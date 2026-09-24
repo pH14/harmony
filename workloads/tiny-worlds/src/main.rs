@@ -2,15 +2,15 @@
 
 use serde::Deserialize;
 use std::{error::Error, io::Read};
-use tiny_worlds::{Workload, resource::Config, run};
+use tiny_worlds::{Workload, run, worlds::World};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
-    config: Config,
+    config: World,
     seed: u64,
     work_budget: u64,
-    omit_stock: bool,
+    broken: bool,
     verify: bool,
 }
 fn main() -> Result<(), Box<dyn Error>> {
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let request: Request = serde_json::from_str(&input)?;
     let workload = Workload {
         config: request.config,
-        omit_stock: request.omit_stock,
+        broken: request.broken,
     };
     workload.config.validate()?;
     if !workload.config.reachable()? {

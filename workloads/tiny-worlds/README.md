@@ -19,7 +19,7 @@ No shortest-path actions or oracle states are supplied to search.
 
 The binary reads one strict JSON request from standard input, capped at 16 KB.
 Required fields are `config`, `seed`, `work_budget` (1–20,000 transitions),
-`omit_stock`, and `verify`. It validates the world and independently enumerates
+`broken`, and `verify`. It validates the world and independently enumerates
 reachable states before searching. Output is one compact JSON report. See the
 [registered panel](../../benchmarks/tiny_worlds/panel.json) for requests and the
 [runner instructions](../../benchmarks/tiny_worlds/README.md) for bounded runs.
@@ -32,7 +32,7 @@ checks the objective witness directly against world mechanics, and sums admitted
 job work independently. Work includes restored-parent replay and suffix actions;
 world environmental state and the cumulative execution counter remain separate.
 
-Exact correctness checks gate changes. Seed-panel solve fractions, Wilson
+Changes must pass exact correctness checks. Seed-panel solve fractions, Wilson
 intervals, and censored work-to-objective rows are descriptive comparisons, not
 universal search-quality thresholds. The initial resource family is motivated,
 not game-calibrated. Calibration must establish the same mechanism using actual
@@ -46,3 +46,26 @@ history and must not be interpreted as active holders; `live_entries` is reporte
 separately. Build-time engine and workload source hashes accompany the executable
 hash, and the panel checks the engine hash and request echoes before scoring.
 Wall-clock telemetry is an explicit Clippy exception and never feeds search.
+
+## Family contracts and evidence
+
+| Family | Failure and software analogue | Assumptions and omitted details | Expected diagnostic | Status |
+| --- | --- | --- | --- | --- |
+| Resource barrier | Useful consumables disappear from retained states; quota replenishment before a multi-step operation. | Deterministic refill station, known charge/health state, consuming corridor; no combat, random drops or navigation. | Charge at barrier arrivals, successful refills/heals, stock preference replacement, continuation work. | Motivated by Metroid; private correspondence open. |
+| History maze | Equal visible locations have different futures after earlier choices; a protocol requiring a prior handshake sequence. | Bounded raw choice history is observable in the sufficient representation; no spatial movement or game-specific RAM abstraction. | Correct/wrong history arrivals, loop resets, distinct versus colliding keys. | Motivated by historical SMB 7-4 traces; fresh local correspondence open. |
+| Changing actions | An action useful in one regime stops producing progress; a service changing supported operations. | Land/water/land stages, a fixed action alphabet, optional observable regime; no inertia, hazards or learned controller. | Attempts and advances by regime/action, entry to the changed regime, recovery in the final land segment. | Exploratory; reported SMB water failure lacks a verified local fixture. |
+
+All worlds enumerate bounded reachability independently of campaign sampling.
+The maze stores raw action history; the pattern is used only by the world and
+post-run evaluator. Reversed mappings test physical action relabeling. The action
+world's unobserved regime deliberately makes distinct states share a key. Its
+normal arm uses the existing half-biased input draw; the broken arm freezes the
+land action. This establishes the need for continued action exploration, not an
+optimal adaptation algorithm. Resource and maze controls alter only representation.
+
+The shared request now carries a tagged `config` with `family` and `parameters`,
+and `broken` selects the family's documented control. Every nested parameter is
+required and unknown fields are rejected. No compatibility path is retained for
+the initial resource-only request. Diagnostic observations never supply paths or
+scoring hints to selection. Action diagnostic counts exclude already-completed
+parents; continuation jobs/work are reconstructed from the event stream.

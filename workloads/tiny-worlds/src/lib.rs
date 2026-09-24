@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub mod actions;
+pub mod maze;
 pub mod resource;
+pub mod worlds;
+use worlds::{State, World};
 
 use searcher::search::{
     archive::{ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, entries_by_suffix},
@@ -10,7 +14,7 @@ use searcher::search::{
         TargetExecution, WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
-    draw::{DrawMixture, SuffixShape},
+    draw::SuffixShape,
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
 };
@@ -19,23 +23,26 @@ use std::{error::Error, io::Write, num::NonZeroUsize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Key {
-    pub place: u8,
+    pub place: u16,
+    pub context: u16,
     pub charge: u8,
     pub health: u8,
     pub goal: bool,
 }
 impl ArchiveKey for Key {
-    type Place = u8;
+    type Place = u16;
     type Progress = bool;
-    type Identity = ();
+    type Identity = u16;
     type Lineage = ();
-    fn place(self) -> u8 {
+    fn place(self) -> u16 {
         self.place
     }
     fn progress(self) -> bool {
         self.goal
     }
-    fn identity(self) {}
+    fn identity(self) -> u16 {
+        self.context
+    }
     fn capacity() -> usize {
         1
     }
@@ -61,6 +68,13 @@ pub struct Evidence {
     pub arrivals: [u64; 32],
     pub refills: u64,
     pub objectives: u64,
+    pub health_recoveries: u64,
+    pub correct_history_arrivals: u64,
+    pub wrong_history_arrivals: u64,
+    pub loop_resets: u64,
+    pub explicit_resets: u64,
+    pub action_attempts: [u64; 12],
+    pub action_advances: [u64; 3],
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport {
@@ -71,17 +85,17 @@ pub struct ArchiveReport {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Observation {
-    before: resource::State,
-    after: resource::State,
+    before: State,
+    after: State,
 }
 pub struct Target {
-    state: resource::State,
+    state: State,
     work: u64,
     observation: Option<Observation>,
 }
 pub struct Workload {
-    pub config: resource::Config,
-    pub omit_stock: bool,
+    pub config: World,
+    pub broken: bool,
 }
 impl CampaignTypes for Workload {
     type Target = Target;
@@ -89,7 +103,7 @@ impl CampaignTypes for Workload {
     type Key = Key;
     type Milestones = bool;
     type Progress = bool;
-    type Snapshot = resource::State;
+    type Snapshot = State;
     type Observations = Observation;
     type Evidence = Evidence;
     type ArchiveReport = ArchiveReport;
@@ -103,7 +117,7 @@ impl Reporting for Workload {
         "tiny-world-checkpoint-v1"
     }
     fn workload_identity_sha256(&self) -> String {
-        postcard_value_sha256(&(&self.config, self.omit_stock)).expect("serializable config")
+        postcard_value_sha256(&(&self.config, self.broken)).expect("serializable config")
     }
     fn action_cost_unit(&self) -> &'static str {
         "transitions"
@@ -134,9 +148,16 @@ impl InputPolicy for Workload {
         1
     }
     fn policies(&self, _: &()) -> WorkloadPolicies {
-        [("tiny_actions".into(), "uniform-four-v1".into())]
-            .into_iter()
-            .collect()
+        [(
+            "tiny_actions".into(),
+            if matches!(self.config, World::Actions(_)) && self.broken {
+                "frozen-land-v1".into()
+            } else {
+                "uniform-four-v1".into()
+            },
+        )]
+        .into_iter()
+        .collect()
     }
     fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<(), Box<dyn Error>> {
         if *policies != self.policies(&()) {
@@ -145,11 +166,14 @@ impl InputPolicy for Workload {
         Ok(())
     }
     fn sample_alphabet(&self, _: &(), rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
-        Ok(rand.below(NonZeroUsize::new(4).unwrap()) as u8)
+        Ok(self
+            .config
+            .sample_action(rand.below(NonZeroUsize::new(4).unwrap()) as u8, self.broken))
     }
 }
 impl TargetExecution for Workload {
     fn new_target(&self) -> Result<Target, String> {
+        self.config.validate()?;
         Ok(Target {
             state: self.config.initial(),
             work: 0,
@@ -160,11 +184,10 @@ impl TargetExecution for Workload {
         target.state = self.config.initial();
         target.observation = None;
     }
-    fn restore(
-        &self,
-        target: &mut Target,
-        snapshot: &resource::State,
-    ) -> Result<(), Box<dyn Error>> {
+    fn restore(&self, target: &mut Target, snapshot: &State) -> Result<(), Box<dyn Error>> {
+        if !self.config.valid_state(*snapshot) {
+            return Err("invalid snapshot state for world".into());
+        }
         target.state = *snapshot;
         target.observation = None;
         Ok(())
@@ -175,8 +198,8 @@ impl TargetExecution for Workload {
     fn action_cost_fn(&self) -> fn(&u8) -> u64 {
         |_| 1
     }
-    fn snapshot_memory_charge(_: &resource::State) -> usize {
-        std::mem::size_of::<resource::State>()
+    fn snapshot_memory_charge(_: &State) -> usize {
+        std::mem::size_of::<State>()
     }
     fn apply_action(
         &self,
@@ -197,7 +220,7 @@ impl TargetExecution for Workload {
     fn rollout_observations(&self, target: &Target) -> Vec<Observation> {
         target.observation.iter().cloned().collect()
     }
-    fn snapshot(&self, target: &mut Target) -> Result<resource::State, Box<dyn Error>> {
+    fn snapshot(&self, target: &mut Target) -> Result<State, Box<dyn Error>> {
         Ok(target.state)
     }
 }
@@ -209,15 +232,9 @@ impl Evaluation for Workload {
         Ok(self.config.goal(target.state))
     }
     fn current_key(&self, target: &Target) -> Result<Key, Box<dyn Error>> {
-        let s = target.state;
-        Ok(Key {
-            place: s.place,
-            charge: if self.omit_stock { 0 } else { s.charge },
-            health: s.health,
-            goal: s.goal,
-        })
+        Ok(self.config.key(target.state, self.broken))
     }
-    fn complete_candidate_key(&self, key: Key, _: &resource::State) -> Result<Key, Box<dyn Error>> {
+    fn complete_candidate_key(&self, key: Key, _: &State) -> Result<Key, Box<dyn Error>> {
         Ok(key)
     }
     fn merge_milestones(&self, into: &mut bool, from: bool) {
@@ -254,13 +271,38 @@ impl Evaluation for Workload {
         F: FnOnce() -> Result<Input<u8>, Box<dyn Error>>,
     {
         for observation in &a.observations {
-            let s = observation.after;
             e.observations += 1;
-            if s.place == self.config.corridor_len && s.place != observation.before.place {
-                e.arrivals[usize::from(s.charge)] += 1;
+            match (self.config, observation.before, observation.after) {
+                (World::Resource(w), State::Resource(before), State::Resource(after)) => {
+                    if after.place == w.corridor_len && before.place != after.place {
+                        e.arrivals[usize::from(after.charge)] += 1;
+                    }
+                    e.refills += u64::from(after.charge > before.charge);
+                    e.health_recoveries += u64::from(after.health > before.health);
+                }
+                (World::Maze(w), State::Maze(before), State::Maze(after)) => {
+                    if after.place == w.length && before.place != after.place {
+                        if w.goal(w.step(after, 0)) {
+                            e.correct_history_arrivals += 1;
+                        } else {
+                            e.wrong_history_arrivals += 1;
+                        }
+                    }
+                    e.loop_resets +=
+                        u64::from(before.place == w.length && after.place == 0 && a.action == 0);
+                    e.explicit_resets +=
+                        u64::from(before.place > 0 && after.place == 0 && a.action == 2);
+                }
+                (World::Actions(_), State::Actions(before), State::Actions(after)) => {
+                    if !before.goal {
+                        let index = usize::from(before.regime) * 4 + usize::from(a.action);
+                        e.action_attempts[index] += 1;
+                        e.action_advances[usize::from(before.regime)] += u64::from(before != after);
+                    }
+                }
+                _ => return Err("observation family mismatch".into()),
             }
-            e.refills += u64::from(a.action == 1 && s.charge > observation.before.charge);
-            e.objectives += u64::from(self.config.goal(s));
+            e.objectives += u64::from(self.config.goal(observation.after));
         }
         Ok(())
     }
@@ -296,7 +338,7 @@ pub fn run(
     if budget == 0 || budget > 20_000 {
         return Err("work budget must be 1..=20000".into());
     }
-    let config = campaign_config(seed, budget);
+    let config = campaign_config(workload, seed, budget);
     let mut stream = BoundedStream(Vec::new());
     let started = telemetry_now();
     let live = run_campaign_checkpointed_with_options(
@@ -344,6 +386,8 @@ pub fn run(
     }
     let mut work = 0;
     let mut first_objective_work = None;
+    let mut continuation_work = 0;
+    let mut continuation_jobs = 0;
     for line in stream
         .0
         .split(|c| *c == b'\n')
@@ -351,7 +395,12 @@ pub fn run(
     {
         let value: serde_json::Value = serde_json::from_slice(line)?;
         if value["event"] == "job" {
-            work += value["execution_work"].as_u64().ok_or("missing work")?;
+            let job_work = value["execution_work"].as_u64().ok_or("missing work")?;
+            work += job_work;
+            if value["selector"]["path"] == "continuation" {
+                continuation_work += job_work;
+                continuation_jobs += 1;
+            }
             if value["decisions"]
                 .as_array()
                 .ok_or("missing decisions")?
@@ -361,6 +410,9 @@ pub fn run(
                 first_objective_work.get_or_insert(work);
             }
         }
+    }
+    if work > budget + 127 {
+        return Err("one-reservation work overshoot exceeded the action bound".into());
     }
     if work != report.execution_work {
         return Err("independent work accounting mismatch".into());
@@ -372,8 +424,9 @@ pub fn run(
     }
     Ok(
         serde_json::json!({"engine_source_sha256":env!("TINY_ENGINE_SOURCE_SHA256"),
-        "workload_source_sha256":env!("TINY_WORKLOAD_SOURCE_SHA256"),"seed":seed,"omit_stock":workload.omit_stock,
-        "config":workload.config,"work_budget":budget,"work":work,
+        "workload_source_sha256":env!("TINY_WORKLOAD_SOURCE_SHA256"),"seed":seed,"broken":workload.broken,
+        "config":workload.config,"work_budget":budget,"work":work,"work_overshoot":work.saturating_sub(budget),
+        "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
         "first_objective_work":first_objective_work,
         "success":first_objective_work.is_some_and(|w|w<=budget),
         "elapsed_seconds":elapsed,"stream_bytes":stream.0.len(),"stream_sha256":report.stream_sha256,
@@ -382,7 +435,7 @@ pub fn run(
     )
 }
 
-fn campaign_config(seed: u64, budget: u64) -> CampaignConfig<Workload> {
+fn campaign_config(workload: &Workload, seed: u64, budget: u64) -> CampaignConfig<Workload> {
     CampaignConfig {
         campaign_seed: seed,
         workers: 1,
@@ -398,7 +451,7 @@ fn campaign_config(seed: u64, budget: u64) -> CampaignConfig<Workload> {
         materialize_final_artifacts: true,
         run: (),
         suffix: SuffixShape::OneOrTwo,
-        mixture: DrawMixture::AlphabetOnly,
+        mixture: workload.config.mixture(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
     }
@@ -418,7 +471,7 @@ mod tests {
 
     fn world() -> Workload {
         Workload {
-            config: resource::Config {
+            config: World::Resource(resource::Config {
                 initial_charge: 0,
                 initial_health: 3,
                 barrier_charge: 5,
@@ -427,8 +480,9 @@ mod tests {
                 refill_amount: 1,
                 max_charge: 8,
                 corridor_len: 1,
-            },
-            omit_stock: false,
+                refill_health_cost: 0,
+            }),
+            broken: false,
         }
     }
 
@@ -455,6 +509,10 @@ mod tests {
             state = w.config.step(state, 0);
         }
         assert!(w.config.goal(state));
+        assert_root_objective(w, state);
+    }
+
+    fn assert_root_objective(w: Workload, state: State) {
         let snapshots = SnapshotCheckpoint {
             format: w.checkpoint_format().into(),
             entries: vec![SnapshotCheckpointEntry {
@@ -469,7 +527,7 @@ mod tests {
                 snapshots,
             },
         };
-        let mut config = campaign_config(17, 20);
+        let mut config = campaign_config(&w, 17, 20);
         config.stop_campaign_on_objective = true;
         let mut stream = BoundedStream(Vec::new());
         let (report, _) = run_campaign_checkpointed_with_options(
@@ -486,6 +544,50 @@ mod tests {
     }
 
     #[test]
+    fn maze_goal_at_root_and_delayed_submit_are_distinct() {
+        let config = maze::Config {
+            length: 5,
+            pattern: 19,
+            reverse_actions: true,
+        };
+        let w = Workload {
+            config: World::Maze(config),
+            broken: false,
+        };
+        let prefix = (0..5).fold(config.initial(), |s, bit| {
+            config.step(s, ((12 >> bit) & 1) as u8)
+        });
+        let mut target = w.new_target().unwrap();
+        w.restore(&mut target, &State::Maze(prefix)).unwrap();
+        assert!(w.rollout_observations(&target).is_empty());
+        assert!(!w.objective_reached(&(), &target).unwrap());
+        assert_root_objective(w, State::Maze(config.step(prefix, 0)));
+    }
+
+    #[test]
+    fn restore_rejects_wrong_family_and_out_of_bounds_state() {
+        let w = world();
+        let mut target = w.new_target().unwrap();
+        assert!(
+            w.restore(
+                &mut target,
+                &State::Maze(maze::State {
+                    place: 0,
+                    history: 0,
+                    goal: false
+                })
+            )
+            .is_err()
+        );
+        let mut invalid = match w.config.initial() {
+            State::Resource(s) => s,
+            _ => unreachable!(),
+        };
+        invalid.charge = 255;
+        assert!(w.restore(&mut target, &State::Resource(invalid)).is_err());
+    }
+
+    #[test]
     fn exhaustive_small_oracle_matches_independent_resource_bound() {
         for corridor_len in 1..=3 {
             for route_cost in 0..=2 {
@@ -496,7 +598,10 @@ mod tests {
                             route_cost,
                             max_charge,
                             health_cost,
-                            ..world().config
+                            ..match world().config {
+                                World::Resource(w) => w,
+                                _ => unreachable!(),
+                            }
                         };
                         let expected =
                             max_charge >= 5 + corridor_len * route_cost && 3 > health_cost;
@@ -526,16 +631,159 @@ mod tests {
         assert_eq!(report["verified"], true);
         assert_eq!(report["success"], true);
         let mut broken = world();
-        broken.omit_stock = true;
+        broken.broken = true;
         let control = run(&broken, 17, 1000, true).unwrap();
         assert_eq!(control["success"], false);
+    }
+
+    #[test]
+    fn every_family_uses_the_real_engine_and_replays_at_fixed_work() {
+        let configs = [
+            World::Maze(maze::Config {
+                length: 4,
+                pattern: 10,
+                reverse_actions: true,
+            }),
+            World::Actions(actions::Config {
+                segment_len: 3,
+                return_to_land: true,
+                observable: true,
+                water_action: 1,
+            }),
+            World::Actions(actions::Config {
+                segment_len: 3,
+                return_to_land: true,
+                observable: false,
+                water_action: 1,
+            }),
+        ];
+        for config in configs {
+            for broken in [false, true] {
+                let workload = Workload { config, broken };
+                let report = run(&workload, 17, 1000, true).unwrap();
+                assert_eq!(report["verified"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn archive_retains_useful_maze_history_in_both_arrival_orders() {
+        use searcher::search::archive::{Archive, ArchiveCandidate};
+        let maze = maze::Config {
+            length: 4,
+            pattern: 10,
+            reverse_actions: false,
+        };
+        for order in [[10_u16, 5_u16], [5_u16, 10_u16]] {
+            for broken in [false, true] {
+                let mut archive = Archive::<u8, Key, bool, State>::new(|_| 1);
+                for history in order {
+                    let input: Vec<u8> = (0..4).map(|bit| ((history >> bit) & 1) as u8).collect();
+                    let state = input.iter().fold(maze.initial(), |s, &a| maze.step(s, a));
+                    assert_eq!(state.place, 4);
+                    archive
+                        .insert(
+                            None,
+                            0,
+                            ArchiveCandidate {
+                                suffix: input,
+                                key: maze.key(state, broken),
+                                milestones: false,
+                            },
+                            State::Maze(state),
+                        )
+                        .unwrap();
+                }
+                assert_eq!(archive.active_count(), if broken { 1 } else { 2 });
+                if !broken {
+                    let mut random = RomuDuoJrRand::with_seed(17);
+                    let selected_correct = (0..64).any(|_| {
+                        let (id, _) = archive.select_parent(&mut random, 128).unwrap();
+                        archive.entry_key(id).unwrap().context == 10
+                    });
+                    assert!(selected_correct);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reversed_history_diagnostics_do_not_depend_on_control_or_reset_choice() {
+        use searcher::search::rollout::Outcome;
+        let config = maze::Config {
+            length: 5,
+            pattern: 19,
+            reverse_actions: true,
+        };
+        for broken in [false, true] {
+            let w = Workload {
+                config: World::Maze(config),
+                broken,
+            };
+            let mut evidence = Evidence::default();
+            for history in [12_u16, 19_u16] {
+                let before = maze::State {
+                    place: 4,
+                    history: history & 15,
+                    goal: false,
+                };
+                let action = ((history >> 4) & 1) as u8;
+                let after = config.step(before, action);
+                let result = CampaignActionResult::<Workload> {
+                    action,
+                    observations: vec![Observation {
+                        before: State::Maze(before),
+                        after: State::Maze(after),
+                    }],
+                    milestones: false,
+                    outcome: Outcome::default(),
+                    candidate: None,
+                };
+                w.merge_action_evidence(&mut evidence, &result, 0, || Ok(Input::default()))
+                    .unwrap();
+            }
+            assert_eq!(evidence.correct_history_arrivals, 1);
+            assert_eq!(evidence.wrong_history_arrivals, 1);
+            for action in [0, 2] {
+                let before = maze::State {
+                    place: 5,
+                    history: 19,
+                    goal: false,
+                };
+                let result = CampaignActionResult::<Workload> {
+                    action,
+                    observations: vec![Observation {
+                        before: State::Maze(before),
+                        after: State::Maze(config.step(before, action)),
+                    }],
+                    milestones: false,
+                    outcome: Outcome::default(),
+                    candidate: None,
+                };
+                w.merge_action_evidence(&mut evidence, &result, 0, || Ok(Input::default()))
+                    .unwrap();
+            }
+            assert_eq!(evidence.loop_resets, 1);
+            assert_eq!(evidence.explicit_resets, 1);
+        }
+    }
+
+    #[test]
+    fn tagged_world_schema_rejects_unconsumed_fields() {
+        let valid = serde_json::to_value(world().config).unwrap();
+        let mut extra = valid.clone();
+        extra["unconsumed"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<World>(extra).is_err());
+        let mut wrong = valid;
+        wrong["family"] = serde_json::json!("unsupported");
+        assert!(serde_json::from_value::<World>(wrong).is_err());
     }
 
     #[test]
     fn broken_representation_erases_only_stock_preference() {
         let correct = world();
         let mut broken = world();
-        broken.omit_stock = true;
+        broken.broken = true;
         let mut t = correct.new_target().unwrap();
         let empty = correct.current_key(&t).unwrap();
         for _ in 0..5 {

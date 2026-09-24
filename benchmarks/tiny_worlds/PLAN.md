@@ -143,7 +143,7 @@ finish independent public work but do not claim that calibration milestone done.
 - Separate development instances/seeds from a frozen validation set. Include
   structural variants, not just new seeds. Register comparison endpoints and
   budgets before validation; do not repeatedly peek until a result is positive.
-- Exact invariants and fixed deterministic regression fixtures may gate PRs.
+- Exact invariants and fixed deterministic regression fixtures may be required for PRs.
   Exploratory performance claims belong in comparative panels until a justified
   acceptance threshold is established. Do not force the current engine to pass
   every challenge by weakening the world or tuning the engine in this project.
@@ -182,7 +182,7 @@ calibration for each game-derived mechanism and preserve limits of the evidence.
 Exit: all three have mechanics tests, meaningful controls, stress parameters,
 held-out evaluation, diagnostics, and completed local game correspondence. Make
 any missing fixture or unresolved causal claim explicit rather than expanding
-the catalog to avoid it. Do not add more families before this gate is satisfied.
+the catalog to avoid it. Do not add more families before this requirement is satisfied.
 
 ### M3 — Five families and selected interactions
 

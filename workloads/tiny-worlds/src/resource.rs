@@ -19,6 +19,7 @@ pub struct Config {
     pub barrier_charge: u8,
     pub route_cost: u8,
     pub health_cost: u8,
+    pub refill_health_cost: u8,
     pub refill_amount: u8,
     pub max_charge: u8,
     pub corridor_len: u8,
@@ -49,6 +50,9 @@ impl Config {
         }
         if self.health_cost > MAX_HEALTH_COST {
             return Err("health_cost must be at most 15".to_owned());
+        }
+        if self.refill_health_cost > MAX_HEALTH_COST {
+            return Err("refill_health_cost must be at most 15".to_owned());
         }
         if !(1..=MAX_CONFIG_VALUE).contains(&self.refill_amount) {
             return Err("refill_amount must be between 1 and 31".to_owned());
@@ -119,7 +123,7 @@ impl Config {
         Ok(false)
     }
 
-    fn state_is_bounded(&self, state: State) -> bool {
+    pub(crate) fn state_is_bounded(&self, state: State) -> bool {
         state.place <= self.corridor_len.saturating_add(1)
             && state.charge <= self.max_charge
             && state.health <= self.initial_health
@@ -159,16 +163,31 @@ impl Config {
                 }
             }
             1 => {
-                if state.place != 0 || state.charge >= self.max_charge {
+                if state.place != 0
+                    || state.charge >= self.max_charge
+                    || state.health <= self.refill_health_cost
+                {
                     return state;
                 }
                 let charge = (u16::from(state.charge) + u16::from(self.refill_amount))
                     .min(u16::from(self.max_charge)) as u8;
-                State { charge, ..state }
+                State {
+                    charge,
+                    health: state.health - self.refill_health_cost,
+                    ..state
+                }
             }
             2 => {
                 if state.place == 0 {
-                    state
+                    if state.health < self.initial_health && state.charge >= 1 {
+                        State {
+                            charge: state.charge - 1,
+                            health: self.initial_health,
+                            ..state
+                        }
+                    } else {
+                        state
+                    }
                 } else {
                     State {
                         place: 0,
@@ -185,7 +204,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, State};
+    use super::{BTreeSet, Config, MAX_STATES, State, VecDeque};
 
     fn config() -> Config {
         Config {
@@ -194,6 +213,7 @@ mod tests {
             barrier_charge: 5,
             route_cost: 1,
             health_cost: 1,
+            refill_health_cost: 0,
             refill_amount: 2,
             max_charge: 8,
             corridor_len: 3,
@@ -227,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn route_then_barrier_consume_charge_and_gate_consumes_health() {
+    fn route_then_barrier_consume_charge_and_barrier_consumes_health() {
         let config = config();
         let stocked = State {
             charge: 8,
@@ -296,6 +316,7 @@ mod tests {
             "barrier_charge":5,
             "route_cost":1,
             "health_cost":1,
+            "refill_health_cost":0,
             "refill_amount":2,
             "max_charge":8,
             "corridor_len":3
@@ -303,24 +324,206 @@ mod tests {
         let parsed: Config = serde_json::from_str(valid_config).unwrap();
         assert_eq!(parsed.barrier_charge, 5);
 
-        let missing_required = r#"{
+        let missing_refill_health_cost = r#"{
             "initial_charge":0,
             "initial_health":4,
+            "barrier_charge":5,
             "route_cost":1,
             "health_cost":1,
             "refill_amount":2,
             "max_charge":8,
             "corridor_len":3
         }"#;
+        assert!(serde_json::from_str::<Config>(missing_refill_health_cost).is_err());
+
+        let missing_required = r#"{
+            "initial_charge":0,
+            "initial_health":4,
+            "route_cost":1,
+            "health_cost":1,
+            "refill_health_cost":0,
+            "refill_amount":2,
+            "max_charge":8,
+            "corridor_len":3
+        }"#;
         assert!(serde_json::from_str::<Config>(missing_required).is_err());
         assert!(serde_json::from_str::<Config>(
-            r#"{"initial_charge":"0","initial_health":4,"barrier_charge":5,"route_cost":1,"health_cost":1,"refill_amount":2,"max_charge":8,"corridor_len":3}"#
+            r#"{"initial_charge":0,"initial_health":4,"barrier_charge":5,"route_cost":1,"health_cost":1,"refill_health_cost":"0","refill_amount":2,"max_charge":8,"corridor_len":3}"#
         )
         .is_err());
         assert!(serde_json::from_str::<Config>(
-            r#"{"initial_charge":0,"initial_health":4,"barrier_charge":5,"route_cost":1,"health_cost":1,"refill_amount":2,"max_charge":8,"corridor_len":3,"unused":0}"#
+            r#"{"initial_charge":0,"initial_health":4,"barrier_charge":5,"route_cost":1,"health_cost":1,"refill_health_cost":0,"refill_amount":2,"max_charge":8,"corridor_len":3,"unused":0}"#
         )
         .is_err());
+        let invalid_cost = Config {
+            refill_health_cost: 16,
+            ..config()
+        };
+        assert!(invalid_cost.validate().is_err());
+    }
+
+    #[test]
+    fn refill_spends_health_only_when_charge_increases() {
+        let config = Config {
+            refill_health_cost: 2,
+            ..config()
+        };
+        let initial = config.initial();
+        assert_eq!(
+            config.step(initial, 1),
+            State {
+                charge: 2,
+                health: 2,
+                ..initial
+            }
+        );
+        let cannot_pay = State {
+            charge: 1,
+            health: 2,
+            ..initial
+        };
+        assert_eq!(config.step(cannot_pay, 1), cannot_pay);
+
+        let full = State {
+            charge: config.max_charge,
+            ..initial
+        };
+        assert_eq!(config.step(full, 1), full);
+
+        let free_refill = Config {
+            refill_health_cost: 0,
+            ..config
+        };
+        assert_eq!(free_refill.step(initial, 1).health, initial.health);
+    }
+
+    #[test]
+    fn return_to_station_can_exchange_charge_for_missing_health() {
+        let config = config();
+        let away = State {
+            place: 2,
+            charge: 3,
+            health: 2,
+            goal: false,
+        };
+        let station = config.step(away, 2);
+        assert_eq!(station, State { place: 0, ..away });
+        assert_eq!(
+            config.step(station, 2),
+            State {
+                charge: 2,
+                health: config.initial_health,
+                ..station
+            }
+        );
+        let no_charge = State {
+            charge: 0,
+            ..station
+        };
+        assert_eq!(config.step(no_charge, 2), no_charge);
+        assert_eq!(config.step(config.initial(), 2), config.initial());
+    }
+
+    #[test]
+    fn health_can_be_exchanged_for_stock_but_stock_cannot_replace_barrier_health() {
+        let portfolio = Config {
+            initial_charge: 0,
+            initial_health: 4,
+            barrier_charge: 5,
+            route_cost: 1,
+            health_cost: 1,
+            refill_health_cost: 1,
+            refill_amount: 2,
+            max_charge: 7,
+            corridor_len: 2,
+        };
+        assert!(portfolio.reachable().unwrap());
+        let short_health = Config {
+            initial_charge: 7,
+            initial_health: 1,
+            ..portfolio
+        };
+        assert!(!short_health.reachable().unwrap());
+    }
+
+    #[test]
+    fn route_cycle_can_gain_charge_only_by_spending_health() {
+        let config = Config {
+            initial_health: 4,
+            barrier_charge: 5,
+            route_cost: 0,
+            health_cost: 1,
+            refill_health_cost: 1,
+            refill_amount: 2,
+            max_charge: 8,
+            corridor_len: 2,
+            ..config()
+        };
+        let initial = config.initial();
+        let refilled = config.step(initial, 1);
+        let away = config.step(refilled, 0);
+        let returned = config.step(away, 2);
+        let healed = config.step(returned, 2);
+        assert_eq!((healed.charge, healed.health), (1, 4));
+        assert_eq!(config.step(healed, 2), healed);
+    }
+
+    #[test]
+    fn resource_changes_always_pay_the_opposite_resource_cost() {
+        let config = Config {
+            refill_health_cost: 2,
+            refill_amount: 2,
+            route_cost: 0,
+            ..config()
+        };
+        for charge in 0..=config.max_charge {
+            for health in 0..=config.initial_health {
+                let state = State {
+                    charge,
+                    health,
+                    ..config.initial()
+                };
+                for action in 0..=3 {
+                    let next = config.step(state, action);
+                    if next.charge > state.charge {
+                        assert_eq!(action, 1);
+                        assert_eq!(state.health - next.health, config.refill_health_cost);
+                    }
+                    if next.health > state.health {
+                        assert_eq!(action, 2);
+                        assert_eq!(state.place, 0);
+                        assert_eq!(state.charge - next.charge, 1);
+                        assert_eq!(next.health, config.initial_health);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_small_states_stay_inside_the_declared_oracle_bound() {
+        let config = Config {
+            initial_health: 3,
+            max_charge: 6,
+            corridor_len: 2,
+            ..config()
+        };
+        config.validate().unwrap();
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::new();
+        let initial = config.initial();
+        seen.insert(initial);
+        pending.push_back(initial);
+        while let Some(state) = pending.pop_front() {
+            for action in 0..=3 {
+                let next = config.step(state, action);
+                assert!(config.state_is_bounded(next));
+                if seen.insert(next) {
+                    assert!(seen.len() <= MAX_STATES);
+                    pending.push_back(next);
+                }
+            }
+        }
     }
 
     #[test]

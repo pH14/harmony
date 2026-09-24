@@ -4,7 +4,7 @@
 
 The [approved plan](PLAN.md) separates exact engine/workload invariants from
 statistical search quality and private game correspondence. The implementation
-starts with a resource-barrier vertical slice. The three-family calibration gate
+contains resource, history, and changing-action worlds. The three-family calibration requirement
 must pass before adding deadline and delayed-progress families.
 
 `panel.json` registers development and held-out structural instances and seeds
@@ -57,7 +57,7 @@ arrival-charge observations, retained states, selection/portfolio counters,
 stream digest, elapsed search time, and logical memory. Resource supervisor
 measurements cover verification and child processes too.
 
-## Private calibration gate
+## Private calibration requirement
 
 Use existing local licensed assets in place, with hashes and immutable build
 identity. Never copy ROMs, snapshots, films, recordings, private paths, or full
@@ -71,4 +71,42 @@ The resource barrier's correspondence to a missile door remains open until a
 local native run verifies resource consumption/replenishment and a meaningful
 comparison at a real root. Maze and water-transition fixtures also need verified
 local roots and traces. Missing assets or unsupported native execution blocks
-that correspondence, not independent public harness work.
+that correspondence, not independent public harness work. Track the missing
+correspondence in [#393](https://github.com/pH14/harmony/issues/393) and the ranked
+post-five-family expansion in [#394](https://github.com/pH14/harmony/issues/394).
+
+## Three-family registration
+
+M2 adds history and changing-action families before any five-family expansion.
+The history control omits raw prior choices from the archive identity; both
+arms execute the same maze. The action control freezes the starting land action
+while the normal arm continues sampling the full alphabet. Both action arms use
+the engine's existing `biased_half` mixture to exercise retained-action bias;
+resource and maze arms keep `alphabet_only`. These are registered workload
+conditions, not engine-policy changes. The unsignaled action variant intentionally
+aliases regimes and may defeat both arms. Success on the observable variant does
+not establish learned adaptation or water-level game performance.
+
+The resource extension lets refill consume health and lets a station visit
+restore health by spending a charge. It tests whether two useful resource
+portfolios survive and propagate along a consuming route. Configuration fields
+are required and bounded; zero refill health cost preserves the first slice.
+
+After an intentional workload change, run `python3 benchmarks/tiny_worlds/register.py`
+once before the corresponding validation. It updates only the workload source
+hash and refuses engine drift. It never changes seeds, instances, budgets or
+endpoints. CI does not re-register sources. The held-out set remains untouched
+until the implementation is frozen; development seeds become regression seeds
+once observed.
+
+Logical-work budgets stop new admissions; the final admitted job can cross the
+threshold. One reservation and the 128-action path cap bound that overshoot to
+127 transitions, which the harness checks and reports separately. Objectives
+first observed beyond the threshold are retained as evidence but scored censored.
+The suite does not demand every normal arm solve every stress/aliased instance.
+
+For the broader registered difficulty/work sweep, use the same supervisor command
+with a fresh output directory, `--seconds 300`, and `panel.py --split sweep`.
+It uses development seeds only, three logical-work budgets, and predeclared route,
+history-length, and regime-length variations. Each report retains per-seed event
+and censoring data; a conditional average over successful runs is never the score.
