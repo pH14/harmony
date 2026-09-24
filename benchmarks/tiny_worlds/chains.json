@@ -2,7 +2,7 @@
   "schema": 2,
   "baseline": "67f65bbce5ee84b57cd91aaceb49350325eb49b9",
   "engine_source_sha256": "98577556455bbca4109eb7ec7a93217dd71100e061f464de6f42ada785df7a70",
-  "workload_source_sha256": "36363ef3ee5e09896728468e7840fa6d812912b47c8479f5a86f3b45c199ca57",
+  "workload_source_sha256": "82c419f2cb2ac09b831197d7477737bcb2be7da534adf0b7b0649232f1b263d0",
   "arms": [
     false,
     true
@@ -4180,5 +4180,525 @@
     }
   ],
   "sweep_cases": [],
-  "sweep_budgets": []
+  "sweep_budgets": [],
+  "confirmation": [
+    {
+      "id": "confirm-mixed-9",
+      "config": {
+        "family": "chain",
+        "parameters": {
+          "stages": [
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "resource",
+                "parameters": {
+                  "initial_charge": 0,
+                  "initial_health": 4,
+                  "barrier_charge": 3,
+                  "route_cost": 0,
+                  "health_cost": 0,
+                  "refill_health_cost": 0,
+                  "refill_amount": 2,
+                  "max_charge": 12,
+                  "corridor_len": 1
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "delayed",
+                "parameters": {
+                  "horizon": 4,
+                  "distractions": 6,
+                  "mode": "wait"
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "deadline",
+                "parameters": {
+                  "length": 2,
+                  "initial_time": 9,
+                  "fast_ticks": 1,
+                  "slow_ticks": 4,
+                  "obstacle_ticks": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "resource",
+                "parameters": {
+                  "initial_charge": 0,
+                  "initial_health": 4,
+                  "barrier_charge": 3,
+                  "route_cost": 0,
+                  "health_cost": 0,
+                  "refill_health_cost": 0,
+                  "refill_amount": 2,
+                  "max_charge": 12,
+                  "corridor_len": 1
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "delayed",
+                "parameters": {
+                  "horizon": 4,
+                  "distractions": 6,
+                  "mode": "wait"
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "deadline",
+                "parameters": {
+                  "length": 2,
+                  "initial_time": 9,
+                  "fast_ticks": 1,
+                  "slow_ticks": 4,
+                  "obstacle_ticks": 3
+                }
+              },
+              "refill_available": true
+            }
+          ],
+          "carry_charge": false,
+          "initial_charge": 0
+        }
+      },
+      "work_budget": 4000
+    },
+    {
+      "id": "confirm-alternating-15",
+      "config": {
+        "family": "chain",
+        "parameters": {
+          "stages": [
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            }
+          ],
+          "carry_charge": false,
+          "initial_charge": 0
+        }
+      },
+      "work_budget": 4000
+    },
+    {
+      "id": "confirm-carry-5",
+      "config": {
+        "family": "chain",
+        "parameters": {
+          "stages": [
+            {
+              "world": {
+                "family": "resource",
+                "parameters": {
+                  "initial_charge": 0,
+                  "initial_health": 4,
+                  "barrier_charge": 1,
+                  "route_cost": 0,
+                  "health_cost": 0,
+                  "refill_health_cost": 0,
+                  "refill_amount": 2,
+                  "max_charge": 12,
+                  "corridor_len": 1
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "delayed",
+                "parameters": {
+                  "horizon": 4,
+                  "distractions": 6,
+                  "mode": "wait"
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "resource",
+                "parameters": {
+                  "initial_charge": 0,
+                  "initial_health": 4,
+                  "barrier_charge": 6,
+                  "route_cost": 1,
+                  "health_cost": 0,
+                  "refill_health_cost": 0,
+                  "refill_amount": 2,
+                  "max_charge": 12,
+                  "corridor_len": 1
+                }
+              },
+              "refill_available": false
+            }
+          ],
+          "carry_charge": true,
+          "initial_charge": 0
+        }
+      },
+      "work_budget": 4000
+    },
+    {
+      "id": "confirm-carry-8",
+      "config": {
+        "family": "chain",
+        "parameters": {
+          "stages": [
+            {
+              "world": {
+                "family": "resource",
+                "parameters": {
+                  "initial_charge": 0,
+                  "initial_health": 4,
+                  "barrier_charge": 1,
+                  "route_cost": 0,
+                  "health_cost": 0,
+                  "refill_health_cost": 0,
+                  "refill_amount": 2,
+                  "max_charge": 12,
+                  "corridor_len": 1
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "delayed",
+                "parameters": {
+                  "horizon": 4,
+                  "distractions": 6,
+                  "mode": "wait"
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "actions",
+                "parameters": {
+                  "segment_len": 1,
+                  "return_to_land": true,
+                  "observable": true,
+                  "water_action": 3
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "maze",
+                "parameters": {
+                  "length": 3,
+                  "pattern": 3,
+                  "reverse_actions": true
+                }
+              },
+              "refill_available": true
+            },
+            {
+              "world": {
+                "family": "resource",
+                "parameters": {
+                  "initial_charge": 0,
+                  "initial_health": 4,
+                  "barrier_charge": 6,
+                  "route_cost": 1,
+                  "health_cost": 0,
+                  "refill_health_cost": 0,
+                  "refill_amount": 2,
+                  "max_charge": 12,
+                  "corridor_len": 1
+                }
+              },
+              "refill_available": false
+            }
+          ],
+          "carry_charge": true,
+          "initial_charge": 0
+        }
+      },
+      "work_budget": 4000
+    }
+  ],
+  "confirmation_seeds": [
+    2026092611,
+    2026092623,
+    2026092633,
+    2026092641,
+    2026092657
+  ]
 }

@@ -315,6 +315,38 @@ mod tests {
     }
 
     #[test]
+    fn cross_stage_preferences_compare_only_persistent_stock() {
+        let resource = Key {
+            stock: 7,
+            place: 0,
+            context: 0,
+            charge: 7,
+            health: 3,
+            goal: false,
+        };
+        let maze = Key {
+            place: 256,
+            charge: 0,
+            health: 0,
+            ..resource
+        };
+        for preference in 0..Key::preferences() {
+            assert!(resource.preference_cmp(preference, maze).is_eq());
+            assert!(maze.preference_cmp(preference, resource).is_eq());
+            assert!(
+                resource
+                    .preference_cmp(preference, Key { stock: 3, ..maze })
+                    .is_gt()
+            );
+            assert!(
+                resource
+                    .preference_cmp(preference, Key { place: 1, ..maze })
+                    .is_gt()
+            );
+        }
+    }
+
+    #[test]
     fn charge_survives_maze_and_controls_access_to_later_barrier() {
         let w = carrying();
         assert!(w.reachable().unwrap());
@@ -432,6 +464,16 @@ mod tests {
                 };
                 let report = run(&w, 17, 1000, true).unwrap();
                 assert_eq!(report["verified"], true);
+                assert!(
+                    report["pre_objective_continuation_jobs"].as_u64().unwrap()
+                        <= report["continuation_jobs"].as_u64().unwrap()
+                );
+                assert!(
+                    report["pre_objective_continuation_work"].as_u64().unwrap()
+                        <= report["first_objective_work"]
+                            .as_u64()
+                            .unwrap_or(report["work"].as_u64().unwrap())
+                );
                 let work: u64 = report["chain_work_by_parent_stage"]
                     .as_array()
                     .unwrap()

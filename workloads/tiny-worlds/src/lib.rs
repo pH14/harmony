@@ -55,6 +55,9 @@ impl ArchiveKey for Key {
         2
     }
     fn preference_cmp(self, preference: usize, other: Self) -> std::cmp::Ordering {
+        if self.place / 256 != other.place / 256 {
+            return self.stock.cmp(&other.stock);
+        }
         if preference == 0 {
             (self.stock, self.charge, self.health).cmp(&(other.stock, other.charge, other.health))
         } else {
@@ -527,6 +530,8 @@ pub fn run(
     let mut first_objective_work = None;
     let mut continuation_work = 0;
     let mut continuation_jobs = 0;
+    let mut pre_objective_continuation_jobs = 0;
+    let mut pre_objective_continuation_work = 0;
     for line in stream
         .0
         .split(|c| *c == b'\n')
@@ -539,6 +544,10 @@ pub fn run(
             if value["selector"]["path"] == "continuation" {
                 continuation_work += job_work;
                 continuation_jobs += 1;
+                if first_objective_work.is_none() {
+                    pre_objective_continuation_jobs += 1;
+                    pre_objective_continuation_work += job_work;
+                }
             }
             if value["decisions"]
                 .as_array()
@@ -591,6 +600,8 @@ pub fn run(
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
         "chain_selected_charge":report.archive.evidence.chain_selected_charge,
         "action_limit":workload.config.action_limit(),
+        "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
+        "pre_objective_continuation_work":pre_objective_continuation_work,
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
         "first_objective_work":first_objective_work,
         "success":first_objective_work.is_some_and(|w|w<=budget),

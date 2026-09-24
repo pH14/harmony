@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--panel', type=Path, default=Path(__file__).with_name('panel.json'))
-    parser.add_argument('--split', choices=('development', 'validation', 'sweep', 'scaling'), default='development')
+    parser.add_argument('--split', choices=('development', 'validation', 'sweep', 'scaling', 'confirmation'), default='development')
     args = parser.parse_args()
     raw = args.panel.read_bytes()
     manifest = json.loads(raw)

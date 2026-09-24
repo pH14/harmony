@@ -166,3 +166,9 @@ can be redirected to a file inside an inventoried private artifact root to
 avoid truncating the supervisor's bounded stdout log. Results and calibration
 claims belong in the PR description, not committed run records. Composed
 synthetic success does not establish an equivalent full-game route.
+
+The `confirmation` split supplies additional structural variants and separate
+seeds. Freeze source and definitions before inspecting it, just as for
+validation. Once observed, a set is a regression panel; a later implementation
+fix does not make its rerun fresh held-out evidence. Record source identities
+and retain superseded comparisons in private evidence and the PR description.

@@ -170,6 +170,10 @@ bounded by 511 transitions. Stage number distinguishes places but is not a
 progress score or retention preference. Carried stock adds the leading component
 to the charge-first preference and the last component to the health-first one;
 standalone worlds have zero stock, preserving their existing preference order.
+Across visible stage namespaces, preferences compare only persistent stock;
+local ammunition, clocks, and health have different meanings across stages.
+This also applies to continuation edge comparisons, not just slot retention.
+The omitted-stage control intentionally loses this boundary distinction too.
 
 Diagnostics record first observed stage-entry work, entry charge distributions,
 suffix actions per stage, and nonempty executed jobs classified by their actual
@@ -181,3 +185,17 @@ or skipped jobs. First-entry work uses the single worker's cumulative execution
 counter; restoring a snapshot does not rewind it. These measurements never feed
 selection. Intermediate stage completion is not a terminal objective or a new
 search invocation. Known paths are used only in mechanics/replay verification.
+
+Carry controls use the engine's ordinary path-length tie-break when hidden stock
+leaves otherwise equal keys. Refills cost actions, so this tends to retain lower
+stock; the comparison is stock-aware retention versus that default tie-break,
+not a neutral resource-blind policy. Omitting stage identity deliberately causes
+later states to collide with earlier, shorter paths. Neither control alone
+establishes improved continuation-graph propagation.
+
+Pre-objective continuation job/work counters exclude post-success dispatches and
+include the objective job. These measure continuation activity, not causal
+attribution of useful stock reaching the final barrier. The chain does not model
+position-sensitive replay after a kill, persistent capability identities, or a
+selection ladder with stage-dependent progress tiers. Its local states have
+exact deterministic transitions and stock does not alter movement geometry.
