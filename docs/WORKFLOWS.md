@@ -238,8 +238,7 @@ two to match exactly.
 
 `scripts/custom-lints.py` checks what a parser can decide. It parses every
 workflow with PyYAML 6.0.3 and fails closed on a missing parser, invalid YAML,
-duplicate mapping keys, a malformed trigger or an unregistered file. Findings
-under a `ci-` rule cannot be recorded in the lint baseline.
+duplicate mapping keys, a malformed trigger or an unregistered file.
 
 | Rule | Covers |
 | --- | --- |
@@ -265,15 +264,13 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 
 `scripts/semantic-lints.py` asks a judge what a parser cannot decide. Its
 judgments skip without `TYPESAFE_API_KEY`, so deterministic correctness never
-depends on them. Its semantic baseline only shrinks, and that check runs without
-the key. A workflow is judged alongside its registry entry, the ownership
-policy, the local actions, scripts and manifests it runs, the renderers its jobs
-register as media, and `docs/WORKFLOWS.md`. A composite action is followed into
-its own file, so a script the workflow reaches only through an action counts
-too. The prompt carries a bounded excerpt of each of those files and the digest
-of the whole file, so a change anywhere in one reselects the workflow and
-invalidates its cached judgment. Findings under these rules are fixed rather
-than recorded in the semantic baseline.
+depends on them. A workflow is judged alongside its registry entry, the
+ownership policy, the local actions, scripts and manifests it runs, the
+renderers its jobs register as media, and `docs/WORKFLOWS.md`. A composite
+action is followed into its own file, so a script the workflow reaches only
+through an action counts too. The prompt carries a bounded excerpt of each of
+those files and the digest of the whole file, so a change anywhere in one
+reselects the workflow and invalidates its cached judgment.
 
 | Rule | Asks |
 | --- | --- |

@@ -101,10 +101,9 @@ class QuestionScopeTests(RequiresApiKey):
             calls: list = []
             post = make_post(answers, calls)
 
-            new_failures, _, _, _, _, _ = LINTS.run(
+            new_failures, _, _, _ = LINTS.run(
                 root,
                 ["dissonance/searcher/src/lib.rs", "workloads/lib.rs"],
-                {},
                 post=post,
             )
 
@@ -117,17 +116,17 @@ class QuestionScopeTests(RequiresApiKey):
 
 
 class VerdictTests(RequiresApiKey):
-    def _run_one(self, name: str, content: str, answers: dict, baseline=None):
+    def _run_one(self, name: str, content: str, answers: dict):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
-            return LINTS.run(root, [name], baseline or {}, post=make_post(answers))
+            return LINTS.run(root, [name], post=make_post(answers))
 
     def test_high_confidence_run_record_fails(self) -> None:
         answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
-        new_failures, new_warnings, _, _, _, _ = self._run_one(
+        new_failures, new_warnings, _, _ = self._run_one(
             "dissonance/PLANTED-RUN.toml", "seed = 42\nhost = \"box1\"\n", answers,
         )
         self.assertEqual([r for r, _, _ in new_failures], ["run-record"])
@@ -135,7 +134,7 @@ class VerdictTests(RequiresApiKey):
 
     def test_medium_probability_run_record_warns_not_fails(self) -> None:
         answers = full_answers(records_runs=0.90)
-        new_failures, new_warnings, _, _, _, _ = self._run_one(
+        new_failures, new_warnings, _, _ = self._run_one(
             "dissonance/PLANTED-RUN.toml", "seed = 42\nhost = \"box1\"\n", answers,
         )
         self.assertEqual(new_failures, [])
@@ -143,66 +142,13 @@ class VerdictTests(RequiresApiKey):
 
     def test_component_reference_passes_clean(self) -> None:
         answers = full_answers(file_kind="component_reference", file_kind_confidence=0.97)
-        new_failures, new_warnings, _, _, _, _ = self._run_one(
+        new_failures, new_warnings, _, _ = self._run_one(
             "consonance/vmm-core/README.md",
             "This component owns snapshot restore boundaries.",
             answers,
         )
         self.assertEqual(new_failures, [])
         self.assertEqual(new_warnings, [])
-
-    def test_baseline_reports_baselined_and_stale_entry_fails(self) -> None:
-        # GONE.toml is judged in this run (unlike an untouched file in a
-        # --changed-from sweep) and comes back clean, so it's a genuine fix:
-        # stale, not "not checked".
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "dissonance").mkdir()
-            (root / "dissonance" / "PLANTED-RUN.toml").write_text("seed = 42\n")
-            (root / "dissonance" / "GONE.toml").write_text("this file is clean now\n")
-
-            run_record_answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
-            clean_answers = full_answers(file_kind="component_reference")
-
-            def post(url: str, headers: dict, body: bytes) -> bytes:
-                payload = json.loads(body)
-                path = payload["state"]["path"]
-                answers = run_record_answers if path == "dissonance/PLANTED-RUN.toml" else clean_answers
-                return json.dumps(
-                    {
-                        "model": LINTS.MODEL,
-                        "answers": {k: v for k, v in answers.items() if k in payload["questions"]},
-                        "usage": {"input_tokens": 1, "output_tokens": 1},
-                    }
-                ).encode()
-
-            baseline = {
-                "run-record": ["dissonance/PLANTED-RUN.toml", "dissonance/GONE.toml"],
-            }
-            new_failures, _, still_baselined, _, _, judged = LINTS.run(
-                root, ["dissonance/PLANTED-RUN.toml", "dissonance/GONE.toml"], baseline, post=post,
-            )
-            self.assertEqual(new_failures, [])
-            self.assertIn(("run-record", "dissonance/PLANTED-RUN.toml"), still_baselined)
-
-            stale = LINTS.stale_baseline_entries(baseline, still_baselined, judged)
-            self.assertEqual(stale, [("run-record", "dissonance/GONE.toml")])
-
-    def test_baseline_entry_outside_changed_set_is_not_reported_stale(self) -> None:
-        # dissonance/GONE.toml is a known violation but wasn't judged this run
-        # (a --changed-from sweep only judges the files that actually changed);
-        # only a file this run actually checked can confirm a fix.
-        answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
-        baseline = {
-            "run-record": ["dissonance/PLANTED-RUN.toml", "dissonance/GONE.toml"],
-        }
-        _, _, still_baselined, _, _, judged = self._run_one(
-            "dissonance/PLANTED-RUN.toml", "seed = 42\n", answers, baseline=baseline,
-        )
-        self.assertNotIn("dissonance/GONE.toml", judged)
-
-        stale = LINTS.stale_baseline_entries(baseline, still_baselined, judged)
-        self.assertEqual(stale, [])
 
 
 class TruncationTests(unittest.TestCase):
@@ -285,10 +231,10 @@ class AnswerValidationTests(RequiresApiKey):
                     answers = full_answers()
                     answers[question] = value
                     cache = {}
-                    failures, warnings, baselined, _, errors, judged = LINTS.run(
-                        root, ["notes.txt"], {}, post=make_post(answers), cache=cache,
+                    failures, warnings, _, errors = LINTS.run(
+                        root, ["notes.txt"], post=make_post(answers), cache=cache,
                     )
-                    self.assertEqual((failures, warnings, baselined, judged), ([], [], set(), set()))
+                    self.assertEqual((failures, warnings), ([], []))
                     self.assertEqual([path for path, _ in errors], ["notes.txt"])
                     self.assertEqual(cache, {})
 
@@ -324,8 +270,8 @@ class CacheTests(RequiresApiKey):
             post = make_post(answers, calls)
             cache: dict = {}
 
-            LINTS.run(root, ["README.md"], {}, post=post, cache=cache)
-            LINTS.run(root, ["README.md"], {}, post=post, cache=cache)
+            LINTS.run(root, ["README.md"], post=post, cache=cache)
+            LINTS.run(root, ["README.md"], post=post, cache=cache)
 
             self.assertEqual(len(calls), 1)
 
@@ -338,9 +284,9 @@ class CacheTests(RequiresApiKey):
             key = LINTS._cache_key("notes.txt", content, questions)
             cache = {key: {name: {} for name in questions}}
             calls = []
-            result = LINTS.run(root, ["notes.txt"], {}, post=make_post(full_answers(), calls), cache=cache)
+            result = LINTS.run(root, ["notes.txt"], post=make_post(full_answers(), calls), cache=cache)
             self.assertEqual(len(calls), 1)
-            self.assertEqual(result[4], [])
+            self.assertEqual(result[3], [])
             self.assertTrue(LINTS._valid_answers(cache[key], questions))
 
 
@@ -365,14 +311,13 @@ class PerFileErrorTests(RequiresApiKey):
                     }
                 ).encode()
 
-            new_failures, new_warnings, _, _, errors, judged = LINTS.run(
-                root, ["huge.md", "ok.md"], {}, post=post,
+            new_failures, new_warnings, _, errors = LINTS.run(
+                root, ["huge.md", "ok.md"], post=post,
             )
 
             self.assertEqual(new_failures, [])
             self.assertEqual(new_warnings, [])
             self.assertEqual([path for path, _ in errors], ["huge.md"])
-            self.assertEqual(judged, {"ok.md"})
 
 
 class ChangedFilesTests(unittest.TestCase):
@@ -492,195 +437,6 @@ class ChangedFilesTests(unittest.TestCase):
 
 
 
-class MainChangedFromBaselineTests(RequiresApiKey):
-    """A --changed-from run only judges the files that changed. A baseline
-    entry for a file outside that set must not be reported as fixed, and
-    --update-baseline must not drop it either."""
-
-    def _git(self, root: Path, *args: str) -> None:
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
-
-    def _make_repo(self, root: Path) -> None:
-        self._git(root, "init", "-q")
-        self._git(root, "config", "user.email", "test@example.com")
-        self._git(root, "config", "user.name", "Test")
-
-        (root / "docs").mkdir()
-        baseline = {"run-record": ["untouched.md"]}
-        (root / "docs" / "semantic-lints-baseline.json").write_text(json.dumps(baseline))
-        (root / "untouched.md").write_text("a known violation nobody fixed yet")
-        (root / "changed.md").write_text("original")
-        self._git(root, "add", "-A")
-        self._git(root, "commit", "-q", "-m", "base")
-
-        (root / "changed.md").write_text("modified, still clean content")
-        self._git(root, "add", "-A")
-        self._git(root, "commit", "-q", "-m", "change")
-
-    def test_unjudged_baseline_entry_does_not_fail_the_run(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._make_repo(root)
-            post = make_post(full_answers(file_kind="component_reference"))
-
-            with mock.patch.object(LINTS, "_http_post", post):
-                code = LINTS.main(["--repo-root", str(root), "--changed-from", "HEAD^1"])
-
-            self.assertEqual(code, 0)
-
-    def test_update_baseline_preserves_an_unjudged_entry(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._make_repo(root)
-            post = make_post(full_answers(file_kind="component_reference"))
-
-            with mock.patch.object(LINTS, "_http_post", post):
-                code = LINTS.main([
-                    "--repo-root", str(root), "--changed-from", "HEAD^1", "--update-baseline",
-                ])
-
-            self.assertEqual(code, 0)
-            baseline = json.loads((root / "docs" / "semantic-lints-baseline.json").read_text())
-            self.assertEqual(baseline, {"run-record": ["untouched.md"]})
-
-
-class BaselineOnlyShrinksTests(RequiresApiKey):
-    BASELINE = "docs/semantic-lints-baseline.json"
-
-    def _git(self, root: Path, *args: str) -> None:
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
-
-    def _commit(self, root: Path, files: dict, message: str) -> None:
-        for name, content in files.items():
-            path = root / name
-            if content is None:
-                path.unlink()
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content if isinstance(content, str) else json.dumps(content))
-        self._git(root, "add", "-A")
-        self._git(root, "commit", "-q", "-m", message)
-
-    def _init(self, root: Path) -> None:
-        self._git(root, "init", "-q")
-        self._git(root, "config", "user.email", "test@example.com")
-        self._git(root, "config", "user.name", "Test")
-
-    def _main(self, args: list[str], post) -> tuple[int, str]:
-        stderr = io.StringIO()
-        with mock.patch.object(LINTS, "_http_post", post), \
-             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
-            code = LINTS.main(args)
-        return code, stderr.getvalue()
-
-    def test_update_baseline_refuses_a_new_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "docs").mkdir()
-            original = json.dumps({"run-record": ["old.md"]})
-            (root / self.BASELINE).write_text(original)
-            (root / "RUNS.md").write_text("seed 42 reached the boss at 3.1M executions\n")
-            answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
-            with mock.patch.object(LINTS, "all_tracked_files", return_value=["RUNS.md"]):
-                code, stderr = self._main(
-                    ["--repo-root", directory, "--all", "--update-baseline"], make_post(answers))
-            self.assertEqual(code, 1)
-            self.assertEqual((root / self.BASELINE).read_text(), original)
-            self.assertIn(f"[run-record] {LINTS.REMEDIATION['run-record']}", stderr)
-            self.assertIn("RUNS.md: file_kind=run_record", stderr)
-
-    def test_update_baseline_removes_a_fixed_entry(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "docs").mkdir()
-            (root / self.BASELINE).write_text(
-                json.dumps({"run-record": ["fixed.md", "untouched.md"]}))
-            (root / "fixed.md").write_text("This component does X.\n")
-            answers = full_answers(file_kind="component_reference")
-            with mock.patch.object(LINTS, "all_tracked_files", return_value=["fixed.md"]):
-                code, _ = self._main(
-                    ["--repo-root", directory, "--all", "--update-baseline"], make_post(answers))
-            self.assertEqual(code, 0)
-            self.assertEqual(json.loads((root / self.BASELINE).read_text()),
-                             {"run-record": ["untouched.md"]})
-
-    def test_an_entry_absent_at_rev_fails_and_suppresses_nothing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._init(root)
-            self._commit(root, {"old.md": "an old record\n",
-                                self.BASELINE: {"run-record": ["old.md"]}}, "base")
-            self._commit(root, {"new.md": "seed 42 reached the boss\n",
-                                self.BASELINE: {"run-record": ["new.md", "old.md"]}}, "grow")
-            answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
-            code, stderr = self._main(
-                ["--repo-root", directory, "--changed-from", "HEAD^1"], make_post(answers))
-            self.assertEqual(code, 1)
-            self.assertIn("[baseline-grew]", stderr)
-            self.assertIn("    [run-record] new.md\n", stderr)
-            self.assertNotIn("    [run-record] old.md\n", stderr)
-            self.assertIn(f"[run-record] {LINTS.REMEDIATION['run-record']}", stderr)
-            self.assertIn("new.md: file_kind=run_record", stderr)
-
-    def test_a_baseline_absent_at_rev_is_empty_there(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._init(root)
-            self._commit(root, {"old.md": "an old record\n"}, "base")
-            self._commit(root, {self.BASELINE: {"run-record": ["old.md"]}}, "add baseline")
-            code, stderr = self._main(
-                ["--repo-root", directory, "--changed-from", "HEAD^1"],
-                make_post(full_answers(file_kind="component_reference")))
-            self.assertEqual(code, 1)
-            self.assertIn("[baseline-grew]", stderr)
-            self.assertIn("    [run-record] old.md\n", stderr)
-
-    def test_update_baseline_refuses_growth_since_rev(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._init(root)
-            self._commit(root, {"old.md": "an old record\n", "changed.md": "original\n",
-                                self.BASELINE: {"run-record": []}}, "base")
-            grown = json.dumps({"run-record": ["old.md"]})
-            self._commit(root, {"changed.md": "modified\n", self.BASELINE: grown}, "grow")
-            code, stderr = self._main(
-                ["--repo-root", directory, "--changed-from", "HEAD^1", "--update-baseline"],
-                make_post(full_answers(file_kind="component_reference")))
-            self.assertEqual(code, 1)
-            self.assertIn("    [run-record] old.md\n", stderr)
-            self.assertEqual((root / self.BASELINE).read_text(), grown)
-
-    def test_growth_fails_without_the_api_key(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._init(root)
-            self._commit(root, {"old.md": "an old record\n",
-                                self.BASELINE: {"run-record": []}}, "base")
-            self._commit(root, {self.BASELINE: {"run-record": ["old.md"]}}, "grow")
-            calls: list = []
-            with mock.patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("TYPESAFE_API_KEY", None)
-                code, stderr = self._main(
-                    ["--repo-root", directory, "--changed-from", "HEAD^1"],
-                    make_post(full_answers(), calls))
-            self.assertEqual(code, 1)
-            self.assertIn("    [run-record] old.md\n", stderr)
-            self.assertEqual(calls, [])
-
-    def test_a_shrunk_baseline_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._init(root)
-            self._commit(root, {"gone.md": "a record\n", "old.md": "an old record\n",
-                                self.BASELINE: {"run-record": ["gone.md", "old.md"]}}, "base")
-            self._commit(root, {"gone.md": None,
-                                self.BASELINE: {"run-record": ["old.md"]}}, "shrink")
-            code, stderr = self._main(
-                ["--repo-root", directory, "--changed-from", "HEAD^1"],
-                make_post(full_answers(file_kind="component_reference")))
-            self.assertEqual(code, 0, stderr)
-
-
 class CiArchitectureTests(RequiresApiKey):
     """The CI architecture questions: scope, context, invalidation and verdicts."""
 
@@ -714,8 +470,8 @@ class CiArchitectureTests(RequiresApiKey):
             root = Path(directory)
             path = self.workflow_path()
             self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
-            failures, _, _, _, _, _ = LINTS.run(
-                root, [path], {},
+            failures, _, _, _ = LINTS.run(
+                root, [path],
                 post=make_post(full_answers(file_kind="config", seed_outcome_pinned=0.97)))
             self.assertEqual([rule for rule, _, _ in failures], ["ci-pinned-seed-outcome"])
 
@@ -804,11 +560,11 @@ class CiArchitectureTests(RequiresApiKey):
             calls: list = []
             post = make_post(full_answers(file_kind="config"), calls)
             cache: dict = {}
-            LINTS.run(root, [path], {}, post=post, cache=cache)
-            LINTS.run(root, [path], {}, post=post, cache=cache)
+            LINTS.run(root, [path], post=post, cache=cache)
+            LINTS.run(root, [path], post=post, cache=cache)
             self.assertEqual(len(calls), 1)
             self.plant(root, "docs/WORKFLOWS.md", "The registry owns every workflow and job.\n")
-            LINTS.run(root, [path], {}, post=post, cache=cache)
+            LINTS.run(root, [path], post=post, cache=cache)
             self.assertEqual(len(calls), 2)
 
     def test_the_policy_version_is_part_of_the_cache_key(self):
@@ -837,8 +593,8 @@ class CiArchitectureTests(RequiresApiKey):
             self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
             self.plant(root, "workloads/bugs/historical/README.md",
                        "Each case records the upstream versions the bug affects.\n")
-            failures, warnings, _, _, errors, _ = LINTS.run(
-                root, [path, "workloads/bugs/historical/README.md"], {},
+            failures, warnings, _, errors = LINTS.run(
+                root, [path, "workloads/bugs/historical/README.md"],
                 post=make_post(full_answers(file_kind="config")))
             self.assertEqual((failures, warnings, errors), ([], [], []))
 
@@ -847,8 +603,8 @@ class CiArchitectureTests(RequiresApiKey):
             root = Path(directory)
             self.plant(root, "workloads/bugs/historical/README.md",
                        "Run the search against the fixed version as a control arm.\n")
-            failures, _, _, _, _, _ = LINTS.run(
-                root, ["workloads/bugs/historical/README.md"], {},
+            failures, _, _, _ = LINTS.run(
+                root, ["workloads/bugs/historical/README.md"],
                 post=make_post(full_answers(file_kind="instructions",
                                             fixed_release_run=0.96)))
             self.assertEqual([rule for rule, _, _ in failures], ["ci-fixed-release-run"])
@@ -882,31 +638,6 @@ class CiArchitectureTests(RequiresApiKey):
             context = LINTS.context_for(root, "workloads/bugs/historical/example/image/Dockerfile",
                                         "FROM scratch\n")
             self.assertIn("workloads/bugs/historical/example/case.json", context["case_manifest"])
-
-    def test_an_architecture_finding_cannot_be_baselined(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = self.workflow_path()
-            self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
-            answers = full_answers(file_kind="config", disguised_search=0.99)
-            baseline = {"ci-disguised-search": [path]}
-            failures, _, baselined, _, _, _ = LINTS.run(
-                root, [path], baseline, post=make_post(answers))
-            self.assertEqual([rule for rule, _, _ in failures], ["ci-disguised-search"])
-            self.assertEqual(baselined, set())
-
-    def test_update_baseline_refuses_an_architecture_finding(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = self.workflow_path()
-            self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
-            answers = full_answers(file_kind="config", owner_match=0.99)
-            with mock.patch.object(LINTS, "_http_post", make_post(answers)), \
-                 mock.patch.object(LINTS, "all_tracked_files", return_value=[path]), \
-                 mock.patch.object(LINTS, "save_baseline") as save, \
-                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(LINTS.main(["--repo-root", directory, "--all", "--update-baseline"]), 1)
-            save.assert_not_called()
 
     def test_text_addressed_to_the_judge_is_material_not_instruction(self):
         for question_id in LINTS.CI_ARCHITECTURE_RULES:
@@ -978,18 +709,15 @@ class OneOffProgramTests(RequiresApiKey):
                          ([], ["one-off-program"]))
         self.assertEqual(LINTS.evaluate(full_answers(one_off_program=0.30)), ([], []))
 
-    def test_a_one_off_program_fails_the_run_unless_baselined(self):
+    def test_a_one_off_program_fails_the_run(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = "tools/src/bin/page_probe.rs"
             self.plant(root, path, "fn main() {}\n")
             answers = full_answers(one_off_program=0.85)
-            failures, _, _, _, _, _ = LINTS.run(root, [path], {}, post=make_post(answers))
+            failures, _, _, _ = LINTS.run(root, [path], post=make_post(answers))
             self.assertEqual([(rule, name) for rule, name, _ in failures],
                              [("one-off-program", path)])
-            failures, _, baselined, _, _, _ = LINTS.run(
-                root, [path], {"one-off-program": [path]}, post=make_post(answers))
-            self.assertEqual((failures, baselined), ([], {("one-off-program", path)}))
 
     def test_text_addressed_to_the_judge_is_material_not_instruction(self):
         self.assertTrue(LINTS.QUESTIONS["one_off_program"]["instructions"]
