@@ -85,14 +85,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Judge changed file content
         env:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-        run: python3 scripts/semantic-lints.py --changed-from HEAD^1
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then
+            python3 scripts/semantic-lints.py --changed-from HEAD^1
+          elif git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            python3 scripts/semantic-lints.py --changed-from "$BEFORE_SHA"
+          else
+            python3 scripts/semantic-lints.py --all
+          fi
 
   ignored-tests:
     name: Ignored Tests — ${{ matrix.host }}

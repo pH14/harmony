@@ -276,6 +276,12 @@ in the semantic baseline.
 | `ci-boundary-contradiction` | Does documentation contradict the component and composition boundaries? |
 | `ci-pinned-seed-outcome` | Does a check require a particular search outcome from one fixed seed? |
 
+The `Semantic Lints` job in `Checks / Repository` judges a pull request against
+the tip of its base branch. It judges a push to main against the commit before
+the push, so every commit in the push is covered. When that commit is all zeros
+or missing from the fetched history, as after a new branch or a force push, the
+job judges every tracked file.
+
 ## Verification
 
 ```sh
