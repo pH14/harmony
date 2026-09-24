@@ -66,6 +66,16 @@ struct Request {
     population_start_action: usize,
     seed: u64,
     broken: bool,
+    #[serde(default)]
+    mode: Mode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Mode {
+    #[default]
+    History,
+    Deadline,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -105,6 +115,7 @@ struct RawState {
     absolute_x: u16,
     history_correct: u8,
     history_passes: u8,
+    clock: u16,
     alive: bool,
 }
 
@@ -240,6 +251,9 @@ fn raw_state(wram: &[u8; WRAM_SIZE], alive: bool) -> RawState {
         absolute_x: u16::from(wram[PLAYER_X_PAGE_OFFSET]) * 256 + u16::from(wram[PLAYER_X_OFFSET]),
         history_correct: wram[HISTORY_CORRECT_OFFSET],
         history_passes: wram[HISTORY_PASSES_OFFSET],
+        clock: wram[0x07f8..=0x07fa]
+            .iter()
+            .fold(0, |clock, digit| clock * 10 + u16::from(*digit)),
         alive,
     }
 }
@@ -254,9 +268,12 @@ fn raw_objective(wram: &[u8; WRAM_SIZE], objective: Objective) -> bool {
         && absolute_x >= objective.absolute_player_x_min
 }
 
-fn effective_key(mut key: SmbArchiveKey, broken: bool) -> SmbArchiveKey {
+fn effective_key(mut key: SmbArchiveKey, broken: bool, mode: Mode) -> SmbArchiveKey {
     if broken {
-        key.loop_on_path = false;
+        match mode {
+            Mode::History => key.loop_on_path = false,
+            Mode::Deadline => key.clock = 999 - key.clock,
+        }
     }
     key
 }
@@ -329,14 +346,17 @@ fn same_zone(left: RawState, right: RawState) -> bool {
     (left.world, left.level, left.area_type) == (right.world, right.level, right.area_type)
 }
 
-fn normalized_location(mut key: SmbArchiveKey) -> SmbArchiveKey {
-    key.loop_on_path = false;
+fn normalized_location(mut key: SmbArchiveKey, mode: Mode) -> SmbArchiveKey {
+    match mode {
+        Mode::History => key.loop_on_path = false,
+        Mode::Deadline => key.clock = 0,
+    }
     key
 }
 
-fn same_normalized_slot(left: SmbArchiveKey, right: SmbArchiveKey) -> bool {
-    let left = normalized_location(left);
-    let right = normalized_location(right);
+fn same_normalized_slot(left: SmbArchiveKey, right: SmbArchiveKey, mode: Mode) -> bool {
+    let left = normalized_location(left, mode);
+    let right = normalized_location(right, mode);
     left.place() == right.place()
         && left.progress() == right.progress()
         && left.identity() == right.identity()
@@ -348,6 +368,7 @@ fn state_json(checkpoint: &Checkpoint) -> Value {
         "raw": raw_json(checkpoint.raw),
         "loop_on_path": checkpoint.key.loop_on_path,
         "clock": checkpoint.key.clock,
+        "raw_clock": checkpoint.raw.clock,
     })
 }
 
@@ -356,6 +377,7 @@ fn population_candidates(
     other: &Replay,
     competitor: &Replay,
     start: usize,
+    mode: Mode,
 ) -> Vec<PopulationCandidate> {
     let useful_zone = useful.endpoint.raw;
     let other_zone = other.endpoint.raw;
@@ -373,7 +395,7 @@ fn population_candidates(
                 && same_zone(checkpoint.raw, other_zone)
                 && same_zone(checkpoint.raw, competitor_zone)
                 && checkpoint.key.room == common_room
-                && !same_normalized_slot(checkpoint.key, useful.endpoint.key)
+                && !same_normalized_slot(checkpoint.key, useful.endpoint.key, mode)
             {
                 candidates.push(PopulationCandidate {
                     branch,
@@ -393,6 +415,7 @@ fn insert_candidate(
     actions: &[ButtonChord],
     checkpoint: &Checkpoint,
     broken: bool,
+    mode: Mode,
     execution: u64,
 ) -> Result<Option<usize>, Box<dyn Error>> {
     archive.insert(
@@ -400,7 +423,7 @@ fn insert_candidate(
         execution,
         ArchiveCandidate {
             suffix: actions.to_vec(),
-            key: effective_key(checkpoint.key, broken),
+            key: effective_key(checkpoint.key, broken, mode),
             milestones: checkpoint.milestones,
         },
         checkpoint.snapshot.clone(),
@@ -435,6 +458,7 @@ fn selected_states(
                 "state": {"world": state.world, "level": state.level, "progress": state.progress,
                     "area_type": actual.area_type, "area_number": actual.area_number,
                     "absolute_player_x": actual.absolute_x, "alive": actual.alive,
+                    "game_clock": actual.clock,
                     "dead": state.dead, "history_correct": actual.history_correct,
                     "history_passes": actual.history_passes},
                 "key": {"loop_on_path": report.key.loop_on_path, "clock": report.key.clock},
@@ -452,6 +476,7 @@ fn archive_trial(
     competitor: &Replay,
     seed: u64,
     broken: bool,
+    mode: Mode,
     useful_first: bool,
     continuation: &ParsedInput,
     objective: Objective,
@@ -473,6 +498,7 @@ fn archive_trial(
             &replay.input.actions[..count],
             &candidate.checkpoint,
             broken,
+            mode,
             execution,
         )?
         .is_some()
@@ -487,6 +513,7 @@ fn archive_trial(
         &competitor.input.actions,
         &competitor.endpoint,
         broken,
+        mode,
         execution,
     )?;
     execution = execution.saturating_add(1);
@@ -501,6 +528,7 @@ fn archive_trial(
         &first.input.actions,
         &first.endpoint,
         broken,
+        mode,
         execution,
     )?;
     execution = execution.saturating_add(1);
@@ -510,6 +538,7 @@ fn archive_trial(
         &second.input.actions,
         &second.endpoint,
         broken,
+        mode,
         execution,
     )?;
     let (useful_id, other_id) = if useful_first {
@@ -560,6 +589,7 @@ fn run_witness(
 ) -> Result<Value, Box<dyn Error>> {
     let mut actions_executed = 0_u64;
     let mut frames_executed = 0_u64;
+    let mut requested_frames = 0_u64;
     let mut reached = raw_objective(&target.wram(), objective);
     let mut terminal = if target.is_dead() { "dead" } else { "runnable" };
     for action in actions {
@@ -567,8 +597,11 @@ fn run_witness(
             break;
         }
         actions_executed = actions_executed.saturating_add(1);
-        frames_executed = frames_executed.saturating_add(u64::from(action.bounded_hold_frames()));
+        requested_frames = requested_frames.saturating_add(u64::from(action.bounded_hold_frames()));
+        let work_before = target.execution_work();
         target.apply(action);
+        frames_executed =
+            frames_executed.saturating_add(target.execution_work().saturating_sub(work_before));
         if target.exit_kind() != ExitKind::Ok {
             terminal = "target_error";
             break;
@@ -588,6 +621,7 @@ fn run_witness(
         "objective_reached": reached,
         "actions_executed": actions_executed,
         "frames_executed": frames_executed,
+        "requested_frames": requested_frames,
         "final_state": raw_json(final_raw),
     }))
 }
@@ -609,6 +643,7 @@ fn raw_json(raw: RawState) -> Value {
         "world": raw.world, "level": raw.level, "area_type": raw.area_type,
         "area_number": raw.area_number, "absolute_player_x": raw.absolute_x, "alive": raw.alive,
         "history_correct_passes": raw.history_correct, "history_passes": raw.history_passes,
+        "game_clock": raw.clock,
     })
 }
 
@@ -688,23 +723,14 @@ fn run(request_path: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {
     let useful_loop = useful.endpoint.key.loop_on_path;
     let other_loop = other.endpoint.key.loop_on_path;
     let competitor_loop = competitor.endpoint.key.loop_on_path;
-    if !useful_raw.alive
-        || !other_raw.alive
-        || !competitor_raw.alive
-        || !useful_loop
-        || other_loop
-        || competitor_loop
-    {
-        return Err(
-            "three endpoints must be alive with useful history true and both competitors false"
-                .into(),
-        );
+    if !useful_raw.alive || !other_raw.alive || !competitor_raw.alive {
+        return Err("three prefix endpoints must be alive".into());
     }
     if !same_zone(useful_raw, other_raw) || !same_zone(other_raw, competitor_raw) {
         return Err("three prefix endpoints do not share raw world, level, and area type".into());
     }
-    let useful_normalized = normalized_location(useful.endpoint.key);
-    let other_normalized = normalized_location(other.endpoint.key);
+    let useful_normalized = normalized_location(useful.endpoint.key, request.mode);
+    let other_normalized = normalized_location(other.endpoint.key, request.mode);
     let same_place = useful_normalized.place() == other_normalized.place();
     let same_progress = useful_normalized.progress() == other_normalized.progress();
     let same_identity = useful_normalized.identity() == other_normalized.identity();
@@ -713,8 +739,31 @@ fn run(request_path: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {
             "prefix endpoints differ in normalized archive place, progress, or identity".into(),
         );
     }
-    if !same_normalized_slot(other.endpoint.key, competitor.endpoint.key) {
+    if !same_normalized_slot(other.endpoint.key, competitor.endpoint.key, request.mode) {
         return Err("other and competitor endpoints must share the normalized archive slot".into());
+    }
+    if request.mode == Mode::History {
+        if !useful_loop || other_loop || competitor_loop {
+            return Err(
+                "history mode requires useful history true and both competitor histories false"
+                    .into(),
+            );
+        }
+    } else {
+        let clocks = [useful_raw.clock, other_raw.clock, competitor_raw.clock];
+        if clocks.iter().any(|clock| *clock > 999)
+            || useful.endpoint.key.clock != useful_raw.clock
+            || other.endpoint.key.clock != other_raw.clock
+            || competitor.endpoint.key.clock != competitor_raw.clock
+        {
+            return Err("deadline mode requires matching raw and key clocks in 0..=999".into());
+        }
+        if useful_raw.clock <= other_raw.clock || useful_raw.clock <= competitor_raw.clock {
+            return Err(
+                "deadline mode requires the useful endpoint clock to exceed both competitors"
+                    .into(),
+            );
+        }
     }
     if other.endpoint.wram == competitor.endpoint.wram {
         return Err("competitor must be an independent naturally replayed state".into());
@@ -723,8 +772,13 @@ fn run(request_path: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {
     let useful_continuation = continue_from(useful, &continuation, request.objective)?;
     let other_continuation = continue_from(other, &continuation, request.objective)?;
     let competitor_continuation = continue_from(competitor, &continuation, request.objective)?;
-    let population =
-        population_candidates(useful, other, competitor, request.population_start_action);
+    let population = population_candidates(
+        useful,
+        other,
+        competitor,
+        request.population_start_action,
+        request.mode,
+    );
     if population.is_empty() {
         return Err(
             "population_start_action produced no preceding states in the shared room context"
@@ -738,6 +792,7 @@ fn run(request_path: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {
         competitor,
         request.seed,
         request.broken,
+        request.mode,
         true,
         &continuation,
         request.objective,
@@ -749,18 +804,44 @@ fn run(request_path: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {
         competitor,
         request.seed,
         request.broken,
+        request.mode,
         false,
         &continuation,
         request.objective,
     )?;
 
     fs::create_dir_all(output_dir)?;
+    let pair_checks = json!({"useful_history_on_path": useful_loop, "other_history_on_path": other_loop,
+            "competitor_history_on_path": competitor_loop,
+            "history_feature_ablation_applied": request.mode == Mode::History && request.broken,
+            "clock_preference_reversed": request.mode == Mode::Deadline && request.broken,
+            "competitor_shares_other_normalized_slot": same_normalized_slot(other.endpoint.key, competitor.endpoint.key, request.mode),
+            "competitor_is_distinct_actual_state": other.endpoint.wram != competitor.endpoint.wram,
+            "same_raw_zone": same_zone(useful_raw, other_raw), "same_normalized_archive_place": same_place,
+            "same_normalized_archive_progress": same_progress, "same_normalized_archive_identity": same_identity,
+            "useful_clock_exceeds_other_and_competitor": useful_raw.clock > other_raw.clock && useful_raw.clock > competitor_raw.clock,
+            "raw_clocks_match_production_keys": useful.endpoint.key.clock == useful_raw.clock && other.endpoint.key.clock == other_raw.clock && competitor.endpoint.key.clock == competitor_raw.clock,
+            "clock_is_preference_and_may_differ": useful.endpoint.key.clock != other.endpoint.key.clock});
     let summary = json!({
-        "schema": "smb-history-retention-v1", "scope": "local history-retention and supplied-suffix diagnostic",
+        "schema": "smb-retention-calibration-v1", "mode": match request.mode { Mode::History => "history", Mode::Deadline => "deadline" },
+        "scope": "local retention and supplied-suffix diagnostic",
         "claim_limit": "does not establish search-discovered continuation, full route reliability, or general level solvability",
         "continuation_role": "identical supplied witness suffix; not searcher input or a search oracle",
         "broken": request.broken,
-        "key_policy": if request.broken { "loop_on_path_cleared_only" } else { "production_smb_key" },
+        "key_policy": match (request.mode, request.broken) {
+            (Mode::History, true) => "loop_on_path_cleared_only",
+            (Mode::History, false) => "production_smb_key",
+            (Mode::Deadline, true) => "clock_reversed_only",
+            (Mode::Deadline, false) => "production_smb_key",
+        },
+        "control_field": match request.mode {
+            Mode::History => "loop_on_path only",
+            Mode::Deadline => "archive-key clock ranking reversed, information preserved",
+        },
+        "normalization_policy": match request.mode {
+            Mode::History => "history_bit_cleared_for_endpoint_alignment_only",
+            Mode::Deadline => "clock_zeroed_for_endpoint_alignment_only",
+        },
         "rom_sha256": rom_sha256, "core_sha256": core_sha256,
         "useful_prefix_sha256": useful.input.sha256, "other_prefix_sha256": other.input.sha256,
         "competitor_prefix_sha256": competitor.input.sha256,
@@ -777,13 +858,7 @@ fn run(request_path: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {
             "area_type": request.objective.area_type, "absolute_player_x_min": request.objective.absolute_player_x_min},
         "seed": request.seed, "prefix_endpoints": {"useful": state_json(&useful.endpoint),
             "other": state_json(&other.endpoint), "competitor": state_json(&competitor.endpoint)},
-        "pair_checks": {"useful_history_true": useful_loop, "other_history_false": !other_loop,
-            "competitor_history_false": !competitor_loop,
-            "competitor_shares_other_normalized_slot": same_normalized_slot(other.endpoint.key, competitor.endpoint.key),
-            "competitor_is_distinct_actual_state": other.endpoint.wram != competitor.endpoint.wram,
-            "same_raw_zone": same_zone(useful_raw, other_raw), "same_normalized_archive_place": same_place,
-            "same_normalized_archive_progress": same_progress, "same_normalized_archive_identity": same_identity,
-            "clock_is_preference_and_may_differ": useful.endpoint.key.clock != other.endpoint.key.clock},
+        "pair_checks": pair_checks,
         "continuation_results": {"useful": useful_continuation, "other": other_continuation,
             "competitor": competitor_continuation},
         "populated_archive_trials": [trial_useful_first, trial_other_first],
@@ -802,7 +877,7 @@ fn run(request_path: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if args.len() != 2 {
-        return Err("usage: smb-history-retention REQUEST.json OUTPUT_DIR".into());
+        return Err("usage: smb-retention-calibrate REQUEST.json OUTPUT_DIR".into());
     }
     run(Path::new(&args[0]), Path::new(&args[1]))
 }
@@ -810,8 +885,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AREA_TYPE_OFFSET, InputFile, LEVEL_OFFSET, Objective, PLAYER_X_OFFSET,
-        PLAYER_X_PAGE_OFFSET, Request, WORLD_OFFSET, WRAM_SIZE, effective_key, raw_objective,
+        AREA_TYPE_OFFSET, InputFile, LEVEL_OFFSET, Mode, Objective, PLAYER_X_OFFSET,
+        PLAYER_X_PAGE_OFFSET, Request, WORLD_OFFSET, WRAM_SIZE, effective_key, normalized_location,
+        raw_objective, same_normalized_slot,
     };
     use nes_workload::smb::archive::SmbArchiveKey;
 
@@ -826,6 +902,23 @@ mod tests {
             "population_start_action":100,"seed":17,"broken":false,"unexpected":true
         }"#;
         assert!(serde_json::from_str::<Request>(request).is_err());
+        let valid_request = request.replace(",\"unexpected\":true", "");
+        let default_mode: Request = serde_json::from_str(&valid_request).unwrap();
+        assert_eq!(default_mode.mode, Mode::History);
+        assert!(
+            serde_json::from_str::<Request>(
+                &valid_request.replace("\"broken\":false", "\"broken\":false,\"mode\":\"unknown\"")
+            )
+            .is_err()
+        );
+        let deadline_request =
+            valid_request.replace("\"broken\":false", "\"broken\":false,\"mode\":\"deadline\"");
+        assert_eq!(
+            serde_json::from_str::<Request>(&deadline_request)
+                .unwrap()
+                .mode,
+            Mode::Deadline
+        );
         assert!(
             serde_json::from_str::<InputFile>(
                 r#"{"actions":[{"buttons":128,"hold_frames":8,"unexpected":1}]}"#
@@ -835,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn broken_control_changes_only_loop_history() {
+    fn history_mode_preserves_legacy_bit_only_ablation() {
         let key = SmbArchiveKey {
             world: 7,
             level: 4,
@@ -849,8 +942,54 @@ mod tests {
         };
         let mut expected = key;
         expected.loop_on_path = false;
-        assert_eq!(effective_key(key, true), expected);
-        assert_eq!(effective_key(key, false), key);
+        assert_eq!(effective_key(key, true, Mode::History), expected);
+        assert_eq!(effective_key(key, false, Mode::History), key);
+    }
+
+    #[test]
+    fn deadline_mode_normalizes_alignment_and_reverses_only_clock_preference() {
+        let key = SmbArchiveKey {
+            world: 7,
+            level: 4,
+            progress: 321,
+            player_y_bucket: 8,
+            loop_on_path: true,
+            room_x_bucket: 3,
+            time_bucket: 9,
+            clock: 456,
+            room: [1, 2, 3],
+        };
+        let mut expected_broken = key;
+        expected_broken.clock = 543;
+        assert_eq!(effective_key(key, true, Mode::Deadline), expected_broken);
+        assert_eq!(effective_key(key, false, Mode::Deadline), key);
+
+        let mut expected_normalized = key;
+        expected_normalized.clock = 0;
+        assert_eq!(
+            normalized_location(key, Mode::Deadline),
+            expected_normalized
+        );
+        let later = SmbArchiveKey { clock: 999, ..key };
+        assert!(same_normalized_slot(key, later, Mode::Deadline));
+        assert!(same_normalized_slot(key, later, Mode::History));
+        assert_eq!(normalized_location(key, Mode::History).clock, key.clock);
+        assert_eq!(normalized_location(later, Mode::History).clock, later.clock);
+
+        let different_history = SmbArchiveKey {
+            loop_on_path: false,
+            ..key
+        };
+        assert!(!same_normalized_slot(
+            key,
+            different_history,
+            Mode::Deadline
+        ));
+        let different_bucket = SmbArchiveKey {
+            time_bucket: 10,
+            ..key
+        };
+        assert!(!same_normalized_slot(key, different_bucket, Mode::Deadline));
     }
 
     #[test]

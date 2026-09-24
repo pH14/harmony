@@ -129,6 +129,92 @@
           "water_action": 1
         }
       }
+    },
+    {
+      "id": "deadline-small",
+      "config": {
+        "family": "deadline",
+        "parameters": {
+          "length": 2,
+          "initial_time": 14,
+          "fast_ticks": 1,
+          "slow_ticks": 4,
+          "obstacle_ticks": 2
+        }
+      }
+    },
+    {
+      "id": "deadline-tight",
+      "config": {
+        "family": "deadline",
+        "parameters": {
+          "length": 5,
+          "initial_time": 14,
+          "fast_ticks": 1,
+          "slow_ticks": 4,
+          "obstacle_ticks": 3
+        }
+      }
+    },
+    {
+      "id": "delayed-sequence",
+      "config": {
+        "family": "delayed",
+        "parameters": {
+          "horizon": 4,
+          "distractions": 8,
+          "mode": "sequence"
+        }
+      }
+    },
+    {
+      "id": "delayed-wait",
+      "config": {
+        "family": "delayed",
+        "parameters": {
+          "horizon": 7,
+          "distractions": 16,
+          "mode": "wait"
+        }
+      }
+    },
+    {
+      "id": "deadline-changing-actions",
+      "config": {
+        "family": "deadline_actions",
+        "parameters": {
+          "actions": {
+            "segment_len": 2,
+            "return_to_land": true,
+            "observable": true,
+            "water_action": 1
+          },
+          "initial_time": 14,
+          "action_ticks": [
+            1,
+            2,
+            2,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "id": "resource-propagation",
+      "config": {
+        "family": "resource",
+        "parameters": {
+          "initial_charge": 0,
+          "initial_health": 5,
+          "barrier_charge": 5,
+          "route_cost": 2,
+          "health_cost": 1,
+          "refill_amount": 2,
+          "max_charge": 14,
+          "corridor_len": 4,
+          "refill_health_cost": 0
+        }
+      }
     }
   ],
   "validation": [
@@ -211,10 +297,96 @@
           "water_action": 3
         }
       }
+    },
+    {
+      "id": "deadline-heldout-tight",
+      "config": {
+        "family": "deadline",
+        "parameters": {
+          "length": 3,
+          "initial_time": 10,
+          "fast_ticks": 1,
+          "slow_ticks": 4,
+          "obstacle_ticks": 3
+        }
+      }
+    },
+    {
+      "id": "deadline-heldout-long",
+      "config": {
+        "family": "deadline",
+        "parameters": {
+          "length": 6,
+          "initial_time": 20,
+          "fast_ticks": 1,
+          "slow_ticks": 4,
+          "obstacle_ticks": 4
+        }
+      }
+    },
+    {
+      "id": "delayed-heldout-sequence",
+      "config": {
+        "family": "delayed",
+        "parameters": {
+          "horizon": 8,
+          "distractions": 24,
+          "mode": "sequence"
+        }
+      }
+    },
+    {
+      "id": "delayed-heldout-wait",
+      "config": {
+        "family": "delayed",
+        "parameters": {
+          "horizon": 10,
+          "distractions": 12,
+          "mode": "wait"
+        }
+      }
+    },
+    {
+      "id": "deadline-actions-heldout",
+      "config": {
+        "family": "deadline_actions",
+        "parameters": {
+          "actions": {
+            "segment_len": 3,
+            "return_to_land": true,
+            "observable": true,
+            "water_action": 2
+          },
+          "initial_time": 18,
+          "action_ticks": [
+            1,
+            2,
+            2,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "id": "resource-propagation-heldout",
+      "config": {
+        "family": "resource",
+        "parameters": {
+          "initial_charge": 0,
+          "initial_health": 4,
+          "barrier_charge": 5,
+          "route_cost": 1,
+          "health_cost": 2,
+          "refill_amount": 3,
+          "max_charge": 12,
+          "corridor_len": 5,
+          "refill_health_cost": 0
+        }
+      }
     }
   ],
   "engine_source_sha256": "98577556455bbca4109eb7ec7a93217dd71100e061f464de6f42ada785df7a70",
-  "workload_source_sha256": "d20999dcf7730271778eda292584b8467e0d5ac568ad439a120793bd14740a00",
+  "workload_source_sha256": "e38a72d947e4d5060f8bd8f3eb34ef88e9e6d4b6ea5ce701ef4dc8955531deef",
   "sweep_seeds": [
     17,
     29,
@@ -354,6 +526,141 @@
           "return_to_land": true,
           "observable": true,
           "water_action": 1
+        }
+      }
+    },
+    {
+      "id": "deadline-length-2",
+      "config": {
+        "family": "deadline",
+        "parameters": {
+          "length": 2,
+          "initial_time": 8,
+          "fast_ticks": 1,
+          "slow_ticks": 4,
+          "obstacle_ticks": 2
+        }
+      }
+    },
+    {
+      "id": "deadline-length-4",
+      "config": {
+        "family": "deadline",
+        "parameters": {
+          "length": 4,
+          "initial_time": 12,
+          "fast_ticks": 1,
+          "slow_ticks": 4,
+          "obstacle_ticks": 2
+        }
+      }
+    },
+    {
+      "id": "deadline-length-6",
+      "config": {
+        "family": "deadline",
+        "parameters": {
+          "length": 6,
+          "initial_time": 16,
+          "fast_ticks": 1,
+          "slow_ticks": 4,
+          "obstacle_ticks": 2
+        }
+      }
+    },
+    {
+      "id": "delayed-horizon-3",
+      "config": {
+        "family": "delayed",
+        "parameters": {
+          "horizon": 3,
+          "distractions": 16,
+          "mode": "wait"
+        }
+      }
+    },
+    {
+      "id": "delayed-horizon-6",
+      "config": {
+        "family": "delayed",
+        "parameters": {
+          "horizon": 6,
+          "distractions": 16,
+          "mode": "wait"
+        }
+      }
+    },
+    {
+      "id": "delayed-horizon-9",
+      "config": {
+        "family": "delayed",
+        "parameters": {
+          "horizon": 9,
+          "distractions": 16,
+          "mode": "wait"
+        }
+      }
+    },
+    {
+      "id": "deadline-actions-length-2",
+      "config": {
+        "family": "deadline_actions",
+        "parameters": {
+          "actions": {
+            "segment_len": 2,
+            "return_to_land": true,
+            "observable": true,
+            "water_action": 1
+          },
+          "initial_time": 12,
+          "action_ticks": [
+            1,
+            2,
+            2,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "id": "deadline-actions-length-3",
+      "config": {
+        "family": "deadline_actions",
+        "parameters": {
+          "actions": {
+            "segment_len": 3,
+            "return_to_land": true,
+            "observable": true,
+            "water_action": 1
+          },
+          "initial_time": 18,
+          "action_ticks": [
+            1,
+            2,
+            2,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "id": "deadline-actions-length-4",
+      "config": {
+        "family": "deadline_actions",
+        "parameters": {
+          "actions": {
+            "segment_len": 4,
+            "return_to_land": true,
+            "observable": true,
+            "water_action": 1
+          },
+          "initial_time": 24,
+          "action_ticks": [
+            1,
+            2,
+            2,
+            1
+          ]
         }
       }
     }

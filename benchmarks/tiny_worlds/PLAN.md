@@ -1,7 +1,7 @@
 # Dissonance tiny-world evaluation plan
 
-Status: M1 and the M2 local-mechanism gate completed; M3/M4 in progress,
-2026-09-24. See CALIBRATION.md for measured evidence and its limits.
+Status: M1–M3 completed; M4 final review and handoff in progress,
+2026-09-24. See CALIBRATION.md and RESULTS.md for measured evidence and limits.
 
 ## Outcome and scope
 

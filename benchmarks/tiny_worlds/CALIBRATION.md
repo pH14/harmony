@@ -80,6 +80,45 @@ between these sections, so this is contextual evidence rather than an isolated
 measurement of water physics. Obstructed and fatal attempted land baselines
 were retained before locating a traversable baseline.
 
+## Deadline comparison
+
+The SMB 8-1 comparison restores natural arrivals at the same archive location
+near the flag. The useful root has two clock units remaining; two distinct
+neutral-wait continuations produce still-alive roots with zero displayed clock.
+A shared five-action suffix reaches the registered live position beyond the
+flag approach from the useful root, while both zero-clock roots die first.
+The game clock is checked against all three raw timer digits. Environmental
+clock state is restored with the snapshot; cumulative execution work is not.
+
+The production archive retains at most two states in the compared slot. With
+the third root creating eviction pressure, its normal clock preference retains
+the useful root in both arrival orders. The control reverses only clock ranking
+and evicts it. This native control preserves clock information, unlike the
+synthetic control which omits remaining time. It supports the importance of
+remaining-time preference, not an identical information-ablation claim.
+
+| Start | Useful endpoint retained, normal / broken | Shared-suffix successes among selected snapshots, normal / broken |
+| --- | --- | --- |
+| Development arrival | 6/6 / 0/6 | 9/96 / 0/96 |
+| Arrival eight frames earlier, held out | 6/6 / 0/6 | 5/96 / 0/96 |
+
+Each phase uses three registered selector seeds, both insertion orders, and
+16 selections from each populated archive. There are nine active states in
+each archive. These are repeated selections from related natural roots, not
+independent full-level trials or evidence of search-discovered flag approaches.
+Direct replay succeeds only from the useful endpoint in both phases.
+
+An earlier development competitor retained one clock unit and also completed
+the suffix. That comparison did not establish loss of all viable endpoint
+continuations. It remains negative fixture-development evidence. The final
+zero-clock competitor and the earlier held-out arrival were registered before
+running held-out validation; validation was not tuned after inspection.
+The final development and validation panels took 105.34 and 107.16 seconds,
+respectively, with one CPU slot and less than 38 MB sampled process-group RSS.
+The renamed native helper also reproduced the previous history-retention
+selection and continuation results; its additional clock/work metadata does
+not change that experiment.
+
 ## Reproducibility and interpretation
 
 Private registrations pin ROM, core, input, binary and panel hashes, objective

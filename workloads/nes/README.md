@@ -53,7 +53,7 @@ actual execution work and require a living player under the terminal policy.
 This measures access to a known continuation, not autonomous discovery. It
 writes only a compact summary; keep requests, inputs, and output private.
 
-`smb-history-retention REQUEST.json OUTPUT_DIRECTORY` compares natural SMB
+`smb-retention-calibrate REQUEST.json OUTPUT_DIRECTORY` compares natural SMB
 prefixes in the production archive. Its strict request supplies ROM/core paths
 and SHA-256 hashes, `useful_prefix`, `other_prefix`, `competitor_prefix`, a
 shared `continuation`, `objective` (`world`, `level`, `area_type`, and
@@ -66,7 +66,14 @@ The third, independently replayed competitor shares the other endpoint's
 normalized slot and is inserted first. Preceding natural snapshots populate an
 512-entry archive with the production two-per-key limit, and the useful
 and other endpoints are inserted in both orders. `broken` changes only the
-archive key by clearing `loop_on_path`.
+archive key by clearing `loop_on_path`. This is the default `mode: "history"`.
+
+`mode: "deadline"` instead requires the useful endpoint to have more remaining
+clock time than both competitors, with all endpoints in the same timer-hundreds
+bucket and normalized archive slot. Its control reverses only the clock
+preference (`999 - clock`); it preserves clock information and game mechanics.
+This tests preference direction, unlike the tiny deadline world's clock-removal
+control. The report includes the actual timer read independently from game RAM.
 
 The same supplied suffix is replayed from the endpoints and selected actual
 archive snapshots. It is a mechanics/retention diagnostic, not searcher input

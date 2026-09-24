@@ -4,8 +4,11 @@
 
 The [approved plan](PLAN.md) separates exact engine/workload invariants from
 statistical search quality and private game correspondence. The implementation
-contains resource, history, and changing-action worlds. The three-family calibration requirement
-must pass before adding deadline and delayed-progress families.
+contains resource, history, changing-action, deadline, and delayed-progress worlds,
+plus deadline/action and multi-transition resource interactions. The first-three-
+family mechanism requirement was completed before that expansion.
+[RESULTS.md](RESULTS.md) records the 546 verified synthetic runs, held-out
+comparisons, negative results, runtime, and resource measurements.
 
 `panel.json` registers development and held-out structural instances and seeds
 before evaluation. The endpoint is a valid objective witness within the admitted
@@ -61,8 +64,8 @@ measurements cover verification and child processes too.
 
 Use existing local licensed assets in place, with hashes and immutable build
 identity. Never copy ROMs, snapshots, films, recordings, private paths, or full
-traces into this directory. Keep aggregate evidence outside the source tree;
-run records are not source. Record actual event decoding before making a causal
+traces into this directory. Keep detailed run records outside the source tree;
+only portable aggregate evidence and experiment metadata belong in public reports. Record actual event decoding before making a causal
 claim: Metroid Zebetite column damage is separate from boss health, and SMB 7-4
 requires earlier correct-check history. Historical reports are leads, not fresh
 calibration of the pinned engine.
@@ -114,3 +117,26 @@ with a fresh output directory, `--seconds 300`, and `panel.py --split sweep`.
 It uses development seeds only, three logical-work budgets, and predeclared route,
 history-length, and regime-length variations. Each report retains per-seed event
 and censoring data; a conditional average over successful runs is never the score.
+
+## Five-family registration
+
+The deadline family gives a one-action slow route and a two-action fast route
+different environmental durations, followed by a late obstacle. The normal key
+prefers remaining time at shared positions; its control omits that value. Search
+work still counts every transition once, regardless of its environmental duration.
+The native 8-1 diagnostic uses a distinct reversed-clock-preference control,
+which tests ranking direction without erasing clock information.
+
+Delayed progress remains exploratory. Its sequence and waiting variants require
+consecutive useful actions among distractor states, with no objective progress
+before the threshold. The control drops partial progress from archive identity.
+The deadline/action product charges time for ineffective actions too; its control
+freezes the starting action while preserving the timer representation. The
+resource interaction uses the existing refill and consumption mechanics across
+four or five transitions, with arrival charge and continuation work reported.
+
+Development and validation run at 4,000 logical transitions per seed and arm.
+The broader sweep varies deadline length, delayed horizon, and interaction length
+as well as the original three families. Search quality remains descriptive;
+exact replay, accounting, objective validity and registered source identity are
+the required checks. Unsolved stress cases are retained rather than weakened.

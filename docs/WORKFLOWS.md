@@ -76,9 +76,9 @@ registered development panel. Each
 command uses one CPU slot with 2 GB memory and disk reservations. The development
 panel has a 58-second wall limit; CI never runs its held-out validation split
 and uploads only the bounded logs and summaries, not build or cache contents.
-The first three-family M2 game-calibration requirement remains open, and the M3 deadline
-and delayed-progress families have not started. This workflow does not claim a
-complete five-family suite.
+The registered panel covers five families and the two initial interactions.
+Private game correspondence and its limitations are documented in
+`benchmarks/tiny_worlds/CALIBRATION.md`; licensed games are not part of this CI job.
 
 ## Bounded checks and full benchmarks
 

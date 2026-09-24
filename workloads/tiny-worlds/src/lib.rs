@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod actions;
+pub mod deadline;
+pub mod deadline_actions;
+pub mod delayed;
 pub mod maze;
 pub mod resource;
 pub mod worlds;
@@ -75,6 +78,12 @@ pub struct Evidence {
     pub explicit_resets: u64,
     pub action_attempts: [u64; 12],
     pub action_advances: [u64; 3],
+    pub deadline_arrivals_by_remaining: Vec<u64>,
+    pub deadline_expirations: u64,
+    pub deadline_obstacle_attempts: u64,
+    pub delayed_useful_state_actions: u64,
+    pub delayed_distraction_actions: u64,
+    pub delayed_progress_observations: Vec<u64>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport {
@@ -150,7 +159,7 @@ impl InputPolicy for Workload {
     fn policies(&self, _: &()) -> WorkloadPolicies {
         [(
             "tiny_actions".into(),
-            if matches!(self.config, World::Actions(_)) && self.broken {
+            if self.config.changes_actions() && self.broken {
                 "frozen-land-v1".into()
             } else {
                 "uniform-four-v1".into()
@@ -298,6 +307,43 @@ impl Evaluation for Workload {
                         let index = usize::from(before.regime) * 4 + usize::from(a.action);
                         e.action_attempts[index] += 1;
                         e.action_advances[usize::from(before.regime)] += u64::from(before != after);
+                    }
+                }
+                (World::Deadline(w), State::Deadline(before), State::Deadline(after)) => {
+                    e.deadline_arrivals_by_remaining.resize(65, 0);
+                    if before.position != after.position {
+                        e.deadline_arrivals_by_remaining[usize::from(after.remaining)] += 1;
+                    }
+                    e.deadline_expirations +=
+                        u64::from(before.remaining > 0 && after.remaining == 0 && !after.goal);
+                    e.deadline_obstacle_attempts += u64::from(
+                        before.position == w.length && before.remaining > 0 && a.action == 2,
+                    );
+                }
+                (World::Delayed(_), State::Delayed(before), State::Delayed(after)) => {
+                    if !before.goal {
+                        e.delayed_useful_state_actions += u64::from(before.lane == 0);
+                        e.delayed_distraction_actions += u64::from(before.lane != 0);
+                        e.delayed_progress_observations.resize(17, 0);
+                        e.delayed_progress_observations[usize::from(after.progress)] += 1;
+                    }
+                }
+                (
+                    World::DeadlineActions(w),
+                    State::DeadlineActions(before),
+                    State::DeadlineActions(after),
+                ) => {
+                    if !w.goal(before) && before.remaining > 0 {
+                        let index = usize::from(before.actions.regime) * 4 + usize::from(a.action);
+                        e.action_attempts[index] += 1;
+                        let advanced = before.actions != after.actions;
+                        e.action_advances[usize::from(before.actions.regime)] +=
+                            u64::from(advanced);
+                        e.deadline_arrivals_by_remaining.resize(65, 0);
+                        if advanced {
+                            e.deadline_arrivals_by_remaining[usize::from(after.remaining)] += 1;
+                        }
+                        e.deadline_expirations += u64::from(after.remaining == 0 && !w.goal(after));
                     }
                 }
                 _ => return Err("observation family mismatch".into()),
@@ -670,6 +716,28 @@ mod tests {
     #[test]
     fn every_family_uses_the_real_engine_and_replays_at_fixed_work() {
         let configs = [
+            World::Deadline(deadline::Config {
+                length: 2,
+                initial_time: 8,
+                fast_ticks: 1,
+                slow_ticks: 4,
+                obstacle_ticks: 2,
+            }),
+            World::Delayed(delayed::Config {
+                horizon: 5,
+                distractions: 8,
+                mode: delayed::Mode::Wait,
+            }),
+            World::DeadlineActions(deadline_actions::Config {
+                actions: actions::Config {
+                    segment_len: 2,
+                    return_to_land: true,
+                    observable: true,
+                    water_action: 1,
+                },
+                initial_time: 12,
+                action_ticks: [1, 2, 1, 1],
+            }),
             World::Maze(maze::Config {
                 length: 4,
                 pattern: 10,
@@ -693,6 +761,88 @@ mod tests {
                 let workload = Workload { config, broken };
                 let report = run(&workload, 17, 1000, true).unwrap();
                 assert_eq!(report["verified"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn deadline_restore_keeps_clock_separate_from_cumulative_work() {
+        let config = deadline::Config {
+            length: 2,
+            initial_time: 10,
+            fast_ticks: 1,
+            slow_ticks: 4,
+            obstacle_ticks: 2,
+        };
+        let w = Workload {
+            config: World::Deadline(config),
+            broken: false,
+        };
+        let mut t = w.new_target().unwrap();
+        let root = w.snapshot(&mut t).unwrap();
+        w.apply_action(&mut t, &0, &mut false).unwrap();
+        assert_eq!(
+            t.state,
+            State::Deadline(deadline::State {
+                position: 1,
+                remaining: 6,
+                ..config.initial()
+            })
+        );
+        assert_eq!(w.execution_work(&t), 1);
+        w.restore(&mut t, &root).unwrap();
+        assert_eq!(t.state, root);
+        assert_eq!(w.execution_work(&t), 1);
+        let goal = [1, 1, 1, 1, 2]
+            .into_iter()
+            .fold(config.initial(), |s, a| config.step(s, a));
+        assert_root_objective(w, State::Deadline(goal));
+    }
+
+    #[test]
+    fn clock_preference_preserves_fast_arrivals_in_both_orders() {
+        use searcher::search::archive::{Archive, ArchiveCandidate};
+        let w = deadline::Config {
+            length: 2,
+            initial_time: 10,
+            fast_ticks: 1,
+            slow_ticks: 4,
+            obstacle_ticks: 3,
+        };
+        for fast_first in [false, true] {
+            for broken in [false, true] {
+                let mut archive = Archive::<u8, Key, bool, State>::new(|_| 1);
+                for fast in [fast_first, !fast_first] {
+                    let suffix = if fast { vec![1, 1, 1, 1] } else { vec![0, 0] };
+                    let state = suffix.iter().fold(w.initial(), |s, &a| w.step(s, a));
+                    archive
+                        .insert(
+                            None,
+                            suffix.len() as u64,
+                            ArchiveCandidate {
+                                suffix,
+                                key: w.key(state, broken),
+                                milestones: false,
+                            },
+                            State::Deadline(state),
+                        )
+                        .unwrap();
+                }
+                assert_eq!(archive.active_count(), 1);
+                let (id, _) = archive
+                    .select_parent(&mut RomuDuoJrRand::with_seed(17), 128)
+                    .unwrap();
+                let (reports, snapshots) = archive.take_entry_reports_and_snapshots();
+                let snapshot_id = reports[id].id;
+                let (_, State::Deadline(state)) = snapshots
+                    .into_iter()
+                    .find(|(i, _)| *i == snapshot_id)
+                    .unwrap()
+                else {
+                    panic!("deadline snapshot");
+                };
+                assert_eq!(state.remaining, if broken { 2 } else { 6 });
+                assert_eq!(w.goal(w.step(state, 2)), !broken);
             }
         }
     }
