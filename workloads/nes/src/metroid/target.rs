@@ -29,7 +29,7 @@ const SAMUS_NAME_TABLE: usize = 0x30c;
 const SAMUS_Y: usize = 0x30d;
 const SAMUS_X: usize = 0x30e;
 const DOOR_STATE: usize = 0x56;
-const DOOR_TOUCHED: u8 = 0x80;
+const DOOR_ARRIVED: u8 = 0x05;
 const AREA: usize = 0x74;
 const AREA_BRINSTAR: u8 = 0x10;
 const POSE: usize = 0x300;
@@ -519,10 +519,10 @@ impl MetroidTarget {
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
         let mut genesis_prefix = prefix.to_vec();
-        let mut untouched = None;
+        let mut outside_door = None;
         for chunk in prefix.chunks(64) {
             run_chords(&mut machine, chunk)?;
-            untouched = last_untouched_frame(machine.frames()).or(untouched);
+            outside_door = last_frame_outside_door(machine.frames()).or(outside_door);
         }
         let mut waited = 0;
         loop {
@@ -540,13 +540,13 @@ impl MetroidTarget {
                 )));
             }
             run_chords(&mut machine, &[ButtonChord::new(0, 1)])?;
-            untouched = last_untouched_frame(machine.frames()).or(untouched);
+            outside_door = last_frame_outside_door(machine.frames()).or(outside_door);
             waited += 1;
         }
         genesis_prefix.extend(idle_chords(waited));
         let wram = machine.read_wram()?;
         let cartridge = machine.read_save_ram()?;
-        let state = rooted_state(&wram, untouched.as_ref(), &cartridge)?;
+        let state = rooted_state(&wram, outside_door.as_ref(), &cartridge)?;
         let genesis = machine.snapshot()?;
         let observation = MetroidObservations {
             frame_count: 0,
@@ -898,7 +898,7 @@ fn decode_action_observations(
     let mut observations = Vec::new();
     let mut tourian_events = TourianEvents::default();
     for (offset, wram) in frames.iter().enumerate() {
-        let state = keep_cell_through_door_touch(decode_state(wram, cartridge)?, prior_state);
+        let state = keep_cell_through_door(decode_state(wram, cartridge)?, prior_state);
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         boss_health_seen = boss_health_seen.max(state.boss_health_ceiling());
@@ -926,22 +926,22 @@ fn decode_action_observations(
     Ok((observations, prior_wram))
 }
 
-fn last_untouched_frame(frames: &[[u8; WRAM_SIZE]]) -> Option<[u8; WRAM_SIZE]> {
+fn last_frame_outside_door(frames: &[[u8; WRAM_SIZE]]) -> Option<[u8; WRAM_SIZE]> {
     frames
         .iter()
         .rev()
-        .find(|wram| wram[DOOR_STATE] & DOOR_TOUCHED == 0)
+        .find(|wram| !in_door_transition(wram[DOOR_STATE]))
         .copied()
 }
 
 fn rooted_state(
     wram: &[u8],
-    untouched: Option<&[u8; WRAM_SIZE]>,
+    outside_door: Option<&[u8; WRAM_SIZE]>,
     cartridge: &[u8],
 ) -> Result<MetroidMechanicalState, MachineError> {
     let state = decode_state(wram, cartridge)?;
-    match untouched {
-        Some(before) if state.door & DOOR_TOUCHED != 0 => Ok(keep_cell_through_door_touch(
+    match outside_door {
+        Some(before) if in_door_transition(state.door) => Ok(keep_cell_through_door(
             state,
             decode_state(before, cartridge)?,
         )),
@@ -954,18 +954,22 @@ fn consistent_with(
     cartridge: &[u8],
     state: MetroidMechanicalState,
 ) -> Result<bool, MachineError> {
-    Ok(keep_cell_through_door_touch(decode_state(wram, cartridge)?, state) == state)
+    Ok(keep_cell_through_door(decode_state(wram, cartridge)?, state) == state)
 }
 
-fn keep_cell_through_door_touch(
+fn keep_cell_through_door(
     mut state: MetroidMechanicalState,
     prior: MetroidMechanicalState,
 ) -> MetroidMechanicalState {
-    if state.door & DOOR_TOUCHED != 0 {
+    if in_door_transition(state.door) {
         state.map_x = prior.map_x;
         state.map_y = prior.map_y;
     }
     state
+}
+
+fn in_door_transition(door: u8) -> bool {
+    door != 0 && door != DOOR_ARRIVED
 }
 
 fn resource_ram_payload(bytes: &[u8], cartridge: bool) -> Option<usize> {
@@ -1339,7 +1343,7 @@ mod observation_tests {
     }
 
     #[test]
-    fn a_door_touch_keeps_the_room_being_left() {
+    fn a_door_transition_keeps_the_room_being_left() {
         let cartridge = [0; 8192];
         let mut walking = [0; WRAM_SIZE];
         walking[GAME_MODE] = GAME_MODE_PLAYING;
@@ -1356,7 +1360,12 @@ mod observation_tests {
         touched[DOOR_STATE] = 0x83;
         touched[SCROLL_Y..=PPU_CONTROL].copy_from_slice(&[0xef, 0x00, 0x1e, 0x90]);
         touched[SAMUS_NAME_TABLE..=SAMUS_X].copy_from_slice(&[0x00, 0x6c, 0xfd]);
+        let mut scrolling = touched;
+        scrolling[DOOR_STATE] = 0x03;
+        scrolling[SAMUS_X] = 0xfa;
         let raw = decode_state(&touched, &cartridge).unwrap();
+        assert_eq!((raw.map_x, raw.map_y), (9, 28));
+        let raw = decode_state(&scrolling, &cartridge).unwrap();
         assert_eq!((raw.map_x, raw.map_y), (9, 28));
         let initial = MetroidTarget::make_observation(
             0,
@@ -1378,6 +1387,22 @@ mod observation_tests {
         .unwrap();
         let last = observations.last().unwrap().decoded;
         assert_eq!((last.map_x, last.map_y, last.door), (9, 29, 0x83));
+        let (observations, _) = decode_action_observations(
+            &[touched, scrolling],
+            &cartridge,
+            &initial,
+            walking,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        assert!(
+            observations
+                .iter()
+                .all(
+                    |observation| (observation.decoded.map_x, observation.decoded.map_y) == (9, 29)
+                )
+        );
+        assert_eq!(observations.last().unwrap().decoded.door, 0x03);
         assert!(consistent_with(&touched, &cartridge, last).unwrap());
         assert!(
             !consistent_with(
@@ -1387,10 +1412,17 @@ mod observation_tests {
             )
             .unwrap()
         );
-        assert_eq!(last_untouched_frame(&[walking, touched]), Some(walking));
-        assert_eq!(last_untouched_frame(&[touched]), None);
+        assert_eq!(last_frame_outside_door(&[walking, touched]), Some(walking));
+        assert_eq!(last_frame_outside_door(&[touched]), None);
+        assert_eq!(
+            last_frame_outside_door(&[walking, touched, scrolling]),
+            Some(walking)
+        );
         let rooted = rooted_state(&touched, Some(&walking), &cartridge).unwrap();
         assert_eq!((rooted.map_x, rooted.map_y, rooted.door), (9, 29, 0x83));
+        let rooted = rooted_state(&scrolling, Some(&walking), &cartridge).unwrap();
+        assert_eq!((rooted.map_x, rooted.map_y, rooted.door), (9, 29, 0x03));
+        assert!(consistent_with(&scrolling, &cartridge, rooted).unwrap());
         let unrooted = rooted_state(&touched, None, &cartridge).unwrap();
         assert_eq!((unrooted.map_x, unrooted.map_y), (9, 28));
     }
