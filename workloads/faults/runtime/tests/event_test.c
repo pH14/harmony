@@ -122,6 +122,17 @@ int main(void)
     unsigned char report_frame[HARMONY_FAULT_EVENT_REPORT_SIZE];
 
     alarm(10);
+    harmony_fault_events.park_weight_left = UINT64_C(2) << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
+    assert(harmony_fault_park_spend(0) == 0);
+    assert(harmony_fault_park_spend(1) == 0);
+    assert(harmony_fault_park_spend(2) == 0);
+    assert(harmony_fault_park_spend(3) == 1);
+    harmony_fault_events.park_weight_left = 2;
+    assert(harmony_fault_park_spend(UINT64_C(1) << 40) == 0);
+    assert(harmony_fault_events.park_weight_left == 1);
+    assert(harmony_fault_park_spend(UINT64_MAX) == 1);
+    assert(harmony_fault_events.park_weight_left == 0);
+
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, control) == 0);
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, report) == 0);
     assert(snprintf(control_name, sizeof(control_name), "%d", control[0]) > 0);
@@ -167,6 +178,8 @@ int main(void)
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 3, 1, response);
     harmony_instrumentation_event(5);
     harmony_instrumentation_event(5);
+    harmony_instrumentation_event(5);
+    harmony_instrumentation_event(10);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 0);
     assert(get_word(response, 16) == 1);
@@ -178,6 +191,19 @@ int main(void)
     assert(get_word(response, 16) == 0);
     assert(json_reports == 1);
     assert(strcmp(json_report, "{\"harmony_park\":{\"site\":9,\"edges\":3}}\n") == 0);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 2, 1, response);
+    harmony_instrumentation_event(11);
+    harmony_instrumentation_event(11);
+    harmony_instrumentation_event(11);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 16) == 1);
+    assert(json_reports == 1);
+    harmony_instrumentation_event(11);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 2);
+    assert(get_word(response, 16) == 0);
+    assert(json_reports == 2);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":11,\"edges\":2}}\n") == 0);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
     assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
     assert(get_word(response, 8) == harmony_fault_events.coverage_crossings);
@@ -195,7 +221,7 @@ int main(void)
         assert(pthread_mutex_unlock(&sleep_lock) == 0);
         harmony_instrumentation_event(7);
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
-        assert(get_word(response, 8) == 2);
+        assert(get_word(response, 8) == 3);
         assert(get_word(response, 16) == 1);
         put_word(request, 0, HARMONY_FAULT_EVENT_CMD_PARK);
         assert(write(control[1], request, sizeof(request)) == (ssize_t)sizeof(request));
