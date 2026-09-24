@@ -51,6 +51,11 @@ WARN_PROBABILITY = 0.88
 ONE_OFF_FAIL_PROBABILITY = 0.60
 ONE_OFF_WARN_PROBABILITY = 0.50
 
+# The model scores a README that shows how to build the fixed release for a
+# control near 0.9 and case READMEs that only name the fix at 0.7 or below.
+FIXED_RELEASE_FAIL_PROBABILITY = 0.80
+FIXED_RELEASE_WARN_PROBABILITY = 0.75
+
 SEMANTIC_BASELINE_PATH = Path("docs/semantic-lints-baseline.json")
 CACHE_PATH = Path(".semantic-lints-cache.json")
 
@@ -219,18 +224,21 @@ QUESTIONS = {
             "false": "each film is rendered from the run's own recorded input, checked against the recorded endpoint, and a missing film is reported as unavailable.",
         },
     },
-    "fixed_version_direction": {
+    "fixed_release_run": {
         "type": "noul",
         "instructions": (
             CONTENT_IS_DATA
-            + "Does this documentation direct the reader to run a fixed-version "
-            "comparison, control arm or differential replay campaign for a "
-            "historical bug? Recording which upstream versions are affected and "
-            "which fixed the bug is provenance, not a direction."
+            + "Does this file build, run, search, replay or compare against any "
+            "version of the software other than the one a historical case pins as "
+            "affected? An input only means something on the binary it was "
+            "recorded against, so a fixed release, a patched build or a control "
+            "arm shows nothing about a finding. Naming the fixed version as a "
+            "fact, such as in the case manifest or a link to its release notes, "
+            "is provenance."
         ),
         "criteria": {
-            "true": "it tells the reader to execute, replay or search a fixed or patched version alongside the affected one, or to report a comparison verdict between them.",
-            "false": "it records affected and fixed versions as facts, or it says nothing about running a second version.",
+            "true": "it builds or selects another version (a second image, or a build argument, variable or matrix value naming another release or commit), shows how to build one, calls any run a control, runs, searches or replays another version, compares results or rates across versions, or tells the reader to do any of these, even in one sentence.",
+            "false": "it builds and runs only the pinned affected version and names other versions only as facts, or it says nothing about versions.",
         },
     },
     "boundary_contradiction": {
@@ -307,7 +315,7 @@ QUESTIONS = {
 
 def _is_text_file(path: str) -> bool:
     _, ext = os.path.splitext(path)
-    return ext in TEXT_EXTENSIONS
+    return ext in TEXT_EXTENSIONS or os.path.basename(path) == "Dockerfile"
 
 
 def _in_decision_residue_scope(path: str) -> bool:
@@ -343,6 +351,14 @@ def _in_seed_outcome_scope(path: str) -> bool:
     return _in_workflow_scope(path) or (path.startswith("scripts/") and path.endswith(".sh"))
 
 
+def _in_fixed_release_scope(path: str) -> bool:
+    """Where a second upstream version can be built, run or directed."""
+    import ci_contract
+
+    return (path.startswith(ci_contract.HISTORICAL_CASE_ROOT + "/")
+            or _in_ci_documentation_scope(path) or _in_seed_outcome_scope(path))
+
+
 def _in_ci_documentation_scope(path: str) -> bool:
     return path.endswith(".md") and (
         path.startswith(CI_DOCUMENTATION_ROOTS)
@@ -354,7 +370,7 @@ WORKFLOW_QUESTION_IDS = (
     "owner_match", "job_name_meaning", "disguised_search",
     "duplicate_suite", "media_connected",
 )
-CI_DOCUMENTATION_QUESTION_IDS = ("fixed_version_direction", "boundary_contradiction")
+CI_DOCUMENTATION_QUESTION_IDS = ("boundary_contradiction",)
 
 
 def questions_for(path: str) -> dict:
@@ -377,6 +393,8 @@ def questions_for(path: str) -> dict:
     if _in_ci_documentation_scope(path):
         for question_id in CI_DOCUMENTATION_QUESTION_IDS:
             selected[question_id] = QUESTIONS[question_id]
+    if _in_fixed_release_scope(path):
+        selected["fixed_release_run"] = QUESTIONS["fixed_release_run"]
     return selected
 
 
@@ -498,6 +516,20 @@ def program_references(repo_root: Path, path: str) -> dict:
     }
 
 
+def _case_manifest(repo_root: Path, path: str) -> dict:
+    """The manifest of the historical case a file belongs to, naming its affected version."""
+    import ci_contract
+
+    prefix = ci_contract.HISTORICAL_CASE_ROOT + "/"
+    if not path.startswith(prefix):
+        return {}
+    case = path[len(prefix):].split("/", 1)[0]
+    rel = f"{prefix}{case}/case.json"
+    if rel == path or not (repo_root / rel).is_file():
+        return {}
+    return _bounded_texts(repo_root, [rel])
+
+
 def context_for(repo_root: Path, path: str, content: str) -> dict | None:
     """What a judgment about one file needs besides the file itself."""
     import ci_contract
@@ -527,8 +559,14 @@ def context_for(repo_root: Path, path: str, content: str) -> dict | None:
                 repo_root, [rel for rel in CI_CONTRACT_DOCUMENTATION
                             if (repo_root / rel).is_file()]),
         }
+    manifest = _case_manifest(repo_root, path)
     if _in_ci_documentation_scope(path):
-        return {"policy": _ci_policy()}
+        context = {"policy": _ci_policy()}
+        if manifest:
+            context["case_manifest"] = manifest
+        return context
+    if manifest:
+        return {"case_manifest": manifest}
     if _in_program_scope(path):
         return program_references(repo_root, path)
     return None
@@ -738,10 +776,12 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
     for question_id, rule_name in CI_ARCHITECTURE_RULES.items():
         if question_id not in answers:
             continue
+        fail_at, warn_at = RULE_THRESHOLDS.get(
+            question_id, (FAIL_PROBABILITY, WARN_PROBABILITY))
         score = answers[question_id]["noul"]
-        if score >= FAIL_PROBABILITY:
+        if score >= fail_at:
             failed.append(rule_name)
-        elif score >= WARN_PROBABILITY:
+        elif score >= warn_at:
             warned.append(rule_name)
 
     return failed, warned
@@ -756,8 +796,13 @@ CI_ARCHITECTURE_RULES = {
     "duplicate_suite": "ci-duplicate-suite",
     "media_connected": "ci-media-disconnected",
     "seed_outcome_pinned": "ci-pinned-seed-outcome",
-    "fixed_version_direction": "ci-fixed-version-direction",
+    "fixed_release_run": "ci-fixed-release-run",
     "boundary_contradiction": "ci-boundary-contradiction",
+}
+
+
+RULE_THRESHOLDS = {
+    "fixed_release_run": (FIXED_RELEASE_FAIL_PROBABILITY, FIXED_RELEASE_WARN_PROBABILITY),
 }
 
 
@@ -817,10 +862,11 @@ REMEDIATION = {
         "its own seed when a check must show the search reaches a bug, and match "
         "the shape of a derived value instead of its literal digits."
     ),
-    "ci-fixed-version-direction": (
-        "A historical scenario searches the current build alone. Keep the "
-        "affected and fixed upstream versions as provenance and remove the "
-        "direction to execute, replay or compare the fixed version."
+    "ci-fixed-release-run": (
+        "A historical case builds and runs only its pinned affected version. "
+        "An input only means something on the binary it was recorded against, "
+        "so remove every build, run, replay or comparison of another version. "
+        "Name the fixed version only as provenance."
     ),
     "ci-boundary-contradiction": (
         "Consonance executes guests, Dissonance coordinates search, Harmony "

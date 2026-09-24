@@ -14,6 +14,13 @@ affected versions, root-cause mechanism, trigger conditions, detection method, a
 Version pins go in the entry, not in prose asides (same discipline as frontier-task
 Environment sections).
 
+## The affected version is the only version
+
+An input only means something on the binary it was recorded against. Change the
+binary at all and the same input drives an unrelated execution. Nothing carries
+between versions, so a case never builds or runs the fixed release. A finding is
+proven by its failed assertion, replayed on the same image.
+
 ## Roster (initial four, in build order)
 
 1. `etcd-3.5-inconsistency/` — etcd v3.5.0–3.5.2 silently diverging after an untimely crash
@@ -66,13 +73,6 @@ repeats on that same version so their state digests can be compared, under the
 case's aggregate replay-session cap. The committed probe file remains a
 historical reference; the current build's discovered input is the replay
 source and the probe is not a CI check.
-
-A scenario never builds or runs the upstream fixed release. Two releases of the
-same software can execute one recorded input differently, so a clean run on a
-patched build is not evidence that the recorded input exercised the same
-scenario, and it is not evidence that the finding is real. The evidence a
-scenario produces is a fresh discovery on the affected version and that
-finding's own same-version confirmation.
 
 The PostgreSQL image builder publishes a checksum-verified artifact keyed by
 the image sources and case manifest. The bounded PostgreSQL check requires that

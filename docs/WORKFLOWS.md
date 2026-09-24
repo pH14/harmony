@@ -273,7 +273,7 @@ than recorded in the semantic baseline.
 | `ci-disguised-search` | Is a full capability search presented as a bounded check? |
 | `ci-duplicate-suite` | Do two suites assert the same thing over the same inputs at the same budget? |
 | `ci-media-disconnected` | Is claimed video evidence produced from the run's own recorded input? |
-| `ci-fixed-version-direction` | Does documentation direct a fixed-version comparison campaign? |
+| `ci-fixed-release-run` | Does a historical case, its documentation or CI build, run or compare a version other than the affected one? |
 | `ci-boundary-contradiction` | Does documentation contradict the component and composition boundaries? |
 | `ci-pinned-seed-outcome` | Does a check require a particular search outcome from one fixed seed? |
 

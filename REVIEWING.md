@@ -16,6 +16,9 @@ scheduling, entropy, serialization, snapshots, or observable output. Trace each
 new input to the state it can influence and confirm that replay reconstructs the
 same value and ordering. Use executable comparisons or planted differences when
 they make the claim materially stronger.
+Reject any claim that moves an input or result from one
+binary to another: a replay on a fixed release, a control arm, or a rate
+compared across builds.
 
 ## External input
 

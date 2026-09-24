@@ -821,10 +821,12 @@ class CiArchitectureTests(RequiresApiKey):
 
     def test_each_architecture_question_fails_warns_and_passes_by_threshold(self):
         for question_id, rule in LINTS.CI_ARCHITECTURE_RULES.items():
+            fail_at, warn_at = LINTS.RULE_THRESHOLDS.get(
+                question_id, (LINTS.FAIL_PROBABILITY, LINTS.WARN_PROBABILITY))
             with self.subTest(question=question_id):
-                failed, warned = LINTS.evaluate(full_answers(**{question_id: 0.97}))
+                failed, warned = LINTS.evaluate(full_answers(**{question_id: fail_at}))
                 self.assertEqual(failed, [rule])
-                failed, warned = LINTS.evaluate(full_answers(**{question_id: 0.90}))
+                failed, warned = LINTS.evaluate(full_answers(**{question_id: warn_at}))
                 self.assertEqual((failed, warned), ([], [rule]))
                 self.assertEqual(LINTS.evaluate(full_answers(**{question_id: 0.10})), ([], []))
 
@@ -848,8 +850,38 @@ class CiArchitectureTests(RequiresApiKey):
             failures, _, _, _, _, _ = LINTS.run(
                 root, ["workloads/bugs/historical/README.md"], {},
                 post=make_post(full_answers(file_kind="instructions",
-                                            fixed_version_direction=0.96)))
-            self.assertEqual([rule for rule, _, _ in failures], ["ci-fixed-version-direction"])
+                                            fixed_release_run=0.96)))
+            self.assertEqual([rule for rule, _, _ in failures], ["ci-fixed-release-run"])
+
+    def test_a_case_readme_showing_how_to_build_the_fixed_release_fails_below_the_general_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = "workloads/bugs/historical/example/README.md"
+            self.plant(root, path, "Pass --build-arg COMMIT=<fixed> for the control.\n")
+            failures, _, _, _, _, _ = LINTS.run(
+                root, [path], {},
+                post=make_post(full_answers(file_kind="instructions",
+                                            fixed_release_run=0.85)))
+            self.assertEqual([rule for rule, _, _ in failures], ["ci-fixed-release-run"])
+
+    def test_every_historical_case_file_is_asked_about_other_versions(self):
+        for path in ("workloads/bugs/historical/example/image/Dockerfile",
+                     "workloads/bugs/historical/example/case.json",
+                     "workloads/bugs/historical/example/image/setup.sh",
+                     "docs/WORKFLOWS.md", "scripts/historical-search.sh",
+                     self.workflow_path()):
+            with self.subTest(path=path):
+                self.assertIn("fixed_release_run", LINTS.questions_for(path))
+        self.assertNotIn("fixed_release_run", LINTS.questions_for("dissonance/searcher/src/lib.rs"))
+
+    def test_a_case_file_is_judged_with_its_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plant(root, "workloads/bugs/historical/example/case.json", '{"id": "example"}\n')
+            self.plant(root, "workloads/bugs/historical/example/image/Dockerfile", "FROM scratch\n")
+            context = LINTS.context_for(root, "workloads/bugs/historical/example/image/Dockerfile",
+                                        "FROM scratch\n")
+            self.assertIn("workloads/bugs/historical/example/case.json", context["case_manifest"])
 
     def test_an_architecture_finding_cannot_be_baselined(self):
         with tempfile.TemporaryDirectory() as directory:
