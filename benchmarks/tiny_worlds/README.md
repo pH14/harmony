@@ -7,8 +7,9 @@ statistical search quality and private game correspondence. The implementation
 contains resource, history, changing-action, deadline, and delayed-progress worlds,
 plus deadline/action and multi-transition resource interactions. The first-three-
 family mechanism requirement was completed before that expansion.
-[RESULTS.md](RESULTS.md) records the 546 verified synthetic runs, held-out
-comparisons, negative results, runtime, and resource measurements.
+Measured comparisons, negative results, runtime, and resource measurements
+belong in the [pull request evidence](https://github.com/pH14/harmony/pull/395),
+not committed run records.
 
 `panel.json` registers development and held-out structural instances and seeds
 before evaluation. The endpoint is a valid objective witness within the admitted
@@ -65,7 +66,8 @@ measurements cover verification and child processes too.
 Use existing local licensed assets in place, with hashes and immutable build
 identity. Never copy ROMs, snapshots, films, recordings, private paths, or full
 traces into this directory. Keep detailed run records outside the source tree;
-only portable aggregate evidence and experiment metadata belong in public reports. Record actual event decoding before making a causal
+publish portable aggregate evidence in the pull request description and keep
+reusable experiment definitions in the repository. Record actual event decoding before making a causal
 claim: Metroid Zebetite column damage is separate from boss health, and SMB 7-4
 requires earlier correct-check history. Historical reports are leads, not fresh
 calibration of the pinned engine.
@@ -73,7 +75,8 @@ calibration of the pinned engine.
 Local native comparisons now establish the first three families' mechanism
 correspondence: resource retention through a verified five-missile door, useful
 history retention in SMB 7-4, and continued button exploration in water. See
-[CALIBRATION.md](CALIBRATION.md) for controls, counts, negative results, and limits.
+[pull request evidence](https://github.com/pH14/harmony/pull/395) for controls,
+counts, negative results, and limits.
 The retention experiments use actual populated archives and known diagnostic
 continuations; they do not establish autonomous route discovery or full-game
 gains. Native calibration tools are documented in `workloads/nes/README.md`;

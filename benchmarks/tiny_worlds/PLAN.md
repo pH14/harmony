@@ -1,7 +1,7 @@
 # Dissonance tiny-world evaluation plan
 
-Status: M1–M3 completed; M4 final review and handoff in progress,
-2026-09-24. See CALIBRATION.md and RESULTS.md for measured evidence and limits.
+Execution status and measured evidence belong in the
+[pull request description](https://github.com/pH14/harmony/pull/395).
 
 ## Outcome and scope
 
