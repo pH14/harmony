@@ -1,7 +1,7 @@
 # Dissonance tiny-world evaluation plan
 
-Status: proposed implementation plan, 2026-09-24. No search implementation or
-game calibration has been performed as part of writing this plan.
+Status: M1 and the M2 local-mechanism gate completed; M3/M4 in progress,
+2026-09-24. See CALIBRATION.md for measured evidence and its limits.
 
 ## Outcome and scope
 

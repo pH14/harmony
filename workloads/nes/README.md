@@ -39,13 +39,19 @@ Use the resource supervisor in `benchmarks/tiny_worlds` for builds and runs.
 `metroid-retention-calibrate REQUEST.json OUTPUT_DIRECTORY` verifies a real
 replenishment transition and tests snapshot retention in both insertion orders
 and a populated archive. Its strict request supplies `rom_path`, `rom_sha256`,
-`core_path`, `core_sha256`, `prefix_input`, consecutive `before_actions` and
+`core_path`, `core_sha256`, `prefix_input`, ordered `before_actions` and
 `after_actions` counts, `seed`, and `broken`. The ordinary input must end exactly
 at `after_actions`. It uses the current BCD-underflow terminal policy, checks
-snapshot restore and one-action replay, and compares the production key with
+snapshot restore and replay of the intervening actions, and compares the production key with
 a control that zeros only missiles. Selection samples read actual emulator
-snapshots. This diagnostic establishes neither door opening nor route completion.
-It writes only a compact summary; keep the request, prefix, and output private.
+snapshots, and the report identifies whether each endpoint remains active in the
+populated archive. Optional `continuation` and `objective` fields must appear
+together; the objective specifies raw `area`, `map_x`, and `map_y`. The same
+supplied suffix (at most 128 actions and 15,360 frames) is replayed from the
+endpoints and selected snapshots. Its results separate requested frames from
+actual execution work and require a living player under the terminal policy.
+This measures access to a known continuation, not autonomous discovery. It
+writes only a compact summary; keep requests, inputs, and output private.
 
 `smb-history-retention REQUEST.json OUTPUT_DIRECTORY` compares natural SMB
 prefixes in the production archive. Its strict request supplies ROM/core paths
