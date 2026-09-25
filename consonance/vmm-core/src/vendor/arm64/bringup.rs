@@ -33,7 +33,7 @@ fn compose_inner<B: Backend<A = Arm64>>(
     map_doorbell: bool,
     seed: u64,
 ) -> Result<Vmm<B>, VmmError> {
-    backend.set_policy(&contract::policy())?;
+    backend.set_policy(&contract::policy(backend.capabilities().arch.asid_bits))?;
 
     let mut ram = GuestRam::new(guest_ram_len)?;
     let loaded = image_loader::load(image, ram.as_mut_bytes()).map_err(VmmError::vendor_boot)?;
@@ -363,6 +363,58 @@ mod tests {
             0,
         );
         assert!(matches!(result, Err(VmmError::ContractViolation(_))));
+    }
+
+    #[test]
+    fn compose_applies_the_backend_asid_width_and_snapshots_do_not_cross_widths() {
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
+
+        let backend_with = |asid_bits| {
+            MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-arm64",
+                arch: Arm64Caps {
+                    in_kernel_gic: false,
+                    asid_bits,
+                },
+            })
+        };
+        let ram_len = 16 * 1024 * 1024;
+        let compose_with =
+            |asid_bits| compose(backend_with(asid_bits), &tiny_image(), "", ram_len).unwrap();
+        let mut eight = compose_with(Arm64AsidBits::Eight);
+        let mut sixteen = compose_with(Arm64AsidBits::Sixteen);
+        for (vmm, asid_bits) in [
+            (&eight, Arm64AsidBits::Eight),
+            (&sixteen, Arm64AsidBits::Sixteen),
+        ] {
+            let installed = vmm.backend().installed_policy().unwrap();
+            assert_eq!(installed, &contract::policy(asid_bits));
+            assert_eq!(
+                Arm64AsidBits::from_id_register(installed.id_regs.regs[&0xc038]),
+                Some(asid_bits)
+            );
+        }
+
+        let from_eight = eight.save_vm_state().unwrap();
+        let from_sixteen = sixteen.save_vm_state().unwrap();
+        assert_eq!(
+            from_eight.contract_hash,
+            contract::contract_hash(Arm64AsidBits::Eight)
+        );
+        assert_eq!(
+            from_sixteen.contract_hash,
+            contract::contract_hash(Arm64AsidBits::Sixteen)
+        );
+        eight.restore_vm_state(&from_eight).unwrap();
+        sixteen.restore_vm_state(&from_sixteen).unwrap();
+        assert!(matches!(
+            sixteen.restore_vm_state(&from_eight),
+            Err(VmmError::Snapshot(_))
+        ));
+        assert!(matches!(
+            eight.restore_vm_state(&from_sixteen),
+            Err(VmmError::Snapshot(_))
+        ));
     }
 
     #[test]

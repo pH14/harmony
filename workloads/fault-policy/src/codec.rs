@@ -129,7 +129,7 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_PROC_EVENT_PARK => {
             let edges = r.u32()?;
             let hold = r.u64()?;
-            if edges == 0 || edges > crate::EVENT_PARK_EDGE_LIMIT || hold == 0 {
+            if !process_proto::events::valid_park_target(edges) || hold == 0 {
                 return Err(EnvError::Malformed);
             }
             Fault::ProcEventPark {

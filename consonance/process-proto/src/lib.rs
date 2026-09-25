@@ -236,7 +236,7 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
         EVENT_PARK => {
             let edges = reader.u32()?;
             let hold_nanos = reader.u64()?;
-            if edges == 0 || edges > events::EVENT_PARK_EDGE_LIMIT || hold_nanos == 0 {
+            if !events::valid_park_target(edges) || hold_nanos == 0 {
                 return Err(WireError::Malformed);
             }
             Ok(ProcessAction::EventPark { edges, hold_nanos })
@@ -442,6 +442,16 @@ mod tests {
             hold_nanos: 1,
         };
         assert_eq!(ProcessAction::decode(&longest.encode()), Some(longest));
+        let site = ProcessAction::EventPark {
+            edges: events::EVENT_PARK_SITE_FLAG | 0x514c0001,
+            hold_nanos: 2_000_000_000,
+        };
+        assert_eq!(ProcessAction::decode(&site.encode()), Some(site));
+        let empty_site = ProcessAction::EventPark {
+            edges: events::EVENT_PARK_SITE_FLAG,
+            hold_nanos: 1,
+        };
+        assert_eq!(ProcessAction::decode(&empty_site.encode()), None);
     }
 
     #[test]

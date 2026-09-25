@@ -19,11 +19,19 @@ the DTB `rng-seed`. Linux control bringup passes the requested session seed.
 `contract::IDENTITY_BASELINE` is the ID register view every arm64 host presents
 to the guest. Each field must be at or below what every supported host
 implements, because the guest sizes its use of the hardware from these values.
-`ID_AA64MMFR0_EL1.ASIDBits` is 8 bits: Hypervisor.framework on Apple silicon
-implements 8-bit ASIDs and ignores `TCR_EL1.AS`. When the baseline claimed 16
-bits, Linux allocated ASIDs above 255, and two processes whose ASIDs differed by
-256 shared TLB entries with no flush between them. After a `fork`, the parent
-then read the child's copy-on-write stack page.
+`ID_AA64MMFR0_EL1.ASIDBits` is the one field that depends on the backend.
+`contract::policy` sets it from `Arm64Caps::asid_bits`: 8 bits on HVF and the
+host's own width on ARM KVM. Hypervisor.framework on Apple silicon implements
+8-bit ASIDs and ignores `TCR_EL1.AS`. When the baseline claimed 16 bits there,
+Linux allocated ASIDs above 255, and two processes whose ASIDs differed by 256
+shared TLB entries with no flush between them. After a `fork`, the parent then
+read the child's copy-on-write stack page. ARM KVM rejects any `ASIDBits` value
+other than the host's, so the baseline cannot hold one width for both backends.
+
+`contract::contract_hash` covers the policy with the backend's ASID width
+applied. A snapshot records that hash, and a restore into a backend with a
+different ASID width fails with `SnapshotError::ContractMismatch`, because the
+guest kernel has already sized its ASID allocator from the saved width.
 
 Both arm64 backends refuse a baseline field above the host when the policy is
 applied, so a baseline that over-claims fails at boot. The ignored test

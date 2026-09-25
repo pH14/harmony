@@ -3,6 +3,10 @@
 **Status: searching.** The case runs the fork's own harness unmodified; it has
 no in-tree record of a find yet.
 
+The sibling [authored scenario](scenario/README.md) reproduces the same defect
+by parking a checkpoint thread at the stale-header window. It is a separate
+regression proof; the organic search case and its harness remain unchanged.
+
 ## Sources
 
 - Harness: the `antithesis/` directory of

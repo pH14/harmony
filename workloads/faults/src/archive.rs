@@ -191,7 +191,7 @@ pub fn action_kind(action: &FaultAction) -> usize {
         FaultAction::Hook(..) => 4,
         FaultAction::Interrupt(..) => 5,
         FaultAction::EventKill { .. } => 6,
-        FaultAction::EventPark { .. } => 7,
+        FaultAction::EventPark { .. } | FaultAction::SitePark { .. } => 7,
     }
 }
 
@@ -566,7 +566,7 @@ mod tests {
             FaultAction::Hook(..) => 4,
             FaultAction::Interrupt(..) => 5,
             FaultAction::EventKill { .. } => 6,
-            FaultAction::EventPark { .. } => 7,
+            FaultAction::EventPark { .. } | FaultAction::SitePark { .. } => 7,
         };
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &vocabulary, 0, TICKS, &ActionMix::default())
@@ -585,6 +585,7 @@ mod tests {
                     assert!(node < vocabulary.nodes());
                     assert!((1..=EVENT_PARK_EDGE_LIMIT).contains(&edges));
                 }
+                FaultAction::SitePark { .. } => unreachable!("site parks are scenario actions"),
                 FaultAction::Kill(node, _)
                 | FaultAction::Restart(node, _)
                 | FaultAction::Pause(node, _) => {

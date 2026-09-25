@@ -12,6 +12,8 @@ the supervisor and an optional instrumented process runtime. It validates the
 shared 0 through 63 kill rarity width, the park edge-count range, exact command acknowledgements, runtime hello,
 kill provenance, event-park status, and bucketed edge-coverage status
 without naming a workload policy.
+Park selector bit 31 marks a site id instead of an edge count. The remaining
+31 bits must contain a nonzero id; ordinary edge counts remain in `1..=1<<24`.
 
 The `registers` module owns the reserved lifecycle-register IDs published by
 the platform supervisor and decoded by workload policy. Keeping these IDs with

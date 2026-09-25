@@ -1,6 +1,13 @@
 pub mod vmm_backend
 pub mod vmm_backend::arch
 pub mod vmm_backend::arch::arm64
+pub enum vmm_backend::arch::arm64::Arm64AsidBits
+pub vmm_backend::arch::arm64::Arm64AsidBits::Eight
+pub vmm_backend::arch::arm64::Arm64AsidBits::Sixteen
+impl vmm_backend::arch::arm64::Arm64AsidBits
+pub const vmm_backend::arch::arm64::Arm64AsidBits::ID_AA64MMFR0_EL1: u32
+pub fn vmm_backend::arch::arm64::Arm64AsidBits::apply_to_id_register(self, u64) -> u64
+pub fn vmm_backend::arch::arm64::Arm64AsidBits::from_id_register(u64) -> core::option::Option<Self>
 pub enum vmm_backend::arch::arm64::Arm64Completion
 pub enum vmm_backend::arch::arm64::Arm64Exit
 pub vmm_backend::arch::arm64::Arm64Exit::Sysreg
@@ -23,6 +30,7 @@ pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
 pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::arch::arm64::Arm64Caps
+pub vmm_backend::arch::arm64::Arm64Caps::asid_bits: vmm_backend::arch::arm64::Arm64AsidBits
 pub vmm_backend::arch::arm64::Arm64Caps::in_kernel_gic: bool
 pub struct vmm_backend::arch::arm64::Arm64CoreRegs
 pub vmm_backend::arch::arm64::Arm64CoreRegs::elr_el1: u64
@@ -343,6 +351,13 @@ pub fn vmm_backend::contract::fixpoint_exam<F: vmm_backend::contract::BackendFix
 pub fn vmm_backend::contract::interrupt_delivery_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::ordering_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::run_all<F: vmm_backend::contract::BackendFixture>(&mut F) -> vmm_backend::contract::ContractReport
+pub enum vmm_backend::Arm64AsidBits
+pub vmm_backend::Arm64AsidBits::Eight
+pub vmm_backend::Arm64AsidBits::Sixteen
+impl vmm_backend::arch::arm64::Arm64AsidBits
+pub const vmm_backend::arch::arm64::Arm64AsidBits::ID_AA64MMFR0_EL1: u32
+pub fn vmm_backend::arch::arm64::Arm64AsidBits::apply_to_id_register(self, u64) -> u64
+pub fn vmm_backend::arch::arm64::Arm64AsidBits::from_id_register(u64) -> core::option::Option<Self>
 pub enum vmm_backend::Arm64Completion
 pub enum vmm_backend::Arm64Exit
 pub vmm_backend::Arm64Exit::Sysreg
@@ -457,6 +472,7 @@ pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
 pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::Arm64Caps
+pub vmm_backend::Arm64Caps::asid_bits: vmm_backend::arch::arm64::Arm64AsidBits
 pub vmm_backend::Arm64Caps::in_kernel_gic: bool
 pub struct vmm_backend::Arm64CoreRegs
 pub vmm_backend::Arm64CoreRegs::elr_el1: u64
@@ -615,8 +631,10 @@ pub fn vmm_backend::FakeKvm::new() -> Self
 pub fn vmm_backend::FakeKvm::push_run(&mut self, vmm_backend::KvmRunView) -> &mut Self
 pub fn vmm_backend::FakeKvm::reg(&self, u64) -> core::option::Option<u64>
 pub fn vmm_backend::FakeKvm::set_accept_irqs(&mut self, bool) -> &mut Self
+pub fn vmm_backend::FakeKvm::set_asid_bits(&mut self, vmm_backend::arch::arm64::Arm64AsidBits) -> &mut Self
 pub fn vmm_backend::FakeKvm::set_dirty_bitmap(&mut self, u32, alloc::vec::Vec<u64>) -> &mut Self
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
+pub fn vmm_backend::FakeKvm::asid_bits(&self) -> vmm_backend::arch::arm64::Arm64AsidBits
 pub fn vmm_backend::FakeKvm::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
@@ -933,6 +951,7 @@ impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub trait vmm_backend::Arm64Kvm
+pub fn vmm_backend::Arm64Kvm::asid_bits(&self) -> vmm_backend::arch::arm64::Arm64AsidBits
 pub fn vmm_backend::Arm64Kvm::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::Arm64Kvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
@@ -952,6 +971,7 @@ pub fn vmm_backend::Arm64Kvm::set_vgic_attr(&mut self, u32, u64, bool, u64) -> v
 pub fn vmm_backend::Arm64Kvm::vcpu_init(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::write_mmio_data(&mut self, [u8; 8]) -> vmm_backend::Result<()>
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
+pub fn vmm_backend::FakeKvm::asid_bits(&self) -> vmm_backend::arch::arm64::Arm64AsidBits
 pub fn vmm_backend::FakeKvm::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>

@@ -40,6 +40,12 @@ values and `addr2line` maps them to source lines. Any other site value, such
 as a trace-pc-guard index, is reported unchanged. A pending kill takes
 priority over a park on the same edge.
 
+An authored site park uses the same command and report path. Selector bit 31
+distinguishes a nonzero 31-bit site id from an edge count; the runtime compares
+the id with each raw site or module offset and holds only the matching thread.
+The supervisor still reports the landing before the hold. This lets a scenario
+verify that its requested pause actually occurred.
+
 Kill rarity is evaluated per instrumentation site. Before each callback the runtime
 uses the site's saturating visit count; rarity `r` is eligible only while that
 count is below `1 << r`, so rarity zero selects a site's first visit and rarity

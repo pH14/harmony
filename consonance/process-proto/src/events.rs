@@ -12,6 +12,13 @@ pub const EVENT_CONTROL_FRAME_SIZE: usize = 24;
 pub const EVENT_REPORT_SIZE: usize = 16;
 pub const EVENT_RARITY_LIMIT: u8 = 64;
 pub const EVENT_PARK_EDGE_LIMIT: u32 = 1 << 24;
+pub const EVENT_PARK_SITE_FLAG: u32 = 1 << 31;
+
+#[must_use]
+pub fn valid_park_target(target: u32) -> bool {
+    (1..=EVENT_PARK_EDGE_LIMIT).contains(&target)
+        || (target & EVENT_PARK_SITE_FLAG != 0 && target & !EVENT_PARK_SITE_FLAG != 0)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {

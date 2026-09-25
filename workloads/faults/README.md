@@ -46,6 +46,7 @@ every action in the suffix takes it:
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold)` | an instrumented runtime holds the thread that reaches the `edges`-th instrumented edge after arming, for the hold; the edge count is drawn log-uniform from 1 through `1 << 24` |
+| `SitePark(node, site, hold_us, ticks)` | replay-only action that holds the thread reaching an exact instrumented site; its short action window can end while the hold stays active so a later hook runs concurrently |
 | `Kill(node, ticks)` | the node stays down for the window |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
@@ -58,6 +59,17 @@ standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
 branch installs it. An event-park window remains active across later actions
 until its hold can finish, allowing another fault to overlap the held thread.
+`SitePark` is reserved for authored replay inputs and is never drawn by search.
+The small [Python scenario helper](python/harmony_scenario.py) writes these inputs,
+runs the existing replay CLI, and checks the resulting assertion and park evidence.
+The same module also lets Python processes inside an image call `setup_complete`,
+`always`, and `sometimes` without formatting SDK event records themselves.
+`Site("service.phase")` gives an authored pause point a name and derives a stable,
+nonzero 31-bit marker from its UTF-8 name. The image can emit `site.id` through
+`notify_coverage`, while `park_site` and `reached_site` accept the named `Site`;
+the replay wire format still carries the numeric marker. Declare all workload
+sites at module import in the shared build-and-replay script so the SDK rejects
+names that map to the same marker before either side runs.
 
 ## Execution
 

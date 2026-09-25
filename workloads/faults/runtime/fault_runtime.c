@@ -257,7 +257,9 @@ static void *harmony_fault_event_control(void *arg)
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
             if (second != 0 &&
-                (first == 0 || first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT)) {
+                !((first >= 1 && first <= HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT) ||
+                  (first > HARMONY_FAULT_EVENT_PARK_SITE_FLAG &&
+                   first < UINT64_C(1) << 32))) {
                 valid = 0;
             } else if (second == 0) {
                 harmony_fault_events.park_armed = 0;
@@ -406,7 +408,14 @@ void harmony_fault_runtime_event(uint64_t site)
         kill_site = site;
         kill_report_fd = harmony_fault_events.report_fd;
     } else if (harmony_fault_events.park_armed != 0 &&
-               --harmony_fault_events.park_edges_left == 0) {
+               ((harmony_fault_events.park_edges &
+                 HARMONY_FAULT_EVENT_PARK_SITE_FLAG) != 0
+                    ? (site == (harmony_fault_events.park_edges &
+                                ~HARMONY_FAULT_EVENT_PARK_SITE_FLAG) ||
+                       harmony_fault_site_offset(site) ==
+                           (harmony_fault_events.park_edges &
+                            ~HARMONY_FAULT_EVENT_PARK_SITE_FLAG))
+                    : --harmony_fault_events.park_edges_left == 0)) {
         harmony_fault_events.park_armed = 0;
         park_edges = harmony_fault_events.park_edges;
         if (harmony_fault_events.park_fires != UINT64_MAX)

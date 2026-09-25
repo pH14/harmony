@@ -41,6 +41,12 @@ pub enum FaultAction {
         edges: u32,
         hold_us: u32,
     },
+    SitePark {
+        node: u16,
+        site: u32,
+        hold_us: u32,
+        ticks: NonZeroU16,
+    },
     Pause(u16, NonZeroU16),
     Restart(u16, NonZeroU16),
     Hook(u32, NonZeroU16),
@@ -57,7 +63,8 @@ impl FaultAction {
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
             | Self::Hook(_, ticks)
-            | Self::Interrupt(_, ticks) => u64::from(ticks.get()),
+            | Self::Interrupt(_, ticks)
+            | Self::SitePark { ticks, .. } => u64::from(ticks.get()),
             Self::EventPark { hold_us, .. } => {
                 u64::from(hold_us).div_ceil(SUPERVISOR_TICK_MICROS).max(1)
             }
@@ -79,6 +86,17 @@ impl FaultAction {
                 edges,
                 hold_us: u32::from(ticks.get())
                     .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
+            },
+            Self::SitePark {
+                node,
+                site,
+                hold_us,
+                ..
+            } => Self::SitePark {
+                node,
+                site,
+                hold_us,
+                ticks,
             },
             Self::Pause(node, _) => Self::Pause(node, ticks),
             Self::Restart(node, _) => Self::Restart(node, ticks),
@@ -161,14 +179,25 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             node,
             edges,
             hold_us,
+        }
+        | FaultAction::SitePark {
+            node,
+            site: edges,
+            hold_us,
+            ..
         } => {
             let hold = u64::from(hold_us).saturating_mul(1_000);
+            let target = if matches!(action, FaultAction::SitePark { .. }) {
+                edges | process_proto::events::EVENT_PARK_SITE_FLAG
+            } else {
+                edges
+            };
             ActionDelta {
                 standing: Some(standing(
                     process_target(
                         node,
                         &Fault::ProcEventPark {
-                            edges,
+                            edges: target,
                             hold: Span(hold),
                         },
                     ),
@@ -618,6 +647,31 @@ mod tests {
         assert!(serde_json::from_str::<FaultAction>(r#"{"Wait":0}"#).is_err());
         assert!(serde_json::from_str::<FaultAction>(r#"{"Wait":65536}"#).is_err());
         assert!(serde_json::from_str::<FaultAction>(r#"{"Kill":[0,0]}"#).is_err());
+    }
+
+    #[test]
+    fn a_site_park_leaves_the_thread_held_across_the_following_hook() {
+        let actions = [
+            FaultAction::SitePark {
+                node: 0,
+                site: 0x514c0001,
+                hold_us: 2_000_000,
+                ticks: ticks(1),
+            },
+            FaultAction::Hook(1, ticks(1)),
+        ];
+        assert_eq!(WINDOWS.window(&actions, 1).unwrap().0, ROOT + TICK);
+        let windows = standing_windows(WINDOWS, &actions).unwrap();
+        assert_eq!(windows.len(), 2);
+        assert!(windows[0].end > windows[1].start);
+        let (_, action) = fault_policy::decode_process_target(&windows[0].target).unwrap();
+        assert_eq!(
+            action,
+            Fault::ProcEventPark {
+                edges: process_proto::events::EVENT_PARK_SITE_FLAG | 0x514c0001,
+                hold: Span(2_000_000_000),
+            }
+        );
     }
 
     #[test]
