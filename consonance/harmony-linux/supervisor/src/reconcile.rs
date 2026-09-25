@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use process_proto::events::ParkTarget;
 use process_proto::{ProcessAction, ProcessWindow, WireError, decode_process_windows};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventPark {
     pub edges: u32,
     pub hold_nanos: u64,
+    pub target: Option<ParkTarget>,
     pub start: u64,
 }
 
@@ -87,10 +89,15 @@ impl ActiveWindows {
             ProcessAction::Kill => flags.kill = true,
             ProcessAction::Pause(_) => flags.pause = true,
             ProcessAction::Restart => flags.restart = true,
-            ProcessAction::EventPark { edges, hold_nanos } => {
+            ProcessAction::EventPark {
+                edges,
+                hold_nanos,
+                target,
+            } => {
                 flags.event_park = Some(EventPark {
                     edges: *edges,
                     hold_nanos: *hold_nanos,
+                    target: *target,
                     start,
                 });
             }

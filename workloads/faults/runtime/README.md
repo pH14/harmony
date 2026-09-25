@@ -23,7 +23,7 @@ inactive, while the host agent still receives the normal coverage and SDK
 behavior.
 
 The agent waits for the runtime's 16-byte hello before sending event commands.
-Commands use three little-endian `u64` words in a 24-byte frame. The runtime
+Commands use five little-endian `u64` words in a 40-byte frame. The runtime
 writes the acknowledgement while holding the callback lock, so an armed
 callback cannot fire before its acknowledgement has entered the channel. Kill reports
 use a 16-byte rarity/site frame and are sent before the requested signal. A
@@ -37,7 +37,10 @@ this visit, so the first visit to a site counts 1 and the hundredth counts
 1/100. A site visited at a steady rate therefore draws parks at the same rate
 as any other active site, and code that runs once per operation competes with
 the loops inside that operation. The count is kept in units of 2^-20, so a
-visit to a site past its millionth visit counts 2^-20. Before the hold it writes one JSON line through `fuzz_json_data`:
+visit to a site past its millionth visit counts 2^-20. A park command's fourth
+and fifth words give an optional target: a half-open range of module offsets,
+with `(0, 0)` for none. With a target, only edges whose site falls in the range
+count toward `k`, and an empty range makes the command invalid. Before the hold it writes one JSON line through `fuzz_json_data`:
 `{"harmony_park":{"site":S,"edges":K}}`. When the instrumentation passes a
 code address, the site is that address's offset into the loaded module that
 contains it, so parks in different processes of one executable share site

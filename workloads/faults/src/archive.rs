@@ -223,6 +223,7 @@ pub fn sample_action(
             edges: park_edges(rand)?,
             hold_us: park_hold_us(rand, ticks)?,
             ticks,
+            target: None,
         },
     };
     Ok(action)
