@@ -19,6 +19,14 @@
 #include <link.h>
 #endif
 
+#if defined(__linux__) && (defined(__aarch64__) || defined(__x86_64__))
+#define HARMONY_FAULT_WATCH_SUPPORTED 1
+#include <sys/mman.h>
+#include <ucontext.h>
+#else
+#define HARMONY_FAULT_WATCH_SUPPORTED 0
+#endif
+
 #ifndef HARMONY_READ
 #define HARMONY_READ(fd, buf, len) read((fd), (buf), (len))
 #endif
@@ -38,6 +46,17 @@ void fuzz_json_data(const char *data, size_t size);
 
 #define HARMONY_FAULT_MODULE_LIMIT 4096
 #define HARMONY_FAULT_PARK_WEIGHT_SHIFT 20
+#define HARMONY_FAULT_WATCH_EDGES UINT64_C(50)
+#define HARMONY_FAULT_WATCH_RANGE_LIMIT 16
+#define HARMONY_FAULT_WATCH_COPY_LIMIT ((size_t)1 << 20)
+#define HARMONY_FAULT_WATCH_PAGE_LIMIT 256
+#define HARMONY_FAULT_WATCH_PENDING_LIMIT 4
+#define HARMONY_FAULT_WATCH_MAPS_LIMIT ((size_t)1 << 16)
+#define HARMONY_FAULT_WATCH_UNKNOWN_WIDTH 16
+
+#if HARMONY_FAULT_WATCH_SUPPORTED
+static void harmony_fault_watch_after_fork(void);
+#endif
 
 struct harmony_fault_module {
     uint64_t start;
@@ -503,6 +522,9 @@ static void harmony_fault_event_init(void)
     }
     (void)pthread_detach(thread);
     (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+#if HARMONY_FAULT_WATCH_SUPPORTED
+    (void)pthread_atfork(NULL, NULL, harmony_fault_watch_after_fork);
+#endif
 
     {
         unsigned char hello[HARMONY_FAULT_EVENT_REPORT_SIZE];
@@ -539,6 +561,384 @@ static void harmony_fault_park_report(uint64_t site, uint64_t edges)
         HARMONY_JSON(json, (size_t)length);
 }
 
+#if HARMONY_FAULT_WATCH_SUPPORTED
+static void harmony_fault_park_read_report(uint64_t site, uint64_t edges)
+{
+    char json[96];
+    int length;
+
+    site = harmony_fault_site_offset(site);
+    length = snprintf(json, sizeof(json),
+                      "{\"harmony_park_read\":{\"site\":%llu,\"edges\":%llu}}\n",
+                      (unsigned long long)site, (unsigned long long)edges);
+
+    if (length > 0 && (size_t)length < sizeof(json))
+        HARMONY_JSON(json, (size_t)length);
+}
+
+struct harmony_fault_watch_range {
+    uintptr_t start;
+    size_t size;
+    size_t copy_at;
+};
+
+static struct {
+    int claimed;
+    int active;
+    int installed;
+    int read_changed;
+    pthread_t owner;
+    uint64_t site;
+    uint64_t edges;
+    uintptr_t page_size;
+    size_t range_count;
+    size_t copied;
+    size_t page_count;
+    size_t pending_count;
+    struct sigaction previous;
+    struct harmony_fault_watch_range ranges[HARMONY_FAULT_WATCH_RANGE_LIMIT];
+    uintptr_t pages[HARMONY_FAULT_WATCH_PAGE_LIMIT];
+    unsigned char released[HARMONY_FAULT_WATCH_PAGE_LIMIT];
+    size_t pending[HARMONY_FAULT_WATCH_PENDING_LIMIT];
+    char maps[HARMONY_FAULT_WATCH_MAPS_LIMIT];
+    unsigned char copy[HARMONY_FAULT_WATCH_COPY_LIMIT];
+    unsigned char changed[HARMONY_FAULT_WATCH_COPY_LIMIT / 8];
+} harmony_fault_watch;
+
+static void harmony_fault_watch_protect_all(int protection)
+{
+    size_t index;
+
+    for (index = 0; index < harmony_fault_watch.page_count; index++)
+        (void)mprotect((void *)harmony_fault_watch.pages[index],
+                       (size_t)harmony_fault_watch.page_size, protection);
+}
+
+static void harmony_fault_watch_stop(void)
+{
+    if (__atomic_exchange_n(&harmony_fault_watch.active, 0, __ATOMIC_ACQ_REL) != 0)
+        harmony_fault_watch_protect_all(PROT_READ | PROT_WRITE);
+    if (__atomic_exchange_n(&harmony_fault_watch.installed, 0, __ATOMIC_ACQ_REL) != 0)
+        (void)sigaction(SIGSEGV, &harmony_fault_watch.previous, NULL);
+    __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
+}
+
+static void harmony_fault_watch_after_fork(void)
+{
+    harmony_fault_watch_stop();
+}
+
+static int harmony_fault_watch_owned(void)
+{
+    return __atomic_load_n(&harmony_fault_watch.active, __ATOMIC_ACQUIRE) != 0 &&
+           pthread_equal(harmony_fault_watch.owner, pthread_self()) != 0;
+}
+
+static void harmony_fault_watch_add_range(uintptr_t start, uintptr_t end)
+{
+    struct harmony_fault_watch_range *range;
+    size_t size = (size_t)(end - start);
+
+    if (harmony_fault_watch.range_count == HARMONY_FAULT_WATCH_RANGE_LIMIT ||
+        size > HARMONY_FAULT_WATCH_COPY_LIMIT - harmony_fault_watch.copied)
+        return;
+    range = &harmony_fault_watch.ranges[harmony_fault_watch.range_count++];
+    range->start = start;
+    range->size = size;
+    range->copy_at = harmony_fault_watch.copied;
+    memcpy(harmony_fault_watch.copy + range->copy_at, (const void *)start, size);
+    harmony_fault_watch.copied += size;
+}
+
+static int harmony_fault_watch_snapshot(void)
+{
+    int expected = 0;
+    size_t used = 0;
+    char *line;
+    int fd;
+
+    if (harmony_fault_watch_owned())
+        harmony_fault_watch_stop();
+    if (!__atomic_compare_exchange_n(&harmony_fault_watch.claimed, &expected, 1, 0,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+        return 0;
+    harmony_fault_watch.range_count = 0;
+    harmony_fault_watch.copied = 0;
+    if (harmony_fault_watch.page_size == 0) {
+        long size = sysconf(_SC_PAGESIZE);
+
+        if (size > 0)
+            harmony_fault_watch.page_size = (uintptr_t)size;
+    }
+    fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+    if (harmony_fault_watch.page_size == 0 || fd < 0) {
+        if (fd >= 0)
+            (void)close(fd);
+        __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
+        return 0;
+    }
+    while (used + 1 < sizeof(harmony_fault_watch.maps)) {
+        ssize_t got = read(fd, harmony_fault_watch.maps + used,
+                           sizeof(harmony_fault_watch.maps) - 1 - used);
+
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            break;
+        used += (size_t)got;
+    }
+    (void)close(fd);
+    harmony_fault_watch.maps[used] = '\0';
+    line = harmony_fault_watch.maps;
+    for (;;) {
+        char *next = strchr(line, '\n');
+        unsigned long start = 0;
+        unsigned long end = 0;
+        char perms[5];
+
+        if (next == NULL)
+            break;
+        *next = '\0';
+        if (sscanf(line, "%lx-%lx %4s", &start, &end, perms) == 3 &&
+            strcmp(perms, "rw-s") == 0 && end > start)
+            harmony_fault_watch_add_range((uintptr_t)start, (uintptr_t)end);
+        line = next + 1;
+    }
+    if (harmony_fault_watch.range_count == 0) {
+        __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
+        return 0;
+    }
+    return 1;
+}
+
+static int harmony_fault_watch_changed_at(uintptr_t address, size_t width)
+{
+    size_t index;
+
+    for (index = 0; index < harmony_fault_watch.range_count; index++) {
+        const struct harmony_fault_watch_range *range =
+            &harmony_fault_watch.ranges[index];
+        size_t offset;
+
+        if (address < range->start || address >= range->start + range->size)
+            continue;
+        for (offset = (size_t)(address - range->start);
+             offset < range->size && width > 0; offset++, width--) {
+            size_t bit = range->copy_at + offset;
+
+            if ((harmony_fault_watch.changed[bit / 8] >> (bit % 8)) & 1u)
+                return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+static void harmony_fault_watch_access(const void *context, int *write,
+                                       size_t *width)
+{
+    const ucontext_t *ucontext = context;
+
+    *write = 0;
+    *width = HARMONY_FAULT_WATCH_UNKNOWN_WIDTH;
+#if defined(__aarch64__)
+    {
+        const uint32_t esr_magic = UINT32_C(0x45535201);
+        const unsigned char *cursor =
+            (const unsigned char *)&ucontext->uc_mcontext.__reserved;
+        const unsigned char *end =
+            cursor + sizeof(ucontext->uc_mcontext.__reserved);
+
+        while (cursor + 16 <= end) {
+            uint32_t magic;
+            uint32_t size;
+            uint64_t esr;
+            uint64_t class_bits;
+
+            memcpy(&magic, cursor, sizeof(magic));
+            memcpy(&size, cursor + 4, sizeof(size));
+            if (magic == 0 || size < 8 || size > (size_t)(end - cursor))
+                return;
+            if (magic != esr_magic) {
+                cursor += size;
+                continue;
+            }
+            memcpy(&esr, cursor + 8, sizeof(esr));
+            class_bits = (esr >> 26) & UINT64_C(0x3f);
+            if (class_bits == UINT64_C(0x24) || class_bits == UINT64_C(0x25)) {
+                *write = (int)((esr >> 6) & 1u);
+                if (((esr >> 24) & 1u) != 0)
+                    *width = (size_t)1 << ((esr >> 22) & 3u);
+            }
+            return;
+        }
+    }
+#else
+    *write = (ucontext->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+#endif
+}
+
+static void harmony_fault_watch_forward(int signo, siginfo_t *info,
+                                        void *context)
+{
+    struct sigaction previous = harmony_fault_watch.previous;
+
+    if ((previous.sa_flags & SA_SIGINFO) != 0 && previous.sa_sigaction != NULL) {
+        previous.sa_sigaction(signo, info, context);
+        return;
+    }
+    if (previous.sa_handler != SIG_DFL && previous.sa_handler != SIG_IGN &&
+        previous.sa_handler != NULL) {
+        previous.sa_handler(signo);
+        return;
+    }
+    harmony_fault_watch_protect_all(PROT_READ | PROT_WRITE);
+    (void)sigaction(SIGSEGV, &previous, NULL);
+}
+
+static void harmony_fault_watch_fault(int signo, siginfo_t *info,
+                                      void *context)
+{
+    uintptr_t address = (uintptr_t)info->si_addr;
+    uintptr_t page = address & ~(harmony_fault_watch.page_size - 1);
+    size_t index;
+
+    for (index = 0; index < harmony_fault_watch.page_count; index++) {
+        if (harmony_fault_watch.pages[index] != page)
+            continue;
+        if (harmony_fault_watch_owned()) {
+            int write;
+            size_t width;
+
+            harmony_fault_watch_access(context, &write, &width);
+            if (write == 0 && harmony_fault_watch_changed_at(address, width))
+                __atomic_store_n(&harmony_fault_watch.read_changed, 1,
+                                 __ATOMIC_RELAXED);
+            if (harmony_fault_watch.pending_count <
+                HARMONY_FAULT_WATCH_PENDING_LIMIT)
+                harmony_fault_watch
+                    .pending[harmony_fault_watch.pending_count++] = index;
+        } else {
+            __atomic_store_n(&harmony_fault_watch.released[index], 1,
+                             __ATOMIC_RELEASE);
+        }
+        (void)mprotect((void *)page, (size_t)harmony_fault_watch.page_size,
+                       PROT_READ | PROT_WRITE);
+        return;
+    }
+    harmony_fault_watch_forward(signo, info, context);
+}
+
+static void harmony_fault_watch_mark_changes(void)
+{
+    size_t index;
+
+    memset(harmony_fault_watch.changed, 0, (harmony_fault_watch.copied + 7) / 8);
+    harmony_fault_watch.page_count = 0;
+    for (index = 0; index < harmony_fault_watch.range_count; index++) {
+        const struct harmony_fault_watch_range *range =
+            &harmony_fault_watch.ranges[index];
+        const unsigned char *now = (const unsigned char *)range->start;
+        const unsigned char *then = harmony_fault_watch.copy + range->copy_at;
+        size_t page;
+
+        for (page = 0; page < range->size; page += harmony_fault_watch.page_size) {
+            size_t offset;
+            int changed = 0;
+
+            if (memcmp(now + page, then + page, harmony_fault_watch.page_size) == 0)
+                continue;
+            for (offset = page; offset < page + harmony_fault_watch.page_size;
+                 offset++) {
+                size_t bit = range->copy_at + offset;
+
+                if (now[offset] == then[offset])
+                    continue;
+                harmony_fault_watch.changed[bit / 8] = (unsigned char)(
+                    harmony_fault_watch.changed[bit / 8] | (1u << (bit % 8)));
+                changed = 1;
+            }
+            if (changed != 0 &&
+                harmony_fault_watch.page_count < HARMONY_FAULT_WATCH_PAGE_LIMIT)
+                harmony_fault_watch.pages[harmony_fault_watch.page_count++] =
+                    range->start + page;
+        }
+    }
+}
+
+static void harmony_fault_watch_start(uint64_t site)
+{
+    struct sigaction action;
+
+    harmony_fault_watch_mark_changes();
+    if (harmony_fault_watch.page_count == 0) {
+        __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    memset(&action, 0, sizeof(action));
+    action.sa_sigaction = harmony_fault_watch_fault;
+    action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
+    (void)sigemptyset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, &harmony_fault_watch.previous) != 0) {
+        __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    __atomic_store_n(&harmony_fault_watch.installed, 1, __ATOMIC_RELEASE);
+    harmony_fault_watch.owner = pthread_self();
+    harmony_fault_watch.site = site;
+    harmony_fault_watch.edges = 0;
+    harmony_fault_watch.pending_count = 0;
+    memset(harmony_fault_watch.released, 0, harmony_fault_watch.page_count);
+    __atomic_store_n(&harmony_fault_watch.read_changed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&harmony_fault_watch.active, 1, __ATOMIC_RELEASE);
+    harmony_fault_watch_protect_all(PROT_NONE);
+}
+
+static void harmony_fault_watch_edge(void)
+{
+    size_t index;
+
+    if (!harmony_fault_watch_owned())
+        return;
+    harmony_fault_watch.edges++;
+    if (__atomic_load_n(&harmony_fault_watch.read_changed, __ATOMIC_RELAXED) != 0) {
+        uint64_t site = harmony_fault_watch.site;
+        uint64_t edges = harmony_fault_watch.edges;
+
+        harmony_fault_watch_stop();
+        harmony_fault_park_read_report(site, edges);
+        return;
+    }
+    if (harmony_fault_watch.edges >= HARMONY_FAULT_WATCH_EDGES) {
+        harmony_fault_watch_stop();
+        return;
+    }
+    for (index = 0; index < harmony_fault_watch.pending_count; index++) {
+        size_t page = harmony_fault_watch.pending[index];
+
+        if (__atomic_load_n(&harmony_fault_watch.released[page],
+                            __ATOMIC_ACQUIRE) == 0)
+            (void)mprotect((void *)harmony_fault_watch.pages[page],
+                           (size_t)harmony_fault_watch.page_size, PROT_NONE);
+    }
+    harmony_fault_watch.pending_count = 0;
+}
+#else
+static int harmony_fault_watch_snapshot(void)
+{
+    return 0;
+}
+
+static void harmony_fault_watch_start(uint64_t site)
+{
+    (void)site;
+}
+
+static void harmony_fault_watch_edge(void)
+{
+}
+#endif
+
 static void harmony_fault_event_sleep(uint64_t hold_nanos)
 {
     const uint64_t nanos_per_second = UINT64_C(1000000000);
@@ -562,6 +962,7 @@ void harmony_fault_runtime_event(uint64_t site)
     uint32_t park_claimed = 0;
     uint8_t crossed;
 
+    harmony_fault_watch_edge();
     if (pthread_once(&harmony_fault_event_once, harmony_fault_event_init) != 0)
         return;
     if (pthread_mutex_lock(&harmony_fault_events.lock) != 0)
@@ -607,8 +1008,13 @@ void harmony_fault_runtime_event(uint64_t site)
     if (crossed != 0)
         harmony_fault_event_note_crossing(site, crossed);
     if (park_claimed != 0) {
+        int watching;
+
         harmony_fault_park_report(site, park_edges);
+        watching = harmony_fault_watch_snapshot();
         harmony_fault_event_sleep(park_hold_nanos);
+        if (watching != 0)
+            harmony_fault_watch_start(site);
         if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
             harmony_fault_events.park_inflight--;
             if (harmony_fault_events.initialized != 0 &&

@@ -174,6 +174,7 @@ pub struct JsonEvent {
     pub setup_complete: bool,
     pub pid: Option<u64>,
     pub park: Option<ParkReport>,
+    pub park_read: Option<ParkReport>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -188,6 +189,7 @@ struct RawEvent {
     antithesis_setup: Option<serde_json::Value>,
     harmony_attribution: Option<RawAttribution>,
     harmony_park: Option<ParkReport>,
+    harmony_park_read: Option<ParkReport>,
 }
 
 #[derive(Deserialize)]
@@ -276,6 +278,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
             .harmony_attribution
             .and_then(|attribution| attribution.pid),
         park: raw.harmony_park,
+        park_read: raw.harmony_park_read,
     })
 }
 

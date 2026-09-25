@@ -51,6 +51,30 @@ instrumented thread. A park in a module loaded since the last command, or on
 another system, reports its address unchanged. A pending kill takes
 priority over a park on the same edge.
 
+On Linux on x86_64 and arm64, a park also records whether the held thread,
+once released, reads shared memory that another process changed during the
+hold. Before the hold, the runtime copies every `rw-s` mapping listed in
+`/proc/self/maps`, up to 16 mappings and 1 MiB in total. After the hold it
+compares each mapping with its copy and removes all access to the pages that
+changed, up to 256 pages, then installs a `SIGSEGV` handler. When the released
+thread faults on one of those pages, the handler decodes whether the access
+is a read from the fault context. On arm64 the syndrome register also gives
+the access width; an access of unknown width, and every access on x86_64,
+counts as 16 bytes. A read that covers a changed byte marks the watch, and the
+handler restores access to the page so the access completes. The thread's
+next instrumented edge removes access again. If the thread reads a changed
+byte within its first 50 instrumented edges after release, the runtime writes
+`{"harmony_park_read":{"site":S,"edges":N}}` through `fuzz_json_data`, where
+`S` is the park's site and `N` is the edge count at the read. The watch ends at
+that report or at the 50th edge, restoring every page and the previous
+handler. Faults from other threads restore their page and leave it
+unwatched. A fault outside the watched pages goes to the handler that was
+installed before the watch. One park at a time owns the watch; a park that
+lands while another hold or watch is in progress is not watched. A forked
+child ends any watch it inherits. A shared mapping names state that other
+processes can change, so a read of changed bytes right after release marks a
+stop placed between reading and using that state.
+
 Kill rarity is evaluated per instrumentation site. Before each callback the runtime
 uses the site's saturating visit count; rarity `r` is eligible only while that
 count is below `1 << r`, so rarity zero selects a site's first visit and rarity

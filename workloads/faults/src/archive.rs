@@ -306,6 +306,8 @@ pub struct FaultArchiveReport {
     #[serde(default)]
     pub park_sites: BTreeMap<u64, u64>,
     #[serde(default)]
+    pub park_reads: BTreeMap<u64, u64>,
+    #[serde(default)]
     pub park_thresholds: BTreeMap<u32, ParkThresholds>,
 }
 
