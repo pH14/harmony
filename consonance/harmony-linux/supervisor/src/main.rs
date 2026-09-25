@@ -311,7 +311,7 @@ mod runtime {
         }
 
         fn fail(&mut self, _node: u16, tick: u64, detail: &str) {
-            if self.closed.is_none() {
+            if self.closed.is_none() && !self.retired {
                 self.closed = Some((tick, detail.to_owned()));
             }
         }
@@ -1691,6 +1691,24 @@ mod runtime {
             channel.reconcile_closed(0, 2);
             assert!(channel.failed);
             assert!(channel.take_transport_error().is_some());
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_retired_channel_closed_before_the_reap_is_not_an_error() {
+            let (control, child_control) = UnixStream::pair().unwrap();
+            let (report, child_report) = UnixStream::pair().unwrap();
+            let mut channel = EventChannel::new(control, report).unwrap();
+            let mut supervisor = Supervisor::new(1);
+            channel.ready = true;
+            channel.retire(0, &mut supervisor, 1);
+            drop(child_control);
+            drop(child_report);
+            channel.drain_reports(0, &mut supervisor, 1, false);
+            channel.reconcile_closed(0, 2);
+            assert!(!channel.failed);
+            assert!(channel.take_transport_error().is_none());
+            assert_eq!(channel.pending_faults(), 0);
         }
     }
 }

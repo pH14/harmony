@@ -88,7 +88,10 @@ multiple event-kill windows overlap for one node, a reported kill advances the
 supervisor to the next unfired window identity. Outstanding windows, commands,
 arms, and a reported kill awaiting observed child death contribute to the
 pending-fault fence. A protocol failure while work is outstanding marks the
-execution as an infrastructure failure.
+execution as an infrastructure failure. A kill or restart retires the node's
+channel before it signals the process. The killed process can close its
+descriptors before the supervisor reaps it, so a retired channel ignores a
+closed transport.
 
 Each tick, a ready channel with nothing in flight also asks its runtime for
 edge-coverage status. The supervisor adds each node's new bucket crossings and
