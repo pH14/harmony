@@ -340,8 +340,9 @@ pub trait InputPolicy: CampaignTypes {
         run: &Self::Run,
         state: &mut DrawTables<Self::Action>,
         retained: &[(usize, &[Self::Action])],
+        evidence: &Self::Evidence,
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-        let _ = run;
+        let _ = (run, evidence);
         state.finish_record(retained)
     }
     fn remember_draw_version(
@@ -2955,8 +2956,12 @@ where
                     if all_prefixes_archived {
                         let duration_checkpoint_before = duration_draw
                             .and_then(|draw| duration_policies.context_checkpoint(draw.context));
-                        let draw_checkpoint_after =
-                            workload.finish_stream_record(&config.run, draw_state, &[])?;
+                        let draw_checkpoint_after = workload.finish_stream_record(
+                            &config.run,
+                            draw_state,
+                            &[],
+                            &core.evidence,
+                        )?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
                             worker,
                             parent_id,
@@ -3478,7 +3483,7 @@ fn finish_record<G: Workload>(
         .iter()
         .map(|suffix| (0, suffix.as_slice()))
         .collect::<Vec<_>>();
-    workload.finish_stream_record(run, draw_state, &retained)
+    workload.finish_stream_record(run, draw_state, &retained, &core.evidence)
 }
 
 fn recorded_policies<G: Workload>(workload: &G, run: &G::Run) -> WorkloadPolicies {
@@ -3922,8 +3927,12 @@ where
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
-                let draw_checkpoint_after =
-                    workload.finish_stream_record(&replay_run, &mut draw_state, &[])?;
+                let draw_checkpoint_after = workload.finish_stream_record(
+                    &replay_run,
+                    &mut draw_state,
+                    &[],
+                    &core.evidence,
+                )?;
                 if draw_checkpoint_after != skip.draw_checkpoint_after {
                     return Err("replayed skip draw-table checkpoint diverged".into());
                 }

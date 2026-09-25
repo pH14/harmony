@@ -39,7 +39,11 @@ is the only supported representation. Every campaign keeps one, in
 `search::draw_tables`, so a workload gets the biased draw without owning any of
 the bookkeeping. `DrawTables` folds each retained suffix as its record closes,
 publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
-and keeps the table versions a serial replay still needs. Workloads identify
+and keeps the table versions a serial replay still needs. The tables also hold
+workload feedback: weights keyed by `u64` that a workload computes from its
+campaign evidence. Feedback changes only at a table update, enters the table
+hash when nonempty, keeps at most the 4,096 heaviest keys, and reaches each draw
+through `DrawView` with the table version the draw names. Workloads identify
 their input policies and reject unknown or retired identifiers during replay.
 
 Physical executors default to at most one running or completed-but-unadmitted
@@ -110,7 +114,9 @@ cost ceiling, the policy identifiers a recording must match, and
 `sample_alphabet`, which draws one action from the workload's vocabulary. The
 searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
 drawn from the retained-input table, `finish_stream_record` folds the record's
-retained suffixes back into it, and `remember_draw_version` keeps the versions
+retained suffixes back into it and receives the campaign evidence after the
+record's admission, so a workload can pass feedback to
+`DrawTables::finish_record_with_feedback`, and `remember_draw_version` keeps the versions
 a replay still names. A workload that embeds a duration choice in its actions
 overrides `expand_duration_recorded_or_live` and draws through
 `DrawTables::draw` itself. That one method serves the live and replay paths,
