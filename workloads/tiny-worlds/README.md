@@ -292,6 +292,28 @@ Metroid campaigns, climbing out of Kraid's hideout after the kill takes
 0.55–0.72 of the first trip from the hideout entry to Kraid's room. The map
 rule asserts only that the return trip is shorter than the first trip.
 
+## Scale measurements
+
+`scale.py` runs scaled graph campaigns and prints measurements. It is not a CI
+check, writes no files, and each mode runs for minutes to hours:
+
+```sh
+uv run workloads/tiny-worlds/scale.py slowdown --binary before --binary after
+uv run workloads/tiny-worlds/scale.py cores --cost-ns 4500000 --work 6000 --repeats 3
+uv run workloads/tiny-worlds/scale.py memory --workers 2 --work 1000000
+```
+
+Every run uses a 4,194,304-entry archive limit and two reservations per worker.
+The script samples the coordinator thread's CPU time, from `ps -M` on macOS
+and from `/proc` schedstat on Linux, against the executions on the latest
+progress line.
+
+| Mode | Runs | Prints |
+| --- | --- | --- |
+| `slowdown` | One long campaign per `--binary` on a 4,194,304-node graph with 1,024 places, a 16 GiB budget, and no snapshot payload. | Executions per second and coordinator CPU milliseconds per 1,000 executions as active entries grow. |
+| `cores` | The same graph at each of `--workers-list`, with `--work` transitions per worker. | Median executions per second over `--repeats`, speedup over the first count, coordinator busy share, and worker milliseconds per try. |
+| `memory` | `--seeds` campaigns on a 65,536-node graph under `--budget-mib`, plus one control at 16 GiB, with `--snapshot-bytes` payloads. | Whether each run reached the goal, peak logical memory, progress lines over the budget, peak RSS, snapshot evictions, history compactions, and dropped entries. |
+
 ## Checks
 
 ```sh
