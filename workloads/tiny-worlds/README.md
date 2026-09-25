@@ -184,6 +184,35 @@ historical admissions. A `non_upgraded_donor` label describes their recorded
 phase. Job-end work includes replay overhead. The action mixture draws random
 one- or two-action suffixes and supports continuation dispatch.
 
+## Searcher panel
+
+The panel runs the worlds under settings whose outcomes match recorded Metroid
+search behaviour, then checks each outcome's direction:
+
+```sh
+uv run workloads/tiny-worlds/panel.py
+```
+
+It builds the executable, draws every seed at runtime, runs six seeds per arm
+(twelve for the tight-ammunition boss arms) in six processes, and prints one
+PASS or FAIL line per rule. It writes no files. A run takes under a minute on a
+laptop. `--seeds` and `--jobs` change the sample and parallelism; `--binary`
+uses a prebuilt executable.
+
+| Rule | Setting |
+| --- | --- |
+| Boss damage | Delayed boss with tight or ample ammunition; partial progress in the place, as an engaged tier, or as the tier itself. |
+| Credit kept after leaving | Engaged boss with and without `sticky_credit`. |
+| Return trip | Route with the upgrade ranked or unranked. |
+| Unwinnable top rank | Trap world against its control, including the top-tier draw share. |
+| Retention | Two-stage chain under `portfolio` and `capacity_two`; the rule expects equal work. |
+| Backtracking | Backtrack world with items ranked, split by identity, kept as a preference, or hidden. |
+| Chains | Sixteen-stage chains: flat, ranked stages, ranked stages with ranked upgrades, and kept boss credit. |
+
+Each rule records current searcher behaviour. A searcher change that flips a
+rule predicts the same change on Metroid. Thresholds allow about a 1% chance
+that an unchanged searcher fails a rule. The panel is not a CI check.
+
 ## Checks
 
 ```sh
