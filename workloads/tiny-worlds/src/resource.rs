@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::{BTreeSet, VecDeque};
-
 use serde::{Deserialize, Serialize};
 
 const MAX_CONFIG_VALUE: u8 = 31;
@@ -9,7 +7,6 @@ const MAX_CORRIDOR_LEN: u8 = 12;
 const MAX_BARRIER_CHARGE: u8 = 15;
 const MAX_ROUTE_COST: u8 = 15;
 const MAX_HEALTH_COST: u8 = 15;
-const MAX_STATES: usize = 100_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,7 +68,7 @@ impl Config {
             * (usize::from(self.max_charge) + 1)
             * (usize::from(self.initial_health) + 1)
             * 2;
-        if state_bound > MAX_STATES {
+        if state_bound > crate::MAX_REACHABLE_STATES {
             return Err("configuration exceeds the 100000-state oracle bound".to_owned());
         }
         Ok(())
@@ -99,28 +96,23 @@ impl Config {
 
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
+        crate::reachable(
+            self.initial(),
+            |s| self.goal(s),
+            |s, a| self.transition(s, a),
+        )
+    }
 
-        let mut seen = BTreeSet::new();
-        let mut pending = VecDeque::new();
-        let initial = self.initial();
-        seen.insert(initial);
-        pending.push_back(initial);
-
-        while let Some(state) = pending.pop_front() {
-            if self.goal(state) {
-                return Ok(true);
-            }
-            for action in 0..=3 {
-                let next = self.transition(state, action);
-                if seen.insert(next) {
-                    if seen.len() > MAX_STATES {
-                        return Err("reachability search exceeded 100000 states".to_owned());
-                    }
-                    pending.push_back(next);
-                }
-            }
+    pub fn key(&self, state: State, broken: bool) -> crate::Key {
+        crate::Key {
+            stock: 0,
+            place: u16::from(state.place),
+            context: 0,
+            charge: if broken { 0 } else { state.charge },
+            health: state.health,
+            goal: state.goal,
+            tier: 0,
         }
-        Ok(false)
     }
 
     pub(crate) fn state_is_bounded(&self, state: State) -> bool {
@@ -205,7 +197,9 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{BTreeSet, Config, MAX_STATES, State, VecDeque};
+    use super::{Config, State};
+    use crate::MAX_REACHABLE_STATES;
+    use std::collections::{BTreeSet, VecDeque};
 
     fn config() -> Config {
         Config {
@@ -520,7 +514,7 @@ mod tests {
                 let next = config.step(state, action);
                 assert!(config.state_is_bounded(next));
                 if seen.insert(next) {
-                    assert!(seen.len() <= MAX_STATES);
+                    assert!(seen.len() <= MAX_REACHABLE_STATES);
                     pending.push_back(next);
                 }
             }

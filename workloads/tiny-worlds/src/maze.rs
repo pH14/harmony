@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::{BTreeSet, VecDeque};
-
 use serde::{Deserialize, Serialize};
 
 const MAX_LENGTH: u8 = 8;
-const MAX_STATES: usize = 100_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +29,7 @@ impl Config {
             return Err("pattern must be less than 1 << length".to_owned());
         }
         let state_bound = usize::from(self.length + 2) * (usize::from(1u16 << self.length)) * 2;
-        if state_bound > MAX_STATES {
+        if state_bound > crate::MAX_REACHABLE_STATES {
             return Err("configuration exceeds the 100000-state oracle bound".to_owned());
         }
         Ok(())
@@ -99,28 +96,7 @@ impl Config {
 
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
-
-        let mut seen = BTreeSet::new();
-        let mut pending = VecDeque::new();
-        let initial = self.initial();
-        seen.insert(initial);
-        pending.push_back(initial);
-
-        while let Some(state) = pending.pop_front() {
-            if self.goal(state) {
-                return Ok(true);
-            }
-            for action in 0..=3 {
-                let next = self.step(state, action);
-                if seen.insert(next) {
-                    if seen.len() > MAX_STATES {
-                        return Err("reachability search exceeded 100000 states".to_owned());
-                    }
-                    pending.push_back(next);
-                }
-            }
-        }
-        Ok(false)
+        crate::reachable(self.initial(), |s| self.goal(s), |s, a| self.step(s, a))
     }
 
     fn expected_raw_history(&self) -> u16 {

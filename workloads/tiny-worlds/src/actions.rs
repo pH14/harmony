@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::{BTreeSet, VecDeque};
-
 use serde::{Deserialize, Serialize};
-
-const MAX_STATES: usize = 100_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -85,25 +81,7 @@ impl Config {
 
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
-
-        let initial = self.initial();
-        let mut seen = BTreeSet::from([initial]);
-        let mut pending = VecDeque::from([initial]);
-        while let Some(state) = pending.pop_front() {
-            if self.goal(state) {
-                return Ok(true);
-            }
-            for action in 0..=3 {
-                let next = self.step(state, action);
-                if seen.insert(next) {
-                    if seen.len() > MAX_STATES {
-                        return Err("reachability search exceeded 100000 states".to_owned());
-                    }
-                    pending.push_back(next);
-                }
-            }
-        }
-        Ok(false)
+        crate::reachable(self.initial(), |s| self.goal(s), |s, a| self.step(s, a))
     }
 
     pub fn key(&self, state: State, _lossy: bool) -> crate::Key {

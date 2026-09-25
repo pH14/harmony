@@ -195,9 +195,9 @@ uv run workloads/tiny-worlds/panel.py
 ```
 
 It builds the executable, draws every seed at runtime, runs six seeds per arm
-(twelve for the tight-ammunition boss arms) in six processes, and prints one
-PASS or FAIL line per rule. It writes no files. A run takes under a minute on a
-laptop. `--seeds` and `--jobs` change the sample and parallelism; `--binary`
+(twelve for the engaged and level-as-tier tight-ammunition boss arms) in six
+processes, and prints one PASS or FAIL line per rule. It writes no files. A run
+takes about a minute and a half on a laptop. `--seeds` and `--jobs` change the sample and parallelism; `--binary`
 uses a prebuilt executable.
 
 | Rule | Setting |
@@ -205,18 +205,19 @@ uses a prebuilt executable.
 | Boss damage | Delayed boss with tight or ample ammunition; partial progress in the place, as an engaged tier, or as the tier itself. |
 | Credit kept after leaving | Engaged boss with and without `sticky_credit`. |
 | Return trip | Route with the upgrade ranked or unranked. |
-| Unwinnable top rank | Trap world against its control, including the top-tier draw share. |
+| Unwinnable top rank | Trap world against its control, including the top-tier draw share, which follows the selector's tier rank weight. |
 | Retention | Two-stage chain under `portfolio` and `capacity_two`; the rule expects equal work. |
 | Backtracking | Backtrack world with items ranked, split by identity, kept as a preference, or hidden. |
 | Chains | Sixteen-stage chains: flat, ranked stages, ranked stages with ranked upgrades, and kept boss credit. |
 
 Timing rules compare medians in which an unsolved run counts as the work
 budget on the side that must be slower and as unbounded on the side that must
-be faster, so a rule passes only when solved runs establish it. The solve-count
-rules round the required two thirds up. Each rule records current searcher
-behaviour. A searcher change that flips a
-rule predicts the same change on Metroid. Thresholds allow about a 1% chance
-that an unchanged searcher fails a rule. The panel is not a CI check.
+be faster, so a rule passes only when solved runs establish it. Count
+allowances scale with the seed count and round up. Each rule records current
+searcher behaviour. A searcher change that flips a rule predicts the same
+change on Metroid. With six seeds per arm, a rule close to its threshold can
+flip between runs of an unchanged searcher, so rerun a FAIL before attributing
+it to a change. The panel is not a CI check.
 
 ## Checks
 

@@ -15,12 +15,69 @@ use worlds::{State, World};
 
 pub const STAGE_PLACES: u16 = 1024;
 
+type StreamRecord = CampaignStreamRecord<serde_json::Value, serde_json::Value>;
+
+fn stream_records(stream: &[u8]) -> Result<Vec<StreamRecord>, Box<dyn Error>> {
+    let mut lines = stream
+        .split(|&c| c == b'\n')
+        .filter(|line| !line.is_empty())
+        .peekable();
+    if lines.peek().is_some_and(|line| {
+        serde_json::from_slice::<CampaignStreamHeader<serde_json::Value>>(line).is_ok()
+    }) {
+        lines.next();
+    }
+    Ok(lines
+        .map(serde_json::from_slice)
+        .collect::<Result<_, _>>()?)
+}
+
+const MAX_REACHABLE_STATES: usize = 100_000;
+
+fn reachable<S: Copy + Ord>(
+    initial: S,
+    goal: impl Fn(S) -> bool,
+    step: impl Fn(S, u8) -> S,
+) -> Result<bool, String> {
+    let mut seen = std::collections::BTreeSet::from([initial]);
+    let mut pending = std::collections::VecDeque::from([initial]);
+    while let Some(state) = pending.pop_front() {
+        if goal(state) {
+            return Ok(true);
+        }
+        for action in 0..4 {
+            let next = step(state, action);
+            if seen.insert(next) {
+                if seen.len() > MAX_REACHABLE_STATES {
+                    return Err("reachability search exceeded 100000 states".into());
+                }
+                pending.push_back(next);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn pattern_action(pattern: u64, position: u8) -> u8 {
+    ((pattern >> (2 * u32::from(position))) & 3) as u8
+}
+
+fn path_name(path: SelectorPath) -> &'static str {
+    match path {
+        SelectorPath::Continuation => "continuation",
+        SelectorPath::Tiers => "tiers",
+    }
+}
+
 use searcher::search::{
-    archive::{ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, entries_by_suffix},
+    archive::{
+        ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, SelectorPath, entries_by_suffix,
+    },
     campaign::{
-        ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignExecutionOptions,
-        CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting,
-        TargetExecution, WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
+        ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignConfig,
+        CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, CampaignStreamHeader,
+        CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution,
+        WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
     draw::SuffixShape,
@@ -644,40 +701,28 @@ fn campaign<const CAPACITY_TWO: bool>(
         .map(|&(sequence, tier, place)| (sequence, (tier, place)))
         .collect();
     let mut parent_draws =
-        std::collections::BTreeMap::<(bool, String, Option<u64>, u16, u16), u64>::new();
-    let mut skipped_draws = std::collections::BTreeMap::<(bool, String, Option<u64>), u64>::new();
-    for line in stream
-        .0
-        .split(|c| *c == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        let value: serde_json::Value = serde_json::from_slice(line)?;
-        if value["event"] == "skip" {
-            let path = value["selector"]["path"]
-                .as_str()
-                .ok_or("missing selector path")?;
+        std::collections::BTreeMap::<(bool, &str, Option<u8>, u16, u16), u64>::new();
+    let mut skipped_draws = std::collections::BTreeMap::<(bool, &str, Option<u8>), u64>::new();
+    for record in stream_records(&stream.0)? {
+        if let CampaignStreamRecord::Skip(skip) = &record {
             *skipped_draws
                 .entry((
                     first_objective_work.is_none(),
-                    path.to_string(),
-                    value["selector"]["tier_rank"].as_u64(),
+                    path_name(skip.selector.path),
+                    skip.selector.tier_rank,
                 ))
                 .or_default() += 1;
         }
-        if value["event"] == "job" {
-            let job_work = value["execution_work"].as_u64().ok_or("missing work")?;
+        if let CampaignStreamRecord::Job(job) = &record {
+            let job_work = job.execution_work;
             work += job_work;
             last_job_work = job_work;
-            let sequence = value["sequence"].as_u64().ok_or("missing sequence")?;
-            if let Some(&(tier, place)) = parents.get(&sequence) {
-                let path = value["selector"]["path"]
-                    .as_str()
-                    .ok_or("missing selector path")?;
+            if let Some(&(tier, place)) = parents.get(&job.sequence) {
                 *parent_draws
                     .entry((
                         first_objective_work.is_none(),
-                        path.to_string(),
-                        value["selector"]["tier_rank"].as_u64(),
+                        path_name(job.selector.path),
+                        job.selector.tier_rank,
                         tier,
                         place,
                     ))
@@ -685,7 +730,7 @@ fn campaign<const CAPACITY_TWO: bool>(
             } else if job_work != 0 {
                 return Err("job with work has no recorded parent".into());
             }
-            if value["selector"]["path"] == "continuation" {
+            if job.selector.path == SelectorPath::Continuation {
                 continuation_work += job_work;
                 continuation_jobs += 1;
                 if first_objective_work.is_none() {
@@ -693,11 +738,9 @@ fn campaign<const CAPACITY_TWO: bool>(
                     pre_objective_continuation_work += job_work;
                 }
             }
-            if value["decisions"]
-                .as_array()
-                .ok_or("missing decisions")?
-                .iter()
-                .any(|d| d["decision"] == "objective")
+            if job
+                .decisions
+                .contains(&CampaignAdmissionDecision::Objective)
             {
                 first_objective_work.get_or_insert(work);
             }

@@ -2,7 +2,6 @@
 
 use crate::{Key, actions};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -83,23 +82,7 @@ impl Config {
 
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
-        let mut seen = BTreeSet::from([self.initial()]);
-        let mut queue = VecDeque::from([self.initial()]);
-        while let Some(state) = queue.pop_front() {
-            if self.goal(state) {
-                return Ok(true);
-            }
-            for action in 0..4 {
-                let next = self.step(state, action);
-                if seen.insert(next) {
-                    if seen.len() > 100_000 {
-                        return Err("oracle exceeded 100000 states".into());
-                    }
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(false)
+        crate::reachable(self.initial(), |s| self.goal(s), |s, a| self.step(s, a))
     }
 }
 

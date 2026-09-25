@@ -139,15 +139,7 @@ impl World {
         match (self, state) {
             (Self::Route(w), State::Route(s)) => w.key(s),
             (Self::Chain(w), State::Chain(s)) => w.key(s, broken),
-            (Self::Resource(_), State::Resource(s)) => Key {
-                stock: 0,
-                place: u16::from(s.place),
-                context: 0,
-                charge: if broken { 0 } else { s.charge },
-                health: s.health,
-                goal: s.goal,
-                tier: 0,
-            },
+            (Self::Resource(w), State::Resource(s)) => w.key(s, broken),
             (Self::Maze(w), State::Maze(s)) => w.key(s, broken),
             (Self::Actions(w), State::Actions(s)) => w.key(s, broken),
             (Self::Deadline(w), State::Deadline(s)) => w.key(s, broken),

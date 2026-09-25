@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::Key;
+use searcher::search::campaign::{
+    CampaignAdmissionDecision, CampaignSpliceRecord, CampaignStreamRecord,
+};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +47,7 @@ impl Config {
         Ok(())
     }
     pub fn route_action(&self, position: u8) -> u8 {
-        ((self.pattern >> (2 * u32::from(position))) & 3) as u8
+        crate::pattern_action(self.pattern.into(), position)
     }
     pub fn align_action(&self) -> u8 {
         (self.attack + 1) % 4
@@ -112,20 +114,7 @@ impl Config {
     }
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
-        let mut seen = BTreeSet::from([self.initial()]);
-        let mut queue = VecDeque::from([self.initial()]);
-        while let Some(s) = queue.pop_front() {
-            if self.goal(s) {
-                return Ok(true);
-            }
-            for a in 0..4 {
-                let next = self.step(s, a);
-                if seen.insert(next) {
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(false)
+        crate::reachable(self.initial(), |s| self.goal(s), |s, a| self.step(s, a))
     }
 }
 
@@ -149,26 +138,19 @@ pub fn summarize(
     let mut first_alignment = None;
     let mut first_endpoint = None;
     let mut work = 0;
-    for line in stream.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
-        let record: serde_json::Value = serde_json::from_slice(line)?;
-        if record["event"] != "job" {
+    for record in crate::stream_records(stream)? {
+        let CampaignStreamRecord::Job(record) = record else {
             continue;
-        }
-        work += record["execution_work"]
-            .as_u64()
-            .ok_or("missing route work")?;
-        let sequence = record["sequence"]
-            .as_u64()
-            .ok_or("missing route sequence")?;
+        };
+        work += record.execution_work;
+        let sequence = record.sequence;
         let Some(actions) = by_sequence.remove(&sequence) else {
-            if record["execution_work"] != 0 {
+            if record.execution_work != 0 {
                 return Err("route job missing trace".into());
             }
             continue;
         };
-        let decisions = record["decisions"]
-            .as_array()
-            .ok_or("missing route decisions")?;
+        let decisions = &record.decisions;
         if actions
             .iter()
             .map(|a| usize::from(a.candidate) + usize::from(a.objective))
@@ -177,7 +159,7 @@ pub fn summarize(
         {
             return Err("route trace and decisions differ".into());
         }
-        let parent_id = record["parent_id"].as_u64().ok_or("missing route parent")?;
+        let parent_id = record.parent_id;
         if let Some(held) = states.get(&parent_id) {
             if *held != actions[0].before {
                 return Err("route parent state mismatch".into());
@@ -185,17 +167,16 @@ pub fn summarize(
         } else {
             states.insert(parent_id, actions[0].before);
         }
-        let donor = record["splice"]["donor_id"]
-            .as_u64()
-            .and_then(|id| states.get(&id))
-            .copied();
-        let leaf = record["splice"]["leaf_id"]
-            .as_u64()
-            .and_then(|id| states.get(&id))
-            .copied();
-        let path = record["selector"]["path"]
-            .as_str()
-            .ok_or("missing route selector")?;
+        let (donor, leaf) = match record.splice {
+            Some(CampaignSpliceRecord::Tail {
+                donor_id, leaf_id, ..
+            }) => (
+                states.get(&donor_id).copied(),
+                states.get(&leaf_id).copied(),
+            ),
+            _ => (None, None),
+        };
+        let path = crate::path_name(record.selector.path);
         let before_objective = first_objective_path.is_none();
         let upgraded_advance = actions
             .iter()
@@ -241,19 +222,18 @@ pub fn summarize(
                 first_objective_path = Some(path.to_string());
             }
             if a.objective
-                && decisions.next().ok_or("missing objective decision")?["decision"] != "objective"
+                && *decisions.next().ok_or("missing objective decision")?
+                    != CampaignAdmissionDecision::Objective
             {
                 return Err("route objective decision mismatch".into());
             }
             if !a.candidate {
                 continue;
             }
-            let decision = decisions.next().ok_or("missing route admission")?;
-            if decision["decision"] == "retained" {
-                states.insert(
-                    decision["id"].as_u64().ok_or("missing retained route id")?,
-                    a.after,
-                );
+            if let CampaignAdmissionDecision::Retained { id } =
+                decisions.next().ok_or("missing route admission")?
+            {
+                states.insert(*id, a.after);
             }
         }
     }
@@ -384,8 +364,9 @@ mod tests {
             before: w.initial(),
             after: w.step(w.initial(), w.route_action(0)),
         };
-        let mut record = serde_json::json!({"event":"job","sequence":1,"execution_work":1,"parent_id":0,
-            "selector":{"path":"tiers"},"decisions":[]});
+        let mut record = serde_json::json!({"event":"job","sequence":1,"worker":0,"parent_id":0,
+            "mutation_seed":0,"execution_work":1,"result_sha256":"","decisions":[],
+            "mixture_weight":0,"splice_weight":0,"selector":{"path":"tiers"}});
         assert!(
             summarize(
                 std::slice::from_ref(&first),
@@ -430,8 +411,10 @@ mod tests {
             before: w.initial(),
             after: w.initial(),
         };
-        let record = serde_json::json!({"event":"job","sequence":1,"execution_work":1,"parent_id":0,
-            "selector":{"path":"tiers"},"decisions":[{"decision":"retained","id":1}]});
+        let record = serde_json::json!({"event":"job","sequence":1,"worker":0,"parent_id":0,
+            "mutation_seed":0,"execution_work":1,"result_sha256":"",
+            "decisions":[{"decision":"retained","id":1}],
+            "mixture_weight":0,"splice_weight":0,"selector":{"path":"tiers"}});
         assert!(
             summarize(&[trace], &serde_json::to_vec(&record).unwrap(), 6)
                 .unwrap_err()

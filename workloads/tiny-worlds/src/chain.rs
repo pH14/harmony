@@ -5,7 +5,6 @@ use crate::{
     Key, actions, backtrack, deadline, deadline_actions, delayed, maze, resource, route, trap,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
 
 const STAGE_TIERS: u16 = 32;
 
@@ -218,24 +217,7 @@ impl Config {
 
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
-        let initial = self.initial();
-        let mut seen = BTreeSet::from([initial]);
-        let mut queue = VecDeque::from([initial]);
-        while let Some(state) = queue.pop_front() {
-            if self.goal(state) {
-                return Ok(true);
-            }
-            for action in 0..4 {
-                let next = self.step(state, action);
-                if seen.insert(next) {
-                    if seen.len() > 100_000 {
-                        return Err("chain oracle exceeded 100000 states".into());
-                    }
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(false)
+        crate::reachable(self.initial(), |s| self.goal(s), |s, a| self.step(s, a))
     }
 }
 

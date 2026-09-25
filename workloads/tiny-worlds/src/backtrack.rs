@@ -2,7 +2,6 @@
 
 use crate::Key;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
 
 const TAKE: u8 = 3;
 
@@ -52,7 +51,7 @@ impl Config {
         Ok(())
     }
     pub fn route_action(&self, position: u8) -> u8 {
-        ((self.pattern >> (2 * u32::from(position))) & 3) as u8
+        crate::pattern_action(self.pattern, position)
     }
     fn next_barrier(&self, items: u8) -> u8 {
         (items + 1) * self.segment
@@ -124,24 +123,7 @@ impl Config {
     }
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
-        let initial = self.initial();
-        let mut seen = BTreeSet::from([initial]);
-        let mut queue = VecDeque::from([initial]);
-        while let Some(s) = queue.pop_front() {
-            if self.goal(s) {
-                return Ok(true);
-            }
-            for a in 0..4 {
-                let next = self.step(s, a);
-                if seen.insert(next) {
-                    if seen.len() > 100_000 {
-                        return Err("backtrack oracle exceeded 100000 states".into());
-                    }
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(false)
+        crate::reachable(self.initial(), |s| self.goal(s), |s, a| self.step(s, a))
     }
 }
 

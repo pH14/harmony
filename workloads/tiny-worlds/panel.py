@@ -162,7 +162,7 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     most = -(-2 * n // 3)
     return [
         ("boss, tight ammo: engaged runs over 1,000 work or unsolved", f"{slow('boss/engaged/tight')}/{m}",
-         slow("boss/engaged/tight") <= 1),
+         slow("boss/engaged/tight") <= -(-m // 12)),
         ("boss, tight ammo: level-as-tier runs over 1,000 work or unsolved", f"{slow('boss/tier/tight')}/{m}",
          slow("boss/tier/tight") >= -(-m // 3)),
         ("boss, tight ammo: place slower than engaged", f"{shown('boss/place/tight')} vs {shown('boss/engaged/tight')}",

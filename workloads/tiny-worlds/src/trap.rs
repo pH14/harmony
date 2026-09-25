@@ -2,7 +2,6 @@
 
 use crate::Key;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
 
 const ENTER: u8 = 3;
 
@@ -42,7 +41,7 @@ impl Config {
         Ok(())
     }
     pub fn route_action(&self, position: u8) -> u8 {
-        ((self.pattern >> (2 * u32::from(position))) & 3) as u8
+        crate::pattern_action(self.pattern.into(), position)
     }
     pub fn initial(&self) -> State {
         State {
@@ -116,23 +115,7 @@ impl Config {
         }
     }
     fn search(&self, from: State) -> Result<bool, String> {
-        let mut seen = BTreeSet::from([from]);
-        let mut queue = VecDeque::from([from]);
-        while let Some(s) = queue.pop_front() {
-            if self.goal(s) {
-                return Ok(true);
-            }
-            for a in 0..4 {
-                let next = self.step(s, a);
-                if seen.insert(next) {
-                    if seen.len() > 100_000 {
-                        return Err("trap oracle exceeded 100000 states".into());
-                    }
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(false)
+        crate::reachable(from, |s| self.goal(s), |s, a| self.step(s, a))
     }
     pub fn reachable(&self) -> Result<bool, String> {
         if !self.trap_is_dead()? {
@@ -201,7 +184,7 @@ mod tests {
         assert_eq!(w.key(item, false).tier, 1);
         assert_eq!(w.key(item, true).tier, 0);
         assert_eq!(w.key(tape(&w, &[ENTER]), false).tier, 0);
-        let rooms: BTreeSet<_> = (0..4)
+        let rooms: std::collections::BTreeSet<_> = (0..4)
             .map(|a| w.key(w.step(item, a), false).place)
             .collect();
         assert_eq!(rooms.len(), 4);
