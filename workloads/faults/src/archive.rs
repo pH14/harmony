@@ -8,10 +8,12 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use fault_policy::ParkTarget;
 use searcher::search::{
     archive::{
         ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
+    draw_tables::DrawView,
     rand::RomuDuoJrRand,
 };
 
@@ -178,6 +180,7 @@ pub fn sample_action(
     vocabulary: &FaultVocabulary,
     event_ready: u64,
     ticks: NonZeroU16,
+    view: Option<DrawView<'_, FaultAction>>,
 ) -> Result<FaultAction, Box<dyn Error>> {
     let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
@@ -218,18 +221,57 @@ pub fn sample_action(
             rarity: u8::try_from(pick(rand, 64)?)?,
             ticks,
         },
-        _ => FaultAction::EventPark {
-            node: event_node(rand)?,
-            edges: park_edges(rand)?,
-            hold_us: park_hold_us(rand, ticks)?,
-            ticks,
-            target: None,
-        },
+        _ => {
+            let node = event_node(rand)?;
+            let target = match view {
+                Some(view) => park_target(rand, view)?,
+                None => None,
+            };
+            FaultAction::EventPark {
+                node,
+                edges: if target.is_some() {
+                    1
+                } else {
+                    park_edges(rand)?
+                },
+                hold_us: park_hold_us(rand, ticks)?,
+                ticks,
+                target,
+            }
+        }
     };
     Ok(action)
 }
 
 const PARK_EDGE_EXPONENTS: u32 = 14;
+
+const PARK_TARGET_LEVELS: usize = 8;
+
+const PARK_TARGET_RADIUS_SHIFT: u32 = 5;
+
+fn park_target(
+    rand: &mut RomuDuoJrRand,
+    view: DrawView<'_, FaultAction>,
+) -> Result<Option<ParkTarget>, Box<dyn Error>> {
+    if view.feedback.is_empty() || rand.below(NonZeroUsize::MIN.saturating_add(1)) == 0 {
+        return Ok(None);
+    }
+    let Some(site) = view.pick_feedback(rand)? else {
+        return Ok(None);
+    };
+    let level = u32::try_from(
+        rand.below(NonZeroUsize::new(PARK_TARGET_LEVELS).ok_or("empty park target levels")?),
+    )?;
+    let radius = if level == 0 {
+        0
+    } else {
+        1_u64 << (level + PARK_TARGET_RADIUS_SHIFT)
+    };
+    Ok(ParkTarget::new(
+        site.saturating_sub(radius),
+        site.saturating_add(radius).saturating_add(1),
+    ))
+}
 
 fn park_edges(rand: &mut RomuDuoJrRand) -> Result<u32, Box<dyn Error>> {
     let exponent = u32::try_from(
@@ -330,6 +372,10 @@ mod tests {
     use super::*;
     use crate::assertion::{AssertionKind, AssertionOutcome};
     use crate::target::FaultStop;
+    use searcher::search::{
+        draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables},
+        empirical_steps::EmpiricalStepParameters,
+    };
 
     fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservations {
         let mut assertions = Assertions::default();
@@ -578,7 +624,8 @@ mod tests {
             FaultAction::EventPark { .. } => 7,
         };
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &vocabulary, 0, TICKS).expect("draw an action");
+            let action =
+                sample_action(&mut rand, &vocabulary, 0, TICKS, None).expect("draw an action");
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action {
@@ -626,7 +673,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(19);
         let mut events = 0;
         for _ in 0..2000 {
-            match sample_action(&mut rand, &vocabulary, 0b010, TICKS).unwrap() {
+            match sample_action(&mut rand, &vocabulary, 0b010, TICKS, None).unwrap() {
                 FaultAction::EventKill { node, .. } | FaultAction::EventPark { node, .. } => {
                     assert_eq!(node, 1);
                     events += 1;
@@ -634,11 +681,71 @@ mod tests {
                 _ => {}
             }
             assert!(!matches!(
-                sample_action(&mut rand, &vocabulary, 0, TICKS).unwrap(),
+                sample_action(&mut rand, &vocabulary, 0, TICKS, None).unwrap(),
                 FaultAction::EventKill { .. } | FaultAction::EventPark { .. }
             ));
         }
         assert!(events > 0);
+    }
+
+    #[test]
+    fn half_the_parks_aim_at_a_weighted_site_once_feedback_exists() {
+        let vocabulary = FaultVocabulary::new(1, Vec::new())
+            .expect("vocabulary")
+            .with_instrumented_events(true);
+        let mut tables = DrawTables::<FaultAction>::new(EmpiricalStepParameters {
+            update_every_records: 1,
+            ..DEFAULT_DRAW_TABLE_PARAMETERS
+        })
+        .expect("draw tables");
+        let parks = |tables: &DrawTables<FaultAction>| {
+            let mut rand = RomuDuoJrRand::with_seed(31);
+            tables
+                .draw(None, false, |view| {
+                    Ok((0..4_000)
+                        .map(|_| sample_action(&mut rand, &vocabulary, 1, TICKS, Some(view)))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .filter_map(|action| match action {
+                            FaultAction::EventPark { edges, target, .. } => Some((edges, target)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>())
+                })
+                .expect("draw parks")
+        };
+        assert!(parks(&tables).iter().all(|(_, target)| target.is_none()));
+        tables
+            .finish_record_with_feedback(&[], || BTreeMap::from([(0x8000, 1), (0x20, 1)]))
+            .expect("set feedback");
+        let drawn = parks(&tables);
+        let aimed = drawn
+            .iter()
+            .filter_map(|(edges, target)| target.map(|target| (*edges, target)))
+            .collect::<Vec<_>>();
+        assert!(aimed.len() * 3 > drawn.len() && aimed.len() * 3 < drawn.len() * 2);
+        let mut widths = BTreeSet::new();
+        for (edges, target) in aimed {
+            assert_eq!(edges, 1);
+            let width = target.end - target.start;
+            let site = if target.start <= 0x20 && 0x20 < target.end {
+                0x20
+            } else {
+                0x8000
+            };
+            assert!(target.start <= site && site < target.end);
+            if site == 0x8000 {
+                assert_eq!(width % 2, 1);
+                assert_eq!(site - target.start, target.end - 1 - site);
+                widths.insert(width);
+            }
+        }
+        assert_eq!(
+            widths,
+            [1, 129, 257, 513, 1025, 2049, 4097, 8193]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]
@@ -682,7 +789,7 @@ mod tests {
         let mut seen = BTreeSet::new();
         for _ in 0..2_000 {
             if let FaultAction::Kill(node, _) =
-                sample_action(&mut rand, &wide, 0, TICKS).expect("draw")
+                sample_action(&mut rand, &wide, 0, TICKS, None).expect("draw")
             {
                 seen.insert(node);
             }
@@ -695,7 +802,7 @@ mod tests {
         let hookless = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(4);
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &hookless, 0, TICKS).expect("draw");
+            let action = sample_action(&mut rand, &hookless, 0, TICKS, None).expect("draw");
             assert!(!matches!(action, FaultAction::Hook(..)));
         }
     }
@@ -705,7 +812,7 @@ mod tests {
         let draw = |seed| {
             let mut rand = RomuDuoJrRand::with_seed(seed);
             (0..64)
-                .map(|_| sample_action(&mut rand, &vocabulary(), 0, TICKS).expect("draw"))
+                .map(|_| sample_action(&mut rand, &vocabulary(), 0, TICKS, None).expect("draw"))
                 .collect::<Vec<_>>()
         };
         assert_eq!(draw(5), draw(5));

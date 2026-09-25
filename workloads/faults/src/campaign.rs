@@ -407,7 +407,7 @@ impl InputPolicy for FaultWorkload {
         run: &FaultCampaignRun,
         rand: &mut RomuDuoJrRand,
     ) -> Result<FaultAction, Box<dyn Error>> {
-        sample_action(rand, &run.vocabulary, 0, std::num::NonZeroU16::MIN)
+        sample_action(rand, &run.vocabulary, 0, std::num::NonZeroU16::MIN, None)
     }
 
     fn duration_request(
@@ -489,6 +489,32 @@ impl InputPolicy for FaultWorkload {
     ) -> Option<NonZeroU64> {
         NonZeroU64::new(action.ticks())
     }
+
+    fn finish_stream_record(
+        &self,
+        _run: &FaultCampaignRun,
+        state: &mut DrawTables<FaultAction>,
+        retained: &[(usize, &[FaultAction])],
+        evidence: &FaultCampaignEvidence,
+    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+        state.finish_record_with_feedback(retained, || park_feedback(evidence))
+    }
+}
+
+const PARK_FEEDBACK_SCALE: u64 = 1024;
+
+fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
+    evidence
+        .park_reads
+        .iter()
+        .filter(|(_, reads)| **reads > 0)
+        .map(|(site, reads)| {
+            let landings = evidence.park_sites.get(site).copied().unwrap_or(0);
+            let weight = PARK_FEEDBACK_SCALE.saturating_mul(reads.saturating_add(1))
+                / landings.saturating_add(2);
+            (*site, weight.max(1))
+        })
+        .collect()
 }
 
 fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
@@ -525,7 +551,7 @@ fn held_suffix(
                     Ok(biased_step(view, rand)?
                         .filter(|action| event_is_ready(action, event_ready)))
                 },
-                |rand| sample_action(rand, &run.vocabulary, event_ready, ticks),
+                |rand| sample_action(rand, &run.vocabulary, event_ready, ticks, Some(view)),
             )
         })?;
     for action in &mut suffix {
@@ -841,6 +867,20 @@ mod tests {
         assert!(evidence.bugs.is_empty());
         assert_eq!(evidence.aggregate, FaultMilestones::default());
         assert_eq!(evidence.watermark, FaultProgressWatermark::default());
+    }
+
+    #[test]
+    fn park_feedback_is_the_smoothed_read_rate_of_each_read_site() {
+        let evidence = FaultCampaignEvidence {
+            park_sites: BTreeMap::from([(4, 2), (8, 98), (12, 5)]),
+            park_reads: BTreeMap::from([(4, 2), (8, 1), (16, 1)]),
+            ..FaultCampaignEvidence::default()
+        };
+        assert_eq!(
+            park_feedback(&evidence),
+            BTreeMap::from([(4, 768), (8, 20), (16, 1024)])
+        );
+        assert!(park_feedback(&FaultCampaignEvidence::default()).is_empty());
     }
 
     #[test]

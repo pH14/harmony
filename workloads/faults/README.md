@@ -120,6 +120,12 @@ passed is a campaign failure: it appears under `never_satisfied` in both
 `park_sites` in `campaign-summary.json` counts event-park landings by site.
 `park_reads` counts, by landing site, the holds after which the held thread
 read shared memory that another process changed during the hold.
+The campaign turns these counts into draw feedback: each site with a read
+weighs `1024 * (reads + 1) / (landings + 2)`, at least 1, and the weights
+change at each draw-table update. Once any site has a weight, half of the drawn
+parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
+range that is the site alone or the site plus or minus `2^k` bytes for `k` from
+6 through 12, each of the eight widths equally likely.
 `park_thresholds` counts, for each `floor(log2(edges))`, the park actions the
 guest ran at that threshold and the landings at that threshold, so the landings
 per action at each threshold show which part of the drawn range a workload's
