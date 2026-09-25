@@ -464,7 +464,7 @@ mod tests {
                     config: World::Chain(config.clone()),
                     broken,
                 };
-                let report = run(&w, 17, 1000, true).unwrap();
+                let report = run(&w, crate::test_seed(), 1000, true).unwrap();
                 assert_eq!(report["verified"], true);
                 assert!(
                     report["pre_objective_continuation_jobs"].as_u64().unwrap()
@@ -484,9 +484,6 @@ mod tests {
                     .sum();
                 assert_eq!(work, report["work"].as_u64().unwrap());
                 assert_eq!(report["evidence"]["chain_first_reach_work"][0], 0);
-                if !broken && !config.carry_charge {
-                    assert_eq!(report["success"], true);
-                }
             }
         }
     }

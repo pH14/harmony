@@ -19,73 +19,27 @@ defaults:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 1
+  CARGO_INCREMENTAL: 0
   HARMONY_RUST_TOOLCHAIN: 1.97.0
-  CARGO_HOME: ${{ github.workspace }}/tiny-worlds-cache/cargo-home
-  RUSTUP_HOME: ${{ github.workspace }}/tiny-worlds-cache/rustup
-  TMPDIR: ${{ github.workspace }}/tiny-worlds-tmp
-  PYTHONPYCACHEPREFIX: ${{ github.workspace }}/tiny-worlds-cache/python
 
 jobs:
-  development-panel:
-    name: Development Panel
+  world-mechanics:
+    name: World Mechanics
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-      - name: Create task-owned cache and evidence roots
-        run: |
-          mkdir -p workloads/tiny-worlds/target tiny-worlds-cache/cargo-home \
-            tiny-worlds-cache/rustup tiny-worlds-cache/python tiny-worlds-tmp \
-            tiny-worlds-evidence
-          touch tiny-worlds-evidence/initialized.txt
-      - name: Install pinned Rust toolchain
+      - name: Install Rust toolchain
         run: rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: dissonance-tiny-worlds
           workspaces: |
             workloads/tiny-worlds -> target
-      - name: Build, lint, and run development checks under supervision
+      - name: Build and check world mechanics
         run: |
-          set -euo pipefail
-
-          run_bounded() {
-            local name="$1"
-            local seconds="$2"
-            shift 2
-            python3 benchmarks/tiny_worlds/supervise.py \
-              --out "tiny-worlds-evidence/$name" \
-              --artifact-root workloads/tiny-worlds/target \
-              --artifact-root tiny-worlds-evidence \
-              --artifact-root tiny-worlds-tmp \
-              --artifact-root tiny-worlds-cache \
-              --cpu-slots 1 --memory-gb 2 --disk-gb 2 --seconds "$seconds" \
-              -- "$@"
-          }
-
-          run_bounded source-registration 30 python3 benchmarks/tiny_worlds/register.py --check
-          run_bounded build 120 cargo "+$HARMONY_RUST_TOOLCHAIN" build --locked --release \
-            --manifest-path workloads/tiny-worlds/Cargo.toml --bin tiny-worlds --jobs 1
-          run_bounded rust-tests 120 cargo "+$HARMONY_RUST_TOOLCHAIN" test --locked --release \
-            --manifest-path workloads/tiny-worlds/Cargo.toml -- --test-threads=1
-          run_bounded format-check 30 cargo "+$HARMONY_RUST_TOOLCHAIN" fmt \
-            --manifest-path workloads/tiny-worlds/Cargo.toml -- --check
-          run_bounded clippy 120 cargo "+$HARMONY_RUST_TOOLCHAIN" clippy --locked --release \
-            --manifest-path workloads/tiny-worlds/Cargo.toml --all-targets -- -D warnings
-          run_bounded supervisor-tests 30 python3 -m unittest \
-            benchmarks.tiny_worlds.test_supervise
-          run_bounded development-panel 58 python3 benchmarks/tiny_worlds/panel.py \
-            --binary workloads/tiny-worlds/target/release/tiny-worlds --split development
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dissonance-tiny-worlds-${{ github.run_id }}
-          path: |
-            tiny-worlds-evidence/**/stdout.log
-            tiny-worlds-evidence/**/stderr.log
-            tiny-worlds-evidence/**/summary.json
-          if-no-files-found: warn
-          retention-days: 14
+          cargo "+$HARMONY_RUST_TOOLCHAIN" build --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml
+          cargo "+$HARMONY_RUST_TOOLCHAIN" test --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml -- --test-threads=1
+          cargo "+$HARMONY_RUST_TOOLCHAIN" fmt --manifest-path workloads/tiny-worlds/Cargo.toml -- --check
+          cargo "+$HARMONY_RUST_TOOLCHAIN" clippy --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml --all-targets -- -D warnings

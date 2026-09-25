@@ -499,7 +499,7 @@ DISSONANCE_TINY_WORLDS_CHECKS = Workflow(
     owner="Dissonance Workloads",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("Development Panel", "pr", 15, crates=("tiny-worlds",)),
+        Job("World Mechanics", "pr", 15, crates=("tiny-worlds",)),
     ),
 )
 
