@@ -44,8 +44,8 @@ a native one by construction. Such a film is a native QuickNES replay of a tape
 the VM search recorded: `film.json` sets `endpoint_bridged` and leaves
 `evidence_verified` false, and nothing is captured inside the guest.
 
-`--max-frames` bounds the render. A `nova-full` input can hold 8192 actions of
-up to 120 frames each, so an unbounded film would run for hours. Frames past the
+`--max-frames` bounds the render. A `nova-full` input has no length bound and
+each action can hold up to 120 frames, so an unbounded film can run for hours. Frames past the
 ceiling are still emulated and are left out of the video, making the film a
 trailing window ending at the recorded endpoint plus `--tail-frames`. The
 ceiling, the clip policy and the dropped frame count are recorded in `film.json`

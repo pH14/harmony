@@ -158,13 +158,6 @@ impl World {
             _ => panic!("world and state family mismatch"),
         }
     }
-    pub fn action_limit(&self) -> usize {
-        if matches!(self, Self::Chain(_)) {
-            512
-        } else {
-            128
-        }
-    }
     pub fn changes_actions(&self) -> bool {
         matches!(self, Self::Actions(_) | Self::DeadlineActions(_))
     }

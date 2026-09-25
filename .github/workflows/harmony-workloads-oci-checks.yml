@@ -169,7 +169,7 @@ jobs:
               oci-images/pgcic-14.3.oci --backend consonance \
               --kernel consonance/harmony-linux/build/x86_64/bzImage \
               --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-              --seed 1 --workers 1 --executions 4 --actions 4 \
+              --seed 1 --workers 1 --executions 4 \
               --ram-mib 1024 \
               --knobs 'faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=20' \
               --wall-minutes 1 --out pg-check/search \

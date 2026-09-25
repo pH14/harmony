@@ -132,10 +132,6 @@ impl Reporting for TimingWorkload {
 }
 
 impl InputPolicy for TimingWorkload {
-    fn max_action_limit(&self) -> usize {
-        16
-    }
-
     fn max_action_cost(&self) -> u64 {
         64
     }
@@ -404,7 +400,6 @@ fn fixture_config() -> CampaignConfig<TimingWorkload> {
         campaign_seed: 0x51a7_e001,
         workers: 2,
         execution_budget: 64,
-        action_limit: 8,
         host: "fixture".to_owned(),
         wall_budget: None,
         stop_rollout_on_objective: false,
@@ -766,10 +761,8 @@ fn failed_parent_skips_replay_and_preserves_preparation_observations() {
                 context: 0,
                 duration: NonZeroU64::MIN,
             }],
-            1,
             (),
             &[],
-            16,
             RetentionPolicy::Unprobed,
             false,
         )

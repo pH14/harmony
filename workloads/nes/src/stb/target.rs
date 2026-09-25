@@ -1272,10 +1272,8 @@ mod tests {
             let mut target = StbTarget::from_machine(machine).unwrap();
             let result = crate::stb::campaign::execute_suffix(
                 &mut target,
-                0,
                 crate::stb::archive::StbMilestones::default(),
                 &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
-                8,
                 RetentionPolicy::Unprobed,
                 stop_on_objective,
             )

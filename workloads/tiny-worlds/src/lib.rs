@@ -206,9 +206,6 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
     }
 }
 impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
-    fn max_action_limit(&self) -> usize {
-        self.config.action_limit()
-    }
     fn max_action_cost(&self) -> u64 {
         1
     }
@@ -294,10 +291,8 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         target: &mut <Self as CampaignTypes>::Target,
         origin_snapshot: &<Self as CampaignTypes>::Snapshot,
         replay: &[<Self as CampaignTypes>::Action],
-        parent_actions: usize,
         parent_milestones: <Self as CampaignTypes>::Milestones,
         suffix: &[<Self as CampaignTypes>::Action],
-        max_actions: usize,
         retention: RetentionPolicy,
         stop_rollout_on_objective: bool,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
@@ -308,10 +303,8 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
             target,
             origin_snapshot,
             replay,
-            parent_actions,
             parent_milestones,
             suffix,
-            max_actions,
             retention,
             stop_rollout_on_objective,
         )?;
@@ -637,6 +630,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         route_length,
     )?;
     let mut work = 0;
+    let mut last_job_work = 0;
     let mut first_objective_work = None;
     let mut continuation_work = 0;
     let mut continuation_jobs = 0;
@@ -673,6 +667,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         if value["event"] == "job" {
             let job_work = value["execution_work"].as_u64().ok_or("missing work")?;
             work += job_work;
+            last_job_work = job_work;
             let sequence = value["sequence"].as_u64().ok_or("missing sequence")?;
             if let Some(&(tier, place)) = parents.get(&sequence) {
                 let path = value["selector"]["path"]
@@ -723,8 +718,8 @@ fn campaign<const CAPACITY_TWO: bool>(
             serde_json::json!([pre_objective, path, rank, skips])
         })
         .collect();
-    if work > budget + workload.config.action_limit() as u64 - 1 {
-        return Err("one-reservation work overshoot exceeded the action bound".into());
+    if work > budget && work - last_job_work >= budget {
+        return Err("a job started after the work budget was spent".into());
     }
     if work != report.execution_work {
         return Err("independent work accounting mismatch".into());
@@ -763,7 +758,6 @@ fn campaign<const CAPACITY_TWO: bool>(
         "chain_parent_selections":report.archive.evidence.chain_parent_selections,
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
         "chain_selected_charge":report.archive.evidence.chain_selected_charge,
-        "action_limit":workload.config.action_limit(),
         "route_evidence":route_evidence,
         "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
         "pre_objective_continuation_work":pre_objective_continuation_work,
@@ -785,7 +779,6 @@ fn campaign_config<const CAPACITY_TWO: bool>(
         campaign_seed: seed,
         workers: 1,
         execution_budget: budget,
-        action_limit: workload.config.action_limit(),
         host: "tiny-worlds".into(),
         wall_budget: None,
         stop_rollout_on_objective: true,
@@ -1144,7 +1137,7 @@ mod tests {
                 }
                 assert_eq!(archive.active_count(), 1);
                 let (id, _) = archive
-                    .select_parent(&mut RomuDuoJrRand::with_seed(crate::test_seed()), 128)
+                    .select_parent(&mut RomuDuoJrRand::with_seed(crate::test_seed()))
                     .unwrap();
                 let (reports, snapshots) = archive.take_entry_reports_and_snapshots();
                 let snapshot_id = reports[id].id;

@@ -51,7 +51,7 @@ run_search() {
         cd "${work}"
         export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
         export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
-        export SEED=1 WORKERS=1 ACTIONS=4 EXECUTIONS=2 WALL_MINUTES=1
+        export SEED=1 WORKERS=1 EXECUTIONS=2 WALL_MINUTES=1
         export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
         export FAKE_REPORT="${work}/report.json" FAKE_SUMMARY="${work}/summary.json"
         export FAKE_EXIT_STATUS=${exit_status} GITHUB_STEP_SUMMARY="${work}/summary.md"
@@ -79,7 +79,7 @@ if (
     cd "${work}"
     export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
-    export SEED=1 WORKERS=1 ACTIONS=4 EXECUTIONS=2 WALL_MINUTES=1
+    export SEED=1 WORKERS=1 EXECUTIONS=2 WALL_MINUTES=1
     export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
     export FAKE_REPORT="${work}/failure-report.json" FAKE_SUMMARY="${work}/failure-summary.json"
     export FAKE_EXIT_STATUS=0 GITHUB_STEP_SUMMARY="${work}/summary.md"
@@ -97,7 +97,7 @@ if (
     cd "${work}"
     export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
-    export SEED=1 WORKERS=1 ACTIONS=4 EXECUTIONS=2 WALL_MINUTES=1
+    export SEED=1 WORKERS=1 EXECUTIONS=2 WALL_MINUTES=1
     export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
     export FAKE_REPORT="${work}/miss-report.json" FAKE_SUMMARY="${work}/summary.json"
     export FAKE_EXIT_STATUS=0 GITHUB_STEP_SUMMARY="${work}/summary.md"

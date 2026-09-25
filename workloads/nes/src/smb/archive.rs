@@ -32,8 +32,6 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
 const PROGRESS_BAND: u16 = 64;
 const BAND_RANK_SHIFT: u32 = 1;
 
-pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
-
 pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_loop_path_place_screen_x_identity_clock_preference";
 
 pub type SmbRoomIdentity = [u8; 3];

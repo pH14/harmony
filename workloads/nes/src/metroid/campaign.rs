@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     metroid::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_METROID_ACTIONS, MetroidArchiveKey,
-            MetroidArchiveReport, MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
+            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MetroidArchiveKey, MetroidArchiveReport,
+            MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
             MetroidProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
             merge_milestones, merge_progress_watermark, milestone_key, milestones,
             progress_watermark, sample_chord,
@@ -296,7 +296,6 @@ pub struct MetroidCampaignConfig {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
-    pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
     pub continue_after_victory: bool,
@@ -315,7 +314,6 @@ impl MetroidCampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
-            action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             stop_rollout_on_objective: !self.continue_after_victory,
@@ -362,10 +360,8 @@ fn merge_action_milestones(
 fn execute_suffix(
     target: &mut MetroidTarget,
     genesis: (u8, u8),
-    parent_actions: usize,
     parent_milestones: MetroidMilestones,
     suffix: &[ButtonChord],
-    max_actions: usize,
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
 ) -> Result<MetroidCampaignJobResult, Box<dyn Error>> {
@@ -374,7 +370,6 @@ fn execute_suffix(
     }
     let (genesis_items, genesis_tanks) = genesis;
     let mut aggregate = parent_milestones;
-    let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
         objective_reached: target.exit_kind() == ExitKind::Ok && target.is_victory(),
@@ -394,10 +389,6 @@ fn execute_suffix(
         });
     }
     for action in suffix {
-        if length >= max_actions {
-            break;
-        }
-        length = length.saturating_add(1);
         target.apply(action);
         merge_action_milestones(&mut aggregate, target, genesis_items, genesis_tanks);
         let failed = target.exit_kind() != ExitKind::Ok;
@@ -635,10 +626,6 @@ impl Reporting for MetroidGame {
 }
 
 impl InputPolicy for MetroidGame {
-    fn max_action_limit(&self) -> usize {
-        MAX_METROID_ACTIONS
-    }
-
     fn max_action_cost(&self) -> u64 {
         u64::from(crate::metroid::archive::LONGEST_HOLD_FRAMES)
     }
@@ -749,10 +736,8 @@ impl TargetExecution for MetroidGame {
         target: &mut MetroidTarget,
         origin_snapshot: &MetroidSnapshot,
         replay: &[ButtonChord],
-        parent_actions: usize,
         parent_milestones: MetroidMilestones,
         suffix: &[ButtonChord],
-        max_actions: usize,
         retention: RetentionPolicy,
         stop_rollout_on_objective: bool,
     ) -> Result<MetroidCampaignJobResult, Box<dyn Error>> {
@@ -766,10 +751,8 @@ impl TargetExecution for MetroidGame {
         execute_suffix(
             target,
             target.genesis_holdings(),
-            parent_actions,
             parent_milestones,
             suffix,
-            max_actions,
             retention,
             stop_rollout_on_objective,
         )

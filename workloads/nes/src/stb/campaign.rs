@@ -27,9 +27,9 @@ use crate::{
     },
     stb::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_STB_ACTIONS, REPLACEMENT_IDENTIFIER,
-            StbArchiveKey, StbArchiveReport, StbChampionKey, StbMilestoneInputs, StbMilestoneTimes,
-            StbMilestones, StbProgressWatermark, archive_key, chord_time, merge_milestones,
+            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, StbArchiveKey,
+            StbArchiveReport, StbChampionKey, StbMilestoneInputs, StbMilestoneTimes, StbMilestones,
+            StbProgressWatermark, archive_key, chord_time, merge_milestones,
             merge_progress_watermark, milestone_key, milestones_from_observation, sample_chord,
         },
         target::{
@@ -172,7 +172,6 @@ pub struct StbCampaignConfig {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
-    pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
     pub continue_after_victory: bool,
@@ -191,7 +190,6 @@ impl StbCampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
-            action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             stop_rollout_on_objective: !self.continue_after_victory,
@@ -232,15 +230,12 @@ fn merge_action_milestones<M: Machine>(
 
 pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
     target: &mut StbTarget<M>,
-    parent_actions: usize,
     parent_milestones: StbMilestones,
     suffix: &[ButtonChord],
-    max_actions: usize,
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
 ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
-    let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
         objective_reached: target.exit_kind() == ExitKind::Ok && target.player_a_won(),
@@ -260,10 +255,6 @@ pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
         });
     }
     for action in suffix {
-        if length >= max_actions {
-            break;
-        }
-        length = length.saturating_add(1);
         let action_start_frame = target.observe().frame_count;
         target.apply(action);
         merge_action_milestones(&mut aggregate, target)?;
@@ -424,10 +415,6 @@ impl Reporting for StbGame {
 }
 
 impl InputPolicy for StbGame {
-    fn max_action_limit(&self) -> usize {
-        MAX_STB_ACTIONS
-    }
-
     fn max_action_cost(&self) -> u64 {
         u64::from(crate::stb::archive::LONGEST_HOLD_FRAMES)
     }
@@ -534,10 +521,8 @@ impl TargetExecution for StbGame {
         target: &mut StbTarget,
         origin_snapshot: &StbSnapshot,
         replay: &[ButtonChord],
-        parent_actions: usize,
         parent_milestones: StbMilestones,
         suffix: &[ButtonChord],
-        max_actions: usize,
         retention: RetentionPolicy,
         stop_rollout_on_objective: bool,
     ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
@@ -547,10 +532,8 @@ impl TargetExecution for StbGame {
         }
         execute_suffix(
             target,
-            parent_actions,
             parent_milestones,
             suffix,
-            max_actions,
             retention,
             stop_rollout_on_objective,
         )

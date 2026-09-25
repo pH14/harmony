@@ -14,7 +14,6 @@
   ],
   "search": {
     "executions": 3000000,
-    "actions": 4096,
     "window": 2,
     "result_slots": 2,
     "wall_seconds": 7200,

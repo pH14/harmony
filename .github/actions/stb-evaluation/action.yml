@@ -68,7 +68,7 @@ runs:
           --rom "${STB_BUILD}/stb.nes" \
           --output "${STB_ARTIFACT}" \
           --ai "${STB_AI}" --seed "${STB_SEED}" --executions "${STB_EXECUTIONS}" \
-          --workers "${STB_WORKERS}" --action-limit 512 \
+          --workers "${STB_WORKERS}" \
           "${stop_flags[@]}")
         if [[ -n "${STB_WALL_SECONDS:-}" ]]; then
           timeout -k 10 "${STB_WALL_SECONDS}" "${search_command[@]}"

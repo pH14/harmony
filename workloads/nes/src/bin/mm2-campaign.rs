@@ -36,7 +36,6 @@ struct Args {
     seed: u64,
     executions: u64,
     workers: u32,
-    action_limit: usize,
     stage: Mm2Stage,
     marketing_soak: bool,
     fixed_execution_soak: bool,
@@ -67,7 +66,6 @@ impl Args {
         let mut seed = 1_u64;
         let mut executions = 4_000_u64;
         let mut workers = 2_u32;
-        let mut action_limit = 4096_usize;
         let mut stage = Mm2Stage::default();
         let mut marketing_soak = false;
         let mut fixed_execution_soak = false;
@@ -95,7 +93,6 @@ impl Args {
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
-                "--action-limit" => action_limit = parse_number("action-limit", value)?,
                 "--stage" => {
                     stage =
                         Mm2Stage::parse(&value.into_string().map_err(|_| "stage is not UTF-8")?)?;
@@ -124,7 +121,6 @@ impl Args {
             seed,
             executions,
             workers,
-            action_limit,
             stage,
             marketing_soak,
             fixed_execution_soak,
@@ -172,7 +168,6 @@ fn campaign_config(args: &Args) -> Mm2CampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,
         execution_budget: args.executions,
-        action_limit: args.action_limit,
         host: args.host.clone(),
         wall_budget: None,
         continue_after_victory: args.fixed_execution_soak,

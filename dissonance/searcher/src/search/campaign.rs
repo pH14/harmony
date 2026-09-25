@@ -35,7 +35,7 @@ use crate::search::duration::{
 };
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
-pub const SPLICE_ACTION_CAP: usize = 128;
+pub const LONGEST_SPLICE_TAIL: usize = 128;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 
@@ -49,7 +49,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 7;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 8;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -189,7 +189,6 @@ pub trait Reporting: CampaignTypes {
 }
 
 pub trait InputPolicy: CampaignTypes {
-    fn max_action_limit(&self) -> usize;
     fn max_action_cost(&self) -> u64;
     fn policies(&self, run: &Self::Run) -> WorkloadPolicies;
     fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>>;
@@ -203,8 +202,8 @@ pub trait InputPolicy: CampaignTypes {
         let _ = run;
         DEFAULT_DRAW_TABLE_PARAMETERS
     }
-    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize {
-        let _ = (run, max_actions);
+    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run) -> usize {
+        let _ = run;
         DrawTables::<Self::Action>::memory_reserve_bytes()
     }
     fn draw_state_memory_bytes(&self, state: &DrawTables<Self::Action>) -> usize {
@@ -390,10 +389,8 @@ pub trait TargetExecution: CampaignTypes {
         target: &mut Self::Target,
         origin_snapshot: &Self::Snapshot,
         replay: &[Self::Action],
-        parent_actions: usize,
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
-        max_actions: usize,
         retention: RetentionPolicy,
         stop_rollout_on_objective: bool,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
@@ -406,10 +403,8 @@ pub trait TargetExecution: CampaignTypes {
             target,
             origin_snapshot,
             replay,
-            parent_actions,
             parent_milestones,
             suffix,
-            max_actions,
             retention,
             stop_rollout_on_objective,
         )
@@ -557,7 +552,6 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
-    pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<Duration>,
     pub stop_rollout_on_objective: bool,
@@ -598,7 +592,6 @@ pub struct CampaignStreamHeader<T> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_budget: Option<u64>,
     pub wall_budget_seconds: Option<u64>,
-    pub action_limit: usize,
     pub archive_entry_limit: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_budget_mib: Option<usize>,
@@ -745,7 +738,6 @@ pub struct CampaignModeReport<A: Ord, R> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executions_to_first_objective: Option<u64>,
     pub wall_budget_seconds: Option<u64>,
-    pub action_limit: usize,
     pub archive_entry_limit: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_budget_mib: Option<usize>,
@@ -813,7 +805,6 @@ pub struct TreeImportCounts {
     pub duplicate: u64,
     pub rejected: u64,
     pub terminal: u64,
-    pub over_limit: u64,
     pub rerooted: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub checkpointed: u64,
@@ -857,7 +848,6 @@ fn take_continuation<G: Workload + ?Sized>(
     action_cost: fn(&G::Action) -> u64,
     max_action_cost: u64,
 ) -> Option<ContinuationReservation<G>> {
-    let max_actions = core.max_actions;
     let mut examined = 0_usize;
     let mut gaining_fallback = None;
     while examined < CONTINUATION_EXITS_PER_RESERVATION
@@ -867,9 +857,7 @@ fn take_continuation<G: Workload + ?Sized>(
         let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
             continue;
         };
-        if !core.archive.active[parent_index]
-            || core.archive.entries[parent_index].input_len >= max_actions
-        {
+        if !core.archive.active[parent_index] {
             continue;
         }
         let outranks = core.archive.outranks_slot_holders(
@@ -1239,7 +1227,6 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     pub(crate) objective_witness: Option<Input<G::Action>>,
     sequence: u64,
     probe_refused: u64,
-    max_actions: usize,
     pub(crate) mixture_energy: MixtureEnergy,
 }
 
@@ -1247,7 +1234,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     pub(crate) fn new(
         workload: &G,
         run: &G::Run,
-        max_actions: usize,
         archive_entry_limit: usize,
         memory_budget_mib: Option<usize>,
     ) -> Self {
@@ -1256,7 +1242,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
             let draw_reserve = workload
-                .draw_state_memory_reserve_bytes(run, max_actions)
+                .draw_state_memory_reserve_bytes(run)
                 .saturating_add(DurationPolicies::<G::Key>::memory_reserve_bytes());
             archive.set_memory_budget(
                 total.saturating_sub(draw_reserve),
@@ -1277,7 +1263,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             objective_witness: None,
             sequence: 0,
             probe_refused: 0,
-            max_actions,
             mixture_energy: MixtureEnergy::default(),
         }
     }
@@ -1400,11 +1385,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             index_of.insert(entry.id, index);
             if entry.input.actions.is_empty() {
                 imported.push(Some(genesis_id));
-                continue;
-            }
-            if entry.input.actions.len() > self.max_actions {
-                counts.over_limit = counts.over_limit.saturating_add(1);
-                imported.push(None);
                 continue;
             }
             let mut ancestor = entry.parent_id;
@@ -1693,15 +1673,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     }
 
     fn all_prefixes_archived(&self, parent_index: usize, suffix: &[G::Action]) -> bool {
-        let parent_actions = self.archive.entries[parent_index].input_len;
-        let executable = suffix
-            .len()
-            .min(self.max_actions.saturating_sub(parent_actions));
-        if executable == 0 {
-            return false;
-        }
-        self.archive
-            .all_extensions_retained(parent_index, &suffix[..executable])
+        !suffix.is_empty() && self.archive.all_extensions_retained(parent_index, suffix)
     }
 
     pub(crate) fn into_archive_report_and_snapshots(
@@ -1825,7 +1797,6 @@ fn stream_header<G: Workload>(
         stop_campaign_on_objective: config.stop_campaign_on_objective,
         work_budget: None,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
-        action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
         memory_budget_mib: config.memory_budget_mib,
         resume_policy: if origin.kind == ORIGIN_SNAPSHOT_ROOT {
@@ -2200,7 +2171,6 @@ fn build_report<G: Workload>(
         executions_completed,
         executions_to_first_objective: counters.executions_to_first_objective,
         wall_budget_seconds: header.wall_budget_seconds,
-        action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
         memory_budget_mib: header.memory_budget_mib,
         resume_policy: header.resume_policy.clone(),
@@ -2287,7 +2257,6 @@ struct JobSpec<G: Workload + ?Sized> {
     reservation: usize,
     snapshot: Arc<G::Snapshot>,
     replay: Vec<G::Action>,
-    parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
 }
@@ -2339,7 +2308,7 @@ fn replay_splice<G: CampaignTypes>(
         Some(CampaignSpliceRecord::Unavailable) => Ok(None),
         Some(CampaignSpliceRecord::Tail { tail_postcard, .. }) => {
             let tail: Vec<G::Action> = postcard::from_bytes(&tail_postcard)?;
-            if tail.is_empty() || tail.len() > SPLICE_ACTION_CAP {
+            if tail.is_empty() || tail.len() > LONGEST_SPLICE_TAIL {
                 return Err("recorded splice tail length is outside the bound".into());
             }
             Ok(Some(tail))
@@ -2598,9 +2567,6 @@ where
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
     }
-    if config.action_limit == 0 || config.action_limit > workload.max_action_limit() {
-        return Err("campaign action limit is outside its bounded range".into());
-    }
     if !archive_entry_limit_is_valid(config.archive_entry_limit) {
         return Err("campaign archive entry limit is outside its bounded range".into());
     }
@@ -2614,7 +2580,7 @@ where
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
         if budget
             <= workload
-                .draw_state_memory_reserve_bytes(&config.run, config.action_limit)
+                .draw_state_memory_reserve_bytes(&config.run)
                 .saturating_add(duration_memory_reserve)
         {
             return Err("campaign memory budget is too small for the bounded draw state".into());
@@ -2634,7 +2600,7 @@ where
     let mut duration_policies = DurationPolicies::<G::Key>::new();
     if !memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
-        workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+        workload.draw_state_memory_reserve_bytes(&config.run),
     ) {
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
@@ -2646,12 +2612,11 @@ where
     let mut core = CoordinatorCore::new(
         workload,
         &config.run,
-        config.action_limit,
         config.archive_entry_limit,
         config.memory_budget_mib,
     );
     core.archive
-        .enable_continuations(config.suffix.max_actions());
+        .enable_continuations(config.suffix.longest_draw());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -2684,7 +2649,7 @@ where
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
         return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
     }
-    core.archive.prepare_selection(core.max_actions);
+    core.archive.prepare_selection();
 
     let workers = config.workers as usize;
     let mut rands = Vec::with_capacity(workers);
@@ -2705,7 +2670,6 @@ where
     let action_cost = workload.action_cost_fn();
     let max_action_cost = workload.max_action_cost();
 
-    let max_actions = config.action_limit;
     let retention = config.retention;
     with_worker_pool(
         config.workers,
@@ -2719,10 +2683,8 @@ where
                     target,
                     &spec.snapshot,
                     &spec.replay,
-                    spec.parent_actions,
                     spec.parent_milestones,
                     &spec.suffix,
-                    max_actions,
                     retention,
                     config.stop_rollout_on_objective,
                 )
@@ -2769,7 +2731,6 @@ where
                     return Ok(None);
                 }
                 let rand = &mut rands[worker as usize];
-                let max_actions = core.max_actions;
                 let mut consecutive_skips = 0_u64;
                 let (continuation_energy, continuation) = continuation_attempt(
                     core,
@@ -2810,7 +2771,6 @@ where
                             reservation: 0,
                             snapshot,
                             replay,
-                            parent_actions: entry.input_len,
                             parent_milestones: entry.milestones,
                             suffix,
                         },
@@ -2838,7 +2798,7 @@ where
                     )));
                 }
                 loop {
-                    let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
+                    let (parent_index, selector) = core.archive.select_parent(rand)?;
                     let parent_id = core
                         .archive
                         .stable_id(parent_index)
@@ -2858,11 +2818,10 @@ where
                         if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
                             == EnergyStrategy::Splice
                         {
-                            match core.archive.splice_tail_for_campaign(
-                                parent_index,
-                                max_actions,
-                                SPLICE_ACTION_CAP,
-                            ) {
+                            match core
+                                .archive
+                                .splice_tail_for_campaign(parent_index, LONGEST_SPLICE_TAIL)
+                            {
                                 Some(CampaignSpliceTail {
                                     donor_id,
                                     leaf_id,
@@ -2976,7 +2935,7 @@ where
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
                         core.archive.maintain_memory_budget()?;
-                        core.archive.prepare_selection(max_actions);
+                        core.archive.prepare_selection();
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                         counters.skips_per_worker[worker as usize] =
                             counters.skips_per_worker[worker as usize].saturating_add(1);
@@ -2993,7 +2952,6 @@ where
                             reservation: 0,
                             snapshot,
                             replay,
-                            parent_actions: entry.input_len,
                             parent_milestones: entry.milestones,
                             suffix,
                         },
@@ -3229,7 +3187,7 @@ where
                     let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
                     if !memory_is_within_reserve(
                         draw_state_memory_bytes,
-                        workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+                        workload.draw_state_memory_reserve_bytes(&config.run),
                     ) {
                         return Err(
                             "live draw state exceeds its deterministic memory reserve".into()
@@ -3248,7 +3206,7 @@ where
                     let compaction_started = profile_now(coordinator_profile.enabled);
                     let compactions_before = core.archive.history_compactions();
                     core.archive.maintain_memory_budget()?;
-                    core.archive.prepare_selection(core.max_actions);
+                    core.archive.prepare_selection();
                     record_compaction_elapsed(
                         &mut coordinator_profile,
                         compactions_before,
@@ -3691,7 +3649,7 @@ where
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
         if budget
             <= workload
-                .draw_state_memory_reserve_bytes(&replay_run, header.action_limit)
+                .draw_state_memory_reserve_bytes(&replay_run)
                 .saturating_add(duration_memory_reserve)
         {
             return Err("recorded memory budget is too small for the bounded draw state".into());
@@ -3699,7 +3657,7 @@ where
     }
     if !memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
-        workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
+        workload.draw_state_memory_reserve_bytes(&replay_run),
     ) {
         return Err("replay draw state exceeds its deterministic memory reserve".into());
     }
@@ -3710,14 +3668,13 @@ where
     let mut core = CoordinatorCore::new(
         workload,
         &replay_run,
-        header.action_limit,
         header.archive_entry_limit,
         header.memory_budget_mib,
     );
     core.record_progress = true;
     core.bounded_progress_curve = true;
     core.archive
-        .enable_continuations(replay_suffix.max_actions());
+        .enable_continuations(replay_suffix.longest_draw());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3765,7 +3722,7 @@ where
         );
     }
 
-    core.archive.prepare_selection(core.max_actions);
+    core.archive.prepare_selection();
 
     let replay_window_depth = admission_window_depth(
         usize::try_from(header.workers)?,
@@ -3918,7 +3875,7 @@ where
                 verify_selector_annotation(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
-                core.archive.prepare_selection(core.max_actions);
+                core.archive.prepare_selection();
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
@@ -3961,7 +3918,7 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let ((snapshot, replay, snapshot_id), parent_actions, parent_milestones) = {
+                let ((snapshot, replay, snapshot_id), parent_milestones) = {
                     let entry = core
                         .archive
                         .entries
@@ -3971,7 +3928,6 @@ where
                         replay_job_snapshots
                             .remove(&replay_job_slot)
                             .ok_or("recorded job has no replayed in-flight snapshot")?,
-                        entry.input_len,
                         entry.milestones,
                     )
                 };
@@ -4058,10 +4014,8 @@ where
                     &mut target,
                     &snapshot,
                     &replay,
-                    parent_actions,
                     parent_milestones,
                     &suffix,
-                    header.action_limit,
                     replay_retention,
                     header.stop_rollout_on_objective,
                 )?;
@@ -4152,7 +4106,7 @@ where
                 let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
                 if !memory_is_within_reserve(
                     draw_state_memory_bytes,
-                    workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
+                    workload.draw_state_memory_reserve_bytes(&replay_run),
                 ) {
                     return Err("replay draw state exceeds its deterministic memory reserve".into());
                 }
@@ -4192,7 +4146,7 @@ where
                 core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(job.parent_id);
                 core.archive.maintain_memory_budget()?;
-                core.archive.prepare_selection(core.max_actions);
+                core.archive.prepare_selection();
                 for metadata_id in &replay_job_metadata[replay_job_slot] {
                     if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
                         *uses = uses.saturating_sub(1);
@@ -4294,17 +4248,18 @@ mod tests {
         CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
         CampaignTypes, ContinuationAccounting, CoordinatorCore,
         DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DrawTables, DurationAdmission,
-        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, SnapshotCheckpoint,
-        SnapshotCheckpointEntry, TargetExecution, WorkloadPolicies, admission_window_depth,
-        archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
-        draws_continuation, draws_highest_preference, execution_work_delta, finish_record,
-        is_zero_usize, live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256,
-        profile_elapsed, profile_now, progress_checkpoint_due, progress_policy_is_supported,
-        record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
-        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        run_campaign_checkpointed, schedule_policy_identifier, schedule_policy_is_supported,
-        schedule_policy_window, stop_reservations_after_objective,
+        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
+        LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand,
+        SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution, WorkloadPolicies,
+        admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
+        completed_results_within_bound, draws_continuation, draws_highest_preference,
+        execution_work_delta, finish_record, is_zero_usize, live_coordinator_profile,
+        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, profile_now,
+        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
+        record_mixture_outcome, replay_campaign_checkpointed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
+        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
+        stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -4476,10 +4431,6 @@ mod tests {
             mutation_seed: u64,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
             self.expand_suffix(run, state, shape, mixture, mutation_seed)
-        }
-
-        fn max_action_limit(&self) -> usize {
-            64
         }
 
         fn max_action_cost(&self) -> u64 {
@@ -4705,7 +4656,7 @@ mod tests {
             bootstrap_objective: false,
         };
         let run = ();
-        let mut core = CoordinatorCore::new(&workload, &run, 16, 1_024, None);
+        let mut core = CoordinatorCore::new(&workload, &run, 1_024, None);
         let mut target = TestTarget::default();
         core.bootstrap(&workload, &run, &mut target)
             .expect("bootstrap generic core");
@@ -4719,10 +4670,8 @@ mod tests {
         rollout.initial_terminal = true;
         let result = execute_suffix(
             &mut rollout,
-            0,
             (),
             &[TestAction::new(1, 1)],
-            8,
             RetentionPolicy::Unprobed,
             false,
         )
@@ -4736,10 +4685,8 @@ mod tests {
         failed.failed_after = Some(0);
         let result = execute_suffix(
             &mut failed,
-            0,
             (),
             &[TestAction::new(1, 1)],
-            8,
             RetentionPolicy::Unprobed,
             false,
         )
@@ -4749,24 +4696,22 @@ mod tests {
     }
 
     #[test]
-    fn rollout_honors_limits_and_restores_after_each_probe() {
+    fn rollout_runs_every_suffix_action_and_restores_after_each_probe() {
         let mut target = TestTarget::default();
         let mut rollout = TestRollout::new(&mut target);
         let result = execute_suffix(
             &mut rollout,
-            1,
             (),
             &[
                 TestAction::new(1, 1),
                 TestAction::new(2, 1),
                 TestAction::new(4, 1),
             ],
-            3,
             RetentionPolicy::ProbeAtAdmission,
             false,
         )
-        .expect("bounded rollout");
-        assert_eq!(result.actions.len(), 2);
+        .expect("rollout");
+        assert_eq!(result.actions.len(), 3);
         assert_eq!(
             result.actions[0].candidate.as_ref().map(|c| c.key),
             Some(TestKey(1))
@@ -4775,8 +4720,12 @@ mod tests {
             result.actions[1].candidate.as_ref().map(|c| c.key),
             Some(TestKey(3))
         );
-        assert_eq!(rollout.probe_calls, vec![1, 3]);
-        assert_eq!(rollout.target.value, 3, "probe restores the live target");
+        assert_eq!(
+            result.actions[2].candidate.as_ref().map(|c| c.key),
+            Some(TestKey(7))
+        );
+        assert_eq!(rollout.probe_calls, vec![1, 3, 7]);
+        assert_eq!(rollout.target.value, 7, "probe restores the live target");
     }
 
     #[test]
@@ -4787,14 +4736,12 @@ mod tests {
         rollout.objective_after = Some(2);
         let result = execute_suffix(
             &mut rollout,
-            0,
             (),
             &[
                 TestAction::new(1, 1),
                 TestAction::new(1, 1),
                 TestAction::new(1, 1),
             ],
-            8,
             RetentionPolicy::Unprobed,
             false,
         )
@@ -4809,10 +4756,8 @@ mod tests {
         assert!(
             execute_suffix(
                 &mut apply_failure,
-                0,
                 (),
                 &[TestAction::new(1, 1)],
-                8,
                 RetentionPolicy::Unprobed,
                 false,
             )
@@ -4825,10 +4770,8 @@ mod tests {
         assert!(
             execute_suffix(
                 &mut probe_failure,
-                0,
                 (),
                 &[TestAction::new(1, 1)],
-                8,
                 RetentionPolicy::ProbeAtAdmission,
                 false,
             )
@@ -4843,10 +4786,8 @@ mod tests {
         rollout.objective_after = Some(1);
         let result = execute_suffix(
             &mut rollout,
-            0,
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
-            8,
             RetentionPolicy::Unprobed,
             true,
         )
@@ -4870,10 +4811,8 @@ mod tests {
         continuation.objective_after = Some(1);
         let result = execute_suffix(
             &mut continuation,
-            1,
             (),
             &[TestAction::new(1, 1)],
-            8,
             RetentionPolicy::Unprobed,
             true,
         )
@@ -4893,10 +4832,8 @@ mod tests {
         terminal.terminal_after = Some(1);
         let result = execute_suffix(
             &mut terminal,
-            0,
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
-            8,
             RetentionPolicy::Unprobed,
             false,
         )
@@ -4914,10 +4851,8 @@ mod tests {
         failed.failed_after = Some(1);
         let result = execute_suffix(
             &mut failed,
-            0,
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
-            8,
             RetentionPolicy::Unprobed,
             false,
         )
@@ -5029,7 +4964,7 @@ mod tests {
             bootstrap_objective: true,
         };
         let run = ();
-        let mut core = CoordinatorCore::new(&workload, &run, 16, 1_024, None);
+        let mut core = CoordinatorCore::new(&workload, &run, 1_024, None);
         let mut target = TestTarget::default();
         core.bootstrap(&workload, &run, &mut target)
             .expect("bootstrap root");
@@ -5050,7 +4985,6 @@ mod tests {
                 campaign_seed: 7,
                 workers: 1,
                 execution_budget: 1,
-                action_limit: 8,
                 host: "test".to_owned(),
                 wall_budget: None,
                 stop_rollout_on_objective,
@@ -5101,11 +5035,11 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":7,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":8,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
-"action_limit":64,"archive_entry_limit":128,"action_vocabulary":"test_inputs",
+"archive_entry_limit":128,"action_vocabulary":"test_inputs",
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
@@ -5435,10 +5369,9 @@ mod tests {
                 entry(2, Some(1), vec![action(0x01), action(0x02)]),
                 entry(3, Some(1), vec![action(0x01), action(0x80)]),
                 entry(9, Some(7), vec![action(0x01), action(0x02), action(0x40)]),
-                entry(10, Some(2), vec![action(0x01); 5]),
             ],
         };
-        let mut core = CoordinatorCore::new(&workload, &run, 4, 32_768, None);
+        let mut core = CoordinatorCore::new(&workload, &run, 32_768, None);
         let suffix_json = serde_json::to_string(&source).expect("serialize source archive");
         assert!(suffix_json.contains("\"input_suffix\""));
         let rebuilt: TestArchiveReport =
@@ -5447,7 +5380,6 @@ mod tests {
         let counts = core
             .import_tree(&workload, &run, &mut target, &source, None)
             .expect("import source archive");
-        assert_eq!(counts.over_limit, 1);
         assert_eq!(counts.rerooted, 1);
         assert_eq!(counts.terminal, 0);
         assert_eq!(counts.imported + counts.rejected, 4);
@@ -5498,18 +5430,18 @@ mod tests {
         assert!(
             replay_splice::<TestWorkload>(
                 EnergyStrategy::Splice,
-                Some(encoded(vec![action; SPLICE_ACTION_CAP + 1])),
+                Some(encoded(vec![action; LONGEST_SPLICE_TAIL + 1])),
             )
             .is_err()
         );
         assert_eq!(
             replay_splice::<TestWorkload>(
                 EnergyStrategy::Splice,
-                Some(encoded(vec![action; SPLICE_ACTION_CAP])),
+                Some(encoded(vec![action; LONGEST_SPLICE_TAIL])),
             )
             .expect("tail at cap is valid")
             .map(|tail| tail.len()),
-            Some(SPLICE_ACTION_CAP)
+            Some(LONGEST_SPLICE_TAIL)
         );
         assert!(
             replay_splice::<TestWorkload>(
@@ -5945,7 +5877,6 @@ mod tests {
             campaign_seed: 31,
             workers: 2,
             execution_budget: 200,
-            action_limit: 32,
             host: "test".to_owned(),
             wall_budget: None,
             stop_rollout_on_objective: false,

@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn long_composition_has_a_whole_witness_beyond_the_leaf_path_limit() {
+    fn long_composition_needs_more_than_128_actions() {
         let mut w = independent(16);
         for stage in &mut w.stages {
             if let World::Delayed(local) = &mut stage.world {
@@ -476,7 +476,6 @@ mod tests {
         let prefix = execute(&w, w.initial(), &[0; 128]);
         assert!(!w.goal(prefix));
         assert!(w.goal(execute(&w, prefix, &[0; 16])));
-        assert_eq!(World::Chain(w).action_limit(), 512);
     }
 
     #[test]

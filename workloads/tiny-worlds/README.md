@@ -54,7 +54,8 @@ The JSON report contains the request parameters, build-time source hashes,
 objective result, execution work, archive statistics, and family diagnostics.
 With `verify=true`, the runner replays the campaign stream, repeats execution with
 the same runtime seed, checks any objective witness against world transitions,
-and independently sums admitted job work. Tests check these invariants using
+independently sums admitted job work, and checks that the last job started
+before the work budget was spent. Tests check these invariants using
 runtime-generated seeds; controlled transition and archive tests check the
 mechanics directly.
 
@@ -156,11 +157,10 @@ Resource stages share a capacity and declare local `initial_charge=0`.
 `refill_available=false` disables the resource refill action. Other leaves
 require this flag to be true.
 
-Chains use a uniform four-action alphabet and a 512-action path limit.
-Standalone worlds use a 128-action limit. A chain job can overshoot its admission
-budget by at most 511 transitions. Across stage namespaces, preferences compare
-persistent stock; within a stage they also compare local resources. Whole-chain
-reachability is checked independently of each stage's reachability.
+Chains use a uniform four-action alphabet. Across stage namespaces,
+preferences compare persistent stock; within a stage they also compare local
+resources. Whole-chain reachability is checked independently of each stage's
+reachability.
 
 Chain diagnostics include stage-entry work and charge distributions, suffix
 actions per stage, and executed work grouped by parent stage and charge.

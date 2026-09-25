@@ -69,7 +69,6 @@ mod real {
         seed: u64,
         executions: u64,
         workers: u32,
-        action_limit: usize,
         wall_seconds: u64,
         host: String,
         memory_budget_mib: usize,
@@ -93,7 +92,6 @@ mod real {
             let mut seed = 1_u64;
             let mut executions = 10_000_u64;
             let mut workers = 1_u32;
-            let mut action_limit = 512_usize;
             let mut wall_seconds = 14_400_u64;
             let mut host = "github-actions-consonance".to_owned();
             let mut memory_budget_mib = 1024_usize;
@@ -118,7 +116,6 @@ mod real {
                     "--seed" => seed = parse_number("seed", value)?,
                     "--executions" => executions = parse_number("executions", value)?,
                     "--workers" => workers = parse_number("workers", value)?,
-                    "--action-limit" => action_limit = parse_number("action-limit", value)?,
                     "--wall-seconds" => wall_seconds = parse_number("wall-seconds", value)?,
                     "--host" => {
                         host = value.into_string().map_err(|_| "host is not UTF-8")?;
@@ -138,7 +135,6 @@ mod real {
                 seed,
                 executions,
                 workers,
-                action_limit,
                 wall_seconds,
                 host,
                 memory_budget_mib,
@@ -256,7 +252,6 @@ mod real {
             campaign_seed: args.seed,
             workers: args.workers,
             execution_budget: args.executions,
-            action_limit: args.action_limit,
             host: args.host.clone(),
             wall_budget: Some(std::time::Duration::from_secs(args.wall_seconds)),
             continue_after_victory: args.fixed_execution_soak,

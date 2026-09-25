@@ -381,7 +381,7 @@ failures remain in every row; milestone timings are censored at each run's budge
 `metroid-long-horizon.json` and `metroid-long-horizon-energy-splice.json`
 register a **development diagnostic**
 using historical seeds 3, 4, and 5: four workers, 8 GiB logical archive,
-3 million executions, 400 million admitted frames, 4096 actions, and
+3 million executions, 400 million admitted frames, and
 `one_to_six`. Every arm uses the same current adapter and executable. Only the
 mutation mixture differs. These restore the earlier
 work/memory scale. They do not reproduce the historical improvement-replay

@@ -105,8 +105,8 @@ A complete adapter receives the aggregate `Workload` implementation automaticall
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
 
-`InputPolicy` requires four things of a workload: the action limit, the action
-cost ceiling, the policy identifiers a recording must match, and
+`InputPolicy` requires three things of a workload: the action cost ceiling,
+the policy identifiers a recording must match, and
 `sample_alphabet`, which draws one action from the workload's vocabulary. The
 searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
 drawn from the retained-input table, `finish_stream_record` folds the record's
@@ -132,9 +132,8 @@ contract excludes champion selection and input publication. Workloads must docum
 their scope and bound their memory; these observer allocations are reflected in
 RSS rather than the archive's logical memory budget.
 
-The shared `search::rollout` loop owns suffix
-limits, action evidence capture, candidate creation, retention probe placement,
-and stopping; a workload provides action execution and state evaluation.
+The shared `search::rollout` loop owns action evidence capture, candidate
+creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.
 
 Workload packages live in `../../workloads`. They own adapters, execution
 integration, and campaign binaries. A probe must restore candidate state before
@@ -276,8 +275,7 @@ inside a place give nearly every position on a route an exit, so an
 improvement anywhere queues. When a replacement wins its slot under
 `preference_cmp` with `Ordering::Greater`, its position is queued at the index
 of the lowest preference it took. A reservation that takes the queue examines
-at most 8 exits, skipping stale parents, prefixes already archived and parents
-at the action limit. Among the rest it dispatches the first whose holder beats
+at most 8 exits, skipping stale parents and prefixes already archived. Among the rest it dispatches the first whose holder beats
 every current holder of the slot it would land in, the parent's progress at the
 destination position, under the preference it won, and otherwise the first edge
 that gains a preference; an edge that does neither is skipped. An edge inside

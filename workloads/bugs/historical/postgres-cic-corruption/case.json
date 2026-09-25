@@ -94,7 +94,6 @@
   "search": {
         "workers": 4,
     "executions": 4000,
-    "actions": 24,
     "wall_minutes": 150
   },
   "probe": "workloads/bugs/historical/postgres-cic-corruption/probe.json",
