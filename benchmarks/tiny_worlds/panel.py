@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--binary', type=Path)
     parser.add_argument('--route-reuse', action='store_true', help='run the registered continuation-bank ablation')
     parser.add_argument('--out', type=Path, help='prepared ablation directory outside the repository')
-    parser.add_argument('--prepare', action='store_true', help='build both ablation arms in a fresh output directory')
+    parser.add_argument('--prepare', action='store_true', help='build the diagnostic binary in a fresh output directory')
     parser.add_argument('--panel', type=Path, default=Path(__file__).with_name('panel.json'))
     parser.add_argument('--split', choices=('development', 'validation', 'sweep', 'scaling', 'confirmation'), default='development')
     args = parser.parse_args()
