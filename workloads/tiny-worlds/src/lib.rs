@@ -8,6 +8,7 @@ pub mod delayed;
 pub mod maze;
 pub mod resource;
 pub mod route;
+pub mod trap;
 pub mod worlds;
 use worlds::{State, World};
 
@@ -460,6 +461,7 @@ impl Evaluation for Workload {
                             [usize::from(after.charge)] += 1;
                     }
                 }
+                (World::Trap(_), State::Trap(_), State::Trap(_)) => {}
                 _ => return Err("observation family mismatch".into()),
             }
             e.objectives += u64::from(self.config.goal(observation.after));
@@ -566,13 +568,27 @@ pub fn run(
         .iter()
         .map(|&(sequence, tier, place)| (sequence, (tier, place)))
         .collect();
-    let mut parent_draws = std::collections::BTreeMap::<(bool, String, u8, u16), u64>::new();
+    let mut parent_draws =
+        std::collections::BTreeMap::<(bool, String, Option<u64>, u8, u16), u64>::new();
+    let mut skipped_draws = std::collections::BTreeMap::<(bool, String, Option<u64>), u64>::new();
     for line in stream
         .0
         .split(|c| *c == b'\n')
         .filter(|line| !line.is_empty())
     {
         let value: serde_json::Value = serde_json::from_slice(line)?;
+        if value["event"] == "skip" {
+            let path = value["selector"]["path"]
+                .as_str()
+                .ok_or("missing selector path")?;
+            *skipped_draws
+                .entry((
+                    first_objective_work.is_none(),
+                    path.to_string(),
+                    value["selector"]["tier_rank"].as_u64(),
+                ))
+                .or_default() += 1;
+        }
         if value["event"] == "job" {
             let job_work = value["execution_work"].as_u64().ok_or("missing work")?;
             work += job_work;
@@ -585,12 +601,13 @@ pub fn run(
                     .entry((
                         first_objective_work.is_none(),
                         path.to_string(),
+                        value["selector"]["tier_rank"].as_u64(),
                         tier,
                         place,
                     ))
                     .or_default() += 1;
             } else if job_work != 0 {
-                return Err("job with work has no recorded parent tier".into());
+                return Err("job with work has no recorded parent".into());
             }
             if value["selector"]["path"] == "continuation" {
                 continuation_work += job_work;
@@ -615,8 +632,14 @@ pub fn run(
     }
     let parent_draws: Vec<_> = parent_draws
         .into_iter()
-        .map(|((pre_objective, path, tier, place), jobs)| {
-            serde_json::json!([pre_objective, path, tier, place, jobs])
+        .map(|((pre_objective, path, rank, tier, place), jobs)| {
+            serde_json::json!([pre_objective, path, rank, tier, place, jobs])
+        })
+        .collect();
+    let skipped_draws: Vec<_> = skipped_draws
+        .into_iter()
+        .map(|((pre_objective, path, rank), skips)| {
+            serde_json::json!([pre_objective, path, rank, skips])
         })
         .collect();
     if work > budget + workload.config.action_limit() as u64 - 1 {
@@ -664,7 +687,7 @@ pub fn run(
         "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
         "pre_objective_continuation_work":pre_objective_continuation_work,
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
-        "first_objective_work":first_objective_work,"parent_draws":parent_draws,
+        "first_objective_work":first_objective_work,"parent_draws":parent_draws,"skipped_draws":skipped_draws,
         "success":first_objective_work.is_some_and(|w|w<=budget),
         "elapsed_seconds":elapsed,"stream_bytes":stream.0.len(),"stream_sha256":report.stream_sha256,
         "resident_memory_bytes":report.resident_memory_bytes,"evidence":report.archive.evidence,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::worlds::{State as WorldState, World};
-use crate::{Key, actions, deadline, deadline_actions, delayed, maze, resource};
+use crate::{Key, actions, deadline, deadline_actions, delayed, maze, resource, route, trap};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 
@@ -28,6 +28,8 @@ pub enum LocalState {
     Deadline(deadline::State),
     Delayed(delayed::State),
     DeadlineActions(deadline_actions::State),
+    Route(route::State),
+    Trap(trap::State),
 }
 
 impl LocalState {
@@ -39,9 +41,9 @@ impl LocalState {
             WorldState::Deadline(s) => Self::Deadline(s),
             WorldState::Delayed(s) => Self::Delayed(s),
             WorldState::DeadlineActions(s) => Self::DeadlineActions(s),
-            WorldState::Chain(_) | WorldState::Route(_) => {
-                unreachable!("validated non-nested stage")
-            }
+            WorldState::Route(s) => Self::Route(s),
+            WorldState::Trap(s) => Self::Trap(s),
+            WorldState::Chain(_) => unreachable!("validated non-nested stage"),
         }
     }
     pub fn world_state(self) -> WorldState {
@@ -52,6 +54,8 @@ impl LocalState {
             Self::Deadline(s) => WorldState::Deadline(s),
             Self::Delayed(s) => WorldState::Delayed(s),
             Self::DeadlineActions(s) => WorldState::DeadlineActions(s),
+            Self::Route(s) => WorldState::Route(s),
+            Self::Trap(s) => WorldState::Trap(s),
         }
     }
 }
@@ -74,8 +78,8 @@ impl Config {
         }
         let mut capacity = None;
         for stage in &self.stages {
-            if matches!(stage.world, World::Chain(_) | World::Route(_)) {
-                return Err("nested chains and route worlds are unsupported".into());
+            if matches!(stage.world, World::Chain(_)) {
+                return Err("nested chains are unsupported".into());
             }
             stage.world.validate()?;
             if let World::Resource(w) = &stage.world {
