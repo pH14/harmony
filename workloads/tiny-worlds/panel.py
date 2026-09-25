@@ -19,7 +19,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 BUDGET = 20_000
-UNSOLVED = float("inf")
 
 
 def pattern(length: int) -> int:
@@ -118,8 +117,17 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def solved(arm):
         return sum(r["success"] for r in by[arm])
 
-    def median(arm):
-        return statistics.median(r["first_objective_work"] if r["success"] else UNSOLVED for r in by[arm])
+    def median(arm, unsolved):
+        return statistics.median(r["first_objective_work"] if r["success"] else unsolved for r in by[arm])
+
+    def low(arm):
+        return median(arm, BUDGET)
+
+    def high(arm):
+        return median(arm, float("inf"))
+
+    def shown(arm):
+        return f"{low(arm):.0f}" if low(arm) == high(arm) else f"{low(arm):.0f}+"
 
     def slow(arm):
         return sum(not r["success"] or r["first_objective_work"] > 1000 for r in by[arm])
@@ -151,35 +159,36 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     n = len(by["credit/engaged"])
     m = len(by["boss/tier/tight"])
     third = n // 3
+    most = -(-2 * n // 3)
     return [
         ("boss, tight ammo: engaged runs over 1,000 work or unsolved", f"{slow('boss/engaged/tight')}/{m}",
          slow("boss/engaged/tight") <= 1),
         ("boss, tight ammo: level-as-tier runs over 1,000 work or unsolved", f"{slow('boss/tier/tight')}/{m}",
-         slow("boss/tier/tight") >= m // 3),
-        ("boss, tight ammo: place slower than engaged", f"{median('boss/place/tight'):.0f} vs {median('boss/engaged/tight'):.0f}",
-         median("boss/place/tight") > median("boss/engaged/tight")),
-        ("boss, ample ammo: level-as-tier faster than engaged", f"{median('boss/tier/ample'):.0f} vs {median('boss/engaged/ample'):.0f}",
-         median("boss/tier/ample") < median("boss/engaged/ample")),
-        ("credit kept after leaving: over 4x slower", f"{median('credit/engaged/sticky'):.0f} vs {median('credit/engaged'):.0f}",
-         median("credit/engaged/sticky") > 4 * median("credit/engaged")),
+         slow("boss/tier/tight") >= -(-m // 3)),
+        ("boss, tight ammo: place slower than engaged", f"{shown('boss/place/tight')} vs {shown('boss/engaged/tight')}",
+         low("boss/place/tight") > high("boss/engaged/tight")),
+        ("boss, ample ammo: level-as-tier faster than engaged", f"{shown('boss/tier/ample')} vs {shown('boss/engaged/ample')}",
+         high("boss/tier/ample") < low("boss/engaged/ample")),
+        ("credit kept after leaving: over 4x slower", f"{shown('credit/engaged/sticky')} vs {shown('credit/engaged')}",
+         low("credit/engaged/sticky") > 4 * high("credit/engaged")),
         ("route: ranked return/first-trip ratio at least 1.5x unranked", f"{return_ratio('route/ranked'):.2f} vs {return_ratio('route/unranked'):.2f}",
          return_ratio("route/ranked") >= 1.5 * return_ratio("route/unranked")),
-        ("trap: ranked item over 3x slower than control", f"{median('trap/ranked'):.0f} vs {median('trap/control'):.0f}",
-         median("trap/ranked") > 3 * median("trap/control")),
+        ("trap: ranked item over 3x slower than control", f"{shown('trap/ranked')} vs {shown('trap/control')}",
+         low("trap/ranked") > 3 * high("trap/control")),
         ("trap: item draw share at least 0.8 ranked, at most 0.5 control", f"{trap_share('trap/ranked'):.2f} vs {trap_share('trap/control'):.2f}",
          trap_share("trap/ranked") >= 0.8 and trap_share("trap/control") <= 0.5),
         ("trap: top-tier draw share 0.87-0.91", f"{top_share('trap/ranked'):.3f}",
          0.87 <= top_share("trap/ranked") <= 0.91),
-        ("keep: capacity 2 / portfolio median 0.67-1.5", f"{median('keep/capacity_two'):.0f} vs {median('keep/portfolio'):.0f}",
-         0.67 <= median("keep/capacity_two") / median("keep/portfolio") <= 1.5),
-        ("backtrack: ranked items slower than preference", f"{median('backtrack/tier'):.0f} vs {median('backtrack/preference'):.0f}",
-         median("backtrack/tier") > median("backtrack/preference")),
-        ("backtrack: identity slowest", f"{median('backtrack/identity'):.0f} vs {median('backtrack/tier'):.0f}",
-         median("backtrack/identity") > median("backtrack/tier")),
+        ("keep: capacity 2 / portfolio median 0.67-1.5", f"{shown('keep/capacity_two')} vs {shown('keep/portfolio')}",
+         0.67 <= low("keep/capacity_two") / high("keep/portfolio") and high("keep/capacity_two") / low("keep/portfolio") <= 1.5),
+        ("backtrack: ranked items slower than preference", f"{shown('backtrack/tier')} vs {shown('backtrack/preference')}",
+         low("backtrack/tier") > high("backtrack/preference")),
+        ("backtrack: identity slowest", f"{shown('backtrack/identity')} vs {shown('backtrack/tier')}",
+         low("backtrack/identity") > high("backtrack/tier")),
         ("backtrack: control mostly unsolved", f"{solved('backtrack/control')}/{n}", solved("backtrack/control") <= third),
         ("chain: flat mostly unsolved", f"{solved('chain/flat')}/{n}", solved("chain/flat") <= third),
-        ("chain: ranked stages solve", f"{solved('chain/ranked')}/{n}", solved("chain/ranked") >= 2 * third),
-        ("chain: ranked stages and upgrade solve", f"{solved('chain/ranked_upgrade')}/{n}", solved("chain/ranked_upgrade") >= 2 * third),
+        ("chain: ranked stages solve", f"{solved('chain/ranked')}/{n}", solved("chain/ranked") >= most),
+        ("chain: ranked stages and upgrade solve", f"{solved('chain/ranked_upgrade')}/{n}", solved("chain/ranked_upgrade") >= most),
         ("chain: kept boss credit mostly unsolved", f"{solved('chain/sticky')}/{n}", solved("chain/sticky") <= third),
     ]
 

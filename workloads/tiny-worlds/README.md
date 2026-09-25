@@ -149,7 +149,8 @@ on stage entry; archived snapshots allow exploration from earlier stages.
 With `carry_charge=false`, each stage starts from its declared initial state and
 chain `initial_charge` is zero. Stage identity namespaces archive places in
 blocks of 1,024. With `ranked=true`, a stage's tier is its leaf tier plus 32
-times the stage index, so a later stage outranks every earlier one. With
+times the stage index, so a later stage outranks every earlier one; the control
+that omits stage identity keeps only the leaf tier. With
 `ranked=false`, every chain key has tier 0. With
 `carry_charge=true`, chain `initial_charge` initializes persistent charge;
 resource stages consume and replenish it, while other stages preserve it.
@@ -209,7 +210,11 @@ uses a prebuilt executable.
 | Backtracking | Backtrack world with items ranked, split by identity, kept as a preference, or hidden. |
 | Chains | Sixteen-stage chains: flat, ranked stages, ranked stages with ranked upgrades, and kept boss credit. |
 
-Each rule records current searcher behaviour. A searcher change that flips a
+Timing rules compare medians in which an unsolved run counts as the work
+budget on the side that must be slower and as unbounded on the side that must
+be faster, so a rule passes only when solved runs establish it. The solve-count
+rules round the required two thirds up. Each rule records current searcher
+behaviour. A searcher change that flips a
 rule predicts the same change on Metroid. Thresholds allow about a 1% chance
 that an unchanged searcher fails a rule. The panel is not a CI check.
 

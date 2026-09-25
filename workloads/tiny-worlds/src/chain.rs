@@ -198,7 +198,8 @@ impl Config {
         let mut key = self.stages[usize::from(state.stage)]
             .world
             .key(state.local.world_state(), false);
-        if self.carry_charge || !broken {
+        let staged = self.carry_charge || !broken;
+        if staged {
             key.place += u16::from(state.stage) * crate::STAGE_PLACES;
         }
         key.stock = if self.carry_charge && !broken {
@@ -206,10 +207,10 @@ impl Config {
         } else {
             0
         };
-        key.tier = if self.ranked {
-            key.tier + u16::from(state.stage) * STAGE_TIERS
-        } else {
-            0
+        key.tier = match (self.ranked, staged) {
+            (true, true) => key.tier + u16::from(state.stage) * STAGE_TIERS,
+            (true, false) => key.tier,
+            (false, _) => 0,
         };
         key.goal = self.goal(state);
         key
@@ -336,6 +337,12 @@ mod tests {
             assert!(a.preference_cmp(preference, b).is_eq());
         }
         assert_eq!(w.key(first, true), w.key(second, true));
+        let ranked = Config {
+            ranked: true,
+            ..w.clone()
+        };
+        assert!(ranked.key(first, false).tier < ranked.key(second, false).tier);
+        assert_eq!(ranked.key(first, true), ranked.key(second, true));
     }
 
     #[test]
