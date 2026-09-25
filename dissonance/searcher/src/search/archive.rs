@@ -2557,8 +2557,13 @@ where
         self.replacement_preferences.get(id).copied().unwrap_or(0)
     }
 
+    #[must_use]
+    pub fn selector_counters(&self) -> SelectorAccounting {
+        self.selector_accounting.clone()
+    }
+
     pub fn selector_report(&self) -> SelectorAccounting {
-        let mut accounting = self.selector_accounting.clone();
+        let mut accounting = self.selector_counters();
         accounting.draws_by_cell = self
             .cells
             .iter()

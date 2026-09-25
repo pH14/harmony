@@ -2483,12 +2483,10 @@ fn write_live_progress<G: Workload>(
         input_reconstructions: core.archive.input_reconstructions(),
         input_index_nodes: core.archive.input_index_nodes(),
         historical_cells: core.archive.historical_cell_count(),
-        selector: {
-            let mut selector = core.archive.selector_report();
-            if !final_census && !sequence.is_multiple_of(CELL_DRAWS_INTERVAL) {
-                selector.draws_by_cell.clear();
-            }
-            selector
+        selector: if final_census || sequence.is_multiple_of(CELL_DRAWS_INTERVAL) {
+            core.archive.selector_report()
+        } else {
+            core.archive.selector_counters()
         },
         continuations: core.archive.continuation_report(),
     })?;

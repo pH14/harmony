@@ -249,9 +249,11 @@ new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
 `cell_resets`, `tier_draws_by_rank` and the draws each cell received, and
 every live progress line carries it under `selector`. The draws each cell
-received appear only on every 100,000th execution's line and the final line,
-because a search with tens of thousands of cells would otherwise write
-gigabytes of progress log.
+received and `selector.portfolio` appear only on every 100,000th execution's
+line and the final line. Counting portfolio holders compares every pair of
+holders in each slot, which on every line would take most of the
+coordinator's time, and the draws of tens of thousands of cells on every line
+would add gigabytes of progress log.
 
 The energy mixtures choose among three input strategies: the retained-input
 table, the alphabet, and a splice, which appends to the parent the recorded
