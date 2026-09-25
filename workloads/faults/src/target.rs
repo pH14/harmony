@@ -40,6 +40,7 @@ pub enum FaultAction {
         node: u16,
         edges: u32,
         hold_us: u32,
+        ticks: NonZeroU16,
     },
     Pause(u16, NonZeroU16),
     Restart(u16, NonZeroU16),
@@ -54,13 +55,11 @@ impl FaultAction {
             Self::Wait(ticks)
             | Self::Kill(_, ticks)
             | Self::EventKill { ticks, .. }
+            | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
             | Self::Hook(_, ticks)
             | Self::Interrupt(_, ticks) => u64::from(ticks.get()),
-            Self::EventPark { hold_us, .. } => {
-                u64::from(hold_us).div_ceil(SUPERVISOR_TICK_MICROS).max(1)
-            }
         }
     }
 
@@ -74,11 +73,19 @@ impl FaultAction {
                 rarity,
                 ticks,
             },
-            Self::EventPark { node, edges, .. } => Self::EventPark {
+            Self::EventPark {
                 node,
                 edges,
-                hold_us: u32::from(ticks.get())
-                    .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
+                hold_us,
+                ..
+            } => Self::EventPark {
+                node,
+                edges,
+                hold_us: hold_us.min(
+                    u32::from(ticks.get())
+                        .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
+                ),
+                ticks,
             },
             Self::Pause(node, _) => Self::Pause(node, ticks),
             Self::Restart(node, _) => Self::Restart(node, ticks),
@@ -161,22 +168,20 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             node,
             edges,
             hold_us,
-        } => {
-            let hold = u64::from(hold_us).saturating_mul(1_000);
-            ActionDelta {
-                standing: Some(standing(
-                    process_target(
-                        node,
-                        &Fault::ProcEventPark {
-                            edges,
-                            hold: Span(hold),
-                        },
-                    ),
-                    (start, end.max(start.saturating_add(hold))),
-                )),
-                perturb: None,
-            }
-        }
+            ..
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcEventPark {
+                        edges,
+                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                    },
+                ),
+                (start, end),
+            )),
+            perturb: None,
+        },
         FaultAction::Kill(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
@@ -586,6 +591,7 @@ mod tests {
                 node: 1,
                 edges: 5,
                 hold_us: 1,
+                ticks: ticks(9),
             },
             FaultAction::Pause(1, ticks(9)),
             FaultAction::Restart(1, ticks(9)),
@@ -597,14 +603,33 @@ mod tests {
             assert_eq!(adapted.ticks(), 12);
             assert_eq!(action_ticks(&adapted), 12);
         }
+    }
+
+    #[test]
+    fn a_shorter_window_shortens_an_event_park_hold_to_fit() {
+        let park = FaultAction::EventPark {
+            node: 0,
+            edges: 1,
+            hold_us: 90_000,
+            ticks: ticks(9),
+        };
         assert_eq!(
+            park.with_ticks(ticks(4)),
             FaultAction::EventPark {
                 node: 0,
                 edges: 1,
-                hold_us: 10_001,
+                hold_us: 40_000,
+                ticks: ticks(4),
             }
-            .ticks(),
-            2
+        );
+        assert_eq!(
+            park.with_ticks(ticks(12)),
+            FaultAction::EventPark {
+                node: 0,
+                edges: 1,
+                hold_us: 90_000,
+                ticks: ticks(12),
+            }
         );
     }
 
@@ -639,16 +664,17 @@ mod tests {
     }
 
     #[test]
-    fn an_event_park_stands_until_its_hold_can_finish() {
+    fn an_event_park_stands_for_its_window_with_its_own_hold() {
         let action = FaultAction::EventPark {
             node: 2,
             edges: 4_096,
             hold_us: 2_000_000,
+            ticks: ticks(500),
         };
         let window = WINDOWS.window(&[action], 0).unwrap();
         let fault = action_delta(action, window).standing.unwrap();
         assert_eq!(fault.start, ROOT);
-        assert_eq!(fault.end, ROOT + 2_000_000_000);
+        assert_eq!(fault.end, ROOT + 500 * TICK);
         assert_eq!(
             decode_process_target(&fault.target),
             Some((

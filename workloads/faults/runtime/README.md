@@ -75,7 +75,9 @@ of bucket bytes holds the levels.
 
 A claimed kill keeps the callback lock through its report and signal, so a
 later disarm acknowledgement cannot overtake enforcement. Parks release the
-lock during the hold: other application threads keep running. Status remains
-active until the hold finishes, and a disarm acknowledgement waits for that
-completion. The agent can therefore distinguish a claimed park from a recovered
-process without guessing a sleep duration.
+lock during the hold: other application threads keep running. When a hold
+finishes, the park counts again from zero toward the same `k`, so one arming
+can hold threads many times until a disarm arrives. A disarm acknowledgement
+waits for a running hold to finish, and status stays active from arming until
+that acknowledgement. The agent can therefore distinguish a claimed park from a
+recovered process without guessing a sleep duration.

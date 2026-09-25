@@ -17,7 +17,7 @@ use searcher::search::{
 
 use crate::assertion::{AssertionSet, Assertions};
 use crate::bundle::FaultVocabulary;
-use crate::target::{FaultAction, FaultObservations};
+use crate::target::{FaultAction, FaultObservations, SUPERVISOR_TICK_MICROS};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
@@ -202,9 +202,9 @@ pub fn sample_action(
         _ => FaultAction::EventPark {
             node: event_node(rand)?,
             edges: park_edges(rand)?,
-            hold_us: 0,
-        }
-        .with_ticks(ticks),
+            hold_us: park_hold_us(rand, ticks)?,
+            ticks,
+        },
     };
     Ok(action)
 }
@@ -223,6 +223,22 @@ fn park_edges(rand: &mut RomuDuoJrRand) -> Result<u32, Box<dyn Error>> {
         rand.below(NonZeroUsize::new(usize::try_from(low)?).ok_or("empty edge range")?),
     )?;
     Ok(low + offset)
+}
+
+fn park_hold_us(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> Result<u32, Box<dyn Error>> {
+    let window = u32::from(ticks.get());
+    let exponent = u32::try_from(
+        rand.below(
+            NonZeroUsize::new(usize::try_from(window.ilog2() + 1)?)
+                .ok_or("empty hold exponent range")?,
+        ),
+    )?;
+    let low = 1_u32 << exponent;
+    let high = window.min((low << 1) - 1);
+    let offset = u32::try_from(
+        rand.below(NonZeroUsize::new(usize::try_from(high - low + 1)?).ok_or("empty hold range")?),
+    )?;
+    Ok((low + offset).saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS)?))
 }
 
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
@@ -507,10 +523,19 @@ mod tests {
                     assert!(node < vocabulary.nodes());
                     assert!(rarity < 64);
                 }
-                FaultAction::EventPark { node, edges, .. } => {
+                FaultAction::EventPark {
+                    node,
+                    edges,
+                    hold_us,
+                    ..
+                } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
                     assert!((1..1 << PARK_EDGE_EXPONENTS).contains(&edges));
+                    assert!(
+                        (SUPERVISOR_TICK_MICROS..=u64::from(TICKS.get()) * SUPERVISOR_TICK_MICROS)
+                            .contains(&u64::from(hold_us))
+                    );
                 }
                 FaultAction::Kill(node, _)
                 | FaultAction::Restart(node, _)
@@ -561,6 +586,28 @@ mod tests {
             exponents.insert(edges.ilog2());
         }
         assert_eq!(exponents, (0..PARK_EDGE_EXPONENTS).collect::<BTreeSet<_>>());
+    }
+
+    #[test]
+    fn park_holds_cover_every_power_of_two_tick_count_up_to_the_window() {
+        let mut rand = RomuDuoJrRand::with_seed(29);
+        let mut exponents = BTreeSet::new();
+        for _ in 0..5_000 {
+            let hold = u64::from(park_hold_us(&mut rand, TICKS).unwrap());
+            assert!(hold.is_multiple_of(SUPERVISOR_TICK_MICROS));
+            let hold_ticks = hold / SUPERVISOR_TICK_MICROS;
+            assert!((1..=u64::from(TICKS.get())).contains(&hold_ticks));
+            exponents.insert(hold_ticks.ilog2());
+        }
+        assert_eq!(
+            exponents,
+            (0..=u32::from(TICKS.get()).ilog2()).collect::<BTreeSet<_>>()
+        );
+        let one = NonZeroU16::MIN;
+        assert_eq!(
+            park_hold_us(&mut rand, one).unwrap(),
+            u32::try_from(SUPERVISOR_TICK_MICROS).unwrap()
+        );
     }
 
     #[test]

@@ -615,6 +615,14 @@ void harmony_fault_runtime_event(uint64_t site)
         harmony_fault_event_sleep(park_hold_nanos);
         if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
             harmony_fault_events.park_inflight--;
+            if (harmony_fault_events.initialized != 0 &&
+                harmony_fault_events.park_armed == 0 &&
+                harmony_fault_events.park_hold_nanos != 0) {
+                harmony_fault_events.park_weight_left =
+                    harmony_fault_events.park_edges
+                    << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
+                harmony_fault_events.park_armed = 1;
+            }
             (void)pthread_cond_broadcast(&harmony_fault_park_done);
             (void)pthread_mutex_unlock(&harmony_fault_events.lock);
         }

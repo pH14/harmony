@@ -255,6 +255,12 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
             FaultAction::EventPark { hold_us: 0, .. } => {
                 return Err("event park hold must be positive".into());
             }
+            FaultAction::EventPark { hold_us, ticks, .. }
+                if u64::from(*hold_us)
+                    > u64::from(ticks.get()) * crate::target::SUPERVISOR_TICK_MICROS =>
+            {
+                return Err("event park hold must fit its window".into());
+            }
             _ => {}
         }
     }
@@ -670,6 +676,18 @@ mod tests {
         assert!(parse_recorded_input(r#"[{"Kill":0}]"#).is_err());
         assert!(parse_recorded_input("[]").is_err());
         assert!(parse_recorded_input("{}").is_err());
+        let park = |hold_us| {
+            serde_json::to_string(&[FaultAction::EventPark {
+                node: 0,
+                edges: 1,
+                hold_us,
+                ticks: std::num::NonZeroU16::new(2).unwrap(),
+            }])
+            .expect("serialize")
+        };
+        assert!(parse_recorded_input(&park(20_000)).is_ok());
+        assert!(parse_recorded_input(&park(20_001)).is_err());
+        assert!(parse_recorded_input(&park(0)).is_err());
     }
 
     fn ids(values: &[u32]) -> Vec<String> {

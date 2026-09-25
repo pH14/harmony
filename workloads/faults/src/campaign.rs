@@ -52,7 +52,7 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
-const ACTION_FORMAT: &str = "fault-action-duration-v1";
+const ACTION_FORMAT: &str = "fault-action-duration-v2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -485,14 +485,7 @@ impl InputPolicy for FaultWorkload {
         _run: &FaultCampaignRun,
         action: &FaultAction,
     ) -> Option<NonZeroU64> {
-        match action {
-            FaultAction::EventPark { hold_us, .. }
-                if !u64::from(*hold_us).is_multiple_of(crate::target::SUPERVISOR_TICK_MICROS) =>
-            {
-                None
-            }
-            _ => NonZeroU64::new(action.ticks()),
-        }
+        NonZeroU64::new(action.ticks())
     }
 }
 
@@ -852,7 +845,8 @@ mod tests {
         let park = FaultAction::EventPark {
             node: 0,
             edges: 5,
-            hold_us: 0,
+            hold_us: 10_000,
+            ticks: std::num::NonZeroU16::MIN,
         };
         let result = |observations| FaultCampaignActionResult {
             action: park,
@@ -975,8 +969,9 @@ mod tests {
                         assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));
                         waits += 1;
                     }
-                    FaultAction::EventPark { hold_us, .. } => {
-                        assert_eq!(hold_us, 2_560_000);
+                    FaultAction::EventPark { hold_us, ticks, .. } => {
+                        assert_eq!(ticks.get(), 256);
+                        assert!((10_000..=2_560_000).contains(&hold_us));
                         assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));
                         event_parks += 1;
                     }

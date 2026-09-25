@@ -45,7 +45,7 @@ every action in the suffix takes it:
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold; each edge counts one over its site's visit count, and `edges` is drawn log-uniform from 1 through `(1 << 14) - 1` |
+| `EventPark(node, edges, hold, ticks)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
 | `Kill(node, ticks)` | the node stays down for the window |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
@@ -56,8 +56,9 @@ Each fault action except `Interrupt` becomes a standing-fault window on the shar
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
-branch installs it. An event-park window remains active across later actions
-until its hold can finish, allowing another fault to overlap the held thread.
+branch installs it. A hold still running when an event-park window closes
+finishes before the runtime acknowledges the disarm, so the next actions can
+overlap the held thread.
 
 ## Execution
 
@@ -107,9 +108,11 @@ passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
 `park_sites` in `campaign-summary.json` counts event-park landings by site.
-`park_thresholds` counts, for each `floor(log2(edges))`, the parks the guest
-ran at that threshold and the parks that fired, so the fired share at each
-threshold shows which part of the drawn range a workload's executions reach. On
+`park_thresholds` counts, for each `floor(log2(edges))`, the park actions the
+guest ran at that threshold and the landings at that threshold, so the landings
+per action at each threshold show which part of the drawn range a workload's
+executions reach. A park re-arms after each hold, so one action can land more
+than once. On
 the SQLite WAL reset and etcd cases no park with a threshold of `1 << 14` or
 more fired, which sets the top of the drawn range.
 
