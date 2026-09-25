@@ -67,19 +67,42 @@ representation or action choice affects the same world transitions.
 | `deadline_actions` | Traverse changing-action stages while every action spends environmental time. | Sample only the land action. |
 | `chain` | Complete an ordered sequence of leaf worlds in one campaign. | Omit stage identity, or carried stock when charge carries between stages. |
 | `route` | Scout a route, return for an upgrade, and traverse it again. | Uses the same representation in both settings. |
+| `trap` | Follow a corridor to the goal, or enter a side corridor to an item whose rooms never reach the goal. | Hide the item from the progress tier. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
 an obstacle's time cost succeeds. In `deadline_actions`, ineffective actions
 also spend their configured duration. The action world's `observable` flag
-controls whether regime identity appears in the key. Delayed progress uses
-`sequence` or `wait` mode and exposes partial progress as context.
+controls whether regime identity appears in the key.
+
+## Archive key
+
+The key's progress is the pair (goal, tier). The searcher ranks slots by
+progress, so a higher tier draws most of the selection weight. Leaf families
+set tier 0 except where an option below raises it.
+
+Delayed progress uses `sequence` or `wait` mode. `placement` puts partial
+progress in the key: `identity` as context, `place` as part of the place,
+`engaged` in the place with tier 1 once progress is nonzero, and `tier` as the
+tier itself. With `sticky_credit=true`, leaving the fight lane keeps the last
+reading in the key of every distraction lane; it requires a placement other
+than `identity`. With `ammo` nonzero, every fight action spends one ammo, a
+miss keeps progress, and a hit needs ammo. Distraction action 3 refills one
+ammo up to the maximum. Leaving the fight lane resets progress. Ammo appears
+as charge, which preferences favour.
+
+The trap world's item raises the tier to 1 and makes the goal unreachable;
+reachability checks every item room. Route `ranked_upgrade=true` puts the
+upgraded phase in tier 1.
 
 Diagnostics count admitted suffix observations. Arrival histograms count
 transitions into a location; resource refill counts require a stock increase.
 Delayed-progress histograms include distraction observations in their zero bin.
 Exported archive entries include ancestry; `live_entries` reports active holders.
 Continuation job counts and work come from the campaign stream.
+`parent_draws` counts jobs by (before objective, selector path, tier rank,
+parent tier, parent place). `skipped_draws` counts draws whose parent and
+suffix were already executed; they produce no job.
 
 ## Configuration bounds
 
@@ -92,21 +115,24 @@ states; requests exceeding the reachability limit are rejected.
 | Maze | `length` 1–8; `pattern` < `1 << length`; boolean `reverse_actions`. |
 | Actions | `segment_len` 1–8; `water_action` 1–3; boolean `return_to_land` and `observable`. |
 | Deadline | `length` 1–8; `initial_time` 1–64; `fast_ticks` 1–4; `slow_ticks` > twice `fast_ticks` and ≤ 16; `obstacle_ticks` 1–16. |
-| Delayed | `horizon` 1–16; `distractions` 1–32; `mode` is `sequence` or `wait`. |
+| Delayed | `horizon` 1–16; `distractions` 1–32; `mode` is `sequence` or `wait`; `placement` is `identity`, `place`, `engaged`, or `tier`; boolean `sticky_credit`; `ammo` 0 or `horizon`–31. |
 | Deadline/actions | `actions` uses the actions parameters; `initial_time` 1–64; four `action_ticks` values, each 1–16. |
-| Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted` and `upgrade_required`. |
+| Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
+| Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Supported leaves are resource, maze, actions, deadline,
-delayed, and deadline/actions. Completion enters the next stage in the same
+`refill_available`. Every family except `chain` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
 
 With `carry_charge=false`, each stage starts from its declared initial state and
-chain `initial_charge` is zero. Stage identity namespaces archive places. With
+chain `initial_charge` is zero. Stage identity namespaces archive places in
+blocks of 1,024. With `ranked=true`, a stage's tier is its leaf tier plus 32
+times the stage index, so a later stage outranks every earlier one. With
+`ranked=false`, every chain key has tier 0. With
 `carry_charge=true`, chain `initial_charge` initializes persistent charge;
 resource stages consume and replenish it, while other stages preserve it.
 Resource stages share a capacity and declare local `initial_charge=0`.
@@ -149,6 +175,6 @@ cargo fmt --manifest-path workloads/tiny-worlds/Cargo.toml -- --check
 cargo clippy --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml --all-targets -- -D warnings
 ```
 
-Tests cover exhaustive reachability, snapshot restoration, archive retention in
+Tests cover exhaustive reachability, dead trap items, snapshot restoration, archive retention in
 both insertion orders, controlled objective witnesses, chain boundaries, route
 alignment, trace validation, replay, and execution-work accounting.
