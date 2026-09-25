@@ -1,8 +1,13 @@
 [workspace]
 resolver = "2"
-# The root workspace contains the CLI and Consonance's deterministic engine,
-# execution contracts, and determinism harness. Dissonance and workloads use
-# standalone workspaces.
+# Crates are grouped under harmony-themed top-level dirs. `consonance/`
+# is the deterministic engine — vmm-core/vmm-backend and the crates they compose,
+# plus `consonance/unison` (the determinism harness, ex-`detharness`) and the
+# engine's contract surface, `consonance/environment` + `consonance/control-proto`
+# (the decision vocabulary and control-transport wire; relocated here from the
+# retired v1 tree of the same name, which they never should have lived under —
+# consonance is their only consumer). The v1 dissonance searcher was removed;
+# its rebuild lives in the standalone `dissonance/` workspace.
 members = ["cli", "consonance/*"]
 # consonance/harmony-linux/ contains standalone Linux-side crates.
 exclude = [
