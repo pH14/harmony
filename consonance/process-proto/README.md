@@ -10,7 +10,7 @@ start, end)` windows.
 The `events` module owns the fixed control and report frames exchanged between
 the supervisor and an optional instrumented process runtime. It validates the
 shared 0 through 63 kill rarity width, the park edge-count range, exact command acknowledgements, runtime hello,
-kill provenance, event-park status, and bucketed edge-coverage status
+kill provenance, event-park armed and held status, and bucketed edge-coverage status
 without naming a workload policy.
 
 The `registers` module owns the reserved lifecycle-register IDs published by

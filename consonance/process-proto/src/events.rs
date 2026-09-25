@@ -7,11 +7,13 @@ pub const EVENT_CMD_PARK: u64 = 2;
 pub const EVENT_CMD_PARK_STATUS: u64 = 3;
 pub const EVENT_CMD_COVERAGE_STATUS: u64 = 4;
 pub const EVENT_REPORT_HELLO: u64 = 0x4841_524d_4f4e_5945;
-pub const EVENT_PROTOCOL_VERSION: u64 = 3;
+pub const EVENT_PROTOCOL_VERSION: u64 = 4;
 pub const EVENT_CONTROL_FRAME_SIZE: usize = 24;
 pub const EVENT_REPORT_SIZE: usize = 16;
 pub const EVENT_RARITY_LIMIT: u8 = 64;
 pub const EVENT_PARK_EDGE_LIMIT: u32 = 1 << 24;
+pub const EVENT_PARK_STATUS_ARMED: u64 = 1;
+pub const EVENT_PARK_STATUS_HELD: u64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
@@ -26,7 +28,7 @@ pub enum Command {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Reply {
     Echo(Command),
-    ParkStatus { fires: u64, armed: bool },
+    ParkStatus { fires: u64, armed: bool, held: bool },
     CoverageStatus { crossings: u64, digest: u64 },
 }
 
@@ -47,7 +49,7 @@ pub enum ProtocolError {
     WrongSize,
     UnknownCommand,
     MismatchedReply,
-    InvalidArmed,
+    InvalidParkStatus,
     InvalidRarity,
     InvalidVersion,
 }
@@ -58,7 +60,7 @@ impl fmt::Display for ProtocolError {
             Self::WrongSize => "event frame has the wrong size",
             Self::UnknownCommand => "event frame has an unknown command",
             Self::MismatchedReply => "event reply does not acknowledge the request",
-            Self::InvalidArmed => "event reply has an invalid armed flag",
+            Self::InvalidParkStatus => "event reply has invalid park status flags",
             Self::InvalidRarity => "event report has an invalid rarity",
             Self::InvalidVersion => "event hello has an unsupported protocol version",
         };
@@ -96,12 +98,13 @@ pub fn decode_reply(expected: Command, frame: &[u8]) -> Result<Reply, ProtocolEr
         if kind != EVENT_CMD_PARK_STATUS {
             return Err(ProtocolError::MismatchedReply);
         }
-        if second > 1 {
-            return Err(ProtocolError::InvalidArmed);
+        if second & !(EVENT_PARK_STATUS_ARMED | EVENT_PARK_STATUS_HELD) != 0 {
+            return Err(ProtocolError::InvalidParkStatus);
         }
         return Ok(Reply::ParkStatus {
             fires: first,
-            armed: second != 0,
+            armed: second & EVENT_PARK_STATUS_ARMED != 0,
+            held: second & EVENT_PARK_STATUS_HELD != 0,
         });
     }
     if matches!(expected, Command::CoverageStatus) {
@@ -226,21 +229,29 @@ mod tests {
     }
 
     #[test]
-    fn park_status_carries_runtime_fires_and_armed_state() {
+    fn park_status_carries_runtime_fires_and_armed_and_held_flags() {
         let mut frame = encode_command(Command::ParkStatus);
         frame[8..16].copy_from_slice(&3_u64.to_le_bytes());
-        frame[16..24].copy_from_slice(&1_u64.to_le_bytes());
+        for (flags, armed, held) in [
+            (0, false, false),
+            (EVENT_PARK_STATUS_ARMED, true, false),
+            (EVENT_PARK_STATUS_HELD, false, true),
+            (EVENT_PARK_STATUS_ARMED | EVENT_PARK_STATUS_HELD, true, true),
+        ] {
+            frame[16..24].copy_from_slice(&flags.to_le_bytes());
+            assert_eq!(
+                decode_reply(Command::ParkStatus, &frame),
+                Ok(Reply::ParkStatus {
+                    fires: 3,
+                    armed,
+                    held
+                })
+            );
+        }
+        frame[16..24].copy_from_slice(&4_u64.to_le_bytes());
         assert_eq!(
             decode_reply(Command::ParkStatus, &frame),
-            Ok(Reply::ParkStatus {
-                fires: 3,
-                armed: true
-            })
-        );
-        frame[16..24].copy_from_slice(&2_u64.to_le_bytes());
-        assert_eq!(
-            decode_reply(Command::ParkStatus, &frame),
-            Err(ProtocolError::InvalidArmed)
+            Err(ProtocolError::InvalidParkStatus)
         );
     }
 
@@ -309,8 +320,8 @@ mod tests {
                 "event reply does not acknowledge the request",
             ),
             (
-                ProtocolError::InvalidArmed,
-                "event reply has an invalid armed flag",
+                ProtocolError::InvalidParkStatus,
+                "event reply has invalid park status flags",
             ),
             (
                 ProtocolError::InvalidRarity,

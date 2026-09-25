@@ -22,7 +22,7 @@ use crate::target::{FaultAction, FaultObservations, SUPERVISOR_TICK_MICROS};
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "faultlab_assertion_ids_peer_places_liveness_edge_buckets_identity_v9";
+    "faultlab_assertion_ids_peer_places_held_park_armed_kill_liveness_edge_buckets_identity_v10";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
@@ -39,11 +39,25 @@ pub struct FaultArchiveKey {
     pub checks_finished: u64,
     pub checks_running: bool,
     pub workload_running: bool,
+    pub park_held: bool,
+    pub kill_armed: bool,
     pub edges: u64,
 }
 
 impl ArchiveKey for FaultArchiveKey {
-    type Place = (AssertionSet, u64, u64, u64, u64, u64, u64, bool, bool);
+    type Place = (
+        AssertionSet,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        bool,
+        bool,
+        bool,
+        bool,
+    );
     type Progress = ();
     type Identity = (u64, u64);
 
@@ -58,6 +72,8 @@ impl ArchiveKey for FaultArchiveKey {
             self.checks_finished,
             self.checks_running,
             self.workload_running,
+            self.park_held,
+            self.kill_armed,
         )
     }
 
@@ -96,6 +112,8 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
         checks_finished: observations.checks_finished.min(HOOKS_FINISHED_KEY_CAP),
         checks_running: observations.checks_started > observations.checks_finished,
         workload_running: observations.workload_started > observations.workload_finished,
+        park_held: observations.event_park_held != 0,
+        kill_armed: observations.event_kill_armed != 0,
         edges: observations.edge_digest,
     }
 }
@@ -417,6 +435,34 @@ mod tests {
         assert_ne!(completed, running);
         assert!(!completed.checks_running);
         assert!(running.checks_running);
+    }
+
+    #[test]
+    fn a_held_park_thread_and_an_armed_event_kill_each_open_their_own_place() {
+        let quiet = FaultObservations {
+            alive: 0b11,
+            ..FaultObservations::default()
+        };
+        let held = FaultObservations {
+            event_park_held: 0b10,
+            ..quiet.clone()
+        };
+        let armed = FaultObservations {
+            event_kill_armed: 0b01,
+            ..quiet.clone()
+        };
+        let places = [&quiet, &held, &armed]
+            .map(|observations| archive_key(observations).place())
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(places.len(), 3);
+        assert!(archive_key(&held).park_held);
+        assert!(archive_key(&armed).kill_armed);
+        let other_node = FaultObservations {
+            event_park_held: 0b01,
+            ..quiet
+        };
+        assert_eq!(archive_key(&other_node), archive_key(&held));
     }
 
     #[test]
