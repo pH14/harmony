@@ -175,12 +175,43 @@ struct Cached {
     stamp: u64,
 }
 
+fn eviction_victim(
+    snapshots: &BTreeMap<Vec<FaultAction>, Cached>,
+    taken: SnapId,
+    prefer_leaves: bool,
+) -> Option<Vec<FaultAction>> {
+    let mut entries = snapshots.iter().peekable();
+    let mut oldest: Option<(&Vec<FaultAction>, u64)> = None;
+    let mut oldest_leaf: Option<(&Vec<FaultAction>, u64)> = None;
+    while let Some((prefix, cached)) = entries.next() {
+        let extended = entries
+            .peek()
+            .is_some_and(|(next, _)| next.starts_with(prefix));
+        if prefix.is_empty() || cached.snap == taken {
+            continue;
+        }
+        if oldest.is_none_or(|(_, stamp)| cached.stamp < stamp) {
+            oldest = Some((prefix, cached.stamp));
+        }
+        if !extended && oldest_leaf.is_none_or(|(_, stamp)| cached.stamp < stamp) {
+            oldest_leaf = Some((prefix, cached.stamp));
+        }
+    }
+    let victim = if prefer_leaves {
+        oldest_leaf.or(oldest)
+    } else {
+        oldest
+    };
+    victim.map(|(prefix, _)| prefix.clone())
+}
+
 struct Live {
     key: [u8; 32],
     session: Session,
     setup: SnapId,
     windows: ActionWindows,
     snapshots: BTreeMap<Vec<FaultAction>, Cached>,
+    cache_bytes: u64,
     uses: u64,
     horizons_run: u64,
     abandoned: bool,
@@ -494,12 +525,16 @@ impl Live {
                 stamp: 0,
             },
         );
+        let cache_bytes = session
+            .snapshot_store_bytes()
+            .saturating_add(u64::try_from(config.session.ram_bytes / 2).unwrap_or(u64::MAX));
         Ok(Self {
             key: config.key,
             session,
             setup,
             windows: ActionWindows { root_seal },
             snapshots,
+            cache_bytes,
             uses: 0,
             horizons_run: 0,
             abandoned: false,
@@ -545,14 +580,12 @@ impl Live {
             stamp: self.uses,
         };
         self.snapshots.insert(actions, cached);
-        while self.snapshots.len() > SNAPSHOT_CACHE_LIMIT.saturating_add(1) {
-            let Some(victim) = self
-                .snapshots
-                .iter()
-                .filter(|(prefix, _)| !prefix.is_empty())
-                .min_by_key(|(_, cached)| cached.stamp)
-                .map(|(prefix, _)| prefix.clone())
-            else {
+        loop {
+            let over_count = self.snapshots.len() > SNAPSHOT_CACHE_LIMIT.saturating_add(1);
+            if !over_count && self.session.snapshot_store_bytes() <= self.cache_bytes {
+                break;
+            }
+            let Some(victim) = eviction_victim(&self.snapshots, snap, !over_count) else {
                 break;
             };
             if let Some(victim) = self.snapshots.remove(&victim) {
@@ -846,6 +879,48 @@ mod tests {
                 !session_failure(phase, &SessionError::Unboundable).starts_with(WATCHDOG_CUTOFF)
             );
         }
+    }
+
+    #[test]
+    fn byte_pressure_prefers_the_oldest_snapshot_no_cached_snapshot_extends() {
+        let wait = |ticks| FaultAction::Wait(std::num::NonZeroU16::new(ticks).unwrap());
+        let entry = |snap, stamp| Cached {
+            snap: SnapId(snap),
+            moment: 0,
+            stamp,
+        };
+        let snapshots = BTreeMap::from([
+            (Vec::new(), entry(0, 0)),
+            (vec![wait(1)], entry(1, 1)),
+            (vec![wait(1), wait(2)], entry(2, 2)),
+            (vec![wait(1), wait(2), wait(3)], entry(3, 9)),
+            (vec![wait(1), wait(4)], entry(4, 5)),
+            (vec![wait(5)], entry(5, 4)),
+        ]);
+        assert_eq!(
+            eviction_victim(&snapshots, SnapId(3), false),
+            Some(vec![wait(1)])
+        );
+        assert_eq!(
+            eviction_victim(&snapshots, SnapId(3), true),
+            Some(vec![wait(5)])
+        );
+        let chain = BTreeMap::from([
+            (Vec::new(), entry(0, 0)),
+            (vec![wait(1)], entry(1, 1)),
+            (vec![wait(1), wait(2)], entry(2, 2)),
+        ]);
+        assert_eq!(
+            eviction_victim(&chain, SnapId(2), true),
+            Some(vec![wait(1)])
+        );
+        assert_eq!(
+            eviction_victim(&chain, SnapId(2), false),
+            Some(vec![wait(1)])
+        );
+        let setup_and_taken =
+            BTreeMap::from([(Vec::new(), entry(0, 0)), (vec![wait(1)], entry(1, 1))]);
+        assert_eq!(eviction_victim(&setup_and_taken, SnapId(1), true), None);
     }
 
     #[test]

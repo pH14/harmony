@@ -70,7 +70,17 @@ deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. A bounded LRU keeps recent prefixes resident and rebuilds evicted
-ones from their longest cached ancestor.
+ones from their longest cached ancestor. It holds at most 96 prefixes. It also
+evicts while the session's snapshot store holds more than the setup snapshot
+plus half a guest RAM of bytes, because a cached snapshot keeps the pages of its
+ancestors and a longer action changes more pages, so a count alone does not
+bound a worker's memory. Over that byte limit it prefers the least recently
+used prefix that no other cached prefix extends, because an ancestor's pages
+usually stay alive in its cached descendants. The setup snapshot and the
+snapshot just taken are never evicted, so one action that changes more than
+half a guest RAM can leave the store above the limit. The running guest and
+the store's lookup indexes come on top of the cached pages; on the etcd case,
+four workers with 1 GiB guests peak below 10 GiB, which fits a 16 GB CI runner.
 The shared session watchdog follows deterministic virtual-time progress, so a
 slowly advancing instrumented guest can finish a long action while one stuck
 at a virtual moment still times out. Replay can apply explicit, bounded Wait
