@@ -39,7 +39,9 @@ impl LocalState {
             WorldState::Deadline(s) => Self::Deadline(s),
             WorldState::Delayed(s) => Self::Delayed(s),
             WorldState::DeadlineActions(s) => Self::DeadlineActions(s),
-            WorldState::Chain(_) => unreachable!("validated non-nested stage"),
+            WorldState::Chain(_) | WorldState::Route(_) => {
+                unreachable!("validated non-nested stage")
+            }
         }
     }
     pub fn world_state(self) -> WorldState {
@@ -72,8 +74,8 @@ impl Config {
         }
         let mut capacity = None;
         for stage in &self.stages {
-            if matches!(stage.world, World::Chain(_)) {
-                return Err("nested chains are unsupported".into());
+            if matches!(stage.world, World::Chain(_) | World::Route(_)) {
+                return Err("nested chains and route worlds are unsupported".into());
             }
             stage.world.validate()?;
             if let World::Resource(w) = &stage.world {

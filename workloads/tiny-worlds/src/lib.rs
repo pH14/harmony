@@ -7,6 +7,7 @@ pub mod deadline_actions;
 pub mod delayed;
 pub mod maze;
 pub mod resource;
+pub mod route;
 pub mod worlds;
 use worlds::{State, World};
 
@@ -72,6 +73,7 @@ impl ArchiveKey for Key {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Evidence {
+    pub route_trace: Vec<route::Trace>,
     pub observations: u64,
     pub chain_stage_actions: Vec<u64>,
     pub chain_parent_selections: Vec<u64>,
@@ -333,7 +335,7 @@ impl Evaluation for Workload {
         &self,
         e: &mut Evidence,
         a: &CampaignActionResult<Self>,
-        _: u64,
+        sequence: u64,
         _: F,
     ) -> Result<(), Box<dyn Error>>
     where
@@ -342,6 +344,16 @@ impl Evaluation for Workload {
         for observation in &a.observations {
             e.observations += 1;
             match (&self.config, observation.before, observation.after) {
+                (World::Route(_), State::Route(before), State::Route(after)) => {
+                    e.route_trace.push(route::Trace {
+                        sequence,
+                        action: a.action,
+                        candidate: a.candidate.is_some(),
+                        objective: a.outcome.objective_reached,
+                        before,
+                        after,
+                    });
+                }
                 (World::Resource(w), State::Resource(before), State::Resource(after)) => {
                     if after.place == w.corridor_len && before.place != after.place {
                         e.arrivals[usize::from(after.charge)] += 1;
@@ -526,6 +538,7 @@ pub fn run(
             return Err("invalid objective witness".into());
         }
     }
+    let route_evidence = route::summarize(&report.archive.evidence.route_trace, &stream.0)?;
     let mut work = 0;
     let mut first_objective_work = None;
     let mut continuation_work = 0;
@@ -600,6 +613,7 @@ pub fn run(
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
         "chain_selected_charge":report.archive.evidence.chain_selected_charge,
         "action_limit":workload.config.action_limit(),
+        "route_evidence":route_evidence,
         "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
         "pre_objective_continuation_work":pre_objective_continuation_work,
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,

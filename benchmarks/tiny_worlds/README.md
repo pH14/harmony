@@ -172,3 +172,24 @@ seeds. Freeze source and definitions before inspecting it, just as for
 validation. Once observed, a set is a regression panel; a later implementation
 fix does not make its rerun fresh held-out evidence. Record source identities
 and retain superseded comparisons in private evidence and the PR description.
+
+## Continuation reuse ablation
+
+`route_reuse.json` registers an upgrade-after-scouting diagnostic, an aligned and
+a shifted-position entry, and a no-upgrade control. It fixes development and
+structural validation cases, seeds, work budgets, and attribution endpoints.
+Use a fresh output directory outside the repository, under the resource supervisor:
+
+```sh
+python3 benchmarks/tiny_worlds/route_reuse.py --out /tmp/route-reuse --prepare --split development
+python3 benchmarks/tiny_worlds/route_reuse.py --out /tmp/route-reuse --split validation
+```
+
+Preparation builds two asset-free source copies offline with one compiler job,
+sharing one local build cache. Their only engine difference is disabling the
+continuation bank. All ordinary search and splicing remains available. Outputs
+include source and binary hashes, exact verified per-seed reports, donor/arrival
+attribution, and censored work-to-objective. Preparation refuses an existing output
+directory; later runs verify prepared identities. Reports remain outside Git.
+Run validation once after development is fixed; subsequent reruns are regressions,
+not fresh held-out evidence. No engine tuning or success threshold is implied.

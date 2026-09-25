@@ -199,3 +199,54 @@ attribution of useful stock reaching the final barrier. The chain does not model
 position-sensitive replay after a kill, persistent capability identities, or a
 selection ladder with stage-dependent progress tiers. Its local states have
 exact deterministic transitions and stock does not alter movement geometry.
+
+## Upgrade and position-sensitive route reuse
+
+The `route` world scouts a deterministic route to a blocked endpoint, returns to
+its origin, acquires a persistent upgrade there, and must traverse the route
+again. `pattern` supplies two-bit actions per position, `length` is 2–16,
+`attack` returns from the blocked endpoint and acquires the upgrade at the origin.
+Wrong route actions return to the origin without losing the upgrade. In the
+`shifted` variant, acquisition changes the starting lane. The alignment action,
+`(attack + 1) % 4`, must restore the original lane before route movement works.
+Alignment differs from the first route action. With `upgrade_required=false`,
+the first traversal completes the objective and no upgrade is available.
+
+Position and lane identify archive places; scout/upgrade phase is a retention
+preference. Both comparison arms use exactly this key, the same sampler, and the
+same world transitions. The `broken` flag has no effect on this family. Route
+worlds cannot currently be embedded in chains. This isolated diagnostic supplies
+no oracle tape or pre-populated route bank to the searcher. It deliberately
+requires scouting before acquisition, so it tests reuse after route discovery
+rather than whether an unconstrained game naturally discovers things in that order.
+
+Route evidence joins executed action observations to campaign job sequence IDs
+and admission decisions. It records the selector responsible for each first
+upgraded arrival, the first objective, and pre-objective continuation transfers
+that advance an upgraded state. Donor and leaf states come from historical
+retained admissions, including entries no longer resident at the end. A transfer
+is labeled pre-upgrade only when both recorded donor and leaf predate acquisition.
+Job work includes execution/replay overhead; these timestamps are job-end work,
+not per-action first-hit times. Raw bounded traces remain in local reports and
+are included in replay verification. No evidence changes selection.
+
+The paired runner in `benchmarks/tiny_worlds/route_reuse.py` builds two private
+source copies. Its sole engine mutation disables creation of the continuation
+bank at the existing initialization method, affecting both live execution and
+stream replay. Ordinary exploration, splicing, archive preferences, and all
+world mechanics remain enabled. The runner checks source/binary identities and
+requires zero continuation dispatches in the disabled arm. This is a diagnostic
+source mutation, not an alternate production searcher or a supported engine
+option. Different dispatch schedules can change later random samples even with
+the same seed. The experiment tests the net effect of continuation dispatch,
+including its budget cost; it does not disable every possible route-reuse path.
+
+The registered cases learn short, often one-action transitions. Reusing a route
+means propagating the upgrade through those transitions; these cases do not test
+long open-loop action tapes.
+
+A successful saved-route replay establishes local compatibility, while a paired
+campaign comparison measures whether automatic reuse helps under the registered
+budget. Keep those conclusions separate. The two-lane alignment mechanic models
+one position-sensitive failure; it does not reproduce game physics, combat,
+capability-dependent geometry, or full-game route robustness.
