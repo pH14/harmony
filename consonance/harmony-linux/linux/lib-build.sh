@@ -68,6 +68,8 @@ BBSRC=$BUILD_ROOT/busybox-$BUSYBOX_VERSION
 BBOBJ=$BUILD_ROOT/busybox-build
 ARM64_KOBJ=$BUILD_ROOT/kernel-build-arm64
 MUSLSRC=$BUILD_ROOT/musl-$MUSL_VERSION
+X86_MUSL_SRC=$BUILD_ROOT/musl-x86-src
+X86_MUSL_PREFIX=$BUILD_ROOT/musl-x86-prefix
 ARM64_MUSL_SRC=$BUILD_ROOT/musl-arm64-src
 ARM64_MUSL_PREFIX=$BUILD_ROOT/musl-arm64-prefix
 
@@ -189,28 +191,43 @@ extract_musl() {
     verify_and_extract "$DL_DIR/$(basename "$MUSL_URL")" "$MUSL_SHA256" "$MUSLSRC"
 }
 
-# Build the arm64 userspace C runtime from pristine pinned source on every run.
-# The upstream aarch64 atomics use LL/SC directly, so the Harmony-only patch
-# replaces their public CAS primitives with acquire-release LSE CAS.
-build_arm64_musl() {
+# build_musl <source-dir> <prefix> <cflags> [patch...]: build the static
+# userspace C runtime from pristine pinned source on every run. Platform
+# executables link this musl instead of the host libc, so a host libc update
+# cannot change the shipped bytes.
+build_musl() {
+    local source_dir=$1 prefix=$2 cflags=$3 musl_patch
+    shift 3
     extract_musl
-    rm -rf "$ARM64_MUSL_SRC" "$ARM64_MUSL_PREFIX"
-    cp -a "$MUSLSRC" "$ARM64_MUSL_SRC"
-    patch -d "$ARM64_MUSL_SRC" --batch -p1 \
-        <"$LINUX_DIR/patches/musl/0001-aarch64-harmony-lse-only-atomics.patch"
+    rm -rf "$source_dir" "$prefix"
+    cp -a "$MUSLSRC" "$source_dir"
+    for musl_patch in "$@"; do
+        patch -d "$source_dir" --batch -p1 <"$musl_patch"
+    done
     (
-        cd "$ARM64_MUSL_SRC" || exit
-        CC=cc CFLAGS='-O2 -march=armv8.1-a+lse -mno-outline-atomics' \
-            ./configure --prefix="$ARM64_MUSL_PREFIX" --disable-shared >/dev/null
+        cd "$source_dir" || exit
+        CC=cc CFLAGS=$cflags ./configure --prefix="$prefix" --disable-shared >/dev/null
         make -j"$(nproc)" >/dev/null
         make install >/dev/null
     )
-    [ -x "$ARM64_MUSL_PREFIX/bin/musl-gcc" ] || {
-        echo "FAIL: arm64 musl compiler wrapper was not installed" >&2
+    [ -x "$prefix/bin/musl-gcc" ] || {
+        echo "FAIL: musl compiler wrapper was not installed in $prefix" >&2
         exit 1
     }
-    [ -f "$ARM64_MUSL_PREFIX/lib/libc.a" ] || {
-        echo "FAIL: arm64 static musl runtime was not installed" >&2
+    [ -f "$prefix/lib/libc.a" ] || {
+        echo "FAIL: static musl runtime was not installed in $prefix" >&2
         exit 1
     }
+}
+
+build_x86_musl() {
+    build_musl "$X86_MUSL_SRC" "$X86_MUSL_PREFIX" '-O2 -march=x86-64'
+}
+
+# The upstream aarch64 atomics use LL/SC directly, so the Harmony-only patch
+# replaces their public CAS primitives with acquire-release LSE CAS.
+build_arm64_musl() {
+    build_musl "$ARM64_MUSL_SRC" "$ARM64_MUSL_PREFIX" \
+        '-O2 -march=armv8.1-a+lse -mno-outline-atomics' \
+        "$LINUX_DIR/patches/musl/0001-aarch64-harmony-lse-only-atomics.patch"
 }

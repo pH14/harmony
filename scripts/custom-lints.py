@@ -3,8 +3,7 @@
 """Custom lints for the Harmony repository.
 
 Enforces architectural boundaries, naming conventions, file placement, CI
-workflow rules, and vocabulary constraints. Known violations are recorded in
-a baseline file; new violations fail the check.
+workflow rules, and vocabulary constraints. Every violation fails the check.
 """
 
 from __future__ import annotations
@@ -1537,8 +1536,6 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
     for rel_path in files:
         if not rel_path.startswith("docs/"):
             continue
-        if rel_path in (str(BASELINE_PATH), "docs/semantic-lints-baseline.json"):
-            continue
         if not rel_path.endswith(".md"):
             violations.append(Violation(
                 rule="docs-markdown-only",
@@ -1622,34 +1619,6 @@ def check_github_dir_files(files: list[str]) -> list[Violation]:
     return violations
 
 
-# ---------------------------------------------------------------------------
-# Baseline — known violations that predate the lint.
-# ---------------------------------------------------------------------------
-
-BASELINE_PATH = Path("docs/custom-lints-baseline.json")
-
-
-def load_baseline(repo_root: Path) -> dict[str, list[str]]:
-    path = repo_root / BASELINE_PATH
-    if not path.exists():
-        return {}
-    with path.open() as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        print(f"warning: {path} is not a JSON object, ignoring baseline", file=sys.stderr)
-        return {}
-    return {k: list(v) for k, v in data.items()}
-
-
-def save_baseline(repo_root: Path, baseline: dict[str, list[str]]) -> None:
-    path = repo_root / BASELINE_PATH
-    pruned = {k: sorted(v) for k, v in baseline.items() if v}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
-        json.dump(pruned, f, indent=2, sort_keys=True)
-        f.write("\n")
-
-
 # The prohibited term is assembled so this checker follows its own rule.
 PROHIBITED_WORD = "ga" + "te"
 PROHIBITED_WORD_RE = re.compile(
@@ -1697,15 +1666,10 @@ def tracked_files(repo_root: Path) -> list[str]:
     return [p for p in result.stdout.split("\0") if p and p != self_path]
 
 
-def check_content_rules(
-    repo_root: Path, files: list[str], baseline: dict[str, list[str]]
-) -> tuple[list[Violation], set[tuple[str, str]]]:
-    """Return (new_violations, baseline (rule, key) pairs still present)."""
-    new_violations: list[Violation] = []
-    still_baselined: set[tuple[str, str]] = set()
+def check_content_rules(repo_root: Path, files: list[str]) -> list[Violation]:
+    violations: list[Violation] = []
 
     for rule in RULES:
-        rule_baseline = set(baseline.get(rule.name, []))
         applicable = [f for f in files if rule.applies(f)]
         for rel_path in applicable:
             abs_path = repo_root / rel_path
@@ -1717,15 +1681,11 @@ def check_content_rules(
                 continue
             for i, line in enumerate(lines, 1):
                 if rule.pattern.search(line):
-                    key = f"{rel_path}:{i}"
-                    if key in rule_baseline:
-                        still_baselined.add((rule.name, key))
-                    else:
-                        new_violations.append(
-                            Violation(rule=rule.name, path=rel_path, line=i, text=line.strip())
-                        )
+                    violations.append(
+                        Violation(rule=rule.name, path=rel_path, line=i, text=line.strip())
+                    )
 
-    return new_violations, still_baselined
+    return violations
 
 
 def check_lab_notes(files: list[str]) -> list[str]:
@@ -1736,12 +1696,6 @@ def check_lab_notes(files: list[str]) -> list[str]:
                 violations.append(path)
                 break
     return violations
-
-
-def _violation_key(v: Violation) -> str:
-    if v.line == 0:
-        return f"{v.path}:0"
-    return f"{v.path}:{v.line}"
 
 
 # ---------------------------------------------------------------------------
@@ -1755,19 +1709,13 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path(__file__).resolve().parent.parent,
     )
-    parser.add_argument(
-        "--update-baseline",
-        action="store_true",
-        help="Write the current violations as the new baseline.",
-    )
     args = parser.parse_args(argv)
     root = args.repo_root.resolve()
 
     files = tracked_files(root)
-    baseline = load_baseline(root)
 
     # Content rules (line-level pattern matches).
-    new_violations, still_baselined = check_content_rules(root, files, baseline)
+    new_violations = check_content_rules(root, files)
 
     vocabulary_violations = check_repository_vocabulary(root, files + ["scripts/custom-lints.py"])
 
@@ -1783,36 +1731,7 @@ def main(argv: list[str] | None = None) -> int:
     toplevel_violations = check_toplevel_dirs(files)
     lab_violations = check_lab_notes(files)
 
-    # Merge file-level violations into the baseline system.
-    all_file_violations = vocabulary_violations + comment_violations + misplaced_violations + numbered_violations + workflow_violations + seed_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations
-    new_file_violations: list[Violation] = []
-    for v in all_file_violations:
-        key = _violation_key(v)
-        rule_baseline = set(baseline.get(v.rule, []))
-        if key in rule_baseline and not v.rule.startswith("ci-") and v.rule != VOCABULARY_RULE:
-            still_baselined.add((v.rule, key))
-        else:
-            new_file_violations.append(v)
-
-    errors: list[str] = []
-
-    if args.update_baseline:
-        ci_errors = [v for v in workflow_violations + seed_violations if v.rule.startswith("ci-")]
-        if vocabulary_violations:
-            print("cannot baseline prohibited vocabulary; rename every occurrence first", file=sys.stderr)
-            return 1
-        if ci_errors:
-            print("cannot baseline CI contract violations; fix the workflows first", file=sys.stderr)
-            return 1
-        full: dict[str, list[str]] = {}
-        for v in new_violations + new_file_violations:
-            full.setdefault(v.rule, []).append(_violation_key(v))
-        for rule_name, key in still_baselined:
-            full.setdefault(rule_name, []).append(key)
-        save_baseline(root, full)
-        count = sum(len(v) for v in full.values())
-        print(f"baseline updated: {count} known violation(s) in {BASELINE_PATH}")
-        return 0
+    new_file_violations = vocabulary_violations + comment_violations + misplaced_violations + numbered_violations + workflow_violations + seed_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations
 
     # Remediation text for non-Rule checks.
     REMEDIATION = {
@@ -1927,13 +1846,7 @@ def main(argv: list[str] | None = None) -> int:
     for v in all_violations:
         by_rule.setdefault(v.rule, []).append(v)
 
-    stale: list[str] = []
-    for rule_name, keys in baseline.items():
-        for key in keys:
-            if (rule_name, key) not in still_baselined:
-                stale.append(f"  [{rule_name}] {key}")
-
-    error_count = len(all_violations) + len(stale)
+    error_count = len(all_violations)
     if error_count > 0:
         print(
             f"custom lints failed with {error_count} issue(s):",
@@ -1948,20 +1861,9 @@ def main(argv: list[str] | None = None) -> int:
                 loc = f"{v.path}:{v.line}" if v.line else v.path
                 suffix = f": {v.text}" if v.text else ""
                 print(f"    {loc}{suffix}", file=sys.stderr)
-        if stale:
-            print(
-                f"\n  [stale-baseline] These baseline entries no longer match a "
-                f"violation. The underlying code was fixed; remove them from "
-                f"{BASELINE_PATH}.",
-                file=sys.stderr,
-            )
-            for s in stale:
-                print(f"  {s}", file=sys.stderr)
         return 1
 
-    baselined_count = len(still_baselined)
-    suffix = f" ({baselined_count} baselined)" if baselined_count else ""
-    print(f"custom lints passed{suffix}")
+    print("custom lints passed")
     return 0
 
 

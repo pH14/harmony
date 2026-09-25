@@ -9,7 +9,14 @@ controller interpretation, RAM decoding, setup, and outcome evidence stay in
 The registered workload starts a new game through ordinary power-on menus.
 Equipment, tanks, boss defeat flags, and the ending flag come from cartridge
 work RAM. The decoder maps Samus's screen using name-table membership and scroll
-direction, so camera coordinates do not masquerade as player coordinates. All
+direction, so camera coordinates do not masquerade as player coordinates.
+From a door touch until the arrival state, while the door state at `$56` is
+neither 0 nor 5, the decoder keeps the map cell of the last frame before the
+touch. A touch in a vertically scrolling room flips the scroll direction, and
+the screen decode can then name the screen above the one Samus stands in until
+the room scroll starts. The decoder applies this rule and the absent boss
+reading rule below to every frame, a rooted target's prefix included, so a root
+decodes the same as an action that ends at that frame. All
 source addresses and meanings are documented beside their constants in
 `target.rs`. Zero health is death; the ending flag is victory. The terminal
 identifier is `death_or_ending_v2`.
@@ -56,25 +63,31 @@ The adapter supplies its controller vocabulary as the alphabet sampler and
 nothing else about drawing; the searcher owns the suffix draw and the
 retained-input table.
 
-The items held are the progress tier. The place is the area byte, the map
+The progress tier is the items held and whether the lineage has damaged the
+boss of its area. Mother Brain's defeat counts as one more item: in Tourian,
+her status byte at `$98` reads 3 to 7, 9 or 10, or the high byte of the escape
+timer at `$010B` reads anything but `$ff`. The place is the area byte, the map
 cell, boss damage and the Zebetite hits still needed, so every hit on a boss or
 a Zebetite column opens a new place whose draw count starts fresh, and a state
-that has hurt either never displaces one that has not. The holder identity is the position bucket, posture and door state.
+that has hurt either never displaces one that has not. A damaged boss lifts
+the state into the tier above its item count, so a fight in progress ranks
+above the rest of the map, while each damage level stays a separate place in
+that tier and draws spread across the levels. The holder identity is the position bucket, posture and door state.
 Tanks, missiles and health are the preferences that decide which state holds a
 slot, in two orders: missiles before health, and health before missiles. Two
-places with equal items are peers whatever their area byte, map row or column.
+places in the same tier are peers whatever their area byte, map row or column.
 
-Boss damage is how far a lineage has worn down the mini boss sharing its room.
+Boss damage is how far a lineage has worn down the boss of its area.
 In Tourian the coordinate reads Mother Brain's remaining hits while her
 status byte at `$98` says she is in view (1 idle, 2 hit): 32 minus her hit
 count at `$99`, the count she dies at. The status byte clears whenever Samus
-is in the other half of her room and once her death sequence starts, and the
-reading is absent then; her hit count persists, so the reading falls as
+is in the other half of her room and once her death sequence starts; her hit
+count persists, so the reading falls as
 missiles land on her and never rises. It counts four per hit, the damage one
 missile does to Kraid or Ridley, so one missile is one boss-damage bucket in
 every boss room. Her full health is the reading's ceiling: an execution's
-highest present reading is at least her full health whenever she is in view,
-so a lineage that leaves her room and returns ranks by her hit count again.
+highest reading is at least her full health whenever she has a reading, so a
+lineage that leaves her room and returns ranks by her hit count again.
 The Zebetite columns are part of the place: the key carries the hits still
 needed on every live column slot, so a state that has hit a column is a
 different place from one that has not. Without it, a state that fired a
@@ -89,16 +102,29 @@ loads the columns of each screen as Samus enters it. The state also counts the
 destroyed columns for the `zebetite_destroyed` milestone.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
-hit points mean the slot holds nothing that can be hurt. The key carries the
-remaining hit points and the highest present reading over the execution's
-frames, and the lineage carries the highest reading it has seen, so the damage
-is the difference between that highest and the remaining hit points in buckets
-of four. A reading of nothing keeps the parent's damage, because a hit flashes
-the slot empty for a few frames. A lineage that leaves the boss's room, reading
-nothing in a different map cell, starts from zero, because the boss regains
-full health when the room is re-entered; while the reading stays present the
-highest carries across map cells, so Mother Brain's reading ranks both
-screens of her room on the same ladder. Without the coordinate a state that has landed ten hits on
+hit points mean the slot holds nothing that can be hurt. Cartridge RAM holds
+each slot's status at `$6AF4` (0 when unused) and its enemy type at `$6B02`,
+with the same spacing. A freed slot keeps its old hit points and mini-boss mark,
+so the boss reading comes only from an in-use slot holding Kraid (type 8 in area
+`$12`) or Ridley (type 9 in area `$14`). The machine records cartridge RAM from
+`$6877` through `$6B52`, which holds every cartridge byte the decoder reads, on
+every frame, because a boss can die and free his slot partway through an
+action. The key carries the
+remaining hit points and the highest reading over the execution's frames in
+the current area, and the lineage carries the highest reading it has seen in
+its current area. The damage is the difference between that highest and the
+remaining hit points, rounded up to buckets of four, so any hit, such as a
+one-point bomb hit on Kraid, puts the state in the engaged tier. Each area
+holds one boss, so the highest starts from zero when the area changes. A
+reading that goes absent keeps its last value while Samus stays in the same
+map cell outside a door transition, because a hit flashes Kraid's or Ridley's
+slot empty for a few frames. Kraid and Ridley regain full health when their
+room is re-entered. Mother Brain follows the same rule until
+she is defeated. Her hit count persists while she is off screen, but keeping her
+reading in other map cells spreads the engaged tier's draws over the Tourian
+corridor, where no missile reaches her. The reading also drops when the item
+count changes, because a kill adds an item. With no reading the damage is
+zero. Without the coordinate a state that has landed ten hits on
 Kraid shares a cell with one standing in the doorway, and no ordering can
 prefer the first.
 
@@ -226,16 +252,16 @@ with the defeat write in `Bank07.asm` at `LDD75`: `(InArea & 0x0f) >> 1`
 stores 1 at $687B for Kraid and 2 at $687C for Ridley. The key reads Mother
 Brain's remaining hits into Tourian's boss health at four per hit while her
 status byte says she is in view, with her full health as the ceiling of the
-highest present reading. It keeps the live Zebetite columns' remaining hits in
-the cell below the map cell, and carries a lineage's highest reading across map
-cells while a reading is present. Named progress
+highest reading. It keeps the live Zebetite columns' remaining hits in the
+cell below the map cell, and carries a lineage's highest reading across map
+cells within one area. Named progress
 (`metroid-named-progress-v3`) records the Kraid and Ridley defeat flags, Mother
 Brain's state, latched Tourian events and the destroyed Zebetite column, and
 binds Mother Brain's room to her status byte. Route timestamps exclude genesis
 setup. The replay probe reports action execution work and setup separately, and
 probes and backend snapshot replay are outside the execution-work counter. The
-campaign stream format is v4; the snapshot checkpoint and result digest formats
-are v5. The combined capacity score is a separate named score.
+campaign stream format is v4, the snapshot checkpoint format is v11, and the
+result digest format is v7. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:
 

@@ -66,7 +66,8 @@ if [ "$runtime_arch" = aarch64 ]; then
     busybox_cflags='-march=armv8.1-a+lse -mno-outline-atomics'
     busybox_flag_args=(-march=armv8.1-a+lse -mno-outline-atomics)
 else
-    busybox_cc=cc
+    build_x86_musl
+    busybox_cc=$X86_MUSL_PREFIX/bin/musl-gcc
     busybox_cflags=
     busybox_flag_args=()
 fi
