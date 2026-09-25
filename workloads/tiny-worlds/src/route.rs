@@ -12,6 +12,7 @@ pub struct Config {
     pub attack: u8,
     pub shifted: bool,
     pub upgrade_required: bool,
+    pub ranked_upgrade: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -106,7 +107,7 @@ impl Config {
             charge: s.phase,
             health: 0,
             goal: self.goal(s),
-            tier: 0,
+            tier: u8::from(self.ranked_upgrade && s.phase == 2),
         }
     }
     pub fn reachable(&self) -> Result<bool, String> {
@@ -131,6 +132,7 @@ impl Config {
 pub fn summarize(
     trace: &[Trace],
     stream: &[u8],
+    length: u8,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     if trace.is_empty() {
         return Ok(serde_json::Value::Null);
@@ -145,6 +147,7 @@ pub fn summarize(
     let mut first_objective_path = None;
     let mut first_acquisition = None;
     let mut first_alignment = None;
+    let mut first_endpoint = None;
     let mut work = 0;
     for line in stream.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
         let record: serde_json::Value = serde_json::from_slice(line)?;
@@ -217,6 +220,10 @@ pub fn summarize(
                 first_acquisition =
                     Some(serde_json::json!({"sequence":sequence,"work":work,"lane":a.after.lane}));
             }
+            if before_objective && a.after.position == length && first_endpoint.is_none() {
+                first_endpoint =
+                    Some(serde_json::json!({"sequence":sequence,"work":work,"path":path}));
+            }
             if before_objective
                 && a.before.lane == 1
                 && a.after.lane == 0
@@ -255,7 +262,7 @@ pub fn summarize(
     }
     Ok(
         serde_json::json!({"first_upgraded_arrivals":first_arrivals,"upgraded_continuation_transfers":transfers,
-        "first_objective_path":first_objective_path,"first_acquisition":first_acquisition,"first_alignment":first_alignment}),
+        "first_objective_path":first_objective_path,"first_endpoint":first_endpoint,"first_acquisition":first_acquisition,"first_alignment":first_alignment}),
     )
 }
 
@@ -269,6 +276,7 @@ mod tests {
             attack: 2,
             shifted: true,
             upgrade_required: true,
+            ranked_upgrade: false,
         }
     }
     fn tape(w: &Config, s: State, actions: &[u8]) -> State {
@@ -381,7 +389,8 @@ mod tests {
         assert!(
             summarize(
                 std::slice::from_ref(&first),
-                &serde_json::to_vec(&record).unwrap()
+                &serde_json::to_vec(&record).unwrap(),
+                6
             )
             .is_err()
         );
@@ -389,7 +398,8 @@ mod tests {
         assert!(
             summarize(
                 std::slice::from_ref(&first),
-                &serde_json::to_vec(&record).unwrap()
+                &serde_json::to_vec(&record).unwrap(),
+                6
             )
             .is_ok()
         );
@@ -403,7 +413,7 @@ mod tests {
         stream.push(b'\n');
         stream.extend(serde_json::to_vec(&record).unwrap());
         assert!(
-            summarize(&[first, second], &stream)
+            summarize(&[first, second], &stream, 6)
                 .unwrap_err()
                 .to_string()
                 .contains("parent state mismatch")
@@ -423,10 +433,46 @@ mod tests {
         let record = serde_json::json!({"event":"job","sequence":1,"execution_work":1,"parent_id":0,
             "selector":{"path":"tiers"},"decisions":[{"decision":"retained","id":1}]});
         assert!(
-            summarize(&[trace], &serde_json::to_vec(&record).unwrap())
+            summarize(&[trace], &serde_json::to_vec(&record).unwrap(), 6)
                 .unwrap_err()
                 .to_string()
                 .contains("objective decision mismatch")
         );
+    }
+    #[test]
+    fn ranked_upgrade_raises_the_tier_and_reports_both_trips() {
+        let w = Config {
+            shifted: false,
+            ranked_upgrade: true,
+            ..config()
+        };
+        let route: Vec<_> = (0..w.length).map(|i| w.route_action(i)).collect();
+        let blocked = tape(&w, w.initial(), &route);
+        let upgraded = tape(&w, blocked, &[w.attack, w.attack]);
+        assert_eq!((upgraded.position, upgraded.phase), (0, 2));
+        assert_eq!(w.key(blocked).tier, 0);
+        assert_eq!(w.key(upgraded).tier, 1);
+        assert_eq!(w.key(upgraded).place, w.key(w.initial()).place);
+        assert_eq!(
+            Config {
+                ranked_upgrade: false,
+                ..w
+            }
+            .key(upgraded)
+            .tier,
+            0
+        );
+        let workload = crate::Workload {
+            config: crate::worlds::World::Route(w),
+            broken: false,
+        };
+        let report = crate::run(&workload, crate::test_seed(), 4000, true).unwrap();
+        assert_eq!(report["verified"], true);
+        let evidence = &report["route_evidence"];
+        if let Some(objective) = report["first_objective_work"].as_u64() {
+            let endpoint = evidence["first_endpoint"]["work"].as_u64().unwrap();
+            let acquisition = evidence["first_acquisition"]["work"].as_u64().unwrap();
+            assert!(endpoint <= acquisition && acquisition <= objective);
+        }
     }
 }

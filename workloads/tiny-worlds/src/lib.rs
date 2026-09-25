@@ -544,7 +544,15 @@ pub fn run(
             return Err("invalid objective witness".into());
         }
     }
-    let route_evidence = route::summarize(&report.archive.evidence.route_trace, &stream.0)?;
+    let route_length = match &workload.config {
+        World::Route(w) => w.length,
+        _ => 0,
+    };
+    let route_evidence = route::summarize(
+        &report.archive.evidence.route_trace,
+        &stream.0,
+        route_length,
+    )?;
     let mut work = 0;
     let mut first_objective_work = None;
     let mut continuation_work = 0;
