@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::{
-    Key, actions, backtrack, chain, deadline, deadline_actions, delayed, map, maze, resource,
-    route, trap,
+    Key, actions, backtrack, chain, deadline, deadline_actions, delayed, graph, map, maze,
+    resource, route, trap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,7 @@ pub enum World {
     Trap(trap::Config),
     Backtrack(backtrack::Config),
     Map(map::Config),
+    Graph(graph::Config),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -40,6 +41,7 @@ pub enum State {
     Trap(trap::State),
     Backtrack(backtrack::State),
     Map(map::State),
+    Graph(graph::State),
 }
 
 impl World {
@@ -56,6 +58,7 @@ impl World {
             Self::Trap(w) => w.validate(),
             Self::Backtrack(w) => w.validate(),
             Self::Map(w) => w.validate(),
+            Self::Graph(w) => w.validate(),
         }
     }
     pub fn valid_state(&self, state: State) -> bool {
@@ -76,6 +79,7 @@ impl World {
                 (Self::Trap(w), State::Trap(s)) => w.state_is_bounded(s),
                 (Self::Backtrack(w), State::Backtrack(s)) => w.state_is_bounded(s),
                 (Self::Map(w), State::Map(s)) => w.state_is_bounded(s),
+                (Self::Graph(w), State::Graph(s)) => w.state_is_bounded(s),
                 _ => false,
             }
     }
@@ -92,6 +96,7 @@ impl World {
             Self::Trap(w) => State::Trap(w.initial()),
             Self::Backtrack(w) => State::Backtrack(w.initial()),
             Self::Map(w) => State::Map(w.initial()),
+            Self::Graph(w) => State::Graph(w.initial()),
         }
     }
     pub fn step(&self, state: State, action: u8) -> State {
@@ -109,6 +114,7 @@ impl World {
             (Self::Trap(w), State::Trap(s)) => State::Trap(w.step(s, action)),
             (Self::Backtrack(w), State::Backtrack(s)) => State::Backtrack(w.step(s, action)),
             (Self::Map(w), State::Map(s)) => State::Map(w.step(s, action)),
+            (Self::Graph(w), State::Graph(s)) => State::Graph(w.step(s, action)),
             _ => panic!("world and state family mismatch"),
         }
     }
@@ -125,6 +131,7 @@ impl World {
             (Self::Trap(w), State::Trap(s)) => w.goal(s),
             (Self::Backtrack(w), State::Backtrack(s)) => w.goal(s),
             (Self::Map(w), State::Map(s)) => w.goal(s),
+            (Self::Graph(w), State::Graph(s)) => w.goal(s),
             _ => false,
         }
     }
@@ -141,6 +148,7 @@ impl World {
             Self::Trap(w) => w.reachable(),
             Self::Backtrack(w) => w.reachable(),
             Self::Map(w) => w.reachable(),
+            Self::Graph(w) => w.reachable(),
         }
     }
     pub fn key(&self, state: State, broken: bool) -> Key {
@@ -156,6 +164,7 @@ impl World {
             (Self::Trap(w), State::Trap(s)) => w.key(s, broken),
             (Self::Backtrack(w), State::Backtrack(s)) => w.key(s, broken),
             (Self::Map(w), State::Map(s)) => w.key(s, broken),
+            (Self::Graph(w), State::Graph(s)) => w.key(s, broken),
             _ => panic!("world and state family mismatch"),
         }
     }

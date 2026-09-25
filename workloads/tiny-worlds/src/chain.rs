@@ -51,7 +51,9 @@ impl LocalState {
             WorldState::Trap(s) => Self::Trap(s),
             WorldState::Backtrack(s) => Self::Backtrack(s),
             WorldState::Map(s) => Self::Map(s),
-            WorldState::Chain(_) => unreachable!("validated non-nested stage"),
+            WorldState::Chain(_) | WorldState::Graph(_) => {
+                unreachable!("validated non-nested, non-graph stage")
+            }
         }
     }
     pub fn world_state(self) -> WorldState {
@@ -90,6 +92,9 @@ impl Config {
         for stage in &self.stages {
             if matches!(stage.world, World::Chain(_)) {
                 return Err("nested chains are unsupported".into());
+            }
+            if matches!(stage.world, World::Graph(_)) {
+                return Err("graph stages are unsupported".into());
             }
             stage.world.validate()?;
             if let World::Resource(w) = &stage.world {

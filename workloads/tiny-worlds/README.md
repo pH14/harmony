@@ -103,6 +103,7 @@ representation or action choice affects the same world transitions.
 | `backtrack` | Walk a line whose barriers each need one more item; the next item is taken at the hub after reaching the next barrier. | Hide items from the key. |
 | `trap` | Follow a corridor to the goal, or enter a side corridor to an item whose rooms never reach the goal. | Hide the item from the progress tier. |
 | `map` | Enter a branch of a grid of rooms, take the item at its far end, leave through the same door, and cross the rest of the map to the goal. | Hide the item from the progress tier. |
+| `graph` | Walk a long line of nodes, with hashed jumps, to its last node. | Hide the progress tier. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -163,6 +164,18 @@ it leaves the item room at once and settles with 0.8–0.9 of top-tier draws
 outside the inner region, where Metroid stays on 6–12 map cells for about 0.4
 of the first trip and settles at 0.3–0.5.
 
+The graph world is sized for scaled runs. It has `nodes` states in a line,
+each also carrying stock and health from 0 to 15. Action 0 moves to the next
+node, so the goal at the last node is reachable from every state; the
+reachability check holds by this construction instead of enumeration. Actions
+1–3 jump to a node drawn from a hash of `layout`, the node, and the action, and
+add amounts from the same hash to stock and health modulo 16. The place splits
+the nodes into `places` equal ranges and the identity is the node's position in
+its range, so a large graph gives hundreds of thousands of slots in about as
+many cells as `places`. Stock and health feed the two slot preferences, and the
+tier splits the nodes into `levels` equal ranges. Graphs cannot be chain
+stages.
+
 Diagnostics count admitted suffix observations. Arrival histograms count
 transitions into a location; resource refill counts require a stock increase.
 Delayed-progress histograms include distraction observations in their zero bin.
@@ -175,7 +188,8 @@ suffix were already executed; they produce no job.
 ## Configuration bounds
 
 Every parameter is required. Bounds keep exhaustive enumeration below 100,000
-states; requests exceeding the reachability limit are rejected.
+states; requests exceeding the reachability limit are rejected. The graph
+family's reachability holds by construction.
 
 | Family | Parameters |
 | --- | --- |
@@ -189,11 +203,12 @@ states; requests exceeding the reachability limit are rejected.
 | Backtrack | `barriers` 1–4; `segment` 1–8; `(barriers + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count. |
+| Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain` and `graph` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.

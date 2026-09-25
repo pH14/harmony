@@ -6,6 +6,7 @@ pub mod chain;
 pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
+pub mod graph;
 pub mod map;
 pub mod maze;
 pub mod resource;
@@ -683,6 +684,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         }
                     }
                 }
+                (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
                 _ => return Err("observation family mismatch".into()),
             }
             e.objectives += u64::from(self.config.goal(observation.after));
