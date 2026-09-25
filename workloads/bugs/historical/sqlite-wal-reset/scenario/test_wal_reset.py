@@ -44,6 +44,7 @@ def main() -> None:
         affected.reached_site(CHECKPOINT_SITE)
         .observed("wal-reset-before-checkpoint")
         .observed("stale-backfill-advanced")
+        .observed("final-canary-read-completed")
         .violated(LOSS_ASSERTION)
         .identical_replays()
     )
@@ -54,6 +55,7 @@ def main() -> None:
         (
             fixed.reached_site(CHECKPOINT_SITE)
             .observed("wal-reset-before-checkpoint")
+            .observed("final-canary-read-completed")
             .not_observed("stale-backfill-advanced")
             .clean()
             .identical_replays()

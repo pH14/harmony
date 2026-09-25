@@ -17,8 +17,9 @@ WAL has one frame. The writer then commits row 2. A truncate checkpoint skips
 that second frame, and a fresh connection checks both committed rows. The
 affected version violates `no-lost-committed-writes`; the fixed version leaves
 `nBackfill` at zero and preserves both rows. The test checks the pause landing,
-the reset ordering, the divergent backfill state, and identical state hashes
-across two replays of each version.
+the reset ordering, the divergent backfill state, completion of the final
+fresh-connection read, and identical state hashes across two replays of each
+version.
 
 Build both images from the repository root, saving each as a Docker archive:
 

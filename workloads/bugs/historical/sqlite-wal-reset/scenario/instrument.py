@@ -12,11 +12,11 @@ if text.count(needle) != 1:
 reset = "static void walRestartHdr(Wal *pWal, u32 salt1){"
 if text.count(reset) != 1:
     raise SystemExit("SQLite WAL reset function changed; review the marker placement")
-text = ("extern void harmony_test_gate(void);\n"
+text = ("extern void harmony_test_checkpoint_ready(void);\n"
         "extern void harmony_test_reset(void);\n"
         "extern void harmony_test_state(int, unsigned, unsigned, unsigned);\n") + text.replace(
     needle,
-    "        harmony_test_gate();\n"
+    "        harmony_test_checkpoint_ready();\n"
     "        harmony_test_state(0, pWal->hdr.mxFrame, walIndexHdr(pWal)->mxFrame, walCkptInfo(pWal)->nBackfill);\n"
     + needle + "\n"
     "        harmony_test_state(1, pWal->hdr.mxFrame, walIndexHdr(pWal)->mxFrame, walCkptInfo(pWal)->nBackfill);"

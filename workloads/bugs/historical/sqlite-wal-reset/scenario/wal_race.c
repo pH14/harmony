@@ -75,7 +75,7 @@ void harmony_test_state(int phase, unsigned old, unsigned live, unsigned backfil
         observation("stale-backfill-advanced", backfill > live);
 }
 
-void harmony_test_gate(void)
+void harmony_test_checkpoint_ready(void)
 {
     if (atomic_load_explicit(&checkpoint_active, memory_order_acquire)) {
         mark("/run/checkpoint-reached", 1);
@@ -276,6 +276,7 @@ static int run(void)
     recovered = scalar(probe, "SELECT count(*) FROM canary");
     sqlite3_close(probe);
     assertion("no-lost-committed-writes", recovered == committed);
+    observation("final-canary-read-completed", 1);
     fprintf(stderr, "committed=%d recovered=%d\n", committed, recovered);
     for (;;)
         nanosleep(&pause, NULL);
