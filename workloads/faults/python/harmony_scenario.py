@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import ctypes
+import hashlib
 import json
 import subprocess
-import ctypes
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +14,27 @@ def _ticks(milliseconds: int) -> int:
     if milliseconds < 10 or milliseconds % 10 or milliseconds // 10 > 65535:
         raise ValueError("duration must be a multiple of 10 ms in 10..655350 ms")
     return milliseconds // 10
+
+
+@dataclass(frozen=True)
+class Site:
+    name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("site name must be a nonempty string")
+
+    @property
+    def id(self) -> int:
+        digest = hashlib.sha256(b"harmony.site\0" + self.name.encode("utf-8")).digest()
+        return (int.from_bytes(digest[:4], "big") & 0x7FFF_FFFF) or 1
+
+
+def _site_id(site: Site | int) -> int:
+    value = site.id if isinstance(site, Site) else site
+    if not isinstance(value, int) or not 0 < value < 1 << 31:
+        raise ValueError("site must be a named Site or a nonzero 31-bit id")
+    return value
 
 
 _event_sink = None
@@ -90,19 +112,18 @@ class Scenario:
     def park_site(
         self,
         node: int,
-        site: int,
+        site: Site | int,
         hold_ms: int,
         then_wait_ms: int = 10,
     ) -> Scenario:
-        if not 0 < site < 1 << 31:
-            raise ValueError("site must be a nonzero 31-bit id")
+        site_id = _site_id(site)
         if not 0 < hold_ms <= 4_294_967:
             raise ValueError("hold must fit in the runtime's microsecond field")
         self.actions.append(
             {
                 "SitePark": {
                     "node": node,
-                    "site": site,
+                    "site": site_id,
                     "hold_us": hold_ms * 1000,
                     "ticks": _ticks(then_wait_ms),
                 }
@@ -165,10 +186,12 @@ class Result:
             raise AssertionError("replay produced no runs")
         return runs
 
-    def reached_site(self, site: int) -> Result:
+    def reached_site(self, site: Site | int) -> Result:
+        site_id = _site_id(site)
         for run in self._runs():
-            if not any(park.get("site") == site for park in run.get("parks", [])):
-                raise AssertionError(f"run {run['run']} did not park at site {site:#x}")
+            if not any(park.get("site") == site_id for park in run.get("parks", [])):
+                label = site.name if isinstance(site, Site) else f"{site_id:#x}"
+                raise AssertionError(f"run {run['run']} did not park at site {label}")
         return self
 
     def violated(self, assertion: str) -> Result:

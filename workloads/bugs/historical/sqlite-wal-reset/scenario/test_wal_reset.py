@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 
 
-CHECKPOINT_SITE = 0x514C0001
 PARK_ENV = "HARMONY_SQLITE_PARK_CHECKPOINT"
 DATABASE = Path("/data/wal-race.db")
 START = Path("/run/wal-race-start")
@@ -26,7 +25,9 @@ LOSS_ASSERTION = "no-lost-committed-writes"
 parents = Path(__file__).resolve().parents
 if len(parents) > 4:
     sys.path.insert(0, str(parents[4] / "faults" / "python"))
-from harmony_scenario import Scenario, always, setup_complete, sometimes
+from harmony_scenario import Scenario, Site, always, setup_complete, sometimes
+
+BEFORE_CHECKPOINT = Site("sqlite.wal.before_checkpoint")
 
 
 def instrument(source: Path) -> None:
@@ -37,7 +38,7 @@ def instrument(source: Path) -> None:
     header = "extern void notify_coverage(unsigned long long);\n"
     marker = (
         f'        if (getenv("{PARK_ENV}") != 0) '
-        f"notify_coverage({CHECKPOINT_SITE}ULL);\n"
+        f"notify_coverage({BEFORE_CHECKPOINT.id}ULL);\n"
     )
     source.write_text(header + text.replace(needle, marker + needle))
 
@@ -183,7 +184,7 @@ def scenario(image: Path, arguments: argparse.Namespace) -> Scenario:
             base_initramfs=arguments.base_initramfs,
             ram_mib=arguments.ram_mib,
         )
-        .park_site(node=0, site=CHECKPOINT_SITE, hold_ms=10000, then_wait_ms=100)
+        .park_site(node=0, site=BEFORE_CHECKPOINT, hold_ms=10000, then_wait_ms=100)
         .hook(1, then_wait_ms=1000)
         .hook(2, then_wait_ms=100)
         .wait(12000)
@@ -203,7 +204,7 @@ def run_host() -> None:
 
     affected = scenario(arguments.image, arguments).run(arguments.out / "affected")
     (
-        affected.reached_site(CHECKPOINT_SITE)
+        affected.reached_site(BEFORE_CHECKPOINT)
         .observed("writer-first-commit-completed")
         .observed("final-canary-read-completed")
         .violated(LOSS_ASSERTION)
@@ -214,7 +215,7 @@ def run_host() -> None:
     if arguments.fixed_image is not None:
         fixed = scenario(arguments.fixed_image, arguments).run(arguments.out / "fixed")
         (
-            fixed.reached_site(CHECKPOINT_SITE)
+            fixed.reached_site(BEFORE_CHECKPOINT)
             .observed("writer-first-commit-completed")
             .observed("final-canary-read-completed")
             .clean()

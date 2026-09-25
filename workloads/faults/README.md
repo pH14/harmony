@@ -64,6 +64,10 @@ The small [Python scenario helper](python/harmony_scenario.py) writes these inpu
 runs the existing replay CLI, and checks the resulting assertion and park evidence.
 The same module also lets Python processes inside an image call `setup_complete`,
 `always`, and `sometimes` without formatting SDK event records themselves.
+`Site("service.phase")` gives an authored pause point a name and derives a stable,
+nonzero 31-bit marker from its UTF-8 name. The image can emit `site.id` through
+`notify_coverage`, while `park_site` and `reached_site` accept the named `Site`;
+the replay wire format still carries the numeric marker.
 
 ## Execution
 

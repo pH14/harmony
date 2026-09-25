@@ -8,8 +8,9 @@ The image builds the pinned SQLite fork as a shared library loaded by Python's
 `sqlite3` module. At build time the same Python file inserts one call to the
 generic `notify_coverage` hook after `sqlite3WalCheckpoint` reads its WAL
 header, just before `walCheckpoint`. SQLite's checkpoint and write logic is
-unchanged, and there is no C test program. `0x514C0001` is simply the stable
-label chosen for that hook, not a SQLite address or discovered offset.
+unchanged, and there is no C test program. `Site("sqlite.wal.before_checkpoint")`
+names that hook in Python; the SDK derives the numeric marker used by the
+instrumented image and the replay action.
 
 The Python workload prepares a WAL database with a large mapped table. One
 hook starts the checkpointer after the site park is armed; a second releases

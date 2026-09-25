@@ -1,17 +1,19 @@
 import unittest
 from pathlib import Path
 
-from harmony_scenario import Result, Scenario
+from harmony_scenario import Result, Scenario, Site
 
 
 class ScenarioContract(unittest.TestCase):
     def test_site_park_records_a_precise_action(self):
+        site = Site("sqlite.wal.before_checkpoint")
+        self.assertEqual(site.id, 1036543216)
         scenario = Scenario(image=Path("service.oci")).park_site(
-            node=0, site=7, hold_ms=2000, then_wait_ms=10
+            node=0, site=site, hold_ms=2000, then_wait_ms=10
         )
         self.assertEqual(
             scenario.actions,
-            [{"SitePark": {"node": 0, "site": 7, "hold_us": 2_000_000, "ticks": 1}}],
+            [{"SitePark": {"node": 0, "site": site.id, "hold_us": 2_000_000, "ticks": 1}}],
         )
 
     def test_result_checks_every_replay(self):
