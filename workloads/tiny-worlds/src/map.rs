@@ -479,6 +479,10 @@ mod tests {
             assert!(reached.windows(2).all(|w| w[0] <= w[1]));
             assert!(first.iter().skip(reached.len()).all(Option::is_none));
             assert_eq!(first[3], report["first_objective_work"].as_u64());
+            let timeline: Vec<[u64; 3]> =
+                serde_json::from_value(report["parent_timeline"].clone()).unwrap();
+            assert!(timeline.windows(2).all(|w| w[0][0] <= w[1][0]));
+            assert!(timeline.iter().all(|t| t[1] <= 1));
         }
     }
 

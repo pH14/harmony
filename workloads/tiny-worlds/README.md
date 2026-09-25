@@ -129,7 +129,13 @@ and the side actions do nothing. The archive place is the room and the
 position inside its doorway, and the tier is 1 once the item is held. Map
 reports include the `layout` (doors per room, regions, item, door, goal, and
 room distances), `evidence.map_first` (first work entering the inner region,
-holding the item, leaving it with the item, and at the goal).
+holding the item, leaving it with the item, and at the goal), and
+`parent_timeline`, which lists each job's start work, whether its parent holds
+the item, and its parent place in order. A room is its place divided by 16.
+As a known limit, the map spreads draws faster than Metroid. After the item
+it leaves the item room at once and settles with 0.8–0.9 of top-tier draws
+outside the inner region, where Metroid stays on 6–12 map cells for about 0.4
+of the first trip and settles at 0.3–0.5.
 
 Diagnostics count admitted suffix observations. Arrival histograms count
 transitions into a location; resource refill counts require a stock increase.

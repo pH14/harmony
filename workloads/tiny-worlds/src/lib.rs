@@ -721,6 +721,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     let mut parent_draws =
         std::collections::BTreeMap::<(bool, &str, Option<u8>, u16, u16), u64>::new();
     let mut skipped_draws = std::collections::BTreeMap::<(bool, &str, Option<u8>), u64>::new();
+    let mut timeline = Vec::new();
     for record in stream_records(&stream.0)? {
         if let CampaignStreamRecord::Skip(skip) = &record {
             *skipped_draws
@@ -736,6 +737,9 @@ fn campaign<const CAPACITY_TWO: bool>(
             work += job_work;
             last_job_work = job_work;
             if let Some(&(tier, place)) = parents.get(&job.sequence) {
+                if matches!(workload.config, World::Map(_)) {
+                    timeline.push([work - job_work, u64::from(tier), u64::from(place)]);
+                }
                 *parent_draws
                     .entry((
                         first_objective_work.is_none(),
@@ -819,7 +823,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         "chain_parent_selections":report.archive.evidence.chain_parent_selections,
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
         "chain_selected_charge":report.archive.evidence.chain_selected_charge,
-        "route_evidence":route_evidence,"layout":workload.config.layout(),
+        "route_evidence":route_evidence,"layout":workload.config.layout(),"parent_timeline":timeline,
         "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
         "pre_objective_continuation_work":pre_objective_continuation_work,
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
