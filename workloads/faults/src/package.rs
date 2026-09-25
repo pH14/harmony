@@ -683,6 +683,7 @@ mod tests {
                 edges: 1,
                 hold_us,
                 ticks: std::num::NonZeroU16::new(2).unwrap(),
+                target: None,
             }])
             .expect("serialize")
         };

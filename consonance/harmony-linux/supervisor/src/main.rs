@@ -1156,6 +1156,7 @@ mod runtime {
                     events.queue(EventCommand::ArmPark {
                         edges: park.edges,
                         hold_nanos: park.hold_nanos,
+                        target: park.target,
                     });
                 }
             }

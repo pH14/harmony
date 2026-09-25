@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;
 
 use control_proto::StopReason;
-use fault_policy::{DecisionClass, Fault, HostFault, Span, StandingWindow, process_target};
+use fault_policy::{
+    DecisionClass, Fault, HostFault, ParkTarget, Span, StandingWindow, process_target,
+};
 use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,12 @@ pub enum FaultAction {
         edges: u32,
         hold_us: u32,
         ticks: NonZeroU16,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "park_target_serde"
+        )]
+        target: Option<ParkTarget>,
     },
     Pause(u16, NonZeroU16),
     Restart(u16, NonZeroU16),
@@ -77,6 +85,7 @@ impl FaultAction {
                 node,
                 edges,
                 hold_us,
+                target,
                 ..
             } => Self::EventPark {
                 node,
@@ -86,12 +95,48 @@ impl FaultAction {
                         .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
                 ),
                 ticks,
+                target,
             },
             Self::Pause(node, _) => Self::Pause(node, ticks),
             Self::Restart(node, _) => Self::Restart(node, ticks),
             Self::Hook(id, _) => Self::Hook(id, ticks),
             Self::Interrupt(vector, _) => Self::Interrupt(vector, ticks),
         }
+    }
+}
+
+mod park_target_serde {
+    use fault_policy::ParkTarget;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize, Serialize)]
+    struct Range {
+        start: u64,
+        end: u64,
+    }
+
+    pub fn serialize<S: Serializer>(
+        target: &Option<ParkTarget>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        target
+            .map(|target| Range {
+                start: target.start,
+                end: target.end,
+            })
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ParkTarget>, D::Error> {
+        Option::<Range>::deserialize(deserializer)?
+            .map(|range| {
+                ParkTarget::new(range.start, range.end).ok_or_else(|| {
+                    serde::de::Error::custom("a park target must be a nonempty range")
+                })
+            })
+            .transpose()
     }
 }
 
@@ -168,6 +213,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             node,
             edges,
             hold_us,
+            target,
             ..
         } => ActionDelta {
             standing: Some(standing(
@@ -176,6 +222,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                     &Fault::ProcEventPark {
                         edges,
                         hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                        target,
                     },
                 ),
                 (start, end),
@@ -614,6 +661,7 @@ mod tests {
                 edges: 5,
                 hold_us: 1,
                 ticks: ticks(9),
+                target: ParkTarget::new(8, 16),
             },
             FaultAction::Pause(1, ticks(9)),
             FaultAction::Restart(1, ticks(9)),
@@ -634,6 +682,7 @@ mod tests {
             edges: 1,
             hold_us: 90_000,
             ticks: ticks(9),
+            target: ParkTarget::new(8, 16),
         };
         assert_eq!(
             park.with_ticks(ticks(4)),
@@ -642,6 +691,7 @@ mod tests {
                 edges: 1,
                 hold_us: 40_000,
                 ticks: ticks(4),
+                target: ParkTarget::new(8, 16),
             }
         );
         assert_eq!(
@@ -651,6 +701,7 @@ mod tests {
                 edges: 1,
                 hold_us: 90_000,
                 ticks: ticks(12),
+                target: ParkTarget::new(8, 16),
             }
         );
     }
@@ -692,6 +743,7 @@ mod tests {
             edges: 4_096,
             hold_us: 2_000_000,
             ticks: ticks(500),
+            target: None,
         };
         let window = WINDOWS.window(&[action], 0).unwrap();
         let fault = action_delta(action, window).standing.unwrap();
@@ -704,9 +756,45 @@ mod tests {
                 Fault::ProcEventPark {
                     edges: 4_096,
                     hold: Span(2_000_000_000),
+                    target: None,
                 }
             ))
         );
+        let aimed = FaultAction::EventPark {
+            node: 2,
+            edges: 4_096,
+            hold_us: 2_000_000,
+            ticks: ticks(500),
+            target: ParkTarget::new(0x892e8, 0x892ec),
+        };
+        let fault = action_delta(aimed, window).standing.unwrap();
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((
+                2,
+                Fault::ProcEventPark {
+                    edges: 4_096,
+                    hold: Span(2_000_000_000),
+                    target: ParkTarget::new(0x892e8, 0x892ec),
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn an_event_park_target_is_a_nonempty_range_in_json() {
+        let untargeted = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1}}"#;
+        let action: FaultAction = serde_json::from_str(untargeted).unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), untargeted);
+        let targeted = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}}"#;
+        let action: FaultAction = serde_json::from_str(targeted).unwrap();
+        assert!(matches!(
+            action,
+            FaultAction::EventPark { target: Some(target), .. } if target == ParkTarget::new(8, 16).unwrap()
+        ));
+        assert_eq!(serde_json::to_string(&action).unwrap(), targeted);
+        let empty = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":8}}}"#;
+        assert!(serde_json::from_str::<FaultAction>(empty).is_err());
     }
 
     #[test]

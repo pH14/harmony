@@ -79,6 +79,8 @@ struct harmony_fault_event_state {
     uint64_t park_edges;
     uint64_t park_weight_left;
     uint64_t park_hold_nanos;
+    uint64_t park_target_start;
+    uint64_t park_target_end;
     uint64_t park_fires;
     uint64_t park_inflight;
     uint32_t initialized;
@@ -271,6 +273,17 @@ static uint64_t harmony_fault_site_offset(uint64_t site)
     return harmony_fault_site_lookup(site, &offset) != 0 ? offset : site;
 }
 
+static int harmony_fault_park_counts(uint64_t site)
+{
+    uint64_t offset;
+
+    if (harmony_fault_events.park_target_end == 0)
+        return 1;
+    offset = harmony_fault_site_offset(site);
+    return offset >= harmony_fault_events.park_target_start &&
+           offset < harmony_fault_events.park_target_end;
+}
+
 #if defined(__linux__)
 static void harmony_fault_module_add(uint64_t start, uint64_t size,
                                      uint64_t base)
@@ -428,6 +441,8 @@ static void *harmony_fault_event_control(void *arg)
         uint64_t kind;
         uint64_t first;
         uint64_t second;
+        uint64_t target_start;
+        uint64_t target_end;
         int valid = 1;
 
         if (read_all(fd, request, sizeof(request)) != 0)
@@ -436,6 +451,8 @@ static void *harmony_fault_event_control(void *arg)
         kind = get_u64(request);
         first = get_u64(request + 8);
         second = get_u64(request + 16);
+        target_start = get_u64(request + 24);
+        target_end = get_u64(request + 32);
         memcpy(response, request, sizeof(response));
         if (pthread_mutex_lock(&harmony_fault_events.lock) != 0)
             break;
@@ -452,7 +469,9 @@ static void *harmony_fault_event_control(void *arg)
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
             if (second != 0 &&
-                (first == 0 || first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT)) {
+                (first == 0 || first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT ||
+                 (target_end == 0 ? target_start != 0
+                                  : target_start >= target_end))) {
                 valid = 0;
             } else if (second == 0) {
                 harmony_fault_events.park_armed = 0;
@@ -462,6 +481,8 @@ static void *harmony_fault_event_control(void *arg)
                 harmony_fault_events.park_weight_left =
                     first << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
                 harmony_fault_events.park_hold_nanos = second;
+                harmony_fault_events.park_target_start = target_start;
+                harmony_fault_events.park_target_end = target_end;
                 harmony_fault_events.park_armed = 1;
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK_STATUS) {
@@ -981,6 +1002,7 @@ void harmony_fault_runtime_event(uint64_t site)
         kill_site = site;
         kill_report_fd = harmony_fault_events.report_fd;
     } else if (harmony_fault_events.park_armed != 0 &&
+               harmony_fault_park_counts(site) &&
                harmony_fault_park_spend(before)) {
         harmony_fault_events.park_armed = 0;
         park_edges = harmony_fault_events.park_edges;

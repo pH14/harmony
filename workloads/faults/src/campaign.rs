@@ -52,7 +52,7 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
-const ACTION_FORMAT: &str = "fault-action-duration-v2";
+const ACTION_FORMAT: &str = "fault-action-duration-v3";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -852,6 +852,7 @@ mod tests {
             edges: 5,
             hold_us: 10_000,
             ticks: std::num::NonZeroU16::MIN,
+            target: None,
         };
         let result = |observations| FaultCampaignActionResult {
             action: park,

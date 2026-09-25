@@ -22,9 +22,14 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
         Fault::ProcRestart => ProcessAction::Restart,
         Fault::RunHook(id) => ProcessAction::RunHook(*id),
         Fault::ProcEventKill { rarity } => ProcessAction::EventKill { rarity: *rarity },
-        Fault::ProcEventPark { edges, hold } => ProcessAction::EventPark {
+        Fault::ProcEventPark {
+            edges,
+            hold,
+            target,
+        } => ProcessAction::EventPark {
             edges: *edges,
             hold_nanos: hold.0,
+            target: *target,
         },
         _ => unreachable!("process_target received a non-process fault"),
     }
@@ -37,9 +42,14 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
         ProcessAction::Restart => Fault::ProcRestart,
         ProcessAction::RunHook(id) => Fault::RunHook(id),
         ProcessAction::EventKill { rarity } => Fault::ProcEventKill { rarity },
-        ProcessAction::EventPark { edges, hold_nanos } => Fault::ProcEventPark {
+        ProcessAction::EventPark {
+            edges,
+            hold_nanos,
+            target,
+        } => Fault::ProcEventPark {
             edges,
             hold: Span(hold_nanos),
+            target,
         },
     })
 }
@@ -60,6 +70,12 @@ mod tests {
             Fault::ProcEventPark {
                 edges: 3,
                 hold: Span(2_000_000),
+                target: None,
+            },
+            Fault::ProcEventPark {
+                edges: 1,
+                hold: Span(2_000_000),
+                target: crate::ParkTarget::new(0x892e8, 0x892ec),
             },
         ] {
             let bytes = process_target(3, &f);
@@ -97,6 +113,7 @@ mod tests {
                 &Fault::ProcEventPark {
                     edges,
                     hold: Span(1),
+                    target: None,
                 },
             );
             assert_eq!(decode_process_target(&park), None);
