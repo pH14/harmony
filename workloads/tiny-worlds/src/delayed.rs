@@ -111,7 +111,7 @@ impl Config {
             let ammo = state.ammo.saturating_sub(u8::from(self.ammo > 0));
             if action != correct_action {
                 return State {
-                    progress: 0,
+                    progress: if self.ammo > 0 { state.progress } else { 0 },
                     ammo,
                     ..state
                 };
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!((one.progress, one.ammo), (1, 1));
         assert_eq!(world.key(one, false).charge, 1);
         let missed = world.step(one, 2);
-        assert_eq!((missed.progress, missed.ammo), (0, 0));
+        assert_eq!((missed.progress, missed.ammo), (1, 0));
         assert_eq!(world.step(missed, 0), missed);
         assert_eq!(world.step(missed, 3), missed);
         let away = world.step(missed, 1);
