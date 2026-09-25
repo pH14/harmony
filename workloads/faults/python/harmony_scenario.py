@@ -16,6 +16,9 @@ def _ticks(milliseconds: int) -> int:
     return milliseconds // 10
 
 
+_site_names_by_id: dict[int, str] = {}
+
+
 @dataclass(frozen=True)
 class Site:
     name: str
@@ -23,6 +26,11 @@ class Site:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("site name must be a nonempty string")
+        site_id = self.id
+        other = _site_names_by_id.get(site_id)
+        if other is not None and other != self.name:
+            raise ValueError(f"site names {other!r} and {self.name!r} share a marker")
+        _site_names_by_id[site_id] = self.name
 
     @property
     def id(self) -> int:

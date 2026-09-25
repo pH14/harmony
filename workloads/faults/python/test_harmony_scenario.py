@@ -5,6 +5,11 @@ from harmony_scenario import Result, Scenario, Site
 
 
 class ScenarioContract(unittest.TestCase):
+    def test_colliding_names_fail_before_a_replay_can_use_them(self):
+        Site("service.phase.48501")
+        with self.assertRaisesRegex(ValueError, "share a marker"):
+            Site("service.phase.61704")
+
     def test_site_park_records_a_precise_action(self):
         site = Site("sqlite.wal.before_checkpoint")
         self.assertEqual(site.id, 1036543216)

@@ -67,7 +67,9 @@ The same module also lets Python processes inside an image call `setup_complete`
 `Site("service.phase")` gives an authored pause point a name and derives a stable,
 nonzero 31-bit marker from its UTF-8 name. The image can emit `site.id` through
 `notify_coverage`, while `park_site` and `reached_site` accept the named `Site`;
-the replay wire format still carries the numeric marker.
+the replay wire format still carries the numeric marker. Declare all workload
+sites at module import in the shared build-and-replay script so the SDK rejects
+names that map to the same marker before either side runs.
 
 ## Execution
 
