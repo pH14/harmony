@@ -21,8 +21,7 @@ use crate::target::{FaultAction, FaultObservations, SUPERVISOR_TICK_MICROS};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "faultlab_assertion_ids_peer_places_held_park_armed_kill_liveness_edge_buckets_identity_v10";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_goals_reached_tiers_assertion_ids_held_park_armed_kill_places_liveness_edge_buckets_identity_v11";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
@@ -58,7 +57,7 @@ impl ArchiveKey for FaultArchiveKey {
         bool,
         bool,
     );
-    type Progress = ();
+    type Progress = u32;
     type Identity = (u64, u64);
 
     fn place(self) -> Self::Place {
@@ -77,7 +76,9 @@ impl ArchiveKey for FaultArchiveKey {
         )
     }
 
-    fn progress(self) -> Self::Progress {}
+    fn progress(self) -> Self::Progress {
+        self.sometimes.count
+    }
 
     fn identity(self) -> Self::Identity {
         (self.alive, self.edges)
@@ -503,7 +504,22 @@ mod tests {
     fn hook_progress_separates_places_inside_one_tier() {
         let early = archive_key(&endpoint(&[1], 1, 0b1));
         let late = archive_key(&endpoint(&[1], 4, 0b1));
+        assert_eq!(early.progress(), late.progress());
         assert_ne!(early.place(), late.place());
+    }
+
+    #[test]
+    fn the_goals_reached_are_the_progress_tier() {
+        let none = archive_key(&endpoint(&[], 0, 0b1));
+        let one = archive_key(&endpoint(&[4], 0, 0b1));
+        let other_one = archive_key(&endpoint(&[7], 0, 0b1));
+        let two = archive_key(&endpoint(&[4, 7], 0, 0b1));
+        assert_eq!(none.progress(), 0);
+        assert_eq!(one.progress(), 1);
+        assert_eq!(two.progress(), 2);
+        assert_eq!(one.progress(), other_one.progress());
+        assert_ne!(one.place(), other_one.place());
+        assert!(two.progress() > one.progress());
     }
 
     #[test]
