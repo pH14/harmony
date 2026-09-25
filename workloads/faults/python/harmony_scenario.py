@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import ctypes
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +13,52 @@ def _ticks(milliseconds: int) -> int:
     if milliseconds < 10 or milliseconds % 10 or milliseconds // 10 > 65535:
         raise ValueError("duration must be a multiple of 10 ms in 10..655350 ms")
     return milliseconds // 10
+
+
+_event_sink = None
+
+
+def _emit_guest_event(value: dict) -> None:
+    global _event_sink
+    if _event_sink is None:
+        _event_sink = ctypes.CDLL("/usr/lib/libvoidstar.so").fuzz_json_data
+        _event_sink.argtypes = (ctypes.c_char_p, ctypes.c_size_t)
+        _event_sink.restype = None
+    data = (json.dumps(value, separators=(",", ":")) + "\n").encode()
+    _event_sink(data, len(data))
+
+
+def setup_complete() -> None:
+    _emit_guest_event({"antithesis_setup": {"status": "complete"}})
+
+
+def always(name: str, condition: bool) -> None:
+    _emit_guest_event(
+        {
+            "antithesis_assert": {
+                "id": name,
+                "message": name,
+                "assert_type": "always",
+                "condition": bool(condition),
+                "hit": True,
+                "must_hit": True,
+            }
+        }
+    )
+
+
+def sometimes(name: str, condition: bool = True) -> None:
+    _emit_guest_event(
+        {
+            "antithesis_assert": {
+                "id": name,
+                "message": name,
+                "assert_type": "sometimes",
+                "condition": bool(condition),
+                "hit": True,
+            }
+        }
+    )
 
 
 @dataclass

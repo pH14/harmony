@@ -1,5 +1,6 @@
-setup /usr/local/bin/wal-race setup
-node checkpoint /usr/local/bin/wal-race run
-node writer /usr/local/bin/wal-race writer
+setup /usr/bin/python3 /usr/local/bin/wal-race.py setup
+node checkpoint /usr/bin/python3 /usr/local/bin/wal-race.py checkpoint
+node writer /usr/bin/python3 /usr/local/bin/wal-race.py writer
 hook 1 /usr/bin/touch /run/wal-race-start
+hook 2 /usr/bin/touch /run/writer-start
 ready /bin/true

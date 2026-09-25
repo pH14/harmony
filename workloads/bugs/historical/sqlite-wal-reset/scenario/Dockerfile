@@ -35,32 +35,36 @@ RUN git init -q . \
     && git checkout -q FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${SQLITE_COMMIT}" \
     && rm -rf .git
-COPY workloads/bugs/historical/sqlite-wal-reset/scenario/instrument.py /instrument.py
-COPY workloads/bugs/historical/sqlite-wal-reset/scenario/wal_race.c /wal_race.c
+COPY workloads/bugs/historical/sqlite-wal-reset/scenario/test_wal_reset.py /test_wal_reset.py
+COPY workloads/faults/python/harmony_scenario.py /harmony_scenario.py
 COPY --from=voidstar /out-libvoidstar.so /usr/lib/libvoidstar.so
-RUN python3 /instrument.py /src/src/wal.c \
+RUN python3 /test_wal_reset.py instrument /src/src/wal.c \
     && CC=clang ./configure >/dev/null \
     && make sqlite3.c sqlite3.h >/dev/null \
-    && clang -c -O1 -g -std=gnu11 -fsanitize-coverage=trace-pc-guard \
+    && clang -c -fPIC -O1 -g -std=gnu11 -fsanitize-coverage=trace-pc-guard \
        -DSQLITE_THREADSAFE=1 -I/src sqlite3.c -o sqlite3.o \
-    && clang -c -O1 -g -std=gnu11 -fsanitize-coverage=trace-pc-guard \
-       -I/src /wal_race.c -o wal_race.o \
-    && clang -g sqlite3.o wal_race.o -o /wal-race \
+    && clang -shared -Wl,-soname,libsqlite3.so.0 sqlite3.o -o /libsqlite3.so.0 \
        -L/usr/lib -lvoidstar -Wl,-rpath,/usr/lib -lpthread -ldl -lm \
     && mkdir -p /out/symbols \
-    && nm --defined-only /wal-race \
-       | awk '$2 ~ /[tT]/ {print $1 "\t" $3}' > /out/symbols/wal-race.sym.tsv \
-    && sha256sum /wal-race \
-       | awk '{print $1 "  /usr/local/bin/wal-race"}' \
+    && nm --defined-only /libsqlite3.so.0 \
+       | awk '$2 ~ /[tT]/ {print $1 "\t" $3}' > /out/symbols/libsqlite3.sym.tsv \
+    && sha256sum /libsqlite3.so.0 \
+       | awk '{print $1 "  /usr/local/lib/harmony/libsqlite3.so.0"}' \
        > /out/symbols/harmony-instrumented-events
 
 FROM ${DEBIAN_IMAGE}
 SHELL ["/bin/sh", "-euxc"]
-COPY --from=sqlite-build /wal-race /usr/local/bin/wal-race
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=sqlite-build /libsqlite3.so.0 /usr/local/lib/harmony/libsqlite3.so.0
 COPY --from=sqlite-build /out/symbols /symbols
 COPY --from=voidstar /out-libvoidstar.so /usr/lib/libvoidstar.so
+COPY workloads/bugs/historical/sqlite-wal-reset/scenario/test_wal_reset.py /usr/local/bin/wal-race.py
+COPY workloads/faults/python/harmony_scenario.py /usr/local/bin/harmony_scenario.py
 COPY workloads/bugs/historical/sqlite-wal-reset/scenario/bundle /etc/harmony/bundle
-RUN chmod 0755 /usr/local/bin/wal-race /usr/lib/libvoidstar.so \
+ENV LD_LIBRARY_PATH=/usr/local/lib/harmony
+RUN chmod 0755 /usr/local/bin/wal-race.py /usr/lib/libvoidstar.so \
     && mkdir -p /data \
     && test -s /symbols/harmony-instrumented-events
-CMD ["/usr/local/bin/wal-race", "run"]
+CMD ["/usr/bin/python3", "/usr/local/bin/wal-race.py", "checkpoint"]

@@ -62,6 +62,8 @@ until its hold can finish, allowing another fault to overlap the held thread.
 `SitePark` is reserved for authored replay inputs and is never drawn by search.
 The small [Python scenario helper](python/harmony_scenario.py) writes these inputs,
 runs the existing replay CLI, and checks the resulting assertion and park evidence.
+The same module also lets Python processes inside an image call `setup_complete`,
+`always`, and `sometimes` without formatting SDK event records themselves.
 
 ## Execution
 

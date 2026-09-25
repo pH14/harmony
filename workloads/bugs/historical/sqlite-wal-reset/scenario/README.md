@@ -1,25 +1,25 @@
 # SQLite WAL reset scenario
 
 This is an authored test of the same WAL reset defect the sibling search case
-tries to find organically. The image builds the pinned affected SQLite fork and
-inserts a pause callback after `sqlite3WalCheckpoint` reads its WAL header, just
-before `walCheckpoint`. Two observation callbacks report WAL reset and backfill
-state. Both SQLite versions use the same callbacks and workload; the SQLite
-checkpoint and write logic is unchanged.
+tries to find organically. `test_wal_reset.py` is the whole test: it prepares
+the database, runs the checkpointer and writer inside the image, emits
+assertions, and uses the Python scenario SDK on the host to replay the schedule.
+The image builds the pinned SQLite fork as a shared library loaded by Python's
+`sqlite3` module. At build time the same Python file inserts one call to the
+generic `notify_coverage` hook after `sqlite3WalCheckpoint` reads its WAL
+header, just before `walCheckpoint`. SQLite's checkpoint and write logic is
+unchanged, and there is no C test program. `0x514C0001` is simply the stable
+label chosen for that hook, not a SQLite address or discovered offset.
 
-The workload prepares a WAL database with a large mapped table in `setup`. A
-hook starts the checkpointer after the site park is armed. The separate writer
-node waits for the first checkpoint to backfill 512 frames, then opens its
-connection. The checkpointer reads that header and parks. While it is held,
-the writer resets the WAL and commits canary row 1. The checkpointer resumes
-and, in the affected version, advances `nBackfill` to 512 even though the live
-WAL has one frame. The writer then commits row 2. A truncate checkpoint skips
-that second frame, and a fresh connection checks both committed rows. The
-affected version violates `no-lost-committed-writes`; the fixed version leaves
-`nBackfill` at zero and preserves both rows. The test checks the pause landing,
-the reset ordering, the divergent backfill state, completion of the final
-fresh-connection read, and identical state hashes across two replays of each
-version.
+The Python workload prepares a WAL database with a large mapped table. One
+hook starts the checkpointer after the site park is armed; a second releases
+the writer while the checkpointer is held. The writer resets the WAL and
+commits canary row 1. After the checkpointer resumes, the writer commits row 2.
+A truncate checkpoint and a fresh connection check both rows. The affected
+version violates `no-lost-committed-writes`; the fixed version preserves both.
+The host test requires the pause landing, the first write, completion of the
+final fresh-connection read, and identical state hashes across two replays of
+each version.
 
 Build both images from the repository root, saving each as a Docker archive:
 
