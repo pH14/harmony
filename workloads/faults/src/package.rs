@@ -380,6 +380,7 @@ mod live {
             "assertions": archive.assertions,
             "never_satisfied": archive.assertions.never_satisfied(),
             "park_sites": archive.park_sites,
+            "park_reads": archive.park_reads,
             "park_thresholds": archive.park_thresholds,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,

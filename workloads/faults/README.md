@@ -118,6 +118,8 @@ passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
 `park_sites` in `campaign-summary.json` counts event-park landings by site.
+`park_reads` counts, by landing site, the holds after which the held thread
+read shared memory that another process changed during the hold.
 `park_thresholds` counts, for each `floor(log2(edges))`, the park actions the
 guest ran at that threshold and the landings at that threshold, so the landings
 per action at each threshold show which part of the drawn range a workload's

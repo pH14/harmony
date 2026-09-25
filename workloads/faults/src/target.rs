@@ -268,10 +268,18 @@ pub struct SdkCapture {
     pub setup_complete: bool,
     pub completed_check: Option<CompletedCheck>,
     pub parks: Vec<ParkLanding>,
+    pub park_reads: Vec<ParkRead>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParkLanding {
+    pub moment: u64,
+    pub site: u64,
+    pub edges: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkRead {
     pub moment: u64,
     pub site: u64,
     pub edges: u64,
@@ -328,6 +336,13 @@ pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, S
                         moment: *moment,
                         site: park.site,
                         edges: park.edges,
+                    });
+                }
+                if let Some(read) = event.park_read {
+                    capture.park_reads.push(ParkRead {
+                        moment: *moment,
+                        site: read.site,
+                        edges: read.edges,
                     });
                 }
                 if let Some((id, outcome)) = event.assertion {
@@ -456,6 +471,8 @@ pub struct FaultObservations {
     pub watchdog_cutoff: bool,
     #[serde(default)]
     pub parks: Vec<ParkLanding>,
+    #[serde(default)]
+    pub park_reads: Vec<ParkRead>,
 }
 
 impl FaultObservations {
@@ -497,6 +514,7 @@ impl FaultObservations {
             stop,
             watchdog_cutoff: false,
             parks: capture.parks.clone(),
+            park_reads: capture.park_reads.clone(),
         }
     }
 
@@ -971,14 +989,23 @@ mod tests {
     }
 
     #[test]
-    fn park_reports_become_landings_with_their_moment() {
-        let capture = decode_sdk_events(&[(
-            41,
-            JSON_EVENT_ID,
-            br#"{"harmony_attribution":{"rip":"0x1","pid":7,"comm_hex":"61"},"harmony_park":{"site":913,"edges":4096}}
+    fn park_reports_become_landings_and_reads_with_their_moment() {
+        let capture = decode_sdk_events(&[
+            (
+                41,
+                JSON_EVENT_ID,
+                br#"{"harmony_attribution":{"rip":"0x1","pid":7,"comm_hex":"61"},"harmony_park":{"site":913,"edges":4096}}
 "#
-            .to_vec(),
-        )])
+                .to_vec(),
+            ),
+            (
+                52,
+                JSON_EVENT_ID,
+                br#"{"harmony_attribution":{"rip":"0x1","pid":7,"comm_hex":"61"},"harmony_park_read":{"site":913,"edges":3}}
+"#
+                .to_vec(),
+            ),
+        ])
         .unwrap();
         assert_eq!(
             capture.parks,
@@ -986,6 +1013,14 @@ mod tests {
                 moment: 41,
                 site: 913,
                 edges: 4096,
+            }]
+        );
+        assert_eq!(
+            capture.park_reads,
+            vec![ParkRead {
+                moment: 52,
+                site: 913,
+                edges: 3,
             }]
         );
         assert!(capture.assertions.0.is_empty());

@@ -105,6 +105,7 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
     assertions: Assertions,
     park_sites: BTreeMap<u64, u64>,
+    park_reads: BTreeMap<u64, u64>,
     park_thresholds: BTreeMap<u32, ParkThresholds>,
 }
 
@@ -348,6 +349,7 @@ impl Reporting for FaultWorkload {
             selector: state.selector,
             assertions: evidence.assertions.clone(),
             park_sites: evidence.park_sites.clone(),
+            park_reads: evidence.park_reads.clone(),
             park_thresholds: evidence.park_thresholds.clone(),
         }
     }
@@ -730,6 +732,9 @@ impl Evaluation for FaultWorkload {
                     .or_default()
                     .fired += 1;
             }
+            for read in &observation.park_reads {
+                *evidence.park_reads.entry(read.site).or_default() += 1;
+            }
         }
         evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
             action
@@ -839,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn park_thresholds_count_parks_the_guest_ran_and_each_landing_once() {
+    fn park_evidence_counts_parks_the_guest_ran_and_each_landing_and_read_once() {
         let game = game();
         let mut evidence = FaultCampaignEvidence::default();
         let park = FaultAction::EventPark {
@@ -864,6 +869,11 @@ mod tests {
                 site: 9,
                 edges: 5,
             }],
+            park_reads: vec![crate::target::ParkRead {
+                moment: 2,
+                site: 9,
+                edges: 1,
+            }],
             ..FaultObservations::default()
         };
         let cutoff = FaultObservations {
@@ -881,6 +891,7 @@ mod tests {
             Some(&ParkThresholds { armed: 1, fired: 1 })
         );
         assert_eq!(evidence.park_sites.get(&9), Some(&1));
+        assert_eq!(evidence.park_reads.get(&9), Some(&1));
     }
 
     #[test]
