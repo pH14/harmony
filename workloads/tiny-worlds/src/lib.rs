@@ -501,7 +501,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                 (World::Trap(_), State::Trap(_), State::Trap(_)) => {}
                 (World::Backtrack(w), State::Backtrack(before), State::Backtrack(after)) => {
                     e.backtrack_first_items
-                        .resize(usize::from(w.gates) + 1, None);
+                        .resize(usize::from(w.barriers) + 1, None);
                     e.backtrack_first_items[0] = Some(0);
                     if after.items > before.items {
                         e.backtrack_first_items[usize::from(after.items)]

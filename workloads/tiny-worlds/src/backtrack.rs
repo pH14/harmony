@@ -17,7 +17,7 @@ pub enum Placement {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub gates: u8,
+    pub barriers: u8,
     pub segment: u8,
     pub pattern: u64,
     pub placement: Placement,
@@ -34,14 +34,14 @@ pub struct State {
 
 impl Config {
     pub fn length(&self) -> u8 {
-        (self.gates + 1) * self.segment
+        (self.barriers + 1) * self.segment
     }
     pub fn validate(&self) -> Result<(), String> {
-        if !(1..=4).contains(&self.gates) || !(1..=8).contains(&self.segment) {
-            return Err("backtrack gates 1..=4 and segment 1..=8 are required".into());
+        if !(1..=4).contains(&self.barriers) || !(1..=8).contains(&self.segment) {
+            return Err("backtrack barriers 1..=4 and segment 1..=8 are required".into());
         }
         if self.length() > 32 {
-            return Err("backtrack length (gates + 1) * segment must be at most 32".into());
+            return Err("backtrack length (barriers + 1) * segment must be at most 32".into());
         }
         if self.length() < 32 && self.pattern >> (2 * u32::from(self.length())) != 0 {
             return Err("backtrack pattern has bits beyond the line length".into());
@@ -54,7 +54,7 @@ impl Config {
     pub fn route_action(&self, position: u8) -> u8 {
         ((self.pattern >> (2 * u32::from(position))) & 3) as u8
     }
-    fn next_gate(&self, items: u8) -> u8 {
+    fn next_barrier(&self, items: u8) -> u8 {
         (items + 1) * self.segment
     }
     pub fn initial(&self) -> State {
@@ -66,10 +66,10 @@ impl Config {
         }
     }
     pub fn state_is_bounded(&self, s: State) -> bool {
-        s.items <= self.gates
-            && s.position <= self.next_gate(s.items).min(self.length())
+        s.items <= self.barriers
+            && s.position <= self.next_barrier(s.items).min(self.length())
             && s.goal == (s.position == self.length())
-            && !(s.scouted && s.items == self.gates)
+            && !(s.scouted && s.items == self.barriers)
     }
     pub fn goal(&self, s: State) -> bool {
         self.state_is_bounded(s) && s.goal
@@ -92,13 +92,14 @@ impl Config {
         if action != self.route_action(s.position) {
             return State { position: 0, ..s };
         }
-        if s.items < self.gates && s.position == self.next_gate(s.items) {
+        if s.items < self.barriers && s.position == self.next_barrier(s.items) {
             return s;
         }
         let position = s.position + 1;
         State {
             position,
-            scouted: s.scouted || (s.items < self.gates && position == self.next_gate(s.items)),
+            scouted: s.scouted
+                || (s.items < self.barriers && position == self.next_barrier(s.items)),
             goal: position == self.length(),
             ..s
         }
@@ -150,7 +151,7 @@ mod tests {
 
     fn config(placement: Placement) -> Config {
         Config {
-            gates: 2,
+            barriers: 2,
             segment: 2,
             pattern: 0b01_10_00_01_10_00,
             placement,
@@ -162,13 +163,13 @@ mod tests {
     }
 
     #[test]
-    fn every_item_needs_a_scouted_gate_and_a_return_to_the_hub() {
+    fn every_item_needs_a_scouted_barrier_and_a_return_to_the_hub() {
         let w = config(Placement::Tier);
-        let at_gate = walk(&w, w.initial(), 0, 2);
-        assert_eq!((at_gate.position, at_gate.scouted), (2, true));
-        assert_eq!(w.step(at_gate, w.route_action(2)), at_gate);
+        let at_barrier = walk(&w, w.initial(), 0, 2);
+        assert_eq!((at_barrier.position, at_barrier.scouted), (2, true));
+        assert_eq!(w.step(at_barrier, w.route_action(2)), at_barrier);
         assert_eq!(w.step(w.initial(), TAKE), w.initial());
-        let home = w.step(at_gate, (w.route_action(2) + 1) % 4);
+        let home = w.step(at_barrier, (w.route_action(2) + 1) % 4);
         assert_eq!((home.position, home.scouted), (0, true));
         let one = w.step(home, TAKE);
         assert_eq!((one.items, one.scouted), (1, false));
@@ -182,10 +183,10 @@ mod tests {
 
     #[test]
     fn goal_is_reachable_for_every_size() {
-        for gates in 1..=4 {
+        for barriers in 1..=4 {
             for segment in 1..=8 {
                 let w = Config {
-                    gates,
+                    barriers,
                     segment,
                     pattern: 0,
                     placement: Placement::Tier,
@@ -224,12 +225,12 @@ mod tests {
     #[test]
     fn strict_schema_and_bounds() {
         let w = config(Placement::Tier);
-        assert!(Config { gates: 0, ..w }.validate().is_err());
-        assert!(Config { gates: 5, ..w }.validate().is_err());
+        assert!(Config { barriers: 0, ..w }.validate().is_err());
+        assert!(Config { barriers: 5, ..w }.validate().is_err());
         assert!(Config { segment: 9, ..w }.validate().is_err());
         assert!(
             Config {
-                gates: 4,
+                barriers: 4,
                 segment: 7,
                 pattern: 0,
                 ..w
