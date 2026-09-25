@@ -14,11 +14,22 @@ pub enum Mode {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    Identity,
+    Place,
+    Engaged,
+    Tier,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub horizon: u8,
     pub distractions: u8,
     pub mode: Mode,
+    pub placement: Placement,
+    pub sticky_credit: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -26,6 +37,7 @@ pub struct Config {
 pub struct State {
     pub lane: u8,
     pub progress: u8,
+    pub memory: u8,
     pub goal: bool,
 }
 
@@ -37,10 +49,15 @@ impl Config {
         if !(1..=32).contains(&self.distractions) {
             return Err("distractions must be between 1 and 32".to_owned());
         }
-        let state_bound =
-            (usize::from(self.distractions) + 1) * (usize::from(self.horizon) + 1) * 2;
+        let state_bound = (usize::from(self.distractions) + 1)
+            * (usize::from(self.horizon) + 1)
+            * (usize::from(self.horizon) + 1)
+            * 2;
         if state_bound > MAX_STATES {
             return Err("configuration exceeds the 100000-state oracle bound".to_owned());
+        }
+        if self.sticky_credit && matches!(self.placement, Placement::Identity) {
+            return Err("sticky_credit requires a placement other than identity".to_owned());
         }
         Ok(())
     }
@@ -49,6 +66,7 @@ impl Config {
         State {
             lane: 0,
             progress: 0,
+            memory: 0,
             goal: false,
         }
     }
@@ -66,6 +84,7 @@ impl Config {
                 return State {
                     lane: 1,
                     progress: 0,
+                    memory: state.progress,
                     goal: false,
                 };
             }
@@ -95,11 +114,13 @@ impl Config {
                     state.lane + 1
                 },
                 progress: 0,
+                memory: state.memory,
                 goal: false,
             },
             2 => State {
                 lane: 0,
                 progress: 0,
+                memory: 0,
                 goal: false,
             },
             3 => state,
@@ -115,15 +136,33 @@ impl Config {
             && state.progress == self.horizon
     }
 
+    pub fn level(&self, state: State) -> u8 {
+        if state.lane == 0 {
+            state.progress
+        } else if self.sticky_credit {
+            state.memory
+        } else {
+            0
+        }
+    }
+
     pub fn key(&self, state: State, lossy: bool) -> crate::Key {
+        let level = if lossy { 0 } else { self.level(state) };
+        let spread = u16::from(state.lane) * (u16::from(self.horizon) + 1) + u16::from(level);
+        let (place, context, tier) = match self.placement {
+            Placement::Identity => (u16::from(state.lane), u16::from(level), 0),
+            Placement::Place => (spread, 0, 0),
+            Placement::Engaged => (spread, 0, u8::from(level > 0)),
+            Placement::Tier => (u16::from(state.lane), 0, level),
+        };
         crate::Key {
             stock: 0,
-            place: u16::from(state.lane),
-            context: if lossy { 0 } else { u16::from(state.progress) },
+            place,
+            context,
             charge: 0,
             health: 0,
             goal: state.goal,
-            tier: 0,
+            tier,
         }
     }
 
@@ -153,22 +192,26 @@ impl Config {
     pub(crate) fn state_is_bounded(&self, state: State) -> bool {
         state.lane <= self.distractions
             && if state.lane == 0 {
-                state.progress <= self.horizon && state.goal == (state.progress == self.horizon)
+                state.progress <= self.horizon
+                    && state.goal == (state.progress == self.horizon)
+                    && state.memory == 0
             } else {
-                state.progress == 0 && !state.goal
+                state.progress == 0 && !state.goal && state.memory < self.horizon
             }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Mode, State};
+    use super::{Config, Mode, Placement, State};
 
     fn config(horizon: u8, distractions: u8, mode: Mode) -> Config {
         Config {
             horizon,
             distractions,
             mode,
+            placement: Placement::Identity,
+            sticky_credit: false,
         }
     }
 
@@ -208,6 +251,7 @@ mod tests {
             State {
                 lane: 1,
                 progress: 0,
+                memory: 1,
                 goal: false
             }
         );
@@ -255,20 +299,25 @@ mod tests {
 
     #[test]
     fn configuration_schema_is_strict_and_mode_is_snake_case() {
-        let valid = r#"{"horizon":4,"distractions":3,"mode":"sequence"}"#;
+        let valid = r#"{"horizon":4,"distractions":3,"mode":"sequence","placement":"identity","sticky_credit":false}"#;
         assert!(serde_json::from_str::<Config>(valid).is_ok());
-        assert!(serde_json::from_str::<Config>(r#"{"horizon":4,"mode":"sequence"}"#).is_err());
         assert!(
-            serde_json::from_str::<Config>(r#"{"horizon":"4","distractions":3,"mode":"sequence"}"#)
+            serde_json::from_str::<Config>(
+                r#"{"horizon":4,"mode":"sequence","placement":"identity","sticky_credit":false}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<Config>(r#"{"horizon":"4","distractions":3,"mode":"sequence","placement":"identity","sticky_credit":false}"#)
                 .is_err()
         );
         assert!(
-            serde_json::from_str::<Config>(r#"{"horizon":4,"distractions":3,"mode":"Sequence"}"#)
+            serde_json::from_str::<Config>(r#"{"horizon":4,"distractions":3,"mode":"Sequence","placement":"identity","sticky_credit":false}"#)
                 .is_err()
         );
         assert!(
             serde_json::from_str::<Config>(
-                r#"{"horizon":4,"distractions":3,"mode":"sequence","extra":1}"#
+                r#"{"horizon":4,"distractions":3,"mode":"sequence","extra":1,"placement":"identity","sticky_credit":false}"#
             )
             .is_err()
         );
@@ -276,15 +325,18 @@ mod tests {
 
     #[test]
     fn state_schema_requires_typed_fields_and_rejects_unknown_fields() {
-        let valid = r#"{"lane":1,"progress":0,"goal":false}"#;
+        let valid = r#"{"lane":1,"progress":0,"memory":0,"goal":false}"#;
         assert!(serde_json::from_str::<State>(valid).is_ok());
-        assert!(serde_json::from_str::<State>(r#"{"lane":1,"progress":0}"#).is_err());
+        assert!(serde_json::from_str::<State>(r#"{"lane":1,"progress":0,"memory":0}"#).is_err());
         assert!(
-            serde_json::from_str::<State>(r#"{"lane":"1","progress":0,"goal":false}"#).is_err()
+            serde_json::from_str::<State>(r#"{"lane":"1","progress":0,"memory":0,"goal":false}"#)
+                .is_err()
         );
         assert!(
-            serde_json::from_str::<State>(r#"{"lane":1,"progress":0,"goal":false,"extra":1}"#)
-                .is_err()
+            serde_json::from_str::<State>(
+                r#"{"lane":1,"progress":0,"memory":0,"goal":false,"extra":1}"#
+            )
+            .is_err()
         );
     }
 
@@ -299,27 +351,122 @@ mod tests {
         assert!(!base.state_is_bounded(State {
             lane: 0,
             progress: 1,
+            memory: 0,
             goal: false
         }));
         assert!(!base.state_is_bounded(State {
             lane: 0,
             progress: 2,
+            memory: 0,
             goal: false
         }));
         assert!(!base.state_is_bounded(State {
             lane: 1,
             progress: 1,
+            memory: 0,
             goal: false
         }));
         assert!(!base.state_is_bounded(State {
             lane: 1,
             progress: 0,
+            memory: 0,
             goal: true
         }));
         assert!(base.state_is_bounded(State {
             lane: 0,
             progress: 1,
+            memory: 0,
             goal: true
         }));
+    }
+
+    #[test]
+    fn placements_put_partial_progress_in_identity_place_or_tier() {
+        let base = config(3, 2, Mode::Sequence);
+        let one = base.step(base.initial(), 0);
+        let two = base.step(one, 0);
+        let cases = [
+            (Placement::Identity, (0, 1, 0), (0, 2, 0)),
+            (Placement::Place, (1, 0, 0), (2, 0, 0)),
+            (Placement::Engaged, (1, 0, 1), (2, 0, 1)),
+            (Placement::Tier, (0, 0, 1), (0, 0, 2)),
+        ];
+        for (placement, first, second) in cases {
+            let world = Config { placement, ..base };
+            for (state, (place, context, tier)) in [(one, first), (two, second)] {
+                let key = world.key(state, false);
+                assert_eq!((key.place, key.context, key.tier), (place, context, tier));
+                let hidden = world.key(state, true);
+                assert_eq!((hidden.context, hidden.tier), (0, 0));
+            }
+            let start = world.key(world.initial(), false);
+            assert_eq!((start.place, start.context, start.tier), (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn sticky_credit_keeps_the_reading_only_in_the_key() {
+        let lane = Config {
+            placement: Placement::Engaged,
+            ..config(3, 2, Mode::Sequence)
+        };
+        let sticky = Config {
+            sticky_credit: true,
+            ..lane
+        };
+        assert!(
+            Config {
+                placement: Placement::Identity,
+                ..sticky
+            }
+            .validate()
+            .is_err()
+        );
+        let two = sticky.step(sticky.step(sticky.initial(), 0), 0);
+        let left = sticky.step(two, 1);
+        let further = sticky.step(left, 0);
+        assert_eq!(left, lane.step(two, 1));
+        assert_eq!((further.lane, further.progress, further.memory), (2, 0, 2));
+        assert_eq!(sticky.level(further), 2);
+        assert_eq!(lane.level(further), 0);
+        assert_eq!(sticky.key(further, false).tier, 1);
+        assert_eq!(lane.key(further, false).tier, 0);
+        assert_ne!(
+            sticky.key(further, false).place,
+            sticky
+                .key(sticky.step(sticky.step(sticky.initial(), 1), 0), false)
+                .place
+        );
+        let back = sticky.step(further, 2);
+        assert_eq!(back, sticky.initial());
+        assert_eq!(sticky.key(back, false).tier, 0);
+        assert!(sticky.reachable().unwrap());
+    }
+
+    #[test]
+    fn every_placement_replays_at_fixed_work() {
+        for placement in [
+            Placement::Identity,
+            Placement::Place,
+            Placement::Engaged,
+            Placement::Tier,
+        ] {
+            for sticky_credit in [false, true] {
+                let world = Config {
+                    placement,
+                    sticky_credit,
+                    ..config(6, 8, Mode::Sequence)
+                };
+                if world.validate().is_err() {
+                    continue;
+                }
+                let workload = crate::Workload {
+                    config: crate::worlds::World::Delayed(world),
+                    broken: false,
+                };
+                let report = crate::run(&workload, crate::test_seed(), 2000, true).unwrap();
+                assert_eq!(report["verified"], true);
+            }
+        }
     }
 }

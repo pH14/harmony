@@ -11,6 +11,8 @@ pub mod route;
 pub mod worlds;
 use worlds::{State, World};
 
+pub const STAGE_PLACES: u16 = 1024;
+
 use searcher::search::{
     archive::{ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, entries_by_suffix},
     campaign::{
@@ -57,7 +59,7 @@ impl ArchiveKey for Key {
         2
     }
     fn preference_cmp(self, preference: usize, other: Self) -> std::cmp::Ordering {
-        if self.place / 256 != other.place / 256 {
+        if self.place / STAGE_PLACES != other.place / STAGE_PLACES {
             return self.stock.cmp(&other.stock);
         }
         if preference == 0 {
@@ -101,6 +103,7 @@ pub struct Evidence {
     pub delayed_useful_state_actions: u64,
     pub delayed_distraction_actions: u64,
     pub delayed_progress_observations: Vec<u64>,
+    pub job_parents: Vec<(u64, u8, u16)>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport {
@@ -278,17 +281,15 @@ impl TargetExecution for Workload {
             retention,
             stop_rollout_on_objective,
         )?;
-        if matches!(self.config, World::Chain(_)) {
-            let work = target.work - start_work;
-            if let Some(observation) = result
-                .actions
-                .first_mut()
-                .and_then(|a| a.observations.first_mut())
-            {
-                observation.job_work = Some(work);
-            } else if work != 0 {
-                return Err("chain job executed work without an observation".into());
-            }
+        let work = target.work - start_work;
+        if let Some(observation) = result
+            .actions
+            .first_mut()
+            .and_then(|a| a.observations.first_mut())
+        {
+            observation.job_work = Some(work);
+        } else if work != 0 {
+            return Err("job executed work without an observation".into());
         }
         Ok(result)
     }
@@ -344,6 +345,10 @@ impl Evaluation for Workload {
     {
         for observation in &a.observations {
             e.observations += 1;
+            if observation.job_work.is_some() {
+                let key = self.config.key(observation.before, false);
+                e.job_parents.push((sequence, key.tier, key.place));
+            }
             match (&self.config, observation.before, observation.after) {
                 (World::Route(_), State::Route(before), State::Route(after)) => {
                     e.route_trace.push(route::Trace {
@@ -546,6 +551,14 @@ pub fn run(
     let mut continuation_jobs = 0;
     let mut pre_objective_continuation_jobs = 0;
     let mut pre_objective_continuation_work = 0;
+    let parents: std::collections::BTreeMap<u64, (u8, u16)> = report
+        .archive
+        .evidence
+        .job_parents
+        .iter()
+        .map(|&(sequence, tier, place)| (sequence, (tier, place)))
+        .collect();
+    let mut parent_draws = std::collections::BTreeMap::<(bool, String, u8, u16), u64>::new();
     for line in stream
         .0
         .split(|c| *c == b'\n')
@@ -555,6 +568,22 @@ pub fn run(
         if value["event"] == "job" {
             let job_work = value["execution_work"].as_u64().ok_or("missing work")?;
             work += job_work;
+            let sequence = value["sequence"].as_u64().ok_or("missing sequence")?;
+            if let Some(&(tier, place)) = parents.get(&sequence) {
+                let path = value["selector"]["path"]
+                    .as_str()
+                    .ok_or("missing selector path")?;
+                *parent_draws
+                    .entry((
+                        first_objective_work.is_none(),
+                        path.to_string(),
+                        tier,
+                        place,
+                    ))
+                    .or_default() += 1;
+            } else if job_work != 0 {
+                return Err("job with work has no recorded parent tier".into());
+            }
             if value["selector"]["path"] == "continuation" {
                 continuation_work += job_work;
                 continuation_jobs += 1;
@@ -573,6 +602,15 @@ pub fn run(
             }
         }
     }
+    if parents.len() != parent_draws.values().sum::<u64>() as usize {
+        return Err("recorded job parents do not match stream jobs".into());
+    }
+    let parent_draws: Vec<_> = parent_draws
+        .into_iter()
+        .map(|((pre_objective, path, tier, place), jobs)| {
+            serde_json::json!([pre_objective, path, tier, place, jobs])
+        })
+        .collect();
     if work > budget + workload.config.action_limit() as u64 - 1 {
         return Err("one-reservation work overshoot exceeded the action bound".into());
     }
@@ -618,7 +656,7 @@ pub fn run(
         "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
         "pre_objective_continuation_work":pre_objective_continuation_work,
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
-        "first_objective_work":first_objective_work,
+        "first_objective_work":first_objective_work,"parent_draws":parent_draws,
         "success":first_objective_work.is_some_and(|w|w<=budget),
         "elapsed_seconds":elapsed,"stream_bytes":stream.0.len(),"stream_sha256":report.stream_sha256,
         "resident_memory_bytes":report.resident_memory_bytes,"evidence":report.archive.evidence,
@@ -881,6 +919,8 @@ mod tests {
                 horizon: 5,
                 distractions: 8,
                 mode: delayed::Mode::Wait,
+                placement: delayed::Placement::Identity,
+                sticky_credit: false,
             }),
             World::DeadlineActions(deadline_actions::Config {
                 actions: actions::Config {

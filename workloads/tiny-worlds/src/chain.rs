@@ -187,7 +187,7 @@ impl Config {
             .world
             .key(state.local.world_state(), false);
         if self.carry_charge || !broken {
-            key.place += u16::from(state.stage) * 256;
+            key.place += u16::from(state.stage) * crate::STAGE_PLACES;
         }
         key.stock = if self.carry_charge && !broken {
             state.charge
@@ -234,6 +234,8 @@ mod tests {
                 horizon: 2,
                 distractions: 2,
                 mode: delayed::Mode::Sequence,
+                placement: delayed::Placement::Identity,
+                sticky_credit: false,
             }),
             refill_available: true,
         }
@@ -328,7 +330,7 @@ mod tests {
             tier: 0,
         };
         let maze = Key {
-            place: 256,
+            place: crate::STAGE_PLACES,
             charge: 0,
             health: 0,
             ..resource
