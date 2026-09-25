@@ -210,12 +210,14 @@ Search also writes
 ([`report`](src/report.rs)); each of those carries the action list and the
 encoded window list that reproduces it.
 
-`FaultArchiveKey` identifies a place and nothing more. The place is every
-lifecycle count except liveness, plus two flags for faults still in effect when
-the state is saved: a thread held by an event park on any node, and an event
-kill armed on any node. Liveness and the edge digest are the holder identity
-inside the place. The adapter has no progress tier, so every place is a peer and the
-selector ranks places only by their draw counts.
+`FaultArchiveKey` has a place, a progress, and a holder identity. The place is
+the passed assertion set and every lifecycle count except liveness, plus two
+flags for faults still in effect when the state is saved: a thread held by an
+event park on any node, and an event kill armed on any node. Liveness and the
+edge digest are the holder identity inside the place. The progress is the
+number of Sometimes and Reachable assertions the state has passed. The
+selector's tiers rank states by that count and draw most parents from the
+states that passed the most. Places inside a tier rank by their draw counts.
 
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
