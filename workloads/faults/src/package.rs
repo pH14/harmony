@@ -5,7 +5,7 @@ use std::{error::Error, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::target::{FaultAction, FaultObservations, FaultStop};
+use crate::target::{FaultAction, FaultObservations, FaultStop, ParkLanding};
 
 pub const PACKAGE: &str = "faults";
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +72,8 @@ pub struct ReplaySummary {
     pub settle_ticks: u64,
     pub guest_horizons: u64,
     pub check: Option<crate::target::CheckEvidence>,
+    #[serde(default)]
+    pub parks: Vec<ParkLanding>,
 }
 
 #[cfg(any(
@@ -134,6 +136,7 @@ impl ReplaySummary {
             settle_ticks: 0,
             guest_horizons,
             check: observation.check.clone(),
+            parks: observation.parks.clone(),
         }
     }
 }
@@ -254,6 +257,14 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
             }
             FaultAction::EventPark { hold_us: 0, .. } => {
                 return Err("event park hold must be positive".into());
+            }
+            FaultAction::SitePark { site, .. }
+                if *site == 0 || *site >= process_proto::events::EVENT_PARK_SITE_FLAG =>
+            {
+                return Err("site park id must be in 1..2^31".into());
+            }
+            FaultAction::SitePark { hold_us: 0, .. } => {
+                return Err("site park hold must be positive".into());
             }
             _ => {}
         }
@@ -483,8 +494,10 @@ mod live {
         actions: &[FaultAction],
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
+        let mut parks = Vec::new();
         for action in actions {
             target.apply(*action);
+            parks.extend_from_slice(&target.observation().parks);
         }
         let actions_applied = target.actions().len() as u64;
         let mut settle_actions = 0_u64;
@@ -497,6 +510,7 @@ mod live {
             target.apply(FaultAction::Wait(
                 std::num::NonZeroU16::new(ticks).expect("settle duration"),
             ));
+            parks.extend_from_slice(&target.observation().parks);
             if target.actions().len() == before {
                 break;
             }
@@ -519,6 +533,7 @@ mod live {
         );
         summary.settle_actions = settle_actions;
         summary.settle_ticks = settle_ticks;
+        summary.parks = parks;
         Ok(summary)
     }
 
@@ -686,6 +701,7 @@ mod tests {
     fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {
         ReplaySummary {
             check: None,
+            parks: Vec::new(),
             run: 1,
             bug,
             stop,

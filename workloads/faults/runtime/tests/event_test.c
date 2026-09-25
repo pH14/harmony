@@ -185,6 +185,21 @@ int main(void)
     assert(get_word(response, 16) == harmony_fault_events.coverage_digest);
 
     {
+        const uint64_t site = UINT64_C(0x514c0001);
+        const uint64_t target = HARMONY_FAULT_EVENT_PARK_SITE_FLAG | site;
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, target, 1, response);
+        harmony_instrumentation_event(site + 1);
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+        assert(get_word(response, 8) == 1);
+        assert(get_word(response, 16) == 1);
+        harmony_instrumentation_event(site);
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+        assert(get_word(response, 8) == 2);
+        assert(get_word(response, 16) == 0);
+        assert(strstr(json_report, "\"site\":1363935233") != NULL);
+    }
+
+    {
         pthread_t callback;
         unsigned char request[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE] = {0};
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1234567, response);
@@ -195,7 +210,7 @@ int main(void)
         assert(pthread_mutex_unlock(&sleep_lock) == 0);
         harmony_instrumentation_event(7);
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
-        assert(get_word(response, 8) == 2);
+        assert(get_word(response, 8) == 3);
         assert(get_word(response, 16) == 1);
         put_word(request, 0, HARMONY_FAULT_EVENT_CMD_PARK);
         assert(write(control[1], request, sizeof(request)) == (ssize_t)sizeof(request));
