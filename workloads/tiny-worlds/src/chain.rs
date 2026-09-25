@@ -477,6 +477,7 @@ mod tests {
                 let w = Workload {
                     config: World::Chain(config.clone()),
                     broken,
+                    scale: None,
                 };
                 let report = run(&w, crate::test_seed(), 1000, true).unwrap();
                 assert_eq!(report["verified"], true);
@@ -564,6 +565,7 @@ mod tests {
             let workload = Workload {
                 config: World::Chain(w.clone()),
                 broken,
+                scale: None,
             };
             let report = run(&workload, crate::test_seed(), 2000, true).unwrap();
             assert_eq!(report["verified"], true);

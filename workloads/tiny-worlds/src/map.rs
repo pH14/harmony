@@ -470,6 +470,7 @@ mod tests {
             let workload = crate::Workload {
                 config: crate::worlds::World::Map(config(crate::test_seed())),
                 broken,
+                scale: None,
             };
             let report = crate::run(&workload, crate::test_seed(), 3000, true).unwrap();
             assert_eq!(report["verified"], true);

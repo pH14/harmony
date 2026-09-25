@@ -17,7 +17,7 @@ cargo build --release --locked --manifest-path workloads/tiny-worlds/Cargo.toml
 
 The executable reads one JSON request from standard input, capped at 16 KiB.
 Required fields are `config`, `seed`, `work_budget`, `broken`, `verify`, and
-`keep`.
+`keep`; `scale` is optional.
 `config` contains `family` and `parameters`; nested objects reject unknown fields.
 Supply a seed at runtime and retain it with the output when reproducing a run.
 Keep generated requests and reports outside the repository.
@@ -58,6 +58,32 @@ independently sums admitted job work, and checks that the last job started
 before the work budget was spent. Tests check these invariants using
 runtime-generated seeds; controlled transition and archive tests check the
 mechanics directly.
+
+## Scaled runs
+
+An optional `scale` object replaces the fixed campaign settings, to measure
+searcher throughput and memory at sizes the other runs cannot reach. Every
+field is required:
+
+| Field | Bounds | Meaning |
+| --- | --- | --- |
+| `workers` | 1–16 | Worker threads. |
+| `reservations_per_worker` | 1–8 | Admission window per worker. |
+| `memory_budget_mib` | 1–16,384 | The searcher's logical memory budget. |
+| `archive_entries` | 1–4,194,304 | Archive entry limit. |
+| `action_cost_ns` | 0–10,000,000 | CPU time each transition spins on its worker thread. |
+| `snapshot_bytes` | 0–1,048,576 | Pseudorandom payload stored in every snapshot and charged to the memory budget. |
+
+The payload is derived from the world state, so it adds real resident memory
+without changing any search decision, and job-result hashes leave it out. The
+spin reads a clock only to wait. A scaled run accepts 1–10,000,000,000
+transitions and requires `verify=false` and `keep=portfolio`. It counts the
+campaign stream's bytes instead of storing them, keeps no per-job evidence,
+skips final archive entries, and writes the searcher's progress lines, one per
+100 executions, to standard error. `HARMONY_COORDINATOR_PROFILE` adds the
+coordinator's time profile to standard error. The report on standard output
+holds the settings, the objective result, work, elapsed time, stream bytes,
+logical resident memory, live entries, and selector counters.
 
 ## Families and controls
 

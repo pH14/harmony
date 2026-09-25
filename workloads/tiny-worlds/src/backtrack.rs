@@ -260,6 +260,7 @@ mod tests {
                 ranked: true,
             }),
             broken: false,
+            scale: None,
         };
         workload.config.validate().unwrap();
         assert!(workload.config.reachable().unwrap());
@@ -274,6 +275,7 @@ mod tests {
                 let workload = crate::Workload {
                     config: crate::worlds::World::Backtrack(config(placement)),
                     broken,
+                    scale: None,
                 };
                 let report = crate::run(&workload, crate::test_seed(), 2000, true).unwrap();
                 assert_eq!(report["verified"], true);

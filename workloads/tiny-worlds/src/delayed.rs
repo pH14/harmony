@@ -517,6 +517,7 @@ mod tests {
                 let workload = crate::Workload {
                     config: crate::worlds::World::Delayed(world),
                     broken: false,
+                    scale: None,
                 };
                 let report = crate::run(&workload, crate::test_seed(), 2000, true).unwrap();
                 assert_eq!(report["verified"], true);

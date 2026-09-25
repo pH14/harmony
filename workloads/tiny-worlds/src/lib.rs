@@ -72,7 +72,8 @@ fn path_name(path: SelectorPath) -> &'static str {
 
 use searcher::search::{
     archive::{
-        ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, SelectorPath, entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy, SelectorPath,
+        entries_by_suffix,
     },
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignConfig,
@@ -216,9 +217,99 @@ pub struct Target {
     work: u64,
     observation: Option<Observation>,
 }
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Snapshot {
+    pub state: State,
+    pub payload: Vec<u8>,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scale {
+    pub workers: u32,
+    pub reservations_per_worker: usize,
+    pub memory_budget_mib: usize,
+    pub archive_entries: usize,
+    pub action_cost_ns: u64,
+    pub snapshot_bytes: usize,
+}
+impl Default for Scale {
+    fn default() -> Self {
+        Self {
+            workers: 1,
+            reservations_per_worker: 1,
+            memory_budget_mib: 32,
+            archive_entries: 4096,
+            action_cost_ns: 0,
+            snapshot_bytes: 0,
+        }
+    }
+}
+impl Scale {
+    pub const MAX_WORK_BUDGET: u64 = 10_000_000_000;
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=16).contains(&self.workers) {
+            return Err("scale workers must be 1..=16".into());
+        }
+        if !(1..=8).contains(&self.reservations_per_worker) {
+            return Err("scale reservations per worker must be 1..=8".into());
+        }
+        if !(1..=16_384).contains(&self.memory_budget_mib) {
+            return Err("scale memory budget must be 1..=16384 MiB".into());
+        }
+        if !(1..=MAX_ARCHIVE_ENTRIES).contains(&self.archive_entries) {
+            return Err(format!(
+                "scale archive entries must be 1..={MAX_ARCHIVE_ENTRIES}"
+            ));
+        }
+        if self.action_cost_ns > 10_000_000 {
+            return Err("scale action cost must be at most 10 ms".into());
+        }
+        if self.snapshot_bytes > 1 << 20 {
+            return Err("scale snapshot payload must be at most 1 MiB".into());
+        }
+        Ok(())
+    }
+}
 pub struct Workload<const CAPACITY_TWO: bool = false> {
     pub config: World,
     pub broken: bool,
+    pub scale: Option<Scale>,
+}
+impl<const CAPACITY_TWO: bool> Workload<CAPACITY_TWO> {
+    fn payload(&self, state: State) -> Vec<u8> {
+        let bytes = self.scale.map_or(0, |scale| scale.snapshot_bytes);
+        if bytes == 0 {
+            return Vec::new();
+        }
+        let mut rand = RomuDuoJrRand::with_seed(
+            postcard_value_sha256(&state)
+                .ok()
+                .and_then(|digest| u64::from_str_radix(&digest[..16], 16).ok())
+                .unwrap_or(1),
+        );
+        let mut payload = Vec::with_capacity(bytes.next_multiple_of(8));
+        while payload.len() < bytes {
+            payload.extend_from_slice(&rand.next_u64().to_le_bytes());
+        }
+        payload.truncate(bytes);
+        payload
+    }
+
+    fn spend_action_cost(&self) {
+        let Some(cost) = self
+            .scale
+            .map(|scale| scale.action_cost_ns)
+            .filter(|&c| c > 0)
+        else {
+            return;
+        };
+        let started = telemetry_now();
+        let cost = std::time::Duration::from_nanos(cost);
+        while started.elapsed() < cost {
+            std::hint::spin_loop();
+        }
+    }
 }
 impl<const CAPACITY_TWO: bool> CampaignTypes for Workload<CAPACITY_TWO> {
     type Target = Target;
@@ -226,7 +317,7 @@ impl<const CAPACITY_TWO: bool> CampaignTypes for Workload<CAPACITY_TWO> {
     type Key = Key<CAPACITY_TWO>;
     type Milestones = bool;
     type Progress = bool;
-    type Snapshot = State;
+    type Snapshot = Snapshot;
     type Observations = Observation;
     type Evidence = Evidence;
     type ArchiveReport = ArchiveReport<CAPACITY_TWO>;
@@ -240,7 +331,7 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
         "tiny-world-checkpoint-v1"
     }
     fn workload_identity_sha256(&self) -> String {
-        postcard_value_sha256(&(&self.config, self.broken, CAPACITY_TWO))
+        postcard_value_sha256(&(&self.config, self.broken, CAPACITY_TWO, self.scale))
             .expect("serializable config")
     }
     fn action_cost_unit(&self) -> &'static str {
@@ -250,7 +341,18 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
         "transitions"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        postcard_value_sha256(result)
+        if self.scale.is_none_or(|scale| scale.snapshot_bytes == 0) {
+            return postcard_value_sha256(result);
+        }
+        let mut result = result.clone();
+        for candidate in result
+            .actions
+            .iter_mut()
+            .filter_map(|a| a.candidate.as_mut())
+        {
+            candidate.snapshot.payload = Vec::new();
+        }
+        postcard_value_sha256(&result)
     }
     fn archive_report(
         &self,
@@ -305,11 +407,11 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         target.state = self.config.initial();
         target.observation = None;
     }
-    fn restore(&self, target: &mut Target, snapshot: &State) -> Result<(), Box<dyn Error>> {
-        if !self.config.valid_state(*snapshot) {
+    fn restore(&self, target: &mut Target, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
+        if !self.config.valid_state(snapshot.state) {
             return Err("invalid snapshot state for world".into());
         }
-        target.state = *snapshot;
+        target.state = snapshot.state;
         target.observation = None;
         Ok(())
     }
@@ -319,8 +421,8 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
     fn action_cost_fn(&self) -> fn(&u8) -> u64 {
         |_| 1
     }
-    fn snapshot_memory_charge(_: &State) -> usize {
-        std::mem::size_of::<State>()
+    fn snapshot_memory_charge(snapshot: &Snapshot) -> usize {
+        std::mem::size_of::<Snapshot>() + snapshot.payload.capacity()
     }
     fn apply_action(
         &self,
@@ -329,6 +431,7 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         milestones: &mut bool,
     ) -> Result<(), Box<dyn Error>> {
         let before = target.state;
+        self.spend_action_cost();
         target.state = self.config.step(target.state, *action);
         target.observation = Some(Observation {
             before,
@@ -379,8 +482,11 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         }
         Ok(result)
     }
-    fn snapshot(&self, target: &mut Target) -> Result<State, Box<dyn Error>> {
-        Ok(target.state)
+    fn snapshot(&self, target: &mut Target) -> Result<Snapshot, Box<dyn Error>> {
+        Ok(Snapshot {
+            state: target.state,
+            payload: self.payload(target.state),
+        })
     }
 }
 impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
@@ -396,7 +502,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
     fn complete_candidate_key(
         &self,
         key: Key<CAPACITY_TWO>,
-        _: &State,
+        _: &Snapshot,
     ) -> Result<Key<CAPACITY_TWO>, Box<dyn Error>> {
         Ok(key)
     }
@@ -435,11 +541,12 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
     {
         for observation in &a.observations {
             e.observations += 1;
-            if observation.job_work.is_some() {
+            if observation.job_work.is_some() && self.scale.is_none() {
                 let key = self.config.key(observation.before, false);
                 e.job_parents.push((sequence, key.tier, key.place));
             }
             match (&self.config, observation.before, observation.after) {
+                (World::Route(_), State::Route(_), State::Route(_)) if self.scale.is_some() => {}
                 (World::Route(_), State::Route(before), State::Route(after)) => {
                     e.route_trace.push(route::Trace {
                         sequence,
@@ -607,6 +714,62 @@ impl Write for BoundedStream {
     }
 }
 
+struct CountingStream(u64);
+impl Write for CountingStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub fn run_scaled(
+    workload: &Workload,
+    seed: u64,
+    budget: u64,
+    progress: &mut dyn Write,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    workload.config.validate()?;
+    let scale = workload.scale.ok_or("scaled run needs scale settings")?;
+    scale.validate()?;
+    if budget == 0 || budget > Scale::MAX_WORK_BUDGET {
+        return Err(format!("scaled work budget must be 1..={}", Scale::MAX_WORK_BUDGET).into());
+    }
+    let config = campaign_config(workload, seed, budget);
+    let mut stream = CountingStream(0);
+    let started = telemetry_now();
+    let live = run_campaign_checkpointed_with_options(
+        workload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        Some(progress),
+        CampaignExecutionOptions {
+            work_budget: Some(budget),
+            ..Default::default()
+        },
+    )?;
+    let elapsed = started.elapsed().as_secs_f64();
+    let report = live.0;
+    Ok(serde_json::json!({
+        "seed": seed,
+        "broken": workload.broken,
+        "config": workload.config,
+        "scale": scale,
+        "work_budget": budget,
+        "work": report.execution_work,
+        "first_objective_work": report.work_to_first_objective,
+        "success": report.work_to_first_objective.is_some_and(|w| w <= budget),
+        "elapsed_seconds": elapsed,
+        "stream_bytes": stream.0,
+        "resident_memory_bytes": report.resident_memory_bytes,
+        "live_entries": report.live_entries,
+        "selector": report.archive.selector,
+    }))
+}
+
 pub fn run_kept(
     workload: &Workload,
     keep: Keep,
@@ -620,6 +783,7 @@ pub fn run_kept(
             &Workload::<true> {
                 config: workload.config.clone(),
                 broken: workload.broken,
+                scale: workload.scale,
             },
             seed,
             budget,
@@ -646,6 +810,9 @@ fn campaign<const CAPACITY_TWO: bool>(
     verify: bool,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     workload.config.validate()?;
+    if workload.scale.is_some() {
+        return Err("scaled runs use run_scaled".into());
+    }
     if budget == 0 || budget > 20_000 {
         return Err("work budget must be 1..=20000".into());
     }
@@ -840,18 +1007,19 @@ fn campaign_config<const CAPACITY_TWO: bool>(
     seed: u64,
     budget: u64,
 ) -> CampaignConfig<Workload<CAPACITY_TWO>> {
+    let scale = workload.scale.unwrap_or_default();
     CampaignConfig {
         campaign_seed: seed,
-        workers: 1,
+        workers: scale.workers,
         execution_budget: budget,
         host: "tiny-worlds".into(),
         wall_budget: None,
         stop_rollout_on_objective: true,
         stop_campaign_on_objective: false,
-        archive_entry_limit: 4096,
-        reservations_per_worker: 1,
-        memory_budget_mib: Some(32),
-        materialize_final_artifacts: true,
+        archive_entry_limit: scale.archive_entries,
+        reservations_per_worker: scale.reservations_per_worker,
+        memory_budget_mib: Some(scale.memory_budget_mib),
+        materialize_final_artifacts: workload.scale.is_none(),
         run: (),
         suffix: SuffixShape::OneOrTwo,
         mixture: workload.config.mixture(),
@@ -878,6 +1046,13 @@ fn test_seed() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snap(state: State) -> Snapshot {
+        Snapshot {
+            state,
+            payload: Vec::new(),
+        }
+    }
     use searcher::search::campaign::{
         CampaignCheckpoint, SnapshotCheckpoint, SnapshotCheckpointEntry,
     };
@@ -896,6 +1071,7 @@ mod tests {
                 refill_health_cost: 0,
             }),
             broken: false,
+            scale: None,
         }
     }
 
@@ -905,9 +1081,9 @@ mod tests {
         let mut t = w.new_target().unwrap();
         let snapshot = w.snapshot(&mut t).unwrap();
         w.apply_action(&mut t, &1, &mut false).unwrap();
-        assert_ne!(t.state, snapshot);
+        assert_ne!(t.state, snapshot.state);
         w.restore(&mut t, &snapshot).unwrap();
-        assert_eq!(t.state, snapshot);
+        assert_eq!(t.state, snapshot.state);
         assert_eq!(w.execution_work(&t), 1);
     }
 
@@ -930,7 +1106,7 @@ mod tests {
             format: w.checkpoint_format().into(),
             entries: vec![SnapshotCheckpointEntry {
                 id: 0,
-                snapshot: state,
+                snapshot: snap(state),
             }],
         };
         let origin = CampaignOrigin::SnapshotRoot {
@@ -966,22 +1142,23 @@ mod tests {
         let w = Workload {
             config: World::Maze(config),
             broken: false,
+            scale: None,
         };
         let prefix = (0..5).fold(config.initial(), |s, bit| {
             config.step(s, ((12 >> bit) & 1) as u8)
         });
         let mut target = w.new_target().unwrap();
-        w.restore(&mut target, &State::Maze(prefix)).unwrap();
+        w.restore(&mut target, &snap(State::Maze(prefix))).unwrap();
         assert!(w.rollout_observations(&target).is_empty());
         assert!(!w.objective_reached(&(), &target).unwrap());
         let terminal = config.step(prefix, 0);
         assert!(
             w.restore(
                 &mut target,
-                &State::Maze(maze::State {
+                &snap(State::Maze(maze::State {
                     goal: false,
                     ..terminal
-                })
+                }))
             )
             .is_err()
         );
@@ -995,11 +1172,11 @@ mod tests {
         assert!(
             w.restore(
                 &mut target,
-                &State::Maze(maze::State {
+                &snap(State::Maze(maze::State {
                     place: 0,
                     history: 0,
                     goal: false
-                })
+                }))
             )
             .is_err()
         );
@@ -1008,7 +1185,10 @@ mod tests {
             _ => unreachable!(),
         };
         invalid.charge = 255;
-        assert!(w.restore(&mut target, &State::Resource(invalid)).is_err());
+        assert!(
+            w.restore(&mut target, &snap(State::Resource(invalid)))
+                .is_err()
+        );
         let World::Resource(config) = w.config else {
             unreachable!()
         };
@@ -1018,14 +1198,15 @@ mod tests {
             health: 1,
             goal: true,
         };
-        w.restore(&mut target, &State::Resource(terminal)).unwrap();
+        w.restore(&mut target, &snap(State::Resource(terminal)))
+            .unwrap();
         assert!(
             w.restore(
                 &mut target,
-                &State::Resource(resource::State {
+                &snap(State::Resource(resource::State {
                     goal: false,
                     ..terminal
-                })
+                }))
             )
             .is_err()
         );
@@ -1130,6 +1311,7 @@ mod tests {
                 let workload = Workload {
                     config: config.clone(),
                     broken,
+                    scale: None,
                 };
                 let report = run(&workload, crate::test_seed(), 1000, true).unwrap();
                 assert_eq!(report["verified"], true);
@@ -1149,6 +1331,7 @@ mod tests {
         let w = Workload {
             config: World::Deadline(config),
             broken: false,
+            scale: None,
         };
         let mut t = w.new_target().unwrap();
         let root = w.snapshot(&mut t).unwrap();
@@ -1163,7 +1346,7 @@ mod tests {
         );
         assert_eq!(w.execution_work(&t), 1);
         w.restore(&mut t, &root).unwrap();
-        assert_eq!(t.state, root);
+        assert_eq!(t.state, root.state);
         assert_eq!(w.execution_work(&t), 1);
         let goal = [1, 1, 1, 1, 2]
             .into_iter()
@@ -1269,6 +1452,7 @@ mod tests {
             let w = Workload {
                 config: World::Maze(config),
                 broken,
+                scale: None,
             };
             let mut evidence = Evidence::default();
             for history in [12_u16, 19_u16] {
@@ -1372,5 +1556,100 @@ mod tests {
             correct.config.step(t.state, 0),
             broken.config.step(t.state, 0)
         );
+    }
+
+    #[test]
+    fn scale_bounds_are_checked() {
+        assert!(Scale::default().validate().is_ok());
+        for bad in [
+            Scale {
+                workers: 0,
+                ..Scale::default()
+            },
+            Scale {
+                workers: 17,
+                ..Scale::default()
+            },
+            Scale {
+                reservations_per_worker: 9,
+                ..Scale::default()
+            },
+            Scale {
+                memory_budget_mib: 16_385,
+                ..Scale::default()
+            },
+            Scale {
+                archive_entries: MAX_ARCHIVE_ENTRIES + 1,
+                ..Scale::default()
+            },
+            Scale {
+                action_cost_ns: 10_000_001,
+                ..Scale::default()
+            },
+            Scale {
+                snapshot_bytes: (1 << 20) + 1,
+                ..Scale::default()
+            },
+        ] {
+            assert!(bad.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn snapshot_payload_charges_memory_without_changing_the_search() {
+        let config = World::Maze(maze::Config {
+            length: 6,
+            pattern: 0b101101,
+            reverse_actions: false,
+        });
+        let seed = crate::test_seed();
+        let scaled = |snapshot_bytes| {
+            let workload = Workload {
+                config: config.clone(),
+                broken: false,
+                scale: Some(Scale {
+                    workers: 2,
+                    reservations_per_worker: 2,
+                    action_cost_ns: 1_000,
+                    snapshot_bytes,
+                    ..Scale::default()
+                }),
+            };
+            run_scaled(&workload, seed, 5_000, &mut std::io::sink()).unwrap()
+        };
+        let plain = scaled(0);
+        let padded = scaled(4096);
+        for field in ["work", "first_objective_work", "selector", "live_entries"] {
+            assert_eq!(plain[field], padded[field]);
+        }
+        let resident = |r: &serde_json::Value| r["resident_memory_bytes"].as_u64().unwrap();
+        assert!(resident(&padded) >= resident(&plain) + 4096);
+        let workload = Workload {
+            config,
+            broken: false,
+            scale: Some(Scale::default()),
+        };
+        assert!(run(&workload, seed, 1000, false).is_err());
+        assert!(
+            run_scaled(
+                &workload,
+                seed,
+                Scale::MAX_WORK_BUDGET + 1,
+                &mut std::io::sink()
+            )
+            .is_err()
+        );
+        let mut target = workload.new_target().unwrap();
+        let snapshot = Workload {
+            scale: Some(Scale {
+                snapshot_bytes: 100,
+                ..Scale::default()
+            }),
+            ..workload
+        }
+        .snapshot(&mut target)
+        .unwrap();
+        assert_eq!(snapshot.payload.len(), 100);
+        assert!(snapshot.payload.iter().any(|&b| b != 0));
     }
 }

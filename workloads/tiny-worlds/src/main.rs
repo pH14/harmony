@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use std::{error::Error, io::Read};
-use tiny_worlds::{Keep, Workload, run_kept, worlds::World};
+use tiny_worlds::{Keep, Scale, Workload, run_kept, run_scaled, worlds::World};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,6 +13,8 @@ struct Request {
     broken: bool,
     verify: bool,
     keep: Keep,
+    #[serde(default)]
+    scale: Option<Scale>,
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let mut input = String::new();
@@ -24,10 +26,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let workload = Workload {
         config: request.config,
         broken: request.broken,
+        scale: request.scale,
     };
     workload.config.validate()?;
     if !workload.config.reachable()? {
         return Err("world objective is unreachable".into());
+    }
+    if request.scale.is_some() {
+        if request.verify || request.keep != Keep::Portfolio {
+            return Err("scaled runs need verify false and keep portfolio".into());
+        }
+        let mut progress = std::io::LineWriter::new(std::io::stderr().lock());
+        println!(
+            "{}",
+            run_scaled(&workload, request.seed, request.work_budget, &mut progress)?
+        );
+        return Ok(());
     }
     println!(
         "{}",
