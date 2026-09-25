@@ -127,6 +127,7 @@ impl World {
                 charge: if broken { 0 } else { s.charge },
                 health: s.health,
                 goal: s.goal,
+                tier: 0,
             },
             (Self::Maze(w), State::Maze(s)) => w.key(s, broken),
             (Self::Actions(w), State::Actions(s)) => w.key(s, broken),

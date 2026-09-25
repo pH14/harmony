@@ -106,6 +106,7 @@ impl Config {
             charge: s.phase,
             health: 0,
             goal: self.goal(s),
+            tier: 0,
         }
     }
     pub fn reachable(&self) -> Result<bool, String> {

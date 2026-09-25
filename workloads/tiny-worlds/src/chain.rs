@@ -325,6 +325,7 @@ mod tests {
             charge: 7,
             health: 3,
             goal: false,
+            tier: 0,
         };
         let maze = Key {
             place: 256,

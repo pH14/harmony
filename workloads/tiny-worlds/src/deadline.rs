@@ -145,6 +145,7 @@ impl Config {
             charge: if broken { 0 } else { state.remaining },
             health: 0,
             goal: state.goal,
+            tier: 0,
         }
     }
 

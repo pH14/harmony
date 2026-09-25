@@ -93,6 +93,7 @@ impl Config {
             charge: 0,
             health: 0,
             goal: state.goal,
+            tier: 0,
         }
     }
 

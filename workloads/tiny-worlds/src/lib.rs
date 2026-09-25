@@ -34,17 +34,18 @@ pub struct Key {
     pub charge: u8,
     pub health: u8,
     pub goal: bool,
+    pub tier: u8,
 }
 impl ArchiveKey for Key {
     type Place = u16;
-    type Progress = bool;
+    type Progress = (bool, u8);
     type Identity = u16;
     type Lineage = ();
     fn place(self) -> u16 {
         self.place
     }
-    fn progress(self) -> bool {
-        self.goal
+    fn progress(self) -> (bool, u8) {
+        (self.goal, self.tier)
     }
     fn identity(self) -> u16 {
         self.context
