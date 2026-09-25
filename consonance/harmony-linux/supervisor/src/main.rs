@@ -122,10 +122,10 @@ mod runtime {
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
         REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EDGE_CROSSINGS,
-        REG_EDGE_DIGEST, REG_EVENT_KILL_FIRES, REG_EVENT_KILL_SITE, REG_EVENT_PARK_FIRES,
-        REG_EVENT_READY, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR,
-        REG_PENDING_FAULTS, REG_RESTARTS, REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED,
-        REG_WORKLOAD_STARTED, Registers,
+        REG_EDGE_DIGEST, REG_EVENT_KILL_ARMED, REG_EVENT_KILL_FIRES, REG_EVENT_KILL_SITE,
+        REG_EVENT_PARK_FIRES, REG_EVENT_PARK_HELD, REG_EVENT_READY, REG_HOOKS_FINISHED,
+        REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RESTARTS, REG_TICKS,
+        REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
     };
     use harmony_supervisor::supervise::{Action, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
@@ -145,7 +145,7 @@ mod runtime {
     use std::thread;
     use std::time::Duration;
 
-    const CATALOG: [Point; 24] = [
+    const CATALOG: [Point; 26] = [
         Point::state(REG_TICKS, "supervisor.ticks"),
         Point::state(REG_ALIVE, "supervisor.alive"),
         Point::state(REG_HOOKS_STARTED, "supervisor.hooks_started"),
@@ -179,6 +179,8 @@ mod runtime {
         Point::state(REG_PENDING_FAULTS, "supervisor.pending_faults"),
         Point::state(REG_EDGE_CROSSINGS, "supervisor.edge_crossings"),
         Point::state(REG_EDGE_DIGEST, "supervisor.edge_digest"),
+        Point::state(REG_EVENT_PARK_HELD, "supervisor.event_park_held"),
+        Point::state(REG_EVENT_KILL_ARMED, "supervisor.event_kill_armed"),
     ];
 
     type GuestSdk = Sdk<DeviceTransport>;
@@ -274,6 +276,7 @@ mod runtime {
             self.outbound = None;
             self.pending = None;
             self.park_armed = false;
+            supervisor.note_event_park_held(node, false);
             self.reported_kill_pending = false;
             self.drain_reports(node, supervisor, tick, true);
             if let Some((rarity, start)) = kill_arm {
@@ -399,6 +402,7 @@ mod runtime {
 
         fn drain_pending_on_death(&mut self, node: u16, supervisor: &mut Supervisor, tick: u64) {
             self.note_child_dead();
+            supervisor.note_event_park_held(node, false);
             if self.failed || self.retired || self.pending.is_none() {
                 return;
             }
@@ -508,11 +512,8 @@ mod runtime {
                 Ok(EventReply::Echo(EventCommand::ArmPark { .. })) => {
                     self.park_armed = true;
                 }
-                Ok(EventReply::Echo(EventCommand::DisarmPark)) => {
-                    self.park_armed = false;
-                    supervisor.note_process_transition();
-                }
-                Ok(EventReply::ParkStatus { fires, armed }) => {
+                Ok(EventReply::Echo(EventCommand::DisarmPark)) => {}
+                Ok(EventReply::ParkStatus { fires, armed, held }) => {
                     let was_armed = self.park_armed;
                     if fires >= self.park_seen {
                         let delta = fires - self.park_seen;
@@ -521,7 +522,8 @@ mod runtime {
                     } else {
                         self.park_seen = fires;
                     }
-                    if !armed {
+                    supervisor.note_event_park_held(node, held && !process_dead);
+                    if !armed && !held {
                         self.park_armed = false;
                         if was_armed {
                             supervisor.note_process_transition();
@@ -1500,6 +1502,97 @@ mod runtime {
                 .expect("disarm acknowledgement");
             channel.drive(0, &mut Supervisor::new(1), 1);
             assert_eq!(channel.pending_faults(), 0);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_held_park_thread_is_published_until_its_hold_ends_or_its_node_dies() {
+            let (control, child_control) = UnixStream::pair().expect("control pair");
+            let (report, _child_report) = UnixStream::pair().expect("report pair");
+            let mut channel = EventChannel::new(control, report).expect("event channel");
+            let mut supervisor = Supervisor::new(1);
+            channel.ready = true;
+            channel.park_armed = true;
+            let mut request = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+            let mut status = |channel: &mut EventChannel, supervisor: &mut Supervisor, flags| {
+                channel.queue(EventCommand::ParkStatus);
+                channel.drive(0, supervisor, 1);
+                (&child_control)
+                    .read_exact(&mut request)
+                    .expect("park status request");
+                assert_eq!(request, events::encode_command(EventCommand::ParkStatus));
+                let mut reply = request;
+                reply[8..16].copy_from_slice(&1_u64.to_le_bytes());
+                reply[16..24].copy_from_slice(&u64::to_le_bytes(flags));
+                (&child_control)
+                    .write_all(&reply)
+                    .expect("park status reply");
+            };
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+            assert_eq!(supervisor.counters().event_park_fires, 1);
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_ARMED,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 0);
+            assert!(channel.park_armed);
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+
+            channel.queue(EventCommand::DisarmPark);
+            channel.drive(0, &mut supervisor, 1);
+            let mut disarm = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+            (&child_control)
+                .read_exact(&mut disarm)
+                .expect("disarm request");
+            (&child_control)
+                .write_all(&disarm)
+                .expect("disarm acknowledgement");
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+            assert!(channel.park_armed);
+            assert!(channel.pending_faults() > 0);
+            let generation = supervisor.counters().disturbance_generation;
+            channel.poll_status();
+            assert_eq!(channel.commands.front(), Some(&EventCommand::ParkStatus));
+            channel.commands.clear();
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+            assert!(channel.park_armed);
+            status(&mut channel, &mut supervisor, 0);
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 0);
+            assert!(!channel.park_armed);
+            assert_eq!(channel.pending_faults(), 0);
+            assert_eq!(supervisor.counters().disturbance_generation, generation + 1);
+
+            channel.park_armed = true;
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drain_pending_on_death(0, &mut supervisor, 2);
+            assert_eq!(supervisor.counters().event_park_held, 0);
+            assert_eq!(supervisor.counters().event_park_fires, 1);
         }
 
         #[test]

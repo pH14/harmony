@@ -75,9 +75,15 @@ invalidate cached results without importing process-fault semantics.
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
 runtime readiness, orders arms and disarms, and only credits an event kill when
-its report matches the acknowledged rarity and window-start identity. Event
-parks report completed holds through the same channel, and their standing
-windows remain active long enough for the recorded hold to complete. When
+its report matches the acknowledged rarity and window-start identity. While a
+park is in effect, each tick's status reply gives its fire count and whether a
+thread is held. The runtime acknowledges a disarm at once, and the park stays
+in effect until a status reply shows it neither armed nor holding a thread.
+The event-park-held register has one bit per node with a held thread, and the
+event-kill-armed register has one bit per live node with an acknowledged event
+kill that has not fired. A node's held bit clears at a status reply without a
+held thread or when the node dies or restarts. A paused node answers no status,
+so its held bit keeps its last value until the node continues. When
 multiple event-kill windows overlap for one node, a reported kill advances the
 supervisor to the next unfired window identity. Outstanding windows, commands,
 arms, and a reported kill awaiting observed child death contribute to the

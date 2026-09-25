@@ -77,7 +77,6 @@ static struct harmony_fault_event_state harmony_fault_events = {
     .control_fd = -1,
     .report_fd = -1
 };
-static pthread_cond_t harmony_fault_park_done = PTHREAD_COND_INITIALIZER;
 static pthread_once_t harmony_fault_event_once = PTHREAD_ONCE_INIT;
 static struct harmony_fault_module
     harmony_fault_modules[HARMONY_FAULT_MODULE_LIMIT];
@@ -439,13 +438,6 @@ static void *harmony_fault_event_control(void *arg)
             } else if (second == 0) {
                 harmony_fault_events.park_armed = 0;
                 harmony_fault_events.park_hold_nanos = 0;
-                while (harmony_fault_events.park_inflight != 0) {
-                    if (pthread_cond_wait(&harmony_fault_park_done,
-                                          &harmony_fault_events.lock) != 0) {
-                        valid = 0;
-                        break;
-                    }
-                }
             } else {
                 harmony_fault_events.park_edges = first;
                 harmony_fault_events.park_weight_left =
@@ -458,8 +450,12 @@ static void *harmony_fault_event_control(void *arg)
             put_u64(response, HARMONY_FAULT_EVENT_CMD_PARK_STATUS);
             put_u64(response + 8, harmony_fault_events.park_fires);
             put_u64(response + 16,
-                    (harmony_fault_events.park_armed != 0 ||
-                     harmony_fault_events.park_inflight != 0) ? 1 : 0);
+                    (harmony_fault_events.park_armed != 0
+                         ? HARMONY_FAULT_EVENT_PARK_STATUS_ARMED
+                         : 0) |
+                        (harmony_fault_events.park_inflight != 0
+                             ? HARMONY_FAULT_EVENT_PARK_STATUS_HELD
+                             : 0));
         } else if (kind == HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS) {
             memset(response, 0, sizeof(response));
             put_u64(response, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
@@ -616,6 +612,7 @@ void harmony_fault_runtime_event(uint64_t site)
         if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
             harmony_fault_events.park_inflight--;
             if (harmony_fault_events.initialized != 0 &&
+                harmony_fault_events.park_inflight == 0 &&
                 harmony_fault_events.park_armed == 0 &&
                 harmony_fault_events.park_hold_nanos != 0) {
                 harmony_fault_events.park_weight_left =
@@ -623,7 +620,6 @@ void harmony_fault_runtime_event(uint64_t site)
                     << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
                 harmony_fault_events.park_armed = 1;
             }
-            (void)pthread_cond_broadcast(&harmony_fault_park_done);
             (void)pthread_mutex_unlock(&harmony_fault_events.lock);
         }
     }

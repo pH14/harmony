@@ -64,6 +64,7 @@ pub struct Counters {
     pub pending_faults: u64,
     pub edge_crossings: u64,
     pub edge_digest: u64,
+    pub event_park_held: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -331,6 +332,18 @@ impl ProcessSupervisor {
         self.bump_disturbance(fires);
     }
 
+    pub fn note_event_park_held(&mut self, node: u16, held: bool) {
+        if node >= 64 {
+            return;
+        }
+        let bit = 1_u64 << node;
+        if held {
+            self.counters.event_park_held |= bit;
+        } else {
+            self.counters.event_park_held &= !bit;
+        }
+    }
+
     pub fn note_edge_coverage(&mut self, crossings: u64, digest: u64) {
         self.counters.edge_crossings = self.counters.edge_crossings.saturating_add(crossings);
         self.counters.edge_digest = self.counters.edge_digest.wrapping_add(digest);
@@ -440,6 +453,13 @@ impl ProcessSupervisor {
             pending_faults: self.counters.pending_faults,
             edge_crossings: self.counters.edge_crossings,
             edge_digest: self.counters.edge_digest,
+            event_park_held: self.counters.event_park_held,
+            event_kill_armed: self
+                .event_kill_armed
+                .iter()
+                .filter(|window| window.node < 64)
+                .fold(0, |bits, window| bits | 1_u64 << window.node)
+                & self.alive_bitmap(),
         }
     }
 
@@ -896,6 +916,45 @@ mod tests {
         assert_eq!(snap.workload_finished, 1);
         assert_eq!(snap.checks_started, 1);
         assert_eq!(snap.checks_finished, 1);
+    }
+
+    #[test]
+    fn held_parks_and_armed_kills_are_published_per_node_without_disturbing() {
+        let mut sup = Supervisor::new(3);
+        sup.note_event_park_held(2, true);
+        sup.note_event_park_held(0, true);
+        sup.note_event_park_held(0, false);
+        sup.note_event_park_held(64, true);
+        sup.note_event_kill_armed(1, 4, 7);
+        let snap = sup.snapshot();
+        assert_eq!(snap.event_park_held, 0b100);
+        assert_eq!(snap.event_kill_armed, 0b010);
+        assert_eq!(snap.disturbance_generation, 0);
+        assert!(sup.note_event_kill(1, 4, 7, 0xfeed));
+        assert_eq!(sup.snapshot().event_kill_armed, 0);
+        sup.note_event_kill_armed(2, 5, 9);
+        sup.note_event_kill_disarmed(2, 5, 9);
+        assert_eq!(sup.snapshot().event_kill_armed, 0);
+    }
+
+    #[test]
+    fn a_node_that_dies_under_a_pause_window_publishes_no_armed_kill() {
+        let mut sup = Supervisor::new(1);
+        let kill = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
+        assert_eq!(sup.tick(&kill, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        assert_eq!(sup.snapshot().event_kill_armed, 1);
+        let paused = active(&[
+            (0, ProcessAction::EventKill { rarity: 0 }),
+            (0, ProcessAction::Pause(30)),
+        ]);
+        assert_eq!(sup.tick(&paused, &[0]), []);
+        assert_eq!(sup.snapshot().alive, 0);
+        assert_eq!(sup.snapshot().event_kill_armed, 0);
+        assert_eq!(
+            sup.tick(&kill, &[]),
+            [Action::Start(0), Action::ArmEventKill(0, 0)]
+        );
     }
 
     #[test]

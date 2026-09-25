@@ -30,6 +30,8 @@ pub mod registers {
     pub const PENDING_FAULTS: u32 = SUPERVISOR_REGISTER_BASE + 21;
     pub const EDGE_CROSSINGS: u32 = SUPERVISOR_REGISTER_BASE + 22;
     pub const EDGE_DIGEST: u32 = SUPERVISOR_REGISTER_BASE + 23;
+    pub const EVENT_PARK_HELD: u32 = SUPERVISOR_REGISTER_BASE + 24;
+    pub const EVENT_KILL_ARMED: u32 = SUPERVISOR_REGISTER_BASE + 25;
 }
 
 pub const PROCESS_CLASS: u16 = 6;
@@ -394,6 +396,8 @@ mod tests {
                 PENDING_FAULTS,
                 EDGE_CROSSINGS,
                 EDGE_DIGEST,
+                EVENT_PARK_HELD,
+                EVENT_KILL_ARMED,
             ],
             core::array::from_fn(|offset| SUPERVISOR_REGISTER_BASE + offset as u32)
         );

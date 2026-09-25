@@ -8,8 +8,9 @@ pub use process_proto::registers::{
     COMPLETED_CHECK_PID as REG_COMPLETED_CHECK_PID, COMPLETED_CHECK_RUN as REG_COMPLETED_CHECK_RUN,
     COMPLETED_CHECK_START_GENERATION as REG_COMPLETED_CHECK_START_GENERATION,
     DISTURBANCE_GENERATION as REG_DISTURBANCE_GENERATION, EDGE_CROSSINGS as REG_EDGE_CROSSINGS,
-    EDGE_DIGEST as REG_EDGE_DIGEST, EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES,
-    EVENT_KILL_SITE as REG_EVENT_KILL_SITE, EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES,
+    EDGE_DIGEST as REG_EDGE_DIGEST, EVENT_KILL_ARMED as REG_EVENT_KILL_ARMED,
+    EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES, EVENT_KILL_SITE as REG_EVENT_KILL_SITE,
+    EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES, EVENT_PARK_HELD as REG_EVENT_PARK_HELD,
     EVENT_READY as REG_EVENT_READY, HOOKS_FINISHED as REG_HOOKS_FINISHED,
     HOOKS_STARTED as REG_HOOKS_STARTED, INFRASTRUCTURE_ERROR as REG_INFRASTRUCTURE_ERROR,
     PENDING_FAULTS as REG_PENDING_FAULTS, RESTARTS as REG_RESTARTS, TICKS as REG_TICKS,
@@ -43,11 +44,13 @@ pub struct RegisterSnapshot {
     pub pending_faults: u64,
     pub edge_crossings: u64,
     pub edge_digest: u64,
+    pub event_park_held: u64,
+    pub event_kill_armed: u64,
 }
 
 impl RegisterSnapshot {
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 24] {
+    pub fn pairs(&self) -> [(u32, u64); 26] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -79,6 +82,8 @@ impl RegisterSnapshot {
             (REG_PENDING_FAULTS, self.pending_faults),
             (REG_EDGE_CROSSINGS, self.edge_crossings),
             (REG_EDGE_DIGEST, self.edge_digest),
+            (REG_EVENT_PARK_HELD, self.event_park_held),
+            (REG_EVENT_KILL_ARMED, self.event_kill_armed),
         ]
     }
 }
@@ -154,6 +159,8 @@ mod tests {
                 (REG_PENDING_FAULTS, 0),
                 (REG_EDGE_CROSSINGS, 0),
                 (REG_EDGE_DIGEST, 0),
+                (REG_EVENT_PARK_HELD, 0),
+                (REG_EVENT_KILL_ARMED, 0),
             ]
         );
     }

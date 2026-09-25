@@ -441,6 +441,8 @@ pub struct FaultObservations {
     pub event_kill_site: u64,
     pub event_ready: u64,
     pub event_park_fires: u64,
+    pub event_park_held: u64,
+    pub event_kill_armed: u64,
     pub edge_crossings: u64,
     pub edge_digest: u64,
     pub workload_started: u64,
@@ -472,6 +474,8 @@ impl FaultObservations {
             event_kill_site: value(reg::EVENT_KILL_SITE),
             event_ready: value(reg::EVENT_READY),
             event_park_fires: value(reg::EVENT_PARK_FIRES),
+            event_park_held: value(reg::EVENT_PARK_HELD),
+            event_kill_armed: value(reg::EVENT_KILL_ARMED),
             edge_crossings: value(reg::EDGE_CROSSINGS),
             edge_digest: value(reg::EDGE_DIGEST),
             workload_started: value(reg::WORKLOAD_STARTED),
@@ -912,12 +916,16 @@ mod tests {
             assert_event(64, DISP_HIT),
             state_event(reg::ALIVE, STATE_SET, 0b101),
             state_event(reg::HOOKS_FINISHED, STATE_SET, 2),
+            state_event(reg::EVENT_PARK_HELD, STATE_SET, 0b100),
+            state_event(reg::EVENT_KILL_ARMED, STATE_SET, 0b001),
         ])
         .expect("decode");
         let observations = FaultObservations::new(77, &capture, FaultStop::Deadline);
         assert_eq!(observations.moment, 77);
         assert_eq!(observations.alive, 0b101);
         assert_eq!(observations.hooks_finished, 2);
+        assert_eq!(observations.event_park_held, 0b100);
+        assert_eq!(observations.event_kill_armed, 0b001);
         assert_eq!(
             observations.sometimes(),
             BTreeSet::from(["0".to_owned(), "63".to_owned(), "64".to_owned()])

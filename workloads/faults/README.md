@@ -57,8 +57,8 @@ Each fault action except `Interrupt` becomes a standing-fault window on the shar
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
 branch installs it. A hold still running when an event-park window closes
-finishes before the runtime acknowledges the disarm, so the next actions can
-overlap the held thread.
+continues after the window, so the next actions can overlap the held thread.
+The park counts as a pending fault until that hold ends.
 
 ## Execution
 
@@ -84,8 +84,8 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which captures assertion, liveness, in-flight work, event-firing state, and
-bucketed edge coverage. The edge-digest register sums a hash of every
+which captures assertion, liveness, in-flight work, event-firing state, faults
+still in effect, and bucketed edge coverage. The edge-digest register sums a hash of every
 (edge, hit-count bucket) pair that instrumented nodes have entered. It is
 part of the holder identity, so an execution that drives any edge into a new
 bucket opens a new slot inside its lifecycle place.
@@ -211,8 +211,10 @@ Search also writes
 encoded window list that reproduces it.
 
 `FaultArchiveKey` identifies a place and nothing more. The place is every
-lifecycle count except liveness; liveness and the edge digest are the holder
-identity inside the place. The adapter has no progress tier, so every place is a peer and the
+lifecycle count except liveness, plus two flags for faults still in effect when
+the state is saved: a thread held by an event park on any node, and an event
+kill armed on any node. Liveness and the edge digest are the holder identity
+inside the place. The adapter has no progress tier, so every place is a peer and the
 selector ranks places only by their draw counts.
 
 The Consonance backend needs Linux and KVM. The action model, the bundle
