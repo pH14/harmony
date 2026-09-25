@@ -248,6 +248,7 @@ mod tests {
                 mode: delayed::Mode::Sequence,
                 placement: delayed::Placement::Identity,
                 sticky_credit: false,
+                ammo: 0,
             }),
             refill_available: true,
         }

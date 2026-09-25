@@ -952,6 +952,7 @@ mod tests {
                 mode: delayed::Mode::Wait,
                 placement: delayed::Placement::Identity,
                 sticky_credit: false,
+                ammo: 0,
             }),
             World::DeadlineActions(deadline_actions::Config {
                 actions: actions::Config {

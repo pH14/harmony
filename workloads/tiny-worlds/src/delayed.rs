@@ -30,6 +30,7 @@ pub struct Config {
     pub mode: Mode,
     pub placement: Placement,
     pub sticky_credit: bool,
+    pub ammo: u8,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -38,6 +39,7 @@ pub struct State {
     pub lane: u8,
     pub progress: u8,
     pub memory: u8,
+    pub ammo: u8,
     pub goal: bool,
 }
 
@@ -49,9 +51,18 @@ impl Config {
         if !(1..=32).contains(&self.distractions) {
             return Err("distractions must be between 1 and 32".to_owned());
         }
+        if self.ammo > 31 || (self.ammo > 0 && self.ammo < self.horizon) {
+            return Err("ammo must be 0 or between the horizon and 31".to_owned());
+        }
+        let memory_levels = if self.sticky_credit {
+            usize::from(self.horizon) + 1
+        } else {
+            1
+        };
         let state_bound = (usize::from(self.distractions) + 1)
             * (usize::from(self.horizon) + 1)
-            * (usize::from(self.horizon) + 1)
+            * memory_levels
+            * (usize::from(self.ammo) + 1)
             * 2;
         if state_bound > MAX_STATES {
             return Err("configuration exceeds the 100000-state oracle bound".to_owned());
@@ -67,6 +78,7 @@ impl Config {
             lane: 0,
             progress: 0,
             memory: 0,
+            ammo: self.ammo,
             goal: false,
         }
     }
@@ -84,23 +96,33 @@ impl Config {
                 return State {
                     lane: 1,
                     progress: 0,
-                    memory: state.progress,
-                    goal: false,
+                    memory: if self.sticky_credit {
+                        state.progress
+                    } else {
+                        0
+                    },
+                    ..state
                 };
             }
             let correct_action = match self.mode {
                 Mode::Sequence => 0,
                 Mode::Wait => 3,
             };
+            let ammo = state.ammo.saturating_sub(u8::from(self.ammo > 0));
             if action != correct_action {
                 return State {
                     progress: 0,
+                    ammo,
                     ..state
                 };
+            }
+            if self.ammo > 0 && state.ammo == 0 {
+                return state;
             }
             let progress = state.progress + 1;
             return State {
                 progress,
+                ammo,
                 goal: progress == self.horizon,
                 ..state
             };
@@ -113,17 +135,17 @@ impl Config {
                 } else {
                     state.lane + 1
                 },
-                progress: 0,
-                memory: state.memory,
-                goal: false,
+                ..state
             },
             2 => State {
                 lane: 0,
-                progress: 0,
                 memory: 0,
-                goal: false,
+                ..state
             },
-            3 => state,
+            3 => State {
+                ammo: (state.ammo + 1).min(self.ammo),
+                ..state
+            },
             _ => state,
         }
     }
@@ -159,7 +181,7 @@ impl Config {
             stock: 0,
             place,
             context,
-            charge: 0,
+            charge: state.ammo,
             health: 0,
             goal: state.goal,
             tier,
@@ -191,6 +213,8 @@ impl Config {
 
     pub(crate) fn state_is_bounded(&self, state: State) -> bool {
         state.lane <= self.distractions
+            && state.ammo <= self.ammo
+            && (self.sticky_credit || state.memory == 0)
             && if state.lane == 0 {
                 state.progress <= self.horizon
                     && state.goal == (state.progress == self.horizon)
@@ -212,6 +236,7 @@ mod tests {
             mode,
             placement: Placement::Identity,
             sticky_credit: false,
+            ammo: 0,
         }
     }
 
@@ -251,7 +276,8 @@ mod tests {
             State {
                 lane: 1,
                 progress: 0,
-                memory: 1,
+                memory: 0,
+                ammo: 0,
                 goal: false
             }
         );
@@ -299,25 +325,25 @@ mod tests {
 
     #[test]
     fn configuration_schema_is_strict_and_mode_is_snake_case() {
-        let valid = r#"{"horizon":4,"distractions":3,"mode":"sequence","placement":"identity","sticky_credit":false}"#;
+        let valid = r#"{"horizon":4,"distractions":3,"mode":"sequence","placement":"identity","sticky_credit":false,"ammo":0}"#;
         assert!(serde_json::from_str::<Config>(valid).is_ok());
         assert!(
             serde_json::from_str::<Config>(
-                r#"{"horizon":4,"mode":"sequence","placement":"identity","sticky_credit":false}"#
+                r#"{"horizon":4,"mode":"sequence","placement":"identity","sticky_credit":false,"ammo":0}"#
             )
             .is_err()
         );
         assert!(
-            serde_json::from_str::<Config>(r#"{"horizon":"4","distractions":3,"mode":"sequence","placement":"identity","sticky_credit":false}"#)
+            serde_json::from_str::<Config>(r#"{"horizon":"4","distractions":3,"mode":"sequence","placement":"identity","sticky_credit":false,"ammo":0}"#)
                 .is_err()
         );
         assert!(
-            serde_json::from_str::<Config>(r#"{"horizon":4,"distractions":3,"mode":"Sequence","placement":"identity","sticky_credit":false}"#)
+            serde_json::from_str::<Config>(r#"{"horizon":4,"distractions":3,"mode":"Sequence","placement":"identity","sticky_credit":false,"ammo":0}"#)
                 .is_err()
         );
         assert!(
             serde_json::from_str::<Config>(
-                r#"{"horizon":4,"distractions":3,"mode":"sequence","extra":1,"placement":"identity","sticky_credit":false}"#
+                r#"{"horizon":4,"distractions":3,"mode":"sequence","extra":1,"placement":"identity","sticky_credit":false,"ammo":0}"#
             )
             .is_err()
         );
@@ -325,16 +351,21 @@ mod tests {
 
     #[test]
     fn state_schema_requires_typed_fields_and_rejects_unknown_fields() {
-        let valid = r#"{"lane":1,"progress":0,"memory":0,"goal":false}"#;
+        let valid = r#"{"lane":1,"progress":0,"memory":0,"ammo":0,"goal":false}"#;
         assert!(serde_json::from_str::<State>(valid).is_ok());
-        assert!(serde_json::from_str::<State>(r#"{"lane":1,"progress":0,"memory":0}"#).is_err());
         assert!(
-            serde_json::from_str::<State>(r#"{"lane":"1","progress":0,"memory":0,"goal":false}"#)
+            serde_json::from_str::<State>(r#"{"lane":1,"progress":0,"memory":0,"ammo":0}"#)
                 .is_err()
         );
         assert!(
             serde_json::from_str::<State>(
-                r#"{"lane":1,"progress":0,"memory":0,"goal":false,"extra":1}"#
+                r#"{"lane":"1","progress":0,"memory":0,"ammo":0,"goal":false}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<State>(
+                r#"{"lane":1,"progress":0,"memory":0,"ammo":0,"goal":false,"extra":1}"#
             )
             .is_err()
         );
@@ -352,30 +383,35 @@ mod tests {
             lane: 0,
             progress: 1,
             memory: 0,
+            ammo: 0,
             goal: false
         }));
         assert!(!base.state_is_bounded(State {
             lane: 0,
             progress: 2,
             memory: 0,
+            ammo: 0,
             goal: false
         }));
         assert!(!base.state_is_bounded(State {
             lane: 1,
             progress: 1,
             memory: 0,
+            ammo: 0,
             goal: false
         }));
         assert!(!base.state_is_bounded(State {
             lane: 1,
             progress: 0,
             memory: 0,
+            ammo: 0,
             goal: true
         }));
         assert!(base.state_is_bounded(State {
             lane: 0,
             progress: 1,
             memory: 0,
+            ammo: 0,
             goal: true
         }));
     }
@@ -425,7 +461,14 @@ mod tests {
         let two = sticky.step(sticky.step(sticky.initial(), 0), 0);
         let left = sticky.step(two, 1);
         let further = sticky.step(left, 0);
-        assert_eq!(left, lane.step(two, 1));
+        assert_eq!(
+            left,
+            State {
+                memory: 2,
+                ..lane.step(two, 1)
+            }
+        );
+        assert_eq!(lane.step(two, 1).memory, 0);
         assert_eq!((further.lane, further.progress, further.memory), (2, 0, 2));
         assert_eq!(sticky.level(further), 2);
         assert_eq!(lane.level(further), 0);
@@ -444,6 +487,38 @@ mod tests {
     }
 
     #[test]
+    fn ammo_is_spent_on_every_fight_action_and_refilled_only_in_distraction_lanes() {
+        let world = Config {
+            placement: Placement::Tier,
+            ammo: 2,
+            ..config(2, 2, Mode::Sequence)
+        };
+        assert_eq!(world.initial().ammo, 2);
+        let one = world.step(world.initial(), 0);
+        assert_eq!((one.progress, one.ammo), (1, 1));
+        assert_eq!(world.key(one, false).charge, 1);
+        let missed = world.step(one, 2);
+        assert_eq!((missed.progress, missed.ammo), (0, 0));
+        assert_eq!(world.step(missed, 0), missed);
+        assert_eq!(world.step(missed, 3), missed);
+        let away = world.step(missed, 1);
+        assert_eq!((away.lane, away.ammo, away.memory), (1, 0, 0));
+        let refilled = world.step(world.step(world.step(away, 3), 3), 3);
+        assert_eq!(refilled.ammo, 2);
+        let back = world.step(refilled, 2);
+        assert_eq!((back.lane, back.progress, back.ammo), (0, 0, 2));
+        assert!(world.goal(world.step(world.step(back, 0), 0)));
+        assert!(world.reachable().unwrap());
+        assert!(!world.state_is_bounded(State {
+            ammo: 3,
+            ..world.initial()
+        }));
+        assert!(!world.state_is_bounded(State { memory: 1, ..away }));
+        assert!(Config { ammo: 1, ..world }.validate().is_err());
+        assert!(Config { ammo: 32, ..world }.validate().is_err());
+    }
+
+    #[test]
     fn every_placement_replays_at_fixed_work() {
         for placement in [
             Placement::Identity,
@@ -451,10 +526,11 @@ mod tests {
             Placement::Engaged,
             Placement::Tier,
         ] {
-            for sticky_credit in [false, true] {
+            for (sticky_credit, ammo) in [(false, 0), (true, 0), (false, 6)] {
                 let world = Config {
                     placement,
                     sticky_credit,
+                    ammo,
                     ..config(6, 8, Mode::Sequence)
                 };
                 if world.validate().is_err() {
