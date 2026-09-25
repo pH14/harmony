@@ -181,13 +181,15 @@ structural validation cases, seeds, work budgets, and attribution endpoints.
 Use a fresh output directory outside the repository, under the resource supervisor:
 
 ```sh
-python3 benchmarks/tiny_worlds/route_reuse.py --out /tmp/route-reuse --prepare --split development
-python3 benchmarks/tiny_worlds/route_reuse.py --out /tmp/route-reuse --split validation
+python3 benchmarks/tiny_worlds/panel.py --route-reuse --out /tmp/route-reuse --prepare --split development
+python3 benchmarks/tiny_worlds/panel.py --route-reuse --out /tmp/route-reuse --split validation
 ```
 
-Preparation builds two asset-free source copies offline with one compiler job,
-sharing one local build cache. Their only engine difference is disabling the
-continuation bank. All ordinary search and splicing remains available. Outputs
+Preparation builds one asset-free diagnostic binary offline with one compiler
+job. Both arms use that same executable; a process environment setting controls
+only continuation-bank initialization. The runner verifies a single-site source
+instrumentation against a frozen baseline copy. Ordinary random exploration
+remains available; ordinary splicing is inactive under this alphabet-only mixture. Outputs
 include source and binary hashes, exact verified per-seed reports, donor/arrival
 attribution, and censored work-to-objective. Preparation refuses an existing output
 directory; later runs verify prepared identities. Reports remain outside Git.

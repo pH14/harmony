@@ -222,28 +222,41 @@ rather than whether an unconstrained game naturally discovers things in that ord
 
 Route evidence joins executed action observations to campaign job sequence IDs
 and admission decisions. It records the selector responsible for each first
-upgraded arrival, the first objective, and pre-objective continuation transfers
+upgraded position/lane arrival, the first objective, and pre-objective continuation transfers
 that advance an upgraded state. Donor and leaf states come from historical
 retained admissions, including entries no longer resident at the end. A transfer
-is labeled pre-upgrade only when both recorded donor and leaf predate acquisition.
+is labeled non-upgraded when both recorded donor and leaf have phase below 2.
+This describes their state, not whether their admission preceded the campaign's
+first acquisition. First acquisition and first alignment jobs are recorded
+separately, including their work and sequence. Alignment is one action with
+probability 1/4 under the sampler. Reports distinguish alignment from acquisition,
+even if they share a job.
 Job work includes execution/replay overhead; these timestamps are job-end work,
 not per-action first-hit times. Raw bounded traces remain in local reports and
 are included in replay verification. No evidence changes selection.
 
-The paired runner in `benchmarks/tiny_worlds/route_reuse.py` builds two private
-source copies. Its sole engine mutation disables creation of the continuation
-bank at the existing initialization method, affecting both live execution and
-stream replay. Ordinary exploration, splicing, archive preferences, and all
-world mechanics remain enabled. The runner checks source/binary identities and
-requires zero continuation dispatches in the disabled arm. This is a diagnostic
-source mutation, not an alternate production searcher or a supported engine
-option. Different dispatch schedules can change later random samples even with
-the same seed. The experiment tests the net effect of continuation dispatch,
-including its budget cost; it does not disable every possible route-reuse path.
+The `benchmarks/tiny_worlds/panel.py --route-reuse` command builds one private
+source copy with a diagnostic environment check at continuation-bank creation.
+Both arms execute the exact same binary. The runner sets or clears
+`TINY_WORLD_DISABLE_CONTINUATIONS` before each process starts, records the control
+value and executable hash, and independently verifies that arm's rerun and replay
+under the same fixed setting. A frozen unmodified source copy and source hashes
+verify that instrumentation changes exactly one engine site. The runner requires
+zero continuation dispatches in the disabled arm. Production engine code has no
+new option or change.
 
-The registered cases learn short, often one-action transitions. Reusing a route
-means propagating the upgrade through those transitions; these cases do not test
-long open-loop action tapes.
+The family's alphabet-only mixture does not dispatch ordinary splicing in either
+arm. The comparison is continuations versus no tail reuse under that mixture;
+the disabled arm can still restore archived states and draw random one- or
+two-action suffixes. Both arms keep identical archive preferences, mechanics,
+and budgets. Equal seeds cease to imply matching action samples after dispatch
+schedules diverge. The no-upgrade control queues no continuations, so identical
+outcomes there check isolation, not dispatch overhead.
+
+Every observed transfer in the registered panel is a one-action transition.
+Reusing a route means propagating the upgrade through those transitions; these
+cases do not test long open-loop action tapes. The shifted variant introduces
+only a one-action alignment requirement, not general post-kill route repair.
 
 A successful saved-route replay establishes local compatibility, while a paired
 campaign comparison measures whether automatic reuse helps under the registered

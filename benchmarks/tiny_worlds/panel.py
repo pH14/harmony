@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import time
 
+from route_reuse import run_ablation
+
 
 def interval(successes, count):
     z = 1.96
@@ -19,10 +21,20 @@ def interval(successes, count):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--binary', type=Path)
+    parser.add_argument('--route-reuse', action='store_true', help='run the registered continuation-bank ablation')
+    parser.add_argument('--out', type=Path, help='prepared ablation directory outside the repository')
+    parser.add_argument('--prepare', action='store_true', help='build both ablation arms in a fresh output directory')
     parser.add_argument('--panel', type=Path, default=Path(__file__).with_name('panel.json'))
     parser.add_argument('--split', choices=('development', 'validation', 'sweep', 'scaling', 'confirmation'), default='development')
     args = parser.parse_args()
+    if args.route_reuse:
+        if args.out is None or args.split not in ('development', 'validation') or args.binary is not None or args.panel != Path(__file__).with_name('panel.json'):
+            parser.error('--route-reuse requires --out and a development/validation split, without --binary/--panel')
+        run_ablation(args.out, args.split, args.prepare)
+        return
+    if args.binary is None or args.out is not None or args.prepare:
+        parser.error('ordinary panels require --binary; --out/--prepare require --route-reuse')
     raw = args.panel.read_bytes()
     manifest = json.loads(raw)
     if manifest['schema'] != 2:

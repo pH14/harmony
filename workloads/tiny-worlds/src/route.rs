@@ -142,6 +142,8 @@ pub fn summarize(
     let mut first_arrivals = std::collections::BTreeMap::new();
     let mut transfers = Vec::new();
     let mut first_objective_path = None;
+    let mut first_acquisition = None;
+    let mut first_alignment = None;
     let mut work = 0;
     for line in stream.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
         let record: serde_json::Value = serde_json::from_slice(line)?;
@@ -171,9 +173,14 @@ pub fn summarize(
         {
             return Err("route trace and decisions differ".into());
         }
-        states
-            .entry(record["parent_id"].as_u64().ok_or("missing route parent")?)
-            .or_insert(actions[0].before);
+        let parent_id = record["parent_id"].as_u64().ok_or("missing route parent")?;
+        if let Some(held) = states.get(&parent_id) {
+            if *held != actions[0].before {
+                return Err("route parent state mismatch".into());
+            }
+        } else {
+            states.insert(parent_id, actions[0].before);
+        }
         let donor = record["splice"]["donor_id"]
             .as_u64()
             .and_then(|id| states.get(&id))
@@ -196,14 +203,30 @@ pub fn summarize(
         {
             transfers.push(serde_json::json!({"sequence":sequence,"work":work,"parent":actions[0].before,
                 "donor":donor,"leaf":leaf,"after":actions.last().unwrap().after,
-                "pre_upgrade_donor":donor.is_some_and(|d| d.phase < 2) && leaf.is_some_and(|l| l.phase < 2),
+                "non_upgraded_donor":donor.is_some_and(|d| d.phase < 2) && leaf.is_some_and(|l| l.phase < 2),
                 "actions":actions.iter().map(|a| a.action).collect::<Vec<_>>()}));
         }
         let mut decisions = decisions.iter();
         for a in &actions {
+            if before_objective
+                && a.before.phase != 2
+                && a.after.phase == 2
+                && first_acquisition.is_none()
+            {
+                first_acquisition =
+                    Some(serde_json::json!({"sequence":sequence,"work":work,"lane":a.after.lane}));
+            }
+            if before_objective
+                && a.before.lane == 1
+                && a.after.lane == 0
+                && first_alignment.is_none()
+            {
+                first_alignment =
+                    Some(serde_json::json!({"sequence":sequence,"work":work,"path":path}));
+            }
             if before_objective && a.after.phase == 2 {
                 first_arrivals
-                    .entry(a.after.position)
+                    .entry(format!("{}:{}", a.after.position, a.after.lane))
                     .or_insert(serde_json::json!({"path":path,"sequence":sequence,"work":work}));
             }
             if a.objective && first_objective_path.is_none() {
@@ -231,7 +254,7 @@ pub fn summarize(
     }
     Ok(
         serde_json::json!({"first_upgraded_arrivals":first_arrivals,"upgraded_continuation_transfers":transfers,
-        "first_objective_path":first_objective_path}),
+        "first_objective_path":first_objective_path,"first_acquisition":first_acquisition,"first_alignment":first_alignment}),
     )
 }
 
@@ -311,12 +334,22 @@ mod tests {
             let report = crate::run(&workload, 17, 4000, true).unwrap();
             assert_eq!(report["verified"], true);
             assert!(report["route_evidence"]["first_upgraded_arrivals"].is_object());
+            assert!(report["route_evidence"]["first_acquisition"].is_object());
+            assert_eq!(
+                report["route_evidence"]["first_alignment"].is_object(),
+                shifted
+            );
+            assert!(report["route_evidence"]["first_upgraded_arrivals"]["0:0"].is_object());
+            assert_eq!(
+                report["route_evidence"]["first_upgraded_arrivals"]["0:1"].is_object(),
+                shifted
+            );
             let transfers = report["route_evidence"]["upgraded_continuation_transfers"]
                 .as_array()
                 .unwrap();
             assert!(!transfers.is_empty());
             for transfer in transfers {
-                assert_eq!(transfer["pre_upgrade_donor"], true);
+                assert_eq!(transfer["non_upgraded_donor"], true);
                 let parent: State = serde_json::from_value(transfer["parent"].clone()).unwrap();
                 let donor: State = serde_json::from_value(transfer["donor"].clone()).unwrap();
                 let leaf: State = serde_json::from_value(transfer["leaf"].clone()).unwrap();
@@ -347,5 +380,69 @@ mod tests {
                     <= report["work"].as_u64().unwrap()
             );
         }
+    }
+    #[test]
+    fn trace_join_rejects_missing_admissions_and_wrong_parent_states() {
+        let w = config();
+        let first = Trace {
+            sequence: 1,
+            action: w.route_action(0),
+            candidate: true,
+            objective: false,
+            before: w.initial(),
+            after: w.step(w.initial(), w.route_action(0)),
+        };
+        let mut record = serde_json::json!({"event":"job","sequence":1,"execution_work":1,"parent_id":0,
+            "selector":{"path":"tiers"},"decisions":[]});
+        assert!(
+            summarize(
+                std::slice::from_ref(&first),
+                &serde_json::to_vec(&record).unwrap()
+            )
+            .is_err()
+        );
+        record["decisions"] = serde_json::json!([{"decision":"retained","id":1}]);
+        assert!(
+            summarize(
+                std::slice::from_ref(&first),
+                &serde_json::to_vec(&record).unwrap()
+            )
+            .is_ok()
+        );
+        let second = Trace {
+            sequence: 2,
+            ..first.clone()
+        };
+        let mut stream = serde_json::to_vec(&record).unwrap();
+        record["sequence"] = 2.into();
+        record["parent_id"] = 1.into();
+        stream.push(b'\n');
+        stream.extend(serde_json::to_vec(&record).unwrap());
+        assert!(
+            summarize(&[first, second], &stream)
+                .unwrap_err()
+                .to_string()
+                .contains("parent state mismatch")
+        );
+    }
+    #[test]
+    fn trace_join_rejects_wrong_objective_event_order() {
+        let w = config();
+        let trace = Trace {
+            sequence: 1,
+            action: 0,
+            candidate: false,
+            objective: true,
+            before: w.initial(),
+            after: w.initial(),
+        };
+        let record = serde_json::json!({"event":"job","sequence":1,"execution_work":1,"parent_id":0,
+            "selector":{"path":"tiers"},"decisions":[{"decision":"retained","id":1}]});
+        assert!(
+            summarize(&[trace], &serde_json::to_vec(&record).unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("objective decision mismatch")
+        );
     }
 }

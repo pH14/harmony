@@ -2,7 +2,7 @@
   "schema": 2,
   "baseline": "67f65bbce5ee84b57cd91aaceb49350325eb49b9",
   "engine_source_sha256": "98577556455bbca4109eb7ec7a93217dd71100e061f464de6f42ada785df7a70",
-  "workload_source_sha256": "04ec98b5e3747d5e3c4e403b02067a9d3f852a915cd1a1001607c29ede287b41",
+  "workload_source_sha256": "8df32ed0a0ce05948fe4229defa3ae23c521f5b2ad5745595343f701cab06032",
   "arms": [
     false,
     true

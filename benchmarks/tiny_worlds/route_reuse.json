@@ -1,15 +1,17 @@
 {
-  "schema": 1,
+  "schema": 2,
   "engine_source_sha256": "98577556455bbca4109eb7ec7a93217dd71100e061f464de6f42ada785df7a70",
-  "workload_source_sha256": "04ec98b5e3747d5e3c4e403b02067a9d3f852a915cd1a1001607c29ede287b41",
+  "workload_source_sha256": "8df32ed0a0ce05948fe4229defa3ae23c521f5b2ad5745595343f701cab06032",
   "work_budget": 4000,
-  "hypothesis": "Enabling continuations reuses pre-upgrade routes after a persistent upgrade, with lower work or greater fixed-work completion than disabling only the continuation bank. Shifted starts must align before reuse. The no-upgrade case checks for effects without an improvement to propagate. Negative and inconclusive results are retained.",
+  "hypothesis": "Enabling continuations reuses routes learned from non-upgraded states after a persistent upgrade, with lower work or greater fixed-work completion than disabling only the continuation bank. Shifted starts must align before reuse. The no-upgrade case checks for effects without an improvement to propagate. Negative and inconclusive results are retained.",
   "endpoints": [
     "success within budget",
     "censored work to objective",
-    "pre-objective upgraded continuation transfers with pre-upgrade donor and leaf",
-    "first upgraded arrival selector by position",
-    "first objective selector"
+    "pre-objective upgraded continuation transfers with non-upgraded donor and leaf",
+    "first upgraded arrival selector by position and lane",
+    "first objective selector",
+    "first acquisition job",
+    "first alignment job"
   ],
   "development_seeds": [
     17,
@@ -143,5 +145,6 @@
         }
       }
     }
-  ]
+  ],
+  "control": "One diagnostic binary; per-process environment disables only the continuation bank. All within-panel comparisons and replays use that same binary."
 }
