@@ -250,6 +250,7 @@ mod tests {
                 node: 3,
                 edges: 1,
                 hold_us: 9,
+                ticks: tick,
             },
             FaultAction::Pause(3, tick),
             FaultAction::Restart(3, tick),
