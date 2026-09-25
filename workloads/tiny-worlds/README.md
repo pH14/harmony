@@ -16,7 +16,8 @@ cargo build --release --locked --manifest-path workloads/tiny-worlds/Cargo.toml
 ```
 
 The executable reads one JSON request from standard input, capped at 16 KiB.
-Required fields are `config`, `seed`, `work_budget`, `broken`, and `verify`.
+Required fields are `config`, `seed`, `work_budget`, `broken`, `verify`, and
+`keep`.
 `config` contains `family` and `parameters`; nested objects reject unknown fields.
 Supply a seed at runtime and retain it with the output when reproducing a run.
 Keep generated requests and reports outside the repository.
@@ -33,10 +34,15 @@ print(json.dumps({
     "seed": secrets.randbits(64),
     "work_budget": 1000,
     "broken": False,
-    "verify": True
+    "verify": True,
+    "keep": "portfolio"
 }))
 PY
 ```
+
+`keep` selects slot retention. `portfolio` keeps one holder per slot under two
+preferences: charge first and health first. `capacity_two` keeps two holders
+per slot under the charge-first preference alone.
 
 `work_budget` accepts 1–20,000 transitions. A campaign uses one worker, one
 reservation, an archive capacity of 4,096, and a 32 MiB logical memory budget.
@@ -67,6 +73,7 @@ representation or action choice affects the same world transitions.
 | `deadline_actions` | Traverse changing-action stages while every action spends environmental time. | Sample only the land action. |
 | `chain` | Complete an ordered sequence of leaf worlds in one campaign. | Omit stage identity, or carried stock when charge carries between stages. |
 | `route` | Scout a route, return for an upgrade, and traverse it again. | Uses the same representation in both settings. |
+| `backtrack` | Walk a line whose gates each need one more item; the next item is taken at the hub after reaching the next gate. | Hide items from the key. |
 | `trap` | Follow a corridor to the goal, or enter a side corridor to an item whose rooms never reach the goal. | Hide the item from the progress tier. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
@@ -95,6 +102,15 @@ The trap world's item raises the tier to 1 and makes the goal unreachable;
 reachability checks every item room. Route `ranked_upgrade=true` puts the
 upgraded phase in tier 1.
 
+The backtrack world places gates every `segment` positions along a line of
+`(gates + 1) * segment` positions. Passing gate k needs k items. Reaching the
+next gate marks it scouted; action 3 at the hub then takes one item. A wrong
+route action returns to the hub and keeps items. Each stage therefore walks
+out, returns, and crosses the earlier ground again. `placement` puts items in
+the `tier`, in the slot `identity`, or only in a retention `preference` through
+charge. The report's `backtrack_first_items` gives the first work at which
+each item count was held.
+
 Diagnostics count admitted suffix observations. Arrival histograms count
 transitions into a location; resource refill counts require a stock increase.
 Delayed-progress histograms include distraction observations in their zero bin.
@@ -118,6 +134,7 @@ states; requests exceeding the reachability limit are rejected.
 | Delayed | `horizon` 1–16; `distractions` 1–32; `mode` is `sequence` or `wait`; `placement` is `identity`, `place`, `engaged`, or `tier`; boolean `sticky_credit`; `ammo` 0 or `horizon`–31. |
 | Deadline/actions | `actions` uses the actions parameters; `initial_time` 1–64; four `action_ticks` values, each 1–16. |
 | Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
+| Backtrack | `gates` 1–4; `segment` 1–8; `(gates + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
 
 ## Scenario chains
