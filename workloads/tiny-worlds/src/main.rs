@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use std::{error::Error, io::Read};
-use tiny_worlds::{Workload, run, worlds::World};
+use tiny_worlds::{Keep, Workload, run_kept, worlds::World};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -12,6 +12,7 @@ struct Request {
     work_budget: u64,
     broken: bool,
     verify: bool,
+    keep: Keep,
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let mut input = String::new();
@@ -30,7 +31,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!(
         "{}",
-        run(&workload, request.seed, request.work_budget, request.verify)?
+        run_kept(
+            &workload,
+            request.keep,
+            request.seed,
+            request.work_budget,
+            request.verify
+        )?
     );
     Ok(())
 }

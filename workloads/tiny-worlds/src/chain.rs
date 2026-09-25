@@ -327,7 +327,7 @@ mod tests {
         let b = w.key(second, false);
         assert_ne!(a.place(), b.place());
         assert_eq!(a.progress(), b.progress());
-        for preference in 0..Key::preferences() {
+        for preference in 0..Key::<false>::preferences() {
             assert!(a.preference_cmp(preference, b).is_eq());
         }
         assert_eq!(w.key(first, true), w.key(second, true));
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn cross_stage_preferences_compare_only_persistent_stock() {
-        let resource = Key {
+        let resource: Key = Key {
             stock: 7,
             place: 0,
             context: 0,
@@ -350,7 +350,7 @@ mod tests {
             health: 0,
             ..resource
         };
-        for preference in 0..Key::preferences() {
+        for preference in 0..Key::<false>::preferences() {
             assert!(resource.preference_cmp(preference, maze).is_eq());
             assert!(maze.preference_cmp(preference, resource).is_eq());
             assert!(

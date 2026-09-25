@@ -29,8 +29,16 @@ use searcher::search::{
 use serde::{Deserialize, Serialize};
 use std::{error::Error, io::Write, num::NonZeroUsize};
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Keep {
+    #[default]
+    Portfolio,
+    CapacityTwo,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct Key {
+pub struct Key<const CAPACITY_TWO: bool = false> {
     pub stock: u8,
     pub place: u16,
     pub context: u16,
@@ -39,7 +47,29 @@ pub struct Key {
     pub goal: bool,
     pub tier: u16,
 }
-impl ArchiveKey for Key {
+impl<const FROM: bool> Key<FROM> {
+    pub fn kept<const CAPACITY_TWO: bool>(self) -> Key<CAPACITY_TWO> {
+        let Key {
+            stock,
+            place,
+            context,
+            charge,
+            health,
+            goal,
+            tier,
+        } = self;
+        Key {
+            stock,
+            place,
+            context,
+            charge,
+            health,
+            goal,
+            tier,
+        }
+    }
+}
+impl<const CAPACITY_TWO: bool> ArchiveKey for Key<CAPACITY_TWO> {
     type Place = u16;
     type Progress = (bool, u16);
     type Identity = u16;
@@ -54,10 +84,10 @@ impl ArchiveKey for Key {
         self.context
     }
     fn capacity() -> usize {
-        1
+        if CAPACITY_TWO { 2 } else { 1 }
     }
     fn preferences() -> usize {
-        2
+        if CAPACITY_TWO { 1 } else { 2 }
     }
     fn preference_cmp(self, preference: usize, other: Self) -> std::cmp::Ordering {
         if self.place / STAGE_PLACES != other.place / STAGE_PLACES {
@@ -107,9 +137,9 @@ pub struct Evidence {
     pub job_parents: Vec<(u64, u16, u16)>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ArchiveReport {
+pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
     #[serde(with = "entries_by_suffix")]
-    pub entries: Vec<ArchiveEntryReport<u8, Key, bool>>,
+    pub entries: Vec<ArchiveEntryReport<u8, Key<CAPACITY_TWO>, bool>>,
     pub evidence: Evidence,
     pub selector: searcher::search::archive::SelectorAccounting,
 }
@@ -125,23 +155,23 @@ pub struct Target {
     work: u64,
     observation: Option<Observation>,
 }
-pub struct Workload {
+pub struct Workload<const CAPACITY_TWO: bool = false> {
     pub config: World,
     pub broken: bool,
 }
-impl CampaignTypes for Workload {
+impl<const CAPACITY_TWO: bool> CampaignTypes for Workload<CAPACITY_TWO> {
     type Target = Target;
     type Action = u8;
-    type Key = Key;
+    type Key = Key<CAPACITY_TWO>;
     type Milestones = bool;
     type Progress = bool;
     type Snapshot = State;
     type Observations = Observation;
     type Evidence = Evidence;
-    type ArchiveReport = ArchiveReport;
+    type ArchiveReport = ArchiveReport<CAPACITY_TWO>;
     type Run = ();
 }
-impl Reporting for Workload {
+impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
     fn stream_format(&self) -> &'static str {
         "tiny-world-v1"
     }
@@ -149,7 +179,8 @@ impl Reporting for Workload {
         "tiny-world-checkpoint-v1"
     }
     fn workload_identity_sha256(&self) -> String {
-        postcard_value_sha256(&(&self.config, self.broken)).expect("serializable config")
+        postcard_value_sha256(&(&self.config, self.broken, CAPACITY_TWO))
+            .expect("serializable config")
     }
     fn action_cost_unit(&self) -> &'static str {
         "transitions"
@@ -164,7 +195,7 @@ impl Reporting for Workload {
         &self,
         evidence: &Evidence,
         state: ArchiveReportState<Self>,
-    ) -> ArchiveReport {
+    ) -> ArchiveReport<CAPACITY_TWO> {
         ArchiveReport {
             entries: state.entries,
             evidence: evidence.clone(),
@@ -172,7 +203,7 @@ impl Reporting for Workload {
         }
     }
 }
-impl InputPolicy for Workload {
+impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
     fn max_action_limit(&self) -> usize {
         self.config.action_limit()
     }
@@ -203,7 +234,7 @@ impl InputPolicy for Workload {
             .sample_action(rand.below(NonZeroUsize::new(4).unwrap()) as u8, self.broken))
     }
 }
-impl TargetExecution for Workload {
+impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
     fn new_target(&self) -> Result<Target, String> {
         self.config.validate()?;
         Ok(Target {
@@ -257,13 +288,13 @@ impl TargetExecution for Workload {
     #[allow(clippy::too_many_arguments)]
     fn execute_job(
         &self,
-        run: &(),
-        target: &mut Target,
-        origin_snapshot: &State,
-        replay: &[u8],
+        run: &<Self as CampaignTypes>::Run,
+        target: &mut <Self as CampaignTypes>::Target,
+        origin_snapshot: &<Self as CampaignTypes>::Snapshot,
+        replay: &[<Self as CampaignTypes>::Action],
         parent_actions: usize,
-        parent_milestones: bool,
-        suffix: &[u8],
+        parent_milestones: <Self as CampaignTypes>::Milestones,
+        suffix: &[<Self as CampaignTypes>::Action],
         max_actions: usize,
         retention: RetentionPolicy,
         stop_rollout_on_objective: bool,
@@ -298,17 +329,21 @@ impl TargetExecution for Workload {
         Ok(target.state)
     }
 }
-impl Evaluation for Workload {
+impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
     fn execution_disposition(&self, _: &Target) -> ExecutionDisposition {
         ExecutionDisposition::Runnable
     }
     fn objective_reached(&self, _: &(), target: &Target) -> Result<bool, Box<dyn Error>> {
         Ok(self.config.goal(target.state))
     }
-    fn current_key(&self, target: &Target) -> Result<Key, Box<dyn Error>> {
-        Ok(self.config.key(target.state, self.broken))
+    fn current_key(&self, target: &Target) -> Result<Key<CAPACITY_TWO>, Box<dyn Error>> {
+        Ok(self.config.key(target.state, self.broken).kept())
     }
-    fn complete_candidate_key(&self, key: Key, _: &State) -> Result<Key, Box<dyn Error>> {
+    fn complete_candidate_key(
+        &self,
+        key: Key<CAPACITY_TWO>,
+        _: &State,
+    ) -> Result<Key<CAPACITY_TWO>, Box<dyn Error>> {
         Ok(key)
     }
     fn merge_milestones(&self, into: &mut bool, from: bool) {
@@ -320,7 +355,7 @@ impl Evaluation for Workload {
     fn aggregate_progress(e: &Evidence) -> bool {
         e.objectives > 0
     }
-    fn merge_origin_evidence(&self, e: &mut Evidence, s: &ArchiveReport) {
+    fn merge_origin_evidence(&self, e: &mut Evidence, s: &ArchiveReport<CAPACITY_TWO>) {
         *e = s.evidence.clone();
     }
     fn merge_snapshot_root_evidence(
@@ -468,10 +503,13 @@ impl Evaluation for Workload {
         }
         Ok(())
     }
-    fn source_entries<'a>(&self, s: &'a ArchiveReport) -> &'a [ArchiveEntryReport<u8, Key, bool>] {
+    fn source_entries<'a>(
+        &self,
+        s: &'a ArchiveReport<CAPACITY_TWO>,
+    ) -> &'a [ArchiveEntryReport<u8, Key<CAPACITY_TWO>, bool>] {
         &s.entries
     }
-    fn resume_input(&self, _: &ArchiveReport) -> Result<Input<u8>, Box<dyn Error>> {
+    fn resume_input(&self, _: &ArchiveReport<CAPACITY_TWO>) -> Result<Input<u8>, Box<dyn Error>> {
         Err("archive origin unsupported".into())
     }
 }
@@ -490,8 +528,40 @@ impl Write for BoundedStream {
     }
 }
 
+pub fn run_kept(
+    workload: &Workload,
+    keep: Keep,
+    seed: u64,
+    budget: u64,
+    verify: bool,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let mut report = match keep {
+        Keep::Portfolio => campaign(workload, seed, budget, verify)?,
+        Keep::CapacityTwo => campaign(
+            &Workload::<true> {
+                config: workload.config.clone(),
+                broken: workload.broken,
+            },
+            seed,
+            budget,
+            verify,
+        )?,
+    };
+    report["keep"] = serde_json::to_value(keep)?;
+    Ok(report)
+}
+
 pub fn run(
     workload: &Workload,
+    seed: u64,
+    budget: u64,
+    verify: bool,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    campaign(workload, seed, budget, verify)
+}
+
+fn campaign<const CAPACITY_TWO: bool>(
+    workload: &Workload<CAPACITY_TWO>,
     seed: u64,
     budget: u64,
     verify: bool,
@@ -695,7 +765,11 @@ pub fn run(
     )
 }
 
-fn campaign_config(workload: &Workload, seed: u64, budget: u64) -> CampaignConfig<Workload> {
+fn campaign_config<const CAPACITY_TWO: bool>(
+    workload: &Workload<CAPACITY_TWO>,
+    seed: u64,
+    budget: u64,
+) -> CampaignConfig<Workload<CAPACITY_TWO>> {
     CampaignConfig {
         campaign_seed: seed,
         workers: 1,
@@ -1188,6 +1262,28 @@ mod tests {
         let mut wrong = valid;
         wrong["family"] = serde_json::json!("unsupported");
         assert!(serde_json::from_value::<World>(wrong).is_err());
+    }
+
+    #[test]
+    fn capacity_two_keeps_two_holders_under_one_preference_and_replays() {
+        assert_eq!(
+            (Key::<false>::capacity(), Key::<false>::preferences()),
+            (1, 2)
+        );
+        assert_eq!(
+            (Key::<true>::capacity(), Key::<true>::preferences()),
+            (2, 1)
+        );
+        let w = world();
+        let key = w.config.key(w.config.initial(), false);
+        assert_eq!(key.kept::<true>().kept::<false>(), key);
+        for keep in [Keep::Portfolio, Keep::CapacityTwo] {
+            let report = run_kept(&w, keep, test_seed(), 2000, true).unwrap();
+            assert_eq!(report["verified"], true);
+            assert_eq!(report["keep"], serde_json::to_value(keep).unwrap());
+        }
+        assert!(serde_json::from_str::<Keep>(r#""capacity_two""#).is_ok());
+        assert!(serde_json::from_str::<Keep>(r#""CapacityTwo""#).is_err());
     }
 
     #[test]
