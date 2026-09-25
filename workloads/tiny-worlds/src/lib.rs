@@ -37,17 +37,17 @@ pub struct Key {
     pub charge: u8,
     pub health: u8,
     pub goal: bool,
-    pub tier: u8,
+    pub tier: u16,
 }
 impl ArchiveKey for Key {
     type Place = u16;
-    type Progress = (bool, u8);
+    type Progress = (bool, u16);
     type Identity = u16;
     type Lineage = ();
     fn place(self) -> u16 {
         self.place
     }
-    fn progress(self) -> (bool, u8) {
+    fn progress(self) -> (bool, u16) {
         (self.goal, self.tier)
     }
     fn identity(self) -> u16 {
@@ -104,7 +104,7 @@ pub struct Evidence {
     pub delayed_useful_state_actions: u64,
     pub delayed_distraction_actions: u64,
     pub delayed_progress_observations: Vec<u64>,
-    pub job_parents: Vec<(u64, u8, u16)>,
+    pub job_parents: Vec<(u64, u16, u16)>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport {
@@ -561,7 +561,7 @@ pub fn run(
     let mut continuation_jobs = 0;
     let mut pre_objective_continuation_jobs = 0;
     let mut pre_objective_continuation_work = 0;
-    let parents: std::collections::BTreeMap<u64, (u8, u16)> = report
+    let parents: std::collections::BTreeMap<u64, (u16, u16)> = report
         .archive
         .evidence
         .job_parents
@@ -569,7 +569,7 @@ pub fn run(
         .map(|&(sequence, tier, place)| (sequence, (tier, place)))
         .collect();
     let mut parent_draws =
-        std::collections::BTreeMap::<(bool, String, Option<u64>, u8, u16), u64>::new();
+        std::collections::BTreeMap::<(bool, String, Option<u64>, u16, u16), u64>::new();
     let mut skipped_draws = std::collections::BTreeMap::<(bool, String, Option<u64>), u64>::new();
     for line in stream
         .0

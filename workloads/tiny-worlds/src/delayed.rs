@@ -152,8 +152,8 @@ impl Config {
         let (place, context, tier) = match self.placement {
             Placement::Identity => (u16::from(state.lane), u16::from(level), 0),
             Placement::Place => (spread, 0, 0),
-            Placement::Engaged => (spread, 0, u8::from(level > 0)),
-            Placement::Tier => (u16::from(state.lane), 0, level),
+            Placement::Engaged => (spread, 0, u16::from(level > 0)),
+            Placement::Tier => (u16::from(state.lane), 0, u16::from(level)),
         };
         crate::Key {
             stock: 0,

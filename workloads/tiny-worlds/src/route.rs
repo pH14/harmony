@@ -107,7 +107,7 @@ impl Config {
             charge: s.phase,
             health: 0,
             goal: self.goal(s),
-            tier: u8::from(self.ranked_upgrade && s.phase == 2),
+            tier: u16::from(self.ranked_upgrade && s.phase == 2),
         }
     }
     pub fn reachable(&self) -> Result<bool, String> {

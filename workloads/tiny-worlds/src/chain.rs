@@ -5,6 +5,8 @@ use crate::{Key, actions, deadline, deadline_actions, delayed, maze, resource, r
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 
+const STAGE_TIERS: u16 = 32;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stage {
@@ -18,6 +20,7 @@ pub struct Config {
     pub stages: Vec<Stage>,
     pub carry_charge: bool,
     pub initial_charge: u8,
+    pub ranked: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -198,6 +201,11 @@ impl Config {
         } else {
             0
         };
+        key.tier = if self.ranked {
+            key.tier + u16::from(state.stage) * STAGE_TIERS
+        } else {
+            0
+        };
         key.goal = self.goal(state);
         key
     }
@@ -250,6 +258,7 @@ mod tests {
             stages: vec![wait_stage(); n],
             carry_charge: false,
             initial_charge: 0,
+            ranked: false,
         }
     }
 
@@ -286,6 +295,7 @@ mod tests {
             ],
             carry_charge: true,
             initial_charge: 0,
+            ranked: false,
         }
     }
 
@@ -492,6 +502,74 @@ mod tests {
                 assert_eq!(work, report["work"].as_u64().unwrap());
                 assert_eq!(report["evidence"]["chain_first_reach_work"][0], 0);
             }
+        }
+    }
+
+    fn ranked_shape() -> Config {
+        let route = route::Config {
+            length: 3,
+            pattern: 0b00_01_10,
+            attack: 2,
+            shifted: false,
+            upgrade_required: true,
+            ranked_upgrade: true,
+        };
+        let trap = trap::Config {
+            length: 2,
+            pattern: 0b01_00,
+            trap_len: 1,
+            rooms: 2,
+        };
+        Config {
+            stages: vec![
+                resource_stage(1, 0, true),
+                Stage {
+                    world: World::Route(route),
+                    refill_available: true,
+                },
+                Stage {
+                    world: World::Trap(trap),
+                    refill_available: true,
+                },
+                wait_stage(),
+            ],
+            carry_charge: true,
+            initial_charge: 0,
+            ranked: true,
+        }
+    }
+
+    #[test]
+    fn ranked_chain_ranks_stages_above_every_earlier_leaf_tier() {
+        let w = ranked_shape();
+        assert!(w.reachable().unwrap());
+        let resource = execute(&w, w.initial(), &[1, 0, 0]);
+        assert_eq!(resource.stage, 1);
+        let blocked = execute(&w, resource, &[2, 1, 0]);
+        let upgraded = execute(&w, blocked, &[2, 2]);
+        assert_eq!(w.key(blocked, false).tier, STAGE_TIERS);
+        assert_eq!(w.key(upgraded, false).tier, STAGE_TIERS + 1);
+        let trap_stage = execute(&w, upgraded, &[2, 1, 0]);
+        assert_eq!(trap_stage.stage, 2);
+        let item = execute(&w, trap_stage, &[3]);
+        assert_eq!(w.key(item, false).tier, 2 * STAGE_TIERS + 1);
+        let last = execute(&w, trap_stage, &[0, 1]);
+        assert_eq!(last.stage, 3);
+        assert!(w.key(last, false).tier > w.key(item, false).tier);
+        let unranked = Config {
+            ranked: false,
+            ..w.clone()
+        };
+        for state in [upgraded, item, last] {
+            assert_eq!(unranked.key(state, false).tier, 0);
+        }
+        for broken in [false, true] {
+            let workload = Workload {
+                config: World::Chain(w.clone()),
+                broken,
+            };
+            let report = run(&workload, crate::test_seed(), 2000, true).unwrap();
+            assert_eq!(report["verified"], true);
         }
     }
 }

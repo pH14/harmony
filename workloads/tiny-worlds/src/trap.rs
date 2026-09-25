@@ -112,7 +112,7 @@ impl Config {
             charge: 0,
             health: 0,
             goal: s.goal,
-            tier: u8::from(s.item && !broken),
+            tier: u16::from(s.item && !broken),
         }
     }
     fn search(&self, from: State) -> Result<bool, String> {
