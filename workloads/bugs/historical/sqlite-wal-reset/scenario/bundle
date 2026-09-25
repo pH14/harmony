@@ -1,0 +1,5 @@
+setup /usr/local/bin/wal-race setup
+node checkpoint /usr/local/bin/wal-race run
+node writer /usr/local/bin/wal-race writer
+hook 1 /usr/bin/touch /run/wal-race-start
+ready /bin/true

@@ -28,6 +28,7 @@ class ScenarioContract(unittest.TestCase):
                                 "run": number,
                                 "parks": [{"site": site}],
                                 "violations": ["no-lost-committed-writes"],
+                                "sometimes": ["stale-backfill-advanced"],
                                 "state_hash": "same",
                             }
                             for number in (1, 2)
@@ -53,9 +54,17 @@ class ScenarioContract(unittest.TestCase):
                     }
                 },
             )
-            result.reached_site(site).violated("no-lost-committed-writes").identical_replays()
+            (
+                result.reached_site(site)
+                .observed("stale-backfill-advanced")
+                .not_observed("fixed-only")
+                .violated("no-lost-committed-writes")
+                .identical_replays()
+            )
             with self.assertRaises(AssertionError):
                 result.reached_site(site + 1)
+            with self.assertRaises(AssertionError):
+                result.not_observed("stale-backfill-advanced")
 
 
 if __name__ == "__main__":

@@ -130,6 +130,18 @@ class Result:
                 raise AssertionError(f"run {run['run']} did not violate {assertion!r}")
         return self
 
+    def observed(self, assertion: str) -> Result:
+        for run in self._runs():
+            if assertion not in run.get("sometimes", []):
+                raise AssertionError(f"run {run['run']} did not observe {assertion!r}")
+        return self
+
+    def not_observed(self, assertion: str) -> Result:
+        for run in self._runs():
+            if assertion in run.get("sometimes", []):
+                raise AssertionError(f"run {run['run']} observed {assertion!r}")
+        return self
+
     def clean(self) -> Result:
         for run in self._runs():
             if run.get("bug") or run.get("violations"):
