@@ -93,7 +93,8 @@ def requests(seeds: int) -> list[dict]:
                 "barriers": 3, "segment": 8, "pattern": line, "placement": placement}}, seed, broken))
         grid = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64),
                                                 "loops": 7, "corridor": 2, "shaft": 3, "inner": 20}}
-        rows.append(request("map/ranked", grid, seed))
+        for arm, broken in (("ranked", False), ("control", True)):
+            rows.append(request(f"map/{arm}", grid, seed, broken))
     return rows
 
 
@@ -133,14 +134,20 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def tier_draws(r):
         return [d for d in r["parent_draws"] if d[0] and d[1] == "tiers"]
 
-    def map_return_trip(arm):
-        ratios = []
+    def map_ratios(arm):
+        return_trip, next_gap = [], []
         for r in by[arm]:
-            entry, item, out, _ = (w if w is not None and w <= BUDGET else None
-                                   for w in (r["evidence"]["map_first"] + [None] * 4)[:4])
+            entry, item, out, goal = (w if w is not None and w <= BUDGET else None
+                                      for w in (r["evidence"]["map_first"] + [None] * 4)[:4])
             first_trip = item - entry if item is not None else BUDGET
-            ratios.append((out - item if out is not None else float("inf")) / first_trip)
-        return statistics.median(ratios)
+            back = out - item if out is not None else float("inf")
+            return_trip.append(back / first_trip)
+            if out is None:
+                next_gap.append(0)
+            else:
+                rooms = r["layout"]["door_to_item"] / r["layout"]["door_to_goal"]
+                next_gap.append(((goal if goal is not None else BUDGET) - out) / back * rooms)
+        return statistics.median(return_trip), statistics.median(next_gap)
 
     def trap_share(arm):
         return statistics.median(
@@ -187,8 +194,11 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("chain: ranked stages solve", f"{solved('chain/ranked')}/{n}", solved("chain/ranked") >= most),
         ("chain: ranked stages and upgrade solve", f"{solved('chain/ranked_upgrade')}/{n}", solved("chain/ranked_upgrade") >= most),
         ("chain: kept boss credit mostly unsolved", f"{solved('chain/sticky')}/{n}", solved("chain/sticky") <= third),
-        ("map: return trip shorter than the first trip", f"{map_return_trip('map/ranked'):.2f}",
-         map_return_trip("map/ranked") < 1),
+        ("map: return trip shorter than the first trip", f"{map_ratios('map/ranked')[0]:.2f}",
+         map_ratios("map/ranked")[0] < 1),
+        ("map: gap after leaving longer than the return trip per room", f"{map_ratios('map/ranked')[1]:.2f}",
+         map_ratios("map/ranked")[1] > 1),
+        ("map: hidden item mostly unsolved", f"{solved('map/control')}/{n}", solved("map/control") <= third),
     ]
 
 

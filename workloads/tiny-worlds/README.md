@@ -234,7 +234,7 @@ uses a prebuilt executable.
 | Retention | Two-stage chain under `portfolio` and `capacity_two`; the rule expects equal work. |
 | Backtracking | Backtrack world with items ranked, split by identity, kept as a preference, or hidden. |
 | Chains | Sixteen-stage chains: flat, ranked stages, ranked stages with ranked upgrades, and kept boss credit. |
-| Return trip | Eight-by-eight map with the item ranked; the return trip is shorter than the first trip. |
+| Growing gaps | Eight-by-eight map with the item ranked or hidden, one layout per seed; the return trip is shorter than the first trip, and per room of path the walk from the door to the goal takes longer than the return trip. |
 
 Timing rules compare medians in which an unsolved run counts as the work
 budget on the side that must be slower and as unbounded on the side that must
