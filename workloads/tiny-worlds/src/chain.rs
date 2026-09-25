@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::worlds::{State as WorldState, World};
-use crate::{Key, actions, deadline, deadline_actions, delayed, maze, resource, route, trap};
+use crate::{
+    Key, actions, backtrack, deadline, deadline_actions, delayed, maze, resource, route, trap,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 
@@ -33,6 +35,7 @@ pub enum LocalState {
     DeadlineActions(deadline_actions::State),
     Route(route::State),
     Trap(trap::State),
+    Backtrack(backtrack::State),
 }
 
 impl LocalState {
@@ -46,6 +49,7 @@ impl LocalState {
             WorldState::DeadlineActions(s) => Self::DeadlineActions(s),
             WorldState::Route(s) => Self::Route(s),
             WorldState::Trap(s) => Self::Trap(s),
+            WorldState::Backtrack(s) => Self::Backtrack(s),
             WorldState::Chain(_) => unreachable!("validated non-nested stage"),
         }
     }
@@ -59,6 +63,7 @@ impl LocalState {
             Self::DeadlineActions(s) => WorldState::DeadlineActions(s),
             Self::Route(s) => WorldState::Route(s),
             Self::Trap(s) => WorldState::Trap(s),
+            Self::Backtrack(s) => WorldState::Backtrack(s),
         }
     }
 }

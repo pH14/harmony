@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod actions;
+pub mod backtrack;
 pub mod chain;
 pub mod deadline;
 pub mod deadline_actions;
@@ -135,6 +136,7 @@ pub struct Evidence {
     pub delayed_distraction_actions: u64,
     pub delayed_progress_observations: Vec<u64>,
     pub job_parents: Vec<(u64, u16, u16)>,
+    pub backtrack_first_items: Vec<Option<u64>>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -497,6 +499,15 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     }
                 }
                 (World::Trap(_), State::Trap(_), State::Trap(_)) => {}
+                (World::Backtrack(w), State::Backtrack(before), State::Backtrack(after)) => {
+                    e.backtrack_first_items
+                        .resize(usize::from(w.gates) + 1, None);
+                    e.backtrack_first_items[0] = Some(0);
+                    if after.items > before.items {
+                        e.backtrack_first_items[usize::from(after.items)]
+                            .get_or_insert(observation.execution_work);
+                    }
+                }
                 _ => return Err("observation family mismatch".into()),
             }
             e.objectives += u64::from(self.config.goal(observation.after));

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::{
-    Key, actions, chain, deadline, deadline_actions, delayed, maze, resource, route, trap,
+    Key, actions, backtrack, chain, deadline, deadline_actions, delayed, maze, resource, route,
+    trap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,7 @@ pub enum World {
     Delayed(delayed::Config),
     DeadlineActions(deadline_actions::Config),
     Trap(trap::Config),
+    Backtrack(backtrack::Config),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -35,6 +37,7 @@ pub enum State {
     Delayed(delayed::State),
     DeadlineActions(deadline_actions::State),
     Trap(trap::State),
+    Backtrack(backtrack::State),
 }
 
 impl World {
@@ -49,6 +52,7 @@ impl World {
             Self::Delayed(w) => w.validate(),
             Self::DeadlineActions(w) => w.validate(),
             Self::Trap(w) => w.validate(),
+            Self::Backtrack(w) => w.validate(),
         }
     }
     pub fn valid_state(&self, state: State) -> bool {
@@ -67,6 +71,7 @@ impl World {
                 (Self::Delayed(w), State::Delayed(s)) => w.state_is_bounded(s),
                 (Self::DeadlineActions(w), State::DeadlineActions(s)) => w.state_is_bounded(s),
                 (Self::Trap(w), State::Trap(s)) => w.state_is_bounded(s),
+                (Self::Backtrack(w), State::Backtrack(s)) => w.state_is_bounded(s),
                 _ => false,
             }
     }
@@ -81,6 +86,7 @@ impl World {
             Self::Delayed(w) => State::Delayed(w.initial()),
             Self::DeadlineActions(w) => State::DeadlineActions(w.initial()),
             Self::Trap(w) => State::Trap(w.initial()),
+            Self::Backtrack(w) => State::Backtrack(w.initial()),
         }
     }
     pub fn step(&self, state: State, action: u8) -> State {
@@ -96,6 +102,7 @@ impl World {
                 State::DeadlineActions(w.step(s, action))
             }
             (Self::Trap(w), State::Trap(s)) => State::Trap(w.step(s, action)),
+            (Self::Backtrack(w), State::Backtrack(s)) => State::Backtrack(w.step(s, action)),
             _ => panic!("world and state family mismatch"),
         }
     }
@@ -110,6 +117,7 @@ impl World {
             (Self::Delayed(w), State::Delayed(s)) => w.goal(s),
             (Self::DeadlineActions(w), State::DeadlineActions(s)) => w.goal(s),
             (Self::Trap(w), State::Trap(s)) => w.goal(s),
+            (Self::Backtrack(w), State::Backtrack(s)) => w.goal(s),
             _ => false,
         }
     }
@@ -124,6 +132,7 @@ impl World {
             Self::Delayed(w) => w.reachable(),
             Self::DeadlineActions(w) => w.reachable(),
             Self::Trap(w) => w.reachable(),
+            Self::Backtrack(w) => w.reachable(),
         }
     }
     pub fn key(&self, state: State, broken: bool) -> Key {
@@ -145,6 +154,7 @@ impl World {
             (Self::Delayed(w), State::Delayed(s)) => w.key(s, broken),
             (Self::DeadlineActions(w), State::DeadlineActions(s)) => w.key(s, broken),
             (Self::Trap(w), State::Trap(s)) => w.key(s, broken),
+            (Self::Backtrack(w), State::Backtrack(s)) => w.key(s, broken),
             _ => panic!("world and state family mismatch"),
         }
     }
