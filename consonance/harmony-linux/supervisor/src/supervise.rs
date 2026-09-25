@@ -30,10 +30,16 @@ impl Action {
                 format!("arm event kill node {node} rarity {rarity}")
             }
             Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
-            Action::ArmEventPark(node, park) => format!(
-                "arm event park node {node} edges {} hold {}",
-                park.edges, park.hold_nanos
-            ),
+            Action::ArmEventPark(node, park) => {
+                let mut text = format!(
+                    "arm event park node {node} edges {} hold {}",
+                    park.edges, park.hold_nanos
+                );
+                if let Some(target) = park.target {
+                    text.push_str(&format!(" target {:#x}..{:#x}", target.start, target.end));
+                }
+                text
+            }
             Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
         }
     }
@@ -631,6 +637,7 @@ mod tests {
                 ProcessAction::EventPark {
                     edges: 3,
                     hold_nanos: 8,
+                    target: None,
                 },
             ),
         ]);
@@ -643,6 +650,7 @@ mod tests {
                     EventPark {
                         edges: 3,
                         hold_nanos: 8,
+                        target: None,
                         start: 0,
                     },
                 ),
@@ -663,6 +671,7 @@ mod tests {
             &ProcessAction::EventPark {
                 edges: 3,
                 hold_nanos: 10_000_000,
+                target: None,
             },
             0,
         );
@@ -672,6 +681,7 @@ mod tests {
             &ProcessAction::EventPark {
                 edges: 3,
                 hold_nanos: 10_000_000,
+                target: None,
             },
             500_000_000,
         );
@@ -682,6 +692,7 @@ mod tests {
                 EventPark {
                     edges: 3,
                     hold_nanos: 10_000_000,
+                    target: None,
                     start: 0,
                 }
             )]
@@ -695,6 +706,7 @@ mod tests {
                     EventPark {
                         edges: 3,
                         hold_nanos: 10_000_000,
+                        target: None,
                         start: 500_000_000,
                     }
                 )
@@ -1131,11 +1143,25 @@ mod tests {
                 EventPark {
                     edges: 2,
                     hold_nanos: 4,
+                    target: None,
                     start: 0,
                 }
             )
             .describe(),
             "arm event park node 0 edges 2 hold 4"
+        );
+        assert_eq!(
+            Action::ArmEventPark(
+                1,
+                EventPark {
+                    edges: 1,
+                    hold_nanos: 4,
+                    target: process_proto::events::ParkTarget::new(0x1000, 0x1004),
+                    start: 0,
+                }
+            )
+            .describe(),
+            "arm event park node 1 edges 1 hold 4 target 0x1000..0x1004"
         );
         assert_eq!(
             Action::DisarmEventPark(0).describe(),

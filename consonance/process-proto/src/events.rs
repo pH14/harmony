@@ -7,19 +7,39 @@ pub const EVENT_CMD_PARK: u64 = 2;
 pub const EVENT_CMD_PARK_STATUS: u64 = 3;
 pub const EVENT_CMD_COVERAGE_STATUS: u64 = 4;
 pub const EVENT_REPORT_HELLO: u64 = 0x4841_524d_4f4e_5945;
-pub const EVENT_PROTOCOL_VERSION: u64 = 4;
-pub const EVENT_CONTROL_FRAME_SIZE: usize = 24;
+pub const EVENT_PROTOCOL_VERSION: u64 = 5;
+pub const EVENT_CONTROL_FRAME_SIZE: usize = 40;
 pub const EVENT_REPORT_SIZE: usize = 16;
 pub const EVENT_RARITY_LIMIT: u8 = 64;
 pub const EVENT_PARK_EDGE_LIMIT: u32 = 1 << 24;
 pub const EVENT_PARK_STATUS_ARMED: u64 = 1;
 pub const EVENT_PARK_STATUS_HELD: u64 = 2;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ParkTarget {
+    pub start: u64,
+    pub end: u64,
+}
+
+impl ParkTarget {
+    #[must_use]
+    pub fn new(start: u64, end: u64) -> Option<Self> {
+        (start < end).then_some(Self { start, end })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
-    ArmKill { rarity: u8, start: u64 },
+    ArmKill {
+        rarity: u8,
+        start: u64,
+    },
     DisarmKill,
-    ArmPark { edges: u32, hold_nanos: u64 },
+    ArmPark {
+        edges: u32,
+        hold_nanos: u64,
+        target: Option<ParkTarget>,
+    },
     DisarmPark,
     ParkStatus,
     CoverageStatus,
@@ -73,17 +93,24 @@ impl std::error::Error for ProtocolError {}
 #[must_use]
 pub fn encode_command(command: Command) -> [u8; EVENT_CONTROL_FRAME_SIZE] {
     let mut frame = [0_u8; EVENT_CONTROL_FRAME_SIZE];
-    let (kind, first, second) = match command {
-        Command::ArmKill { rarity, .. } => (EVENT_CMD_KILL, u64::from(rarity), 1),
-        Command::DisarmKill => (EVENT_CMD_KILL, 0, 0),
-        Command::ArmPark { edges, hold_nanos } => (EVENT_CMD_PARK, u64::from(edges), hold_nanos),
-        Command::DisarmPark => (EVENT_CMD_PARK, 0, 0),
-        Command::ParkStatus => (EVENT_CMD_PARK_STATUS, 0, 0),
-        Command::CoverageStatus => (EVENT_CMD_COVERAGE_STATUS, 0, 0),
+    let (kind, first, second, target) = match command {
+        Command::ArmKill { rarity, .. } => (EVENT_CMD_KILL, u64::from(rarity), 1, None),
+        Command::DisarmKill => (EVENT_CMD_KILL, 0, 0, None),
+        Command::ArmPark {
+            edges,
+            hold_nanos,
+            target,
+        } => (EVENT_CMD_PARK, u64::from(edges), hold_nanos, target),
+        Command::DisarmPark => (EVENT_CMD_PARK, 0, 0, None),
+        Command::ParkStatus => (EVENT_CMD_PARK_STATUS, 0, 0, None),
+        Command::CoverageStatus => (EVENT_CMD_COVERAGE_STATUS, 0, 0, None),
     };
+    let (target_start, target_end) = target.map_or((0, 0), |target| (target.start, target.end));
     frame[..8].copy_from_slice(&kind.to_le_bytes());
     frame[8..16].copy_from_slice(&first.to_le_bytes());
-    frame[16..].copy_from_slice(&second.to_le_bytes());
+    frame[16..24].copy_from_slice(&second.to_le_bytes());
+    frame[24..32].copy_from_slice(&target_start.to_le_bytes());
+    frame[32..].copy_from_slice(&target_end.to_le_bytes());
     frame
 }
 
@@ -180,26 +207,40 @@ fn read_u64(frame: &[u8], offset: usize) -> u64 {
 mod tests {
     use super::*;
 
+    fn words(values: [u64; 5]) -> [u8; EVENT_CONTROL_FRAME_SIZE] {
+        let mut frame = [0_u8; EVENT_CONTROL_FRAME_SIZE];
+        for (chunk, value) in frame.chunks_exact_mut(8).zip(values) {
+            chunk.copy_from_slice(&value.to_le_bytes());
+        }
+        frame
+    }
+
     #[test]
-    fn control_frames_are_three_little_endian_words() {
+    fn control_frames_are_five_little_endian_words() {
         assert_eq!(
             encode_command(Command::ArmKill {
                 rarity: 7,
                 start: 0,
             }),
-            [
-                1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0
-            ]
+            words([1, 7, 1, 0, 0])
         );
         assert_eq!(
             encode_command(Command::ArmPark {
                 edges: 2,
                 hold_nanos: 9,
+                target: None,
             }),
-            [
-                2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0
-            ]
+            words([2, 2, 9, 0, 0])
         );
+        assert_eq!(
+            encode_command(Command::ArmPark {
+                edges: 1,
+                hold_nanos: 9,
+                target: ParkTarget::new(0x40, 0x80),
+            }),
+            words([2, 1, 9, 0x40, 0x80])
+        );
+        assert_eq!(ParkTarget::new(5, 5), None);
     }
 
     #[test]
@@ -219,9 +260,16 @@ mod tests {
         let park = Command::ArmPark {
             edges: 4,
             hold_nanos: 17,
+            target: ParkTarget::new(8, 16),
         };
         let mut wrong = encode_command(park);
         wrong[16] = 18;
+        assert_eq!(
+            decode_reply(park, &wrong),
+            Err(ProtocolError::MismatchedReply)
+        );
+        let mut wrong = encode_command(park);
+        wrong[32] = 17;
         assert_eq!(
             decode_reply(park, &wrong),
             Err(ProtocolError::MismatchedReply)

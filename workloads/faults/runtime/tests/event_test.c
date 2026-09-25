@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <pthread.h>
+#include <sched.h>
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -117,16 +118,31 @@ static uint64_t get_word(const unsigned char *frame, size_t offset)
     return value;
 }
 
-static void exchange(int fd, uint64_t kind, uint64_t first, uint64_t second,
-                     unsigned char *response)
+static void send_frame(int fd, uint64_t kind, uint64_t first, uint64_t second,
+                       uint64_t target_start, uint64_t target_end)
 {
     unsigned char request[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE] = {0};
 
     put_word(request, 0, kind);
     put_word(request, 8, first);
     put_word(request, 16, second);
+    put_word(request, 24, target_start);
+    put_word(request, 32, target_end);
     assert(write(fd, request, sizeof(request)) == (ssize_t)sizeof(request));
+}
+
+static void exchange_target(int fd, uint64_t kind, uint64_t first, uint64_t second,
+                            uint64_t target_start, uint64_t target_end,
+                            unsigned char *response)
+{
+    send_frame(fd, kind, first, second, target_start, target_end);
     assert(read_all(fd, response, HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE) == 0);
+}
+
+static void exchange(int fd, uint64_t kind, uint64_t first, uint64_t second,
+                     unsigned char *response)
+{
+    exchange_target(fd, kind, first, second, 0, 0, response);
 }
 
 int main(void)
@@ -238,6 +254,29 @@ int main(void)
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 3);
     assert(get_word(response, 16) == 0);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 20, 22, response);
+    assert(get_word(response, 24) == 20);
+    assert(get_word(response, 32) == 22);
+    harmony_instrumentation_event(30);
+    harmony_instrumentation_event(19);
+    harmony_instrumentation_event(22);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 3);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    harmony_instrumentation_event(21);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 4);
+    assert(json_reports == 4);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":21,\"edges\":1}}\n") == 0);
+    harmony_instrumentation_event(31);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 4);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, response);
+    harmony_instrumentation_event(32);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 5);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":32,\"edges\":1}}\n") == 0);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
     assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
     assert(get_word(response, 8) == harmony_fault_events.coverage_crossings);
@@ -252,7 +291,7 @@ int main(void)
         await_sleep(0);
         harmony_instrumentation_event(7);
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
-        assert(get_word(response, 8) == 4);
+        assert(get_word(response, 8) == 6);
         assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_HELD);
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
         assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_PARK);
@@ -266,7 +305,7 @@ int main(void)
         assert(pthread_create(&second, NULL, park_callback, (void *)(uintptr_t)8) == 0);
         await_sleep(1);
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
-        assert(get_word(response, 8) == 5);
+        assert(get_word(response, 8) == 7);
         assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_HELD);
         release_sleep(1);
         assert(pthread_join(second, NULL) == 0);
@@ -278,9 +317,22 @@ int main(void)
         assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
-        assert(get_word(response, 8) == 5);
+        assert(get_word(response, 8) == 7);
         assert(get_word(response, 16) == 0);
     }
+
+    send_frame(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 22, 22);
+    for (;;) {
+        int initialized;
+
+        assert(pthread_mutex_lock(&harmony_fault_events.lock) == 0);
+        initialized = harmony_fault_events.initialized != 0;
+        assert(pthread_mutex_unlock(&harmony_fault_events.lock) == 0);
+        if (!initialized)
+            break;
+        assert(sched_yield() == 0);
+    }
+    assert(harmony_fault_events.park_armed == 0);
 
     assert(close(control[1]) == 0);
     assert(close(report[0]) == 0);

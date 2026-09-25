@@ -200,6 +200,7 @@ mod tests {
         LocalIndex,
         extent::{extent_len, write_extent},
     };
+    use fault_policy::ParkTarget;
 
     use super::*;
 
@@ -238,6 +239,13 @@ mod tests {
     #[test]
     fn action_keys_are_fixed_width_and_distinct() {
         let tick = NonZeroU16::new(9).unwrap();
+        let park = FaultAction::EventPark {
+            node: 3,
+            edges: 1,
+            hold_us: 9,
+            ticks: tick,
+            target: None,
+        };
         let actions = [
             wait(3),
             FaultAction::Kill(3, tick),
@@ -246,11 +254,13 @@ mod tests {
                 rarity: 1,
                 ticks: tick,
             },
+            park,
             FaultAction::EventPark {
                 node: 3,
                 edges: 1,
                 hold_us: 9,
                 ticks: tick,
+                target: ParkTarget::new(u64::MAX - 1, u64::MAX),
             },
             FaultAction::Pause(3, tick),
             FaultAction::Restart(3, tick),
