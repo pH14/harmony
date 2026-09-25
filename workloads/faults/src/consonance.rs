@@ -515,6 +515,7 @@ impl FaultTarget {
             Ok((mut observation, ran)) => {
                 let since = self.observation.moment;
                 observation.parks.retain(|park| park.moment > since);
+                observation.park_reads.retain(|read| read.moment > since);
                 self.actions.push(action);
                 self.execution_ticks = self
                     .execution_ticks
@@ -529,6 +530,7 @@ impl FaultTarget {
                     self.watchdog_cutoffs = self.watchdog_cutoffs.saturating_add(1);
                     let mut observation = self.observation.clone();
                     observation.parks.clear();
+                    observation.park_reads.clear();
                     observation.watchdog_cutoff = true;
                     self.action_observations.push(observation);
                 }
@@ -1041,6 +1043,13 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .parks
                 .capacity()
                 .saturating_mul(size_of::<crate::target::ParkLanding>()),
+        )
+        .saturating_add(
+            snapshot
+                .observation
+                .park_reads
+                .capacity()
+                .saturating_mul(size_of::<crate::target::ParkRead>()),
         )
 }
 
