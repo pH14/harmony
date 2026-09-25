@@ -73,11 +73,6 @@ def requests(seeds: int) -> list[dict]:
             request("credit/engaged", delayed("engaged"), seed),
             request("credit/engaged/sticky", delayed("engaged", 0, True), seed),
         ]
-        route = pattern(16)
-        for ranked in (False, True):
-            rows.append(request(f"route/{'ranked' if ranked else 'unranked'}", {"family": "route", "parameters": {
-                "length": 16, "pattern": route, "attack": 2, "shifted": False,
-                "upgrade_required": True, "ranked_upgrade": ranked}}, seed))
         trap = {"family": "trap", "parameters": {"length": 12, "pattern": pattern(12), "trap_len": 2, "rooms": 1}}
         rows.append(request("trap/ranked", trap, seed))
         rows.append(request("trap/control", trap, seed, broken=True))
@@ -96,6 +91,9 @@ def requests(seeds: int) -> list[dict]:
                                        ("preference", "preference", False), ("control", "tier", True)):
             rows.append(request(f"backtrack/{arm}", {"family": "backtrack", "parameters": {
                 "barriers": 3, "segment": 8, "pattern": line, "placement": placement}}, seed, broken))
+        grid = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64),
+                                                "loops": 7, "corridor": 2, "shaft": 3, "inner": 20}}
+        rows.append(request("map/ranked", grid, seed))
     return rows
 
 
@@ -132,16 +130,17 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def slow(arm):
         return sum(not r["success"] or r["first_objective_work"] > 1000 for r in by[arm])
 
-    def return_ratio(arm):
-        ratios = []
-        for r in by[arm]:
-            if r["success"]:
-                e = r["route_evidence"]
-                ratios.append((r["first_objective_work"] - e["first_acquisition"]["work"]) / e["first_endpoint"]["work"])
-        return statistics.median(ratios) if ratios else float("nan")
-
     def tier_draws(r):
         return [d for d in r["parent_draws"] if d[0] and d[1] == "tiers"]
+
+    def map_return_trip(arm):
+        ratios = []
+        for r in by[arm]:
+            entry, item, out, _ = (w if w is not None and w <= BUDGET else None
+                                   for w in (r["evidence"]["map_first"] + [None] * 4)[:4])
+            first_trip = item - entry if item is not None else BUDGET
+            ratios.append((out - item if out is not None else float("inf")) / first_trip)
+        return statistics.median(ratios)
 
     def trap_share(arm):
         return statistics.median(
@@ -171,8 +170,6 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
          high("boss/tier/ample") < low("boss/engaged/ample")),
         ("credit kept after leaving: over 4x slower", f"{shown('credit/engaged/sticky')} vs {shown('credit/engaged')}",
          low("credit/engaged/sticky") > 4 * high("credit/engaged")),
-        ("route: ranked return/first-trip ratio at least 1.5x unranked", f"{return_ratio('route/ranked'):.2f} vs {return_ratio('route/unranked'):.2f}",
-         return_ratio("route/ranked") >= 1.5 * return_ratio("route/unranked")),
         ("trap: ranked item over 3x slower than control", f"{shown('trap/ranked')} vs {shown('trap/control')}",
          low("trap/ranked") > 3 * high("trap/control")),
         ("trap: item draw share at least 0.8 ranked, at most 0.5 control", f"{trap_share('trap/ranked'):.2f} vs {trap_share('trap/control'):.2f}",
@@ -190,6 +187,8 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("chain: ranked stages solve", f"{solved('chain/ranked')}/{n}", solved("chain/ranked") >= most),
         ("chain: ranked stages and upgrade solve", f"{solved('chain/ranked_upgrade')}/{n}", solved("chain/ranked_upgrade") >= most),
         ("chain: kept boss credit mostly unsolved", f"{solved('chain/sticky')}/{n}", solved("chain/sticky") <= third),
+        ("map: return trip shorter than the first trip", f"{map_return_trip('map/ranked'):.2f}",
+         map_return_trip("map/ranked") < 1),
     ]
 
 

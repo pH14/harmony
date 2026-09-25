@@ -2,7 +2,7 @@
 
 use crate::worlds::{State as WorldState, World};
 use crate::{
-    Key, actions, backtrack, deadline, deadline_actions, delayed, maze, resource, route, trap,
+    Key, actions, backtrack, deadline, deadline_actions, delayed, map, maze, resource, route, trap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,7 @@ pub enum LocalState {
     Route(route::State),
     Trap(trap::State),
     Backtrack(backtrack::State),
+    Map(map::State),
 }
 
 impl LocalState {
@@ -49,6 +50,7 @@ impl LocalState {
             WorldState::Route(s) => Self::Route(s),
             WorldState::Trap(s) => Self::Trap(s),
             WorldState::Backtrack(s) => Self::Backtrack(s),
+            WorldState::Map(s) => Self::Map(s),
             WorldState::Chain(_) => unreachable!("validated non-nested stage"),
         }
     }
@@ -63,6 +65,7 @@ impl LocalState {
             Self::Route(s) => WorldState::Route(s),
             Self::Trap(s) => WorldState::Trap(s),
             Self::Backtrack(s) => WorldState::Backtrack(s),
+            Self::Map(s) => WorldState::Map(s),
         }
     }
 }

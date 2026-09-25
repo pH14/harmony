@@ -76,6 +76,7 @@ representation or action choice affects the same world transitions.
 | `route` | Scout a route, return for an upgrade, and traverse it again. | Uses the same representation in both settings. |
 | `backtrack` | Walk a line whose barriers each need one more item; the next item is taken at the hub after reaching the next barrier. | Hide items from the key. |
 | `trap` | Follow a corridor to the goal, or enter a side corridor to an item whose rooms never reach the goal. | Hide the item from the progress tier. |
+| `map` | Enter a branch of a grid of rooms, take the item at its far end, leave through the same door, and cross the rest of the map to the goal. | Hide the item from the progress tier. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -112,6 +113,24 @@ the `tier`, in the slot `identity`, or only in a retention `preference` through
 charge. The report's `backtrack_first_items` gives the first work at which
 each item count was held.
 
+The map world is a `width` by `height` grid of rooms. Doors form a spanning
+tree drawn by a randomized depth-first walk from room 0, seeded by `layout`,
+so the map has long corridors, branches, and dead ends. The inner region is
+the tree branch of about `inner` rooms that hangs from one door; the campaign
+starts in room 0 in the outer region, and that door is the only way in or
+out. Up to `loops` extra doors join rooms within one region. The item is the
+inner room farthest from the door, and the goal is the outer room farthest
+from the door; reaching the goal counts only while holding the item, so a
+campaign enters the inner region, takes the item, leaves through the same
+door, and crosses the outer region again. Actions 0–3 are up, right, down, and
+left. Crossing a horizontal door takes `corridor` presses in its direction and
+crossing a vertical door takes `shaft` presses; the opposite action steps back
+and the side actions do nothing. The archive place is the room and the
+position inside its doorway, and the tier is 1 once the item is held. Map
+reports include the `layout` (doors per room, regions, item, door, goal, and
+room distances), `evidence.map_first` (first work entering the inner region,
+holding the item, leaving it with the item, and at the goal).
+
 Diagnostics count admitted suffix observations. Arrival histograms count
 transitions into a location; resource refill counts require a stock increase.
 Delayed-progress histograms include distraction observations in their zero bin.
@@ -137,6 +156,7 @@ states; requests exceeding the reachability limit are rejected.
 | Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
 | Backtrack | `barriers` 1–4; `segment` 1–8; `(barriers + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
+| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count. |
 
 ## Scenario chains
 
@@ -197,27 +217,33 @@ uv run workloads/tiny-worlds/panel.py
 It builds the executable, draws every seed at runtime, runs six seeds per arm
 (twelve for the engaged and level-as-tier tight-ammunition boss arms) in six
 processes, and prints one PASS or FAIL line per rule. It writes no files. A run
-takes about a minute and a half on a laptop. `--seeds` and `--jobs` change the sample and parallelism; `--binary`
+takes about half a minute on a laptop. `--seeds` and `--jobs` change the sample and parallelism; `--binary`
 uses a prebuilt executable.
 
 | Rule | Setting |
 | --- | --- |
 | Boss damage | Delayed boss with tight or ample ammunition; partial progress in the place, as an engaged tier, or as the tier itself. |
 | Credit kept after leaving | Engaged boss with and without `sticky_credit`. |
-| Return trip | Route with the upgrade ranked or unranked. |
 | Unwinnable top rank | Trap world against its control, including the top-tier draw share, which follows the selector's tier rank weight. |
 | Retention | Two-stage chain under `portfolio` and `capacity_two`; the rule expects equal work. |
 | Backtracking | Backtrack world with items ranked, split by identity, kept as a preference, or hidden. |
 | Chains | Sixteen-stage chains: flat, ranked stages, ranked stages with ranked upgrades, and kept boss credit. |
+| Return trip | Eight-by-eight map with the item ranked; the return trip is shorter than the first trip. |
 
 Timing rules compare medians in which an unsolved run counts as the work
 budget on the side that must be slower and as unbounded on the side that must
-be faster, so a rule passes only when solved runs establish it. Count
+be faster, so a rule passes only when solved runs establish it. A milestone
+reached after the budget counts as unreached. Count
 allowances scale with the seed count and round up. Each rule records current
 searcher behaviour. A searcher change that flips a rule predicts the same
 change on Metroid. With six seeds per arm, a rule close to its threshold can
 flip between runs of an unchanged searcher, so rerun a FAIL before attributing
 it to a change. The panel is not a CI check.
+
+The map world is the calibrated world for the return trip. In recorded
+Metroid campaigns, climbing out of Kraid's hideout after the kill takes
+0.55–0.72 of the first trip from the hideout entry to Kraid's room. The map
+rule asserts only that the return trip is shorter than the first trip.
 
 ## Checks
 

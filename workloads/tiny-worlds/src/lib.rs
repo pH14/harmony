@@ -6,6 +6,7 @@ pub mod chain;
 pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
+pub mod map;
 pub mod maze;
 pub mod resource;
 pub mod route;
@@ -194,6 +195,7 @@ pub struct Evidence {
     pub delayed_progress_observations: Vec<u64>,
     pub job_parents: Vec<(u64, u16, u16)>,
     pub backtrack_first_items: Vec<Option<u64>>,
+    pub map_first: Vec<Option<u64>>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -558,6 +560,22 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                             .get_or_insert(observation.execution_work);
                     }
                 }
+                (World::Map(w), State::Map(before), State::Map(after)) => {
+                    e.map_first.resize(4, None);
+                    let layout = w.layout();
+                    let inside = |cell: u8| layout.inner[usize::from(cell)];
+                    let reached = [
+                        inside(after.cell) && !inside(before.cell),
+                        after.item && !before.item,
+                        after.item && !inside(after.cell) && inside(before.cell),
+                        after.goal && !before.goal,
+                    ];
+                    for (first, reached) in e.map_first.iter_mut().zip(reached) {
+                        if reached {
+                            first.get_or_insert(observation.execution_work);
+                        }
+                    }
+                }
                 _ => return Err("observation family mismatch".into()),
             }
             e.objectives += u64::from(self.config.goal(observation.after));
@@ -801,7 +819,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         "chain_parent_selections":report.archive.evidence.chain_parent_selections,
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
         "chain_selected_charge":report.archive.evidence.chain_selected_charge,
-        "route_evidence":route_evidence,
+        "route_evidence":route_evidence,"layout":workload.config.layout(),
         "pre_objective_continuation_jobs":pre_objective_continuation_jobs,
         "pre_objective_continuation_work":pre_objective_continuation_work,
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
