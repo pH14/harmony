@@ -33,6 +33,8 @@ pub struct Config {
     #[serde(default)]
     pub locked: bool,
     #[serde(default)]
+    pub boss_hits_back: bool,
+    #[serde(default)]
     pub timing: u8,
 }
 
@@ -125,6 +127,9 @@ impl Config {
         if self.locked && (self.items > 1 || self.item_optional || self.boss_stock > 0) {
             return Err("a locked map region needs one required item and no boss".into());
         }
+        if self.boss_hits_back && !(1..=6).contains(&self.boss_stock) {
+            return Err("a map boss that hits back needs a boss stock of 1..=6".into());
+        }
         if self.boss_stock > 0
             && (self.items > 1 || self.farms < 2 || self.boss_stock > self.farm_cap)
         {
@@ -136,6 +141,12 @@ impl Config {
         let layout = self.layout();
         if self.items > 1 && layout.items.len() < usize::from(self.items) {
             return Err("the map's outer region has too few rooms for its items".into());
+        }
+        if layout.farms.len() < usize::from(self.farms) {
+            return Err("the map has too few rooms for its farms".into());
+        }
+        if self.farms == 0 && self.farm_cap != 0 {
+            return Err("a map farm cap needs farms".into());
         }
         if self.locked && layout.key.is_none() {
             return Err("a locked map needs an outer room for the key".into());
@@ -417,6 +428,14 @@ impl Config {
         }
     }
 
+    fn health_cap(&self) -> u8 {
+        if self.boss_hits_back {
+            self.boss_stock + 2
+        } else {
+            self.cap()
+        }
+    }
+
     fn state_fits(&self, layout: &Layout, s: State) -> bool {
         if s.cell >= self.cells() || s.arm > 4 || s.phase >= self.timing.max(1) {
             return false;
@@ -435,13 +454,16 @@ impl Config {
                 && u32::from(s.found) < 1 << self.items
                 && s.found & (s.found + 1) == 0
                 && next_item(layout, s.found) != Some(s.cell)
+                && (self.complete(s) || !layout.inner[usize::from(s.cell)])
         };
         arm_fits
             && items_fit
             && s.hits <= self.boss_stock
             && (s.hits == 0 || (s.item && s.arm == 0 && s.cell == layout.goal))
-            && s.health <= self.cap()
-            && s.stock <= self.cap()
+            && s.health <= self.health_cap()
+            && s.hits + s.stock <= self.cap()
+            && (!self.boss_hits_back || s.hits + s.health <= self.health_cap())
+            && (self.boss_stock == 0 || s.item || s.stock == 0)
             && (s.item || Some(s.cell) != layout.item)
             && (!self.locked
                 || s.found == 1
@@ -473,9 +495,10 @@ impl Config {
         }
         if let Some(farm) = layout.farms.iter().position(|&room| room == cell) {
             if farm % 2 == 0 {
-                next.health = (next.health + 1).min(self.cap());
+                next.health = (next.health + 1).min(self.health_cap());
             } else if self.boss_stock == 0 || next.item {
                 next.stock = (next.stock + 1).min(self.cap());
+                next.health = next.health.saturating_sub(u8::from(self.boss_hits_back));
             }
         }
         next.goal = self.complete(next) && cell == layout.goal;
@@ -502,9 +525,15 @@ impl Config {
     fn advance(&self, layout: &Layout, s: State, action: u8) -> State {
         if s.arm == 0 {
             if !self.open(layout, s, s.cell, action) {
-                if self.boss_stock > 0 && s.item && s.cell == layout.goal && s.stock > 0 {
+                if self.boss_stock > 0
+                    && s.item
+                    && s.cell == layout.goal
+                    && s.stock > 0
+                    && (!self.boss_hits_back || s.health > 0)
+                {
                     let fired = State {
                         stock: s.stock - 1,
+                        health: s.health - u8::from(self.boss_hits_back),
                         hits: s.hits + 1,
                         ..s
                     };
@@ -586,7 +615,7 @@ impl Config {
             |s, a| {
                 let next = self.step(s, a);
                 State {
-                    health: 0,
+                    health: if self.boss_hits_back { next.health } else { 0 },
                     stock: next.stock.min(self.boss_stock),
                     phase: 0,
                     ..next
@@ -615,6 +644,7 @@ mod tests {
             boss_stock: 0,
             item_optional: false,
             locked: false,
+            boss_hits_back: false,
             timing: 0,
         }
     }
@@ -844,6 +874,119 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn each_state_bound_rejects_its_own_violation() {
+        let boss = Config {
+            farms: 2,
+            farm_cap: 3,
+            boss_stock: 3,
+            boss_hits_back: true,
+            ..config(crate::test_seed())
+        };
+        let l = boss.layout();
+        let fighting = State {
+            cell: l.goal,
+            item: true,
+            stock: 1,
+            health: 1,
+            hits: 2,
+            ..boss.initial()
+        };
+        assert!(boss.state_is_bounded(fighting));
+        for s in [
+            State {
+                hits: 4,
+                ..fighting
+            },
+            State {
+                cell: l.farms[0],
+                ..fighting
+            },
+            State {
+                stock: 2,
+                ..fighting
+            },
+            State {
+                health: 4,
+                ..fighting
+            },
+            State {
+                hits: 0,
+                stock: 4,
+                ..fighting
+            },
+            State {
+                hits: 0,
+                health: 6,
+                ..fighting
+            },
+            State {
+                cell: l.farms[1],
+                item: false,
+                hits: 0,
+                ..fighting
+            },
+            State {
+                found: 1,
+                ..fighting
+            },
+        ] {
+            assert!(!boss.state_is_bounded(s), "{s:?}");
+        }
+        let ordered = Config {
+            width: 8,
+            height: 8,
+            inner: 4,
+            items: 3,
+            ..config(crate::test_seed())
+        };
+        let l = ordered.layout();
+        let one = State {
+            cell: l.items[0],
+            found: 1,
+            ..ordered.initial()
+        };
+        assert!(ordered.state_is_bounded(one));
+        for s in [
+            State { found: 2, ..one },
+            State { item: true, ..one },
+            State {
+                cell: l.items[1],
+                ..one
+            },
+            State {
+                cell: l.entry,
+                ..one
+            },
+        ] {
+            assert!(!ordered.state_is_bounded(s), "{s:?}");
+        }
+        let locked = Config {
+            width: 8,
+            height: 8,
+            inner: 4,
+            locked: true,
+            ..config(crate::test_seed())
+        };
+        let l = locked.layout();
+        for s in [
+            State {
+                cell: l.key.unwrap(),
+                ..locked.initial()
+            },
+            State {
+                cell: l.entry,
+                ..locked.initial()
+            },
+            State {
+                found: 2,
+                ..locked.initial()
+            },
+        ] {
+            assert!(!locked.state_is_bounded(s), "{s:?}");
+        }
+    }
+
     fn fire(w: &Config, l: &Layout, s: State) -> State {
         let wall = (0..4)
             .find(|&d| l.doors[usize::from(l.goal)] & (1 << d) == 0)
@@ -921,6 +1064,51 @@ mod tests {
             serde_json::from_value(report["evidence"]["map_first_tier"].clone()).unwrap();
         let stocked = report["evidence"]["map_first_stocked"].as_u64().unwrap();
         assert!(tiers[1].unwrap() < stocked && stocked < goal);
+    }
+
+    #[test]
+    fn a_boss_that_hits_back_needs_health_as_well_as_stock() {
+        let w = Config {
+            farms: 2,
+            farm_cap: 3,
+            boss_stock: 3,
+            boss_hits_back: true,
+            ..config(crate::test_seed())
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        let armed = State {
+            item: true,
+            health: 2,
+            ..w.initial()
+        };
+        let farmed = w.arrive(&l, armed, l.farms[1]);
+        assert_eq!((farmed.stock, farmed.health), (1, 1));
+        let healed = w.arrive(&l, farmed, l.farms[0]);
+        assert_eq!((healed.stock, healed.health), (1, 2));
+        let at_boss = |health| State {
+            cell: l.goal,
+            item: true,
+            stock: 3,
+            health,
+            ..w.initial()
+        };
+        let mut s = at_boss(2);
+        for _ in 0..2 {
+            let before = s;
+            s = fire(&w, &l, s);
+            assert_eq!(
+                (s.hits, s.stock, s.health),
+                (before.hits + 1, before.stock - 1, before.health - 1)
+            );
+        }
+        assert_eq!(fire(&w, &l, s), s);
+        assert!(!s.goal);
+        let mut s = at_boss(3);
+        for _ in 0..3 {
+            s = fire(&w, &l, s);
+        }
+        assert!(s.goal && w.goal(s));
     }
 
     #[test]

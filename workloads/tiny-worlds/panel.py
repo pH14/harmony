@@ -21,12 +21,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 BUDGET = 20_000
-WORLD_BUDGET = 400_000
+WORLD_BUDGET = 200_000
 SLOWER, FASTER = 1.25, 0.8
 WORLDS = {
     "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
     "whole-map re-walk": ({"inner": 4, "items": 9}, 1),
     "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 1),
+    "boss needing stock and health": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 6,
+                                       "boss_hits_back": True}, 1),
     "off-path item": ({"inner": 6, "item_optional": True}, 4),
     "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 4),
     "locked item": ({"inner": 4, "locked": True}, 4),

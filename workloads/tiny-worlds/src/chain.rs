@@ -96,6 +96,9 @@ impl Config {
             if matches!(stage.world, World::Graph(_)) {
                 return Err("graph stages are unsupported".into());
             }
+            if matches!(&stage.world, World::Map(w) if w.boss_stock > 0) {
+                return Err("map stages with a boss are unsupported".into());
+            }
             stage.world.validate()?;
             if let World::Resource(w) = &stage.world {
                 if self.carry_charge {

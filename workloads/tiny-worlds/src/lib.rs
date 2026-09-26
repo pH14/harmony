@@ -701,6 +701,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         && after.arm == 0
                         && after.cell == layout.goal
                         && after.stock >= w.boss_stock
+                        && (!w.boss_hits_back || after.health >= w.boss_stock)
                     {
                         e.map_first_stocked
                             .get_or_insert(observation.execution_work);
