@@ -112,7 +112,9 @@ impl Config {
         if self.item_optional && (self.items > 1 || self.boss_stock > 0) {
             return Err("an optional map item needs one item and no boss".into());
         }
-        if self.boss_stock > 0 && (self.items > 1 || self.farms < 2 || self.boss_stock > self.farm_cap) {
+        if self.boss_stock > 0
+            && (self.items > 1 || self.farms < 2 || self.boss_stock > self.farm_cap)
+        {
             return Err("a map boss needs one item and farms whose cap covers its stock".into());
         }
         if self.farms > 8 || (self.farms > 0 && !(1..=63).contains(&self.farm_cap)) {
@@ -454,7 +456,7 @@ impl Config {
 
     fn advance(&self, layout: &Layout, s: State, action: u8) -> State {
         if s.arm == 0 {
-            if !self.open(&layout, s, s.cell, action) {
+            if !self.open(layout, s, s.cell, action) {
                 if self.boss_stock > 0 && s.item && s.cell == layout.goal && s.stock > 0 {
                     let fired = State {
                         stock: s.stock - 1,
@@ -470,7 +472,7 @@ impl Config {
             }
             if self.length(action) == 1 {
                 let next = self.neighbour(s.cell, action).expect("door has a room");
-                return self.arrive(&layout, State { hits: 0, ..s }, next);
+                return self.arrive(layout, State { hits: 0, ..s }, next);
             }
             return State {
                 arm: action + 1,
@@ -483,7 +485,7 @@ impl Config {
         if action == direction {
             if s.progress + 1 == self.length(direction) {
                 let next = self.neighbour(s.cell, direction).expect("door has a room");
-                return self.arrive(&layout, s, next);
+                return self.arrive(layout, s, next);
             }
             return State {
                 progress: s.progress + 1,
@@ -809,7 +811,11 @@ mod tests {
         };
         let l = w.layout();
         assert!(w.reachable().unwrap());
-        assert!(l.farms.iter().all(|&c| !l.inner[usize::from(c)] && c != l.goal));
+        assert!(
+            l.farms
+                .iter()
+                .all(|&c| !l.inner[usize::from(c)] && c != l.goal)
+        );
         let mut s = walk(&w, &l, w.initial(), l.farms[1]);
         assert_eq!(s.stock, 0);
         s = walk(&w, &l, s, l.item);
@@ -895,10 +901,7 @@ mod tests {
         };
         let l = w.layout();
         assert!(w.reachable().unwrap());
-        let plain = Config {
-            timing: 0,
-            ..w
-        };
+        let plain = Config { timing: 0, ..w };
         let start = w.initial();
         for phase in 0..5 {
             let s = State { phase, ..start };

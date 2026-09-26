@@ -51,7 +51,9 @@ fn reachable<S: Copy + Ord>(
             let next = step(state, action);
             if seen.insert(next) {
                 if seen.len() > MAX_REACHABLE_STATES {
-                    return Err(format!("reachability search exceeded {MAX_REACHABLE_STATES} states"));
+                    return Err(format!(
+                        "reachability search exceeded {MAX_REACHABLE_STATES} states"
+                    ));
                 }
                 pending.push_back(next);
             }
