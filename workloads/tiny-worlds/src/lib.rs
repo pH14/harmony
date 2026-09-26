@@ -198,6 +198,8 @@ pub struct Evidence {
     pub job_parents: Vec<(u64, u16, u16)>,
     pub backtrack_first_items: Vec<Option<u64>>,
     pub map_first: Vec<Option<u64>>,
+    pub map_first_tier: Vec<Option<u64>>,
+    pub map_first_stocked: Option<u64>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -685,6 +687,21 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         if reached {
                             first.get_or_insert(observation.execution_work);
                         }
+                    }
+                    e.map_first_tier.resize(usize::from(w.items) + 1, None);
+                    e.map_first_tier[0] = Some(0);
+                    if w.tier(after) > w.tier(before) {
+                        e.map_first_tier[usize::from(w.tier(after))]
+                            .get_or_insert(observation.execution_work);
+                    }
+                    if w.boss_stock > 0
+                        && after.item
+                        && after.arm == 0
+                        && after.cell == layout.goal
+                        && after.stock >= w.boss_stock
+                    {
+                        e.map_first_stocked
+                            .get_or_insert(observation.execution_work);
                     }
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_)) => {}

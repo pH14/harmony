@@ -11,6 +11,8 @@ import argparse
 import collections
 import concurrent.futures
 import json
+import math
+import random
 import secrets
 import statistics
 import subprocess
@@ -19,6 +21,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 BUDGET = 20_000
+WORLD_BUDGET = 400_000
+SLOWER, FASTER = 1.25, 0.8
+WORLDS = {
+    "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 16),
+    "whole-map re-walk": ({"inner": 4, "items": 9}, 16),
+    "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 16),
+    "off-path item": ({"inner": 6, "item_optional": True}, 64),
+    "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 64),
+    "off-path item with hidden timing": ({"inner": 6, "item_optional": True, "timing": 5}, 64),
+}
 
 
 def pattern(length: int) -> int:
@@ -98,9 +110,93 @@ def requests(seeds: int) -> list[dict]:
     return rows
 
 
+def world_requests(scale: int) -> list[dict]:
+    rows = []
+    for world, (fields, layouts) in WORLDS.items():
+        for _ in range(layouts * scale // 16):
+            config = {"family": "map", "parameters": {
+                "width": 8, "height": 8, "layout": secrets.randbits(64), "loops": 7, "corridor": 2,
+                "shaft": 3, **fields}}
+            rows.append({"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
+                                                   "work_budget": WORLD_BUDGET, "broken": False,
+                                                   "verify": False, "keep": "portfolio"}})
+    return rows
+
+
+def legs(report: dict) -> dict:
+    evidence = report["evidence"]
+    goal, first, tiers = report["first_objective_work"], evidence["map_first"], evidence["map_first_tier"]
+
+    def gap(start, end):
+        return None if start is None or end is None else end - start
+
+    measured = {"to the goal": goal if goal is not None else WORLD_BUDGET}
+    parameters = report["config"]["parameters"]
+    if parameters.get("boss_stock"):
+        measured["to the item"] = tiers[1]
+        measured["item to stocked arrival"] = gap(tiers[1], evidence["map_first_stocked"])
+        measured["stocked arrival to kill"] = gap(evidence["map_first_stocked"], goal)
+    elif parameters.get("items", 1) > 1:
+        measured["to the last item"] = tiers[-1]
+        measured["last item to the goal"] = gap(tiers[-1], goal)
+    elif parameters.get("item_optional"):
+        measured["pickup to the goal"] = gap(tiers[1], goal)
+    else:
+        measured["to the item"] = tiers[1]
+        measured["out of the item region"] = gap(first[1], first[2])
+        measured["out to the goal"] = gap(first[2], goal)
+    return measured
+
+
+def paired(base: list[dict], candidate: list[dict]) -> list[tuple[str, int, float, float, float]]:
+    rows = []
+    for leg in legs(base[0]):
+        ratios = [math.log(c[leg] / b[leg]) for b, c in zip(map(legs, base), map(legs, candidate))
+                  if b[leg] and c[leg]]
+        if len(ratios) < 3:
+            rows.append((leg, len(ratios), math.nan, math.nan, math.nan))
+            continue
+        draws = sorted(statistics.median(random.choices(ratios, k=len(ratios))) for _ in range(2000))
+        rows.append((leg, len(ratios), math.exp(statistics.median(ratios)),
+                     math.exp(draws[10]), math.exp(draws[1989])))
+    return rows
+
+
+def verdict(low: float, high: float) -> str:
+    if low > SLOWER:
+        return "slower"
+    if high < FASTER:
+        return "faster"
+    return "no clear change"
+
+
+def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
+    requests_ = world_requests(scale)
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        base = list(pool.map(lambda job: execute(baseline, job), requests_))
+        cand = list(pool.map(lambda job: execute(candidate, job), requests_))
+    bad = []
+    for world in WORLDS:
+        b = [r for r in base if r["arm"] == world]
+        c = [r for r in cand if r["arm"] == world]
+        missed = (sum(r["first_objective_work"] is None for r in b),
+                  sum(r["first_objective_work"] is None for r in c))
+        results = paired(b, c)
+        slower = [leg for leg, _, _, low, high in results if verdict(low, high) == "slower"]
+        clearly_bad = bool(slower) or missed[1] > missed[0] + 1
+        if clearly_bad:
+            bad.append(world)
+        print(f"{world}: {'CLEARLY BAD' if clearly_bad else 'plausible'}; "
+              f"goal missed {missed[1]}/{len(c)} vs {missed[0]}/{len(b)}")
+        for leg, n, ratio, low, high in results:
+            print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {n} pairs  {verdict(low, high)}")
+    print(f"{len(base) + len(cand)} world runs; clearly bad on {len(bad)} of {len(WORLDS)} worlds")
+    return 1 if bad else 0
+
+
 def execute(binary: Path, job: dict) -> dict:
     process = subprocess.run([str(binary)], input=json.dumps(job["request"]),
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, check=False)
     if process.returncode:
         raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
     report = json.loads(process.stdout)
@@ -207,6 +303,10 @@ def main() -> int:
     parser.add_argument("--seeds", type=int, default=6, help="runtime seeds per arm")
     parser.add_argument("--jobs", type=int, default=6, help="parallel processes")
     parser.add_argument("--binary", type=Path, help="prebuilt tiny-worlds executable")
+    parser.add_argument("--compare", type=Path, metavar="BASELINE",
+                        help="also run the Metroid worlds on this baseline executable and on --binary")
+    parser.add_argument("--world-scale", type=int, default=16,
+                        help="layouts per heavy Metroid world; light worlds run four times as many")
     args = parser.parse_args()
     if args.seeds < 3:
         parser.error("--seeds must be at least 3")
@@ -226,6 +326,8 @@ def main() -> int:
         failed += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {name}: {value}")
     print(f"{len(rows)} runs, {failed} failed rules")
+    if args.compare:
+        failed += compare(args.compare, binary, args.world_scale, args.jobs)
     return 1 if failed else 0
 
 

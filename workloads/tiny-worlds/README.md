@@ -158,7 +158,9 @@ and the side actions do nothing. The archive place is the room and the
 position inside its doorway, and the tier is 1 once the item is held. Map
 reports include the `layout` (doors per room, regions, item, door, goal, and
 room distances), `evidence.map_first` (first work entering the inner region,
-holding the item, leaving it with the item, and at the goal), and
+holding the item, leaving it with the item, and at the goal),
+`evidence.map_first_tier` (first work at each tier), `evidence.map_first_stocked`
+(first work arriving in a boss room holding the item and enough stock), and
 `parent_timeline`, which lists each job's start work, whether its parent holds
 the item, and its parent place in order. A room is its place divided by 16.
 As a known limit, the map spreads draws faster than Metroid. After the item
@@ -278,8 +280,9 @@ uv run workloads/tiny-worlds/panel.py
 It builds the executable, draws every seed at runtime, runs six seeds per arm
 (twelve for the engaged and level-as-tier tight-ammunition boss arms) in six
 processes, and prints one PASS or FAIL line per rule. It writes no files. A run
-takes about half a minute on a laptop. `--seeds` and `--jobs` change the sample and parallelism; `--binary`
-uses a prebuilt executable.
+takes about ten seconds on a ten-core laptop with `--jobs 10`. `--seeds` and
+`--jobs` change the sample and parallelism; `--binary` uses a prebuilt
+executable.
 
 | Rule | Setting |
 | --- | --- |
@@ -300,6 +303,39 @@ searcher behaviour. A searcher change that flips a rule predicts the same
 change on Metroid. With six seeds per arm, a rule close to its threshold can
 flip between runs of an unchanged searcher, so rerun a FAIL before attributing
 it to a change. The panel is not a CI check.
+
+### Comparing a searcher change
+
+`--compare BASELINE` also runs the Metroid worlds on the baseline executable and
+on `--binary`, with the same layouts and runtime seeds on both:
+
+```sh
+uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare baseline
+```
+
+| World | Settings | Metroid behaviour | Legs |
+| --- | --- | --- | --- |
+| Farm loop | `inner` 20, 4 farms | Refills away from the next item draw the search back | To the item, out of the item region, out to the goal |
+| Whole-map re-walk | `inner` 4, 9 items | Each item sends a new tier back across the map | To the last item, last item to the goal |
+| Boss needing far stock | `inner` 20, 4 farms, `boss_stock` 24 | Kraid and Ridley need missiles farmed far from the boss | To the item, item to stocked arrival, stocked arrival to kill |
+| Off-path item | `inner` 6, `item_optional` | A new tier from an off-path pickup walks back over reached ground | Pickup to the goal |
+| Off-path item with farms | as above, 2 farms | The same with refills | Pickup to the goal |
+| Off-path item with hidden timing | as above, `timing` 5 | Replayed inputs land about one time in five | Pickup to the goal |
+
+Every world also reports work to the goal. A campaign stops at the goal or
+after 400,000 work. The heavy worlds run 16 layouts and the off-path worlds 64;
+`--world-scale` sets the heavy count. A stocked arrival is the first arrival in
+the boss room holding the item and at least `boss_stock` stock. For each leg
+the panel prints the median over layouts of the candidate-to-baseline work
+ratio, a 99% bootstrap interval, and the number of layouts that reached both
+ends in both runs. A leg is slower when the interval lies above 1.25 and
+faster when it lies below 0.8. A world is clearly bad when any leg is slower or
+the candidate misses the goal on two more layouts than the baseline. The
+exit status is nonzero when a rule fails or a world is clearly bad. Two
+unchanged searchers with different runtime seeds gave no slower or faster leg
+in 300 trials per world. A comparison takes about 35 seconds with `--jobs 10`.
+A leg with ratio exactly 1.00 ran identically on both executables, which
+happens when the change never acts in that world.
 
 The map world is the calibrated world for the return trip. In recorded
 Metroid campaigns, climbing out of Kraid's hideout after the kill takes

@@ -362,7 +362,7 @@ impl Config {
             && !(self.items > 1 && gated && !self.complete(s))
     }
 
-    fn tier(&self, s: State) -> u16 {
+    pub fn tier(&self, s: State) -> u16 {
         if self.items == 1 {
             u16::from(s.item)
         } else {
@@ -697,6 +697,10 @@ mod tests {
             assert!(reached.windows(2).all(|w| w[0] <= w[1]));
             assert!(first.iter().skip(reached.len()).all(Option::is_none));
             assert_eq!(first[3], report["first_objective_work"].as_u64());
+            let tiers: Vec<Option<u64>> =
+                serde_json::from_value(report["evidence"]["map_first_tier"].clone()).unwrap();
+            assert_eq!(tiers[0], Some(0));
+            assert_eq!(tiers[1], first[1]);
             let timeline: Vec<[u64; 3]> =
                 serde_json::from_value(report["parent_timeline"].clone()).unwrap();
             assert!(timeline.windows(2).all(|w| w[0][0] <= w[1][0]));
@@ -841,6 +845,26 @@ mod tests {
         s = fire(&w, &l, s);
         assert!(s.goal);
         assert!(w.goal(s));
+    }
+
+    #[test]
+    fn a_boss_campaign_arrives_stocked_between_the_item_and_the_goal() {
+        let workload = crate::Workload {
+            config: crate::worlds::World::Map(Config {
+                farms: 2,
+                farm_cap: 3,
+                boss_stock: 3,
+                ..config(crate::test_seed())
+            }),
+            broken: false,
+            scale: None,
+        };
+        let report = crate::run(&workload, crate::test_seed(), 200_000, true).unwrap();
+        let goal = report["first_objective_work"].as_u64().unwrap();
+        let tiers: Vec<Option<u64>> =
+            serde_json::from_value(report["evidence"]["map_first_tier"].clone()).unwrap();
+        let stocked = report["evidence"]["map_first_stocked"].as_u64().unwrap();
+        assert!(tiers[1].unwrap() < stocked && stocked < goal);
     }
 
     #[test]
