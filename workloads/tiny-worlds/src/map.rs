@@ -9,6 +9,15 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 const SUBPLACES: u16 = 16;
+const GAUNTLET_HIT: u8 = 1;
+const GAUNTLET_ODDS: u64 = 64;
+const GAUNTLET_HITS: u64 = 63;
+const OUTER_ODDS: u64 = 4;
+const OUTER_HIT: u8 = 1;
+const FARM_ODDS: u64 = 8;
+const RISEN_FARM_ODDS: u64 = 80;
+const HIDDEN_VALUES: u8 = 64;
+const TAIL_ACTIONS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +45,14 @@ pub struct Config {
     pub boss_hits_back: bool,
     #[serde(default)]
     pub timing: u8,
+    #[serde(default)]
+    pub gauntlet: bool,
+    #[serde(default)]
+    pub hidden_state: bool,
+    #[serde(default)]
+    pub rise_slows_farms: bool,
+    #[serde(default)]
+    pub costly_walk: bool,
 }
 
 fn one() -> u8 {
@@ -55,6 +72,10 @@ pub struct State {
     pub found: u16,
     pub hits: u8,
     pub phase: u8,
+    pub tail: u8,
+    pub hidden: u8,
+    pub clock: u8,
+    pub dead: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -71,6 +92,8 @@ pub struct Layout {
     pub loops: u8,
     pub entry: u8,
     pub farms: Vec<u8>,
+    pub farm_to_mouth: u8,
+    pub costly: Vec<bool>,
     pub items: Vec<u8>,
     pub key: Option<u8>,
 }
@@ -115,7 +138,9 @@ impl Config {
         if !(1..=9).contains(&self.items) {
             return Err("map items must be 1..=9".into());
         }
-        if self.items > 1 && (self.farms > 0 || self.items + 2 > self.cells() - self.inner) {
+        if self.items > 1
+            && ((self.farms > 0 && !self.gauntlet) || self.items + 2 > self.cells() - self.inner)
+        {
             return Err("several map items need no farms and enough outer rooms".into());
         }
         if self.timing == 1 || self.timing > 16 {
@@ -126,6 +151,12 @@ impl Config {
         }
         if self.locked && (self.items > 1 || self.item_optional || self.boss_stock > 0) {
             return Err("a locked map region needs one required item and no boss".into());
+        }
+        if self.gauntlet && (self.items < 2 || self.farms == 0) {
+            return Err("a map gauntlet needs several items and farms".into());
+        }
+        if (self.hidden_state || self.rise_slows_farms || self.costly_walk) && !self.gauntlet {
+            return Err("hidden map state, slowed farms and a costly walk need a gauntlet".into());
         }
         if self.boss_hits_back && !(1..=6).contains(&self.boss_stock) {
             return Err("a map boss that hits back needs a boss stock of 1..=6".into());
@@ -329,7 +360,23 @@ impl Config {
                     *n = (*n).min(d);
                 }
             }
-            (None, farthest(&from_entry, true), chosen.split_off(1))
+            let mut items = chosen.split_off(1);
+            if self.gauntlet
+                && let Some(mouth) = (1..self.cells())
+                    .filter(|&c| !inner[usize::from(c)] && Some(&c) != items.first())
+                    .min_by_key(|&c| (from_door[usize::from(c)], c))
+            {
+                items.truncate(usize::from(self.items) - 1);
+                items.push(mouth);
+            }
+            if self.costly_walk
+                && let Some(far) = (1..self.cells())
+                    .filter(|&c| !inner[usize::from(c)] && !items.contains(&c))
+                    .max_by_key(|&c| (from_door[usize::from(c)], std::cmp::Reverse(c)))
+            {
+                items[0] = far;
+            }
+            (None, farthest(&from_entry, true), items)
         };
         let mut rooms: Vec<u8> = if self.boss_stock > 0 {
             let from_goal = self.distances(&doors, goal);
@@ -339,15 +386,44 @@ impl Config {
             outer.sort_by_key(|&c| (std::cmp::Reverse(from_goal[usize::from(c)]), c));
             outer.truncate((outer.len() / 2).max(usize::from(self.farms)));
             outer
+        } else if self.gauntlet {
+            let mut outer: Vec<u8> = (0..self.cells())
+                .filter(|&c| {
+                    !inner[usize::from(c)] && c != 0 && c != door_cell && !items.contains(&c)
+                })
+                .collect();
+            outer.sort_by_key(|&c| (std::cmp::Reverse(from_door[usize::from(c)]), c));
+            outer.truncate((outer.len() / 2).max(usize::from(self.farms)));
+            outer
         } else {
             (0..self.cells())
                 .filter(|&c| inner[usize::from(c)] && Some(c) != item)
                 .collect()
         };
+        let costly: Vec<bool> = (0..self.cells())
+            .map(|c| {
+                self.costly_walk
+                    && !inner[usize::from(c)]
+                    && c != 0
+                    && !items.contains(&c)
+                    && !rooms.contains(&c)
+            })
+            .collect();
         let mut farms = Vec::new();
         while farms.len() < usize::from(self.farms) && !rooms.is_empty() {
             farms.push(rooms.swap_remove(pick(&mut rand, rooms.len())));
         }
+        let farm_to_mouth = match (self.gauntlet, items.last()) {
+            (true, Some(&mouth)) => {
+                let from_mouth = self.distances(&doors, mouth);
+                farms
+                    .iter()
+                    .map(|&farm| from_mouth[usize::from(farm)])
+                    .min()
+                    .unwrap_or(0)
+            }
+            _ => 0,
+        };
         Layout {
             start_to_door: from_door[0],
             door_to_item: item.map(|item| from_entry[usize::from(item)] + 1),
@@ -365,6 +441,8 @@ impl Config {
             loops: added,
             entry,
             farms,
+            farm_to_mouth,
+            costly,
             items,
             key,
         }
@@ -397,6 +475,10 @@ impl Config {
             found: 0,
             hits: 0,
             phase: 0,
+            tail: 0,
+            hidden: 0,
+            clock: 0,
+            dead: false,
         }
     }
 
@@ -428,16 +510,28 @@ impl Config {
         }
     }
 
-    fn health_cap(&self) -> u8 {
+    fn health_cap(&self, layout: &Layout) -> u8 {
         if self.boss_hits_back {
             self.boss_stock + 2
+        } else if self.costly_walk {
+            layout.door_to_goal + 2 + layout.farm_to_mouth
+        } else if self.rise_slows_farms {
+            layout.door_to_goal + 2 + layout.farm_to_mouth / 2
+        } else if self.gauntlet {
+            layout.door_to_goal + 2
         } else {
             self.cap()
         }
     }
 
     fn state_fits(&self, layout: &Layout, s: State) -> bool {
-        if s.cell >= self.cells() || s.arm > 4 || s.phase >= self.timing.max(1) {
+        if s.cell >= self.cells()
+            || s.arm > 4
+            || s.phase >= self.timing.max(1)
+            || s.hidden >= HIDDEN_VALUES
+            || s.clock >= HIDDEN_VALUES
+            || (!self.hidden_state && (s.hidden != 0 || s.clock != 0))
+        {
             return false;
         }
         let arm_fits = if s.arm == 0 {
@@ -460,9 +554,12 @@ impl Config {
             && items_fit
             && s.hits <= self.boss_stock
             && (s.hits == 0 || (s.item && s.arm == 0 && s.cell == layout.goal))
-            && s.health <= self.health_cap()
+            && s.health <= self.health_cap(layout)
             && s.hits + s.stock <= self.cap()
-            && (!self.boss_hits_back || s.hits + s.health <= self.health_cap())
+            && (!self.boss_hits_back || s.hits + s.health <= self.health_cap(layout))
+            && s.tail < 1 << (2 * TAIL_ACTIONS)
+            && (self.gauntlet || (s.tail == 0 && !s.dead))
+            && (!s.dead || s.health == 0)
             && (self.boss_stock == 0 || s.item || s.stock == 0)
             && (s.item || Some(s.cell) != layout.item)
             && (!self.locked
@@ -485,6 +582,7 @@ impl Config {
             arm: 0,
             progress: 0,
             item: s.item || Some(cell) == layout.item,
+            hidden: self.rehide(s, cell),
             ..s
         };
         if Some(cell) == layout.key {
@@ -494,8 +592,17 @@ impl Config {
             next.found |= 1 << next.found.count_ones();
         }
         if let Some(farm) = layout.farms.iter().position(|&room| room == cell) {
-            if farm % 2 == 0 {
-                next.health = (next.health + 1).min(self.health_cap());
+            if self.gauntlet {
+                let odds = if self.rise_slows_farms && self.complete(next) {
+                    RISEN_FARM_ODDS
+                } else {
+                    FARM_ODDS
+                };
+                if self.roll(cell, s.tail ^ 0x80).is_multiple_of(odds) {
+                    next.health = (next.health + 1).min(self.health_cap(layout));
+                }
+            } else if farm % 2 == 0 {
+                next.health = (next.health + 1).min(self.health_cap(layout));
             } else if self.boss_stock == 0 || next.item {
                 next.stock = (next.stock + 1).min(self.cap());
                 next.health = next.health.saturating_sub(u8::from(self.boss_hits_back));
@@ -505,24 +612,122 @@ impl Config {
         next
     }
 
+    fn turn(&self, s: State) -> u8 {
+        if self.hidden_state {
+            u8::try_from(self.roll(s.cell ^ 0x40, s.hidden) >> 62).expect("two bits fit")
+        } else {
+            0
+        }
+    }
+
+    fn rehide(&self, s: State, cell: u8) -> u8 {
+        if !self.hidden_state {
+            return 0;
+        }
+        let x = (self.roll(cell ^ 0x80, s.clock) ^ (u64::from(s.hidden) << 32))
+            .wrapping_mul(0xff51_afd7_ed55_8ccd);
+        u8::try_from((x ^ (x >> 29)) % u64::from(HIDDEN_VALUES)).expect("hidden value fits")
+    }
+
+    fn hit(&self, layout: &Layout, cell: u8, tail: u8) -> bool {
+        self.gauntlet
+            && layout.inner[usize::from(cell)]
+            && self.roll(cell, tail) % GAUNTLET_ODDS < GAUNTLET_HITS
+    }
+
+    fn roll(&self, cell: u8, tail: u8) -> u64 {
+        let mut x = self.layout ^ (u64::from(cell) << 8) ^ u64::from(tail);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        x ^ (x >> 33)
+    }
+
+    fn enter(&self, layout: &Layout, s: State, cell: u8, hits: bool) -> State {
+        if hits && layout.costly[usize::from(cell)] && s.found != 0 && !self.complete(s) {
+            if s.health < OUTER_HIT {
+                return State {
+                    health: 0,
+                    dead: true,
+                    ..s
+                };
+            }
+            return self.arrive(
+                layout,
+                State {
+                    health: s.health - OUTER_HIT,
+                    ..s
+                },
+                cell,
+            );
+        }
+        if hits
+            && self.gauntlet
+            && !layout.inner[usize::from(cell)]
+            && self.roll(cell, s.tail).is_multiple_of(OUTER_ODDS)
+        {
+            return self.arrive(
+                layout,
+                State {
+                    health: s.health.saturating_sub(OUTER_HIT),
+                    ..s
+                },
+                cell,
+            );
+        }
+        if !hits || !self.hit(layout, cell, s.tail) {
+            return self.arrive(layout, s, cell);
+        }
+        if s.health <= GAUNTLET_HIT {
+            return State {
+                health: 0,
+                dead: true,
+                ..s
+            };
+        }
+        self.arrive(
+            layout,
+            State {
+                health: s.health - GAUNTLET_HIT,
+                ..s
+            },
+            cell,
+        )
+    }
+
     pub fn step(&self, s: State, action: u8) -> State {
+        self.step_with(s, action, true)
+    }
+
+    fn step_with(&self, s: State, action: u8, hits: bool) -> State {
         let layout = self.layout();
-        if action > 3 || !self.state_fits(&layout, s) || s.goal {
+        if action > 3 || !self.state_fits(&layout, s) || s.goal || s.dead {
             return s;
         }
-        let action = (action + s.phase) % 4;
-        let next = self.advance(&layout, s, action);
+        let action = (action + s.phase + self.turn(s)) % 4;
+        let tail = if self.gauntlet {
+            ((s.tail << 2) | action) & ((1 << (2 * TAIL_ACTIONS)) - 1)
+        } else {
+            0
+        };
+        let next = self.advance(&layout, State { tail, ..s }, action, hits);
         State {
             phase: if self.timing == 0 {
                 0
             } else {
                 (s.phase + 1) % self.timing
             },
+            clock: if self.hidden_state {
+                (s.clock + 1) % HIDDEN_VALUES
+            } else {
+                0
+            },
             ..next
         }
     }
 
-    fn advance(&self, layout: &Layout, s: State, action: u8) -> State {
+    fn advance(&self, layout: &Layout, s: State, action: u8, hits: bool) -> State {
         if s.arm == 0 {
             if !self.open(layout, s, s.cell, action) {
                 if self.boss_stock > 0
@@ -546,7 +751,7 @@ impl Config {
             }
             if self.length(action) == 1 {
                 let next = self.neighbour(s.cell, action).expect("door has a room");
-                return self.arrive(layout, State { hits: 0, ..s }, next);
+                return self.enter(layout, State { hits: 0, ..s }, next, hits);
             }
             return State {
                 arm: action + 1,
@@ -559,7 +764,7 @@ impl Config {
         if action == direction {
             if s.progress + 1 == self.length(direction) {
                 let next = self.neighbour(s.cell, direction).expect("door has a room");
-                return self.arrive(layout, s, next);
+                return self.enter(layout, s, next, hits);
             }
             return State {
                 progress: s.progress + 1,
@@ -584,6 +789,9 @@ impl Config {
     }
 
     pub fn place(s: State) -> u16 {
+        if s.dead {
+            return 64 * SUBPLACES + 32;
+        }
         if s.hits > 0 {
             return 64 * SUBPLACES + u16::from(s.hits);
         }
@@ -613,9 +821,12 @@ impl Config {
             self.initial(),
             |s| self.goal(s),
             |s, a| {
-                let next = self.step(s, a);
+                let next = self.step_with(s, a, false);
                 State {
                     health: if self.boss_hits_back { next.health } else { 0 },
+                    tail: 0,
+                    hidden: 0,
+                    clock: 0,
                     stock: next.stock.min(self.boss_stock),
                     phase: 0,
                     ..next
@@ -646,6 +857,10 @@ mod tests {
             locked: false,
             boss_hits_back: false,
             timing: 0,
+            gauntlet: false,
+            hidden_state: false,
+            rise_slows_farms: false,
+            costly_walk: false,
         }
     }
 
@@ -840,6 +1055,244 @@ mod tests {
         assert_eq!((s.health, s.stock), (3, 3));
         assert!(w.state_is_bounded(s));
         assert_eq!(w.key(s, false).health, 3);
+    }
+
+    #[test]
+    fn hidden_state_turns_actions_per_room_and_is_redrawn_from_the_clock_on_entry() {
+        let w = Config {
+            items: 2,
+            farms: 2,
+            farm_cap: 1,
+            gauntlet: true,
+            hidden_state: true,
+            ..config(9)
+        };
+        assert!(w.reachable().unwrap());
+        let l = w.layout();
+        let plain = Config {
+            hidden_state: false,
+            ..w
+        };
+        let start = w.initial();
+        let turns: Vec<u8> = (0..HIDDEN_VALUES)
+            .map(|hidden| w.turn(State { hidden, ..start }))
+            .collect();
+        assert!((0..4).all(|t| turns.contains(&t)));
+        for hidden in 0..HIDDEN_VALUES {
+            let s = State { hidden, ..start };
+            assert!(w.state_is_bounded(s));
+            assert_eq!(w.key(s, false), w.key(start, false));
+            for action in 0..4 {
+                let moved = w.step(s, action);
+                let expected = plain.step(start, (action + turns[usize::from(hidden)]) % 4);
+                assert_eq!(moved.clock, 1);
+                if moved.cell == start.cell {
+                    assert_eq!(moved.hidden, hidden);
+                    assert_eq!(
+                        State {
+                            hidden: 0,
+                            clock: 0,
+                            ..moved
+                        },
+                        expected
+                    );
+                } else {
+                    assert_eq!(
+                        moved.hidden,
+                        w.rehide(
+                            State {
+                                tail: moved.tail,
+                                ..s
+                            },
+                            moved.cell
+                        )
+                    );
+                }
+            }
+        }
+        assert!(!w.state_is_bounded(State {
+            hidden: HIDDEN_VALUES,
+            ..start
+        }));
+        assert!(!w.state_is_bounded(State {
+            clock: HIDDEN_VALUES,
+            ..start
+        }));
+        assert!(!plain.state_is_bounded(State { hidden: 1, ..start }));
+        assert!(!plain.state_is_bounded(State { clock: 1, ..start }));
+        assert_eq!(*l, *plain.layout());
+    }
+
+    #[test]
+    fn a_costly_walk_charges_item_holders_near_the_door_and_kills_at_zero() {
+        let w = Config {
+            items: 2,
+            farms: 2,
+            farm_cap: 1,
+            gauntlet: true,
+            costly_walk: true,
+            ..config(9)
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        assert_eq!(w.health_cap(&l), l.door_to_goal + 2 + l.farm_to_mouth);
+        let room = (0..w.cells())
+            .find(|&c| l.costly[usize::from(c)])
+            .expect("a costly room");
+        assert!(
+            !l.inner[usize::from(room)] && !l.farms.contains(&room) && !l.items.contains(&room)
+        );
+        let from_door = w.distances(&l.doors, l.door_cell);
+        assert!(
+            (1..w.cells())
+                .filter(|&c| !l.inner[usize::from(c)] && c != l.items[1])
+                .all(|c| from_door[usize::from(c)] <= from_door[usize::from(l.items[0])])
+        );
+        let at = |found, health| State {
+            found,
+            health,
+            ..w.initial()
+        };
+        assert_eq!(w.enter(&l, at(1, 3), room, true).health, 3 - OUTER_HIT);
+        assert!(w.enter(&l, at(1, 0), room, true).dead);
+        assert!(!w.enter(&l, at(0, 0), room, true).dead);
+        assert!(!w.enter(&l, at(3, 0), room, true).dead);
+    }
+
+    #[test]
+    fn farms_refill_ten_times_slower_once_the_last_item_is_held() {
+        let w = Config {
+            items: 2,
+            farms: 2,
+            farm_cap: 1,
+            gauntlet: true,
+            rise_slows_farms: true,
+            ..config(9)
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        let from_mouth = w.distances(&l.doors, l.items[1]);
+        assert_eq!(
+            l.farm_to_mouth,
+            l.farms
+                .iter()
+                .map(|&c| from_mouth[usize::from(c)])
+                .min()
+                .unwrap()
+        );
+        assert_eq!(w.health_cap(&l), l.door_to_goal + 2 + l.farm_to_mouth / 2);
+        let refills = |found| -> Vec<(u8, u8)> {
+            l.farms
+                .iter()
+                .flat_map(|&farm| (0..64).map(move |tail| (farm, tail)))
+                .filter(|&(farm, tail)| {
+                    let s = State {
+                        found,
+                        tail,
+                        ..w.initial()
+                    };
+                    w.arrive(&l, s, farm).health == 1
+                })
+                .collect()
+        };
+        let (held, risen) = (refills(1), refills(3));
+        assert!(!held.is_empty());
+        assert!(risen.len() < held.len());
+        assert!(risen.iter().all(|pair| held.contains(pair)));
+        assert!(
+            Config {
+                gauntlet: false,
+                items: 1,
+                farms: 0,
+                farm_cap: 0,
+                ..w
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_gauntlet_charges_hits_by_the_arrival_tail_and_kills_below_the_hit() {
+        let w = Config {
+            items: 2,
+            farms: 2,
+            farm_cap: 1,
+            gauntlet: true,
+            ..config(9)
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        assert!(
+            l.farms
+                .iter()
+                .all(|&c| !l.inner[usize::from(c)] && !l.items.contains(&c))
+        );
+        let from_door = w.distances(&l.doors, l.door_cell);
+        let mouth = l.items[1];
+        assert!(!l.inner[usize::from(mouth)]);
+        assert!(
+            (1..w.cells())
+                .filter(|&c| !l.inner[usize::from(c)] && c != l.items[0])
+                .all(|c| from_door[usize::from(c)] >= from_door[usize::from(mouth)])
+        );
+        let tails: Vec<u8> = (0..64).collect();
+        let farm = l.farms[0];
+        let refill = *tails
+            .iter()
+            .find(|&&t| w.roll(farm, t ^ 0x80).is_multiple_of(FARM_ODDS))
+            .unwrap();
+        let dry = *tails
+            .iter()
+            .find(|&&t| !w.roll(farm, t ^ 0x80).is_multiple_of(FARM_ODDS))
+            .unwrap();
+        let start = w.initial();
+        assert_eq!(
+            w.enter(
+                &l,
+                State {
+                    tail: refill,
+                    ..start
+                },
+                farm,
+                true
+            )
+            .health,
+            1
+        );
+        assert_eq!(
+            w.enter(&l, State { tail: dry, ..start }, farm, true).health,
+            0
+        );
+        let mut s = start;
+        for &room in &l.items {
+            s = walk(&w, &l, s, room);
+        }
+        let door = walk(&w, &l, s, l.door_cell);
+        let hit = *tails.iter().find(|&&t| w.hit(&l, l.entry, t)).unwrap();
+        let miss = *tails.iter().find(|&&t| !w.hit(&l, l.entry, t)).unwrap();
+        let entered = |health, tail| {
+            w.enter(
+                &l,
+                State {
+                    health,
+                    tail,
+                    ..door
+                },
+                l.entry,
+                true,
+            )
+        };
+        assert_eq!(entered(0, miss).cell, l.entry);
+        assert_eq!(entered(0, miss).health, 0);
+        assert_eq!(entered(GAUNTLET_HIT + 1, hit).health, 1);
+        assert_eq!(entered(GAUNTLET_HIT + 1, hit).cell, l.entry);
+        let dead = entered(GAUNTLET_HIT, hit);
+        assert!(dead.dead && dead.health == 0 && dead.cell == l.door_cell);
+        assert!(w.state_is_bounded(dead));
+        assert_eq!(w.step(dead, l.door_direction), dead);
+        assert_eq!(Config::place(dead), 64 * SUBPLACES + 32);
+        assert!(!w.hit(&l, l.door_cell, hit));
     }
 
     #[test]

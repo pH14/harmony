@@ -696,6 +696,15 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         e.map_first_tier[usize::from(w.tier(after))]
                             .get_or_insert(observation.execution_work);
                     }
+                    if w.gauntlet
+                        && after.arm == 0
+                        && after.cell == layout.entry
+                        && w.tier(after) == w.top_tier()
+                        && after.health >= layout.door_to_goal
+                    {
+                        e.map_first_stocked
+                            .get_or_insert(observation.execution_work);
+                    }
                     if w.boss_stock > 0
                         && after.item
                         && after.arm == 0
