@@ -301,7 +301,7 @@ executable instead of the fresh build.
 | Backtracking | Backtrack world with items ranked, split by identity, kept as a preference, or hidden. |
 | Chains | Sixteen-stage chains: flat, ranked stages, ranked stages with ranked upgrades, and kept boss credit. |
 | Growing gaps | Eight-by-eight map with the item ranked or hidden, one layout per seed; the return trip is shorter than the first trip, and per room of path the walk from the door to the goal takes longer than the return trip. |
-| Farm loop | Eight-by-eight map with `inner` 20 and 4 farms against the same layout and seed without farms, 200,000 work each. The median ratio of the trip from leaving the item region to the goal stays under 10x, which six-seed medians on the current searcher stayed below in 20,000 resamples of 300 pairs. The current searcher measures 5.87x. Resetting a cell's draw count only on its 1st, 2nd, 4th, 8th and later carried-in preference win measures 2.50x, with six-seed medians up to 4.47x in 20,000 resamples; with that reset rule in the searcher the threshold is 4.5x. |
+| Farm loop | Eight-by-eight map with `inner` 20 and 4 farms against the same layout and seed without farms, 200,000 work each. The median ratio of the trip from leaving the item region to the goal stays under 10x, which six-seed medians on the current searcher stayed below in 20,000 resamples of 300 pairs. The current searcher measures 5.87x. Resetting a cell's draw count only on its 1st, 2nd, 4th, 8th and later carried-in preference win measures 2.50x, with six-seed medians up to 4.47x in 20,000 resamples. That change is clearly bad on the gauntlet worlds: net extra goal misses are 9.0% of layouts, and 12.9% with hidden timing. |
 
 Timing rules compare medians in which an unsolved run counts as the work
 budget on the side that must be slower and as unbounded on the side that must
@@ -336,27 +336,51 @@ uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare bas
 | Off-path item with farms | as above, 2 farms | The same with refills | Pickup to the goal |
 | Locked item | `inner` 4, `locked` | The new tier's lower-tier frontier is far from the pickup | To the key, key to the item, item to the goal |
 | Locked item with hidden timing | as above, `timing` 5 | Replayed inputs land about one time in five | As above |
+| Gauntlet | `inner` 20, 2 items, 2 farms, `farm_cap` 1, `gauntlet` | Tourian: the last item comes at the entry low on energy, and the refills are far away | To the last item, last item to full-health arrival, full-health arrival to the goal |
+| Gauntlet with hidden timing | as above, `timing` 5 | The same with replayed inputs landing about one time in five | As above |
 
 Every world also reports work to the goal, counting a missed goal as 200,000.
 A campaign stops at the goal or after 200,000 work, and a milestone after that
 counts as unreached. Comparison runs skip replay verification; the rule panel
-verifies every run. The first four worlds run `--world-scale` layouts
-(default 16) and the other four run four times as many. A stocked arrival is
-the first arrival in the boss room holding the item and at least `boss_stock`
-stock, and at least `boss_stock` health when the boss hits back. For each leg the panel prints the median over layouts of the
+verifies every run. The off-path and locked worlds start with four times
+`--world-scale` layouts (default 16) and the others start with `--world-scale`.
+A stocked arrival is the first arrival in the boss room holding the item and at
+least `boss_stock` stock, and at least `boss_stock` health when the boss hits
+back. A full-health arrival is the first arrival in the gauntlet's entry room
+holding both items and health at least the entry-to-goal room count. For each leg the panel prints the median over layouts of the
 candidate-to-baseline ratio of work plus one, a 99% bootstrap interval, and how
 many layouts reached the leg's end in each run; only layouts where both runs
 reached it enter the ratio, and a leg with fewer than three such layouts
 prints nan. The off-path pickup-to-goal leg covers only layouts
 where the pickup came before the goal, and a change in that count changes which
-layouts it compares. A leg is slower when the interval lies above 1.25 and
-faster when it lies below 0.8. A world is clearly bad when any leg is slower or
-the candidate misses the goal on two more layouts than the baseline. The exit
-status is nonzero when a rule fails or a world is clearly bad. Two unchanged
-searchers with different runtime seeds gave no slower or faster leg in 300
-trials per world. Each world also counts the layouts whose event streams are
-identical on both executables, which happens where the change never acts. A
-comparison takes one to two minutes with `--jobs 10`.
+layouts it compares. A leg is slower when the interval lies above 1.25,
+faster when it lies below 0.8, inside the band when it lies within
+[0.8, 1.25], and undecided when it crosses 0.8 or 1.25. Goal misses are
+judged on the layouts where only one of the two runs missed the goal. The
+candidate has more misses when its net extra misses reach 5% of layouts and an
+exact one-sided sign test on those layouts gives p < 0.01, and fewer misses in
+the mirror case. Misses are inside the band when the 99% bootstrap interval of
+the net extra-miss rate lies within ±5%, and undecided otherwise. A world with
+an undecided leg or undecided misses doubles its layouts until nothing is
+undecided or it reaches 256 layouts (1,024 for the off-path and locked worlds).
+A world is clearly bad when any leg is slower or the candidate has more
+misses. A leg still undecided at the limit with its upper bound above 1.25 makes
+the world undecided when its interval's lower bound is above 1.0, and is a
+watch leg otherwise. Misses still undecided at the limit are a
+watch when the net extra misses are under 5% of layouts, and make the world
+undecided otherwise. A watch passes and is named in the world's line so the
+matching Metroid leg gets measured. A candidate is
+plausible when no world is clearly bad or undecided. The exit status is nonzero when a rule fails or a world is clearly
+bad or undecided. Two unchanged
+searchers with different runtime seeds, in 300 simulated comparisons per world,
+failed the farm loop, re-walk, off-path and locked worlds in none, the boss
+worlds in 0.3% (far stock) and 0.7% (stock and health), and the gauntlet
+worlds in 0.3% (no timing) and 2.3% (hidden timing, all from goal misses). The
+simulated comparisons for a world draw from one pool of 512 layouts (2,048 for
+the off-path and locked worlds), so they share layouts and these rates are
+rough. Each world also counts the layouts whose event streams are identical on
+both executables, which happens where the change never acts. A comparison that
+takes every world to its limit takes about 20 minutes with `--jobs 10`.
 
 The map world is the calibrated world for the return trip. In recorded
 Metroid campaigns, climbing out of Kraid's hideout after the kill takes

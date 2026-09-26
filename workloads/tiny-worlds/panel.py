@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parent
 BUDGET = 20_000
 WORLD_BUDGET = 200_000
 SLOWER, FASTER = 1.25, 0.8
+MISS_BAND = 0.05
+MAX_WORLD_SCALE = 256
 WORLDS = {
     "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
     "whole-map re-walk": ({"inner": 4, "items": 9}, 1),
@@ -33,6 +35,9 @@ WORLDS = {
     "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 4),
     "locked item": ({"inner": 4, "locked": True}, 4),
     "locked item with hidden timing": ({"inner": 4, "locked": True, "timing": 5}, 4),
+    "gauntlet": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True}, 1),
+    "gauntlet with hidden timing": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True,
+                                     "timing": 5}, 1),
 }
 
 
@@ -119,16 +124,16 @@ def requests(seeds: int) -> list[dict]:
     return rows
 
 
-def world_requests(scale: int) -> list[dict]:
+def world_requests(world: str, count: int) -> list[dict]:
+    fields, multiplier = WORLDS[world]
     rows = []
-    for world, (fields, multiplier) in WORLDS.items():
-        for _ in range(multiplier * scale):
-            config = {"family": "map", "parameters": {
-                "width": 8, "height": 8, "layout": secrets.randbits(64), "loops": 7, "corridor": 2,
-                "shaft": 3, **fields}}
-            rows.append({"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
-                                                   "work_budget": WORLD_BUDGET, "broken": False,
-                                                   "verify": False, "keep": "portfolio"}})
+    for _ in range(multiplier * count):
+        config = {"family": "map", "parameters": {
+            "width": 8, "height": 8, "layout": secrets.randbits(64), "loops": 7, "corridor": 2,
+            "shaft": 3, **fields}}
+        rows.append({"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
+                                               "work_budget": WORLD_BUDGET, "broken": False,
+                                               "verify": False, "keep": "portfolio"}})
     return rows
 
 
@@ -147,7 +152,12 @@ def legs(report: dict) -> dict:
 
     measured = {"to the goal": WORLD_BUDGET if goal is None else goal}
     parameters = report["config"]["parameters"]
-    if parameters.get("boss_stock"):
+    if parameters.get("gauntlet"):
+        full = within(evidence["map_first_stocked"])
+        measured["to the last item"] = tiers[-1]
+        measured["last item to full-health arrival"] = gap(tiers[-1], full)
+        measured["full-health arrival to the goal"] = gap(full, goal)
+    elif parameters.get("boss_stock"):
         measured["to the item"] = tiers[1]
         measured["item to stocked arrival"] = gap(tiers[1], within(evidence["map_first_stocked"]))
         measured["stocked arrival to kill"] = gap(within(evidence["map_first_stocked"]), goal)
@@ -190,31 +200,87 @@ def verdict(low: float, high: float) -> str:
         return "slower"
     if high < FASTER:
         return "faster"
-    return "no clear change"
+    if FASTER <= low and high <= SLOWER:
+        return "inside the band"
+    return "undecided"
+
+
+def sign_test(more: int, fewer: int) -> float:
+    n = more + fewer
+    return sum(math.comb(n, k) for k in range(more, n + 1)) / 2 ** n
+
+
+def missed_goals(base: list[dict], candidate: list[dict]) -> tuple[str, int, int]:
+    arm_only = sum(b["success"] and not c["success"] for b, c in zip(base, candidate))
+    base_only = sum(c["success"] and not b["success"] for b, c in zip(base, candidate))
+    net, band = arm_only - base_only, MISS_BAND * len(base)
+    if net >= band and sign_test(arm_only, base_only) < 0.01:
+        return "more misses", arm_only, base_only
+    if -net >= band and sign_test(base_only, arm_only) < 0.01:
+        return "fewer misses", arm_only, base_only
+    rand = random.Random(0)
+    diffs = [int(b["success"]) - int(c["success"]) for b, c in zip(base, candidate)]
+    draws = sorted(sum(rand.choices(diffs, k=len(diffs))) / len(diffs) for _ in range(2000))
+    if -MISS_BAND < draws[10] and draws[1989] < MISS_BAND:
+        return "inside the band", arm_only, base_only
+    return "undecided", arm_only, base_only
 
 
 def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
-    runs = world_requests(scale)
+    runs = {world: ([], []) for world in WORLDS}
+    done = dict.fromkeys(WORLDS, 0)
+    target = dict.fromkeys(WORLDS, scale)
+    results = {}
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        base = list(pool.map(lambda job: execute(baseline, job), runs))
-        cand = list(pool.map(lambda job: execute(candidate, job), runs))
-    bad = []
+        while open_worlds := [w for w in WORLDS if done[w] < target[w]]:
+            batch = [job for w in open_worlds for job in world_requests(w, target[w] - done[w])]
+            pairs = list(pool.map(lambda job: (execute(baseline, job), execute(candidate, job)), batch))
+            for world in open_worlds:
+                b, c = runs[world]
+                for x, y in pairs:
+                    if x["arm"] == world:
+                        b.append(x)
+                        c.append(y)
+                done[world] = target[world]
+                results[world] = paired(b, c)
+                if (target[world] < MAX_WORLD_SCALE
+                        and (missed_goals(b, c)[0] == "undecided"
+                             or any(verdict(low, high) == "undecided" for _, _, _, low, high in results[world]))):
+                    target[world] = min(2 * target[world], MAX_WORLD_SCALE)
+    failed = []
     for world in WORLDS:
-        b = [r for r in base if r["arm"] == world]
-        c = [r for r in cand if r["arm"] == world]
+        b, c = runs[world]
         missed = (sum(not r["success"] for r in b), sum(not r["success"] for r in c))
+        misses, arm_only, base_only = missed_goals(b, c)
+        if misses == "undecided":
+            misses = "undecided" if arm_only - base_only >= MISS_BAND * len(b) else "watch"
         identical = sum(x["stream_sha256"] == y["stream_sha256"] for x, y in zip(b, c))
-        results = paired(b, c)
-        slower = [leg for leg, _, _, low, high in results if verdict(low, high) == "slower"]
-        clearly_bad = bool(slower) or missed[1] > missed[0] + 1
-        if clearly_bad:
-            bad.append(world)
-        print(f"{world}: {'CLEARLY BAD' if clearly_bad else 'plausible'}; "
-              f"goal missed {missed[1]}/{len(c)} vs {missed[0]}/{len(b)}; identical runs {identical}/{len(b)}")
-        for leg, reached, ratio, low, high in results:
-            print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {verdict(low, high)}")
-    print(f"{len(base) + len(cand)} world runs; clearly bad on {len(bad)} of {len(WORLDS)} worlds")
-    return 1 if bad else 0
+        verdicts = []
+        for _, _, ratio, low, high in results[world]:
+            v = verdict(low, high)
+            if v == "undecided" and high > SLOWER:
+                v = "undecided" if low > 1.0 else "watch"
+            verdicts.append(v)
+        if "slower" in verdicts or misses == "more misses":
+            status = "CLEARLY BAD"
+        elif misses == "undecided" or any(v == "undecided" and high > SLOWER
+                                          for v, (_, _, _, _, high) in zip(verdicts, results[world])):
+            status = "UNDECIDED"
+        else:
+            status = "plausible"
+        if status != "plausible":
+            failed.append(world)
+        watched = [leg for (leg, *_), v in zip(results[world], verdicts) if v == "watch"]
+        if misses == "watch":
+            watched.append("goal misses")
+        print(f"{world}: {status}; {len(b)} layouts; goal missed {missed[1]}/{len(c)} vs {missed[0]}/{len(b)} "
+              f"(missed by one only: {arm_only} vs {base_only}, {misses}); "
+              f"identical runs {identical}/{len(b)}" + (f"; watch {', '.join(watched)}" if watched else ""))
+        for (leg, reached, ratio, low, high), v in zip(results[world], verdicts):
+            print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}")
+    runs_total = sum(2 * len(b) for b, _ in runs.values())
+    print(f"{runs_total} world runs; clearly bad or undecided on {len(failed)} of {len(WORLDS)} worlds")
+    return 1 if failed else 0
 
 
 def execute(binary: Path, job: dict) -> dict:
@@ -338,7 +404,7 @@ def main() -> int:
     parser.add_argument("--compare", type=Path, metavar="BASELINE",
                         help="also run the Metroid worlds on this baseline executable and on --binary")
     parser.add_argument("--world-scale", type=int, default=16,
-                        help="layouts per heavy Metroid world; light worlds run four times as many")
+                        help="starting layouts per heavy Metroid world; light worlds run four times as many")
     args = parser.parse_args()
     if args.seeds < 3:
         parser.error("--seeds must be at least 3")
