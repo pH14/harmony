@@ -382,7 +382,9 @@ yet admitted. A checkpoint is written after an admission and the selection that
 follows it, so resuming re-executes the unadmitted jobs and admits them in the
 same order. `CheckpointPlan` writes one at a fixed execution interval, at each
 new workload milestone (`Reporting::checkpoint_marks`), and at each new top
-archive tier.
+archive tier. Milestone and tier checkpoints are kept; only the last two
+interval checkpoints are kept. The snapshot store keeps every snapshot any
+checkpoint listed.
 
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints

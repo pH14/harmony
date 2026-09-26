@@ -654,7 +654,7 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
             &CampaignOrigin::Genesis,
             Some(CheckpointPlan {
                 directory: directory.clone(),
-                every: NonZeroU64::new(100),
+                every: NonZeroU64::new(300),
                 on_marks: true,
                 on_top_progress: true,
             }),
@@ -665,8 +665,20 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
             "writing checkpoints changed the progress of {label}"
         );
         assert_eq!(original.0.archive, plain.0.archive);
-        for resume_at in [100_u64, 300, 700] {
-            let path = directory.join(format!("{resume_at:012}-interval.ckpt"));
+        let mut kept = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "ckpt")
+            })
+            .collect::<Vec<_>>();
+        kept.sort();
+        assert!(kept.len() >= 2, "{label} kept {kept:?}");
+        for path in kept {
+            let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
+                .parse()
+                .unwrap();
             let (resumed, resumed_progress) =
                 run_with_checkpoints(&config, &CampaignOrigin::SearchCheckpoint { path }, None);
             assert_eq!(

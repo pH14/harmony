@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     error::Error,
     fs::{self, File, OpenOptions},
     io::{BufWriter, Read, Seek, SeekFrom, Write},
@@ -17,6 +17,7 @@ pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v1";
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
+const INTERVAL_CHECKPOINTS_KEPT: usize = 2;
 
 pub(crate) mod json_bytes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
@@ -90,6 +91,7 @@ pub(crate) struct CheckpointWriter<P> {
     stored: BTreeMap<u64, (u64, u64)>,
     last_marks: usize,
     last_top: Option<P>,
+    intervals: VecDeque<PathBuf>,
 }
 
 impl<P: Copy + Ord> CheckpointWriter<P> {
@@ -113,6 +115,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
             stored: BTreeMap::new(),
             last_marks: marks,
             last_top: top,
+            intervals: VecDeque::new(),
         })
     }
 
@@ -187,6 +190,14 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         let checkpoint_bytes = file.metadata()?.len();
         drop(file);
         fs::rename(&partial, &path)?;
+        if header.reason == "interval" {
+            self.intervals.push_back(path);
+            while self.intervals.len() > INTERVAL_CHECKPOINTS_KEPT {
+                if let Some(oldest) = self.intervals.pop_front() {
+                    fs::remove_file(oldest)?;
+                }
+            }
+        }
         let line = serde_json::to_string(&CheckpointLogLine {
             executions: header.executions,
             reason: &header.reason,
@@ -359,6 +370,14 @@ mod tests {
         snapshots.sort_unstable();
         assert_eq!(snapshots, [(2, vec![3]), (4, vec![5, 6, 7])]);
         reader.finish().expect("no trailing bytes");
+        writer
+            .write(&header(30), std::iter::empty::<(u64, &Vec<u8>)>(), |out| {
+                Ok(postcard::to_io(&11_u32, out).map(|_| ())?)
+            })
+            .expect("write the third checkpoint");
+        assert!(!directory.join("000000000010-interval.ckpt").exists());
+        assert!(directory.join("000000000020-interval.ckpt").exists());
+        assert!(directory.join("000000000030-interval.ckpt").exists());
         assert!(
             CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).is_err(),
             "a directory holds one run's snapshot store"
