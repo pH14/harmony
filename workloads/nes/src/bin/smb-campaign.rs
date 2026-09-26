@@ -257,6 +257,9 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         SmbCampaignOrigin::Archive {
             report, checkpoint, ..
         } => (Some(*report), checkpoint),
+        SmbCampaignOrigin::SearchCheckpoint { .. } => {
+            return Err("a run resumed from a search checkpoint cannot be replayed".into());
+        }
     };
     let (report, checkpoint) = replay_smb_campaign_checkpointed(
         &game,

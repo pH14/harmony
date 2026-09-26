@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
 };
+
+pub const CONTINUATION_IDENTIFIER: &str = "position_edges_preference_queue_v1";
 
 const EDGE_NODE_OVERHEAD: usize = 192;
 
@@ -22,7 +25,7 @@ pub(crate) struct Continuation<P, A> {
     pub actions: Vec<A>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Edge<A> {
     donor: u64,
     leaf: u64,
@@ -31,7 +34,7 @@ struct Edge<A> {
     actions: Vec<A>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Pending<P> {
     sequence: u64,
     preference: u8,
@@ -40,6 +43,11 @@ struct Pending<P> {
     cursor: Option<P>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(
+    serialize = "P: Serialize, A: Serialize",
+    deserialize = "P: DeserializeOwned, A: DeserializeOwned"
+))]
 pub(crate) struct ContinuationBank<P: Ord, A> {
     action_cap: usize,
     edges: BTreeMap<(P, P), Edge<A>>,
@@ -247,6 +255,22 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
             .map(|(key, source)| (*key, *source))
     }
 
+    pub fn set_action_cap(&mut self, action_cap: usize) {
+        self.action_cap = action_cap;
+    }
+
+    pub fn retain_preferences(&mut self, preferences: usize) {
+        let dropped: Vec<P> = self
+            .pending_source
+            .iter()
+            .filter(|(_, held)| usize::from(held.preference) >= preferences)
+            .map(|(source, _)| *source)
+            .collect();
+        for source in dropped {
+            self.drop_pending(source);
+        }
+    }
+
     fn drop_pending(&mut self, source: P) {
         if let Some(held) = self.pending_source.remove(&source) {
             self.pending.remove(&(held.preference, held.sequence));
@@ -329,6 +353,21 @@ mod tests {
         cost: u64,
     ) {
         bank.record(from, to, donor, leaf, actions, cost, 0);
+    }
+
+    #[test]
+    fn a_raised_action_cap_records_longer_edges_and_trimming_drops_queued_sources() {
+        let mut bank = bank();
+        record(&mut bank, 1, 2, 10, 11, &[7; 6], 100);
+        assert_eq!(bank.edge_count(), 0);
+        bank.set_action_cap(6);
+        record(&mut bank, 1, 2, 10, 11, &[7; 6], 100);
+        assert_eq!(bank.edge_count(), 1);
+        bank.improved(1, 5, 0, 1);
+        bank.retain_preferences(2);
+        assert_eq!(bank.queue_len(), 1);
+        bank.retain_preferences(1);
+        assert_eq!(bank.queue_len(), 0);
     }
 
     #[test]

@@ -22,7 +22,7 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
-ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','suffix','mixture','verification'}
+ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','suffix','mixture','verification','checkpoint_every','checkpoint_on_progress'}
 
 
 def valid_id(value):
@@ -140,8 +140,11 @@ def expand_suite(suite, selected=None):
         if 'selector' in settings: raise ValueError('case '+name+' sets search.selector; nes-eval takes no selector, so remove it from the manifest')
         if set(settings)-ALLOWED_SEARCH: raise ValueError('unknown search settings: '+', '.join(sorted(set(settings)-ALLOWED_SEARCH)))
         for seed,workers,memory in itertools.product(suite['seeds'],suite['workers'],suite['memory_mib']):
-            request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game','root_input') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
-            if 'root_input' in request: request['root_input']=str(request['root_input']).format(seed=seed)
+            request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game','root_input','resume') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
+            for field in ('root_input','resume'):
+                if field in request: request[field]=str(request[field]).format(seed=seed)
+            if request.get('checkpoint_every') is not None and (type(request['checkpoint_every']) is not int or request['checkpoint_every'] <= 0): raise ValueError('invalid checkpoint_every')
+            if type(request.get('checkpoint_on_progress',False)) is not bool: raise ValueError('invalid checkpoint_on_progress')
             for field in ('seed','workers','memory_mib','executions','actions','window','wall_seconds'):
                 val=request[field]
                 if type(val) is not int or val<0 or (field!='seed' and val==0): raise ValueError('invalid '+field)
@@ -163,10 +166,11 @@ def resolve_assets(job, assets):
         if name!='core' and actual!=job['case']['rom_sha256']: raise ValueError('ROM differs from frozen suite: '+name)
         prefix='core' if name=='core' else 'rom'
         request[prefix]=str(Path(item['path']).resolve());request[prefix+'_sha256']=actual
-    if request.get('root_input'):
-        root=Path(request['root_input'])
-        if not root.is_file(): raise ValueError('root input is missing: '+str(root))
-        request['root_input']=str(root.resolve())
+    for field in ('root_input','resume'):
+        if request.get(field):
+            path=Path(request[field])
+            if not path.is_file(): raise ValueError(field.replace('_',' ')+' is missing: '+str(path))
+            request[field]=str(path.resolve())
     return request
 
 

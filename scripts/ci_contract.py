@@ -201,7 +201,7 @@ LIB_PARTITIONS = {
             "search::duration", "search::empirical_steps", "search::parallel",
         ),
         "Search Coordination": ("search::continuation", "search::rand"),
-        "Campaign Recording and Replay": ("search::campaign",),
+        "Campaign Recording and Replay": ("search::campaign", "search::checkpoint"),
     },
 }
 

@@ -16,6 +16,10 @@ use crate::search::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+fn unset_action_cost<A>() -> fn(&A) -> u64 {
+    |_| 0
+}
+
 fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
     values
         .into_iter()
@@ -25,9 +29,9 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
 }
 
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
-    type Place: Copy + Ord + Debug;
-    type Progress: Copy + Ord + Debug;
-    type Identity: Copy + Ord + Debug;
+    type Place: Copy + Ord + Debug + Serialize + DeserializeOwned;
+    type Progress: Copy + Ord + Debug + Serialize + DeserializeOwned;
+    type Identity: Copy + Ord + Debug + Serialize + DeserializeOwned;
     fn place(self) -> Self::Place;
     fn progress(self) -> Self::Progress;
     fn identity(self) -> Self::Identity;
@@ -43,7 +47,7 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
     }
-    type Lineage: Clone + Default;
+    type Lineage: Clone + Default + Serialize + DeserializeOwned;
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
     fn record(lineage: &mut Self::Lineage, key: Self);
 }
@@ -390,7 +394,11 @@ pub mod entries_by_suffix {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(bound(
+    serialize = "A: Serialize, K: Serialize, M: Serialize",
+    deserialize = "A: DeserializeOwned, K: DeserializeOwned, M: DeserializeOwned"
+))]
 pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     pub(crate) id: u64,
     pub(crate) parent_id: Option<u64>,
@@ -400,6 +408,7 @@ pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     input_node: usize,
     pub(crate) key: K,
     pub(crate) milestones: M,
+    #[serde(skip)]
     pub(crate) snapshot: Option<Arc<S>>,
 }
 
@@ -415,6 +424,11 @@ pub struct ArchiveCandidate<A: Ord, K, M> {
     pub milestones: M,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(
+    serialize = "A: Serialize, M: Serialize",
+    deserialize = "A: DeserializeOwned, M: DeserializeOwned"
+))]
 pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub max_entries: usize,
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
@@ -434,6 +448,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     productive: Vec<u64>,
     opened_cell: Vec<bool>,
     opened_slot: Vec<bool>,
+    #[serde(with = "crate::search::checkpoint::json_bytes")]
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
@@ -442,6 +457,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     replacement_preferences: Vec<u8>,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
+    #[serde(skip, default = "unset_action_cost::<A>")]
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
@@ -466,6 +482,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[cfg(test)]
     liveness_anchor_reactivations: u64,
     resident_snapshot_bytes: usize,
+    #[serde(skip)]
     snapshot_memory_charge: Option<fn(&S) -> usize>,
     resident_snapshot_order: VecDeque<usize>,
     snapshot_evictions: u64,
@@ -478,18 +495,20 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     landed: BTreeSet<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 struct CellState {
     active: usize,
     draws: u64,
     draws_total: u64,
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 struct CellMembers {
     ids: BTreeSet<usize>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "")]
 struct DonorRank<K: ArchiveKey> {
     leaf_key: K,
     leaf_id: usize,
@@ -528,6 +547,8 @@ impl<K: ArchiveKey> Ord for DonorRank<K> {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(serialize = "A: Serialize", deserialize = "A: DeserializeOwned"))]
 struct InputNode<A: Ord> {
     parent: Option<usize>,
     action: Option<A>,
@@ -535,6 +556,8 @@ struct InputNode<A: Ord> {
     owner: Option<u64>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(serialize = "A: Serialize", deserialize = "A: DeserializeOwned"))]
 struct InputIndex<A: Ord> {
     nodes: Vec<Option<InputNode<A>>>,
     free: Vec<usize>,
@@ -713,7 +736,7 @@ impl<A: Clone + Ord> InputIndex<A> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 struct ActiveIds {
     ids: BTreeSet<usize>,
 }
@@ -1691,21 +1714,48 @@ where
     }
 
     #[must_use]
+    pub fn top_progress(&self) -> Option<K::Progress> {
+        self.tiers.last_key_value().map(|(progress, _)| *progress)
+    }
+
+    pub(crate) fn resident_snapshot_entries(&self) -> impl Iterator<Item = (u64, &S)> {
+        self.entries.iter().filter_map(|entry| {
+            entry
+                .snapshot
+                .as_deref()
+                .map(|snapshot| (entry.id, snapshot))
+        })
+    }
+
+    pub(crate) fn restore_runtime(
+        &mut self,
+        action_cost: fn(&A) -> u64,
+        charge: Option<fn(&S) -> usize>,
+        snapshots: Vec<(u64, S)>,
+    ) -> Result<(), &'static str> {
+        self.action_cost = action_cost;
+        self.snapshot_memory_charge = if self.memory_limit.is_some() {
+            Some(charge.ok_or("a memory-budgeted archive needs its snapshot charge")?)
+        } else {
+            None
+        };
+        for (id, snapshot) in snapshots {
+            let index = self
+                .index_of_id(id)
+                .ok_or("a checkpoint snapshot names a missing archive entry")?;
+            self.entries[index].snapshot = Some(Arc::new(snapshot));
+        }
+        Ok(())
+    }
+
+    #[must_use]
     pub fn live_progress(&self) -> Option<(K, u64, u64)> {
         self.live_progress
             .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
     }
 
-    fn rank_slot_preferences(
-        &self,
-        slot: &[usize],
-        key: K,
-        cost_in_group: u64,
-    ) -> (Vec<bool>, Vec<usize>) {
-        let capacity = K::capacity().max(1);
-        let preferences = K::preferences().max(1);
-        let members: Vec<(K, u64, u64)> = slot
-            .iter()
+    fn slot_members(&self, slot: &[usize]) -> Vec<(K, u64, u64)> {
+        slot.iter()
             .map(|id| {
                 (
                     self.entries[*id].key,
@@ -1713,11 +1763,13 @@ where
                     self.entries[*id].id,
                 )
             })
-            .chain(std::iter::once((key, cost_in_group, self.next_entry_id)))
-            .collect();
-        let candidate = members.len().saturating_sub(1);
-        let mut won = Vec::new();
-        let mut retained = vec![false; members.len()];
+            .collect()
+    }
+
+    fn preferences_won(members: &[(K, u64, u64)]) -> Vec<Vec<usize>> {
+        let capacity = K::capacity().max(1);
+        let preferences = K::preferences().max(1);
+        let mut won = vec![Vec::new(); members.len()];
         let mut order: Vec<usize> = (0..members.len()).collect();
         for preference in 0..preferences {
             order.sort_by(|left, right| {
@@ -1730,13 +1782,54 @@ where
                     .then_with(|| left_id.cmp(&right_id))
             });
             for index in order.iter().take(capacity) {
-                retained[*index] = true;
-                if *index == candidate {
-                    won.push(preference);
-                }
+                won[*index].push(preference);
             }
         }
-        (retained, won)
+        won
+    }
+
+    fn rank_slot_preferences(
+        &self,
+        slot: &[usize],
+        key: K,
+        cost_in_group: u64,
+    ) -> (Vec<bool>, Vec<usize>) {
+        let mut members = self.slot_members(slot);
+        members.push((key, cost_in_group, self.next_entry_id));
+        let mut won = Self::preferences_won(&members);
+        let candidate = won.pop().unwrap_or_default();
+        let mut retained: Vec<bool> = won
+            .iter()
+            .map(|preferences| !preferences.is_empty())
+            .collect();
+        retained.push(!candidate.is_empty());
+        (retained, candidate)
+    }
+
+    pub(crate) fn rerank_slot_holders(&mut self) -> usize {
+        let displaced: Vec<usize> = self
+            .slots
+            .values()
+            .flat_map(|holders| {
+                Self::preferences_won(&self.slot_members(holders))
+                    .into_iter()
+                    .zip(holders.iter().copied())
+                    .filter_map(|(won, id)| won.is_empty().then_some(id))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut retired = 0;
+        for id in displaced {
+            if self.deactivate(id) {
+                retired += 1;
+            }
+        }
+        self.portfolio_replacements
+            .resize(K::preferences().max(1), 0);
+        if let Some(bank) = &mut self.continuations {
+            bank.retain_preferences(K::preferences());
+        }
+        retired
     }
 
     fn cost_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
@@ -2294,6 +2387,14 @@ where
     #[must_use]
     pub(crate) fn stored_input_actions(&self) -> usize {
         self.stored_input_actions
+    }
+
+    pub(crate) fn resume_continuations(&mut self, action_cap: usize) {
+        match (&mut self.continuations, K::preferences() > 0) {
+            (Some(bank), true) => bank.set_action_cap(action_cap),
+            (None, true) => self.continuations = Some(ContinuationBank::new(action_cap)),
+            (_, false) => self.continuations = None,
+        }
     }
 
     pub(crate) fn enable_continuations(&mut self, action_cap: usize) {
@@ -3117,6 +3218,93 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    thread_local! {
+        static SECOND_ORDER_FLIPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct SwitchedOrderKey {
+        first: u8,
+        second: u8,
+    }
+
+    impl ArchiveKey for SwitchedOrderKey {
+        type Place = u8;
+        type Progress = ();
+        type Identity = ();
+
+        fn place(self) -> Self::Place {
+            7
+        }
+
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {}
+
+        fn capacity() -> usize {
+            1
+        }
+
+        fn preferences() -> usize {
+            2
+        }
+
+        fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
+            if preference == 0 || SECOND_ORDER_FLIPPED.get() {
+                (self.first, self.second).cmp(&(other.first, other.second))
+            } else {
+                (self.second, self.first).cmp(&(other.second, other.first))
+            }
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn resuming_continuations_follows_the_key_preference_count() {
+        let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        assert!(portfolio.continuations.is_none());
+        portfolio.resume_continuations(4);
+        assert!(portfolio.continuations.is_some());
+        let mut plain = Archive::<u8, TestKey, (), ()>::new(|_| 1);
+        plain.continuations = Some(crate::search::continuation::ContinuationBank::new(4));
+        plain.resume_continuations(4);
+        assert!(plain.continuations.is_none());
+    }
+
+    #[test]
+    fn reranking_slot_holders_retires_holders_that_win_no_preference() {
+        SECOND_ORDER_FLIPPED.set(false);
+        let mut archive = Archive::<u8, SwitchedOrderKey, (), ()>::new(|_| 1);
+        for (input, first, second) in [(1, 10, 20), (2, 5, 200)] {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![input],
+                        key: SwitchedOrderKey { first, second },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert holder");
+        }
+        assert_eq!(archive.rerank_slot_holders(), 0);
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
+        SECOND_ORDER_FLIPPED.set(true);
+        assert_eq!(archive.rerank_slot_holders(), 1);
+        SECOND_ORDER_FLIPPED.set(false);
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0]));
+        assert_eq!(archive.active, vec![true, false]);
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

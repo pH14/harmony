@@ -372,3 +372,37 @@ normally; evaluators must score first-objective work against the threshold and
 account for any drained overshoot. Omitting the option leaves the campaign
 without a work-budget cutoff.
 
+## Search checkpoints
+
+`CampaignExecutionOptions::checkpoints` writes the whole search state during a
+run: the coordinator counters, the archive with its cells, lineages and
+continuation queue, the workload evidence, the draw tables, the adaptive
+duration policies, the worker random states, and every reserved job that is not
+yet admitted. A checkpoint is written after an admission and the selection that
+follows it, so resuming re-executes the unadmitted jobs and admits them in the
+same order. `CheckpointPlan` writes one at a fixed execution interval, at each
+new workload milestone (`Reporting::checkpoint_marks`), and at each new top
+archive tier. Milestone and tier checkpoints are kept; only the last two
+interval checkpoints are kept. The snapshot store keeps every snapshot any
+checkpoint listed.
+
+Snapshots go into one append-only `snapshots.store` per directory. An archive
+entry's snapshot never changes, so each is written once and later checkpoints
+list it by entry id and offset. Each `.ckpt` file holds its header, that index,
+and the postcard body; `checkpoints.jsonl` records write time and sizes.
+`CampaignOrigin::SearchCheckpoint` resumes one. The worker count, admission
+window, limits, workload identity and the workload policies that give stored
+inputs and keys their meaning must match. The suffix, mixture and retention
+policies, the selector, the continuation policy and the objective stop may
+change, so a search can continue under a revised algorithm. The draw table
+policy, the preference portfolio and a workload's `preference_policy` may also
+change, because their state is rebuilt from the archive entries: new draw
+tables fold every entry's suffix, and each slot re-ranks its holders under the
+new preference order and capacity. The origin record and stream header list
+each change as `checkpoint_policy_changes`. The same seed
+repeats the original progress lines; another seed derives new worker random
+states and keeps everything else. The draw tables continue their table hash
+from the recorded one, so stream draw-table hashes after a resume differ from an
+uninterrupted run. A resumed stream cannot be replayed. Workloads opt in through
+`Reporting::evidence_checkpoint` and `Reporting::evidence_from_checkpoint`.
+

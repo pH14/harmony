@@ -6,7 +6,7 @@ use std::{
     fmt,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 const MAX_COMPACT_HISTORY_DISTINCT: usize = 4096;
@@ -88,7 +88,11 @@ impl Error for EmpiricalStepError {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(bound(
+    serialize = "Step: Serialize",
+    deserialize = "Step: DeserializeOwned + Ord"
+))]
 pub struct EmpiricalStepTables<Step> {
     parameters: EmpiricalStepParameters,
     pending: Vec<Vec<Step>>,
@@ -96,6 +100,7 @@ pub struct EmpiricalStepTables<Step> {
     recent: Vec<Step>,
     compact_history: BTreeMap<Step, usize>,
     compact_history_len: usize,
+    #[serde(skip)]
     history_hasher: Sha256,
     table_sha256: String,
     records: u64,
@@ -206,6 +211,10 @@ where
             return Ok(None);
         }
         self.checkpoint().map(Some)
+    }
+
+    pub fn continue_history_hash(&mut self) {
+        self.history_hasher = Sha256::new_with_prefix(self.table_sha256.as_bytes());
     }
 
     pub fn checkpoint(&self) -> Result<EmpiricalStepCheckpoint, EmpiricalStepError> {
