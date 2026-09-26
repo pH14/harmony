@@ -401,7 +401,7 @@ class EvaluationTests(unittest.TestCase):
         item['origin'] = 'power-on stage genesis'
         item['identity'] = {'backend': 'native', 'policies': {'key': 'fixed-v1'}}
         item['search_request'].update({
-            'game': 'mm2', 'seed': 7, 'executions': 123, 'actions': 456,
+            'game': 'mm2', 'seed': 7, 'executions': 123,
             'frames': 789, 'wall_seconds': 42, 'workers': 2, 'memory_mib': 64,
             'selector': 'selector-v1', 'suffix': 'suffix-v1', 'mixture': 'mixture-v1',
             'verification': 'witness'})

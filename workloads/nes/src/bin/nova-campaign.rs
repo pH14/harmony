@@ -36,7 +36,6 @@ struct Args {
     seed: u64,
     executions: u64,
     workers: u32,
-    action_limit: usize,
     level: NovaLevel,
     marketing_soak: bool,
     fixed_execution_soak: bool,
@@ -65,7 +64,6 @@ impl Args {
         let mut seed = 1_u64;
         let mut executions = 4_000_u64;
         let mut workers = 2_u32;
-        let mut action_limit = 512_usize;
         let mut level_number = 1_u8;
         let mut marketing_soak = false;
         let mut fixed_execution_soak = false;
@@ -91,7 +89,6 @@ impl Args {
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
-                "--action-limit" => action_limit = parse_number("action-limit", value)?,
                 "--level" => level_number = parse_number("level", value)?,
                 "--host" => {
                     host = value.into_string().map_err(|_| "host is not UTF-8")?;
@@ -109,7 +106,6 @@ impl Args {
             seed,
             executions,
             workers,
-            action_limit,
             level: NovaLevel::from_number(level_number)?,
             marketing_soak,
             fixed_execution_soak,
@@ -150,7 +146,6 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,
         execution_budget: args.executions,
-        action_limit: args.action_limit,
         host: args.host.clone(),
         wall_budget: None,
         continue_after_victory: args.fixed_execution_soak,

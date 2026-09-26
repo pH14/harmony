@@ -13,7 +13,6 @@ pub struct Options {
     pub seed: u64,
     pub workers: u32,
     pub executions: u64,
-    pub actions: usize,
     pub ram_mib: u32,
     pub knobs: Vec<String>,
     pub wall_minutes: Option<u64>,
@@ -22,8 +21,8 @@ pub struct Options {
 
 impl Options {
     pub fn validate(&self) -> Result<(), Box<dyn Error>> {
-        if self.workers == 0 || self.actions == 0 || self.executions == 0 {
-            return Err("workers, actions, and executions must be positive".into());
+        if self.workers == 0 || self.executions == 0 {
+            return Err("workers and executions must be positive".into());
         }
         if self.ram_mib == 0 {
             return Err("--ram-mib must be positive".into());
@@ -246,9 +245,6 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
     if actions.is_empty() {
         return Err("the recorded input names no actions".into());
     }
-    if actions.len() > crate::target::MAX_FAULT_ACTIONS {
-        return Err("recorded input exceeds the action bound".into());
-    }
     for action in &actions {
         match action {
             FaultAction::EventKill { rarity, .. } | FaultAction::EventPark { rarity, .. }
@@ -334,7 +330,6 @@ mod live {
             vocabulary: vocabulary.clone(),
             workers: options.workers,
             execution_budget: options.executions,
-            action_limit: options.actions,
             host: hostname(),
             wall_budget: options
                 .wall_minutes
@@ -543,7 +538,6 @@ mod tests {
             seed: 7,
             workers: 2,
             executions: 10,
-            actions: 4,
             ram_mib: 1024,
             knobs: Vec::new(),
             wall_minutes: None,
@@ -605,10 +599,6 @@ mod tests {
             },
             Options {
                 executions: 0,
-                ..options()
-            },
-            Options {
-                actions: 0,
                 ..options()
             },
             Options {

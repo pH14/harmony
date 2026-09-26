@@ -13,11 +13,10 @@ use sha2::{Digest, Sha256};
 use crate::{
     mm2::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_MM2_ACTIONS, Mm2ArchiveKey,
-            Mm2ArchiveReport, Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones,
-            Mm2ProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
-            merge_milestones, merge_progress_watermark, milestone_key, milestones,
-            progress_watermark, sample_chord,
+            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, Mm2ArchiveKey, Mm2ArchiveReport,
+            Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones, Mm2ProgressWatermark,
+            REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
+            merge_progress_watermark, milestone_key, milestones, progress_watermark, sample_chord,
         },
         target::{
             ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
@@ -216,7 +215,6 @@ pub struct Mm2CampaignConfig {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
-    pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
     pub continue_after_victory: bool,
@@ -235,7 +233,6 @@ impl Mm2CampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
-            action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             stop_rollout_on_objective: !self.continue_after_victory,
@@ -290,15 +287,12 @@ fn admission_is_viable(
 fn execute_suffix(
     target: &mut Mm2Target,
     genesis_weapons: u8,
-    parent_actions: usize,
     parent_milestones: Mm2Milestones,
     suffix: &[ButtonChord],
-    max_actions: usize,
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
 ) -> Result<Mm2CampaignJobResult, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
-    let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
         objective_reached: target.exit_kind() == ExitKind::Ok && target.defeated_a_boss(),
@@ -318,10 +312,6 @@ fn execute_suffix(
         });
     }
     for action in suffix {
-        if length >= max_actions {
-            break;
-        }
-        length = length.saturating_add(1);
         target.apply(action);
         merge_action_milestones(&mut aggregate, target, genesis_weapons);
         let observations = if target.exit_kind() != ExitKind::Ok {
@@ -530,10 +520,6 @@ impl Reporting for Mm2Game {
 }
 
 impl InputPolicy for Mm2Game {
-    fn max_action_limit(&self) -> usize {
-        MAX_MM2_ACTIONS
-    }
-
     fn max_action_cost(&self) -> u64 {
         u64::from(crate::mm2::archive::LONGEST_HOLD_FRAMES)
     }
@@ -645,10 +631,8 @@ impl TargetExecution for Mm2Game {
         target: &mut Mm2Target,
         origin_snapshot: &Mm2Snapshot,
         replay: &[ButtonChord],
-        parent_actions: usize,
         parent_milestones: Mm2Milestones,
         suffix: &[ButtonChord],
-        max_actions: usize,
         retention: RetentionPolicy,
         stop_rollout_on_objective: bool,
     ) -> Result<Mm2CampaignJobResult, Box<dyn Error>> {
@@ -662,10 +646,8 @@ impl TargetExecution for Mm2Game {
         execute_suffix(
             target,
             target.genesis_weapons(),
-            parent_actions,
             parent_milestones,
             suffix,
-            max_actions,
             retention,
             stop_rollout_on_objective,
         )

@@ -122,7 +122,7 @@ jobs:
             --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
             --image consonance/harmony-linux/build/nes.oci \
             --core "${NOVA_BUILD}/quicknes_libretro.so" \
-            --seed 20260901 --workers 1 --executions 4 --actions 8 \
+            --seed 20260901 --workers 1 --executions 4 \
             --out harmony-nes-check/search "${NOVA_BUILD}/nova.nes" \
             2>&1 | tee harmony-nes-check/console.txt
           python3 - <<'PY'
@@ -260,20 +260,19 @@ jobs:
           PACKAGE_SEED: "20260901"
           PACKAGE_WORKERS: "1"
           PACKAGE_EXECUTIONS: "8"
-          PACKAGE_ACTIONS: "16"
         run: |
           rm -rf package-native package-consonance
           target/release/harmony search --package nes --backend native \
             --core "${NOVA_BUILD}/quicknes_libretro.so" \
             --seed "${PACKAGE_SEED}" --workers "${PACKAGE_WORKERS}" \
-            --executions "${PACKAGE_EXECUTIONS}" --actions "${PACKAGE_ACTIONS}" \
+            --executions "${PACKAGE_EXECUTIONS}" \
             --out package-native "${NOVA_BUILD}/nova.nes"
           target/release/harmony search --package nes --backend consonance \
             --kernel consonance/harmony-linux/build/x86_64/bzImage \
             --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
             --image consonance/harmony-linux/build/nes.oci \
             --seed "${PACKAGE_SEED}" --workers "${PACKAGE_WORKERS}" \
-            --executions "${PACKAGE_EXECUTIONS}" --actions "${PACKAGE_ACTIONS}" \
+            --executions "${PACKAGE_EXECUTIONS}" \
             --out package-consonance "${NOVA_BUILD}/nova.nes"
           python3 - <<'PY'
           import json

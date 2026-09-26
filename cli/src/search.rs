@@ -26,8 +26,6 @@ pub struct Args {
     workers: u32,
     #[arg(long, default_value_t = 1000)]
     executions: u64,
-    #[arg(long, default_value_t = 128)]
-    actions: usize,
     #[arg(long, default_value = "harmony-search")]
     out: PathBuf,
     #[arg(long)]
@@ -69,7 +67,6 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         seed: args.seed,
         workers: args.workers,
         executions: args.executions,
-        actions: args.actions,
         output: args.out.clone(),
     };
     match (args.package, backend) {
@@ -135,7 +132,6 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
         seed: args.seed,
         workers: args.workers,
         executions: args.executions,
-        actions: args.actions,
         ram_mib: args.ram_mib,
         knobs: args
             .knobs
@@ -268,7 +264,6 @@ mod tests {
             seed: 1,
             workers: 1,
             executions: 1,
-            actions: 1,
             output: PathBuf::from("missing-output"),
         }
     }
@@ -281,7 +276,6 @@ mod tests {
             seed: 1,
             workers: 1,
             executions: 1,
-            actions: 1,
             out: PathBuf::from("missing-output"),
             core: None,
             kernel: None,

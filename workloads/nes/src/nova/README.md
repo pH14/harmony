@@ -60,9 +60,9 @@ the retained-input table.
 
 ## Level and whole-game evaluation
 
-The default level campaign stops on its first new durable clear and allows up
-to 512 actions. `NovaGame::with_whole_game()` disables that intermediate stop,
-allows up to 8,192 actions, and requires all 40 campaign levels to be cleared.
+The default level campaign stops on its first new durable clear.
+`NovaGame::with_whole_game()` disables that intermediate stop and requires all
+40 campaign levels to be cleared.
 The common `nes-eval` request selects this mode with `whole_game: true` from
 level 1. Its fixed terminal policy is part of replay identity. Isolated later-
 level fixtures initialize the declared prior-clear bitmap and remain separate
@@ -95,7 +95,7 @@ cargo run --locked --release --manifest-path workloads/nes/Cargo.toml \
   --core workloads/nes/build/nova/quicknes_libretro.so \
   --rom workloads/nes/build/nova/nova.nes \
   --output /tmp/nova-artifact \
-  --seed 1 --executions 500000 --workers 4 --action-limit 512
+  --seed 1 --executions 500000 --workers 4
 ```
 
 Execution work counts frames emitted by logical actions, including frames from

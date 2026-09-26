@@ -15,7 +15,7 @@ use nes_workload::{
     search::draw::{
         DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
     },
-    smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport},
+    smb::archive::SmbArchiveReport,
     smb::campaign::{
         SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport,
         SmbCampaignOrigin, SmbGame, SmbSnapshotCheckpoint, SmbTerminalPredicate,
@@ -69,9 +69,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
             .ok_or("missing execution budget")?
             .to_string_lossy(),
     )?;
-    let action_limit = usize::try_from(parse_u64(
-        &args.next().ok_or("missing action limit")?.to_string_lossy(),
-    )?)?;
     let host = args
         .next()
         .ok_or("missing host name")?
@@ -167,9 +164,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
             return Err("unexpected run argument".into());
         }
     }
-    if action_limit > MAX_SMB_COMPLETION_ACTIONS {
-        return Err("action limit exceeds the compiled completion bound".into());
-    }
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
     let game = SmbGame::from_environment(&rom)?;
@@ -185,7 +179,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         campaign_seed,
         workers,
         execution_budget,
-        action_limit,
         host,
         wall_budget,
         continue_after_victory: false,

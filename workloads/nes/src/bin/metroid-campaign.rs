@@ -33,7 +33,6 @@ struct Args {
     seed: u64,
     executions: u64,
     workers: u32,
-    action_limit: usize,
     host: String,
     memory_budget_mib: Option<usize>,
     mixture: DrawMixture,
@@ -52,7 +51,6 @@ impl Args {
         let mut seed = 1_u64;
         let mut executions = 4_000_u64;
         let mut workers = 2_u32;
-        let mut action_limit = 4096_usize;
         let mut host = "local".to_owned();
         let mut memory_budget_mib = None;
         let mut mixture = DrawMixture::AlphabetOnly;
@@ -75,7 +73,6 @@ impl Args {
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
-                "--action-limit" => action_limit = parse_number("action-limit", value)?,
                 "--host" => host = value.into_string().map_err(|_| "host is not UTF-8")?,
                 "--memory-budget-mib" => {
                     memory_budget_mib = Some(parse_number("memory-budget-mib", value)?);
@@ -95,7 +92,6 @@ impl Args {
             seed,
             executions,
             workers,
-            action_limit,
             host,
             memory_budget_mib,
             mixture,
@@ -155,7 +151,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         campaign_seed: args.seed,
         workers: args.workers,
         execution_budget: args.executions,
-        action_limit: args.action_limit,
         host: args.host.clone(),
         wall_budget: None,
         continue_after_victory: true,
