@@ -165,6 +165,18 @@ it leaves the item room at once and settles with 0.8–0.9 of top-tier draws
 outside the inner region, where Metroid stays on 6–12 map cells for about 0.4
 of the first trip and settles at 0.3–0.5.
 
+Optional map fields add Metroid behaviours; each defaults to off. The search
+key puts `stock` in the stock field and `health` in the health field, so both
+feed the slot preferences and neither changes the tier.
+
+| Field | World | Metroid behaviour |
+| --- | --- | --- |
+| `farms`, `farm_cap` | Farm rooms. Entering an even-numbered farm adds one health and an odd-numbered farm one stock, up to `farm_cap`. Without a boss the farms are inner rooms. | Refilling energy and missiles in rooms that do not lead to the next item: a stock gain wins the slot preference and draws the search back to the farm. |
+| `items` above 1 | The items are outer rooms, taken in order, each the room farthest from the start and the earlier items. The door to the inner region opens once all are held, and the goal is the inner room farthest from the door; the tier is the item count. | Each item gain sends a new tier back across the whole map to the one region it opens. |
+| `boss_stock` | A boss in the goal room. Needs `farms` of at least 2 and `boss_stock` at most `farm_cap`. Stock farms fill only while holding the item and lie in the outer half farthest from the goal. Each wall press in the goal room with the item spends one stock and adds a hit; leaving resets hits. The goal needs `boss_stock` hits. Hit counts are their own places. | Kraid and Ridley: the item tier must farm missiles far away, then carry them to the boss room. |
+| `item_optional` | The item is the first room of the shallowest side branch whose size is within two rooms of `inner`, and the goal is the outer room farthest from the start that is not on the way to that branch. The goal counts without the item, which still raises the tier. | Varia and other pickups off the main path: the new tier walks back over ground the lower tier already reached. |
+| `timing` | 0, or a period of 2–16. Every action is rotated by a hidden phase that advances by one each step modulo `timing`, so a recorded suffix replayed from a holder with another phase takes different actions. At 5, about one replayed suffix in five lands. | Enemy positions and frame timing that the key does not see. |
+
 The graph world is sized for scaled runs. It has `nodes` states in a line,
 each also carrying stock and health from 0 to 15. Action 0 moves to the next
 node, so the goal at the last node is reachable from every state; the
@@ -188,8 +200,8 @@ suffix were already executed; they produce no job.
 
 ## Configuration bounds
 
-Every parameter is required. Bounds keep exhaustive enumeration below 100,000
-states; requests exceeding the reachability limit are rejected. The graph
+Every parameter is required except the optional map fields. Bounds keep
+exhaustive enumeration below 4,000,000 states; requests exceeding the reachability limit are rejected. The graph
 family's reachability holds by construction.
 
 | Family | Parameters |
@@ -203,7 +215,7 @@ family's reachability holds by construction.
 | Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
 | Backtrack | `barriers` 1–4; `segment` 1–8; `(barriers + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
-| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count. |
+| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only without farms and with two outer rooms to spare; `farms` 0–8 with `farm_cap` 1–63; `timing` 0 or 2–16; `item_optional` needs one item and no boss. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 
 ## Scenario chains

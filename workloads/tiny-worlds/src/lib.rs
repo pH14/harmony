@@ -34,7 +34,7 @@ fn stream_records(stream: &[u8]) -> Result<Vec<StreamRecord>, Box<dyn Error>> {
         .collect::<Result<_, _>>()?)
 }
 
-const MAX_REACHABLE_STATES: usize = 100_000;
+const MAX_REACHABLE_STATES: usize = 4_000_000;
 
 fn reachable<S: Copy + Ord>(
     initial: S,
@@ -51,7 +51,7 @@ fn reachable<S: Copy + Ord>(
             let next = step(state, action);
             if seen.insert(next) {
                 if seen.len() > MAX_REACHABLE_STATES {
-                    return Err("reachability search exceeded 100000 states".into());
+                    return Err(format!("reachability search exceeded {MAX_REACHABLE_STATES} states"));
                 }
                 pending.push_back(next);
             }
