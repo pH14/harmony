@@ -305,7 +305,11 @@ be faster, so a rule passes only when solved runs establish it. A milestone
 reached after the budget counts as unreached. Count
 allowances scale with the seed count and round up. Each rule records current
 searcher behaviour. A searcher change that flips a rule predicts the same
-change on Metroid. With six seeds per arm, a rule close to its threshold can
+change on Metroid. The backtrack ranked-items rule and the farm-loop rule set
+their thresholds above the current searcher's spread, so they fail only when a
+change makes that cost worse. Six-seed medians on the current searcher put
+ranked items at 1.41x the preference work, at most 2.29x in 20,000 resamples
+of 300 seeds, against a 2.5x threshold. With six seeds per arm, a rule close to its threshold can
 flip between runs of an unchanged searcher, so rerun a FAIL before attributing
 it to a change. The panel is not a CI check.
 
