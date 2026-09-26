@@ -288,11 +288,9 @@ impl<const CAPACITY_TWO: bool> Workload<CAPACITY_TWO> {
         if bytes == 0 {
             return Vec::new();
         }
+        let digest = postcard_value_sha256(&state).expect("serializable state");
         let mut rand = RomuDuoJrRand::with_seed(
-            postcard_value_sha256(&state)
-                .ok()
-                .and_then(|digest| u64::from_str_radix(&digest[..16], 16).ok())
-                .unwrap_or(1),
+            u64::from_str_radix(&digest[..16], 16).expect("hexadecimal digest"),
         );
         let mut payload = Vec::with_capacity(bytes.next_multiple_of(8));
         while payload.len() < bytes {
@@ -310,7 +308,7 @@ impl<const CAPACITY_TWO: bool> Workload<CAPACITY_TWO> {
         else {
             return;
         };
-        let started = telemetry_now();
+        let started = cpu_time::ThreadTime::now();
         let cost = std::time::Duration::from_nanos(cost);
         while started.elapsed() < cost {
             std::hint::spin_loop();

@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures
 import json
+import math
 import os
 import secrets
 import statistics
@@ -31,8 +33,8 @@ def graph(nodes: int, places: int, levels: int) -> dict:
 def scale(workers: int, memory_mib: int, cost_ns: int, snapshot_bytes: int, reservations: int = 2,
           results: int = 1) -> dict:
     return {"workers": workers, "reservations_per_worker": reservations, "results_per_worker": results,
-            "memory_budget_mib": memory_mib,
-            "archive_entries": 4_194_304, "action_cost_ns": cost_ns, "snapshot_bytes": snapshot_bytes}
+            "memory_budget_mib": memory_mib, "archive_entries": 4_194_304, "action_cost_ns": cost_ns,
+            "snapshot_bytes": snapshot_bytes}
 
 
 def clock(text: str) -> float:
@@ -59,21 +61,23 @@ def launch(binary: Path, config: dict, settings: dict, work: int, sample_seconds
            seed: int | None = None) -> dict:
     request = {"config": config, "seed": secrets.randbits(64) if seed is None else seed, "work_budget": work,
                "broken": False, "verify": False, "keep": "portfolio", "scale": settings}
+    started = time.monotonic()
     proc = subprocess.Popen([str(binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True,
-                            env=dict(os.environ, HARMONY_COORDINATOR_PROFILE="1"))
-    proc.stdin.write(json.dumps(request))
-    proc.stdin.close()
+                            stderr=subprocess.PIPE, text=True)
     latest: dict = {}
+    lines: list[tuple[float, int]] = []
     peaks = {"resident_memory_bytes": 0, "lines_over_budget": 0}
+    errors: collections.deque[str] = collections.deque(maxlen=20)
     out: list[str] = []
     budget = settings["memory_budget_mib"] * MIB
 
     def read_progress() -> None:
         for line in proc.stderr:
             if not line.startswith("{"):
+                errors.append(line.rstrip())
                 continue
             record = json.loads(line)
+            lines.append((time.monotonic() - started, record["executions"]))
             latest.update({k: record.get(k, 0) for k in (
                 "executions", "execution_work", "active_entries", "live_entries", "resident_snapshots",
                 "resident_memory_bytes", "snapshot_evictions", "entry_drops", "history_compactions",
@@ -86,22 +90,31 @@ def launch(binary: Path, config: dict, settings: dict, work: int, sample_seconds
     for reader in readers:
         reader.start()
     samples = []
-    started = time.monotonic()
-    while True:
-        pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
-        if pid:
-            break
-        cpu = coordinator_cpu(proc.pid)
-        if cpu is not None and latest:
-            samples.append({"seconds": time.monotonic() - started, "coordinator_cpu": cpu, **latest})
-        time.sleep(sample_seconds)
-    for reader in readers:
-        reader.join()
+    pid = 0
+    try:
+        proc.stdin.write(json.dumps(request))
+        proc.stdin.close()
+        while True:
+            pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
+            if pid:
+                break
+            cpu = coordinator_cpu(proc.pid)
+            if cpu is not None and latest:
+                samples.append({"seconds": time.monotonic() - started, "coordinator_cpu": cpu, **latest})
+            time.sleep(sample_seconds)
+    finally:
+        if not pid:
+            proc.kill()
+            proc.wait()
+        for reader in readers:
+            reader.join()
     if status:
-        raise SystemExit(f"tiny-worlds failed with status {status}")
+        raise SystemExit(f"tiny-worlds failed with exit code {os.waitstatus_to_exitcode(status)}:\n"
+                         + "\n".join(errors))
     report = json.loads(out[0])
     peak_rss = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
-    return {"report": report, "samples": samples, "final": dict(latest), "peak_rss_bytes": peak_rss, **peaks}
+    return {"report": report, "samples": samples, "lines": lines, "final": dict(latest),
+            "peak_rss_bytes": peak_rss, **peaks}
 
 
 def windows(samples: list[dict]) -> list[dict]:
@@ -116,12 +129,25 @@ def windows(samples: list[dict]) -> list[dict]:
     return rows
 
 
-def slowdown(args: argparse.Namespace, binaries: list[Path]) -> None:
+def search_interval(run: dict) -> tuple[float, float | None]:
+    lines = run["lines"][:-1]
+    if len(lines) < 2 or lines[-1][0] <= lines[0][0]:
+        raise SystemExit("run too short to time: raise --work")
+    (start, first), (end, last) = lines[0], lines[-1]
+    inside = [s for s in run["samples"] if start <= s["seconds"] <= end]
+    busy = None
+    if len(inside) >= 2 and inside[-1]["seconds"] > inside[0]["seconds"]:
+        busy = ((inside[-1]["coordinator_cpu"] - inside[0]["coordinator_cpu"])
+                / (inside[-1]["seconds"] - inside[0]["seconds"]))
+    return (last - first) / (end - start), busy
+
+
+def slowdown(args: argparse.Namespace) -> None:
     config = graph(4_194_304, 1024, 4)
     settings = scale(args.workers, 16_384, args.cost_ns, 0)
     seed = secrets.randbits(64)
     print(f"seed {seed}, layout {config['parameters']['layout']}")
-    for binary in binaries:
+    for binary in args.binary:
         for repeat in range(args.repeats):
             run = launch(binary, config, settings, args.work, args.sample_seconds, seed)
             print(f"{binary} repeat {repeat + 1}: {run['final'].get('executions', 0):,} executions, "
@@ -137,12 +163,13 @@ def slowdown(args: argparse.Namespace, binaries: list[Path]) -> None:
                       f"{statistics.median(r['coordinator_ms_per_1000'] for r in rows):>24,.0f}")
 
 
-def cores(args: argparse.Namespace, binary: Path) -> None:
+def cores(args: argparse.Namespace) -> None:
     config = graph(4_194_304, 1024, 4)
     seed = secrets.randbits(64)
     print(f"seed {seed}, layout {config['parameters']['layout']}, "
           f"cost {args.cost_ns:,} ns per transition, work {args.work:,} transitions"
-          f"{'' if args.total_work else ' per worker'}")
+          f"{'' if args.total_work else ' per worker'}, {args.reservations} reservations "
+          f"and {args.results} results per worker")
     print(f"{'workers':>7}  {'executions/s':>12}  {'speedup':>7}  {'coordinator busy':>16}  "
           f"{'transitions per try':>19}  {'worker ms per try':>17}")
     base = None
@@ -151,12 +178,12 @@ def cores(args: argparse.Namespace, binary: Path) -> None:
         for _ in range(args.repeats):
             work = args.work if args.total_work else args.work * workers
             settings = scale(workers, 16_384, args.cost_ns, 0, args.reservations, args.results)
-            run = launch(binary, config, settings, work, args.sample_seconds, seed)
-            final, elapsed = run["final"], run["report"]["elapsed_seconds"]
-            rates.append(final["executions"] / elapsed)
-            if run["samples"]:
-                busy.append(run["samples"][-1]["coordinator_cpu"] / run["samples"][-1]["seconds"])
-            transitions.append(final["execution_work"] / final["executions"])
+            run = launch(args.binary[0], config, settings, work, args.sample_seconds, seed)
+            rate, share = search_interval(run)
+            rates.append(rate)
+            if share is not None:
+                busy.append(share)
+            transitions.append(run["final"]["execution_work"] / run["final"]["executions"])
         rate = statistics.median(rates)
         base = base or rate
         per_try = statistics.median(transitions)
@@ -165,8 +192,9 @@ def cores(args: argparse.Namespace, binary: Path) -> None:
               f"{args.cost_ns * per_try / 1e6:>17.2f}")
 
 
-def memory(args: argparse.Namespace, binary: Path) -> None:
+def memory(args: argparse.Namespace) -> None:
     config = graph(65_536, 64, 4)
+    binary = args.binary[0]
     budget = scale(args.workers, args.budget_mib, 0, args.snapshot_bytes)
     unbounded = scale(args.workers, 16_384, 0, args.snapshot_bytes)
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
@@ -187,40 +215,71 @@ def memory(args: argparse.Namespace, binary: Path) -> None:
               f"{final['history_compactions']:>11,}  {final['historical_entries_dropped']:>15,}")
 
 
+def positive(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def non_negative(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
+    return value
+
+
+def seconds(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number of seconds")
+    return value
+
+
+def worker_counts(text: str) -> list[int]:
+    return [positive(w) for w in text.split(",")]
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["slowdown", "cores", "memory"])
-    parser.add_argument("--binary", type=Path, action="append",
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--binary", type=lambda p: Path(p).resolve(), action="append",
                         help="prebuilt tiny-worlds executable; slowdown accepts several to compare")
-    parser.add_argument("--workers", type=int, default=8, help="worker threads (slowdown and memory)")
-    parser.add_argument("--workers-list", type=lambda s: [int(w) for w in s.split(",")], default=[1, 2, 4, 8],
-                        help="worker counts for cores")
-    parser.add_argument("--cost-ns", type=int, default=0, help="CPU time per transition")
-    parser.add_argument("--work", type=int, default=6_000_000,
-                        help="transition budget per run (per worker for cores)")
-    parser.add_argument("--total-work", action="store_true",
-                        help="give every worker count the same --work in cores mode")
-    parser.add_argument("--reservations", type=int, default=2, help="reservations per worker for cores")
-    parser.add_argument("--results", type=int, default=1, help="results per worker for cores")
-    parser.add_argument("--repeats", type=int, default=1, help="timing repeats per setting")
-    parser.add_argument("--bin", type=int, default=100_000, help="active entries per slowdown table row")
-    parser.add_argument("--budget-mib", type=int, default=256, help="memory budget for memory mode")
-    parser.add_argument("--snapshot-bytes", type=int, default=21_238, help="snapshot payload for memory mode")
-    parser.add_argument("--seeds", type=int, default=6, help="runtime seeds for memory mode")
-    parser.add_argument("--jobs", type=int, default=3, help="parallel processes for memory mode")
-    parser.add_argument("--sample-seconds", type=float, default=2.0, help="coordinator CPU sampling interval")
+    common.add_argument("--sample-seconds", type=seconds, default=2.0, help="coordinator CPU sampling interval")
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_subparsers(dest="mode", required=True)
+
+    slow = modes.add_parser("slowdown", parents=[common], help="throughput against archive size")
+    slow.add_argument("--workers", type=positive, default=8, help="worker threads")
+    slow.add_argument("--cost-ns", type=non_negative, default=0, help="thread CPU time per transition")
+    slow.add_argument("--work", type=positive, default=6_000_000, help="transition budget per run")
+    slow.add_argument("--repeats", type=positive, default=1, help="timing repeats per binary")
+    slow.add_argument("--bin", type=positive, default=100_000, help="active entries per table row")
+
+    core = modes.add_parser("cores", parents=[common], help="throughput against worker count")
+    core.add_argument("--workers-list", type=worker_counts, default=[1, 2, 4, 8], help="worker counts")
+    core.add_argument("--cost-ns", type=non_negative, default=0, help="thread CPU time per transition")
+    core.add_argument("--work", type=positive, default=6_000_000, help="transitions per worker per run")
+    core.add_argument("--total-work", action="store_true", help="give every worker count the same --work")
+    core.add_argument("--reservations", type=positive, default=2, help="reservations per worker")
+    core.add_argument("--results", type=positive, default=1, help="results per worker")
+    core.add_argument("--repeats", type=positive, default=1, help="timing repeats per worker count")
+
+    mem = modes.add_parser("memory", parents=[common], help="goal and memory under a budget")
+    mem.add_argument("--workers", type=positive, default=8, help="worker threads per run")
+    mem.add_argument("--work", type=positive, default=6_000_000, help="transition budget per run")
+    mem.add_argument("--budget-mib", type=positive, default=256, help="memory budget")
+    mem.add_argument("--snapshot-bytes", type=non_negative, default=21_238, help="snapshot payload")
+    mem.add_argument("--seeds", type=positive, default=6, help="runtime seeds")
+    mem.add_argument("--jobs", type=positive, default=3, help="parallel processes")
+
     args = parser.parse_args()
-    binaries = args.binary
-    if not binaries:
+    if args.binary and len(args.binary) > 1 and args.mode != "slowdown":
+        parser.error(f"{args.mode} takes one --binary")
+    if not args.binary:
         subprocess.run(["cargo", "build", "--release", "--locked", "--manifest-path",
                         str(ROOT / "Cargo.toml")], check=True)
-        binaries = [ROOT / "target" / "release" / "tiny-worlds"]
-    if args.mode == "slowdown":
-        slowdown(args, binaries)
-    elif args.mode == "cores":
-        cores(args, binaries[0])
-    else:
-        memory(args, binaries[0])
+        args.binary = [ROOT / "target" / "release" / "tiny-worlds"]
+    {"slowdown": slowdown, "cores": cores, "memory": memory}[args.mode](args)
     return 0
 
 

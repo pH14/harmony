@@ -72,12 +72,12 @@ field is required:
 | `results_per_worker` | 1–2 | Finished results a worker may hold before admission: `ResultBuffering::OnePerWorker` or `TwoPerWorker`. |
 | `memory_budget_mib` | 1–16,384 | The searcher's logical memory budget. |
 | `archive_entries` | 1–4,194,304 | Archive entry limit. |
-| `action_cost_ns` | 0–10,000,000 | Wall time each transition spins on its worker thread. |
+| `action_cost_ns` | 0–10,000,000 | Thread CPU time each transition spins on its worker thread, so a descheduled worker takes longer, as a real target would. |
 | `snapshot_bytes` | 0–1,048,576 | Pseudorandom payload stored in every snapshot and charged to the memory budget. |
 
 The payload is derived from the world state, so it adds real resident memory
 without changing any search decision, and job-result hashes leave it out. The
-spin reads a clock only to wait. A scaled run accepts 1–10,000,000,000
+spin reads the thread's CPU clock only to wait. A scaled run accepts 1–10,000,000,000
 transitions and requires `verify=false` and `keep=portfolio`. It counts the
 campaign stream's bytes instead of storing them, keeps no per-job evidence,
 skips final archive entries, and writes the searcher's progress lines, one per
@@ -309,7 +309,7 @@ one result per worker unless `cores` sets them.
 `slowdown` and `cores` use one runtime seed and one graph layout for all their
 runs, so every build and worker count explores the same graph. A try on the
 graph averages about 1.3 transitions, so `--cost-ns 4000000` gives about 5.2 ms
-of worker time per try.
+of worker CPU time per try.
 The script samples the coordinator thread's CPU time, from `ps -M` on macOS
 and from `/proc` schedstat on Linux, against the executions on the latest
 progress line.
@@ -317,7 +317,7 @@ progress line.
 | Mode | Runs | Prints |
 | --- | --- | --- |
 | `slowdown` | One long campaign per `--binary` on a 4,194,304-node graph with 1,024 places, a 16 GiB budget, and no snapshot payload. | Executions per second and coordinator CPU milliseconds per 1,000 executions, as medians over sampling windows grouped into `--bin` active entries. The final window is dropped because it includes the final report. |
-| `cores` | The same graph at each of `--workers-list`, with `--work` transitions per worker, or in total with `--total-work`, and with `--reservations` and `--results` per worker. | Median executions per second over `--repeats`, speedup over the first count, coordinator busy share, transitions per try, and worker milliseconds per try. |
+| `cores` | The same graph at each of `--workers-list`, with `--work` transitions per worker, or in total with `--total-work`, and with `--reservations` and `--results` per worker. | Median executions per second over `--repeats`, timed between the first and last progress lines of the search so setup and the final report are excluded, speedup over the first count, coordinator busy share, transitions per try, and worker milliseconds per try. |
 | `memory` | `--seeds` campaigns on a 65,536-node graph under `--budget-mib`, plus one control at 16 GiB, with `--snapshot-bytes` payloads. | Whether each run reached the goal, peak logical memory, progress lines over the budget, peak RSS, snapshot evictions, history compactions, and dropped entries. |
 
 ## Checks
