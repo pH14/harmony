@@ -746,3 +746,62 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
     assert!(error.to_string().contains("worker count"), "{error}");
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn a_resume_under_a_changed_search_policy_records_the_change() {
+    let directory = checkpoint_directory("policy-change");
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(300),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    config.mixture = DrawMixture::Energy { scale: 6 };
+    let (resumed, _) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::SearchCheckpoint {
+            path: directory.join("000000000300-interval.ckpt"),
+        },
+        None,
+    );
+    assert_eq!(resumed.0.executions_completed, 800);
+    let changes = &resumed.0.origin.checkpoint_policy_changes;
+    assert_eq!(changes.keys().collect::<Vec<_>>(), ["mixture_policy"]);
+    assert_ne!(
+        changes["mixture_policy"].checkpoint,
+        changes["mixture_policy"].run
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_resume_refuses_a_changed_workload_policy() {
+    let header = |key: &str| CheckpointHeader {
+        format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
+        reason: "interval".to_owned(),
+        workload_identity_sha256: String::new(),
+        campaign_seed: 1,
+        workers: 1,
+        reservations_per_worker: 1,
+        action_limit: 8,
+        archive_entry_limit: 8,
+        memory_budget_mib: None,
+        policies: BTreeMap::from([
+            ("key_policy".to_owned(), key.to_owned()),
+            ("parent_scheduler".to_owned(), key.to_owned()),
+        ]),
+        executions: 0,
+        reserved: 0,
+        next_admission: 0,
+    };
+    let error = search_checkpoint_policy_changes(&header("a"), &header("b"))
+        .expect_err("a changed key policy");
+    assert!(error.to_string().contains("key_policy"), "{error}");
+    assert!(!error.to_string().contains("parent_scheduler"), "{error}");
+}

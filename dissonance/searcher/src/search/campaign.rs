@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
     io::Write,
@@ -607,6 +607,8 @@ pub struct CampaignStreamHeader<T> {
     pub origin_checkpoint_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_checkpoint_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub origin_checkpoint_policy_changes: BTreeMap<String, PolicyChange>,
     pub resume_input_sha256: String,
     pub resume_actions: usize,
     pub execution_budget: u64,
@@ -740,9 +742,25 @@ pub struct CampaignOriginRecord {
     pub checkpoint_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub checkpoint_policy_changes: BTreeMap<String, PolicyChange>,
     pub resume_input_sha256: String,
     pub resume_actions: usize,
 }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PolicyChange {
+    pub checkpoint: String,
+    pub run: String,
+}
+
+const RESUMABLE_POLICY_FIELDS: [&str; 5] = [
+    "suffix_policy",
+    "mixture_policy",
+    "retention_policy",
+    "parent_scheduler",
+    "stop_rollout_on_objective",
+];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "A: Serialize + DeserializeOwned + Ord + Clone, R: Serialize + DeserializeOwned")]
@@ -1800,11 +1818,16 @@ fn merge_max<G: Workload + ?Sized>(
 
 fn resolve_origin<G: Workload>(
     workload: &G,
+    config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     search_checkpoint: Option<&CheckpointReader>,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
     if let CampaignOrigin::SearchCheckpoint { path } = origin {
         let reader = search_checkpoint.ok_or("a search checkpoint origin was not opened")?;
+        let checkpoint_policy_changes = search_checkpoint_policy_changes(
+            &reader.header,
+            &search_checkpoint_header(workload, config, &reader.header.reason, 0, 0, 0),
+        )?;
         let path = path.display().to_string();
         let resume_input_sha256 = format!(
             "{:x}",
@@ -1816,6 +1839,7 @@ fn resolve_origin<G: Workload>(
             archive_sha256: None,
             checkpoint_path: Some(path),
             checkpoint_sha256: Some(reader.file_sha256.clone()),
+            checkpoint_policy_changes,
             resume_input_sha256,
             resume_actions: 0,
         });
@@ -1858,6 +1882,7 @@ fn resolve_origin<G: Workload>(
         archive_sha256,
         checkpoint_path: checkpoint.map(|checkpoint| checkpoint.path.clone()),
         checkpoint_sha256: checkpoint.map(|checkpoint| checkpoint.file_sha256.clone()),
+        checkpoint_policy_changes: BTreeMap::new(),
         resume_input_sha256,
         resume_actions: resume_input.actions.len(),
     })
@@ -1893,6 +1918,7 @@ fn stream_header<G: Workload>(
         origin_archive_sha256: origin.archive_sha256.clone(),
         origin_checkpoint_path: origin.checkpoint_path.clone(),
         origin_checkpoint_sha256: origin.checkpoint_sha256.clone(),
+        origin_checkpoint_policy_changes: origin.checkpoint_policy_changes.clone(),
         resume_input_sha256: origin.resume_input_sha256.clone(),
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
@@ -2768,7 +2794,7 @@ where
         CampaignOrigin::SearchCheckpoint { path } => Some(CheckpointReader::open(path)?),
         _ => None,
     };
-    let origin_record = resolve_origin(workload, origin, search_checkpoint.as_ref())?;
+    let origin_record = resolve_origin(workload, config, origin, search_checkpoint.as_ref())?;
     let draw_origin = match origin {
         CampaignOrigin::Genesis => None,
         CampaignOrigin::SnapshotRoot { .. } => None,
@@ -3766,6 +3792,42 @@ fn search_checkpoint_header<G: Workload>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn search_checkpoint_policy_changes(
+    header: &CheckpointHeader,
+    expected: &CheckpointHeader,
+) -> Result<BTreeMap<String, PolicyChange>, Box<dyn Error>> {
+    let fields = header
+        .policies
+        .keys()
+        .chain(expected.policies.keys())
+        .collect::<BTreeSet<_>>();
+    let mut changes = BTreeMap::new();
+    let mut fixed = Vec::new();
+    for field in fields {
+        let checkpoint = header.policies.get(field);
+        let run = expected.policies.get(field);
+        if checkpoint == run {
+            continue;
+        }
+        match (checkpoint, run) {
+            (Some(checkpoint), Some(run)) if RESUMABLE_POLICY_FIELDS.contains(&field.as_str()) => {
+                changes.insert(
+                    field.clone(),
+                    PolicyChange {
+                        checkpoint: checkpoint.clone(),
+                        run: run.clone(),
+                    },
+                );
+            }
+            _ => fixed.push(field.as_str()),
+        }
+    }
+    if !fixed.is_empty() {
+        return Err(format!("search checkpoint policies differ: {}", fixed.join(", ")).into());
+    }
+    Ok(changes)
+}
+
 fn restore_search_checkpoint<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
@@ -3791,23 +3853,7 @@ fn restore_search_checkpoint<G: Workload>(
     {
         return Err("search checkpoint limits differ from the campaign".into());
     }
-    if header.policies != expected.policies {
-        let differing = header
-            .policies
-            .iter()
-            .filter(|(field, value)| expected.policies.get(*field) != Some(value))
-            .map(|(field, _)| field.as_str())
-            .chain(
-                expected
-                    .policies
-                    .keys()
-                    .filter(|field| !header.policies.contains_key(*field))
-                    .map(String::as_str),
-            )
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!("search checkpoint policies differ: {differing}").into());
-    }
+    search_checkpoint_policy_changes(&header, &expected)?;
     let state: CoreCheckpoint<G> = reader.next()?;
     let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
     let evidence: Vec<u8> = reader.next()?;
@@ -4734,6 +4780,7 @@ where
         archive_sha256: header.origin_archive_sha256.clone(),
         checkpoint_path: header.origin_checkpoint_path.clone(),
         checkpoint_sha256: header.origin_checkpoint_sha256.clone(),
+        checkpoint_policy_changes: header.origin_checkpoint_policy_changes.clone(),
         resume_input_sha256: header.resume_input_sha256.clone(),
         resume_actions: header.resume_actions,
     };
