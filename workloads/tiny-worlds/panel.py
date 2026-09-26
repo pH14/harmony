@@ -68,8 +68,9 @@ def chain(ranked: bool, ranked_upgrade: bool, placement: str, sticky: bool, patt
         "stages": stages, "carry_charge": True, "initial_charge": 0, "ranked": ranked}}
 
 
-def request(arm: str, config: dict, seed: int, broken: bool = False, keep: str = "portfolio") -> dict:
-    return {"arm": arm, "request": {"config": config, "seed": seed, "work_budget": BUDGET,
+def request(arm: str, config: dict, seed: int, broken: bool = False, keep: str = "portfolio",
+            budget: int = BUDGET) -> dict:
+    return {"arm": arm, "request": {"config": config, "seed": seed, "work_budget": budget,
                                     "broken": broken, "verify": True, "keep": keep}}
 
 
@@ -110,6 +111,11 @@ def requests(seeds: int) -> list[dict]:
                                                 "loops": 7, "corridor": 2, "shaft": 3, "inner": 20}}
         for arm, broken in (("ranked", False), ("control", True)):
             rows.append(request(f"map/{arm}", grid, seed, broken))
+        layout = secrets.randbits(64)
+        for arm, farms in (("farms", 4), ("none", 0)):
+            rows.append(request(f"farm/{arm}", {"family": "map", "parameters": {
+                "width": 8, "height": 8, "layout": layout, "loops": 7, "corridor": 2, "shaft": 3, "inner": 20,
+                "farms": farms, "farm_cap": 63 if farms else 0}}, seed, budget=WORLD_BUDGET))
     return rows
 
 
@@ -262,6 +268,14 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
                 next_gap.append(((goal if goal is not None else BUDGET) - out) / back * rooms)
         return statistics.median(return_trip), statistics.median(next_gap)
 
+    def trip_out(r):
+        out = (r["evidence"]["map_first"] + [None] * 4)[2]
+        goal = r["first_objective_work"] if r["success"] else WORLD_BUDGET
+        return WORLD_BUDGET if out is None else goal - out
+
+    def farm_cost():
+        return statistics.median(trip_out(f) / max(1, trip_out(c)) for f, c in zip(by["farm/farms"], by["farm/none"]))
+
     def trap_share(arm):
         return statistics.median(
             sum(d[5] for d in tier_draws(r) if d[3] == 1) / max(1, sum(d[5] for d in tier_draws(r)))
@@ -312,6 +326,7 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("map: gap after leaving longer than the return trip per room", f"{map_ratios('map/ranked')[1]:.2f}",
          map_ratios("map/ranked")[1] > 1),
         ("map: hidden item mostly unsolved", f"{solved('map/control')}/{n}", solved("map/control") <= third),
+        ("farm loop: farms off the route slow the trip out under 10x", f"{farm_cost():.2f}", farm_cost() < 10),
     ]
 
 
