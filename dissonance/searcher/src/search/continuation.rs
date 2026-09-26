@@ -6,6 +6,8 @@ use std::{
     mem::size_of,
 };
 
+pub const CONTINUATION_IDENTIFIER: &str = "position_edges_preference_queue_v1";
+
 const EDGE_NODE_OVERHEAD: usize = 192;
 
 const PENDING_NODE_OVERHEAD: usize = 128;
@@ -251,6 +253,18 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
             .iter()
             .next()
             .map(|(key, source)| (*key, *source))
+    }
+
+    pub fn retain_preferences(&mut self, preferences: usize) {
+        let dropped: Vec<P> = self
+            .pending_source
+            .iter()
+            .filter(|(_, held)| usize::from(held.preference) >= preferences)
+            .map(|(source, _)| *source)
+            .collect();
+        for source in dropped {
+            self.drop_pending(source);
+        }
     }
 
     fn drop_pending(&mut self, source: P) {

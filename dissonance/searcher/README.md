@@ -391,11 +391,15 @@ entry's snapshot never changes, so each is written once and later checkpoints
 list it by entry id and offset. Each `.ckpt` file holds its header, that index,
 and the postcard body; `checkpoints.jsonl` records write time and sizes.
 `CampaignOrigin::SearchCheckpoint` resumes one. The worker count, admission
-window, limits, workload identity, workload policies, draw table policy and
-preference portfolio must match. The suffix, mixture and retention policies,
-the selector and the objective stop may change, so a search can continue under
-a revised algorithm; the origin record and stream header list each change as
-`checkpoint_policy_changes`. The same seed
+window, limits, workload identity and the workload policies that give stored
+inputs and keys their meaning must match. The suffix, mixture and retention
+policies, the selector, the continuation policy and the objective stop may
+change, so a search can continue under a revised algorithm. The draw table
+policy, the preference portfolio and a workload's `preference_policy` may also
+change, because their state is rebuilt from the archive entries: new draw
+tables fold every entry's suffix, and each slot re-ranks its holders under the
+new preference order and capacity. The origin record and stream header list
+each change as `checkpoint_policy_changes`. The same seed
 repeats the original progress lines; another seed derives new worker random
 states and keeps everything else. The draw tables continue their table hash
 from the recorded one, so stream draw-table hashes after a resume differ from an

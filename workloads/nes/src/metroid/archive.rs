@@ -21,7 +21,9 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_two_preferences_tier_items_boss_engaged_mother_brain_defeat_item_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_tier_items_boss_engaged_mother_brain_defeat_item_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up";
+pub const PREFERENCE_IDENTIFIER: &str =
+    "items_tanks_missiles_health_then_items_tanks_health_missiles";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;

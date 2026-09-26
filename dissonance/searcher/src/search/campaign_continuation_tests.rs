@@ -140,7 +140,10 @@ impl Reporting for TestWorkload {
 
 impl InputPolicy for TestWorkload {
     fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
-        WorkloadPolicies::new()
+        WorkloadPolicies::from([(
+            PREFERENCE_POLICY_FIELD.to_owned(),
+            "place_high_nibble".to_owned(),
+        )])
     }
     fn resolve_recorded(&self, _policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>> {
         Ok(())
@@ -777,6 +780,61 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
         changes["mixture_policy"].checkpoint,
         changes["mixture_policy"].run
     );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+fn rewrite_checkpoint_policy(path: &std::path::Path, field: &str, value: &str) {
+    let bytes = std::fs::read(path).unwrap();
+    let (mut header, rest): (CheckpointHeader, _) = postcard::take_from_bytes(&bytes).unwrap();
+    header.policies.insert(field.to_owned(), value.to_owned());
+    let mut rewritten = postcard::to_allocvec(&header).unwrap();
+    rewritten.extend_from_slice(rest);
+    std::fs::write(path, rewritten).unwrap();
+}
+
+#[test]
+fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
+    let directory = checkpoint_directory("policy-fields");
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    let (_, original_progress) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(300),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    let checkpoint = directory.join("000000000300-interval.ckpt");
+    let recorded = std::fs::read(&checkpoint).unwrap();
+    for field in [
+        "parent_scheduler",
+        "continuation_policy",
+        PREFERENCE_PORTFOLIO_FIELD,
+        PREFERENCE_POLICY_FIELD,
+        DRAW_TABLE_POLICY_FIELD,
+    ] {
+        std::fs::write(&checkpoint, &recorded).unwrap();
+        rewrite_checkpoint_policy(&checkpoint, field, "older");
+        let (resumed, resumed_progress) = run_with_checkpoints(
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path: checkpoint.clone(),
+            },
+            None,
+        );
+        let changes = &resumed.0.origin.checkpoint_policy_changes;
+        assert_eq!(changes.keys().collect::<Vec<_>>(), [field]);
+        assert_eq!(changes[field].checkpoint, "older");
+        assert_eq!(resumed.0.executions_completed, 800);
+        assert_eq!(
+            progress_lines_after(&resumed_progress, 300),
+            progress_lines_after(&original_progress, 300),
+            "a resume recording a {field} change diverged"
+        );
+    }
     std::fs::remove_dir_all(&directory).unwrap();
 }
 

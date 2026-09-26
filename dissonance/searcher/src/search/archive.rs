@@ -1754,16 +1754,8 @@ where
             .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
     }
 
-    fn rank_slot_preferences(
-        &self,
-        slot: &[usize],
-        key: K,
-        cost_in_group: u64,
-    ) -> (Vec<bool>, Vec<usize>) {
-        let capacity = K::capacity().max(1);
-        let preferences = K::preferences().max(1);
-        let members: Vec<(K, u64, u64)> = slot
-            .iter()
+    fn slot_members(&self, slot: &[usize]) -> Vec<(K, u64, u64)> {
+        slot.iter()
             .map(|id| {
                 (
                     self.entries[*id].key,
@@ -1771,11 +1763,13 @@ where
                     self.entries[*id].id,
                 )
             })
-            .chain(std::iter::once((key, cost_in_group, self.next_entry_id)))
-            .collect();
-        let candidate = members.len().saturating_sub(1);
-        let mut won = Vec::new();
-        let mut retained = vec![false; members.len()];
+            .collect()
+    }
+
+    fn preferences_won(members: &[(K, u64, u64)]) -> Vec<Vec<usize>> {
+        let capacity = K::capacity().max(1);
+        let preferences = K::preferences().max(1);
+        let mut won = vec![Vec::new(); members.len()];
         let mut order: Vec<usize> = (0..members.len()).collect();
         for preference in 0..preferences {
             order.sort_by(|left, right| {
@@ -1788,13 +1782,54 @@ where
                     .then_with(|| left_id.cmp(&right_id))
             });
             for index in order.iter().take(capacity) {
-                retained[*index] = true;
-                if *index == candidate {
-                    won.push(preference);
-                }
+                won[*index].push(preference);
             }
         }
-        (retained, won)
+        won
+    }
+
+    fn rank_slot_preferences(
+        &self,
+        slot: &[usize],
+        key: K,
+        cost_in_group: u64,
+    ) -> (Vec<bool>, Vec<usize>) {
+        let mut members = self.slot_members(slot);
+        members.push((key, cost_in_group, self.next_entry_id));
+        let mut won = Self::preferences_won(&members);
+        let candidate = won.pop().unwrap_or_default();
+        let mut retained: Vec<bool> = won
+            .iter()
+            .map(|preferences| !preferences.is_empty())
+            .collect();
+        retained.push(!candidate.is_empty());
+        (retained, candidate)
+    }
+
+    pub(crate) fn rerank_slot_holders(&mut self) -> usize {
+        let displaced: Vec<usize> = self
+            .slots
+            .values()
+            .flat_map(|holders| {
+                Self::preferences_won(&self.slot_members(holders))
+                    .into_iter()
+                    .zip(holders.iter().copied())
+                    .filter_map(|(won, id)| won.is_empty().then_some(id))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut retired = 0;
+        for id in displaced {
+            if self.deactivate(id) {
+                retired += 1;
+            }
+        }
+        self.portfolio_replacements
+            .resize(K::preferences().max(1), 0);
+        if let Some(bank) = &mut self.continuations {
+            bank.retain_preferences(K::preferences().max(1));
+        }
+        retired
     }
 
     fn cost_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
@@ -3175,6 +3210,81 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    thread_local! {
+        static SECOND_ORDER_FLIPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct SwitchedOrderKey {
+        first: u8,
+        second: u8,
+    }
+
+    impl ArchiveKey for SwitchedOrderKey {
+        type Place = u8;
+        type Progress = ();
+        type Identity = ();
+
+        fn place(self) -> Self::Place {
+            7
+        }
+
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {}
+
+        fn capacity() -> usize {
+            1
+        }
+
+        fn preferences() -> usize {
+            2
+        }
+
+        fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
+            if preference == 0 || SECOND_ORDER_FLIPPED.get() {
+                (self.first, self.second).cmp(&(other.first, other.second))
+            } else {
+                (self.second, self.first).cmp(&(other.second, other.first))
+            }
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn reranking_slot_holders_retires_holders_that_win_no_preference() {
+        SECOND_ORDER_FLIPPED.set(false);
+        let mut archive = Archive::<u8, SwitchedOrderKey, (), ()>::new(|_| 1);
+        for (input, first, second) in [(1, 10, 20), (2, 5, 200)] {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![input],
+                        key: SwitchedOrderKey { first, second },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert holder");
+        }
+        assert_eq!(archive.rerank_slot_holders(), 0);
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
+        SECOND_ORDER_FLIPPED.set(true);
+        assert_eq!(archive.rerank_slot_holders(), 1);
+        SECOND_ORDER_FLIPPED.set(false);
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0]));
+        assert_eq!(archive.active, vec![true, false]);
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

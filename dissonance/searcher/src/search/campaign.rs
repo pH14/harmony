@@ -23,6 +23,7 @@ use crate::search::archive::{
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, CheckpointWriter, SEARCH_CHECKPOINT_FORMAT,
 };
+use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
@@ -754,12 +755,20 @@ pub struct PolicyChange {
     pub run: String,
 }
 
-const RESUMABLE_POLICY_FIELDS: [&str; 5] = [
+pub const PREFERENCE_POLICY_FIELD: &str = "preference_policy";
+
+const PREFERENCE_PORTFOLIO_FIELD: &str = "preference_portfolio";
+
+const RESUMABLE_POLICY_FIELDS: [&str; 9] = [
     "suffix_policy",
     "mixture_policy",
     "retention_policy",
     "parent_scheduler",
+    "continuation_policy",
     "stop_rollout_on_objective",
+    DRAW_TABLE_POLICY_FIELD,
+    PREFERENCE_PORTFOLIO_FIELD,
+    PREFERENCE_POLICY_FIELD,
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -3763,8 +3772,9 @@ fn search_checkpoint_header<G: Workload>(
             retention_policy_identifier(config.retention).to_owned(),
         ),
         ("parent_scheduler", SELECTOR_IDENTIFIER.to_owned()),
+        ("continuation_policy", CONTINUATION_IDENTIFIER.to_owned()),
         (
-            "preference_portfolio",
+            PREFERENCE_PORTFOLIO_FIELD,
             preference_portfolio_identifier::<G::Key>(),
         ),
         (
@@ -3853,7 +3863,7 @@ fn restore_search_checkpoint<G: Workload>(
     {
         return Err("search checkpoint limits differ from the campaign".into());
     }
-    search_checkpoint_policy_changes(&header, &expected)?;
+    let changes = search_checkpoint_policy_changes(&header, &expected)?;
     let state: CoreCheckpoint<G> = reader.next()?;
     let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
     let evidence: Vec<u8> = reader.next()?;
@@ -3870,8 +3880,28 @@ fn restore_search_checkpoint<G: Workload>(
     let charge: fn(&G::Snapshot) -> usize = G::snapshot_memory_charge;
     core.archive
         .restore_runtime(workload.action_cost_fn(), Some(charge), snapshots)?;
+    if changes.contains_key(PREFERENCE_PORTFOLIO_FIELD)
+        || changes.contains_key(PREFERENCE_POLICY_FIELD)
+    {
+        core.archive.rerank_slot_holders();
+    }
     core.evidence = G::evidence_from_checkpoint(&evidence)?;
-    *draw_state = DrawTables::from_resume_bytes(&draw)?;
+    *draw_state = if changes.contains_key(DRAW_TABLE_POLICY_FIELD) {
+        let parameters = workload.draw_table_parameters(&config.run);
+        let mut tables = DrawTables::new(parameters)?;
+        fold_draw_sources(
+            &mut tables,
+            parameters,
+            core.archive
+                .entries
+                .iter()
+                .map(|entry| entry.input_suffix.as_slice()),
+        )?;
+        tables.flush()?;
+        tables
+    } else {
+        DrawTables::from_resume_bytes(&draw)?
+    };
     *duration_policies = DurationPolicies::from_checkpoint(durations)?;
     *counters = restored_counters;
     if header.campaign_seed != config.campaign_seed {
@@ -4018,6 +4048,23 @@ fn resolve_recorded_policies<G: Workload>(
     Ok(run)
 }
 
+fn fold_draw_sources<'a, A: Copy + Ord + Serialize + 'a>(
+    tables: &mut DrawTables<A>,
+    parameters: EmpiricalStepParameters,
+    suffixes: impl Iterator<Item = &'a [A]>,
+) -> Result<(), Box<dyn Error>> {
+    let mut pending = 0_u64;
+    for suffix in suffixes {
+        tables.fold_source(suffix)?;
+        pending = pending.saturating_add(1);
+        if pending >= parameters.update_every_records {
+            tables.flush()?;
+            pending = 0;
+        }
+    }
+    Ok(())
+}
+
 fn initial_draw_state<G: Workload>(
     workload: &G,
     run: &G::Run,
@@ -4033,19 +4080,17 @@ fn initial_draw_state<G: Workload>(
                 .iter()
                 .map(|entry| (entry.id, entry.input.actions.len()))
                 .collect();
-            let mut pending = 0_u64;
-            for entry in entries {
-                let prefix = entry
-                    .parent_id
-                    .and_then(|parent| parent_len.get(&parent).copied())
-                    .unwrap_or(0);
-                tables.fold_source(entry.input.actions.get(prefix..).unwrap_or(&[]))?;
-                pending = pending.saturating_add(1);
-                if pending >= parameters.update_every_records {
-                    tables.flush()?;
-                    pending = 0;
-                }
-            }
+            fold_draw_sources(
+                &mut tables,
+                parameters,
+                entries.iter().map(|entry| {
+                    let prefix = entry
+                        .parent_id
+                        .and_then(|parent| parent_len.get(&parent).copied())
+                        .unwrap_or(0);
+                    entry.input.actions.get(prefix..).unwrap_or(&[])
+                }),
+            )?;
             file_sha256.to_owned()
         }
     };
