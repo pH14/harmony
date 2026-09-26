@@ -61,7 +61,10 @@ impl Config {
             * (usize::from(self.ammo) + 1)
             * 2;
         if state_bound > crate::MAX_REACHABLE_STATES {
-            return Err("configuration exceeds the 100000-state oracle bound".to_owned());
+            return Err(format!(
+                "configuration exceeds the {}-state oracle bound",
+                crate::MAX_REACHABLE_STATES
+            ));
         }
         if self.sticky_credit && matches!(self.placement, Placement::Identity) {
             return Err("sticky_credit requires a placement other than identity".to_owned());

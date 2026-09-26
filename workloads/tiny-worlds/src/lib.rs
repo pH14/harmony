@@ -34,7 +34,7 @@ fn stream_records(stream: &[u8]) -> Result<Vec<StreamRecord>, Box<dyn Error>> {
         .collect::<Result<_, _>>()?)
 }
 
-const MAX_REACHABLE_STATES: usize = 4_000_000;
+const MAX_REACHABLE_STATES: usize = 200_000;
 
 fn reachable<S: Copy + Ord>(
     initial: S,
@@ -690,7 +690,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                             first.get_or_insert(observation.execution_work);
                         }
                     }
-                    e.map_first_tier.resize(usize::from(w.items) + 1, None);
+                    e.map_first_tier.resize(usize::from(w.top_tier()) + 1, None);
                     e.map_first_tier[0] = Some(0);
                     if w.tier(after) > w.tier(before) {
                         e.map_first_tier[usize::from(w.tier(after))]
@@ -1144,8 +1144,7 @@ mod tests {
                 snapshots,
             },
         };
-        let mut config = campaign_config(&w, crate::test_seed(), 20);
-        config.stop_campaign_on_objective = true;
+        let config = campaign_config(&w, crate::test_seed(), 20);
         let mut stream = BoundedStream(Vec::new());
         let (report, _) = run_campaign_checkpointed_with_options(
             &w,

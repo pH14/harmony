@@ -69,7 +69,10 @@ impl Config {
             * (usize::from(self.initial_health) + 1)
             * 2;
         if state_bound > crate::MAX_REACHABLE_STATES {
-            return Err("configuration exceeds the 100000-state oracle bound".to_owned());
+            return Err(format!(
+                "configuration exceeds the {}-state oracle bound",
+                crate::MAX_REACHABLE_STATES
+            ));
         }
         Ok(())
     }

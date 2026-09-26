@@ -31,6 +31,8 @@ pub struct Config {
     #[serde(default)]
     pub item_optional: bool,
     #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
     pub timing: u8,
 }
 
@@ -59,19 +61,27 @@ pub struct Layout {
     pub inner: Vec<bool>,
     pub door_cell: u8,
     pub door_direction: u8,
-    pub item: u8,
+    pub item: Option<u8>,
     pub goal: u8,
     pub start_to_door: u8,
-    pub door_to_item: u8,
+    pub door_to_item: Option<u8>,
     pub door_to_goal: u8,
     pub loops: u8,
     pub entry: u8,
     pub farms: Vec<u8>,
     pub items: Vec<u8>,
+    pub key: Option<u8>,
 }
 
 thread_local! {
     static LAYOUT: RefCell<Option<(Config, Rc<Layout>)>> = const { RefCell::new(None) };
+}
+
+fn next_item(layout: &Layout, found: u16) -> Option<u8> {
+    layout
+        .items
+        .get(usize::try_from(found.count_ones()).expect("item count fits"))
+        .copied()
 }
 
 fn pick(rand: &mut RomuDuoJrRand, len: usize) -> usize {
@@ -112,6 +122,9 @@ impl Config {
         if self.item_optional && (self.items > 1 || self.boss_stock > 0) {
             return Err("an optional map item needs one item and no boss".into());
         }
+        if self.locked && (self.items > 1 || self.item_optional || self.boss_stock > 0) {
+            return Err("a locked map region needs one required item and no boss".into());
+        }
         if self.boss_stock > 0
             && (self.items > 1 || self.farms < 2 || self.boss_stock > self.farm_cap)
         {
@@ -119,6 +132,13 @@ impl Config {
         }
         if self.farms > 8 || (self.farms > 0 && !(1..=63).contains(&self.farm_cap)) {
             return Err("map farms must be at most 8 with a cap of 1..=63".into());
+        }
+        let layout = self.layout();
+        if self.items > 1 && layout.items.len() < usize::from(self.items) {
+            return Err("the map's outer region has too few rooms for its items".into());
+        }
+        if self.locked && layout.key.is_none() {
+            return Err("a locked map needs an outer room for the key".into());
         }
         Ok(())
     }
@@ -213,7 +233,7 @@ impl Config {
             .filter(|&cell| subtree[usize::from(cell)] <= self.cells() - 2)
             .min_by_key(|&cell| {
                 let miss = subtree[usize::from(cell)].abs_diff(self.inner);
-                if self.item_optional && miss <= 2 {
+                if (self.item_optional || self.locked) && miss <= 2 {
                     (0, tree_depth[usize::from(cell)], cell)
                 } else {
                     (1 + miss, 0, cell)
@@ -256,6 +276,11 @@ impl Config {
                 .max_by_key(|&c| (from[usize::from(c)], std::cmp::Reverse(c)))
                 .expect("rooms on each side")
         };
+        let key = if self.locked {
+            self.key_room(&doors, &inner, door_cell)
+        } else {
+            None
+        };
         let (item, goal, items) = if self.items == 1 {
             let goal = if self.item_optional {
                 let from_start = self.distances(&doors, 0);
@@ -267,26 +292,33 @@ impl Config {
                     })
                     .max_by_key(|&c| (from_start[usize::from(c)], std::cmp::Reverse(c)))
                     .unwrap_or_else(|| farthest(&from_start, false))
+            } else if self.locked {
+                (0..self.cells())
+                    .filter(|&c| !inner[usize::from(c)] && Some(c) != key)
+                    .max_by_key(|&c| (from_door[usize::from(c)], std::cmp::Reverse(c)))
+                    .expect("an outer room besides the key")
             } else {
                 farthest(&from_door, false)
             };
-            (farthest(&from_entry, true), goal, Vec::new())
+            (Some(farthest(&from_entry, true)), goal, Vec::new())
         } else {
             let mut outer = doors.clone();
             outer[usize::from(door_cell)] &= !(1 << door_direction);
             let mut chosen = vec![0_u8];
             let mut nearest = self.distances(&outer, 0);
             for _ in 0..self.items {
-                let next = (0..self.cells())
+                let Some(next) = (0..self.cells())
                     .filter(|&c| !inner[usize::from(c)] && !chosen.contains(&c))
                     .max_by_key(|&c| (nearest[usize::from(c)], std::cmp::Reverse(c)))
-                    .expect("enough outer rooms");
+                else {
+                    break;
+                };
                 chosen.push(next);
                 for (n, d) in nearest.iter_mut().zip(self.distances(&outer, next)) {
                     *n = (*n).min(d);
                 }
             }
-            (u8::MAX, farthest(&from_entry, true), chosen.split_off(1))
+            (None, farthest(&from_entry, true), chosen.split_off(1))
         };
         let mut rooms: Vec<u8> = if self.boss_stock > 0 {
             let from_goal = self.distances(&doors, goal);
@@ -298,7 +330,7 @@ impl Config {
             outer
         } else {
             (0..self.cells())
-                .filter(|&c| inner[usize::from(c)] && c != item)
+                .filter(|&c| inner[usize::from(c)] && Some(c) != item)
                 .collect()
         };
         let mut farms = Vec::new();
@@ -307,11 +339,7 @@ impl Config {
         }
         Layout {
             start_to_door: from_door[0],
-            door_to_item: if self.items == 1 {
-                from_entry[usize::from(item)] + 1
-            } else {
-                0
-            },
+            door_to_item: item.map(|item| from_entry[usize::from(item)] + 1),
             door_to_goal: if self.items == 1 {
                 from_door[usize::from(goal)]
             } else {
@@ -327,6 +355,22 @@ impl Config {
             entry,
             farms,
             items,
+            key,
+        }
+    }
+
+    fn key_room(&self, doors: &[u8], inner: &[bool], door_cell: u8) -> Option<u8> {
+        let from_start = self.distances(doors, 0);
+        (1..self.cells())
+            .filter(|&c| !inner[usize::from(c)] && c != door_cell)
+            .max_by_key(|&c| (from_start[usize::from(c)], std::cmp::Reverse(c)))
+    }
+
+    pub fn top_tier(&self) -> u16 {
+        if self.items == 1 {
+            1 + u16::from(self.locked)
+        } else {
+            u16::from(self.items)
         }
     }
 
@@ -362,11 +406,12 @@ impl Config {
             || (cell == layout.entry && direction == opposite(layout.door_direction));
         layout.doors[usize::from(cell)] & (1 << direction) != 0
             && !(self.items > 1 && gated && !self.complete(s))
+            && !(self.locked && gated && s.found == 0)
     }
 
     pub fn tier(&self, s: State) -> u16 {
         if self.items == 1 {
-            u16::from(s.item)
+            u16::from(s.item) + u16::from(self.locked && s.found == 1)
         } else {
             u16::try_from(s.found.count_ones()).expect("item count fits")
         }
@@ -384,16 +429,12 @@ impl Config {
                 && (1..self.length(direction)).contains(&s.progress)
         };
         let items_fit = if self.items == 1 {
-            s.found == 0
+            s.found == 0 || (self.locked && s.found == 1)
         } else {
             !s.item
                 && u32::from(s.found) < 1 << self.items
                 && s.found & (s.found + 1) == 0
-                && layout
-                    .items
-                    .iter()
-                    .enumerate()
-                    .all(|(i, &room)| room != s.cell || u32::from(s.found) != (1 << i) - 1)
+                && next_item(layout, s.found) != Some(s.cell)
         };
         arm_fits
             && items_fit
@@ -401,7 +442,10 @@ impl Config {
             && (s.hits == 0 || (s.item && s.arm == 0 && s.cell == layout.goal))
             && s.health <= self.cap()
             && s.stock <= self.cap()
-            && (s.item || s.cell != layout.item)
+            && (s.item || Some(s.cell) != layout.item)
+            && (!self.locked
+                || s.found == 1
+                || (Some(s.cell) != layout.key && !s.item && !layout.inner[usize::from(s.cell)]))
             && s.goal == (self.complete(s) && s.arm == 0 && s.cell == layout.goal)
     }
 
@@ -418,13 +462,14 @@ impl Config {
             cell,
             arm: 0,
             progress: 0,
-            item: s.item || cell == layout.item,
+            item: s.item || Some(cell) == layout.item,
             ..s
         };
-        for (i, &room) in layout.items.iter().enumerate() {
-            if room == cell && u32::from(next.found) == (1 << i) - 1 {
-                next.found |= 1 << i;
-            }
+        if Some(cell) == layout.key {
+            next.found = 1;
+        }
+        if next_item(layout, next.found) == Some(cell) {
+            next.found |= 1 << next.found.count_ones();
         }
         if let Some(farm) = layout.farms.iter().position(|&room| room == cell) {
             if farm % 2 == 0 {
@@ -569,6 +614,7 @@ mod tests {
             items: 1,
             boss_stock: 0,
             item_optional: false,
+            locked: false,
             timing: 0,
         }
     }
@@ -615,7 +661,11 @@ mod tests {
             let doors: u32 = l.doors.iter().map(|d| d.count_ones()).sum();
             assert_eq!(doors / 2, u32::from(w.cells()) - 1 + u32::from(l.loops));
             assert!(l.loops <= w.loops);
-            assert!(!l.inner[0] && l.inner[usize::from(l.item)] && !l.inner[usize::from(l.goal)]);
+            assert!(
+                !l.inner[0]
+                    && l.inner[usize::from(l.item.unwrap())]
+                    && !l.inner[usize::from(l.goal)]
+            );
             assert!(!l.inner[usize::from(l.door_cell)]);
             let entry = w.neighbour(l.door_cell, l.door_direction).unwrap();
             assert!(l.inner[usize::from(entry)]);
@@ -630,7 +680,7 @@ mod tests {
                 }
             }
             assert_eq!(crossings, 2);
-            assert!(l.door_to_item > 0 && l.door_to_goal > 0);
+            assert!(l.door_to_item.unwrap() > 0 && l.door_to_goal > 0);
             assert_eq!(w.build(), *l);
             assert!(w.reachable().unwrap());
         }
@@ -642,7 +692,7 @@ mod tests {
         let l = w.layout();
         let early = walk(&w, &l, w.initial(), l.goal);
         assert!(!early.item && !early.goal && !w.goal(early));
-        let with_item = walk(&w, &l, early, l.item);
+        let with_item = walk(&w, &l, early, l.item.unwrap());
         assert!(with_item.item);
         assert_eq!(w.key(with_item, false).tier, 1);
         assert_eq!(w.key(with_item, true).tier, 0);
@@ -672,7 +722,7 @@ mod tests {
         assert_eq!(w.step(s, (direction + 1) % 4), s);
         assert_eq!(w.step(s, opposite(direction)), w.initial());
         assert_ne!(Config::place(s), Config::place(w.initial()));
-        for cell in (0..w.cells()).filter(|&c| c != l.item) {
+        for cell in (0..w.cells()).filter(|&c| Some(c) != l.item) {
             if let Some(d) = (0..4).find(|&d| l.doors[usize::from(cell)] & (1 << d) == 0) {
                 let at = State {
                     cell,
@@ -767,14 +817,14 @@ mod tests {
         let w = config(5);
         let l = w.layout();
         assert!(!w.state_is_bounded(State {
-            cell: l.item,
+            cell: l.item.unwrap(),
             ..w.initial()
         }));
         let direction = (0..4)
-            .find(|&d| l.doors[usize::from(l.item)] & (1 << d) != 0 && w.length(d) > 1)
+            .find(|&d| l.doors[usize::from(l.item.unwrap())] & (1 << d) != 0 && w.length(d) > 1)
             .unwrap();
         assert!(!w.state_is_bounded(State {
-            cell: l.item,
+            cell: l.item.unwrap(),
             arm: direction + 1,
             progress: 1,
             ..w.initial()
@@ -818,7 +868,7 @@ mod tests {
         );
         let mut s = walk(&w, &l, w.initial(), l.farms[1]);
         assert_eq!(s.stock, 0);
-        s = walk(&w, &l, s, l.item);
+        s = walk(&w, &l, s, l.item.unwrap());
         while s.stock < 2 {
             s = walk(&w, &l, s, l.farms[1]);
             s = walk(&w, &l, s, l.farms[0]);
@@ -874,6 +924,39 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_region_opens_with_a_key_from_the_far_end() {
+        let w = Config {
+            width: 8,
+            height: 8,
+            inner: 4,
+            locked: true,
+            ..config(crate::test_seed())
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        let key = l.key.unwrap();
+        assert!(!l.inner[usize::from(key)] && key != l.goal && key != l.door_cell);
+        let mut shut = State {
+            cell: l.door_cell,
+            ..w.initial()
+        };
+        assert!(w.state_is_bounded(shut));
+        for _ in 0..8 {
+            shut = w.step(shut, l.door_direction);
+        }
+        assert_eq!(shut.cell, l.door_cell);
+        let s = walk(&w, &l, w.initial(), key);
+        assert_eq!((s.found, w.key(s, false).tier), (1, 1));
+        let s = walk(&w, &l, s, l.item.unwrap());
+        assert!(s.item);
+        assert_eq!(w.key(s, false).tier, 2);
+        let s = walk(&w, &l, s, l.goal);
+        assert!(s.goal && w.goal(s));
+        let early = walk(&w, &l, walk(&w, &l, w.initial(), key), l.goal);
+        assert!(!early.goal);
+    }
+
+    #[test]
     fn an_optional_item_raises_the_tier_without_being_needed() {
         let w = Config {
             width: 8,
@@ -888,7 +971,7 @@ mod tests {
         let plain = walk(&w, &l, w.initial(), l.goal);
         assert!(plain.goal && !plain.item);
         assert_eq!(w.key(plain, false).tier, 0);
-        let item = walk(&w, &l, w.initial(), l.item);
+        let item = walk(&w, &l, w.initial(), l.item.unwrap());
         assert_eq!(w.key(item, false).tier, 1);
         assert!(walk(&w, &l, item, l.goal).goal);
     }

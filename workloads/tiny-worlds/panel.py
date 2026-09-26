@@ -24,12 +24,13 @@ BUDGET = 20_000
 WORLD_BUDGET = 400_000
 SLOWER, FASTER = 1.25, 0.8
 WORLDS = {
-    "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 16),
-    "whole-map re-walk": ({"inner": 4, "items": 9}, 16),
-    "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 16),
-    "off-path item": ({"inner": 6, "item_optional": True}, 64),
-    "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 64),
-    "off-path item with hidden timing": ({"inner": 6, "item_optional": True, "timing": 5}, 64),
+    "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
+    "whole-map re-walk": ({"inner": 4, "items": 9}, 1),
+    "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 1),
+    "off-path item": ({"inner": 6, "item_optional": True}, 4),
+    "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 4),
+    "locked item": ({"inner": 4, "locked": True}, 4),
+    "locked item with hidden timing": ({"inner": 4, "locked": True, "timing": 5}, 4),
 }
 
 
@@ -112,8 +113,8 @@ def requests(seeds: int) -> list[dict]:
 
 def world_requests(scale: int) -> list[dict]:
     rows = []
-    for world, (fields, layouts) in WORLDS.items():
-        for _ in range(layouts * scale // 16):
+    for world, (fields, multiplier) in WORLDS.items():
+        for _ in range(multiplier * scale):
             config = {"family": "map", "parameters": {
                 "width": 8, "height": 8, "layout": secrets.randbits(64), "loops": 7, "corridor": 2,
                 "shaft": 3, **fields}}
@@ -125,17 +126,27 @@ def world_requests(scale: int) -> list[dict]:
 
 def legs(report: dict) -> dict:
     evidence = report["evidence"]
-    goal, first, tiers = report["first_objective_work"], evidence["map_first"], evidence["map_first_tier"]
+
+    def within(work):
+        return work if work is not None and work <= WORLD_BUDGET else None
+
+    goal = within(report["first_objective_work"])
+    first = [within(w) for w in evidence["map_first"]]
+    tiers = [within(w) for w in evidence["map_first_tier"]]
 
     def gap(start, end):
         return None if start is None or end is None else end - start
 
-    measured = {"to the goal": goal if goal is not None else WORLD_BUDGET}
+    measured = {"to the goal": WORLD_BUDGET if goal is None else goal}
     parameters = report["config"]["parameters"]
     if parameters.get("boss_stock"):
         measured["to the item"] = tiers[1]
-        measured["item to stocked arrival"] = gap(tiers[1], evidence["map_first_stocked"])
-        measured["stocked arrival to kill"] = gap(evidence["map_first_stocked"], goal)
+        measured["item to stocked arrival"] = gap(tiers[1], within(evidence["map_first_stocked"]))
+        measured["stocked arrival to kill"] = gap(within(evidence["map_first_stocked"]), goal)
+    elif parameters.get("locked"):
+        measured["to the key"] = tiers[1]
+        measured["key to the item"] = gap(tiers[1], tiers[2])
+        measured["item to the goal"] = gap(tiers[2], goal)
     elif parameters.get("items", 1) > 1:
         measured["to the last item"] = tiers[-1]
         measured["last item to the goal"] = gap(tiers[-1], goal)
@@ -148,16 +159,20 @@ def legs(report: dict) -> dict:
     return measured
 
 
-def paired(base: list[dict], candidate: list[dict]) -> list[tuple[str, int, float, float, float]]:
+def paired(base: list[dict], candidate: list[dict]) -> list[tuple[str, str, float, float, float]]:
+    rand = random.Random(0)
+    base_legs, candidate_legs = list(map(legs, base)), list(map(legs, candidate))
     rows = []
-    for leg in legs(base[0]):
-        ratios = [math.log(c[leg] / b[leg]) for b, c in zip(map(legs, base), map(legs, candidate))
-                  if b[leg] and c[leg]]
+    for leg in base_legs[0]:
+        reached = (f"reached {sum(c[leg] is not None for c in candidate_legs)}"
+                   f" vs {sum(b[leg] is not None for b in base_legs)}")
+        ratios = [math.log((c[leg] + 1) / (b[leg] + 1)) for b, c in zip(base_legs, candidate_legs)
+                  if b[leg] is not None and c[leg] is not None]
         if len(ratios) < 3:
-            rows.append((leg, len(ratios), math.nan, math.nan, math.nan))
+            rows.append((leg, reached, math.nan, math.nan, math.nan))
             continue
-        draws = sorted(statistics.median(random.choices(ratios, k=len(ratios))) for _ in range(2000))
-        rows.append((leg, len(ratios), math.exp(statistics.median(ratios)),
+        draws = sorted(statistics.median(rand.choices(ratios, k=len(ratios))) for _ in range(2000))
+        rows.append((leg, reached, math.exp(statistics.median(ratios)),
                      math.exp(draws[10]), math.exp(draws[1989])))
     return rows
 
@@ -171,25 +186,25 @@ def verdict(low: float, high: float) -> str:
 
 
 def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
-    requests_ = world_requests(scale)
+    runs = world_requests(scale)
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        base = list(pool.map(lambda job: execute(baseline, job), requests_))
-        cand = list(pool.map(lambda job: execute(candidate, job), requests_))
+        base = list(pool.map(lambda job: execute(baseline, job), runs))
+        cand = list(pool.map(lambda job: execute(candidate, job), runs))
     bad = []
     for world in WORLDS:
         b = [r for r in base if r["arm"] == world]
         c = [r for r in cand if r["arm"] == world]
-        missed = (sum(r["first_objective_work"] is None for r in b),
-                  sum(r["first_objective_work"] is None for r in c))
+        missed = (sum(not r["success"] for r in b), sum(not r["success"] for r in c))
+        identical = sum(x["stream_sha256"] == y["stream_sha256"] for x, y in zip(b, c))
         results = paired(b, c)
         slower = [leg for leg, _, _, low, high in results if verdict(low, high) == "slower"]
         clearly_bad = bool(slower) or missed[1] > missed[0] + 1
         if clearly_bad:
             bad.append(world)
         print(f"{world}: {'CLEARLY BAD' if clearly_bad else 'plausible'}; "
-              f"goal missed {missed[1]}/{len(c)} vs {missed[0]}/{len(b)}")
-        for leg, n, ratio, low, high in results:
-            print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {n} pairs  {verdict(low, high)}")
+              f"goal missed {missed[1]}/{len(c)} vs {missed[0]}/{len(b)}; identical runs {identical}/{len(b)}")
+        for leg, reached, ratio, low, high in results:
+            print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {verdict(low, high)}")
     print(f"{len(base) + len(cand)} world runs; clearly bad on {len(bad)} of {len(WORLDS)} worlds")
     return 1 if bad else 0
 
@@ -310,6 +325,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.seeds < 3:
         parser.error("--seeds must be at least 3")
+    if args.world_scale < 3:
+        parser.error("--world-scale must be at least 3")
     binary = args.binary
     if binary is None:
         subprocess.run(["cargo", "build", "--release", "--locked", "--manifest-path",

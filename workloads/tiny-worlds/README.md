@@ -156,8 +156,8 @@ left. Crossing a horizontal door takes `corridor` presses in its direction and
 crossing a vertical door takes `shaft` presses; the opposite action steps back
 and the side actions do nothing. The archive place is the room and the
 position inside its doorway, and the tier is 1 once the item is held. Map
-reports include the `layout` (doors per room, regions, item, door, goal, and
-room distances), `evidence.map_first` (first work entering the inner region,
+reports include the `layout` (doors per room, regions, item, key, door, goal,
+and room distances; item and key are null when absent), `evidence.map_first` (first work entering the inner region,
 holding the item, leaving it with the item, and at the goal),
 `evidence.map_first_tier` (first work at each tier), `evidence.map_first_stocked`
 (first work arriving in a boss room holding the item and enough stock), and
@@ -174,10 +174,11 @@ feed the slot preferences and neither changes the tier.
 
 | Field | World | Metroid behaviour |
 | --- | --- | --- |
-| `farms`, `farm_cap` | Farm rooms. Entering an even-numbered farm adds one health and an odd-numbered farm one stock, up to `farm_cap`. Without a boss the farms are inner rooms. | Refilling energy and missiles in rooms that do not lead to the next item: a stock gain wins the slot preference and draws the search back to the farm. |
+| `farms`, `farm_cap` | Up to `farms` farm rooms, fewer when the region has too few rooms. Entering an even-numbered farm adds one health and an odd-numbered farm one stock, up to `farm_cap`. Without a boss the farms are inner rooms other than the item room. | Refilling energy and missiles in rooms that do not lead to the next item: a stock gain wins the slot preference and draws the search back to the farm. |
 | `items` above 1 | The items are outer rooms, taken in order, each the room farthest from the start and the earlier items. The door to the inner region opens once all are held, and the goal is the inner room farthest from the door; the tier is the item count. | Each item gain sends a new tier back across the whole map to the one region it opens. |
-| `boss_stock` | A boss in the goal room. Needs `farms` of at least 2 and `boss_stock` at most `farm_cap`. Stock farms fill only while holding the item and lie in the outer half farthest from the goal. Each wall press in the goal room with the item spends one stock and adds a hit; leaving resets hits. The goal needs `boss_stock` hits. Hit counts are their own places. | Kraid and Ridley: the item tier must farm missiles far away, then carry them to the boss room. |
-| `item_optional` | The item is the first room of the shallowest side branch whose size is within two rooms of `inner`, and the goal is the outer room farthest from the start that is not on the way to that branch. The goal counts without the item, which still raises the tier. | Varia and other pickups off the main path: the new tier walks back over ground the lower tier already reached. |
+| `boss_stock` | A boss in the goal room, which is the outer room farthest from the door among rooms with at most three doors, so a wall remains to press. Needs `farms` of at least 2 and `boss_stock` at most `farm_cap`. Stock farms fill only while holding the item and lie in the outer half farthest from the goal. Each wall press in the goal room with the item spends one stock and adds a hit; leaving resets hits. The goal needs `boss_stock` hits. Hit counts are their own places. | Kraid and Ridley: the item tier must farm missiles far away, then carry them to the boss room. |
+| `item_optional` | The inner region is the shallowest side branch whose size is within two rooms of `inner`, or the branch closest in size when none is, and the item is its room farthest from the entry. The goal is the outer room farthest from the start that is not on the way to that branch. The goal counts without the item, which still raises the tier. | Varia and other pickups off the main path: the new tier walks back over ground the lower tier already reached. |
+| `locked` | The inner region is chosen as for `item_optional`. Its door opens only while holding a key in the outer room farthest from the start other than the door room; the goal is the outer room farthest from the door other than the key room and needs the item. The key raises the tier to 1 and the item to 2. | Varia in Brinstar after the lower tier reached the Tourian shaft: the lower tier's frontier is far from the pickup, and the new tier must walk back across the map. |
 | `timing` | 0, or a period of 2–16. Every action is rotated by a hidden phase that advances by one each step modulo `timing`, so a recorded suffix replayed from a holder with another phase takes different actions. At 5, about one replayed suffix in five lands. | Enemy positions and frame timing that the key does not see. |
 
 The graph world is sized for scaled runs. It has `nodes` states in a line,
@@ -204,7 +205,7 @@ suffix were already executed; they produce no job.
 ## Configuration bounds
 
 Every parameter is required except the optional map fields. Bounds keep
-exhaustive enumeration below 4,000,000 states; requests exceeding the reachability limit are rejected. The graph
+exhaustive enumeration below 200,000 states; requests exceeding the reachability limit are rejected. The graph
 family's reachability holds by construction.
 
 | Family | Parameters |
@@ -218,7 +219,7 @@ family's reachability holds by construction.
 | Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
 | Backtrack | `barriers` 1–4; `segment` 1–8; `(barriers + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
-| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only without farms and with two outer rooms to spare; `farms` 0–8 with `farm_cap` 1–63; `timing` 0 or 2–16; `item_optional` needs one item and no boss. |
+| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only without farms and with two outer rooms to spare; `farms` 0–8 with `farm_cap` 1–63; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 
 ## Scenario chains
@@ -280,7 +281,7 @@ uv run workloads/tiny-worlds/panel.py
 It builds the executable, draws every seed at runtime, runs six seeds per arm
 (twelve for the engaged and level-as-tier tight-ammunition boss arms) in six
 processes, and prints one PASS or FAIL line per rule. It writes no files. A run
-takes about ten seconds on a ten-core laptop with `--jobs 10`. `--seeds` and
+takes under a minute on a ten-core laptop with `--jobs 10`. `--seeds` and
 `--jobs` change the sample and parallelism; `--binary` uses a prebuilt
 executable.
 
@@ -320,22 +321,28 @@ uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare bas
 | Boss needing far stock | `inner` 20, 4 farms, `boss_stock` 24 | Kraid and Ridley need missiles farmed far from the boss | To the item, item to stocked arrival, stocked arrival to kill |
 | Off-path item | `inner` 6, `item_optional` | A new tier from an off-path pickup walks back over reached ground | Pickup to the goal |
 | Off-path item with farms | as above, 2 farms | The same with refills | Pickup to the goal |
-| Off-path item with hidden timing | as above, `timing` 5 | Replayed inputs land about one time in five | Pickup to the goal |
+| Locked item | `inner` 4, `locked` | The new tier's lower-tier frontier is far from the pickup | To the key, key to the item, item to the goal |
+| Locked item with hidden timing | as above, `timing` 5 | Replayed inputs land about one time in five | As above |
 
-Every world also reports work to the goal. A campaign stops at the goal or
-after 400,000 work. The heavy worlds run 16 layouts and the off-path worlds 64;
-`--world-scale` sets the heavy count. A stocked arrival is the first arrival in
-the boss room holding the item and at least `boss_stock` stock. For each leg
-the panel prints the median over layouts of the candidate-to-baseline work
-ratio, a 99% bootstrap interval, and the number of layouts that reached both
-ends in both runs. A leg is slower when the interval lies above 1.25 and
+Every world also reports work to the goal, counting a missed goal as 400,000.
+A campaign stops at the goal or after 400,000 work, and a milestone after that
+counts as unreached. Comparison runs skip replay verification; the rule panel
+verifies every run. The first three worlds run `--world-scale` layouts
+(default 16) and the other four run four times as many. A stocked arrival is
+the first arrival in the boss room holding the item and at least `boss_stock`
+stock. For each leg the panel prints the median over layouts of the
+candidate-to-baseline ratio of work plus one, a 99% bootstrap interval, and how
+many layouts reached the leg's end in each run; only layouts where both runs
+reached it enter the ratio. The off-path pickup-to-goal leg covers only layouts
+where the pickup came before the goal, and a change in that count changes which
+layouts it compares. A leg is slower when the interval lies above 1.25 and
 faster when it lies below 0.8. A world is clearly bad when any leg is slower or
-the candidate misses the goal on two more layouts than the baseline. The
-exit status is nonzero when a rule fails or a world is clearly bad. Two
-unchanged searchers with different runtime seeds gave no slower or faster leg
-in 300 trials per world. A comparison takes about 35 seconds with `--jobs 10`.
-A leg with ratio exactly 1.00 ran identically on both executables, which
-happens when the change never acts in that world.
+the candidate misses the goal on two more layouts than the baseline. The exit
+status is nonzero when a rule fails or a world is clearly bad. Two unchanged
+searchers with different runtime seeds gave no slower or faster leg in 300
+trials per world. Each world also counts the layouts whose event streams are
+identical on both executables, which happens where the change never acts. A
+comparison takes one to two minutes with `--jobs 10`.
 
 The map world is the calibrated world for the return trip. In recorded
 Metroid campaigns, climbing out of Kraid's hideout after the kill takes
