@@ -28,8 +28,10 @@ def graph(nodes: int, places: int, levels: int) -> dict:
         "nodes": nodes, "places": places, "levels": levels, "layout": secrets.randbits(64)}}
 
 
-def scale(workers: int, memory_mib: int, cost_ns: int, snapshot_bytes: int) -> dict:
-    return {"workers": workers, "reservations_per_worker": 2, "memory_budget_mib": memory_mib,
+def scale(workers: int, memory_mib: int, cost_ns: int, snapshot_bytes: int, reservations: int = 2,
+          results: int = 1) -> dict:
+    return {"workers": workers, "reservations_per_worker": reservations, "results_per_worker": results,
+            "memory_budget_mib": memory_mib,
             "archive_entries": 4_194_304, "action_cost_ns": cost_ns, "snapshot_bytes": snapshot_bytes}
 
 
@@ -53,9 +55,10 @@ def coordinator_cpu(pid: int) -> float | None:
     return clock(fields[6]) + clock(fields[7])
 
 
-def launch(binary: Path, config: dict, settings: dict, work: int, sample_seconds: float) -> dict:
-    request = {"config": config, "seed": secrets.randbits(64), "work_budget": work, "broken": False,
-               "verify": False, "keep": "portfolio", "scale": settings}
+def launch(binary: Path, config: dict, settings: dict, work: int, sample_seconds: float,
+           seed: int | None = None) -> dict:
+    request = {"config": config, "seed": secrets.randbits(64) if seed is None else seed, "work_budget": work,
+               "broken": False, "verify": False, "keep": "portfolio", "scale": settings}
     proc = subprocess.Popen([str(binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True,
                             env=dict(os.environ, HARMONY_COORDINATOR_PROFILE="1"))
@@ -103,7 +106,7 @@ def launch(binary: Path, config: dict, settings: dict, work: int, sample_seconds
 
 def windows(samples: list[dict]) -> list[dict]:
     rows = []
-    for a, b in zip(samples, samples[1:]):
+    for a, b in zip(samples, samples[1:-1]):
         executions = b["executions"] - a["executions"]
         if executions <= 0:
             continue
@@ -116,40 +119,50 @@ def windows(samples: list[dict]) -> list[dict]:
 def slowdown(args: argparse.Namespace, binaries: list[Path]) -> None:
     config = graph(4_194_304, 1024, 4)
     settings = scale(args.workers, 16_384, args.cost_ns, 0)
+    seed = secrets.randbits(64)
+    print(f"seed {seed}, layout {config['parameters']['layout']}")
     for binary in binaries:
         for repeat in range(args.repeats):
-            run = launch(binary, config, settings, args.work, args.sample_seconds)
+            run = launch(binary, config, settings, args.work, args.sample_seconds, seed)
             print(f"{binary} repeat {repeat + 1}: {run['final'].get('executions', 0):,} executions, "
+                  f"{run['final'].get('active_entries', 0):,} active entries, "
                   f"{run['report']['elapsed_seconds']:.0f} s, peak RSS {run['peak_rss_bytes'] / MIB:,.0f} MiB")
             print(f"  {'active entries':>14}  {'executions/s':>12}  {'coordinator ms per 1,000':>24}")
-            rows = windows(run["samples"])
-            step = max(1, len(rows) // args.rows)
-            for i in range(0, len(rows), step):
-                chunk = rows[i:i + step]
-                print(f"  {chunk[-1]['active_entries']:>14,}  "
-                      f"{statistics.median(r['executions_per_second'] for r in chunk):>12,.0f}  "
-                      f"{statistics.median(r['coordinator_ms_per_1000'] for r in chunk):>24,.0f}")
+            bins: dict[int, list[dict]] = {}
+            for row in windows(run["samples"]):
+                bins.setdefault(row["active_entries"] // args.bin, []).append(row)
+            for key, rows in sorted(bins.items()):
+                print(f"  {(key + 1) * args.bin:>14,}  "
+                      f"{statistics.median(r['executions_per_second'] for r in rows):>12,.0f}  "
+                      f"{statistics.median(r['coordinator_ms_per_1000'] for r in rows):>24,.0f}")
 
 
 def cores(args: argparse.Namespace, binary: Path) -> None:
     config = graph(4_194_304, 1024, 4)
-    print(f"cost {args.cost_ns:,} ns per transition, work {args.work:,} transitions per worker")
-    print(f"{'workers':>7}  {'executions/s':>12}  {'speedup':>7}  {'coordinator busy':>16}  {'worker ms per try':>17}")
+    seed = secrets.randbits(64)
+    print(f"seed {seed}, layout {config['parameters']['layout']}, "
+          f"cost {args.cost_ns:,} ns per transition, work {args.work:,} transitions"
+          f"{'' if args.total_work else ' per worker'}")
+    print(f"{'workers':>7}  {'executions/s':>12}  {'speedup':>7}  {'coordinator busy':>16}  "
+          f"{'transitions per try':>19}  {'worker ms per try':>17}")
     base = None
     for workers in args.workers_list:
-        rates, busy, per_try = [], [], []
+        rates, busy, transitions = [], [], []
         for _ in range(args.repeats):
-            run = launch(binary, config, scale(workers, 16_384, args.cost_ns, 0), args.work * workers,
-                         args.sample_seconds)
+            work = args.work if args.total_work else args.work * workers
+            settings = scale(workers, 16_384, args.cost_ns, 0, args.reservations, args.results)
+            run = launch(binary, config, settings, work, args.sample_seconds, seed)
             final, elapsed = run["final"], run["report"]["elapsed_seconds"]
             rates.append(final["executions"] / elapsed)
             if run["samples"]:
                 busy.append(run["samples"][-1]["coordinator_cpu"] / run["samples"][-1]["seconds"])
-            per_try.append(args.cost_ns * final["execution_work"] / final["executions"] / 1e6)
+            transitions.append(final["execution_work"] / final["executions"])
         rate = statistics.median(rates)
         base = base or rate
+        per_try = statistics.median(transitions)
         print(f"{workers:>7}  {rate:>12,.0f}  {rate / base:>7.2f}  "
-              f"{statistics.median(busy) if busy else float('nan'):>16.0%}  {statistics.median(per_try):>17.2f}")
+              f"{statistics.median(busy) if busy else float('nan'):>16.0%}  {per_try:>19.2f}  "
+              f"{args.cost_ns * per_try / 1e6:>17.2f}")
 
 
 def memory(args: argparse.Namespace, binary: Path) -> None:
@@ -185,8 +198,12 @@ def main() -> int:
     parser.add_argument("--cost-ns", type=int, default=0, help="CPU time per transition")
     parser.add_argument("--work", type=int, default=6_000_000,
                         help="transition budget per run (per worker for cores)")
+    parser.add_argument("--total-work", action="store_true",
+                        help="give every worker count the same --work in cores mode")
+    parser.add_argument("--reservations", type=int, default=2, help="reservations per worker for cores")
+    parser.add_argument("--results", type=int, default=1, help="results per worker for cores")
     parser.add_argument("--repeats", type=int, default=1, help="timing repeats per setting")
-    parser.add_argument("--rows", type=int, default=12, help="table rows per slowdown run")
+    parser.add_argument("--bin", type=int, default=100_000, help="active entries per slowdown table row")
     parser.add_argument("--budget-mib", type=int, default=256, help="memory budget for memory mode")
     parser.add_argument("--snapshot-bytes", type=int, default=21_238, help="snapshot payload for memory mode")
     parser.add_argument("--seeds", type=int, default=6, help="runtime seeds for memory mode")

@@ -79,8 +79,8 @@ use searcher::search::{
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignConfig,
         CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, CampaignStreamHeader,
-        CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution,
-        WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
+        CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy, Reporting, ResultBuffering,
+        TargetExecution, WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
     draw::SuffixShape,
@@ -228,6 +228,7 @@ pub struct Snapshot {
 pub struct Scale {
     pub workers: u32,
     pub reservations_per_worker: usize,
+    pub results_per_worker: usize,
     pub memory_budget_mib: usize,
     pub archive_entries: usize,
     pub action_cost_ns: u64,
@@ -238,6 +239,7 @@ impl Default for Scale {
         Self {
             workers: 1,
             reservations_per_worker: 1,
+            results_per_worker: 1,
             memory_budget_mib: 32,
             archive_entries: 4096,
             action_cost_ns: 0,
@@ -254,6 +256,9 @@ impl Scale {
         }
         if !(1..=8).contains(&self.reservations_per_worker) {
             return Err("scale reservations per worker must be 1..=8".into());
+        }
+        if !(1..=2).contains(&self.results_per_worker) {
+            return Err("scale results per worker must be 1..=2".into());
         }
         if !(1..=16_384).contains(&self.memory_budget_mib) {
             return Err("scale memory budget must be 1..=16384 MiB".into());
@@ -750,7 +755,11 @@ pub fn run_scaled(
         Some(progress),
         CampaignExecutionOptions {
             work_budget: Some(budget),
-            ..Default::default()
+            result_buffering: if scale.results_per_worker == 2 {
+                ResultBuffering::TwoPerWorker
+            } else {
+                ResultBuffering::OnePerWorker
+            },
         },
     )?;
     let elapsed = started.elapsed().as_secs_f64();
@@ -1577,6 +1586,14 @@ mod tests {
                 ..Scale::default()
             },
             Scale {
+                results_per_worker: 0,
+                ..Scale::default()
+            },
+            Scale {
+                results_per_worker: 3,
+                ..Scale::default()
+            },
+            Scale {
                 memory_budget_mib: 16_385,
                 ..Scale::default()
             },
@@ -1598,20 +1615,21 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_payload_charges_memory_without_changing_the_search() {
+    fn payload_and_result_buffering_leave_the_search_unchanged() {
         let config = World::Maze(maze::Config {
             length: 6,
             pattern: 0b101101,
             reverse_actions: false,
         });
         let seed = crate::test_seed();
-        let scaled = |snapshot_bytes| {
+        let scaled = |snapshot_bytes, results_per_worker| {
             let workload = Workload {
                 config: config.clone(),
                 broken: false,
                 scale: Some(Scale {
                     workers: 2,
                     reservations_per_worker: 2,
+                    results_per_worker,
                     action_cost_ns: 1_000,
                     snapshot_bytes,
                     ..Scale::default()
@@ -1619,10 +1637,12 @@ mod tests {
             };
             run_scaled(&workload, seed, 5_000, &mut std::io::sink()).unwrap()
         };
-        let plain = scaled(0);
-        let padded = scaled(4096);
+        let plain = scaled(0, 1);
+        let padded = scaled(4096, 1);
+        let buffered = scaled(0, 2);
         for field in ["work", "first_objective_work", "selector", "live_entries"] {
             assert_eq!(plain[field], padded[field]);
+            assert_eq!(plain[field], buffered[field]);
         }
         let resident = |r: &serde_json::Value| r["resident_memory_bytes"].as_u64().unwrap();
         assert!(resident(&padded) >= resident(&plain) + 4096);
