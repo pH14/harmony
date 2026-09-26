@@ -839,6 +839,66 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
 }
 
 #[test]
+fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
+    let directory = checkpoint_directory("drained");
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(400),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    config.execution_budget = 1200;
+    config.stop_campaign_on_objective = true;
+    let (resumed, _) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::SearchCheckpoint {
+            path: directory.join("000000000800-interval.ckpt"),
+        },
+        None,
+    );
+    assert_eq!(resumed.0.executions_completed, 1200);
+    assert_eq!(
+        resumed
+            .0
+            .origin
+            .checkpoint_policy_changes
+            .keys()
+            .collect::<Vec<_>>(),
+        ["stop_campaign_on_objective"]
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn campaign_counters_with_an_import_round_trip_through_postcard() {
+    let counters = CampaignCounters {
+        bootstrap_execution_work: 3,
+        tree_import: Some(TreeImportCounts {
+            imported: 5,
+            ..TreeImportCounts::default()
+        }),
+        job_execution_work: 7,
+        work_to_first_objective: None,
+        executions_to_first_objective: Some(9),
+        duplicates_skipped: 11,
+        draw_state_memory_bytes: 13,
+        jobs_per_worker: vec![1, 2],
+        skips_per_worker: vec![0, 1],
+    };
+    let decoded: CampaignCounters =
+        postcard::from_bytes(&postcard::to_allocvec(&counters).unwrap()).unwrap();
+    assert_eq!(decoded.tree_import, counters.tree_import);
+    assert_eq!(decoded.job_execution_work, 7);
+    assert_eq!(decoded.skips_per_worker, vec![0, 1]);
+}
+
+#[test]
 fn a_resume_refuses_a_changed_workload_policy() {
     let header = |key: &str| CheckpointHeader {
         format: SEARCH_CHECKPOINT_FORMAT.to_owned(),

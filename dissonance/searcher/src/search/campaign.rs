@@ -759,13 +759,14 @@ pub const PREFERENCE_POLICY_FIELD: &str = "preference_policy";
 
 const PREFERENCE_PORTFOLIO_FIELD: &str = "preference_portfolio";
 
-const RESUMABLE_POLICY_FIELDS: [&str; 9] = [
+const RESUMABLE_POLICY_FIELDS: [&str; 10] = [
     "suffix_policy",
     "mixture_policy",
     "retention_policy",
     "parent_scheduler",
     "continuation_policy",
     "stop_rollout_on_objective",
+    "stop_campaign_on_objective",
     DRAW_TABLE_POLICY_FIELD,
     PREFERENCE_PORTFOLIO_FIELD,
     PREFERENCE_POLICY_FIELD,
@@ -1989,6 +1990,7 @@ impl<'a> StreamWriter<'a> {
 #[derive(Deserialize, Serialize)]
 struct CampaignCounters {
     bootstrap_execution_work: u64,
+    #[serde(with = "crate::search::checkpoint::json_bytes")]
     tree_import: Option<TreeImportCounts>,
     job_execution_work: u64,
     work_to_first_objective: Option<u64>,
@@ -3247,7 +3249,7 @@ where
                 }
                 pending.insert(job.reservation, job.pending);
             }
-            let prefill = if resumed_admission > 0 || !pending.is_empty() {
+            let prefill = if !pending.is_empty() {
                 0
             } else {
                 pipeline_depth
@@ -3781,6 +3783,10 @@ fn search_checkpoint_header<G: Workload>(
             "stop_rollout_on_objective",
             config.stop_rollout_on_objective.to_string(),
         ),
+        (
+            "stop_campaign_on_objective",
+            config.stop_campaign_on_objective.to_string(),
+        ),
     ] {
         policies.insert(field.to_owned(), value);
     }
@@ -3885,6 +3891,8 @@ fn restore_search_checkpoint<G: Workload>(
     {
         core.archive.rerank_slot_holders();
     }
+    core.archive
+        .resume_continuations(config.suffix.max_actions());
     core.evidence = G::evidence_from_checkpoint(&evidence)?;
     *draw_state = if changes.contains_key(DRAW_TABLE_POLICY_FIELD) {
         let parameters = workload.draw_table_parameters(&config.run);

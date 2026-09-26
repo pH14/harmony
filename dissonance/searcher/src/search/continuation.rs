@@ -255,6 +255,10 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
             .map(|(key, source)| (*key, *source))
     }
 
+    pub fn set_action_cap(&mut self, action_cap: usize) {
+        self.action_cap = action_cap;
+    }
+
     pub fn retain_preferences(&mut self, preferences: usize) {
         let dropped: Vec<P> = self
             .pending_source
@@ -349,6 +353,21 @@ mod tests {
         cost: u64,
     ) {
         bank.record(from, to, donor, leaf, actions, cost, 0);
+    }
+
+    #[test]
+    fn a_raised_action_cap_records_longer_edges_and_trimming_drops_queued_sources() {
+        let mut bank = bank();
+        record(&mut bank, 1, 2, 10, 11, &[7; 6], 100);
+        assert_eq!(bank.edge_count(), 0);
+        bank.set_action_cap(6);
+        record(&mut bank, 1, 2, 10, 11, &[7; 6], 100);
+        assert_eq!(bank.edge_count(), 1);
+        bank.improved(1, 5, 0, 1);
+        bank.retain_preferences(2);
+        assert_eq!(bank.queue_len(), 1);
+        bank.retain_preferences(1);
+        assert_eq!(bank.queue_len(), 0);
     }
 
     #[test]
