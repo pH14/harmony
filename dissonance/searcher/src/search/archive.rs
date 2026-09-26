@@ -1825,7 +1825,7 @@ where
         self.portfolio_replacements
             .resize(K::preferences().max(1), 0);
         if let Some(bank) = &mut self.continuations {
-            bank.retain_preferences(K::preferences().max(1));
+            bank.retain_preferences(K::preferences());
         }
         retired
     }
@@ -2376,6 +2376,14 @@ where
     #[must_use]
     pub(crate) fn stored_input_actions(&self) -> usize {
         self.stored_input_actions
+    }
+
+    pub(crate) fn resume_continuations(&mut self, longest_edge: usize) {
+        match (&mut self.continuations, K::preferences() > 0) {
+            (Some(bank), true) => bank.set_longest_edge(longest_edge),
+            (None, true) => self.continuations = Some(ContinuationBank::new(longest_edge)),
+            (_, false) => self.continuations = None,
+        }
     }
 
     pub(crate) fn enable_continuations(&mut self, longest_edge: usize) {
@@ -3245,6 +3253,18 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn resuming_continuations_follows_the_key_preference_count() {
+        let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        assert!(portfolio.continuations.is_none());
+        portfolio.resume_continuations(4);
+        assert!(portfolio.continuations.is_some());
+        let mut plain = Archive::<u8, TestKey, (), ()>::new(|_| 1);
+        plain.continuations = Some(crate::search::continuation::ContinuationBank::new(4));
+        plain.resume_continuations(4);
+        assert!(plain.continuations.is_none());
     }
 
     #[test]
