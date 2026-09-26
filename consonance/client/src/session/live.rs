@@ -363,6 +363,13 @@ impl Session {
         self.client.transport().snapshot_chain_len(snapshot)
     }
 
+    pub fn snapshot_store_bytes(&self) -> u64 {
+        self.client
+            .transport()
+            .snapshot_store_stats()
+            .bytes_resident
+    }
+
     pub fn last_restore_stats(&self) -> (u64, u64) {
         (
             self.client.transport().last_restore_bytes_written(),

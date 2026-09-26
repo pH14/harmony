@@ -119,7 +119,16 @@ fn run_ready() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "linux")]
 fn run_hook() -> Result<(), Box<dyn std::error::Error>> {
-    println!("@sometimes 7");
+    use std::io::Write;
+
+    let dir = std::env::var("ANTITHESIS_OUTPUT_DIR")?;
+    let mut sink = std::fs::OpenOptions::new()
+        .append(true)
+        .open(std::path::Path::new(&dir).join("sdk.jsonl"))?;
+    sink.write_all(
+        br#"{"antithesis_assert":{"hit":true,"must_hit":true,"assert_type":"sometimes","display_type":"Sometimes","message":"runtime fixture hook ran","condition":true,"id":"runtime fixture hook ran","location":{"class":"runtime-fixture","function":"run_hook","file":"src/main.rs","begin_line":0,"begin_column":0},"details":null}}
+"#,
+    )?;
     Ok(())
 }
 

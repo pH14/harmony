@@ -35,6 +35,7 @@ pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
         })?;
         command.env(key, value);
     }
+    command.env("ANTITHESIS_OUTPUT_DIR", crate::ANTITHESIS_OUTPUT_DIR);
     #[cfg(unix)]
     {
         let uid = spec.uid;
@@ -140,6 +141,21 @@ pub fn run_argv_once(spec: &ExecutionSpec, argv: &[String]) -> io::Result<ExitSt
     Ok(status)
 }
 
+#[cfg(unix)]
+pub fn prepare_antithesis_output(
+    dir: &std::path::Path,
+    device: &std::path::Path,
+) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let sink = dir.join("sdk.jsonl");
+    match std::fs::remove_file(&sink) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::os::unix::fs::symlink(device, sink)
+}
+
 pub fn enable_subreaper() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -223,6 +239,50 @@ fn reap_descendants(pgid: u32) -> io::Result<()> {
     }
 }
 
+pub const NODE_EXIT_ASSERTION: &str = "workload node ends only by a fault the search injected";
+
+#[must_use]
+pub fn unexpected_exit(status: &ExitStatus) -> Option<String> {
+    #[cfg(unix)]
+    if let Some(signal) = status.signal() {
+        return matches!(
+            signal,
+            libc::SIGSEGV
+                | libc::SIGBUS
+                | libc::SIGABRT
+                | libc::SIGILL
+                | libc::SIGFPE
+                | libc::SIGTRAP
+                | libc::SIGSYS
+        )
+        .then(|| format!("signal {signal}"));
+    }
+    status
+        .code()
+        .filter(|code| *code != 0)
+        .map(|code| format!("exit status {code}"))
+}
+
+#[must_use]
+pub fn node_exit_record(violation: Option<(u16, &str)>) -> String {
+    let (hit, details) = match violation {
+        Some((node, exit)) => (true, format!(r#"{{"node":{node},"exit":"{exit}"}}"#)),
+        None => (false, "{}".to_owned()),
+    };
+    format!(
+        r#"{{"antithesis_assert":{{"assert_type":"always","display_type":"AlwaysOrUnreachable","id":"{NODE_EXIT_ASSERTION}","message":"{NODE_EXIT_ASSERTION}","hit":{hit},"must_hit":false,"condition":false,"location":{{"file":"harmony-supervisor","function":"node exit","class":"","begin_line":0,"begin_column":0}},"details":{details}}}}}"#
+    ) + "\n"
+}
+
+pub fn write_record(path: &std::path::Path, record: &str) -> io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)?
+        .write_all(record.as_bytes())
+}
+
 #[must_use]
 pub fn exit_code(status: &ExitStatus) -> u8 {
     if let Some(code) = status.code() {
@@ -248,6 +308,39 @@ mod tests {
     use super::*;
     use execution_proto::ExecutionSpec;
     use std::path::PathBuf;
+
+    #[test]
+    fn crash_signals_and_nonzero_exits_are_unexpected() {
+        assert_eq!(
+            unexpected_exit(&ExitStatus::from_raw(libc::SIGSEGV)),
+            Some(format!("signal {}", libc::SIGSEGV))
+        );
+        assert!(unexpected_exit(&ExitStatus::from_raw(libc::SIGBUS)).is_some());
+        assert!(unexpected_exit(&ExitStatus::from_raw(libc::SIGABRT)).is_some());
+        for signal in [libc::SIGILL, libc::SIGFPE, libc::SIGTRAP, libc::SIGSYS] {
+            assert!(unexpected_exit(&ExitStatus::from_raw(signal)).is_some());
+        }
+        assert_eq!(unexpected_exit(&ExitStatus::from_raw(libc::SIGKILL)), None);
+        assert_eq!(unexpected_exit(&ExitStatus::from_raw(libc::SIGTERM)), None);
+        assert_eq!(unexpected_exit(&ExitStatus::from_raw(0)), None);
+        assert_eq!(
+            unexpected_exit(&ExitStatus::from_raw(3 << 8)),
+            Some("exit status 3".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_node_exit_record_is_one_json_line_naming_the_node() {
+        let declared = node_exit_record(None);
+        assert!(declared.ends_with("}\n"));
+        assert!(declared.contains(r#""hit":false"#));
+        let violated = node_exit_record(Some((1, "signal 11")));
+        assert_eq!(violated.matches('\n').count(), 1);
+        assert!(violated.contains(r#""hit":true"#));
+        assert!(violated.contains(r#""condition":false"#));
+        assert!(violated.contains(r#""details":{"node":1,"exit":"signal 11"}"#));
+        assert!(violated.contains(NODE_EXIT_ASSERTION));
+    }
 
     fn spec(argv: &[&str]) -> ExecutionSpec {
         ExecutionSpec {
@@ -282,6 +375,24 @@ mod tests {
         assert!(command.get_envs().any(|(key, value)| {
             key == "HS_PROCESS_TEST" && value.and_then(|value| value.to_str()) == Some("present")
         }));
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "ANTITHESIS_OUTPUT_DIR"
+                && value.and_then(|value| value.to_str()) == Some(crate::ANTITHESIS_OUTPUT_DIR)
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_antithesis_sink_is_a_link_to_the_device() {
+        let root = std::env::temp_dir().join(format!("hs-antithesis-{}", std::process::id()));
+        let dir = root.join("antithesis");
+        let device = root.join("device");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&device, b"").unwrap();
+        prepare_antithesis_output(&dir, &device).unwrap();
+        prepare_antithesis_output(&dir, &device).unwrap();
+        assert_eq!(std::fs::read_link(dir.join("sdk.jsonl")).unwrap(), device);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

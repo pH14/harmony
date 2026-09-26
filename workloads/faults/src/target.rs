@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU16;
 
 use control_proto::StopReason;
-use fault_policy::{DecisionClass, Fault, HostFault, Span, StandingWindow, process_target};
+use fault_policy::{
+    DecisionClass, Fault, HostFault, ParkTarget, Span, StandingWindow, process_target,
+};
 use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_HORIZON_NANOS: u64 = 500_000_000;
+use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_event};
+
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
+pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 pub const MAX_FAULT_ACTIONS: usize = 256;
 
 const NS_SHIFT: u32 = 24;
+const JSON_EVENT_ID: u32 = 0;
 const NS_ASSERT: u8 = 1;
 const NS_STATE: u8 = 2;
 const DISP_HIT: u8 = 0;
@@ -23,18 +29,115 @@ const STATE_MAX: u8 = 1;
 const ASSERT_PAYLOAD_LEN: usize = 3;
 const STATE_PAYLOAD_LEN: usize = 9;
 
-pub const SOMETIMES_KEY_BITS: u32 = 64;
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum FaultAction {
-    Wait(std::num::NonZeroU16),
-    Kill(u16),
-    EventKill { node: u16, rarity: u8 },
-    EventPark { node: u16, rarity: u8, hold_us: u32 },
-    Pause(u16, u32),
-    Restart(u16),
-    Hook(u32),
-    Interrupt(u32),
+    Wait(NonZeroU16),
+    Kill(u16, NonZeroU16),
+    EventKill {
+        node: u16,
+        rarity: u8,
+        ticks: NonZeroU16,
+    },
+    EventPark {
+        node: u16,
+        edges: u32,
+        hold_us: u32,
+        ticks: NonZeroU16,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "park_target_serde"
+        )]
+        target: Option<ParkTarget>,
+    },
+    Pause(u16, NonZeroU16),
+    Restart(u16, NonZeroU16),
+    Hook(u32, NonZeroU16),
+    Interrupt(u32, NonZeroU16),
+}
+
+impl FaultAction {
+    #[must_use]
+    pub fn ticks(&self) -> u64 {
+        match *self {
+            Self::Wait(ticks)
+            | Self::Kill(_, ticks)
+            | Self::EventKill { ticks, .. }
+            | Self::EventPark { ticks, .. }
+            | Self::Pause(_, ticks)
+            | Self::Restart(_, ticks)
+            | Self::Hook(_, ticks)
+            | Self::Interrupt(_, ticks) => u64::from(ticks.get()),
+        }
+    }
+
+    #[must_use]
+    pub fn with_ticks(self, ticks: NonZeroU16) -> Self {
+        match self {
+            Self::Wait(_) => Self::Wait(ticks),
+            Self::Kill(node, _) => Self::Kill(node, ticks),
+            Self::EventKill { node, rarity, .. } => Self::EventKill {
+                node,
+                rarity,
+                ticks,
+            },
+            Self::EventPark {
+                node,
+                edges,
+                hold_us,
+                target,
+                ..
+            } => Self::EventPark {
+                node,
+                edges,
+                hold_us: hold_us.min(
+                    u32::from(ticks.get())
+                        .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
+                ),
+                ticks,
+                target,
+            },
+            Self::Pause(node, _) => Self::Pause(node, ticks),
+            Self::Restart(node, _) => Self::Restart(node, ticks),
+            Self::Hook(id, _) => Self::Hook(id, ticks),
+            Self::Interrupt(vector, _) => Self::Interrupt(vector, ticks),
+        }
+    }
+}
+
+mod park_target_serde {
+    use fault_policy::ParkTarget;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize, Serialize)]
+    struct Range {
+        start: u64,
+        end: u64,
+    }
+
+    pub fn serialize<S: Serializer>(
+        target: &Option<ParkTarget>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        target
+            .map(|target| Range {
+                start: target.start,
+                end: target.end,
+            })
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ParkTarget>, D::Error> {
+        Option::<Range>::deserialize(deserializer)?
+            .map(|range| {
+                ParkTarget::new(range.start, range.end).ok_or_else(|| {
+                    serde::de::Error::custom("a park target must be a nonempty range")
+                })
+            })
+            .transpose()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -59,20 +162,12 @@ pub struct ActionDelta {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ActionWindows {
     pub root_seal: u64,
-    pub horizon_nanos: u64,
 }
 
 impl ActionWindows {
     fn end(self, start: u64, action: &FaultAction) -> Result<u64, String> {
-        let duration = match action {
-            FaultAction::Wait(ticks) => u64::from(ticks.get()) * SUPERVISOR_TICK_NANOS,
-            _ => self.horizon_nanos,
-        };
-        if duration == 0 {
-            return Err("action window must have positive duration".to_owned());
-        }
         start
-            .checked_add(duration)
+            .checked_add(action.ticks() * SUPERVISOR_TICK_NANOS)
             .ok_or_else(|| "action timeline overflows guest time".to_owned())
     }
 
@@ -89,10 +184,7 @@ impl ActionWindows {
 
 #[must_use]
 pub fn action_ticks(action: &FaultAction) -> u64 {
-    match action {
-        FaultAction::Wait(ticks) => u64::from(ticks.get()),
-        _ => DEFAULT_HORIZON_NANOS / SUPERVISOR_TICK_NANOS,
-    }
+    action.ticks()
 }
 
 fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
@@ -110,7 +202,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     let horizon = end.saturating_sub(start);
     match action {
         FaultAction::Wait(_) => ActionDelta::default(),
-        FaultAction::EventKill { node, rarity } => ActionDelta {
+        FaultAction::EventKill { node, rarity, .. } => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
                 (start, u64::MAX),
@@ -119,59 +211,58 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         },
         FaultAction::EventPark {
             node,
-            rarity,
+            edges,
             hold_us,
-        } => {
-            let hold = u64::from(hold_us).saturating_mul(1_000);
-            ActionDelta {
-                standing: Some(standing(
-                    process_target(
-                        node,
-                        &Fault::ProcEventPark {
-                            rarity,
-                            hold: Span(hold),
-                        },
-                    ),
-                    (start, end.max(start.saturating_add(hold))),
-                )),
-                perturb: None,
-            }
-        }
-        FaultAction::Kill(node) => ActionDelta {
+            target,
+            ..
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcEventPark {
+                        edges,
+                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                        target,
+                    },
+                ),
+                (start, end),
+            )),
+            perturb: None,
+        },
+        FaultAction::Kill(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
                 (start, end),
             )),
             perturb: None,
         },
-        FaultAction::Pause(node, ticks) => {
-            let held = u64::from(ticks)
-                .saturating_mul(SUPERVISOR_TICK_NANOS)
-                .min(horizon.saturating_sub(SUPERVISOR_TICK_NANOS))
-                .max(SUPERVISOR_TICK_NANOS);
-            ActionDelta {
-                standing: Some(standing(
-                    process_target(node, &Fault::ProcPause(Span(held))),
-                    (start, start.saturating_add(held)),
-                )),
-                perturb: None,
-            }
-        }
-        FaultAction::Restart(node) => ActionDelta {
+        FaultAction::Pause(node, _) => ActionDelta {
             standing: Some(standing(
-                process_target(node, &Fault::ProcRestart),
-                (start, start.saturating_add(horizon / RESTART_DOWN_DIVISOR)),
+                process_target(node, &Fault::ProcPause(Span(horizon))),
+                (start, end),
             )),
             perturb: None,
         },
-        FaultAction::Hook(id) => ActionDelta {
+        FaultAction::Restart(node, _) => ActionDelta {
+            standing: Some(standing(
+                process_target(node, &Fault::ProcRestart),
+                (
+                    start,
+                    start.saturating_add(
+                        (horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS),
+                    ),
+                ),
+            )),
+            perturb: None,
+        },
+        FaultAction::Hook(id, _) => ActionDelta {
             standing: Some(standing(
                 process_target(0, &Fault::RunHook(id)),
                 (start, end),
             )),
             perturb: None,
         },
-        FaultAction::Interrupt(vector) => ActionDelta {
+        FaultAction::Interrupt(vector, _) => ActionDelta {
             standing: None,
             perturb: Some(StagedPerturb {
                 fault: HostFault::InjectInterrupt { vector }.encode(),
@@ -213,18 +304,59 @@ pub struct CheckEvidence {
     pub run: u64,
     pub start_generation: u64,
     pub end_generation: u64,
-    pub points: Vec<u32>,
+    pub points: Vec<String>,
     pub pending_faults: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SdkCapture {
     pub registers: BTreeMap<u32, u64>,
-    pub sometimes: BTreeSet<u32>,
-    pub violations: BTreeSet<u32>,
+    pub assertions: Assertions,
+    pub setup_complete: bool,
+    pub completed_check: Option<CompletedCheck>,
+    pub parks: Vec<ParkLanding>,
+    pub park_reads: Vec<ParkRead>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkLanding {
+    pub moment: u64,
+    pub site: u64,
+    pub edges: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkRead {
+    pub moment: u64,
+    pub site: u64,
+    pub edges: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CompletedCheck {
+    pub run: u64,
+    pub start_generation: u64,
+    pub end_generation: u64,
+    pub points: Vec<String>,
 }
 
 impl SdkCapture {
+    fn note_completed_check(&mut self, run: u64, check_passes: &BTreeMap<u64, BTreeSet<String>>) {
+        let register = |id: u32| self.registers.get(&id).copied().unwrap_or_default();
+        let Some(points) = check_passes
+            .get(&register(reg::COMPLETED_CHECK_PID))
+            .filter(|points| !points.is_empty())
+        else {
+            return;
+        };
+        self.completed_check = Some(CompletedCheck {
+            run,
+            start_generation: register(reg::COMPLETED_CHECK_START_GENERATION),
+            end_generation: register(reg::COMPLETED_CHECK_END_GENERATION),
+            points: points.iter().cloned().collect(),
+        });
+    }
+
     pub fn check_infrastructure_status(&self) -> Result<(), String> {
         if self
             .registers
@@ -241,19 +373,56 @@ impl SdkCapture {
 
 pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
-    for (_, event_id, bytes) in events {
+    let mut check_passes: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    for (moment, event_id, bytes) in events {
+        if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
+            if let Some(event) = decode_json_event(bytes) {
+                capture.setup_complete |= event.setup_complete;
+                if let Some(park) = event.park {
+                    capture.parks.push(ParkLanding {
+                        moment: *moment,
+                        site: park.site,
+                        edges: park.edges,
+                    });
+                }
+                if let Some(read) = event.park_read {
+                    capture.park_reads.push(ParkRead {
+                        moment: *moment,
+                        site: read.site,
+                        edges: read.edges,
+                    });
+                }
+                if let Some((id, outcome)) = event.assertion {
+                    if let Some(pid) = event.pid
+                        && outcome.feeds_the_key()
+                    {
+                        check_passes.entry(pid).or_default().insert(id.clone());
+                    }
+                    capture.assertions.record(id, outcome);
+                }
+            }
+            continue;
+        }
         let namespace = (event_id >> NS_SHIFT) as u8;
         let local = event_id & ((1 << NS_SHIFT) - 1);
         match namespace {
-            NS_ASSERT if bytes.len() == ASSERT_PAYLOAD_LEN => match bytes[0] {
-                DISP_HIT => {
-                    capture.sometimes.insert(local);
-                }
-                DISP_VIOLATION => {
-                    capture.violations.insert(local);
-                }
-                _ => return Err("SDK assertion event has an unknown disposition".to_owned()),
-            },
+            NS_ASSERT if bytes.len() == ASSERT_PAYLOAD_LEN => {
+                let (kind, passed) = match bytes[0] {
+                    DISP_HIT => (AssertionKind::Sometimes, true),
+                    DISP_VIOLATION => (AssertionKind::Always, false),
+                    _ => return Err("SDK assertion event has an unknown disposition".to_owned()),
+                };
+                capture.assertions.record(
+                    local.to_string(),
+                    AssertionOutcome {
+                        kind,
+                        message: local.to_string(),
+                        location: String::new(),
+                        passed,
+                        failed: !passed,
+                    },
+                );
+            }
             NS_STATE if bytes.len() == STATE_PAYLOAD_LEN => {
                 let value = u64::from_le_bytes(
                     bytes[1..STATE_PAYLOAD_LEN]
@@ -262,7 +431,13 @@ pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, S
                 );
                 match bytes[0] {
                     STATE_SET => {
-                        capture.registers.insert(local, value);
+                        let previous = capture.registers.insert(local, value);
+                        if local == reg::CHECKS_STARTED && previous != Some(value) {
+                            check_passes.clear();
+                        }
+                        if local == reg::COMPLETED_CHECK_RUN {
+                            capture.note_completed_check(value, &check_passes);
+                        }
                     }
                     STATE_MAX => {
                         capture
@@ -328,17 +503,23 @@ pub struct FaultObservations {
     pub event_kill_site: u64,
     pub event_ready: u64,
     pub event_park_fires: u64,
+    pub event_park_held: u64,
+    pub event_kill_armed: u64,
+    pub edge_crossings: u64,
+    pub edge_digest: u64,
     pub workload_started: u64,
     pub workload_finished: u64,
     pub checks_started: u64,
     pub checks_finished: u64,
     pub check: Option<CheckEvidence>,
-    pub sometimes_register: u64,
-    pub sometimes: BTreeSet<u32>,
-    pub violations: BTreeSet<u32>,
+    pub assertions: Assertions,
     pub stop: FaultStop,
     #[serde(default)]
     pub watchdog_cutoff: bool,
+    #[serde(default)]
+    pub parks: Vec<ParkLanding>,
+    #[serde(default)]
+    pub park_reads: Vec<ParkRead>,
 }
 
 impl FaultObservations {
@@ -357,39 +538,50 @@ impl FaultObservations {
             event_kill_site: value(reg::EVENT_KILL_SITE),
             event_ready: value(reg::EVENT_READY),
             event_park_fires: value(reg::EVENT_PARK_FIRES),
+            event_park_held: value(reg::EVENT_PARK_HELD),
+            event_kill_armed: value(reg::EVENT_KILL_ARMED),
+            edge_crossings: value(reg::EDGE_CROSSINGS),
+            edge_digest: value(reg::EDGE_DIGEST),
             workload_started: value(reg::WORKLOAD_STARTED),
             workload_finished: value(reg::WORKLOAD_FINISHED),
             checks_started: value(reg::CHECKS_STARTED),
             checks_finished: value(reg::CHECKS_FINISHED),
-            check: (value(reg::CHECK_ENABLED) != 0).then(|| CheckEvidence {
-                disturbance_generation: value(reg::DISTURBANCE_GENERATION),
-                run: value(reg::COMPLETED_CHECK_RUN),
-                start_generation: value(reg::COMPLETED_CHECK_START_GENERATION),
-                end_generation: value(reg::COMPLETED_CHECK_END_GENERATION),
-                points: (0..48)
-                    .filter(|point| value(reg::COMPLETED_CHECK_POINTS) & (1_u64 << point) != 0)
-                    .collect(),
-                pending_faults: value(reg::PENDING_FAULTS),
+            check: (value(reg::CHECK_ENABLED) != 0).then(|| {
+                let completed = capture.completed_check.clone().unwrap_or_default();
+                CheckEvidence {
+                    disturbance_generation: value(reg::DISTURBANCE_GENERATION),
+                    run: completed.run,
+                    start_generation: completed.start_generation,
+                    end_generation: completed.end_generation,
+                    points: completed.points,
+                    pending_faults: value(reg::PENDING_FAULTS),
+                }
             }),
-            sometimes_register: value(reg::SOMETIMES),
-            sometimes: capture.sometimes.clone(),
-            violations: capture.violations.clone(),
+            assertions: capture.assertions.clone(),
             stop,
             watchdog_cutoff: false,
+            parks: capture.parks.clone(),
+            park_reads: capture.park_reads.clone(),
         }
     }
 
     #[must_use]
-    pub fn sometimes_bitmap(&self) -> u64 {
-        self.sometimes
-            .iter()
-            .filter(|id| **id < SOMETIMES_KEY_BITS)
-            .fold(0_u64, |bits, id| bits | (1_u64 << id))
+    pub fn sometimes(&self) -> BTreeSet<String> {
+        self.assertions
+            .key_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[must_use]
+    pub fn violations(&self) -> BTreeSet<String> {
+        self.assertions.violations()
     }
 
     #[must_use]
     pub fn is_bug(&self) -> bool {
-        self.stop.is_bug() || !self.violations.is_empty()
+        self.stop.is_bug() || !self.violations().is_empty()
     }
 
     #[must_use]
@@ -409,10 +601,16 @@ mod tests {
     use fault_policy::decode_process_target;
 
     const ROOT: u64 = 1_000;
-    const WINDOWS: ActionWindows = ActionWindows {
-        root_seal: ROOT,
-        horizon_nanos: DEFAULT_HORIZON_NANOS,
-    };
+    const WINDOWS: ActionWindows = ActionWindows { root_seal: ROOT };
+    const TICK: u64 = SUPERVISOR_TICK_NANOS;
+
+    fn ticks(value: u16) -> NonZeroU16 {
+        NonZeroU16::new(value).unwrap()
+    }
+
+    fn kills(count: usize) -> Vec<FaultAction> {
+        vec![FaultAction::Kill(0, ticks(50)); count]
+    }
 
     fn assert_event(point: u32, disposition: u8) -> (u64, u32, Vec<u8>) {
         (
@@ -429,25 +627,82 @@ mod tests {
     }
 
     #[test]
-    fn windows_tile_the_axis_from_the_root_seal() {
+    fn windows_tile_the_axis_by_each_action_duration() {
         assert_eq!(
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap(),
-            (1_000, 1_000 + DEFAULT_HORIZON_NANOS)
+            WINDOWS.window(&kills(4), 0).unwrap(),
+            (ROOT, ROOT + 50 * TICK)
         );
-        let (start, end) = WINDOWS.window(&[FaultAction::Kill(0); 4], 3).unwrap();
-        assert_eq!(start, 1_000 + 3 * DEFAULT_HORIZON_NANOS);
-        assert_eq!(end, start + DEFAULT_HORIZON_NANOS);
+        let (start, end) = WINDOWS.window(&kills(4), 3).unwrap();
+        assert_eq!(start, ROOT + 150 * TICK);
+        assert_eq!(end, start + 50 * TICK);
+        let mixed = [
+            FaultAction::Kill(0, ticks(3)),
+            FaultAction::Hook(1, ticks(7)),
+            FaultAction::Pause(0, ticks(2)),
+        ];
         assert_eq!(
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 3).unwrap().1,
-            end
+            WINDOWS.window(&mixed, 2).unwrap(),
+            (ROOT + 10 * TICK, ROOT + 12 * TICK)
         );
-        let short = ActionWindows {
-            horizon_nanos: 100_000_000,
-            ..WINDOWS
+    }
+
+    #[test]
+    fn every_action_takes_a_recorded_duration() {
+        let actions = [
+            FaultAction::Wait(ticks(9)),
+            FaultAction::Kill(1, ticks(9)),
+            FaultAction::EventKill {
+                node: 1,
+                rarity: 3,
+                ticks: ticks(9),
+            },
+            FaultAction::EventPark {
+                node: 1,
+                edges: 5,
+                hold_us: 1,
+                ticks: ticks(9),
+                target: ParkTarget::new(8, 16),
+            },
+            FaultAction::Pause(1, ticks(9)),
+            FaultAction::Restart(1, ticks(9)),
+            FaultAction::Hook(4, ticks(9)),
+            FaultAction::Interrupt(0x20, ticks(9)),
+        ];
+        for action in actions {
+            let adapted = action.with_ticks(ticks(12));
+            assert_eq!(adapted.ticks(), 12);
+            assert_eq!(action_ticks(&adapted), 12);
+        }
+    }
+
+    #[test]
+    fn a_shorter_window_shortens_an_event_park_hold_to_fit() {
+        let park = FaultAction::EventPark {
+            node: 0,
+            edges: 1,
+            hold_us: 90_000,
+            ticks: ticks(9),
+            target: ParkTarget::new(8, 16),
         };
         assert_eq!(
-            short.window(&[FaultAction::Kill(0); 4], 3).unwrap(),
-            (1_000 + 300_000_000, 1_000 + 400_000_000)
+            park.with_ticks(ticks(4)),
+            FaultAction::EventPark {
+                node: 0,
+                edges: 1,
+                hold_us: 40_000,
+                ticks: ticks(4),
+                target: ParkTarget::new(8, 16),
+            }
+        );
+        assert_eq!(
+            park.with_ticks(ticks(12)),
+            FaultAction::EventPark {
+                node: 0,
+                edges: 1,
+                hold_us: 90_000,
+                ticks: ticks(12),
+                target: ParkTarget::new(8, 16),
+            }
         );
     }
 
@@ -455,30 +710,24 @@ mod tests {
     fn an_overflowing_timeline_is_rejected() {
         let windows = ActionWindows {
             root_seal: u64::MAX - 1,
-            ..WINDOWS
         };
-        assert!(windows.window(&[FaultAction::Kill(0)], 0).is_err());
+        assert!(windows.window(&kills(1), 0).is_err());
         assert!(WINDOWS.window(&[], 0).is_err());
         assert!(serde_json::from_str::<FaultAction>(r#"{"Wait":0}"#).is_err());
         assert!(serde_json::from_str::<FaultAction>(r#"{"Wait":65536}"#).is_err());
+        assert!(serde_json::from_str::<FaultAction>(r#"{"Kill":[0,0]}"#).is_err());
     }
 
     #[test]
     fn short_and_long_waits_shift_later_faults_by_the_recorded_duration() {
         let actions = [
-            FaultAction::Wait(std::num::NonZeroU16::new(8).unwrap()),
-            FaultAction::Kill(0),
-            FaultAction::Wait(std::num::NonZeroU16::new(8192).unwrap()),
-            FaultAction::Hook(1),
+            FaultAction::Wait(ticks(8)),
+            FaultAction::Kill(0, ticks(50)),
+            FaultAction::Wait(ticks(8192)),
+            FaultAction::Hook(1, ticks(50)),
         ];
-        assert_eq!(
-            WINDOWS.window(&actions, 1).unwrap().0,
-            ROOT + 8 * SUPERVISOR_TICK_NANOS
-        );
-        assert_eq!(
-            WINDOWS.window(&actions, 3).unwrap().0,
-            ROOT + 8200 * SUPERVISOR_TICK_NANOS + DEFAULT_HORIZON_NANOS
-        );
+        assert_eq!(WINDOWS.window(&actions, 1).unwrap().0, ROOT + 8 * TICK);
+        assert_eq!(WINDOWS.window(&actions, 3).unwrap().0, ROOT + 8250 * TICK);
         let encoded = serde_json::to_string(&actions).unwrap();
         let replay: Vec<FaultAction> = serde_json::from_str(&encoded).unwrap();
         assert_eq!(
@@ -488,34 +737,72 @@ mod tests {
     }
 
     #[test]
-    fn an_event_park_stands_until_its_hold_can_finish() {
+    fn an_event_park_stands_for_its_window_with_its_own_hold() {
         let action = FaultAction::EventPark {
             node: 2,
-            rarity: 12,
+            edges: 4_096,
             hold_us: 2_000_000,
+            ticks: ticks(500),
+            target: None,
         };
         let window = WINDOWS.window(&[action], 0).unwrap();
         let fault = action_delta(action, window).standing.unwrap();
         assert_eq!(fault.start, ROOT);
-        assert_eq!(fault.end, ROOT + 2_000_000_000);
+        assert_eq!(fault.end, ROOT + 500 * TICK);
         assert_eq!(
             decode_process_target(&fault.target),
             Some((
                 2,
                 Fault::ProcEventPark {
-                    rarity: 12,
+                    edges: 4_096,
                     hold: Span(2_000_000_000),
+                    target: None,
+                }
+            ))
+        );
+        let aimed = FaultAction::EventPark {
+            node: 2,
+            edges: 4_096,
+            hold_us: 2_000_000,
+            ticks: ticks(500),
+            target: ParkTarget::new(0x892e8, 0x892ec),
+        };
+        let fault = action_delta(aimed, window).standing.unwrap();
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((
+                2,
+                Fault::ProcEventPark {
+                    edges: 4_096,
+                    hold: Span(2_000_000_000),
+                    target: ParkTarget::new(0x892e8, 0x892ec),
                 }
             ))
         );
     }
 
     #[test]
+    fn an_event_park_target_is_a_nonempty_range_in_json() {
+        let untargeted = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1}}"#;
+        let action: FaultAction = serde_json::from_str(untargeted).unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), untargeted);
+        let targeted = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}}"#;
+        let action: FaultAction = serde_json::from_str(targeted).unwrap();
+        assert!(matches!(
+            action,
+            FaultAction::EventPark { target: Some(target), .. } if target == ParkTarget::new(8, 16).unwrap()
+        ));
+        assert_eq!(serde_json::to_string(&action).unwrap(), targeted);
+        let empty = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":8}}}"#;
+        assert!(serde_json::from_str::<FaultAction>(empty).is_err());
+    }
+
+    #[test]
     fn wait_installs_nothing() {
         assert_eq!(
             action_delta(
-                FaultAction::Wait(std::num::NonZeroU16::MIN),
-                WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap()
+                FaultAction::Wait(NonZeroU16::MIN),
+                WINDOWS.window(&kills(4), 0).unwrap()
             ),
             ActionDelta::default()
         );
@@ -523,8 +810,8 @@ mod tests {
             standing_windows(
                 WINDOWS,
                 &[
-                    FaultAction::Wait(std::num::NonZeroU16::MIN),
-                    FaultAction::Wait(std::num::NonZeroU16::MIN)
+                    FaultAction::Wait(NonZeroU16::MIN),
+                    FaultAction::Wait(NonZeroU16::MIN)
                 ]
             )
             .unwrap()
@@ -533,77 +820,60 @@ mod tests {
     }
 
     #[test]
-    fn kill_holds_the_whole_horizon_for_its_node() {
-        let delta = action_delta(
-            FaultAction::Kill(2),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 1).unwrap(),
-        );
+    fn kill_holds_its_whole_window_for_its_node() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        let delta = action_delta(FaultAction::Kill(2, ticks(50)), window);
         let fault = delta.standing.expect("kill installs a standing fault");
         assert_eq!(fault.class, DecisionClass::Process.as_u16());
         assert_eq!(
             decode_process_target(&fault.target),
             Some((2, Fault::ProcKill))
         );
-        assert_eq!(
-            (fault.start, fault.end),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 1).unwrap()
-        );
+        assert_eq!((fault.start, fault.end), window);
         assert!(delta.perturb.is_none());
     }
 
     #[test]
-    fn pause_lifts_inside_its_own_horizon() {
-        let short = ActionWindows {
-            horizon_nanos: 5 * SUPERVISOR_TICK_NANOS,
-            ..WINDOWS
-        };
-        for windows in [WINDOWS, short] {
-            for ticks in [0_u32, 1, 7, u32::MAX] {
-                let (start, end) = windows.window(&[FaultAction::Kill(0); 4], 0).unwrap();
-                let delta = action_delta(FaultAction::Pause(1, ticks), (start, end));
-                let fault = delta.standing.expect("pause installs a standing fault");
-                let (node, decoded) = decode_process_target(&fault.target).expect("decode");
-                assert_eq!(node, 1);
-                let held = match decoded {
-                    Fault::ProcPause(Span(held)) => held,
-                    other => panic!("pause encoded as {other:?}"),
-                };
-                assert_eq!(fault.start, start);
-                assert_eq!(fault.end, start + held);
-                assert!(fault.end < end, "a pause must lift before the horizon");
-                assert!(
-                    held >= SUPERVISOR_TICK_NANOS,
-                    "a pause must span a whole tick"
-                );
-            }
+    fn pause_holds_its_node_for_its_recorded_duration() {
+        for duration in [1_u16, 7, 1_024] {
+            let actions = [FaultAction::Pause(1, ticks(duration))];
+            let (start, end) = WINDOWS.window(&actions, 0).unwrap();
+            let fault = action_delta(actions[0], (start, end))
+                .standing
+                .expect("pause installs a standing fault");
+            assert_eq!(
+                decode_process_target(&fault.target),
+                Some((1, Fault::ProcPause(Span(u64::from(duration) * TICK))))
+            );
+            assert_eq!((fault.start, fault.end), (start, end));
         }
     }
 
     #[test]
-    fn restart_leaves_its_window_inside_the_horizon() {
-        for horizon_nanos in [DEFAULT_HORIZON_NANOS, 100_000_000] {
-            let windows = ActionWindows {
-                horizon_nanos,
-                ..WINDOWS
-            };
-            let (start, end) = windows.window(&[FaultAction::Kill(0); 4], 0).unwrap();
-            let fault = action_delta(FaultAction::Restart(0), (start, end))
+    fn restart_brings_the_node_back_inside_its_window() {
+        for duration in [1_u16, 4, 50, 1_024] {
+            let actions = [FaultAction::Restart(0, ticks(duration))];
+            let (start, end) = WINDOWS.window(&actions, 0).unwrap();
+            let fault = action_delta(actions[0], (start, end))
                 .standing
                 .expect("restart installs a standing fault");
             assert_eq!(
                 decode_process_target(&fault.target),
                 Some((0, Fault::ProcRestart))
             );
-            assert_eq!(fault.end, start + horizon_nanos / 4);
-            assert!(fault.end < end);
+            assert_eq!(
+                fault.end,
+                start + (u64::from(duration) * TICK / 4).max(TICK)
+            );
+            assert!(fault.end <= end);
         }
     }
 
     #[test]
     fn hook_targets_the_supervisor_rather_than_a_node() {
         let fault = action_delta(
-            FaultAction::Hook(9),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap(),
+            FaultAction::Hook(9, ticks(50)),
+            WINDOWS.window(&kills(4), 0).unwrap(),
         )
         .standing
         .expect("hook installs a standing fault");
@@ -615,14 +885,11 @@ mod tests {
 
     #[test]
     fn interrupt_stages_a_host_fault_and_no_standing_fault() {
-        let (start, _) = WINDOWS.window(&[FaultAction::Kill(0); 4], 2).unwrap();
-        let delta = action_delta(
-            FaultAction::Interrupt(0x30),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 2).unwrap(),
-        );
+        let window = WINDOWS.window(&kills(4), 2).unwrap();
+        let delta = action_delta(FaultAction::Interrupt(0x30, ticks(50)), window);
         assert!(delta.standing.is_none());
         let perturb = delta.perturb.expect("interrupt stages a host fault");
-        assert_eq!(perturb.at, start);
+        assert_eq!(perturb.at, window.0);
         assert_eq!(
             HostFault::decode(&perturb.fault),
             Ok(HostFault::InjectInterrupt { vector: 0x30 })
@@ -632,16 +899,16 @@ mod tests {
     #[test]
     fn an_input_installs_one_standing_fault_per_faulting_action() {
         let actions = [
-            FaultAction::Hook(1),
-            FaultAction::Wait(std::num::NonZeroU16::MIN),
-            FaultAction::Interrupt(32),
-            FaultAction::Kill(0),
+            FaultAction::Hook(1, ticks(50)),
+            FaultAction::Wait(NonZeroU16::MIN),
+            FaultAction::Interrupt(32, ticks(50)),
+            FaultAction::Kill(0, ticks(50)),
         ];
         let faults = standing_windows(WINDOWS, &actions).unwrap();
         assert_eq!(faults.len(), 2);
         assert_eq!(
             (faults[0].start, faults[0].end),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap()
+            WINDOWS.window(&actions, 0).unwrap()
         );
         assert_eq!(
             (faults[1].start, faults[1].end),
@@ -656,7 +923,10 @@ mod tests {
 
     #[test]
     fn the_window_list_round_trips_through_the_shared_codec() {
-        let actions = [FaultAction::Kill(1), FaultAction::Hook(2)];
+        let actions = [
+            FaultAction::Kill(1, ticks(50)),
+            FaultAction::Hook(2, ticks(50)),
+        ];
         let windows = standing_windows(WINDOWS, &actions).unwrap();
         let bytes = fault_policy::encode_windows(&windows).expect("encode");
         assert_eq!(
@@ -668,28 +938,25 @@ mod tests {
     #[test]
     fn the_window_list_is_a_function_of_the_actions_and_the_tiling() {
         let actions = [
-            FaultAction::Restart(3),
-            FaultAction::Wait(std::num::NonZeroU16::MIN),
+            FaultAction::Restart(3, ticks(50)),
+            FaultAction::Wait(NonZeroU16::MIN),
         ];
         assert_eq!(
             standing_windows(WINDOWS, &actions),
             standing_windows(WINDOWS, &actions)
         );
-        let moved = ActionWindows {
-            root_seal: 2_000,
-            ..WINDOWS
-        };
-        let shorter = ActionWindows {
-            horizon_nanos: 100_000_000,
-            ..WINDOWS
-        };
+        let moved = ActionWindows { root_seal: 2_000 };
         assert_ne!(
             standing_windows(WINDOWS, &actions),
             standing_windows(moved, &actions)
         );
+        let shorter = [
+            FaultAction::Restart(3, ticks(10)),
+            FaultAction::Wait(NonZeroU16::MIN),
+        ];
         assert_ne!(
             standing_windows(WINDOWS, &actions),
-            standing_windows(shorter, &actions)
+            standing_windows(WINDOWS, &shorter)
         );
     }
 
@@ -697,7 +964,7 @@ mod tests {
     fn a_reported_runtime_failure_is_not_bug_evidence() {
         let capture =
             decode_sdk_events(&[state_event(reg::INFRASTRUCTURE_ERROR, STATE_SET, 1)]).unwrap();
-        assert!(capture.violations.is_empty());
+        assert!(capture.assertions.violations().is_empty());
         assert!(capture.check_infrastructure_status().is_err());
         assert!(SdkCapture::default().check_infrastructure_status().is_ok());
     }
@@ -712,8 +979,11 @@ mod tests {
             state_event(reg::HOOKS_FINISHED, STATE_SET, 4),
         ])
         .expect("decode");
-        assert_eq!(capture.sometimes, BTreeSet::from([3, 70]));
-        assert_eq!(capture.violations, BTreeSet::from([5]));
+        assert_eq!(capture.assertions.key_ids(), BTreeSet::from(["3", "70"]));
+        assert_eq!(
+            capture.assertions.violations(),
+            BTreeSet::from(["5".to_owned()])
+        );
         assert_eq!(capture.registers.get(&reg::HOOKS_FINISHED), Some(&4));
     }
 
@@ -752,39 +1022,116 @@ mod tests {
             assert_event(64, DISP_HIT),
             state_event(reg::ALIVE, STATE_SET, 0b101),
             state_event(reg::HOOKS_FINISHED, STATE_SET, 2),
-            state_event(reg::SOMETIMES, STATE_SET, 0b11),
+            state_event(reg::EVENT_PARK_HELD, STATE_SET, 0b100),
+            state_event(reg::EVENT_KILL_ARMED, STATE_SET, 0b001),
         ])
         .expect("decode");
         let observations = FaultObservations::new(77, &capture, FaultStop::Deadline);
         assert_eq!(observations.moment, 77);
         assert_eq!(observations.alive, 0b101);
         assert_eq!(observations.hooks_finished, 2);
-        assert_eq!(observations.sometimes_register, 0b11);
-        assert_eq!(observations.sometimes, BTreeSet::from([0, 63, 64]));
+        assert_eq!(observations.event_park_held, 0b100);
+        assert_eq!(observations.event_kill_armed, 0b001);
         assert_eq!(
-            observations.sometimes_bitmap(),
-            (1_u64 << 63) | 1,
-            "a site past the key width stays in the observation only"
+            observations.sometimes(),
+            BTreeSet::from(["0".to_owned(), "63".to_owned(), "64".to_owned()])
         );
         assert!(!observations.is_bug());
         assert_eq!(observations.exit_kind(), ExitKind::Ok);
     }
 
+    fn json_pass(pid: u64, id: &str) -> (u64, u32, Vec<u8>) {
+        (
+            0,
+            JSON_EVENT_ID,
+            format!(
+                r#"{{"harmony_attribution":{{"rip":"0x1","pid":{pid},"comm_hex":"61"}},"antithesis_assert":{{"hit":true,"must_hit":true,"assert_type":"reachability","message":"{id}","condition":true,"id":"{id}"}}}}"#
+            )
+            .into_bytes(),
+        )
+    }
+
+    fn completion(pid: u64, run: u64, generation: u64) -> Vec<(u64, u32, Vec<u8>)> {
+        vec![
+            state_event(reg::COMPLETED_CHECK_PID, STATE_SET, pid),
+            state_event(reg::COMPLETED_CHECK_START_GENERATION, STATE_SET, generation),
+            state_event(reg::COMPLETED_CHECK_END_GENERATION, STATE_SET, generation),
+            state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, run),
+        ]
+    }
+
     #[test]
-    fn completed_check_provenance_is_distinct_from_cumulative_hits() {
+    fn a_supervisor_node_exit_record_is_a_violation() {
+        let capture = decode_sdk_events(&[(
+            5,
+            JSON_EVENT_ID,
+            br#"{"antithesis_assert":{"assert_type":"always","display_type":"AlwaysOrUnreachable","id":"workload node ends only by a fault the search injected","message":"workload node ends only by a fault the search injected","hit":true,"must_hit":false,"condition":false,"location":{"file":"harmony-supervisor","function":"node exit","class":"","begin_line":0,"begin_column":0},"details":{"node":1,"exit":"signal 11"}}}
+"#
+            .to_vec(),
+        )])
+        .unwrap();
+        assert_eq!(
+            capture.assertions.violations(),
+            BTreeSet::from(["workload node ends only by a fault the search injected".to_owned()])
+        );
+    }
+
+    #[test]
+    fn park_reports_become_landings_and_reads_with_their_moment() {
         let capture = decode_sdk_events(&[
-            assert_event(11, DISP_HIT),
-            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
-            state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, 7),
-            state_event(reg::COMPLETED_CHECK_START_GENERATION, STATE_SET, 2),
-            state_event(reg::COMPLETED_CHECK_END_GENERATION, STATE_SET, 2),
-            state_event(reg::COMPLETED_CHECK_POINTS, STATE_SET, 1 << 11),
-            state_event(reg::DISTURBANCE_GENERATION, STATE_SET, 3),
-            state_event(reg::PENDING_FAULTS, STATE_SET, 1),
+            (
+                41,
+                JSON_EVENT_ID,
+                br#"{"harmony_attribution":{"rip":"0x1","pid":7,"comm_hex":"61"},"harmony_park":{"site":913,"edges":4096}}
+"#
+                .to_vec(),
+            ),
+            (
+                52,
+                JSON_EVENT_ID,
+                br#"{"harmony_attribution":{"rip":"0x1","pid":7,"comm_hex":"61"},"harmony_park_read":{"site":913,"edges":3}}
+"#
+                .to_vec(),
+            ),
         ])
         .unwrap();
+        assert_eq!(
+            capture.parks,
+            vec![ParkLanding {
+                moment: 41,
+                site: 913,
+                edges: 4096,
+            }]
+        );
+        assert_eq!(
+            capture.park_reads,
+            vec![ParkRead {
+                moment: 52,
+                site: 913,
+                edges: 3,
+            }]
+        );
+        assert!(capture.assertions.0.is_empty());
+    }
+
+    #[test]
+    fn completed_check_provenance_is_the_checks_own_passes() {
+        let mut events = vec![
+            json_pass(9, "elsewhere"),
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+            json_pass(41, "hook"),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+        ];
+        events.extend(completion(40, 7, 2));
+        events.extend([
+            state_event(reg::DISTURBANCE_GENERATION, STATE_SET, 3),
+            state_event(reg::PENDING_FAULTS, STATE_SET, 1),
+        ]);
+        let capture = decode_sdk_events(&events).unwrap();
         let observation = FaultObservations::new(77, &capture, FaultStop::Deadline);
-        assert!(observation.sometimes.contains(&11));
+        assert!(observation.sometimes().contains("elsewhere"));
         assert_eq!(
             observation.check,
             Some(CheckEvidence {
@@ -792,11 +1139,42 @@ mod tests {
                 run: 7,
                 start_generation: 2,
                 end_generation: 2,
-                points: vec![11],
+                points: vec!["checked".to_owned()],
                 pending_faults: 1,
             })
         );
         assert!(FaultObservations::default().check.is_none());
+    }
+
+    #[test]
+    fn a_check_without_passes_keeps_the_previous_evidence() {
+        let mut events = vec![
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+        ];
+        events.extend(completion(40, 1, 1));
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 2),
+            json_pass(9, "elsewhere"),
+        ]);
+        events.extend(completion(40, 2, 2));
+        let capture = decode_sdk_events(&events).unwrap();
+        let check = FaultObservations::new(1, &capture, FaultStop::Deadline)
+            .check
+            .unwrap();
+        assert_eq!((check.run, check.end_generation), (1, 1));
+        assert_eq!(check.points, ["checked"]);
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 3),
+            json_pass(40, "checked"),
+        ]);
+        events.extend(completion(40, 3, 2));
+        let capture = decode_sdk_events(&events).unwrap();
+        let check = FaultObservations::new(1, &capture, FaultStop::Deadline)
+            .check
+            .unwrap();
+        assert_eq!((check.run, check.end_generation), (3, 2));
     }
 
     #[test]
@@ -828,6 +1206,27 @@ mod tests {
                 .is_continuable()
         );
         assert!(!FaultStop::from_stop_reason(&StopReason::Quiescent { vtime: Moment(1) }).is_bug());
+    }
+
+    #[test]
+    fn json_assertions_arriving_on_event_zero_are_decoded() {
+        let json = |text: &str| (0, JSON_EVENT_ID, text.as_bytes().to_vec());
+        let capture = decode_sdk_events(&[
+            json(r#"{"antithesis_assert":{"id":"reached","assert_type":"reachability","must_hit":true,"hit":true,"condition":true}}"#),
+            json(r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#),
+            json(r#"{"antithesis_setup":{"status":"complete"}}"#),
+            json("{not json}"),
+            (0, JSON_EVENT_ID, b"SDKC".to_vec()),
+        ])
+        .expect("decode");
+        assert!(capture.setup_complete);
+        assert_eq!(capture.assertions.key_ids(), BTreeSet::from(["reached"]));
+        let observation = FaultObservations::new(0, &capture, FaultStop::Deadline);
+        assert_eq!(
+            observation.violations(),
+            BTreeSet::from(["kept".to_owned()])
+        );
+        assert!(observation.is_bug());
     }
 
     #[test]

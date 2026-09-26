@@ -62,8 +62,8 @@
     }
   ],
   "oracle": {
-    "assertion": 2,
-    "evidence": 24,
+    "assertion": "every heap tuple has an index entry",
+    "evidence": "amcheck compared the index",
     "kind": "always",
     "hook": 3,
     "detector": "pg_amcheck --heapallindexed --index=cic_k_idx",
@@ -83,7 +83,6 @@
     "Interrupt"
   ],
   "run": {
-    "horizon_ms": 500,
     "ram_mib": 1024,
     "knobs": {
       "faultlab.churn_rows": 20,

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, io::Write, num::NonZeroU64, path::PathBuf, sync::OnceLock};
+use std::{
+    collections::BTreeMap, error::Error, io::Write, num::NonZeroU64, path::PathBuf, sync::OnceLock,
+};
 
 use searcher::{
     search::{
@@ -28,19 +30,20 @@ use crate::{
     archive::{
         DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
         FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome, merge_milestones,
-        merge_progress_watermark, milestone_key, milestones, sample_action,
+        ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome,
+        merge_milestones, merge_progress_watermark, milestone_key, milestones,
+        park_threshold_bucket, sample_action,
     },
+    assertion::Assertions,
     bundle::FaultVocabulary,
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
     target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v4";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v5";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
-const SUPERVISOR_TICK_MICROS: u64 = crate::target::SUPERVISOR_TICK_NANOS / 1_000;
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -48,7 +51,8 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
-const HORIZON_FIELD: &str = "horizon_nanos";
+const ACTION_FORMAT_FIELD: &str = "action_format";
+const ACTION_FORMAT: &str = "fault-action-duration-v3";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -99,6 +103,10 @@ pub struct FaultCampaignEvidence {
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
+    assertions: Assertions,
+    park_sites: BTreeMap<u64, u64>,
+    park_reads: BTreeMap<u64, u64>,
+    park_thresholds: BTreeMap<u32, ParkThresholds>,
 }
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
@@ -325,7 +333,6 @@ impl Reporting for FaultWorkload {
         FaultArchiveReport {
             seed: state.seed,
             root_seal: self.root_seal.get().copied().unwrap_or_default(),
-            horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
             executions: state.executions,
             milestones: evidence.aggregate,
             progress_watermark: evidence.watermark,
@@ -340,6 +347,10 @@ impl Reporting for FaultWorkload {
             watchdog_cutoffs: evidence.watchdog_cutoffs,
             bugs: evidence.bugs.clone(),
             selector: state.selector,
+            assertions: evidence.assertions.clone(),
+            park_sites: evidence.park_sites.clone(),
+            park_reads: evidence.park_reads.clone(),
+            park_thresholds: evidence.park_thresholds.clone(),
         }
     }
 }
@@ -364,10 +375,7 @@ impl InputPolicy for FaultWorkload {
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .chain([
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
-            (
-                HORIZON_FIELD.to_owned(),
-                crate::target::DEFAULT_HORIZON_NANOS.to_string(),
-            ),
+            (ACTION_FORMAT_FIELD.to_owned(), ACTION_FORMAT.to_owned()),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
         ])
         .collect()
@@ -399,7 +407,7 @@ impl InputPolicy for FaultWorkload {
         run: &FaultCampaignRun,
         rand: &mut RomuDuoJrRand,
     ) -> Result<FaultAction, Box<dyn Error>> {
-        sample_action(rand, &run.vocabulary, 0)
+        sample_action(rand, &run.vocabulary, 0, std::num::NonZeroU16::MIN, None)
     }
 
     fn duration_request(
@@ -479,16 +487,34 @@ impl InputPolicy for FaultWorkload {
         _run: &FaultCampaignRun,
         action: &FaultAction,
     ) -> Option<NonZeroU64> {
-        match action {
-            FaultAction::Wait(ticks) => NonZeroU64::new(u64::from(ticks.get())),
-            FaultAction::EventPark { hold_us, .. }
-                if u64::from(*hold_us).is_multiple_of(SUPERVISOR_TICK_MICROS) =>
-            {
-                NonZeroU64::new(u64::from(*hold_us) / SUPERVISOR_TICK_MICROS)
-            }
-            _ => None,
-        }
+        NonZeroU64::new(action.ticks())
     }
+
+    fn finish_stream_record(
+        &self,
+        _run: &FaultCampaignRun,
+        state: &mut DrawTables<FaultAction>,
+        retained: &[(usize, &[FaultAction])],
+        evidence: &FaultCampaignEvidence,
+    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+        state.finish_record_with_feedback(retained, || park_feedback(evidence))
+    }
+}
+
+const PARK_FEEDBACK_SCALE: u64 = 1024;
+
+fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
+    evidence
+        .park_reads
+        .iter()
+        .filter(|(_, reads)| **reads > 0)
+        .map(|(site, reads)| {
+            let landings = evidence.park_sites.get(site).copied().unwrap_or(0);
+            let weight = PARK_FEEDBACK_SCALE.saturating_mul(reads.saturating_add(1))
+                / landings.saturating_add(2);
+            (*site, weight.max(1))
+        })
+        .collect()
 }
 
 fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
@@ -512,8 +538,7 @@ fn held_suffix(
     draw: DurationDraw<FaultArchiveKey>,
 ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
     let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
-        .ok_or("wait duration must be positive")?;
-    let hold_us = u32::try_from(draw.duration.get().saturating_mul(SUPERVISOR_TICK_MICROS))?;
+        .ok_or("action duration must be positive")?;
     let event_ready = draw.context.event_ready;
     let mut suffix =
         state.draw(before, replay, |view| {
@@ -526,18 +551,11 @@ fn held_suffix(
                     Ok(biased_step(view, rand)?
                         .filter(|action| event_is_ready(action, event_ready)))
                 },
-                |rand| sample_action(rand, &run.vocabulary, event_ready),
+                |rand| sample_action(rand, &run.vocabulary, event_ready, ticks, Some(view)),
             )
         })?;
     for action in &mut suffix {
-        match action {
-            FaultAction::Wait(_) => *action = FaultAction::Wait(ticks),
-            FaultAction::EventPark {
-                hold_us: action_hold_us,
-                ..
-            } => *action_hold_us = hold_us,
-            _ => {}
-        }
+        *action = action.with_ticks(ticks);
     }
     Ok(suffix)
 }
@@ -676,6 +694,7 @@ impl Evaluation for FaultWorkload {
             &mut evidence.watermark,
             std::slice::from_ref(target.observation()),
         );
+        evidence.assertions.merge(&target.observation().assertions);
         Ok(())
     }
 
@@ -717,6 +736,32 @@ impl Evaluation for FaultWorkload {
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
+        if let FaultAction::EventPark { edges, .. } = action.action
+            && action
+                .observations
+                .iter()
+                .any(|observation| !observation.watchdog_cutoff)
+        {
+            evidence
+                .park_thresholds
+                .entry(park_threshold_bucket(u64::from(edges)))
+                .or_default()
+                .armed += 1;
+        }
+        for observation in &action.observations {
+            evidence.assertions.merge(&observation.assertions);
+            for park in &observation.parks {
+                *evidence.park_sites.entry(park.site).or_default() += 1;
+                evidence
+                    .park_thresholds
+                    .entry(park_threshold_bucket(park.edges))
+                    .or_default()
+                    .fired += 1;
+            }
+            for read in &observation.park_reads {
+                *evidence.park_reads.entry(read.site).or_default() += 1;
+            }
+        }
         evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
             action
                 .observations
@@ -779,9 +824,9 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    let (report, checkpoint) =
+    let (report, snapshot) =
         run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)?;
-    Ok((FaultCampaignReport::new(report), checkpoint))
+    Ok((FaultCampaignReport::new(report), snapshot))
 }
 
 #[cfg(test)]
@@ -822,6 +867,72 @@ mod tests {
         assert!(evidence.bugs.is_empty());
         assert_eq!(evidence.aggregate, FaultMilestones::default());
         assert_eq!(evidence.watermark, FaultProgressWatermark::default());
+    }
+
+    #[test]
+    fn park_feedback_is_the_smoothed_read_rate_of_each_read_site() {
+        let evidence = FaultCampaignEvidence {
+            park_sites: BTreeMap::from([(4, 2), (8, 98), (12, 5)]),
+            park_reads: BTreeMap::from([(4, 2), (8, 1), (16, 1)]),
+            ..FaultCampaignEvidence::default()
+        };
+        assert_eq!(
+            park_feedback(&evidence),
+            BTreeMap::from([(4, 768), (8, 20), (16, 1024)])
+        );
+        assert!(park_feedback(&FaultCampaignEvidence::default()).is_empty());
+    }
+
+    #[test]
+    fn park_evidence_counts_parks_the_guest_ran_and_each_landing_and_read_once() {
+        let game = game();
+        let mut evidence = FaultCampaignEvidence::default();
+        let park = FaultAction::EventPark {
+            node: 0,
+            edges: 5,
+            hold_us: 10_000,
+            ticks: std::num::NonZeroU16::MIN,
+            target: None,
+        };
+        let result = |observations| FaultCampaignActionResult {
+            action: park,
+            observations,
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                objective_reached: false,
+                disposition: ExecutionDisposition::Runnable,
+            },
+            candidate: None,
+        };
+        let landed = FaultObservations {
+            parks: vec![crate::target::ParkLanding {
+                moment: 1,
+                site: 9,
+                edges: 5,
+            }],
+            park_reads: vec![crate::target::ParkRead {
+                moment: 2,
+                site: 9,
+                edges: 1,
+            }],
+            ..FaultObservations::default()
+        };
+        let cutoff = FaultObservations {
+            watchdog_cutoff: true,
+            ..FaultObservations::default()
+        };
+        for observations in [vec![landed], vec![cutoff], vec![]] {
+            game.merge_action_evidence(&mut evidence, &result(observations), 0, || {
+                Err("no input".into())
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            evidence.park_thresholds.get(&2),
+            Some(&ParkThresholds { armed: 1, fired: 1 })
+        );
+        assert_eq!(evidence.park_sites.get(&9), Some(&1));
+        assert_eq!(evidence.park_reads.get(&9), Some(&1));
     }
 
     #[test]
@@ -910,8 +1021,9 @@ mod tests {
                         assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));
                         waits += 1;
                     }
-                    FaultAction::EventPark { hold_us, .. } => {
-                        assert_eq!(hold_us, 2_560_000);
+                    FaultAction::EventPark { hold_us, ticks, .. } => {
+                        assert_eq!(ticks.get(), 256);
+                        assert!((10_000..=2_560_000).contains(&hold_us));
                         assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));
                         event_parks += 1;
                     }
@@ -993,17 +1105,17 @@ mod tests {
     }
 
     #[test]
-    fn the_recorded_policies_pin_the_knobs_and_the_horizon() {
+    fn the_recorded_policies_pin_the_knobs_and_the_action_format() {
         let game = game();
         let policies = game.policies(&run(1, vec![1, 2]));
         let tuned = FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
-        let mut different_timing = policies.clone();
-        different_timing.insert(HORIZON_FIELD.to_owned(), "100000000".to_owned());
-        assert!(game.resolve_recorded(&different_timing).is_err());
+        let mut older = policies.clone();
+        older.insert(ACTION_FORMAT_FIELD.to_owned(), "500000000".to_owned());
+        assert!(game.resolve_recorded(&older).is_err());
         assert_eq!(
-            policies.get(HORIZON_FIELD).map(String::as_str),
-            Some("500000000")
+            policies.get(ACTION_FORMAT_FIELD).map(String::as_str),
+            Some(ACTION_FORMAT)
         );
     }
 }

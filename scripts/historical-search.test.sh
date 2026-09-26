@@ -26,10 +26,10 @@ printf x >"${work}/guest/initramfs-oci.cpio.gz"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf '%s\n' '{"id":"pgcic"}' >"${work}/case/case.json"
 
-confirmed_replay=$(jq -cn '{run:1,bug:true,violations:[2],sometimes:[24],
+confirmed_replay=$(jq -cn '{run:1,bug:true,violations:["case-assertion"],sometimes:["case-evidence"],
     actions_applied:1,settle_actions:0,settle_ticks:0,guest_horizons:1}')
 confirmed_bug=$(jq -cn --argjson replay "${confirmed_replay}" '{execution:12,
-    actions:[{"Wait":50}], stop:"Assertion", violations:[2], sometimes:[24],
+    actions:[{"Wait":50}], stop:"Assertion", violations:["case-assertion"], sometimes:["case-evidence"],
     state_hash:"abc", confirmed:true, replay:$replay}')
 
 jq -cn --argjson bug "${confirmed_bug}" '{mode:"search", package:"faults", executions:2,
@@ -52,7 +52,7 @@ run_search() {
         export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
         export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
         export SEED=1 WORKERS=1 ACTIONS=4 EXECUTIONS=2 WALL_MINUTES=1
-        export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
+        export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
         export FAKE_REPORT="${work}/report.json" FAKE_SUMMARY="${work}/summary.json"
         export FAKE_EXIT_STATUS=${exit_status} GITHUB_STEP_SUMMARY="${work}/summary.md"
         "${here}/historical-search.sh"
@@ -64,6 +64,11 @@ jq -e '.watchdog_cutoffs == 3 and .cli_exit_status == 0 and
        .execution_failures == 0 and .oracle == "pass" and
        .execution_status == "completed_with_watchdog_cutoffs"' \
     "${work}/reports/pgcic.search/panel-status.json" >/dev/null
+
+RUN_KEY=pgcic-seed7 run_search
+jq -e '.oracle == "pass"' \
+    "${work}/reports/pgcic-seed7/pgcic.search/panel-status.json" >/dev/null
+test -f "${work}/reports/pgcic-seed7/pgcic.search.console.txt"
 
 if run_search 23; then
     printf 'FAIL search masked a nonzero CLI exit\n'
@@ -80,7 +85,7 @@ if (
     export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
     export SEED=1 WORKERS=1 ACTIONS=4 EXECUTIONS=2 WALL_MINUTES=1
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
     export FAKE_REPORT="${work}/failure-report.json" FAKE_SUMMARY="${work}/failure-summary.json"
     export FAKE_EXIT_STATUS=0 GITHUB_STEP_SUMMARY="${work}/summary.md"
     "${here}/historical-search.sh"
@@ -98,7 +103,7 @@ if (
     export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
     export SEED=1 WORKERS=1 ACTIONS=4 EXECUTIONS=2 WALL_MINUTES=1
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
     export FAKE_REPORT="${work}/miss-report.json" FAKE_SUMMARY="${work}/summary.json"
     export FAKE_EXIT_STATUS=0 GITHUB_STEP_SUMMARY="${work}/summary.md"
     "${here}/historical-search.sh"

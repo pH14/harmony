@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod archive;
+pub mod assertion;
 pub mod bundle;
 pub mod package;
 pub mod prepare;
@@ -34,4 +35,4 @@ pub mod consonance;
 
 pub use bundle::FaultVocabulary;
 pub use package::{Artifacts, Options, RecordedActions, Report, parse_recorded_input};
-pub use target::{DEFAULT_HORIZON_NANOS, FaultAction, MAX_FAULT_ACTIONS};
+pub use target::{FaultAction, MAX_FAULT_ACTIONS};

@@ -385,7 +385,7 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +	rip = instruction_pointer(task_pt_regs(current));
 +	attr_len = scnprintf(attribution, sizeof(attribution),
 +		"\"harmony_attribution\":{\"rip\":\"0x%lx\",\"pid\":%d,"
-+		"\"comm_hex\":\"%s\"}", rip, task_pid_nr(current), comm_hex);
++		"\"comm_hex\":\"%s\"}", rip, task_tgid_vnr(current), comm_hex);
 +	comma_len = input[after_brace] == '}' ? 0 : 1;
 +	json_len = count + attr_len + comma_len;
 +	if (json_len > HC_MAX_PAYLOAD - 4) {

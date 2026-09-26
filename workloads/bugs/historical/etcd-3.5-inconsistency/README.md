@@ -47,10 +47,11 @@ and symptom direction are different.
 - **Fault surface**: a hard process kill of one member followed by the normal supervisor restart,
   while the clients are applying entries, and a hold that sleeps one member's thread at an
   instrumented site. Together these target the small interval between consistent-index persistence
-  and the corresponding follower entry apply. Dissonance names the crash and hold coordinates by
-  how rare the site is: the Antithesis runtime receives the rarity over an inherited control
-  channel and fires at the first callback after the arm whose own site has been visited at most
-  `1 << rarity` times.
+  and the corresponding follower entry apply. The search names the crash coordinate by how rare
+  the site is: the runtime receives the rarity over an inherited control channel and kills at the
+  first callback after the arm whose own site has been visited at most `1 << rarity` times. It
+  names the hold coordinate by an edge count: the runtime holds the thread that reaches the
+  `k`-th instrumented edge after the arm.
 - **Oracle**: the helper journals each acknowledged put outside etcd as
   `key<TAB>value<TAB>PutResponse.Header.Revision`. The platform supervisor reruns a check that performs
   serializable local reads through each member. It checks new acknowledged records incrementally
@@ -59,6 +60,8 @@ and symptom direction are different.
   below a journaled acknowledgement revision is stale and
   remains inconclusive until it catches up. Once a member's response revision fences a record, an
   acknowledged-but-missing or changed value on that member is the case's only failing assertion.
+  The check writes both assertions as Antithesis SDK JSON records to
+  `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`.
   The complete history is checked after every fault, so records verified before a crash are checked
   again. A down member, empty journal, or failed local read is silent, so a crash alone cannot be
   mistaken for corruption. The multi-member oracle directly observes the follower-local divergence
@@ -76,8 +79,9 @@ data it claims to cover. The case's fault surface therefore pairs the event kill
 ## Discovery contract
 
 The case has one locked execution profile, bounded by wall time alone. CI searches the pinned
-vulnerable image on demand or on schedule. The campaign must find assertion 1 with evidence point
-11 and reproduce it in the package's fresh deterministic self-replay. A search miss or replay
+vulnerable image on demand or on schedule. The campaign must find the Always assertion `every etcd
+member holds each acknowledged write`, with the check's Reachable assertion `etcd oracle compared
+every member` as evidence, and reproduce it in the package's fresh deterministic self-replay. A search miss or replay
 mismatch is a regression in the test machinery, not a request to tune the workload.
 
 Performance experiments may add separate profiles later, but they cannot alter the correctness or

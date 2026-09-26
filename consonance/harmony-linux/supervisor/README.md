@@ -43,37 +43,67 @@ were already running retain their results. The hooks-started register advances
 only after a queued or immediate request successfully spawns. A bundle without
 a readiness command launches hooks immediately.
 
+Every child the supervisor starts receives `ANTITHESIS_OUTPUT_DIR=/run/antithesis`.
+The supervisor links `/run/antithesis/sdk.jsonl` to `/dev/harmony` at startup
+and again after the setup command, because setup may mount a fresh `/run`, so a
+process that follows the Antithesis fallback SDK writes each JSON record
+straight to the host. The driver attributes each record to its writer's process
+id in the writer's PID namespace, which the supervisor shares with the children
+it starts.
+Child stdout is discarded; assertions travel only as SDK records.
+
+The supervisor declares one built-in check, the Always assertion
+`workload node ends only by a fault the search injected`. A node that dies
+while no kill, restart or event kill targets it, by a signal its own execution
+raises (`SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGTRAP` or
+`SIGSYS`) or a nonzero exit status, violates it; the record's details name the
+node and the exit.
+
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and
-continuously; its directives carry the run number and disturbance-generation
-range that produced the latest successful evidence. Process transitions and
-accepted instrumentation reports advance that generation, which keeps stale
-pre-fault evidence distinct from a check completed after recovery. Each check
-receives its starting generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a
-stateful checker to invalidate cached results without importing process-fault
-semantics. A successful check replaces the completed evidence only after it
-publishes at least one supported assertion point; an empty check leaves prior
-evidence intact. The supervisor unlinks each check's output file after opening
-its read and write descriptors, so completed checks do not accumulate in the
-guest tmpfs.
+continuously. The supervisor publishes the checks-started register before it
+spawns each check, and after a check exits successfully it publishes the run
+number, the check's pid, and the disturbance-generation range the check
+spanned. The host treats the Sometimes and Reachable assertions that pid passed
+after that start as the check's evidence; a check that passed none leaves the
+prior evidence intact. Process transitions and accepted instrumentation reports
+advance the disturbance generation, which keeps stale pre-fault evidence
+distinct from a check completed after recovery. Each check receives its starting
+generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a stateful checker to
+invalidate cached results without importing process-fault semantics.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
 runtime readiness, orders arms and disarms, and only credits an event kill when
-its report matches the acknowledged rarity and window-start identity. Event
-parks report completed holds through the same channel, and their standing
-windows remain active long enough for the recorded hold to complete. When
+its report matches the acknowledged rarity and window-start identity. While a
+park is in effect, each tick's status reply gives its fire count and whether a
+thread is held. The runtime acknowledges a disarm at once, and the park stays
+in effect until a status reply shows it neither armed nor holding a thread.
+The event-park-held register has one bit per node with a held thread, and the
+event-kill-armed register has one bit per live node with an acknowledged event
+kill that has not fired. A node's held bit clears at a status reply without a
+held thread or when the node dies or restarts. A paused node answers no status,
+so its held bit keeps its last value until the node continues. When
 multiple event-kill windows overlap for one node, a reported kill advances the
 supervisor to the next unfired window identity. Outstanding windows, commands,
 arms, and a reported kill awaiting observed child death contribute to the
 pending-fault fence. A protocol failure while work is outstanding marks the
-execution as an infrastructure failure.
+execution as an infrastructure failure. A kill or restart retires the node's
+channel before it signals the process. The killed process can close its
+descriptors before the supervisor reaps it, so a retired channel ignores a
+closed transport.
+
+Each tick, a ready channel with nothing in flight also asks its runtime for
+edge-coverage status. The supervisor adds each node's new bucket crossings and
+digest change to the edge-crossings and edge-digest registers. These are
+coverage evidence only: they do not advance the disturbance generation or the
+pending-fault fence.
 
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.
 
-`bundle`, `directive`, `reconcile`, `recovery`, and `supervise` are portable library
+`bundle`, `reconcile`, `recovery`, and `supervise` are portable library
 modules. Linux device and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
 

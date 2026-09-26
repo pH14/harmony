@@ -142,8 +142,13 @@ impl DecisionPoint {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Fault {
     NetLatency(Span),
-    NetLoss { num: u16, den: u16 },
-    NetThrottle { bps: u32 },
+    NetLoss {
+        num: u16,
+        den: u16,
+    },
+    NetThrottle {
+        bps: u32,
+    },
     NetReset,
     BlockEio,
     BlockLatency(Span),
@@ -152,8 +157,14 @@ pub enum Fault {
     ProcPause(Span),
     ProcKill,
     ProcRestart,
-    ProcEventKill { rarity: u8 },
-    ProcEventPark { rarity: u8, hold: Span },
+    ProcEventKill {
+        rarity: u8,
+    },
+    ProcEventPark {
+        edges: u32,
+        hold: Span,
+        target: Option<crate::ParkTarget>,
+    },
     BuggifyFire,
     RunHook(u32),
 }

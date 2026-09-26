@@ -175,12 +175,43 @@ struct Cached {
     stamp: u64,
 }
 
+fn eviction_victim(
+    snapshots: &BTreeMap<Vec<FaultAction>, Cached>,
+    taken: SnapId,
+    prefer_leaves: bool,
+) -> Option<Vec<FaultAction>> {
+    let mut entries = snapshots.iter().peekable();
+    let mut oldest: Option<(&Vec<FaultAction>, u64)> = None;
+    let mut oldest_leaf: Option<(&Vec<FaultAction>, u64)> = None;
+    while let Some((prefix, cached)) = entries.next() {
+        let extended = entries
+            .peek()
+            .is_some_and(|(next, _)| next.starts_with(prefix));
+        if prefix.is_empty() || cached.snap == taken {
+            continue;
+        }
+        if oldest.is_none_or(|(_, stamp)| cached.stamp < stamp) {
+            oldest = Some((prefix, cached.stamp));
+        }
+        if !extended && oldest_leaf.is_none_or(|(_, stamp)| cached.stamp < stamp) {
+            oldest_leaf = Some((prefix, cached.stamp));
+        }
+    }
+    let victim = if prefer_leaves {
+        oldest_leaf.or(oldest)
+    } else {
+        oldest
+    };
+    victim.map(|(prefix, _)| prefix.clone())
+}
+
 struct Live {
     key: [u8; 32],
     session: Session,
     setup: SnapId,
     windows: ActionWindows,
     snapshots: BTreeMap<Vec<FaultAction>, Cached>,
+    cache_bytes: u64,
     uses: u64,
     horizons_run: u64,
     abandoned: bool,
@@ -409,7 +440,10 @@ impl FaultTarget {
             Ok((observation, live.horizons_run.saturating_sub(before)))
         });
         match result {
-            Ok((observation, ran)) => {
+            Ok((mut observation, ran)) => {
+                let since = self.observation.moment;
+                observation.parks.retain(|park| park.moment > since);
+                observation.park_reads.retain(|read| read.moment > since);
                 self.actions.push(action);
                 self.execution_ticks = self
                     .execution_ticks
@@ -423,6 +457,8 @@ impl FaultTarget {
                 if error.starts_with(WATCHDOG_CUTOFF) {
                     self.watchdog_cutoffs = self.watchdog_cutoffs.saturating_add(1);
                     let mut observation = self.observation.clone();
+                    observation.parks.clear();
+                    observation.park_reads.clear();
                     observation.watchdog_cutoff = true;
                     self.action_observations.push(observation);
                 }
@@ -491,15 +527,16 @@ impl Live {
                 stamp: 0,
             },
         );
+        let cache_bytes = session
+            .snapshot_store_bytes()
+            .saturating_add(u64::try_from(config.session.ram_bytes / 2).unwrap_or(u64::MAX));
         Ok(Self {
             key: config.key,
             session,
             setup,
-            windows: ActionWindows {
-                root_seal,
-                horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
-            },
+            windows: ActionWindows { root_seal },
             snapshots,
+            cache_bytes,
             uses: 0,
             horizons_run: 0,
             abandoned: false,
@@ -545,14 +582,12 @@ impl Live {
             stamp: self.uses,
         };
         self.snapshots.insert(actions, cached);
-        while self.snapshots.len() > SNAPSHOT_CACHE_LIMIT.saturating_add(1) {
-            let Some(victim) = self
-                .snapshots
-                .iter()
-                .filter(|(prefix, _)| !prefix.is_empty())
-                .min_by_key(|(_, cached)| cached.stamp)
-                .map(|(prefix, _)| prefix.clone())
-            else {
+        loop {
+            let over_count = self.snapshots.len() > SNAPSHOT_CACHE_LIMIT.saturating_add(1);
+            if !over_count && self.session.snapshot_store_bytes() <= self.cache_bytes {
+                break;
+            }
+            let Some(victim) = eviction_victim(&self.snapshots, snap, !over_count) else {
                 break;
             };
             if let Some(victim) = self.snapshots.remove(&victim) {
@@ -715,22 +750,47 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
         .saturating_add(
             snapshot
                 .observation
-                .sometimes
-                .len()
-                .saturating_mul(size_of::<u32>()),
+                .assertions
+                .0
+                .iter()
+                .map(|(id, outcome)| {
+                    size_of::<String>()
+                        + id.len()
+                        + outcome.message.len()
+                        + outcome.location.len()
+                        + size_of::<crate::assertion::AssertionOutcome>()
+                })
+                .sum::<usize>(),
         )
         .saturating_add(snapshot.observation.check.as_ref().map_or(0, |check| {
-            check.points.capacity().saturating_mul(size_of::<u32>())
+            check
+                .points
+                .iter()
+                .map(|point| size_of::<String>() + point.capacity())
+                .sum::<usize>()
         }))
+        .saturating_add(
+            snapshot
+                .observation
+                .parks
+                .capacity()
+                .saturating_mul(size_of::<crate::target::ParkLanding>()),
+        )
+        .saturating_add(
+            snapshot
+                .observation
+                .park_reads
+                .capacity()
+                .saturating_mul(size_of::<crate::target::ParkRead>()),
+        )
 }
 
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
     format!(
-        "faults-consonance-whole-vm-v2;session={};horizon-nanos={};\
-         action=standing-fault-delta-v2;snapshot=portable-prefix-to-vm-snapshot-v1",
+        "faults-consonance-whole-vm-v2;session={};\
+         action=standing-fault-delta-v3;snapshot=portable-prefix-to-vm-snapshot-v1",
         identity_with_config(kernel, initramfs, &config.session_config()),
-        crate::target::DEFAULT_HORIZON_NANOS,
     )
 }
 
@@ -792,7 +852,7 @@ mod tests {
         assert!(target.snapshot().is_none());
         assert!(target.actions.is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
-        target.apply(FaultAction::Kill(0));
+        target.apply(FaultAction::Kill(0, std::num::NonZeroU16::new(50).unwrap()));
         assert_eq!(target.execution_ticks(), 17);
         assert_eq!(target.last_action_observations().len(), 1);
         assert!(target.last_action_observations()[0].watchdog_cutoff);
@@ -828,6 +888,48 @@ mod tests {
                 !session_failure(phase, &SessionError::Unboundable).starts_with(WATCHDOG_CUTOFF)
             );
         }
+    }
+
+    #[test]
+    fn byte_pressure_prefers_the_oldest_snapshot_no_cached_snapshot_extends() {
+        let wait = |ticks| FaultAction::Wait(std::num::NonZeroU16::new(ticks).unwrap());
+        let entry = |snap, stamp| Cached {
+            snap: SnapId(snap),
+            moment: 0,
+            stamp,
+        };
+        let snapshots = BTreeMap::from([
+            (Vec::new(), entry(0, 0)),
+            (vec![wait(1)], entry(1, 1)),
+            (vec![wait(1), wait(2)], entry(2, 2)),
+            (vec![wait(1), wait(2), wait(3)], entry(3, 9)),
+            (vec![wait(1), wait(4)], entry(4, 5)),
+            (vec![wait(5)], entry(5, 4)),
+        ]);
+        assert_eq!(
+            eviction_victim(&snapshots, SnapId(3), false),
+            Some(vec![wait(1)])
+        );
+        assert_eq!(
+            eviction_victim(&snapshots, SnapId(3), true),
+            Some(vec![wait(5)])
+        );
+        let chain = BTreeMap::from([
+            (Vec::new(), entry(0, 0)),
+            (vec![wait(1)], entry(1, 1)),
+            (vec![wait(1), wait(2)], entry(2, 2)),
+        ]);
+        assert_eq!(
+            eviction_victim(&chain, SnapId(2), true),
+            Some(vec![wait(1)])
+        );
+        assert_eq!(
+            eviction_victim(&chain, SnapId(2), false),
+            Some(vec![wait(1)])
+        );
+        let setup_and_taken =
+            BTreeMap::from([(Vec::new(), entry(0, 0)), (vec![wait(1)], entry(1, 1))]);
+        assert_eq!(eviction_victim(&setup_and_taken, SnapId(1), true), None);
     }
 
     #[test]

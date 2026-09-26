@@ -36,27 +36,29 @@ a readiness command keep immediate hook launches.
 
 ## Actions
 
-An input records adaptive durations in 10 ms guest ticks. Waits and instrumented
-event holds range from 10 ms through 10.24 seconds. Other actions have a built-in
-500 ms execution window ([`target`](src/target.rs)):
+Every action records its own duration in 10 ms guest ticks, from 10 ms through
+10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
+search draws one duration per suffix from the adaptive duration policy, and
+every action in the suffix takes it:
 
 | action | effect |
 |---|---|
-| `Wait(ticks)` | the workload runs undisturbed for the recorded positive duration |
-| `EventKill(node, rarity)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, rarity, hold)` | an instrumented runtime holds a thread at a selected event for the recorded adaptive duration |
-| `Kill(node)` | the node stays down for the whole horizon |
-| `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
-| `Restart(node)` | the node is killed and comes back inside the horizon |
-| `Hook(id)` | the supervisor runs that hook once |
-| `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
+| `Wait(ticks)` | the workload runs undisturbed |
+| `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
+| `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
+| `Kill(node, ticks)` | the node stays down for the window |
+| `Pause(node, ticks)` | the node is stopped for the window, then continued |
+| `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
+| `Hook(id, ticks)` | the supervisor runs that hook once |
+| `Interrupt(vector, ticks)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
 
 Each fault action except `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
-branch installs it. An event-park window remains active across later actions
-until its hold can finish, allowing another fault to overlap the held thread.
+branch installs it. A hold still running when an event-park window closes
+continues after the window, so the next actions can overlap the held thread.
+The park counts as a pending fault until that hold ends.
 
 ## Execution
 
@@ -68,7 +70,17 @@ deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. A bounded LRU keeps recent prefixes resident and rebuilds evicted
-ones from their longest cached ancestor.
+ones from their longest cached ancestor. It holds at most 96 prefixes. It also
+evicts while the session's snapshot store holds more than the setup snapshot
+plus half a guest RAM of bytes, because a cached snapshot keeps the pages of its
+ancestors and a longer action changes more pages, so a count alone does not
+bound a worker's memory. Over that byte limit it prefers the least recently
+used prefix that no other cached prefix extends, because an ancestor's pages
+usually stay alive in its cached descendants. The setup snapshot and the
+snapshot just taken are never evicted, so one action that changes more than
+half a guest RAM can leave the store above the limit. The running guest and
+the store's lookup indexes come on top of the cached pages; on the etcd case,
+four workers with 1 GiB guests peak below 10 GiB, which fits a 16 GB CI runner.
 The shared session watchdog follows deterministic virtual-time progress, so a
 slowly advancing instrumented guest can finish a long action while one stuck
 at a virtual moment still times out. Replay can apply explicit, bounded Wait
@@ -82,10 +94,45 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which captures assertion, liveness, in-flight work, and event-firing state. The
+which captures assertion, liveness, in-flight work, event-firing state, faults
+still in effect, and bucketed edge coverage. The edge-digest register sums a hash of every
+(edge, hit-count bucket) pair that instrumented nodes have entered. It is
+part of the holder identity, so an execution that drives any edge into a new
+bucket opens a new slot inside its lifecycle place.
+Workloads without the C runtime report a digest of zero. The
 raw instrumented site reported by an event kill remains diagnostic evidence; it
 is not archive novelty because a large instrumented binary can report a
 distinct address at nearly every endpoint.
+
+Assertions arrive as Antithesis SDK JSON records written to `/dev/harmony`.
+The host keys each assertion by its `id` (the message when the id is empty)
+and keeps its kind, message, and source location. An Always or
+AlwaysOrUnreachable assertion evaluated false, or an Unreachable assertion that
+was reached, is a violation and marks the execution as a bug. The set of
+Sometimes and Reachable assertions that passed enters the archive key as a
+count plus a digest of the sorted ids, so the key has no limit on how many
+distinct assertions a workload declares. Every process's records feed the key.
+`campaign-summary.json` lists every assertion the campaign saw under
+`assertions`. A Sometimes or Reachable assertion that was declared but never
+passed is a campaign failure: it appears under `never_satisfied` in both
+`campaign-summary.json` and `report.json`, and the search prints one
+`FAIL: assertion never satisfied` line for each.
+`park_sites` in `campaign-summary.json` counts event-park landings by site.
+`park_reads` counts, by landing site, the holds after which the held thread
+read shared memory that another process changed during the hold.
+The campaign turns these counts into draw feedback: each site with a read
+weighs `1024 * (reads + 1) / (landings + 2)`, at least 1, and the weights
+change at each draw-table update. Once any site has a weight, half of the drawn
+parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
+range that is the site alone or the site plus or minus `2^k` bytes for `k` from
+6 through 12, each of the eight widths equally likely.
+`park_thresholds` counts, for each `floor(log2(edges))`, the park actions the
+guest ran at that threshold and the landings at that threshold, so the landings
+per action at each threshold show which part of the drawn range a workload's
+executions reach. A park re-arms after each hold, so one action can land more
+than once. On
+the SQLite WAL reset and etcd cases no park with a threshold of `1 << 14` or
+more fired, which sets the top of the drawn range.
 
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions
@@ -181,20 +228,26 @@ Search also writes
 ([`report`](src/report.rs)); each of those carries the action list and the
 encoded window list that reproduces it.
 
-`FaultArchiveKey` identifies a place and nothing more. The place is every
-lifecycle count except liveness; liveness is the holder identity inside the
-place. The adapter has no progress tier, so every place is a peer and the
-selector ranks places only by their draw counts.
+`FaultArchiveKey` has a place, a progress, and a holder identity. The place is
+the passed assertion set and every lifecycle count except liveness, plus two
+flags for faults still in effect when the state is saved: a thread held by an
+event park on any node, and an event kill armed on any node. Liveness and the
+edge digest are the holder identity inside the place. The progress is the
+number of Sometimes and Reachable assertions the state has passed. The
+selector's tiers rank states by that count and draw most parents from the
+states that passed the most. Places inside a tier rank by their draw counts.
 
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.
 
 Replay summaries include completed-check provenance automatically for bundles
-with a continuous `check`. The supervisor records the check run, disturbance
-generations at its start and completion, its reached points, and pending process
-faults. A case can require evidence from a successful check that started and
-finished in the final generation with no outstanding fault. Cumulative reached
-points remain exploration evidence and cannot establish this recovery condition.
+with a continuous `check`. The supervisor records the check run, its pid, and
+the disturbance generations at its start and completion. The host adds the
+Sometimes and Reachable assertions that pid passed during the run, and the
+pending process faults. A case can require evidence from a successful check that
+started and finished in the final generation with no outstanding fault.
+Assertions passed anywhere else remain exploration evidence and cannot establish
+this recovery condition.
 Bundles that use drawn hooks have `check: null`; their evidence comes from those
 hooks instead.

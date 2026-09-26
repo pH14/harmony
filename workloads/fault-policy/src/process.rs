@@ -22,9 +22,14 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
         Fault::ProcRestart => ProcessAction::Restart,
         Fault::RunHook(id) => ProcessAction::RunHook(*id),
         Fault::ProcEventKill { rarity } => ProcessAction::EventKill { rarity: *rarity },
-        Fault::ProcEventPark { rarity, hold } => ProcessAction::EventPark {
-            rarity: *rarity,
+        Fault::ProcEventPark {
+            edges,
+            hold,
+            target,
+        } => ProcessAction::EventPark {
+            edges: *edges,
             hold_nanos: hold.0,
+            target: *target,
         },
         _ => unreachable!("process_target received a non-process fault"),
     }
@@ -37,9 +42,14 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
         ProcessAction::Restart => Fault::ProcRestart,
         ProcessAction::RunHook(id) => Fault::RunHook(id),
         ProcessAction::EventKill { rarity } => Fault::ProcEventKill { rarity },
-        ProcessAction::EventPark { rarity, hold_nanos } => Fault::ProcEventPark {
-            rarity,
+        ProcessAction::EventPark {
+            edges,
+            hold_nanos,
+            target,
+        } => Fault::ProcEventPark {
+            edges,
             hold: Span(hold_nanos),
+            target,
         },
     })
 }
@@ -58,8 +68,14 @@ mod tests {
             Fault::RunHook(7),
             Fault::ProcEventKill { rarity: 0 },
             Fault::ProcEventPark {
-                rarity: 3,
+                edges: 3,
                 hold: Span(2_000_000),
+                target: None,
+            },
+            Fault::ProcEventPark {
+                edges: 1,
+                hold: Span(2_000_000),
+                target: crate::ParkTarget::new(0x892e8, 0x892ec),
             },
         ] {
             let bytes = process_target(3, &f);
@@ -83,21 +99,24 @@ mod tests {
 
     #[test]
     fn an_event_park_with_no_hold_does_not_decode() {
-        let bytes = [0, 0, 21, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = [0, 0, 21, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         assert_eq!(decode_process_target(&bytes), None);
     }
 
     #[test]
-    fn event_rarity_outside_the_shared_width_does_not_decode() {
+    fn event_selectors_outside_their_ranges_do_not_decode() {
         let kill = process_target(0, &Fault::ProcEventKill { rarity: 64 });
         assert_eq!(decode_process_target(&kill), None);
-        let park = process_target(
-            0,
-            &Fault::ProcEventPark {
-                rarity: 64,
-                hold: Span(1),
-            },
-        );
-        assert_eq!(decode_process_target(&park), None);
+        for edges in [0, crate::EVENT_PARK_EDGE_LIMIT + 1] {
+            let park = process_target(
+                0,
+                &Fault::ProcEventPark {
+                    edges,
+                    hold: Span(1),
+                    target: None,
+                },
+            );
+            assert_eq!(decode_process_target(&park), None);
+        }
     }
 }

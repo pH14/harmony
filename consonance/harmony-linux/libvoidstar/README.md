@@ -7,8 +7,11 @@ ABI used by guest workloads. It sends SDK JSON to `/dev/harmony`, obtains
 seeded entropy through the driver's fixed transaction, and exposes the legacy
 coverage and sanitizer callback symbols expected by instrumented programs.
 
-Device exchanges are serialized per process. The library keeps explicit thread
-identities and counters for callback thresholding. Device errors fail closed:
+Device exchanges are serialized per process. A thread that calls
+`harmony_coverage_configure` gets an explicit identity and a callback counter,
+and asks the scheduler for its next threshold each time the counter reaches
+the current one. A thread that never configures makes no coverage exchange,
+so an instrumented program pays no device round trip per edge. Device errors fail closed:
 an event is dropped and entropy returns zero rather than using host randomness.
 
 Coverage callbacks invoke the optional weak `harmony_instrumentation_event`

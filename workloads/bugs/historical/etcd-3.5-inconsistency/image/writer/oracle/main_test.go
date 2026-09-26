@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -181,5 +183,43 @@ func TestAReadErrorIsInconclusive(t *testing.T) {
 		}, func(context.Context, time.Duration) bool { return true })
 	if got != verdictInconclusive {
 		t.Fatalf("compareMember = %v, want inconclusive", got)
+	}
+}
+
+func TestAssertionsAreAntithesisJSONLines(t *testing.T) {
+	dir := t.TempDir()
+	sink := filepath.Join(dir, "sdk.jsonl")
+	if err := os.WriteFile(sink, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTITHESIS_OUTPUT_DIR", dir)
+	if err := declareAssertions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitAssertion("always", agreementID, true, false); err != nil {
+		t.Fatal(err)
+	}
+	text, err := os.ReadFile(sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(text), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d records", len(lines))
+	}
+	var record struct {
+		Assert struct {
+			ID         string `json:"id"`
+			AssertType string `json:"assert_type"`
+			Hit        bool   `json:"hit"`
+			Condition  bool   `json:"condition"`
+		} `json:"antithesis_assert"`
+	}
+	if err := json.Unmarshal([]byte(lines[2]), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Assert.ID != agreementID || record.Assert.AssertType != "always" ||
+		!record.Assert.Hit || record.Assert.Condition {
+		t.Fatalf("unexpected record %+v", record.Assert)
 	}
 }

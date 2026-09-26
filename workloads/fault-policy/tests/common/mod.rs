@@ -7,7 +7,8 @@ use proptest::prelude::*;
 
 use fault_policy::{
     Action, Answer, BlockOp, ConnId, DecisionClass, DecisionPoint, EnvSpec, Environment, Fault,
-    FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, Ratio, Span, StandingFault,
+    FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, ParkTarget, Ratio, Span,
+    StandingFault,
 };
 
 pub fn config(cases: u32) -> ProptestConfig {
@@ -43,12 +44,15 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
         Just(Fault::ProcRestart),
         (0..fault_policy::EVENT_RARITY_LIMIT).prop_map(|rarity| Fault::ProcEventKill { rarity }),
         (
-            0..fault_policy::EVENT_RARITY_LIMIT,
-            any::<u64>().prop_filter("nonzero hold", |hold| *hold != 0)
+            1..=fault_policy::EVENT_PARK_EDGE_LIMIT,
+            any::<u64>().prop_filter("nonzero hold", |hold| *hold != 0),
+            proptest::option::of((any::<u64>(), 1..=u64::MAX)),
         )
-            .prop_map(|(rarity, hold)| Fault::ProcEventPark {
-                rarity,
+            .prop_map(|(edges, hold, target)| Fault::ProcEventPark {
+                edges,
                 hold: Span(hold),
+                target: target
+                    .and_then(|(start, width)| ParkTarget::new(start, start.saturating_add(width))),
             },),
         any::<u32>().prop_map(Fault::RunHook),
     ]

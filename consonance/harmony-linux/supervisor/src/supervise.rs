@@ -30,10 +30,16 @@ impl Action {
                 format!("arm event kill node {node} rarity {rarity}")
             }
             Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
-            Action::ArmEventPark(node, park) => format!(
-                "arm event park node {node} rarity {} hold {}",
-                park.rarity, park.hold_nanos
-            ),
+            Action::ArmEventPark(node, park) => {
+                let mut text = format!(
+                    "arm event park node {node} edges {} hold {}",
+                    park.edges, park.hold_nanos
+                );
+                if let Some(target) = park.target {
+                    text.push_str(&format!(" target {:#x}..{:#x}", target.start, target.end));
+                }
+                text
+            }
             Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
         }
     }
@@ -46,7 +52,6 @@ pub struct Counters {
     pub hooks_finished: u64,
     pub unexpected_deaths: u64,
     pub restarts: u64,
-    pub sometimes: u64,
     pub event_kill_fires: u64,
     pub event_kill_site: u64,
     pub event_park_fires: u64,
@@ -61,8 +66,11 @@ pub struct Counters {
     pub completed_check_run: u64,
     pub completed_check_start_generation: u64,
     pub completed_check_end_generation: u64,
-    pub completed_check_points: u64,
+    pub completed_check_pid: u64,
     pub pending_faults: u64,
+    pub edge_crossings: u64,
+    pub edge_digest: u64,
+    pub event_park_held: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,6 +89,7 @@ pub struct ProcessSupervisor {
     event_kill_selected: Vec<Option<EventKillWindow>>,
     event_kill_armed: Vec<EventKillWindow>,
     event_kill_fired: Vec<EventKillWindow>,
+    natural_deaths: Vec<u16>,
 }
 
 pub type Supervisor = ProcessSupervisor;
@@ -104,7 +113,12 @@ impl ProcessSupervisor {
             event_kill_selected: vec![None; node_count],
             event_kill_armed: Vec::new(),
             event_kill_fired: Vec::new(),
+            natural_deaths: Vec::new(),
         }
+    }
+
+    pub fn take_natural_deaths(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.natural_deaths)
     }
 
     pub fn tick(&mut self, active: &ActiveWindows, deaths: &[u16]) -> Vec<Action> {
@@ -127,6 +141,7 @@ impl ProcessSupervisor {
             if natural {
                 self.bump_disturbance(1);
                 self.counters.unexpected_deaths += 1;
+                self.natural_deaths.push(node);
             }
         }
 
@@ -323,6 +338,23 @@ impl ProcessSupervisor {
         self.bump_disturbance(fires);
     }
 
+    pub fn note_event_park_held(&mut self, node: u16, held: bool) {
+        if node >= 64 {
+            return;
+        }
+        let bit = 1_u64 << node;
+        if held {
+            self.counters.event_park_held |= bit;
+        } else {
+            self.counters.event_park_held &= !bit;
+        }
+    }
+
+    pub fn note_edge_coverage(&mut self, crossings: u64, digest: u64) {
+        self.counters.edge_crossings = self.counters.edge_crossings.saturating_add(crossings);
+        self.counters.edge_digest = self.counters.edge_digest.wrapping_add(digest);
+    }
+
     pub fn note_workload_started(&mut self) {
         self.counters.workload_started = self.counters.workload_started.saturating_add(1);
     }
@@ -339,15 +371,11 @@ impl ProcessSupervisor {
         self.counters.checks_finished = self.counters.checks_finished.saturating_add(1);
     }
 
-    pub fn note_check_completed(&mut self, evidence: CheckEvidence) -> bool {
-        if evidence.points == 0 {
-            return false;
-        }
+    pub fn note_check_completed(&mut self, evidence: CheckEvidence) {
         self.counters.completed_check_run = evidence.run;
         self.counters.completed_check_start_generation = evidence.start_generation;
         self.counters.completed_check_end_generation = evidence.end_generation;
-        self.counters.completed_check_points = evidence.points;
-        true
+        self.counters.completed_check_pid = evidence.pid;
     }
 
     pub fn set_check_enabled(&mut self, enabled: bool) {
@@ -388,12 +416,6 @@ impl ProcessSupervisor {
         }
     }
 
-    pub fn note_sometimes(&mut self, id: u32) {
-        if let Some(bit) = crate::regs::sometimes_bit(id) {
-            self.counters.sometimes |= bit;
-        }
-    }
-
     #[must_use]
     pub fn alive_bitmap(&self) -> u64 {
         let mut bits = 0;
@@ -417,7 +439,6 @@ impl ProcessSupervisor {
             alive: self.alive_bitmap(),
             hooks_started: self.counters.hooks_started,
             hooks_finished: self.counters.hooks_finished,
-            sometimes: self.counters.sometimes,
             unexpected_deaths: self.counters.unexpected_deaths,
             restarts: self.counters.restarts,
             event_kill_fires: self.counters.event_kill_fires,
@@ -434,8 +455,17 @@ impl ProcessSupervisor {
             completed_check_run: self.counters.completed_check_run,
             completed_check_start_generation: self.counters.completed_check_start_generation,
             completed_check_end_generation: self.counters.completed_check_end_generation,
-            completed_check_points: self.counters.completed_check_points,
+            completed_check_pid: self.counters.completed_check_pid,
             pending_faults: self.counters.pending_faults,
+            edge_crossings: self.counters.edge_crossings,
+            edge_digest: self.counters.edge_digest,
+            event_park_held: self.counters.event_park_held,
+            event_kill_armed: self
+                .event_kill_armed
+                .iter()
+                .filter(|window| window.node < 64)
+                .fold(0, |bits, window| bits | 1_u64 << window.node)
+                & self.alive_bitmap(),
         }
     }
 
@@ -455,7 +485,22 @@ impl ProcessSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evidence::CheckCapture;
+
+    fn started(run: u64, sup: &Supervisor) -> CheckEvidence {
+        CheckEvidence {
+            run,
+            start_generation: sup.disturbance_generation(),
+            end_generation: 0,
+            pid: 7,
+        }
+    }
+
+    fn completed(check: CheckEvidence, sup: &Supervisor) -> CheckEvidence {
+        CheckEvidence {
+            end_generation: sup.disturbance_generation(),
+            ..check
+        }
+    }
     use process_proto::ProcessAction;
 
     fn active(actions: &[(u16, ProcessAction)]) -> ActiveWindows {
@@ -464,6 +509,18 @@ mod tests {
             set.insert(*node, action, 0);
         }
         set
+    }
+
+    #[test]
+    fn only_a_death_the_search_did_not_cause_is_natural() {
+        let mut sup = Supervisor::new(2);
+        let killed = active(&[(0, ProcessAction::Kill)]);
+        sup.tick(&killed, &[]);
+        sup.tick(&killed, &[0]);
+        assert!(sup.take_natural_deaths().is_empty());
+        sup.tick(&killed, &[1]);
+        assert_eq!(sup.take_natural_deaths(), [1]);
+        assert!(sup.take_natural_deaths().is_empty());
     }
 
     #[test]
@@ -558,8 +615,9 @@ mod tests {
             (
                 0,
                 ProcessAction::EventPark {
-                    rarity: 3,
+                    edges: 3,
                     hold_nanos: 8,
+                    target: None,
                 },
             ),
         ]);
@@ -570,8 +628,9 @@ mod tests {
                 Action::ArmEventPark(
                     0,
                     EventPark {
-                        rarity: 3,
+                        edges: 3,
                         hold_nanos: 8,
+                        target: None,
                         start: 0,
                     },
                 ),
@@ -590,8 +649,9 @@ mod tests {
         first.insert(
             0,
             &ProcessAction::EventPark {
-                rarity: 3,
+                edges: 3,
                 hold_nanos: 10_000_000,
+                target: None,
             },
             0,
         );
@@ -599,8 +659,9 @@ mod tests {
         second.insert(
             0,
             &ProcessAction::EventPark {
-                rarity: 3,
+                edges: 3,
                 hold_nanos: 10_000_000,
+                target: None,
             },
             500_000_000,
         );
@@ -609,8 +670,9 @@ mod tests {
             [Action::ArmEventPark(
                 0,
                 EventPark {
-                    rarity: 3,
+                    edges: 3,
                     hold_nanos: 10_000_000,
+                    target: None,
                     start: 0,
                 }
             )]
@@ -622,8 +684,9 @@ mod tests {
                 Action::ArmEventPark(
                     0,
                     EventPark {
-                        rarity: 3,
+                        edges: 3,
                         hold_nanos: 10_000_000,
+                        target: None,
                         start: 500_000_000,
                     }
                 )
@@ -835,29 +898,17 @@ mod tests {
     }
 
     #[test]
-    fn the_sometimes_bitmap_covers_the_first_forty_eight_ids() {
-        let mut sup = Supervisor::new(1);
-        sup.note_sometimes(0);
-        sup.note_sometimes(47);
-        sup.note_sometimes(48);
-        sup.note_sometimes(u32::MAX);
-        assert_eq!(sup.counters().sometimes, 1 | (1 << 47));
-    }
-
-    #[test]
     fn the_snapshot_reports_every_register() {
         let mut sup = Supervisor::new(2);
         sup.tick(&active(&[(1, ProcessAction::RunHook(2))]), &[0]);
         assert_eq!(sup.counters().hooks_started, 0);
         sup.note_hook_started();
         sup.note_hook_finished();
-        sup.note_sometimes(3);
         let snap = sup.snapshot();
         assert_eq!(snap.ticks, 1);
         assert_eq!(snap.alive, 0b11);
         assert_eq!(snap.hooks_started, 1);
         assert_eq!(snap.hooks_finished, 1);
-        assert_eq!(snap.sometimes, 1 << 3);
         assert_eq!(snap.unexpected_deaths, 1);
         assert_eq!(snap.restarts, 1);
     }
@@ -877,6 +928,56 @@ mod tests {
         assert_eq!(snap.workload_finished, 1);
         assert_eq!(snap.checks_started, 1);
         assert_eq!(snap.checks_finished, 1);
+    }
+
+    #[test]
+    fn held_parks_and_armed_kills_are_published_per_node_without_disturbing() {
+        let mut sup = Supervisor::new(3);
+        sup.note_event_park_held(2, true);
+        sup.note_event_park_held(0, true);
+        sup.note_event_park_held(0, false);
+        sup.note_event_park_held(64, true);
+        sup.note_event_kill_armed(1, 4, 7);
+        let snap = sup.snapshot();
+        assert_eq!(snap.event_park_held, 0b100);
+        assert_eq!(snap.event_kill_armed, 0b010);
+        assert_eq!(snap.disturbance_generation, 0);
+        assert!(sup.note_event_kill(1, 4, 7, 0xfeed));
+        assert_eq!(sup.snapshot().event_kill_armed, 0);
+        sup.note_event_kill_armed(2, 5, 9);
+        sup.note_event_kill_disarmed(2, 5, 9);
+        assert_eq!(sup.snapshot().event_kill_armed, 0);
+    }
+
+    #[test]
+    fn a_node_that_dies_under_a_pause_window_publishes_no_armed_kill() {
+        let mut sup = Supervisor::new(1);
+        let kill = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
+        assert_eq!(sup.tick(&kill, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        assert_eq!(sup.snapshot().event_kill_armed, 1);
+        let paused = active(&[
+            (0, ProcessAction::EventKill { rarity: 0 }),
+            (0, ProcessAction::Pause(30)),
+        ]);
+        assert_eq!(sup.tick(&paused, &[0]), []);
+        assert_eq!(sup.snapshot().alive, 0);
+        assert_eq!(sup.snapshot().event_kill_armed, 0);
+        assert_eq!(
+            sup.tick(&kill, &[]),
+            [Action::Start(0), Action::ArmEventKill(0, 0)]
+        );
+    }
+
+    #[test]
+    fn edge_coverage_sums_across_nodes_without_disturbing() {
+        let mut sup = Supervisor::new(2);
+        sup.note_edge_coverage(3, u64::MAX);
+        sup.note_edge_coverage(2, 2);
+        let snap = sup.snapshot();
+        assert_eq!(snap.edge_crossings, 5);
+        assert_eq!(snap.edge_digest, 1);
+        assert_eq!(snap.disturbance_generation, 0);
     }
 
     #[test]
@@ -906,14 +1007,13 @@ mod tests {
         let mut sup = Supervisor::new(1);
         sup.set_check_enabled(true);
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(1, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(1, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         sup.note_process_transition();
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_start_generation, 1);
         assert_eq!(snap.completed_check_end_generation, 1);
-        assert_eq!(snap.completed_check_points, 1 << 7);
+        assert_eq!(snap.completed_check_pid, 7);
         assert_eq!(snap.disturbance_generation, 2);
         assert_ne!(
             snap.completed_check_end_generation,
@@ -925,10 +1025,9 @@ mod tests {
     fn a_check_spanning_a_disturbance_publishes_both_generations() {
         let mut sup = Supervisor::new(1);
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(2, sup.disturbance_generation());
-        capture.note_success(7);
+        let capture = started(2, &sup);
         sup.note_process_transition();
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        sup.note_check_completed(completed(capture, &sup));
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_start_generation, 1);
         assert_eq!(snap.completed_check_end_generation, 2);
@@ -939,9 +1038,8 @@ mod tests {
     fn a_late_standing_event_advances_past_completed_check_provenance() {
         let mut sup = Supervisor::new(1);
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(3, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(3, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         sup.note_process_transition();
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_end_generation, 1);
@@ -953,44 +1051,11 @@ mod tests {
         let mut sup = Supervisor::new(1);
         sup.note_process_transition();
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(4, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_start_generation, 2);
         assert_eq!(snap.completed_check_end_generation, 2);
-        assert_eq!(snap.disturbance_generation, 2);
-    }
-
-    #[test]
-    fn an_empty_check_keeps_same_generation_evidence() {
-        let mut sup = Supervisor::new(1);
-        sup.note_process_transition();
-        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
-        capture.note_success(7);
-        assert!(sup.note_check_completed(capture.complete(sup.disturbance_generation())));
-        let empty = CheckCapture::new(5, sup.disturbance_generation());
-        assert!(!sup.note_check_completed(empty.complete(sup.disturbance_generation())));
-        let snap = sup.snapshot();
-        assert_eq!(snap.completed_check_run, 4);
-        assert_eq!(snap.completed_check_start_generation, 1);
-        assert_eq!(snap.completed_check_end_generation, 1);
-        assert_eq!(snap.completed_check_points, 1 << 7);
-    }
-
-    #[test]
-    fn an_empty_post_disturbance_check_keeps_prior_evidence_stale() {
-        let mut sup = Supervisor::new(1);
-        sup.note_process_transition();
-        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
-        capture.note_success(7);
-        assert!(sup.note_check_completed(capture.complete(sup.disturbance_generation())));
-        sup.note_process_transition();
-        let empty = CheckCapture::new(5, sup.disturbance_generation());
-        assert!(!sup.note_check_completed(empty.complete(sup.disturbance_generation())));
-        let snap = sup.snapshot();
-        assert_eq!(snap.completed_check_run, 4);
-        assert_eq!(snap.completed_check_end_generation, 1);
         assert_eq!(snap.disturbance_generation, 2);
     }
 
@@ -1000,9 +1065,8 @@ mod tests {
         let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
-        let mut capture = CheckCapture::new(5, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(5, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         assert_eq!(sup.snapshot().pending_faults, 1);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         assert_eq!(sup.tick(&event, &[]), []);
@@ -1057,13 +1121,27 @@ mod tests {
             Action::ArmEventPark(
                 0,
                 EventPark {
-                    rarity: 2,
+                    edges: 2,
                     hold_nanos: 4,
+                    target: None,
                     start: 0,
                 }
             )
             .describe(),
-            "arm event park node 0 rarity 2 hold 4"
+            "arm event park node 0 edges 2 hold 4"
+        );
+        assert_eq!(
+            Action::ArmEventPark(
+                1,
+                EventPark {
+                    edges: 1,
+                    hold_nanos: 4,
+                    target: process_proto::events::ParkTarget::new(0x892e8, 0x892ec),
+                    start: 0,
+                }
+            )
+            .describe(),
+            "arm event park node 1 edges 1 hold 4 target 0x892e8..0x892ec"
         );
         assert_eq!(
             Action::DisarmEventPark(0).describe(),

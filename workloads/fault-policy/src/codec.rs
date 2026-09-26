@@ -90,10 +90,22 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             w.push(F_PROC_EVENT_KILL);
             w.push(*rarity);
         }
-        Fault::ProcEventPark { rarity, hold } => {
+        Fault::ProcEventPark {
+            edges,
+            hold,
+            target,
+        } => {
             w.push(F_PROC_EVENT_PARK);
-            w.push(*rarity);
+            put_u32(w, *edges);
             put_u64(w, hold.0);
+            match target {
+                None => w.push(0),
+                Some(target) => {
+                    w.push(1);
+                    put_u64(w, target.start);
+                    put_u64(w, target.end);
+                }
+            }
         }
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
         Fault::RunHook(id) => {
@@ -127,14 +139,20 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
             Fault::ProcEventKill { rarity }
         }
         F_PROC_EVENT_PARK => {
-            let rarity = r.u8()?;
+            let edges = r.u32()?;
             let hold = r.u64()?;
-            if rarity >= crate::EVENT_RARITY_LIMIT || hold == 0 {
+            if edges == 0 || edges > crate::EVENT_PARK_EDGE_LIMIT || hold == 0 {
                 return Err(EnvError::Malformed);
             }
+            let target = match r.u8()? {
+                0 => None,
+                1 => Some(crate::ParkTarget::new(r.u64()?, r.u64()?).ok_or(EnvError::Malformed)?),
+                _ => return Err(EnvError::Malformed),
+            };
             Fault::ProcEventPark {
-                rarity,
+                edges,
                 hold: Span(hold),
+                target,
             }
         }
         F_BUGGIFY_FIRE => Fault::BuggifyFire,

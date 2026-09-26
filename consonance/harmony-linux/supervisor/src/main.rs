@@ -34,6 +34,12 @@ fn run() -> Result<RunOutcome, String> {
         .map_err(|error| format!("{EXECUTION_PATH}: {error}"))?;
     #[cfg(target_os = "linux")]
     prepare_cgroup().map_err(|error| format!("delegated cgroup: {error}"))?;
+    #[cfg(target_os = "linux")]
+    process::prepare_antithesis_output(
+        Path::new(harmony_supervisor::ANTITHESIS_OUTPUT_DIR),
+        Path::new("/dev/harmony"),
+    )
+    .map_err(|error| format!("{}: {error}", harmony_supervisor::ANTITHESIS_OUTPUT_DIR))?;
     match spec.bundle.as_deref() {
         None => Ok(run_application(&spec)),
         Some(bundle) => {
@@ -108,19 +114,18 @@ fn run_application(spec: &ExecutionSpec) -> RunOutcome {
 mod runtime {
     use harmony_sdk::{Point, Sdk};
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
-    use harmony_supervisor::directive::{Directive, LineReader, parse_directive};
-    use harmony_supervisor::evidence::CheckCapture;
+    use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::process;
     use harmony_supervisor::reconcile::ActiveWindows;
     use harmony_supervisor::recovery::RecoveryReadiness;
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
-        REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_POINTS, REG_COMPLETED_CHECK_RUN,
-        REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EVENT_KILL_FIRES,
-        REG_EVENT_KILL_SITE, REG_EVENT_PARK_FIRES, REG_EVENT_READY, REG_HOOKS_FINISHED,
-        REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RESTARTS,
-        REG_SOMETIMES, REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED,
-        REG_WORKLOAD_STARTED, Registers,
+        REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
+        REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EDGE_CROSSINGS,
+        REG_EDGE_DIGEST, REG_EVENT_KILL_ARMED, REG_EVENT_KILL_FIRES, REG_EVENT_KILL_SITE,
+        REG_EVENT_PARK_FIRES, REG_EVENT_PARK_HELD, REG_EVENT_READY, REG_HOOKS_FINISHED,
+        REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RESTARTS, REG_TICKS,
+        REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
     };
     use harmony_supervisor::supervise::{Action, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
@@ -131,27 +136,20 @@ mod runtime {
         decode_report,
     };
     use std::collections::VecDeque;
-    use std::fs::File;
     use std::io::{ErrorKind, Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Stdio};
+    use std::process::{Child, ExitStatus, Stdio};
     use std::thread;
     use std::time::Duration;
 
-    const HOOK_FAILURE_POINT: u32 = 0x00ff_e000;
-    const HOOK_FAILURE_STATUS: i32 = 42;
-    const HOOK_DIR: &str = "/run/harmony/hooks";
-
-    const CATALOG: [Point; 24] = [
-        Point::always(HOOK_FAILURE_POINT, "supervisor.hook_assertion"),
+    const CATALOG: [Point; 26] = [
         Point::state(REG_TICKS, "supervisor.ticks"),
         Point::state(REG_ALIVE, "supervisor.alive"),
         Point::state(REG_HOOKS_STARTED, "supervisor.hooks_started"),
         Point::state(REG_HOOKS_FINISHED, "supervisor.hooks_finished"),
-        Point::state(REG_SOMETIMES, "supervisor.sometimes"),
         Point::state(REG_UNEXPECTED_DEATHS, "supervisor.unexpected_deaths"),
         Point::state(REG_RESTARTS, "supervisor.restarts"),
         Point::state(REG_EVENT_KILL_FIRES, "supervisor.event_kill_fires"),
@@ -168,7 +166,7 @@ mod runtime {
             "supervisor.disturbance_generation",
         ),
         Point::state(REG_CHECK_ENABLED, "supervisor.check_enabled"),
-        Point::state(REG_COMPLETED_CHECK_RUN, "supervisor.completed_check_run"),
+        Point::state(REG_COMPLETED_CHECK_PID, "supervisor.completed_check_pid"),
         Point::state(
             REG_COMPLETED_CHECK_START_GENERATION,
             "supervisor.completed_check_start_generation",
@@ -177,11 +175,12 @@ mod runtime {
             REG_COMPLETED_CHECK_END_GENERATION,
             "supervisor.completed_check_end_generation",
         ),
-        Point::state(
-            REG_COMPLETED_CHECK_POINTS,
-            "supervisor.completed_check_points",
-        ),
+        Point::state(REG_COMPLETED_CHECK_RUN, "supervisor.completed_check_run"),
         Point::state(REG_PENDING_FAULTS, "supervisor.pending_faults"),
+        Point::state(REG_EDGE_CROSSINGS, "supervisor.edge_crossings"),
+        Point::state(REG_EDGE_DIGEST, "supervisor.edge_digest"),
+        Point::state(REG_EVENT_PARK_HELD, "supervisor.event_park_held"),
+        Point::state(REG_EVENT_KILL_ARMED, "supervisor.event_kill_armed"),
     ];
 
     type GuestSdk = Sdk<DeviceTransport>;
@@ -200,15 +199,12 @@ mod runtime {
     struct Hook {
         id: u32,
         child: Child,
-        output: File,
-        reader: LineReader,
     }
 
     struct Check {
         child: Child,
-        output: File,
-        reader: LineReader,
-        capture: CheckCapture,
+        run: u64,
+        start_generation: u64,
     }
 
     struct RecoveryProbe {
@@ -228,6 +224,7 @@ mod runtime {
         kill_arm_start: Option<u64>,
         park_armed: bool,
         park_seen: u64,
+        coverage_seen: (u64, u64),
         reported_kill_pending: bool,
         ready: bool,
         deferred: VecDeque<EventCommand>,
@@ -257,6 +254,7 @@ mod runtime {
                 kill_arm_start: None,
                 park_armed: false,
                 park_seen: 0,
+                coverage_seen: (0, 0),
                 reported_kill_pending: false,
                 ready: false,
                 deferred: VecDeque::new(),
@@ -278,6 +276,7 @@ mod runtime {
             self.outbound = None;
             self.pending = None;
             self.park_armed = false;
+            supervisor.note_event_park_held(node, false);
             self.reported_kill_pending = false;
             self.drain_reports(node, supervisor, tick, true);
             if let Some((rarity, start)) = kill_arm {
@@ -300,17 +299,19 @@ mod runtime {
 
         fn poll_status(&mut self) {
             if self.ready
-                && self.park_armed
                 && self.commands.is_empty()
                 && self.outbound.is_none()
                 && self.pending.is_none()
             {
-                self.commands.push_back(EventCommand::ParkStatus);
+                if self.park_armed {
+                    self.commands.push_back(EventCommand::ParkStatus);
+                }
+                self.commands.push_back(EventCommand::CoverageStatus);
             }
         }
 
         fn fail(&mut self, _node: u16, tick: u64, detail: &str) {
-            if self.closed.is_none() {
+            if self.closed.is_none() && !self.retired {
                 self.closed = Some((tick, detail.to_owned()));
             }
         }
@@ -359,17 +360,26 @@ mod runtime {
             }
             let mut pending = u64::from(self.closed.is_some());
             for command in self.commands.iter().chain(self.deferred.iter()) {
-                if !matches!(command, EventCommand::ParkStatus) {
+                if !matches!(
+                    command,
+                    EventCommand::ParkStatus | EventCommand::CoverageStatus
+                ) {
                     pending = pending.saturating_add(1);
                 }
             }
             if let Some((command, _, _)) = self.outbound
-                && !matches!(command, EventCommand::ParkStatus)
+                && !matches!(
+                    command,
+                    EventCommand::ParkStatus | EventCommand::CoverageStatus
+                )
             {
                 pending = pending.saturating_add(1);
             }
             if let Some((command, _, _)) = self.pending
-                && !matches!(command, EventCommand::ParkStatus)
+                && !matches!(
+                    command,
+                    EventCommand::ParkStatus | EventCommand::CoverageStatus
+                )
             {
                 pending = pending.saturating_add(1);
             }
@@ -392,6 +402,7 @@ mod runtime {
 
         fn drain_pending_on_death(&mut self, node: u16, supervisor: &mut Supervisor, tick: u64) {
             self.note_child_dead();
+            supervisor.note_event_park_held(node, false);
             if self.failed || self.retired || self.pending.is_none() {
                 return;
             }
@@ -501,11 +512,8 @@ mod runtime {
                 Ok(EventReply::Echo(EventCommand::ArmPark { .. })) => {
                     self.park_armed = true;
                 }
-                Ok(EventReply::Echo(EventCommand::DisarmPark)) => {
-                    self.park_armed = false;
-                    supervisor.note_process_transition();
-                }
-                Ok(EventReply::ParkStatus { fires, armed }) => {
+                Ok(EventReply::Echo(EventCommand::DisarmPark)) => {}
+                Ok(EventReply::ParkStatus { fires, armed, held }) => {
                     let was_armed = self.park_armed;
                     if fires >= self.park_seen {
                         let delta = fires - self.park_seen;
@@ -514,15 +522,26 @@ mod runtime {
                     } else {
                         self.park_seen = fires;
                     }
-                    if !armed {
+                    supervisor.note_event_park_held(node, held && !process_dead);
+                    if !armed && !held {
                         self.park_armed = false;
                         if was_armed {
                             supervisor.note_process_transition();
                         }
                     }
                 }
-                Ok(EventReply::Echo(EventCommand::ParkStatus)) => {
-                    self.fail_protocol(node, tick, "invalid park status acknowledgement");
+                Ok(EventReply::CoverageStatus { crossings, digest }) => {
+                    let (seen_crossings, seen_digest) = self.coverage_seen;
+                    if crossings >= seen_crossings {
+                        supervisor.note_edge_coverage(
+                            crossings - seen_crossings,
+                            digest.wrapping_sub(seen_digest),
+                        );
+                    }
+                    self.coverage_seen = (crossings, digest);
+                }
+                Ok(EventReply::Echo(EventCommand::ParkStatus | EventCommand::CoverageStatus)) => {
+                    self.fail_protocol(node, tick, "invalid status acknowledgement");
                     return false;
                 }
                 Err(error) => {
@@ -616,7 +635,6 @@ mod runtime {
 
     struct HookRuntime {
         hooks: Vec<Hook>,
-        launches: u64,
         recovery: RecoveryReadiness,
         recovery_probe: Option<RecoveryProbe>,
         retired_probes: Vec<Child>,
@@ -630,7 +648,6 @@ mod runtime {
         fn new() -> Self {
             Self {
                 hooks: Vec::new(),
-                launches: 0,
                 recovery: RecoveryReadiness::initially_ready(),
                 recovery_probe: None,
                 retired_probes: Vec::new(),
@@ -648,13 +665,18 @@ mod runtime {
             .map_err(|error| format!("{}: {error}", bundle_path.display()))?;
         let bundle =
             parse_bundle(&text).map_err(|error| format!("{}: {error}", bundle_path.display()))?;
-        std::fs::create_dir_all(HOOK_DIR).map_err(|error| format!("{HOOK_DIR}: {error}"))?;
-
         let transport =
             DeviceTransport::open().map_err(|error| format!("/dev/harmony: {error}"))?;
         let mut sdk = Sdk::init(transport, &CATALOG).map_err(|error| format!("sdk: {error}"))?;
 
         run_setup(spec, &bundle)?;
+        process::prepare_antithesis_output(
+            Path::new(harmony_supervisor::ANTITHESIS_OUTPUT_DIR),
+            Path::new("/dev/harmony"),
+        )
+        .map_err(|error| format!("{}: {error}", harmony_supervisor::ANTITHESIS_OUTPUT_DIR))?;
+        process::write_record(&sdk_output(), &process::node_exit_record(None))
+            .map_err(|error| format!("node exit declaration: {error}"))?;
         let mut nodes: Vec<Node> = bundle
             .nodes
             .iter()
@@ -751,6 +773,7 @@ mod runtime {
         bundle: &Bundle,
         runtime: &mut HookRuntime,
         supervisor: &mut Supervisor,
+        sdk: &mut GuestSdk,
         tick: u64,
     ) -> Result<(), String> {
         if runtime.check.is_some() {
@@ -761,15 +784,11 @@ mod runtime {
         };
         runtime.check_runs = runtime.check_runs.saturating_add(1);
         let run = runtime.check_runs;
-        let check = spawn_check(
-            spec,
-            argv,
-            Path::new(HOOK_DIR),
-            run,
-            supervisor.disturbance_generation(),
-        )?;
-        runtime.check = Some(check);
         supervisor.note_check_started();
+        sdk.state_set(REG_CHECKS_STARTED, supervisor.counters().checks_started)
+            .map_err(|error| format!("state_set({REG_CHECKS_STARTED}): {error}"))?;
+        let check = spawn_check(spec, argv, run, supervisor.disturbance_generation())?;
+        runtime.check = Some(check);
         log(tick, &format!("check {run} started"));
         Ok(())
     }
@@ -783,54 +802,25 @@ mod runtime {
         tick: u64,
     ) -> Result<(), String> {
         let Some(check) = runtime.check.as_mut() else {
-            return start_check(spec, bundle, runtime, supervisor, tick);
+            return start_check(spec, bundle, runtime, supervisor, sdk, tick);
         };
-        for line in read_lines(&mut check.output, &mut check.reader) {
-            forward(
-                &line,
-                u32::MAX,
-                supervisor,
-                sdk,
-                tick,
-                Some(&mut check.capture),
-            )?;
-        }
         let status = match check.child.try_wait() {
             Ok(Some(status)) => status,
             Ok(None) => return Ok(()),
-            Err(error) => return Err(format!("check {}: {error}", check.capture.run())),
+            Err(error) => return Err(format!("check {}: {error}", check.run)),
         };
-        for line in read_lines(&mut check.output, &mut check.reader) {
-            forward(
-                &line,
-                u32::MAX,
-                supervisor,
-                sdk,
-                tick,
-                Some(&mut check.capture),
-            )?;
-        }
-        if let Some(line) = check.reader.flush() {
-            forward(
-                &line,
-                u32::MAX,
-                supervisor,
-                sdk,
-                tick,
-                Some(&mut check.capture),
-            )?;
-        }
-        let capture = check.capture;
-        let evidence = capture.complete(supervisor.disturbance_generation());
-        let run = evidence.run;
-        if status.code() == Some(HOOK_FAILURE_STATUS) {
-            log(tick, &format!("check {run} failed its assertion"));
-            sdk.assert_always(false, HOOK_FAILURE_POINT)
-                .map_err(|error| format!("assert_always: {error}"))?;
-        } else if let Some(signal) = status.signal() {
+        let run = check.run;
+        if let Some(signal) = status.signal() {
             log(tick, &format!("check {run} died on signal {signal}"));
         } else if status.success() {
-            supervisor.note_check_completed(evidence);
+            supervisor.note_check_completed(CheckEvidence {
+                run,
+                start_generation: check.start_generation,
+                end_generation: supervisor.disturbance_generation(),
+                pid: u64::from(check.child.id()),
+            });
+        } else {
+            log(tick, &format!("check {run} exited {status}"));
         }
         runtime.check = None;
         supervisor.note_check_finished();
@@ -871,7 +861,7 @@ mod runtime {
         sdk.state_set(REG_CHECK_ENABLED, u64::from(bundle.check.is_some()))
             .map_err(|error| format!("state_set({REG_CHECK_ENABLED}): {error}"))?;
         start_workload(spec, bundle, &mut runtime, supervisor, 0)?;
-        start_check(spec, bundle, &mut runtime, supervisor, 0)?;
+        start_check(spec, bundle, &mut runtime, supervisor, sdk, 0)?;
 
         loop {
             thread::sleep(Duration::from_nanos(harmony_supervisor::TICK_NANOS));
@@ -879,7 +869,8 @@ mod runtime {
                 .map_err(|error| format!("state_set({REG_PENDING_FAULTS}): {error}"))?;
             let active = poll_standing(sdk, supervisor.counters().ticks, &mut buffer)?;
             let tick = supervisor.counters().ticks + 1;
-            let deaths = reap_nodes(nodes)?;
+            let exits = reap_nodes(nodes)?;
+            let deaths: Vec<u16> = exits.iter().map(|(node, _)| *node).collect();
             for &node in &deaths {
                 supervisor.note_event_ready(node, false);
                 if let Some(events) = nodes
@@ -900,7 +891,9 @@ mod runtime {
                 sdk,
                 supervisor,
             )?;
-            for action in supervisor.tick(&active, &deaths) {
+            let actions = supervisor.tick(&active, &deaths);
+            report_node_exits(supervisor, &exits, tick)?;
+            for action in actions {
                 log(tick, &action.describe());
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
             }
@@ -932,19 +925,11 @@ mod runtime {
                 &mut runtime.retired_probes,
             )?;
             for ready in ready_hooks {
-                launch_ready_hook(
-                    ready,
-                    spec,
-                    bundle,
-                    &mut runtime.hooks,
-                    &mut runtime.launches,
-                    supervisor,
-                    tick,
-                )?;
+                launch_ready_hook(ready, spec, bundle, &mut runtime.hooks, supervisor, tick)?;
             }
             poll_workload(&mut runtime, supervisor, tick);
             poll_check(spec, bundle, &mut runtime, supervisor, sdk, tick)?;
-            drain_hooks(&mut runtime.hooks, supervisor, sdk, tick)?;
+            drain_hooks(&mut runtime.hooks, supervisor, tick)?;
             update_pending_faults(nodes, supervisor);
             let tracked: Vec<_> = nodes
                 .iter()
@@ -980,23 +965,51 @@ mod runtime {
             .map_err(|error| format!("standing answer: {error}"))
     }
 
-    fn reap_nodes(nodes: &mut [Node]) -> Result<Vec<u16>, String> {
+    fn reap_nodes(nodes: &mut [Node]) -> Result<Vec<(u16, Option<ExitStatus>)>, String> {
         let mut deaths = Vec::new();
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(child) = node.child.as_mut() else {
                 continue;
             };
-            let exited = match child.try_wait() {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
-                Err(_) => true,
+            let status = match child.try_wait() {
+                Ok(Some(status)) => Some(Some(status)),
+                Ok(None) => None,
+                Err(_) => Some(None),
             };
-            if exited {
+            if let Some(status) = status {
                 node.child = None;
-                deaths.push(id as u16);
+                deaths.push((id as u16, status));
             }
         }
         Ok(deaths)
+    }
+
+    fn report_node_exits(
+        supervisor: &mut Supervisor,
+        deaths: &[(u16, Option<ExitStatus>)],
+        tick: u64,
+    ) -> Result<(), String> {
+        for node in supervisor.take_natural_deaths() {
+            let Some(exit) = deaths
+                .iter()
+                .find(|(id, _)| *id == node)
+                .and_then(|(_, status)| status.as_ref())
+                .and_then(process::unexpected_exit)
+            else {
+                continue;
+            };
+            log(tick, &format!("node {node} ended on its own: {exit}"));
+            process::write_record(
+                &sdk_output(),
+                &process::node_exit_record(Some((node, &exit))),
+            )
+            .map_err(|error| format!("node exit record: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn sdk_output() -> PathBuf {
+        Path::new(harmony_supervisor::ANTITHESIS_OUTPUT_DIR).join("sdk.jsonl")
     }
 
     fn drive_event_channels(
@@ -1141,8 +1154,9 @@ mod runtime {
                     && let Some(events) = entry.events.as_mut()
                 {
                     events.queue(EventCommand::ArmPark {
-                        rarity: park.rarity,
+                        edges: park.edges,
                         hold_nanos: park.hold_nanos,
+                        target: park.target,
                     });
                 }
             }
@@ -1156,15 +1170,7 @@ mod runtime {
             Action::RunHook(id) => {
                 let ready_hooks = runtime.recovery.request_hook(id);
                 for ready in ready_hooks {
-                    launch_ready_hook(
-                        ready,
-                        spec,
-                        bundle,
-                        &mut runtime.hooks,
-                        &mut runtime.launches,
-                        supervisor,
-                        tick,
-                    )?;
+                    launch_ready_hook(ready, spec, bundle, &mut runtime.hooks, supervisor, tick)?;
                 }
             }
         }
@@ -1243,14 +1249,12 @@ mod runtime {
         spec: &execution_proto::ExecutionSpec,
         bundle: &Bundle,
         hooks: &mut Vec<Hook>,
-        launches: &mut u64,
         supervisor: &mut Supervisor,
         tick: u64,
     ) -> Result<(), String> {
         match bundle.hook(id) {
             Some(hook) => {
-                *launches += 1;
-                hooks.push(spawn_hook(spec, hook, *launches)?);
+                hooks.push(spawn_hook(spec, hook)?);
                 supervisor.note_hook_started();
             }
             None => log(tick, &format!("hook {id} is not declared")),
@@ -1301,24 +1305,14 @@ mod runtime {
     fn spawn_hook(
         execution: &execution_proto::ExecutionSpec,
         hook: &HookSpec,
-        launch: u64,
     ) -> Result<Hook, String> {
-        std::fs::create_dir_all(HOOK_DIR).map_err(|error| format!("{HOOK_DIR}: {error}"))?;
-        let path = PathBuf::from(HOOK_DIR).join(format!("hook-{}-{launch}.out", hook.id));
-        let sink = File::create(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let output = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut command = process::command(execution, &hook.argv)
             .map_err(|error| format!("hook {}: {error}", hook.id))?;
         let child = command
-            .stdout(Stdio::from(sink))
+            .stdout(Stdio::null())
             .spawn()
             .map_err(|error| format!("hook {}: {error}", hook.id))?;
-        Ok(Hook {
-            id: hook.id,
-            child,
-            output,
-            reader: LineReader::new(),
-        })
+        Ok(Hook { id: hook.id, child })
     }
 
     fn signal_node(nodes: &mut [Node], node: u16, signal: libc::c_int) -> Result<bool, String> {
@@ -1336,16 +1330,9 @@ mod runtime {
     fn spawn_check(
         execution: &execution_proto::ExecutionSpec,
         argv: &[String],
-        hook_dir: &Path,
         run: u64,
         start_generation: u64,
     ) -> Result<Check, String> {
-        std::fs::create_dir_all(hook_dir)
-            .map_err(|error| format!("{}: {error}", hook_dir.display()))?;
-        let path = hook_dir.join(format!("check-{run}.out"));
-        let sink = File::create(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let output = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        std::fs::remove_file(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut command = process::command(execution, argv)
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
         command.env(
@@ -1353,45 +1340,29 @@ mod runtime {
             start_generation.to_string(),
         );
         let child = command
-            .stdout(Stdio::from(sink))
+            .stdout(Stdio::null())
             .spawn()
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
         Ok(Check {
             child,
-            output,
-            reader: LineReader::new(),
-            capture: CheckCapture::new(run, start_generation),
+            run,
+            start_generation,
         })
     }
 
     fn drain_hooks(
         hooks: &mut Vec<Hook>,
         supervisor: &mut Supervisor,
-        sdk: &mut GuestSdk,
         tick: u64,
     ) -> Result<(), String> {
         let mut finished = Vec::new();
         for (index, hook) in hooks.iter_mut().enumerate() {
-            let lines = read_lines(&mut hook.output, &mut hook.reader);
-            for line in lines {
-                forward(&line, hook.id, supervisor, sdk, tick, None)?;
-            }
             let status = match hook.child.try_wait() {
                 Ok(Some(status)) => status,
                 Ok(None) => continue,
                 Err(error) => return Err(format!("hook {}: {error}", hook.id)),
             };
-            for line in read_lines(&mut hook.output, &mut hook.reader) {
-                forward(&line, hook.id, supervisor, sdk, tick, None)?;
-            }
-            if let Some(line) = hook.reader.flush() {
-                forward(&line, hook.id, supervisor, sdk, tick, None)?;
-            }
-            if status.code() == Some(HOOK_FAILURE_STATUS) {
-                log(tick, &format!("hook {} failed its assertion", hook.id));
-                sdk.assert_always(false, HOOK_FAILURE_POINT)
-                    .map_err(|error| format!("assert_always: {error}"))?;
-            } else if let Some(signal) = status.signal() {
+            if let Some(signal) = status.signal() {
                 log(tick, &format!("hook {} died on signal {signal}", hook.id));
             }
             supervisor.note_hook_finished();
@@ -1403,63 +1374,6 @@ mod runtime {
         Ok(())
     }
 
-    fn read_lines(output: &mut File, reader: &mut LineReader) -> Vec<String> {
-        let mut lines = Vec::new();
-        let mut chunk = [0_u8; 4096];
-        loop {
-            match output.read(&mut chunk) {
-                Ok(0) | Err(_) => return lines,
-                Ok(length) => lines.extend(reader.push(&chunk[..length])),
-            }
-        }
-    }
-
-    fn forward(
-        line: &str,
-        hook: u32,
-        supervisor: &mut Supervisor,
-        sdk: &mut GuestSdk,
-        tick: u64,
-        mut check: Option<&mut CheckCapture>,
-    ) -> Result<(), String> {
-        let directive = match parse_directive(line) {
-            Ok(Some(directive)) => directive,
-            Ok(None) => return Ok(()),
-            Err(error) => {
-                log(tick, &format!("hook {hook}: {error}"));
-                return Ok(());
-            }
-        };
-        let result = match directive {
-            Directive::Sometimes(point) => {
-                supervisor.note_sometimes(point);
-                let result = sdk.assert_sometimes(true, point);
-                if result.is_ok()
-                    && let Some(capture) = check.as_mut()
-                {
-                    capture.note_success(point);
-                }
-                result
-            }
-            Directive::Reachable(point) => {
-                let result = sdk.assert_reachable(point);
-                if result.is_ok()
-                    && let Some(capture) = check.as_mut()
-                {
-                    capture.note_success(point);
-                }
-                result
-            }
-            Directive::Always { point, cond } => {
-                if !cond {
-                    log(tick, &format!("hook {hook} assertion {point} failed"));
-                }
-                sdk.assert_always(cond, point)
-            }
-        };
-        result.map_err(|error| format!("hook {hook} directive {line:?}: {error}"))
-    }
-
     fn log(tick: u64, what: &str) {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "HS: {tick} {what}");
@@ -1469,70 +1383,17 @@ mod runtime {
     #[cfg(test)]
     mod tests {
         use super::{
-            Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events,
-            inherit_event_fd, read_lines, spawn_check,
+            Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events, inherit_event_fd,
         };
         use process_proto::ProcessAction;
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
-        use std::os::unix::fs::MetadataExt;
         use std::os::unix::net::UnixStream;
 
         fn event_faults() -> ActiveWindows {
             let mut active = ActiveWindows::new();
             active.insert(0, &ProcessAction::EventKill { rarity: 0 }, 0);
             active
-        }
-
-        fn current_groups() -> Vec<u32> {
-            let status = std::fs::read_to_string("/proc/self/status").expect("process status");
-            let mut groups = status
-                .lines()
-                .find_map(|line| line.strip_prefix("Groups:"))
-                .expect("process groups")
-                .split_whitespace()
-                .map(|group| group.parse().expect("group id"))
-                .collect::<Vec<_>>();
-            groups.sort_unstable();
-            groups.dedup();
-            groups
-        }
-
-        #[test]
-        #[cfg_attr(miri, ignore = "Miri does not support isolated filesystem processes")]
-        fn check_output_is_unlinked_while_the_open_stream_remains_readable() {
-            let directory =
-                std::env::temp_dir().join(format!("harmony-check-output-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&directory);
-            std::fs::create_dir(&directory).expect("create check directory");
-            let argv = [
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                "printf '@reachable 7\\n'".to_owned(),
-            ];
-            let execution = execution_proto::ExecutionSpec {
-                version: execution_proto::VERSION,
-                argv: argv.to_vec(),
-                env: Vec::new(),
-                cwd: "/".to_owned(),
-                uid: std::fs::metadata("/proc/self")
-                    .expect("process metadata")
-                    .uid(),
-                gid: std::fs::metadata("/proc/self")
-                    .expect("process metadata")
-                    .gid(),
-                additional_gids: current_groups(),
-                bundle: None,
-            };
-            let mut check = spawn_check(&execution, &argv, &directory, 3, 0).expect("spawn check");
-            assert!(!directory.join("check-3.out").exists());
-            assert!(check.child.wait().expect("wait for check").success());
-            assert_eq!(
-                read_lines(&mut check.output, &mut check.reader),
-                ["@reachable 7"]
-            );
-            drop(check);
-            std::fs::remove_dir(directory).expect("remove check directory");
         }
 
         #[test]
@@ -1646,6 +1507,97 @@ mod runtime {
 
         #[test]
         #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_held_park_thread_is_published_until_its_hold_ends_or_its_node_dies() {
+            let (control, child_control) = UnixStream::pair().expect("control pair");
+            let (report, _child_report) = UnixStream::pair().expect("report pair");
+            let mut channel = EventChannel::new(control, report).expect("event channel");
+            let mut supervisor = Supervisor::new(1);
+            channel.ready = true;
+            channel.park_armed = true;
+            let mut request = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+            let mut status = |channel: &mut EventChannel, supervisor: &mut Supervisor, flags| {
+                channel.queue(EventCommand::ParkStatus);
+                channel.drive(0, supervisor, 1);
+                (&child_control)
+                    .read_exact(&mut request)
+                    .expect("park status request");
+                assert_eq!(request, events::encode_command(EventCommand::ParkStatus));
+                let mut reply = request;
+                reply[8..16].copy_from_slice(&1_u64.to_le_bytes());
+                reply[16..24].copy_from_slice(&u64::to_le_bytes(flags));
+                (&child_control)
+                    .write_all(&reply)
+                    .expect("park status reply");
+            };
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+            assert_eq!(supervisor.counters().event_park_fires, 1);
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_ARMED,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 0);
+            assert!(channel.park_armed);
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+
+            channel.queue(EventCommand::DisarmPark);
+            channel.drive(0, &mut supervisor, 1);
+            let mut disarm = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+            (&child_control)
+                .read_exact(&mut disarm)
+                .expect("disarm request");
+            (&child_control)
+                .write_all(&disarm)
+                .expect("disarm acknowledgement");
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+            assert!(channel.park_armed);
+            assert!(channel.pending_faults() > 0);
+            let generation = supervisor.counters().disturbance_generation;
+            channel.poll_status();
+            assert_eq!(channel.commands.front(), Some(&EventCommand::ParkStatus));
+            channel.commands.clear();
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 1);
+            assert!(channel.park_armed);
+            status(&mut channel, &mut supervisor, 0);
+            channel.drive(0, &mut supervisor, 1);
+            assert_eq!(supervisor.counters().event_park_held, 0);
+            assert!(!channel.park_armed);
+            assert_eq!(channel.pending_faults(), 0);
+            assert_eq!(supervisor.counters().disturbance_generation, generation + 1);
+
+            channel.park_armed = true;
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_HELD,
+            );
+            channel.drain_pending_on_death(0, &mut supervisor, 2);
+            assert_eq!(supervisor.counters().event_park_held, 0);
+            assert_eq!(supervisor.counters().event_park_fires, 1);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
         fn a_reported_kill_stays_pending_until_observed_death() {
             let (control, _child_control) = UnixStream::pair().unwrap();
             let (report, mut child_report) = UnixStream::pair().unwrap();
@@ -1740,6 +1692,24 @@ mod runtime {
             channel.reconcile_closed(0, 2);
             assert!(channel.failed);
             assert!(channel.take_transport_error().is_some());
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_retired_channel_closed_before_the_reap_is_not_an_error() {
+            let (control, child_control) = UnixStream::pair().unwrap();
+            let (report, child_report) = UnixStream::pair().unwrap();
+            let mut channel = EventChannel::new(control, report).unwrap();
+            let mut supervisor = Supervisor::new(1);
+            channel.ready = true;
+            channel.retire(0, &mut supervisor, 1);
+            drop(child_control);
+            drop(child_report);
+            channel.drain_reports(0, &mut supervisor, 1, false);
+            channel.reconcile_closed(0, 2);
+            assert!(!channel.failed);
+            assert!(channel.take_transport_error().is_none());
+            assert_eq!(channel.pending_faults(), 0);
         }
     }
 }

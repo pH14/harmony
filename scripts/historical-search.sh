@@ -29,9 +29,13 @@ base_initramfs=${PWD}/guest/initramfs-oci.cpio.gz
 chmod +x "${harmony}"
 test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 
-mkdir -p reports
-out="reports/${CASE_ID}.search"
-console="reports/${CASE_ID}.search.console.txt"
+report_dir=reports
+if [ "${RUN_KEY:-${CASE_ID}}" != "${CASE_ID}" ]; then
+    report_dir="reports/${RUN_KEY}"
+fi
+mkdir -p "${report_dir}"
+out="${report_dir}/${CASE_ID}.search"
+console="${report_dir}/${CASE_ID}.search.console.txt"
 rm -rf "${out}"
 
 # The outer bound covers a process that stops answering after the campaign's
@@ -186,8 +190,8 @@ jq -n \
         ["wall seconds", (.wall_seconds | tostring)],
         ["bug found", (.bug_found | tostring)],
         ["raw findings", ((.bugs // []) | length | tostring)],
-        ["confirmed findings carrying assertion", (([.bugs[]? | select(.confirmed and ((.violations // []) | index($assertion | tonumber)) != null)] | length) | tostring)],
-        ["oracle verdict evidence", (([.bugs[]?.sometimes[]? | select(. == ($evidence | tonumber))] | length > 0) | tostring)],
+        ["confirmed findings carrying assertion", (([.bugs[]? | select(.confirmed and ((.violations // []) | index($assertion)) != null)] | length) | tostring)],
+        ["oracle verdict evidence", (([.bugs[]?.sometimes[]? | select(. == $evidence)] | length > 0) | tostring)],
         ["executions to first hit", (.first_bug_execution | tostring)],
         ["execution status", $execution_status],
         ["guests cut off by watchdog", $cutoff],

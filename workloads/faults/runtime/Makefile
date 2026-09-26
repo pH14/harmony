@@ -2,7 +2,7 @@
 CC ?= cc
 CFLAGS ?= -O2
 BUILD_DIR ?= build
-WARNINGS := -Wall -Wextra -Werror -Wconversion -Wpedantic
+WARNINGS := -Wall -Wextra -Werror -Wconversion -Wpedantic -D_GNU_SOURCE
 CORE_DIR ?= ../../../consonance/harmony-linux/libvoidstar
 CORE := $(CORE_DIR)/voidstar.c
 MAP := $(CORE_DIR)/libvoidstar.map
@@ -18,6 +18,7 @@ LIB := $(BUILD_DIR)/libvoidstar.so
 EVENT_TEST := $(BUILD_DIR)/event-test
 HOOK_TEST := $(BUILD_DIR)/hook-test
 SITE_TEST := $(BUILD_DIR)/site-test
+WATCH_TEST := $(BUILD_DIR)/watch-test
 
 .PHONY: all check clean
 
@@ -40,10 +41,14 @@ $(HOOK_TEST): tests/hook_test.c $(LIB) fault_runtime.h | $(BUILD_DIR)
 $(SITE_TEST): tests/site_test.c fault_runtime.c fault_runtime.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/site_test.c
 
-check: $(LIB) $(EVENT_TEST) $(HOOK_TEST) $(SITE_TEST)
+$(WATCH_TEST): tests/watch_test.c fault_runtime.c fault_runtime_shim.c fault_runtime.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/watch_test.c
+
+check: $(LIB) $(EVENT_TEST) $(HOOK_TEST) $(SITE_TEST) $(WATCH_TEST)
 	$(EVENT_TEST)
 	$(HOOK_TEST)
 	$(SITE_TEST)
+	$(WATCH_TEST)
 
 clean:
 	rm -rf $(BUILD_DIR)

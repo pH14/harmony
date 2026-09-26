@@ -5,30 +5,18 @@ pub use process_proto::registers::{
     ALIVE as REG_ALIVE, CHECK_ENABLED as REG_CHECK_ENABLED, CHECKS_FINISHED as REG_CHECKS_FINISHED,
     CHECKS_STARTED as REG_CHECKS_STARTED,
     COMPLETED_CHECK_END_GENERATION as REG_COMPLETED_CHECK_END_GENERATION,
-    COMPLETED_CHECK_POINTS as REG_COMPLETED_CHECK_POINTS,
-    COMPLETED_CHECK_RUN as REG_COMPLETED_CHECK_RUN,
+    COMPLETED_CHECK_PID as REG_COMPLETED_CHECK_PID, COMPLETED_CHECK_RUN as REG_COMPLETED_CHECK_RUN,
     COMPLETED_CHECK_START_GENERATION as REG_COMPLETED_CHECK_START_GENERATION,
-    DISTURBANCE_GENERATION as REG_DISTURBANCE_GENERATION, EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES,
-    EVENT_KILL_SITE as REG_EVENT_KILL_SITE, EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES,
+    DISTURBANCE_GENERATION as REG_DISTURBANCE_GENERATION, EDGE_CROSSINGS as REG_EDGE_CROSSINGS,
+    EDGE_DIGEST as REG_EDGE_DIGEST, EVENT_KILL_ARMED as REG_EVENT_KILL_ARMED,
+    EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES, EVENT_KILL_SITE as REG_EVENT_KILL_SITE,
+    EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES, EVENT_PARK_HELD as REG_EVENT_PARK_HELD,
     EVENT_READY as REG_EVENT_READY, HOOKS_FINISHED as REG_HOOKS_FINISHED,
     HOOKS_STARTED as REG_HOOKS_STARTED, INFRASTRUCTURE_ERROR as REG_INFRASTRUCTURE_ERROR,
-    PENDING_FAULTS as REG_PENDING_FAULTS, RESTARTS as REG_RESTARTS, SOMETIMES as REG_SOMETIMES,
-    TICKS as REG_TICKS, UNEXPECTED_DEATHS as REG_UNEXPECTED_DEATHS,
-    WORKLOAD_FINISHED as REG_WORKLOAD_FINISHED, WORKLOAD_STARTED as REG_WORKLOAD_STARTED,
+    PENDING_FAULTS as REG_PENDING_FAULTS, RESTARTS as REG_RESTARTS, TICKS as REG_TICKS,
+    UNEXPECTED_DEATHS as REG_UNEXPECTED_DEATHS, WORKLOAD_FINISHED as REG_WORKLOAD_FINISHED,
+    WORKLOAD_STARTED as REG_WORKLOAD_STARTED,
 };
-
-pub const SOMETIMES_BITMAP_IDS: u32 = 48;
-pub const CHECK_POINT_IDS: u32 = SOMETIMES_BITMAP_IDS;
-
-#[must_use]
-pub fn point_bit(id: u32) -> Option<u64> {
-    (id < CHECK_POINT_IDS).then(|| 1_u64 << id)
-}
-
-#[must_use]
-pub fn sometimes_bit(id: u32) -> Option<u64> {
-    point_bit(id)
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RegisterSnapshot {
@@ -36,7 +24,6 @@ pub struct RegisterSnapshot {
     pub alive: u64,
     pub hooks_started: u64,
     pub hooks_finished: u64,
-    pub sometimes: u64,
     pub unexpected_deaths: u64,
     pub restarts: u64,
     pub event_kill_fires: u64,
@@ -50,22 +37,25 @@ pub struct RegisterSnapshot {
     pub event_ready: u64,
     pub disturbance_generation: u64,
     pub check_enabled: u64,
-    pub completed_check_run: u64,
+    pub completed_check_pid: u64,
     pub completed_check_start_generation: u64,
     pub completed_check_end_generation: u64,
-    pub completed_check_points: u64,
+    pub completed_check_run: u64,
     pub pending_faults: u64,
+    pub edge_crossings: u64,
+    pub edge_digest: u64,
+    pub event_park_held: u64,
+    pub event_kill_armed: u64,
 }
 
 impl RegisterSnapshot {
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 23] {
+    pub fn pairs(&self) -> [(u32, u64); 26] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
             (REG_HOOKS_STARTED, self.hooks_started),
             (REG_HOOKS_FINISHED, self.hooks_finished),
-            (REG_SOMETIMES, self.sometimes),
             (REG_UNEXPECTED_DEATHS, self.unexpected_deaths),
             (REG_RESTARTS, self.restarts),
             (REG_EVENT_KILL_FIRES, self.event_kill_fires),
@@ -79,7 +69,7 @@ impl RegisterSnapshot {
             (REG_EVENT_READY, self.event_ready),
             (REG_DISTURBANCE_GENERATION, self.disturbance_generation),
             (REG_CHECK_ENABLED, self.check_enabled),
-            (REG_COMPLETED_CHECK_RUN, self.completed_check_run),
+            (REG_COMPLETED_CHECK_PID, self.completed_check_pid),
             (
                 REG_COMPLETED_CHECK_START_GENERATION,
                 self.completed_check_start_generation,
@@ -88,8 +78,12 @@ impl RegisterSnapshot {
                 REG_COMPLETED_CHECK_END_GENERATION,
                 self.completed_check_end_generation,
             ),
-            (REG_COMPLETED_CHECK_POINTS, self.completed_check_points),
+            (REG_COMPLETED_CHECK_RUN, self.completed_check_run),
             (REG_PENDING_FAULTS, self.pending_faults),
+            (REG_EDGE_CROSSINGS, self.edge_crossings),
+            (REG_EDGE_DIGEST, self.edge_digest),
+            (REG_EVENT_PARK_HELD, self.event_park_held),
+            (REG_EVENT_KILL_ARMED, self.event_kill_armed),
         ]
     }
 }
@@ -145,7 +139,6 @@ mod tests {
                 (REG_ALIVE, 0b11),
                 (REG_HOOKS_STARTED, 0),
                 (REG_HOOKS_FINISHED, 0),
-                (REG_SOMETIMES, 0),
                 (REG_UNEXPECTED_DEATHS, 0),
                 (REG_RESTARTS, 0),
                 (REG_EVENT_KILL_FIRES, 0),
@@ -159,11 +152,15 @@ mod tests {
                 (REG_EVENT_READY, 0),
                 (REG_DISTURBANCE_GENERATION, 0),
                 (REG_CHECK_ENABLED, 0),
-                (REG_COMPLETED_CHECK_RUN, 0),
+                (REG_COMPLETED_CHECK_PID, 0),
                 (REG_COMPLETED_CHECK_START_GENERATION, 0),
                 (REG_COMPLETED_CHECK_END_GENERATION, 0),
-                (REG_COMPLETED_CHECK_POINTS, 0),
+                (REG_COMPLETED_CHECK_RUN, 0),
                 (REG_PENDING_FAULTS, 0),
+                (REG_EDGE_CROSSINGS, 0),
+                (REG_EDGE_DIGEST, 0),
+                (REG_EVENT_PARK_HELD, 0),
+                (REG_EVENT_KILL_ARMED, 0),
             ]
         );
     }
@@ -224,14 +221,6 @@ mod tests {
     #[test]
     fn supervisor_registers_occupy_a_high_reserved_range() {
         assert_eq!(SUPERVISOR_REGISTER_BASE, 0x00ff_f000);
-        assert_eq!(REG_EVENT_KILL_FIRES, SUPERVISOR_REGISTER_BASE + 7);
-    }
-
-    #[test]
-    fn the_sometimes_bitmap_is_forty_eight_ids_wide() {
-        assert_eq!(sometimes_bit(0), Some(1));
-        assert_eq!(sometimes_bit(47), Some(1 << 47));
-        assert_eq!(sometimes_bit(48), None);
-        assert_eq!(sometimes_bit(u32::MAX), None);
+        assert_eq!(REG_EVENT_KILL_FIRES, SUPERVISOR_REGISTER_BASE + 6);
     }
 }

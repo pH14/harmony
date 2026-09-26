@@ -10,7 +10,7 @@ python3 "${manifest}" --check
 all=$(python3 "${manifest}" --matrix)
 runnable=$(python3 "${manifest}" --runnable-matrix)
 
-test "$(jq '.include | length' <<<"${all}")" -eq 2
+test "$(jq '.include | length' <<<"${all}")" -eq 3
 test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 2
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .job_timeout_minutes' <<<"${all}")" -eq 230
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .job_timeout_minutes' <<<"${all}")" -eq 320
@@ -104,5 +104,20 @@ except SystemExit as error:
 else:
     raise SystemExit("manifest accepted a committed seed")
 PY
+
+matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case etcd-3.5-inconsistency --seeds 3,5)
+python3 - "${matrix}" <<'PY'
+import json
+import sys
+
+entries = json.loads(sys.argv[1])["include"]
+assert [entry["seed"] for entry in entries] == [3, 5], entries
+assert len({entry["run_key"] for entry in entries}) == 2, entries
+assert {entry["id"] for entry in entries} == {"etcd-3.5-inconsistency"}, entries
+PY
+if python3 scripts/historical-manifest.py --runnable-matrix --case no-such-case >/dev/null 2>&1; then
+    printf 'manifest accepted an unknown case filter\n' >&2
+    exit 1
+fi
 
 printf 'historical manifest checks passed\n'

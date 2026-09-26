@@ -10,25 +10,28 @@ pub mod registers {
     pub const ALIVE: u32 = SUPERVISOR_REGISTER_BASE + 1;
     pub const HOOKS_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 2;
     pub const HOOKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 3;
-    pub const SOMETIMES: u32 = SUPERVISOR_REGISTER_BASE + 4;
-    pub const UNEXPECTED_DEATHS: u32 = SUPERVISOR_REGISTER_BASE + 5;
-    pub const RESTARTS: u32 = SUPERVISOR_REGISTER_BASE + 6;
-    pub const EVENT_KILL_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 7;
-    pub const EVENT_KILL_SITE: u32 = SUPERVISOR_REGISTER_BASE + 8;
-    pub const EVENT_PARK_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 9;
-    pub const WORKLOAD_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 10;
-    pub const WORKLOAD_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 11;
-    pub const CHECKS_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 12;
-    pub const CHECKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 13;
-    pub const INFRASTRUCTURE_ERROR: u32 = SUPERVISOR_REGISTER_BASE + 14;
-    pub const EVENT_READY: u32 = SUPERVISOR_REGISTER_BASE + 15;
-    pub const DISTURBANCE_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 16;
-    pub const CHECK_ENABLED: u32 = SUPERVISOR_REGISTER_BASE + 17;
-    pub const COMPLETED_CHECK_RUN: u32 = SUPERVISOR_REGISTER_BASE + 18;
-    pub const COMPLETED_CHECK_START_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 19;
-    pub const COMPLETED_CHECK_END_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 20;
-    pub const COMPLETED_CHECK_POINTS: u32 = SUPERVISOR_REGISTER_BASE + 21;
-    pub const PENDING_FAULTS: u32 = SUPERVISOR_REGISTER_BASE + 22;
+    pub const UNEXPECTED_DEATHS: u32 = SUPERVISOR_REGISTER_BASE + 4;
+    pub const RESTARTS: u32 = SUPERVISOR_REGISTER_BASE + 5;
+    pub const EVENT_KILL_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 6;
+    pub const EVENT_KILL_SITE: u32 = SUPERVISOR_REGISTER_BASE + 7;
+    pub const EVENT_PARK_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 8;
+    pub const WORKLOAD_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 9;
+    pub const WORKLOAD_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 10;
+    pub const CHECKS_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 11;
+    pub const CHECKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 12;
+    pub const INFRASTRUCTURE_ERROR: u32 = SUPERVISOR_REGISTER_BASE + 13;
+    pub const EVENT_READY: u32 = SUPERVISOR_REGISTER_BASE + 14;
+    pub const DISTURBANCE_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 15;
+    pub const CHECK_ENABLED: u32 = SUPERVISOR_REGISTER_BASE + 16;
+    pub const COMPLETED_CHECK_PID: u32 = SUPERVISOR_REGISTER_BASE + 17;
+    pub const COMPLETED_CHECK_START_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 18;
+    pub const COMPLETED_CHECK_END_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 19;
+    pub const COMPLETED_CHECK_RUN: u32 = SUPERVISOR_REGISTER_BASE + 20;
+    pub const PENDING_FAULTS: u32 = SUPERVISOR_REGISTER_BASE + 21;
+    pub const EDGE_CROSSINGS: u32 = SUPERVISOR_REGISTER_BASE + 22;
+    pub const EDGE_DIGEST: u32 = SUPERVISOR_REGISTER_BASE + 23;
+    pub const EVENT_PARK_HELD: u32 = SUPERVISOR_REGISTER_BASE + 24;
+    pub const EVENT_KILL_ARMED: u32 = SUPERVISOR_REGISTER_BASE + 25;
 }
 
 pub const PROCESS_CLASS: u16 = 6;
@@ -48,8 +51,14 @@ pub enum ProcessAction {
     Kill,
     Restart,
     RunHook(u32),
-    EventKill { rarity: u8 },
-    EventPark { rarity: u8, hold_nanos: u64 },
+    EventKill {
+        rarity: u8,
+    },
+    EventPark {
+        edges: u32,
+        hold_nanos: u64,
+        target: Option<events::ParkTarget>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,10 +220,22 @@ fn write_action(out: &mut Vec<u8>, action: ProcessAction) {
             out.push(EVENT_KILL);
             out.push(rarity);
         }
-        ProcessAction::EventPark { rarity, hold_nanos } => {
+        ProcessAction::EventPark {
+            edges,
+            hold_nanos,
+            target,
+        } => {
             out.push(EVENT_PARK);
-            out.push(rarity);
+            put_u32(out, edges);
             put_u64(out, hold_nanos);
+            match target {
+                None => out.push(0),
+                Some(target) => {
+                    out.push(1);
+                    put_u64(out, target.start);
+                    put_u64(out, target.end);
+                }
+            }
         }
     }
 }
@@ -233,12 +254,24 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
             Ok(ProcessAction::EventKill { rarity })
         }
         EVENT_PARK => {
-            let rarity = reader.u8()?;
+            let edges = reader.u32()?;
             let hold_nanos = reader.u64()?;
-            if rarity >= events::EVENT_RARITY_LIMIT || hold_nanos == 0 {
+            if edges == 0 || edges > events::EVENT_PARK_EDGE_LIMIT || hold_nanos == 0 {
                 return Err(WireError::Malformed);
             }
-            Ok(ProcessAction::EventPark { rarity, hold_nanos })
+            let target = match reader.u8()? {
+                0 => None,
+                1 => Some(
+                    events::ParkTarget::new(reader.u64()?, reader.u64()?)
+                        .ok_or(WireError::Malformed)?,
+                ),
+                _ => return Err(WireError::Malformed),
+            };
+            Ok(ProcessAction::EventPark {
+                edges,
+                hold_nanos,
+                target,
+            })
         }
         _ => Err(WireError::Malformed),
     }
@@ -349,7 +382,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
-    fn actions() -> [ProcessAction; 6] {
+    fn actions() -> [ProcessAction; 7] {
         [
             ProcessAction::Pause(1234),
             ProcessAction::Kill,
@@ -357,8 +390,14 @@ mod tests {
             ProcessAction::RunHook(7),
             ProcessAction::EventKill { rarity: 3 },
             ProcessAction::EventPark {
-                rarity: 5,
+                edges: 5,
                 hold_nanos: 2_000_000,
+                target: None,
+            },
+            ProcessAction::EventPark {
+                edges: 1,
+                hold_nanos: 2_000_000,
+                target: events::ParkTarget::new(0x40, 0x41),
             },
         ]
     }
@@ -373,7 +412,6 @@ mod tests {
                 ALIVE,
                 HOOKS_STARTED,
                 HOOKS_FINISHED,
-                SOMETIMES,
                 UNEXPECTED_DEATHS,
                 RESTARTS,
                 EVENT_KILL_FIRES,
@@ -387,11 +425,15 @@ mod tests {
                 EVENT_READY,
                 DISTURBANCE_GENERATION,
                 CHECK_ENABLED,
-                COMPLETED_CHECK_RUN,
+                COMPLETED_CHECK_PID,
                 COMPLETED_CHECK_START_GENERATION,
                 COMPLETED_CHECK_END_GENERATION,
-                COMPLETED_CHECK_POINTS,
+                COMPLETED_CHECK_RUN,
                 PENDING_FAULTS,
+                EDGE_CROSSINGS,
+                EDGE_DIGEST,
+                EVENT_PARK_HELD,
+                EVENT_KILL_ARMED,
             ],
             core::array::from_fn(|offset| SUPERVISOR_REGISTER_BASE + offset as u32)
         );
@@ -405,7 +447,11 @@ mod tests {
             vec![11],
             vec![17, 7, 0, 0, 0],
             vec![20, 3],
-            vec![21, 5, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0],
+            vec![21, 5, 0, 0, 0, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0, 0],
+            vec![
+                21, 1, 0, 0, 0, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0, 1, 0x40, 0, 0, 0, 0, 0, 0, 0,
+                0x41, 0, 0, 0, 0, 0, 0, 0,
+            ],
             vec![
                 19, 0x86, 0x0e, 0x4b, 0, 0, 0, 0, 0, 28, 0, 0, 0, 0x80, 0x84, 0x1e, 0, 0, 0, 0, 0,
             ],
@@ -428,27 +474,35 @@ mod tests {
     }
 
     #[test]
-    fn event_park_requires_valid_rarity_and_positive_hold() {
-        assert_eq!(
-            ProcessAction::decode(
-                &ProcessAction::EventPark {
-                    rarity: events::EVENT_RARITY_LIMIT,
-                    hold_nanos: 1,
-                }
-                .encode()
-            ),
-            None
-        );
-        assert_eq!(
-            ProcessAction::decode(
-                &ProcessAction::EventPark {
-                    rarity: 0,
-                    hold_nanos: 0,
-                }
-                .encode()
-            ),
-            None
-        );
+    fn event_park_requires_an_edge_count_in_range_and_positive_hold() {
+        for (edges, hold_nanos) in [(0, 1), (events::EVENT_PARK_EDGE_LIMIT + 1, 1), (1, 0)] {
+            assert_eq!(
+                ProcessAction::decode(
+                    &ProcessAction::EventPark {
+                        edges,
+                        hold_nanos,
+                        target: None,
+                    }
+                    .encode()
+                ),
+                None
+            );
+        }
+        let longest = ProcessAction::EventPark {
+            edges: events::EVENT_PARK_EDGE_LIMIT,
+            hold_nanos: 1,
+            target: None,
+        };
+        assert_eq!(ProcessAction::decode(&longest.encode()), Some(longest));
+        let empty = ProcessAction::EventPark {
+            edges: 1,
+            hold_nanos: 1,
+            target: Some(events::ParkTarget { start: 9, end: 9 }),
+        };
+        assert_eq!(ProcessAction::decode(&empty.encode()), None);
+        let mut unknown = longest.encode();
+        *unknown.last_mut().expect("presence byte") = 2;
+        assert_eq!(ProcessAction::decode(&unknown), None);
     }
 
     #[test]

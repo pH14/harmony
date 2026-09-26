@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use fault_policy::{
     Action, Answer, BitMask, BlockOp, ConnId, DecisionClass, DecisionPoint as P, EnvSpec,
-    Environment, Fault, FaultPolicy, HostFault, NodeId, Outcome, Ratio, SeededEnv, Span,
+    Environment, Fault, FaultPolicy, HostFault, NodeId, Outcome, ParkTarget, Ratio, SeededEnv,
+    Span,
 };
 
 const SEED: u64 = 0x0123_4567_89AB_CDEF;
@@ -213,10 +214,19 @@ fn golden_process_fault_wire_format() {
         (Fault::ProcEventKill { rarity: 0 }, "021400"),
         (
             Fault::ProcEventPark {
-                rarity: 3,
+                edges: 3,
                 hold: Span(2_000_000),
+                target: None,
             },
-            "02150380841e0000000000",
+            "02150300000080841e000000000000",
+        ),
+        (
+            Fault::ProcEventPark {
+                edges: 1,
+                hold: Span(2_000_000),
+                target: ParkTarget::new(0x892e8, 0x892ec),
+            },
+            "02150100000080841e000000000001e892080000000000ec92080000000000",
         ),
     ] {
         let got = to_hex(&Answer::Fault(fault).encode());
