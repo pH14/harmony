@@ -16,6 +16,10 @@ use crate::search::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+fn unset_action_cost<A>() -> fn(&A) -> u64 {
+    |_| 0
+}
+
 fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
     values
         .into_iter()
@@ -25,9 +29,9 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
 }
 
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
-    type Place: Copy + Ord + Debug;
-    type Progress: Copy + Ord + Debug;
-    type Identity: Copy + Ord + Debug;
+    type Place: Copy + Ord + Debug + Serialize + DeserializeOwned;
+    type Progress: Copy + Ord + Debug + Serialize + DeserializeOwned;
+    type Identity: Copy + Ord + Debug + Serialize + DeserializeOwned;
     fn place(self) -> Self::Place;
     fn progress(self) -> Self::Progress;
     fn identity(self) -> Self::Identity;
@@ -43,7 +47,7 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
     }
-    type Lineage: Clone + Default;
+    type Lineage: Clone + Default + Serialize + DeserializeOwned;
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
     fn record(lineage: &mut Self::Lineage, key: Self);
 }
@@ -390,7 +394,11 @@ pub mod entries_by_suffix {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(bound(
+    serialize = "A: Serialize, K: Serialize, M: Serialize",
+    deserialize = "A: DeserializeOwned, K: DeserializeOwned, M: DeserializeOwned"
+))]
 pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     pub(crate) id: u64,
     pub(crate) parent_id: Option<u64>,
@@ -400,6 +408,7 @@ pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     input_node: usize,
     pub(crate) key: K,
     pub(crate) milestones: M,
+    #[serde(skip)]
     pub(crate) snapshot: Option<Arc<S>>,
 }
 
@@ -415,6 +424,11 @@ pub struct ArchiveCandidate<A: Ord, K, M> {
     pub milestones: M,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(
+    serialize = "A: Serialize, M: Serialize",
+    deserialize = "A: DeserializeOwned, M: DeserializeOwned"
+))]
 pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub max_entries: usize,
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
@@ -434,6 +448,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     productive: Vec<u64>,
     opened_cell: Vec<bool>,
     opened_slot: Vec<bool>,
+    #[serde(with = "crate::search::checkpoint::json_bytes")]
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
@@ -442,6 +457,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     replacement_preferences: Vec<u8>,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
+    #[serde(skip, default = "unset_action_cost::<A>")]
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
@@ -466,6 +482,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[cfg(test)]
     liveness_anchor_reactivations: u64,
     resident_snapshot_bytes: usize,
+    #[serde(skip)]
     snapshot_memory_charge: Option<fn(&S) -> usize>,
     resident_snapshot_order: VecDeque<usize>,
     snapshot_evictions: u64,
@@ -478,18 +495,20 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     landed: BTreeSet<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 struct CellState {
     active: usize,
     draws: u64,
     draws_total: u64,
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 struct CellMembers {
     ids: BTreeSet<usize>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "")]
 struct DonorRank<K: ArchiveKey> {
     leaf_key: K,
     leaf_id: usize,
@@ -528,6 +547,8 @@ impl<K: ArchiveKey> Ord for DonorRank<K> {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(serialize = "A: Serialize", deserialize = "A: DeserializeOwned"))]
 struct InputNode<A: Ord> {
     parent: Option<usize>,
     action: Option<A>,
@@ -535,6 +556,8 @@ struct InputNode<A: Ord> {
     owner: Option<u64>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(serialize = "A: Serialize", deserialize = "A: DeserializeOwned"))]
 struct InputIndex<A: Ord> {
     nodes: Vec<Option<InputNode<A>>>,
     free: Vec<usize>,
@@ -713,7 +736,7 @@ impl<A: Clone + Ord> InputIndex<A> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 struct ActiveIds {
     ids: BTreeSet<usize>,
 }
@@ -1688,6 +1711,41 @@ where
     #[cfg(test)]
     pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
         self.cost_in_group[id]
+    }
+
+    #[must_use]
+    pub fn top_progress(&self) -> Option<K::Progress> {
+        self.tiers.last_key_value().map(|(progress, _)| *progress)
+    }
+
+    pub(crate) fn resident_snapshot_entries(&self) -> impl Iterator<Item = (u64, &S)> {
+        self.entries.iter().filter_map(|entry| {
+            entry
+                .snapshot
+                .as_deref()
+                .map(|snapshot| (entry.id, snapshot))
+        })
+    }
+
+    pub(crate) fn restore_runtime(
+        &mut self,
+        action_cost: fn(&A) -> u64,
+        charge: Option<fn(&S) -> usize>,
+        snapshots: Vec<(u64, S)>,
+    ) -> Result<(), &'static str> {
+        self.action_cost = action_cost;
+        self.snapshot_memory_charge = if self.memory_limit.is_some() {
+            Some(charge.ok_or("a memory-budgeted archive needs its snapshot charge")?)
+        } else {
+            None
+        };
+        for (id, snapshot) in snapshots {
+            let index = self
+                .index_of_id(id)
+                .ok_or("a checkpoint snapshot names a missing archive entry")?;
+            self.entries[index].snapshot = Some(Arc::new(snapshot));
+        }
+        Ok(())
     }
 
     #[must_use]

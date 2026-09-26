@@ -20,6 +20,9 @@ use crate::search::archive::{
     SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath,
     retention_policy_from_identifier, retention_policy_identifier,
 };
+use crate::search::checkpoint::{
+    CheckpointHeader, CheckpointPlan, CheckpointReader, CheckpointWriter, SEARCH_CHECKPOINT_FORMAT,
+};
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
@@ -60,6 +63,7 @@ const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
+const ORIGIN_SEARCH_CHECKPOINT: &str = "search_checkpoint";
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ResultBuffering {
@@ -77,10 +81,11 @@ impl ResultBuffering {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CampaignExecutionOptions {
     pub work_budget: Option<u64>,
     pub result_buffering: ResultBuffering,
+    pub checkpoints: Option<CheckpointPlan>,
 }
 
 pub const DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER: usize = 1;
@@ -174,6 +179,15 @@ pub trait Reporting: CampaignTypes {
         _observations: &[Self::Observations],
         _sequence: u64,
     ) {
+    }
+    fn evidence_checkpoint(_evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        Err("this workload cannot write its evidence into a search checkpoint".into())
+    }
+    fn evidence_from_checkpoint(_bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        Err("this workload cannot read its evidence from a search checkpoint".into())
+    }
+    fn checkpoint_marks(_evidence: &Self::Evidence) -> usize {
+        0
     }
     fn stream_format(&self) -> &'static str;
     fn checkpoint_format(&self) -> &'static str;
@@ -515,6 +529,9 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
         file_sha256: String,
         report: Box<G::ArchiveReport>,
         checkpoint: Option<CampaignCheckpoint<G::Snapshot>>,
+    },
+    SearchCheckpoint {
+        path: PathBuf,
     },
 }
 
@@ -1282,6 +1299,43 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
     }
 
+    fn checkpoint_state(&self) -> CoreCheckpoint<G> {
+        CoreCheckpoint {
+            curve: self.curve.clone(),
+            curve_interval: self.curve_interval,
+            bounded_progress_curve: self.bounded_progress_curve,
+            record_progress: self.record_progress,
+            terminal_endpoints: self.terminal_endpoints,
+            terminal_objectives: self.terminal_objectives,
+            execution_failures: self.execution_failures,
+            objectives_reached: self.objectives_reached,
+            objective_witness: self.objective_witness.clone(),
+            sequence: self.sequence,
+            probe_refused: self.probe_refused,
+            max_actions: self.max_actions,
+            mixture_energy: self.mixture_energy,
+        }
+    }
+
+    fn restore_state(&mut self, state: CoreCheckpoint<G>) -> Result<(), Box<dyn Error>> {
+        if state.max_actions != self.max_actions {
+            return Err("search checkpoint action limit differs from the campaign".into());
+        }
+        self.curve = state.curve;
+        self.curve_interval = state.curve_interval;
+        self.bounded_progress_curve = state.bounded_progress_curve;
+        self.record_progress = state.record_progress;
+        self.terminal_endpoints = state.terminal_endpoints;
+        self.terminal_objectives = state.terminal_objectives;
+        self.execution_failures = state.execution_failures;
+        self.objectives_reached = state.objectives_reached;
+        self.objective_witness = state.objective_witness;
+        self.sequence = state.sequence;
+        self.probe_refused = state.probe_refused;
+        self.mixture_energy = state.mixture_energy;
+        Ok(())
+    }
+
     pub(crate) fn bootstrap(
         &mut self,
         workload: &G,
@@ -1747,8 +1801,29 @@ fn merge_max<G: Workload + ?Sized>(
 fn resolve_origin<G: Workload>(
     workload: &G,
     origin: &CampaignOrigin<G>,
+    search_checkpoint: Option<&CheckpointReader>,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
+    if let CampaignOrigin::SearchCheckpoint { path } = origin {
+        let reader = search_checkpoint.ok_or("a search checkpoint origin was not opened")?;
+        let path = path.display().to_string();
+        let resume_input_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&Input::<G::Action>::default())?)
+        );
+        return Ok(CampaignOriginRecord {
+            kind: ORIGIN_SEARCH_CHECKPOINT.to_owned(),
+            path: None,
+            archive_sha256: None,
+            checkpoint_path: Some(path),
+            checkpoint_sha256: Some(reader.file_sha256.clone()),
+            resume_input_sha256,
+            resume_actions: 0,
+        });
+    }
     let (kind, path, archive_sha256, checkpoint, resume_input) = match origin {
+        CampaignOrigin::SearchCheckpoint { .. } => {
+            return Err("a search checkpoint origin was not opened".into());
+        }
         CampaignOrigin::Genesis => (
             ORIGIN_GENESIS.to_owned(),
             None,
@@ -1876,6 +1951,7 @@ impl<'a> StreamWriter<'a> {
     }
 }
 
+#[derive(Deserialize, Serialize)]
 struct CampaignCounters {
     bootstrap_execution_work: u64,
     tree_import: Option<TreeImportCounts>,
@@ -2034,7 +2110,7 @@ fn validate_duration_draw<G: Workload + ?Sized>(
     }
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 struct LiveCoordinatorProfile {
     enabled: bool,
     receive_wait_ns: u128,
@@ -2294,6 +2370,71 @@ struct JobSpec<G: Workload + ?Sized> {
 
 type SelectedJob<G> = (JobSpec<G>, PendingJob<G>);
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "")]
+struct JobSpecRecord<G: Workload + ?Sized> {
+    replay: Vec<G::Action>,
+    parent_actions: usize,
+    parent_milestones: G::Milestones,
+    suffix: Vec<G::Action>,
+}
+
+impl<G: Workload + ?Sized> JobSpecRecord<G> {
+    fn of(spec: &JobSpec<G>) -> Self {
+        Self {
+            replay: spec.replay.clone(),
+            parent_actions: spec.parent_actions,
+            parent_milestones: spec.parent_milestones,
+            suffix: spec.suffix.clone(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(bound = "")]
+struct InFlightJobRef<'a, G: Workload + ?Sized> {
+    reservation: usize,
+    spec: &'a JobSpecRecord<G>,
+    pending: &'a PendingJob<G>,
+}
+
+#[derive(Deserialize)]
+#[serde(bound = "")]
+struct InFlightJob<G: Workload + ?Sized> {
+    reservation: usize,
+    spec: JobSpecRecord<G>,
+    pending: PendingJob<G>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "")]
+struct CoreCheckpoint<G: Workload + ?Sized> {
+    #[serde(with = "crate::search::checkpoint::json_bytes")]
+    curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
+    curve_interval: u64,
+    bounded_progress_curve: bool,
+    record_progress: bool,
+    terminal_endpoints: u64,
+    terminal_objectives: u64,
+    execution_failures: u64,
+    objectives_reached: u64,
+    objective_witness: Option<Input<G::Action>>,
+    sequence: u64,
+    probe_refused: u64,
+    max_actions: usize,
+    mixture_energy: MixtureEnergy,
+}
+
+struct SearchResume<G: Workload + ?Sized> {
+    rands: Vec<RomuDuoJrRand>,
+    reserved: u64,
+    next_admission: usize,
+    profile: LiveCoordinatorProfile,
+    in_flight: Vec<InFlightJob<G>>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "")]
 struct PendingJob<G: Workload + ?Sized> {
     snapshot_id: u64,
     worker: u32,
@@ -2304,7 +2445,9 @@ struct PendingJob<G: Workload + ?Sized> {
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
+    #[serde(with = "crate::search::checkpoint::json_bytes")]
     splice: Option<CampaignSpliceRecord>,
+    #[serde(with = "crate::search::checkpoint::json_bytes")]
     selector: SelectorDraw,
     draw_checkpoint_before: Option<EmpiricalStepCheckpoint>,
     duration_draw: Option<DurationDraw<G::Key>>,
@@ -2521,6 +2664,9 @@ fn bootstrap_core<G: Workload>(
             core.bootstrap_snapshot_root(workload, run, target, checkpoint)?;
             Ok(None)
         }
+        CampaignOrigin::SearchCheckpoint { .. } => {
+            Err("a search checkpoint restores its archive instead of bootstrapping one".into())
+        }
     }
 }
 
@@ -2618,10 +2764,15 @@ where
             return Err("campaign memory budget is too small for the bounded draw state".into());
         }
     }
-    let origin_record = resolve_origin(workload, origin)?;
+    let mut search_checkpoint = match origin {
+        CampaignOrigin::SearchCheckpoint { path } => Some(CheckpointReader::open(path)?),
+        _ => None,
+    };
+    let origin_record = resolve_origin(workload, origin, search_checkpoint.as_ref())?;
     let draw_origin = match origin {
         CampaignOrigin::Genesis => None,
         CampaignOrigin::SnapshotRoot { .. } => None,
+        CampaignOrigin::SearchCheckpoint { .. } => None,
         CampaignOrigin::Archive {
             file_sha256,
             report,
@@ -2648,41 +2799,33 @@ where
         config.archive_entry_limit,
         config.memory_budget_mib,
     );
-    core.archive
-        .enable_continuations(config.suffix.max_actions());
     let mut counters = CampaignCounters::new(config.workers);
-    let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
-        format!("failed to build the bootstrap target: {error}").into()
-    })?;
-    let work_before = workload.execution_work(&bootstrap_target);
-    counters.tree_import = bootstrap_core(
-        workload,
-        &config.run,
-        &mut core,
-        &mut bootstrap_target,
-        origin,
-    )?;
-    counters.bootstrap_execution_work = execution_work_delta(
-        work_before,
-        workload.execution_work(&bootstrap_target),
-        "bootstrap",
-    )?;
-    if core.objectives_reached > 0 {
-        counters.note_first_objective(0);
-    }
+    let resume = match search_checkpoint.take() {
+        Some(reader) => Some(restore_search_checkpoint(
+            workload,
+            config,
+            reader,
+            &mut core,
+            &mut draw_state,
+            &mut duration_policies,
+            &mut counters,
+        )?),
+        None => {
+            bootstrap_campaign(
+                workload,
+                config,
+                origin,
+                &mut core,
+                &draw_state,
+                &duration_policies,
+                &mut counters,
+            )?;
+            None
+        }
+    };
     if let (Some(path), Some(input)) = (&config.objective_witness_path, &core.objective_witness) {
         std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
     }
-    drop(bootstrap_target);
-    let bootstrap_memory_bytes = core
-        .archive
-        .resident_memory_bytes()
-        .saturating_add(workload.draw_state_memory_bytes(&draw_state))
-        .saturating_add(duration_policies.memory_bytes());
-    if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
-        return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
-    }
-    core.archive.prepare_selection(core.max_actions);
 
     let workers = config.workers as usize;
     let mut rands = Vec::with_capacity(workers);
@@ -2698,8 +2841,32 @@ where
     let started = config.wall_budget.map(|_| telemetry_started);
 
     let mut reserved = 0_u64;
-    let mut coordinator_profile =
-        live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
+    let profile_enabled = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
+    let mut coordinator_profile = live_coordinator_profile(profile_enabled);
+    let mut resumed_admission = 0_usize;
+    let mut resumed_in_flight = None;
+    if let Some(resume) = resume {
+        rands = resume.rands;
+        reserved = resume.reserved;
+        coordinator_profile = LiveCoordinatorProfile {
+            enabled: profile_enabled,
+            ..resume.profile
+        };
+        resumed_admission = resume.next_admission;
+        resumed_in_flight = Some(resume.in_flight);
+    }
+    let mut checkpoints = options
+        .checkpoints
+        .clone()
+        .map(|plan| {
+            CheckpointWriter::create(
+                plan,
+                G::checkpoint_marks(&core.evidence),
+                core.archive.top_progress(),
+            )
+        })
+        .transpose()?;
+    let mut spec_records = BTreeMap::<usize, JobSpecRecord<G>>::new();
     let action_cost = workload.action_cost_fn();
     let max_action_cost = workload.max_action_cost();
 
@@ -3023,7 +3190,34 @@ where
             let mut queued_specs = VecDeque::with_capacity(
                 pipeline_depth.min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX)),
             );
-            for _ in 0..pipeline_depth {
+            for job in resumed_in_flight.take().unwrap_or_default() {
+                let index = core
+                    .archive
+                    .index_of_id(job.pending.snapshot_id)
+                    .ok_or("search checkpoint in-flight job names a missing snapshot entry")?;
+                let snapshot = core.archive.entries[index]
+                    .snapshot
+                    .clone()
+                    .ok_or("search checkpoint in-flight job has no stored snapshot")?;
+                queued_specs.push_back(JobSpec {
+                    reservation: job.reservation,
+                    snapshot,
+                    replay: job.spec.replay.clone(),
+                    parent_actions: job.spec.parent_actions,
+                    parent_milestones: job.spec.parent_milestones,
+                    suffix: job.spec.suffix.clone(),
+                });
+                if checkpoints.is_some() {
+                    spec_records.insert(job.reservation, job.spec);
+                }
+                pending.insert(job.reservation, job.pending);
+            }
+            let prefill = if resumed_admission > 0 || !pending.is_empty() {
+                0
+            } else {
+                pipeline_depth
+            };
+            for _ in 0..prefill {
                 let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                 let worker = u32::try_from(worker_index)?;
                 let selection_started = profile_now(coordinator_profile.enabled);
@@ -3054,6 +3248,9 @@ where
                 if pending.insert(reservation, pending_job).is_some() {
                     return Err("campaign reserved one job twice".into());
                 }
+                if checkpoints.is_some() {
+                    spec_records.insert(reservation, JobSpecRecord::of(&spec));
+                }
                 queued_specs.push_back(spec);
             }
             let mut physical_queued = vec![0_usize; workers];
@@ -3069,7 +3266,7 @@ where
                 physical_queued[usize::try_from(worker)?] += 1;
             }
 
-            let mut next_admission = 0_usize;
+            let mut next_admission = resumed_admission;
             while !pending.is_empty() || !completed.is_empty() {
                 let mut ready_reply = if completed.contains_key(&next_admission) {
                     pool.try_receive()?
@@ -3122,6 +3319,7 @@ where
                 }
 
                 while let Some(completed_job) = completed.remove(&next_admission) {
+                    spec_records.remove(&next_admission);
                     let pending_job = completed_job.pending;
                     let worker_index = usize::try_from(pending_job.worker)?;
                     let result = completed_job.result;
@@ -3376,6 +3574,9 @@ where
                         if pending.insert(reservation, pending_job).is_some() {
                             return Err("campaign reserved one job twice".into());
                         }
+                        if checkpoints.is_some() {
+                            spec_records.insert(reservation, JobSpecRecord::of(&spec));
+                        }
                         queued_specs.push_back(spec);
                     }
 
@@ -3390,6 +3591,31 @@ where
                         let physical_index = usize::try_from(worker)?;
                         physical_queued[physical_index] =
                             physical_queued[physical_index].saturating_add(1);
+                    }
+                    if let Some(checkpoints) = checkpoints.as_mut()
+                        && let Some(reason) = checkpoints.due(
+                            core.sequence,
+                            G::checkpoint_marks(&core.evidence),
+                            core.archive.top_progress(),
+                        )
+                    {
+                        write_search_checkpoint(
+                            workload,
+                            config,
+                            checkpoints,
+                            reason,
+                            &core,
+                            &draw_state,
+                            &duration_policies,
+                            &rands,
+                            &counters,
+                            &coordinator_profile,
+                            reserved,
+                            next_admission,
+                            &pending,
+                            &completed,
+                            &spec_records,
+                        )?;
                     }
                 }
                 while !queued_specs.is_empty() {
@@ -3447,6 +3673,248 @@ where
         stream_sha256,
         config.materialize_final_artifacts,
     ))
+}
+
+fn bootstrap_campaign<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    core: &mut CoordinatorCore<G>,
+    draw_state: &DrawTables<G::Action>,
+    duration_policies: &DurationPolicies<G::Key>,
+    counters: &mut CampaignCounters,
+) -> Result<(), Box<dyn Error>> {
+    core.archive
+        .enable_continuations(config.suffix.max_actions());
+    let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
+        format!("failed to build the bootstrap target: {error}").into()
+    })?;
+    let work_before = workload.execution_work(&bootstrap_target);
+    counters.tree_import =
+        bootstrap_core(workload, &config.run, core, &mut bootstrap_target, origin)?;
+    counters.bootstrap_execution_work = execution_work_delta(
+        work_before,
+        workload.execution_work(&bootstrap_target),
+        "bootstrap",
+    )?;
+    if core.objectives_reached > 0 {
+        counters.note_first_objective(0);
+    }
+    drop(bootstrap_target);
+    let bootstrap_memory_bytes = core
+        .archive
+        .resident_memory_bytes()
+        .saturating_add(workload.draw_state_memory_bytes(draw_state))
+        .saturating_add(duration_policies.memory_bytes());
+    if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
+        return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
+    }
+    core.archive.prepare_selection(core.max_actions);
+    Ok(())
+}
+
+fn search_checkpoint_header<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    reason: &str,
+    executions: u64,
+    reserved: u64,
+    next_admission: usize,
+) -> CheckpointHeader {
+    let mut policies = recorded_policies(workload, &config.run);
+    for (field, value) in [
+        (
+            "schedule_policy",
+            schedule_policy_identifier(config.reservations_per_worker),
+        ),
+        (
+            "suffix_policy",
+            suffix_shape_identifier(config.suffix).to_owned(),
+        ),
+        ("mixture_policy", draw_mixture_identifier(config.mixture)),
+        (
+            "retention_policy",
+            retention_policy_identifier(config.retention).to_owned(),
+        ),
+        ("parent_scheduler", SELECTOR_IDENTIFIER.to_owned()),
+        (
+            "preference_portfolio",
+            preference_portfolio_identifier::<G::Key>(),
+        ),
+        (
+            "stop_rollout_on_objective",
+            config.stop_rollout_on_objective.to_string(),
+        ),
+    ] {
+        policies.insert(field.to_owned(), value);
+    }
+    CheckpointHeader {
+        format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
+        reason: reason.to_owned(),
+        workload_identity_sha256: workload.workload_identity_sha256(),
+        campaign_seed: config.campaign_seed,
+        workers: config.workers,
+        reservations_per_worker: config.reservations_per_worker,
+        action_limit: config.action_limit,
+        archive_entry_limit: config.archive_entry_limit,
+        memory_budget_mib: config.memory_budget_mib,
+        policies,
+        executions,
+        reserved,
+        next_admission,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_search_checkpoint<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    mut reader: CheckpointReader,
+    core: &mut CoordinatorCore<G>,
+    draw_state: &mut DrawTables<G::Action>,
+    duration_policies: &mut DurationPolicies<G::Key>,
+    counters: &mut CampaignCounters,
+) -> Result<SearchResume<G>, Box<dyn Error>> {
+    let header = reader.header.clone();
+    let expected = search_checkpoint_header(workload, config, &header.reason, 0, 0, 0);
+    if header.workload_identity_sha256 != expected.workload_identity_sha256 {
+        return Err("search checkpoint belongs to a different workload".into());
+    }
+    if header.workers != expected.workers
+        || header.reservations_per_worker != expected.reservations_per_worker
+    {
+        return Err("search checkpoint worker count and admission window must match".into());
+    }
+    if header.action_limit != expected.action_limit
+        || header.archive_entry_limit != expected.archive_entry_limit
+        || header.memory_budget_mib != expected.memory_budget_mib
+    {
+        return Err("search checkpoint limits differ from the campaign".into());
+    }
+    if header.policies != expected.policies {
+        let differing = header
+            .policies
+            .iter()
+            .filter(|(field, value)| expected.policies.get(*field) != Some(value))
+            .map(|(field, _)| field.as_str())
+            .chain(
+                expected
+                    .policies
+                    .keys()
+                    .filter(|field| !header.policies.contains_key(*field))
+                    .map(String::as_str),
+            )
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("search checkpoint policies differ: {differing}").into());
+    }
+    let state: CoreCheckpoint<G> = reader.next()?;
+    let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
+    let evidence: Vec<u8> = reader.next()?;
+    let draw: Vec<u8> = reader.next()?;
+    let durations = reader.next()?;
+    let mut rands: Vec<RomuDuoJrRand> = reader.next()?;
+    let restored_counters: CampaignCounters = reader.next()?;
+    let profile: LiveCoordinatorProfile = reader.next()?;
+    let in_flight: Vec<InFlightJob<G>> = reader.next()?;
+    let snapshots = reader.snapshots::<G::Snapshot>()?;
+    reader.finish()?;
+    core.restore_state(state)?;
+    core.archive = archive;
+    let charge: fn(&G::Snapshot) -> usize = G::snapshot_memory_charge;
+    core.archive
+        .restore_runtime(workload.action_cost_fn(), Some(charge), snapshots)?;
+    core.evidence = G::evidence_from_checkpoint(&evidence)?;
+    *draw_state = DrawTables::from_resume_bytes(&draw)?;
+    *duration_policies = DurationPolicies::from_checkpoint(durations)?;
+    *counters = restored_counters;
+    if header.campaign_seed != config.campaign_seed {
+        rands = (0..config.workers)
+            .map(|index| {
+                derive_worker_seed(config.campaign_seed, index).map(RomuDuoJrRand::with_seed)
+            })
+            .collect::<Result<_, _>>()?;
+    }
+    if rands.len() != config.workers as usize || counters.jobs_per_worker.len() != rands.len() {
+        return Err("search checkpoint worker state does not match its worker count".into());
+    }
+    let reserved = usize::try_from(header.reserved)?;
+    if in_flight
+        .iter()
+        .map(|job| job.reservation)
+        .ne(header.next_admission..reserved)
+    {
+        return Err("search checkpoint in-flight jobs do not fill the admission window".into());
+    }
+    if core.sequence != u64::try_from(header.next_admission)? || core.sequence != header.executions
+    {
+        return Err("search checkpoint admission count disagrees with its archive".into());
+    }
+    Ok(SearchResume {
+        rands,
+        reserved: header.reserved,
+        next_admission: header.next_admission,
+        profile,
+        in_flight,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_search_checkpoint<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    checkpoints: &mut CheckpointWriter<<G::Key as ArchiveKey>::Progress>,
+    reason: &str,
+    core: &CoordinatorCore<G>,
+    draw_state: &DrawTables<G::Action>,
+    duration_policies: &DurationPolicies<G::Key>,
+    rands: &[RomuDuoJrRand],
+    counters: &CampaignCounters,
+    profile: &LiveCoordinatorProfile,
+    reserved: u64,
+    next_admission: usize,
+    pending: &BTreeMap<usize, PendingJob<G>>,
+    completed: &BTreeMap<usize, CompletedJob<G>>,
+    spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
+) -> Result<(), Box<dyn Error>> {
+    let in_flight = (next_admission..usize::try_from(reserved)?)
+        .map(|reservation| -> Result<_, Box<dyn Error>> {
+            let pending = pending
+                .get(&reservation)
+                .or_else(|| completed.get(&reservation).map(|job| &job.pending))
+                .ok_or("search checkpoint lost an in-flight reservation")?;
+            let spec = spec_records
+                .get(&reservation)
+                .ok_or("search checkpoint lost an in-flight job input")?;
+            Ok(InFlightJobRef {
+                reservation,
+                spec,
+                pending,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let header = search_checkpoint_header(
+        workload,
+        config,
+        reason,
+        core.sequence,
+        reserved,
+        next_admission,
+    );
+    let evidence = G::evidence_checkpoint(&core.evidence)?;
+    let draw = draw_state.to_resume_bytes()?;
+    checkpoints.write(&header, core.archive.resident_snapshot_entries(), |out| {
+        postcard::to_io(&core.checkpoint_state(), &mut *out)?;
+        postcard::to_io(&core.archive, &mut *out)?;
+        postcard::to_io(&evidence, &mut *out)?;
+        postcard::to_io(&draw, &mut *out)?;
+        postcard::to_io(&duration_policies.checkpoint(), &mut *out)?;
+        postcard::to_io(rands, &mut *out)?;
+        postcard::to_io(counters, &mut *out)?;
+        postcard::to_io(profile, &mut *out)?;
+        postcard::to_io(&in_flight, &mut *out)?;
+        Ok(())
+    })
 }
 
 fn finish_record<G: Workload>(
@@ -3638,6 +4106,9 @@ where
             let source =
                 origin_report.ok_or("archive campaign replay requires the source archive")?;
             workload.resume_input(source)?
+        }
+        ORIGIN_SEARCH_CHECKPOINT => {
+            return Err("a stream that resumes from a search checkpoint cannot be replayed".into());
         }
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };

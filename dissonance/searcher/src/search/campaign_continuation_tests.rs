@@ -101,6 +101,12 @@ impl Reporting for TestWorkload {
     fn diagnostics(_: &()) -> Option<serde_json::Value> {
         Some(serde_json::json!({"observed": 42}))
     }
+    fn evidence_checkpoint(_evidence: &()) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(Vec::new())
+    }
+    fn evidence_from_checkpoint(_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
     fn stream_format(&self) -> &'static str {
         "test-campaign-v1"
     }
@@ -583,4 +589,148 @@ fn a_budget_that_fits_the_bootstrap_state_finishes_the_campaign() {
             (live, checkpoint)
         );
     }
+}
+
+fn checkpoint_directory(label: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "dissonance-search-checkpoint-{label}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    directory
+}
+
+fn progress_lines_after(progress: &[u8], after: u64) -> Vec<serde_json::Value> {
+    String::from_utf8(progress.to_vec())
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            let fields = value.as_object_mut().unwrap();
+            fields.remove("search_elapsed_millis");
+            fields.remove("unix_time");
+            value
+        })
+        .filter(|value| value["executions"].as_u64().unwrap() > after)
+        .collect()
+}
+
+fn run_with_checkpoints(
+    config: &CampaignConfig<TestWorkload>,
+    origin: &CampaignOrigin<TestWorkload>,
+    checkpoints: Option<CheckpointPlan>,
+) -> (CampaignOutcome<TestWorkload>, Vec<u8>) {
+    let mut stream = Vec::new();
+    let mut progress = Vec::new();
+    let outcome = run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        config,
+        origin,
+        &mut stream,
+        Some(&mut progress),
+        CampaignExecutionOptions {
+            checkpoints,
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    (outcome, progress)
+}
+
+#[test]
+fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
+    for (workers, mixture, budget_mib) in [
+        (1, DrawMixture::EnergySplice { scale: 6 }, 12),
+        (4, DrawMixture::EnergySplice { scale: 6 }, 12),
+        (4, DrawMixture::Energy { scale: 6 }, 18),
+    ] {
+        let label = format!("resume-{workers}-{budget_mib}");
+        let directory = checkpoint_directory(&label);
+        let mut config = continuation_config(workers, mixture, budget_mib);
+        config.stop_campaign_on_objective = false;
+        let (plain, plain_progress) = run_with_checkpoints(&config, &CampaignOrigin::Genesis, None);
+        let (original, original_progress) = run_with_checkpoints(
+            &config,
+            &CampaignOrigin::Genesis,
+            Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: NonZeroU64::new(100),
+                on_marks: true,
+                on_top_progress: true,
+            }),
+        );
+        assert_eq!(
+            progress_lines_after(&original_progress, 0),
+            progress_lines_after(&plain_progress, 0),
+            "writing checkpoints changed the progress of {label}"
+        );
+        assert_eq!(original.0.archive, plain.0.archive);
+        for resume_at in [100_u64, 300, 700] {
+            let path = directory.join(format!("{resume_at:012}-interval.ckpt"));
+            let (resumed, resumed_progress) =
+                run_with_checkpoints(&config, &CampaignOrigin::SearchCheckpoint { path }, None);
+            assert_eq!(
+                progress_lines_after(&resumed_progress, resume_at),
+                progress_lines_after(&original_progress, resume_at),
+                "{label} resumed at {resume_at} diverged"
+            );
+            assert_eq!(resumed.0.archive, original.0.archive);
+            assert_eq!(
+                resumed.0.executions_completed,
+                original.0.executions_completed
+            );
+            assert_eq!(resumed.0.execution_work, original.0.execution_work);
+            assert_eq!(resumed.0.origin.kind, "search_checkpoint");
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+#[test]
+fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
+    let directory = checkpoint_directory("reseed");
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    let (_, original_progress) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(300),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    config.campaign_seed = 948;
+    let (resumed, resumed_progress) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::SearchCheckpoint {
+            path: directory.join("000000000300-interval.ckpt"),
+        },
+        None,
+    );
+    assert_eq!(resumed.0.executions_completed, 800);
+    assert_eq!(resumed.0.campaign_seed, 948);
+    assert_eq!(
+        progress_lines_after(&resumed_progress, 300)[0]["executions"],
+        400
+    );
+    assert_ne!(
+        progress_lines_after(&resumed_progress, 300),
+        progress_lines_after(&original_progress, 300)
+    );
+    config.workers = 2;
+    let error = run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::SearchCheckpoint {
+            path: directory.join("000000000300-interval.ckpt"),
+        },
+        &mut Vec::new(),
+        None,
+        CampaignExecutionOptions::default(),
+    )
+    .expect_err("a checkpoint resumed with another worker count");
+    assert!(error.to_string().contains("worker count"), "{error}");
+    std::fs::remove_dir_all(&directory).unwrap();
 }

@@ -506,6 +506,7 @@ fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
         CampaignExecutionOptions {
             work_budget: Some(4_096),
             result_buffering: ResultBuffering::TwoPerWorker,
+            checkpoints: None,
         },
     )
     .expect("adaptive campaign");
@@ -530,6 +531,7 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
         CampaignExecutionOptions {
             work_budget: Some(4_096),
             result_buffering: ResultBuffering::TwoPerWorker,
+            checkpoints: None,
         },
     )
     .expect("adaptive campaign");
@@ -657,6 +659,7 @@ fn failed_duration_actions_do_not_train_the_policy() {
         CampaignExecutionOptions {
             work_budget: Some(4_096),
             result_buffering: ResultBuffering::TwoPerWorker,
+            checkpoints: None,
         },
     )
     .expect("failed-duration campaign");
@@ -693,6 +696,7 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
         CampaignExecutionOptions {
             work_budget: Some(4_096),
             result_buffering: ResultBuffering::TwoPerWorker,
+            checkpoints: None,
         },
     )
     .expect("preparation-failure campaign");

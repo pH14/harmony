@@ -136,7 +136,7 @@ pub struct MixtureDraw {
     pub splice_weight: u8,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct MixtureEnergy {
     barren_work: [u64; 3],
     jobs: u64,

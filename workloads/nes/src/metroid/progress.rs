@@ -27,7 +27,7 @@ impl TourianEvents {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FirstSeen {
     pub execution: u64,
     pub route_action_end_frame: u64,

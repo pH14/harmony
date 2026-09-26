@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
@@ -22,7 +23,7 @@ pub(crate) struct Continuation<P, A> {
     pub actions: Vec<A>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Edge<A> {
     donor: u64,
     leaf: u64,
@@ -31,7 +32,7 @@ struct Edge<A> {
     actions: Vec<A>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Pending<P> {
     sequence: u64,
     preference: u8,
@@ -40,6 +41,11 @@ struct Pending<P> {
     cursor: Option<P>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(bound(
+    serialize = "P: Serialize, A: Serialize",
+    deserialize = "P: DeserializeOwned, A: DeserializeOwned"
+))]
 pub(crate) struct ContinuationBank<P: Ord, A> {
     action_cap: usize,
     edges: BTreeMap<(P, P), Edge<A>>,

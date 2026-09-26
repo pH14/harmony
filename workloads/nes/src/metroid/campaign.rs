@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
             merge_milestones, merge_progress_watermark, milestone_key, milestones,
             progress_watermark, sample_chord,
         },
-        progress::NamedProgress,
+        progress::{FirstSeen, NamedProgress},
         target::{
             ButtonChord, GenesisDepth, MetroidInput, MetroidObservations, MetroidSnapshot,
             MetroidTarget, MetroidTerminalPolicy, power_on_walk, preference_tuple,
@@ -218,6 +218,113 @@ pub struct MetroidCampaignEvidence {
     best_energy: BTreeMap<&'static str, (u16, u8)>,
     best_missiles: BTreeMap<&'static str, (u8, u16)>,
     best_boss: BTreeMap<&'static str, (Reverse<u16>, u8, u16)>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct MetroidEvidenceCheckpoint {
+    observed_map: Vec<u64>,
+    first_seen: Vec<(String, Option<FirstSeen>)>,
+    max_missile_capacity: u8,
+    max_energy_tanks: u8,
+    aggregate: MetroidMilestones,
+    watermark: MetroidProgressWatermark,
+    first_reached: MetroidMilestoneTimes,
+    first_inputs: MetroidMilestoneInputs,
+    champion_input: MetroidInput,
+    champion_milestones: MetroidMilestones,
+    champion_key: Option<MetroidChampionKey>,
+    genesis_area: Option<u8>,
+    best_energy: Vec<(String, (u16, u8))>,
+    best_missiles: Vec<(String, (u8, u16))>,
+    best_boss: Vec<(String, (u16, u8, u16))>,
+}
+
+fn named_progress_name(name: &str) -> Result<&'static str, Box<dyn Error>> {
+    NamedProgress::default()
+        .first_seen
+        .keys()
+        .find(|known| **known == name)
+        .copied()
+        .ok_or_else(|| format!("search checkpoint names an unknown milestone {name}").into())
+}
+
+fn owned_names<V: Copy>(map: &BTreeMap<&'static str, V>) -> Vec<(String, V)> {
+    map.iter()
+        .map(|(name, value)| ((*name).to_owned(), *value))
+        .collect()
+}
+
+fn interned_names<V>(
+    entries: Vec<(String, V)>,
+) -> Result<BTreeMap<&'static str, V>, Box<dyn Error>> {
+    entries
+        .into_iter()
+        .map(|(name, value)| Ok((named_progress_name(&name)?, value)))
+        .collect()
+}
+
+impl MetroidCampaignEvidence {
+    fn to_checkpoint(&self) -> MetroidEvidenceCheckpoint {
+        MetroidEvidenceCheckpoint {
+            observed_map: self.observed_map.0.to_vec(),
+            first_seen: owned_names(&self.named_progress.first_seen),
+            max_missile_capacity: self.named_progress.max_missile_capacity,
+            max_energy_tanks: self.named_progress.max_energy_tanks,
+            aggregate: self.aggregate,
+            watermark: self.watermark,
+            first_reached: self.first_reached,
+            first_inputs: self.first_inputs.clone(),
+            champion_input: self.champion_input.clone(),
+            champion_milestones: self.champion_milestones,
+            champion_key: self.champion_key,
+            genesis_area: self.genesis_area,
+            best_energy: owned_names(&self.best_energy),
+            best_missiles: owned_names(&self.best_missiles),
+            best_boss: self
+                .best_boss
+                .iter()
+                .map(|(name, (Reverse(health), missiles, energy))| {
+                    ((*name).to_owned(), (*health, *missiles, *energy))
+                })
+                .collect(),
+        }
+    }
+
+    fn from_checkpoint(checkpoint: MetroidEvidenceCheckpoint) -> Result<Self, Box<dyn Error>> {
+        let observed_map: Box<[u64; 4096]> = checkpoint
+            .observed_map
+            .into_boxed_slice()
+            .try_into()
+            .map_err(|_| "search checkpoint map coverage has the wrong size")?;
+        let mut named_progress = NamedProgress::default();
+        let first_seen = interned_names(checkpoint.first_seen)?;
+        if first_seen.len() != named_progress.first_seen.len() {
+            return Err("search checkpoint milestone names differ from this build".into());
+        }
+        named_progress.first_seen = first_seen;
+        named_progress.max_missile_capacity = checkpoint.max_missile_capacity;
+        named_progress.max_energy_tanks = checkpoint.max_energy_tanks;
+        Ok(Self {
+            observed_map: MapCoverage(observed_map),
+            named_progress,
+            aggregate: checkpoint.aggregate,
+            watermark: checkpoint.watermark,
+            first_reached: checkpoint.first_reached,
+            first_inputs: checkpoint.first_inputs,
+            champion_input: checkpoint.champion_input,
+            champion_milestones: checkpoint.champion_milestones,
+            champion_key: checkpoint.champion_key,
+            genesis_area: checkpoint.genesis_area,
+            best_energy: interned_names(checkpoint.best_energy)?,
+            best_missiles: interned_names(checkpoint.best_missiles)?,
+            best_boss: interned_names(checkpoint.best_boss)?
+                .into_iter()
+                .map(|(name, (health, missiles, energy))| {
+                    (name, (Reverse(health), missiles, energy))
+                })
+                .collect(),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -493,6 +600,20 @@ impl CampaignTypes for MetroidGame {
 }
 
 impl Reporting for MetroidGame {
+    fn evidence_checkpoint(evidence: &MetroidCampaignEvidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(postcard::to_allocvec(&evidence.to_checkpoint())?)
+    }
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<MetroidCampaignEvidence, Box<dyn Error>> {
+        MetroidCampaignEvidence::from_checkpoint(postcard::from_bytes(bytes)?)
+    }
+    fn checkpoint_marks(evidence: &MetroidCampaignEvidence) -> usize {
+        evidence
+            .named_progress
+            .first_seen
+            .values()
+            .filter(|seen| seen.is_some())
+            .count()
+    }
     fn diagnostics(evidence: &MetroidCampaignEvidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "map_cells_observed": evidence.observed_map.count(),

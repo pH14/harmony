@@ -20,6 +20,7 @@ use nes_workload::{
             TargetExecution, Workload, replay_campaign_checkpointed,
             run_campaign_checkpointed_with_options,
         },
+        checkpoint::CheckpointPlan,
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
     },
     smb::campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
@@ -36,6 +37,7 @@ use std::{
     error::Error,
     fs,
     io::{self, BufReader, BufWriter, LineWriter, Write},
+    num::NonZeroU64,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -89,6 +91,12 @@ struct Request {
     metroid_terminal: Option<String>,
     #[serde(default)]
     root_input: Option<PathBuf>,
+    #[serde(default)]
+    checkpoint_every: Option<NonZeroU64>,
+    #[serde(default)]
+    checkpoint_on_progress: bool,
+    #[serde(default)]
+    resume: Option<PathBuf>,
 }
 
 struct StreamDigest {
@@ -174,6 +182,22 @@ where
     if full && request.executions > 5000 {
         return Err("full campaign verification is bounded to 5000 executions; use witness verification for performance runs".into());
     }
+    if full && request.resume.is_some() {
+        return Err("a run resumed from a search checkpoint has no stream to replay; use witness verification".into());
+    }
+    let origin = match &request.resume {
+        Some(path) => CampaignOrigin::SearchCheckpoint { path: path.clone() },
+        None => CampaignOrigin::Genesis,
+    };
+    let checkpoints =
+        (request.checkpoint_every.is_some() || request.checkpoint_on_progress).then(|| {
+            CheckpointPlan {
+                directory: out.join("checkpoints"),
+                every: request.checkpoint_every,
+                on_marks: request.checkpoint_on_progress,
+                on_top_progress: request.checkpoint_on_progress,
+            }
+        });
     let config = CampaignConfig {
         campaign_seed: request.seed,
         workers: request.workers,
@@ -212,7 +236,7 @@ where
     };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
+        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -230,12 +254,13 @@ where
     let (report, checkpoint) = run_campaign_checkpointed_with_options(
         &game,
         &config,
-        &CampaignOrigin::Genesis,
+        &origin,
         &mut stream,
         Some(&mut progress),
         CampaignExecutionOptions {
             work_budget: request.frames,
             result_buffering,
+            checkpoints,
         },
     )?;
     stream.flush()?;
