@@ -125,6 +125,16 @@ replaced with the cell's seed, so each seed can continue its own line.
 for one case name different root inputs, so it never combines a rooted run
 with a power-on run.
 
+An `nes-eval` request can write search checkpoints into `checkpoints/` in its
+output directory. `checkpoint_every` writes one every that many executions, and
+`checkpoint_on_progress` writes one whenever the workload reaches a new named
+milestone or the archive opens a higher tier. `resume` names a checkpoint file
+and continues that search. The executions and frame budgets count from the
+original power-on, so a resumed run stops where the original would have. A
+resume with the same seed repeats the original progress lines after the
+checkpoint; a different seed keeps the archive and draws new choices. Resumed
+runs use witness verification, because their stream starts at the checkpoint.
+
 ## Registered panels
 
 | Manifest | Purpose |

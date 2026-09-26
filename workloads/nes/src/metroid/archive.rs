@@ -121,7 +121,7 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct MetroidLineage {
     boss_health_highest: u16,
     area: u8,
