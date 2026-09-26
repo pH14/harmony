@@ -44,9 +44,10 @@ PY
 preferences: charge first and health first. `capacity_two` keeps two holders
 per slot under the charge-first preference alone.
 
-`work_budget` accepts 1–20,000 transitions. A campaign uses one worker, one
-reservation, an archive capacity of 4,096, and a 32 MiB logical memory budget.
-The event stream has a checked 32 MB allocation limit. Execution work counts
+`work_budget` accepts 1–2,000,000 transitions. A campaign uses one worker, one
+reservation, an archive capacity of 4,096, and a 32 MiB logical memory budget,
+and stops at its first objective. The event stream has a checked 1 GiB
+allocation limit. Execution work counts
 restored-parent replay and suffix actions; restoring a snapshot preserves the
 cumulative work counter. Environmental clocks belong to the restored world state.
 

@@ -708,7 +708,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
 struct BoundedStream(Vec<u8>);
 impl Write for BoundedStream {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self.0.len() + bytes.len() > 32_000_000 {
+        if self.0.len() + bytes.len() > 1 << 30 {
             return Err(std::io::Error::other("stream bound exceeded"));
         }
         self.0.extend_from_slice(bytes);
@@ -822,8 +822,8 @@ fn campaign<const CAPACITY_TWO: bool>(
     if workload.scale.is_some() {
         return Err("scaled runs use run_scaled".into());
     }
-    if budget == 0 || budget > 20_000 {
-        return Err("work budget must be 1..=20000".into());
+    if budget == 0 || budget > 2_000_000 {
+        return Err("work budget must be 1..=2000000".into());
     }
     let config = campaign_config(workload, seed, budget);
     let mut stream = BoundedStream(Vec::new());
@@ -1024,7 +1024,7 @@ fn campaign_config<const CAPACITY_TWO: bool>(
         host: "tiny-worlds".into(),
         wall_budget: None,
         stop_rollout_on_objective: true,
-        stop_campaign_on_objective: false,
+        stop_campaign_on_objective: workload.scale.is_none(),
         archive_entry_limit: scale.archive_entries,
         reservations_per_worker: scale.reservations_per_worker,
         memory_budget_mib: Some(scale.memory_budget_mib),
