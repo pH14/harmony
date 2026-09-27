@@ -472,11 +472,11 @@ impl Gicv3 {
 
     pub fn active_interrupt(&self) -> Option<u32> {
         let mut best: Option<(u16, u32)> = None;
-        for word in 0..BITMAP_WORDS {
-            for bit in 0..32 {
-                if self.active[word] & (1 << bit) == 0 {
-                    continue;
-                }
+        for word in 0..self.intid_limit() as usize / 32 {
+            let mut bits = self.active[word];
+            while bits != 0 {
+                let bit = bits.trailing_zeros();
+                bits &= bits - 1;
                 let intid = word as u32 * 32 + bit;
                 if !self.implemented(intid) {
                     continue;
@@ -1152,3 +1152,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod performance_tests;

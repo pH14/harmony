@@ -23,3 +23,15 @@ redistributor. Group 0/FIQ, LPIs, interrupt routing, SGI generation through
 ICC registers, and real-guest delivery are outside this crate. `vmm-core`
 wires it into the arm64 HVF composition; stock arm64 KVM uses its in-kernel
 GIC.
+
+## Arbitration cost
+
+Active-interrupt acknowledgement walks only set bits inside the configured
+interrupt range. It retains priority-first selection and lowest-INTID tie
+breaking without inspecting every inactive interrupt slot. This adds no cached
+state or allocation and does not change the snapshot format.
+
+The unit qualification module keeps the previous scans as controls in the same
+executable. Deterministic and randomized comparisons cover every supported
+controller size, priority masking, pending and level inputs, active interrupts,
+acceptance, EOI, and restored snapshots.
