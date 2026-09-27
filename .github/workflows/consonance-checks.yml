@@ -281,6 +281,10 @@ jobs:
           filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'Snapshot and Restore')
           cargo nextest run --release --all-features -p vmm-core --lib -E "$filter"
           cargo nextest run --release --all-features -p vmm-core --test snapshot_branch --test event_loop
+      - name: Compare software and native SHA-256 in one executable
+        run: |
+          cargo fetch --locked
+          python3 consonance/vmm-core/qualification/qualify-sha256.py --check
       - name: Grant /dev/kvm access
         if: steps.scope.outputs.enabled == 'true'
         run: |

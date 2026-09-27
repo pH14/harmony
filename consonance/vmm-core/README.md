@@ -8,6 +8,14 @@ dispatch, hypercall/control handling, snapshot and branch operations, and
 state hashing. Host hypervisor calls stay behind the backend trait; concrete
 backend and architecture pairs are selected by the vendor composition roots.
 
+Native AArch64 Linux and macOS builds enable RustCrypto's runtime-dispatched
+SHA-256 backend for state hashes and portable snapshot digests. Hosts with SHA2
+instructions use them; hosts without them retain the software implementation.
+Miri builds retain the software implementation. Hash inputs, digest bytes,
+guest CPU policy, and snapshot formats are independent of this host choice.
+The dependency feature also applies to other SHA-256 consumers in the same
+Cargo dependency graph.
+
 ## Run loop
 
 `Vmm::run` repeatedly obtains one backend exit, classifies it through the
@@ -101,6 +109,28 @@ by platform and require the corresponding KVM or Hypervisor.framework host.
 cargo test -p vmm-core
 cargo clippy -p vmm-core --all-targets -- -D warnings
 ```
+
+The SHA-256 qualification builds the production VMM and a software-backed
+copy into one release executable. The copy uses the same VMM source and the
+locked RustCrypto source archive, verified against its Cargo.lock checksum,
+under separate package names so Cargo cannot unify the two hashing backends.
+Only the control's hashing dependency changes. Neither copy is installed.
+
+```sh
+cargo fetch --locked
+python3 consonance/vmm-core/qualification/qualify-sha256.py --check
+python3 consonance/vmm-core/qualification/qualify-sha256.py
+```
+
+`--check` compares digests across padding boundaries, streaming chunk sizes,
+unaligned inputs, cloned prefix states, and complete VMM state hashes. The
+Snapshot and Restore CI job runs it without timing thresholds. The full run
+also reports nine alternating software/native timing pairs for small and large
+digests and whole-state hashes over zero and populated RAM from 4 KiB through
+128 MiB. Each timed result is checked. ARM timings qualify this build change;
+the software control deliberately disables acceleration on every architecture.
+These are host hashing costs, not guest execution throughput. The executable's
+SHA-256 is printed with the results to bind both arms to the same build.
 
 The x86 exit dispatcher finishes the current instruction's device-access chain
 before returning a stopped endpoint. Continuation accesses retain their device,

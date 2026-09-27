@@ -84,6 +84,10 @@ environment = { path = "../environment", version = "0.1.0" }
 # Linux-only host support. Caret default, pin nothing.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+[target.'cfg(all(target_arch = "aarch64", any(target_os = "linux", target_os = "macos"), not(miri)))'.dependencies]
+sha2 = { version = "0.10", features = ["asm"] }
+
 [dev-dependencies]
 snapshot-store = { path = "../snapshot-store", version = "0.1.0", features = ["test-utils"] }
 # `mock` turns on `vmm_backend::MockBackend` — the scripted, no-`/dev/kvm`

@@ -6,9 +6,6 @@ license = "AGPL-3.0-or-later"
 
 [workspace]
 
-[features]
-arm-sha2-asm = ["sha2/asm"]
-
 [dependencies]
 consonance-client = { version = "=0.1.0", path = "../../consonance/client", features = ["in-process"] }
 nes-workload = { path = "../nes", version = "=0.1.0" }
