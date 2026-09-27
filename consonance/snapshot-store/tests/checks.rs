@@ -10,6 +10,64 @@ fn page(seed: u8) -> [u8; PAGE_SIZE] {
     [seed; PAGE_SIZE]
 }
 
+#[test]
+fn recycling_released_pages_preserves_live_branches_and_rejects_old_handles() {
+    let mut s = store(8);
+    let mut builder = s.begin_base();
+    builder.write_page(0, &page(1)).unwrap();
+    let base = builder.seal(vec![1]);
+    let leaf = s.derive(base).unwrap().seal(vec![2]);
+    let mut out = page(0);
+    s.read_page(leaf, 0, &mut out).unwrap();
+    s.release(base).unwrap();
+    assert_eq!(s.gc(), 0);
+
+    for seed in 2..100 {
+        let mut builder = s.derive(leaf).unwrap();
+        builder.write_page(1, &page(seed)).unwrap();
+        let child = builder.seal(vec![seed]);
+        assert!(!s.page_ref_eq(leaf, 0, child, 1).unwrap());
+        assert!(s.page_ref_eq(leaf, 0, child, 0).unwrap());
+        s.read_page(child, 1, &mut out).unwrap();
+        assert_eq!(out, page(seed));
+        s.release(child).unwrap();
+        assert_eq!(s.gc(), PAGE_SIZE as u64 + 1);
+        assert!(matches!(
+            s.read_page(child, 1, &mut out),
+            Err(StoreError::UnknownSnapshot(_))
+        ));
+        s.read_page(leaf, 0, &mut out).unwrap();
+        assert_eq!(out, page(1));
+        assert_eq!(s.store_stats().stored_unique_pages, 1);
+    }
+
+    s.release(leaf).unwrap();
+    assert_eq!(s.gc(), PAGE_SIZE as u64 + 2);
+    assert_eq!(s.store_stats().bytes_resident, 0);
+}
+
+#[test]
+fn abandoned_rewrites_do_not_change_live_content_or_page_accounting() {
+    let mut s = store(4);
+    let mut builder = s.begin_base();
+    builder.write_page(0, &page(1)).unwrap();
+    let base = builder.seal(vec![1]);
+    let before = s.store_stats();
+    for seed in 2..100 {
+        let mut builder = s.derive(base).unwrap();
+        builder.write_page(0, &page(seed)).unwrap();
+        builder.write_page(0, &page(1)).unwrap();
+        builder.write_page(1, &page(seed)).unwrap();
+        builder.write_page(1, &page(0)).unwrap();
+        drop(builder);
+        assert_eq!(s.store_stats(), before);
+        assert_eq!(s.gc(), 0);
+        let mut out = page(0);
+        s.read_page(base, 0, &mut out).unwrap();
+        assert_eq!(out, page(1));
+    }
+}
+
 fn base_of_n(store: &mut Store, n: u8) -> SnapshotId {
     let mut b = store.begin_base();
     for i in 0..n {
