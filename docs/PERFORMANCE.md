@@ -1,21 +1,25 @@
 # Performance
 
-This document gives the fastest rate a search can reach on a workload and a
-chip, called its speed of light. It also gives a method for accounting for the
-gap between that rate and a measured one. The model comes first, then the
-accounting, then each cost in turn, then scaling.
+How fast could a search run on a given chip, and where does the time go when
+it falls short? We estimate that ceiling from the native CPU time of the
+workload, then account for the gap using measurements of host overhead,
+repeated work, and worker utilization. The worked examples are measurements
+from specific hardware and implementations; they illustrate the model and
+will change as the system evolves.
 
 ## The model
 
-An execution is one rollout: a restore, a suffix of actions, and the run to an
-endpoint. A deterministic search should run its workload at native speed with
-the idle time removed. The floor for one execution is the native CPU time of
-its new guest work, meaning work no earlier execution ran. The workload's
-action durations and the virtual clock's rules set how much guest work an
-execution contains. Those are fidelity choices, so the model takes that work
-as given.
+An execution is one rollout: the worker restores a state, applies a sequence
+of actions, and runs to an endpoint. Ideally, it would run at native speed,
+skip idle time, and reuse all work from earlier executions. Its minimum cost,
+or floor, is therefore the native CPU time needed for new guest work.
 
-Everything above the floor is overhead, and each kind has a cost.
+The amount of guest work depends on action durations and the rules of the
+virtual clock. These choices determine how faithfully the search models the
+workload; we take them as given when estimating performance.
+
+Actual executions also pay for exits, snapshots, repeated work, and
+coordination:
 
 | Overhead | Cost |
 |---|---|
@@ -24,25 +28,23 @@ Everything above the floor is overhead, and each kind has a cost.
 | Guest work run a second time | Its full CPU time |
 | Coordinator time per job | The whole search finishes at most one job in that time |
 
-Two rules of thumb follow from the table. Exits cost 10% of guest time when one
-arrives every 25 µs of guest work. Page copies cost 10% when the guest writes a
-new page every 10 µs.
+At these costs, an exit every 25 µs of guest work adds about 10% overhead.
+Copying a page every 10 µs adds another 10%.
 
-A chip's ceiling is the sum of its cores' rates at the floor, with each core
-type measured separately.
-
-Memory decides how close a search gets to that ceiling. Each worker holds its
-guest's resident pages, which limits how many workers a host can run. Each
-retained state holds the pages its execution wrote. An emulator snapshot is
-tens of kilobytes and a Linux guest's is megabytes. A gigabyte keeps tens of
-thousands of the first and on the order of a hundred of the second. When the
-retained states fall short of the ones the search draws, the search runs work
-a second time.
+To estimate the whole chip's ceiling, measure the floor on each core type and
+add up the resulting per-core execution rates. Reaching that ceiling also
+requires enough memory to keep the cores busy and avoid repeating work. Each
+worker needs memory for its guest, and each retained state needs space for the
+pages changed by its execution. A typical emulator snapshot takes tens of
+kilobytes, while a Linux guest snapshot takes megabytes: a gigabyte can hold
+tens of thousands of emulator snapshots but only around a hundred Linux
+snapshots. When a selected state is no longer in memory, the search has to
+reconstruct it by running earlier work again.
 
 ## The execution contract
 
-The costs hold for any deterministic search that snapshots and restores a
-machine, under four assumptions.
+This model applies to a deterministic search that snapshots and restores a
+machine, with four assumptions:
 
 1. The machine has one vCPU. Harmony's determinism claim covers single-vCPU
    machines only ([Determinism](DETERMINISM.md)), so a worker occupies one
@@ -58,14 +60,16 @@ machine, under four assumptions.
 
 ## Accounting for the gap
 
-A search's efficiency is its measured rate divided by the chip's ceiling. The
-gap is the product of five factors. Each factor is at least one, and a search
-at its ceiling has all five at one.
+We measure efficiency as the actual execution rate divided by the chip's
+ceiling. Five factors account for the gap between them:
 
 ```text
 ceiling = measured rate × host overhead × re-execution
                         × cores in use × worker waiting × contention
 ```
+
+In this model, each factor is at least one. All five must be one for the
+search to reach the ceiling.
 
 | Factor | Ratio | Measured by |
 |---|---|---|
@@ -76,20 +80,23 @@ ceiling = measured rate × host overhead × re-execution
 | Contention | Guest time per unit of new work with every worker running, over that time with one | Guest cycles on a full run against a one-worker run on the same core type |
 
 > [!NOTE]
-> **Worked example: an emulator search at its floor.** On an M1 Max
-> (Firestorm), the Game Boy core runs Pokémon Blue at 9,904 frames per second
-> in a bare loop with no search around it. One search worker runs it at 9,932
-> frames per second, so host overhead is one within measurement error. Every
-> frame the search ran was one an action requested, so re-execution is one as
-> well. A Pokémon Blue snapshot is 58 KiB, so a gigabyte holds about 17,000
-> and the search can keep one for every endpoint. Only cores in use, worker
-> waiting, and contention remain.
+> **Worked example: Pokémon Blue at native speed.**
+>
+> On an M1 Max (Firestorm), the Game Boy core runs Pokémon Blue at 9,904 frames
+> per second in a bare loop and 9,932 frames per second inside one search worker.
+> Within measurement error, the search adds no host overhead. It also repeats no
+> guest work: every frame it runs belongs to a requested action. Snapshots are
+> small enough to retain every endpoint, at 58 KiB each, or about 17,000 per
+> gigabyte. That leaves core utilization, worker waiting, and contention to
+> explain any gap when scaling to the whole chip.
 
 > [!NOTE]
-> **Worked example: one Linux guest search on four core types.** The etcd
-> historical case ran as a consonance search with one worker pinned to one
-> core. Guest time is the worker's busy time scaled by its share of guest
-> cycles. Re-execution is virtual time run over new virtual time.
+> **Worked example: etcd on one core.**
+>
+> For the etcd historical case, we ran a Consonance search with one worker
+> pinned to a core of each type. We estimated guest time by multiplying the
+> worker's busy time by the fraction of cycles spent in the guest, and measured
+> re-execution as total virtual time run divided by new virtual time.
 >
 > | | Intel 285HX P-core | Intel 285HX E-core | CIX CP8180 (Cortex-A720) | CIX CP8180 (Cortex-A520) |
 > |---|---|---|---|---|
@@ -100,16 +107,19 @@ ceiling = measured rate × host overhead × re-execution
 > | Re-execution | 2.4x | 2.4x | 2.4x | 2.2x |
 > | Gap | 7.8x | 9.7x | 11.7x | 18x |
 >
-> One worker was busy for the whole run, so worker waiting and contention are
-> one. An E-core ran the same executions at 0.56 of a P-core's rate, and a
-> Cortex-A520 at 0.17 of a Cortex-A720's.
+> Each worker stayed busy throughout its run, so the worker-waiting factor is
+> one. These single-worker runs also provide the baseline for contention. The
+> E-core achieved 0.56 of the P-core's execution rate, while the Cortex-A520
+> achieved 0.17 of the Cortex-A720's rate.
 
 > [!NOTE]
-> **Worked example: the same search on every core of one type.** On the Intel
-> 285HX, eight workers on the P-cores ran 5.6 executions per second, 2.6 times
-> one worker. Sixteen workers on the E-cores ran 4.2 per second, 3.5 times one
-> worker. Eight workers on the Cortex-A720 cores of a CIX CP8180 ran 1.3 per
-> second, 3.2 times one worker.
+> **Worked example: etcd on every core of one type.**
+>
+> Adding workers improved throughput, but the gains fell well short of linear
+> scaling. On the Intel 285HX, eight P-core workers reached 5.6 executions per
+> second, a 2.6x speedup over one worker. Sixteen E-core workers reached 4.2 per
+> second, a 3.5x speedup. On the CIX CP8180, eight Cortex-A720 workers reached
+> 1.3 per second, a 3.2x speedup.
 >
 > | Factor | 8 P-cores | 16 E-cores | 8 Cortex-A720 |
 > |---|---|---|---|
@@ -119,91 +129,98 @@ ceiling = measured rate × host overhead × re-execution
 > | Contention | 1.4x | 1.4x | 1.3x |
 > | Gap to the cores' ceiling | 24x | 44x | 29x |
 >
-> Re-execution grows with the worker count because each worker keeps its own
-> retained states, so a worker re-runs prefixes other workers already ran.
-> Restores cost more per page with every worker running, which points at
-> memory bandwidth as the source of contention. The coordinator spent under
-> 0.4 ms per job. Worker waiting includes time a finished result waited for an
-> earlier one to be admitted.
+> Re-execution increased because workers keep separate sets of retained states
+> and repeat prefixes already run by other workers. Restores also became more
+> expensive per page, suggesting contention for memory bandwidth. Although the
+> coordinator spent less than 0.4 ms per job, workers still waited; this includes
+> time spent holding finished results until earlier results could be admitted.
 
 ## Exits
 
-An exit is a transfer from the guest to the host and back. The floor has one
-exit per arbitrated event and one per timer deadline an idle guest wakes for. A
-syscall is an arbitrated event only when it reads time, performs I/O, or draws
-entropy. Any other exit, such as one that only advances the virtual clock, is
-above the floor.
+An exit transfers control from the guest to the host and back. At minimum,
+the guest must exit whenever the host arbitrates an event or an idle guest
+wakes for a timer deadline. A syscall needs arbitration when it reads time,
+performs I/O, or draws entropy. Other exits, including those used only to
+advance the virtual clock, add to this minimum.
 
-Exit overhead is the exit count times the cost per exit, divided by guest time.
-The guest time between exits is the number to compare against the cost of one
-exit. At 2.5 µs per exit, an exit every 25 µs of guest work costs 10%, and an
-exit every 2.5 µs doubles the time.
+The cost depends on how often the guest exits relative to the work it does
+between exits. Multiply the exit count by the cost per exit, then divide by
+guest time to get the overhead. At 2.5 µs per exit, exiting every 25 µs of
+guest work adds 10%; exiting every 2.5 µs doubles the total time.
 
 > [!NOTE]
-> **Worked example.** The etcd search on one Intel 285HX P-core took 75,000
-> exits per execution against 148 ms of guest time, one per 2 µs of guest work.
-> Most were ticks that advance the virtual clock. The host spent about 2.5 µs
-> per exit, 1.3 times the guest time in all. On a CIX CP8180 (Cortex-A720) the
-> same search took 262,000 exits per execution at about 5.8 µs each, about
-> three times the guest time.
+> **Worked example: etcd exit costs.**
+>
+> The etcd search on one Intel 285HX P-core made 75,000 exits per execution
+> during 148 ms of guest time, or roughly one exit every 2 µs. Most were ticks
+> used to advance the virtual clock. At about 2.5 µs per exit, the host spent
+> 1.3 times as long handling exits as the guest spent running. On a CIX CP8180
+> (Cortex-A720), the same search made 262,000 exits per execution at about
+> 5.8 µs each, costing roughly three times the guest time.
 
 ## Pages
 
-A snapshot copies each page the guest wrote since the parent. A restore copies
-back each page that differs between the worker's current state and the next
-parent. That count grows with the distance between the two states in the tree.
-Page overhead is the pages copied per execution times the cost per page,
-divided by guest time. Hashing pages and scanning memory to find written pages
-add to the cost per page.
+Capturing a snapshot requires copying the pages the guest has written since
+its parent state. Restoring a state requires copying the pages that differ
+between the worker's current state and the next parent. The farther apart
+those states are in the tree, the more pages generally need to be copied.
+
+As with exits, page overhead is the number of copies per execution multiplied
+by the cost of each copy, divided by guest time. Hashing pages or scanning
+memory to find changed pages adds to that cost.
 
 > [!NOTE]
-> **Worked example.** Hypervisor.framework on macOS has no record of the pages
-> a guest wrote, so each restore and each snapshot copies all of guest RAM. On
-> an M1 Max (Firestorm), the etcd search with 1 GiB of guest RAM copied all
-> 262,144 pages at 2.8 µs per page on restore, and 1.0 µs per page with hashing
-> on capture. Those copies took 96% of the worker's time, and one worker ran
-> 0.20 executions per second.
+> **Worked example: snapshot copies on macOS.**
+>
+> The macOS backend illustrates how expensive this can become without a record
+> of changed pages. With Hypervisor.framework, each restore and snapshot copies
+> all of guest RAM. In the etcd search on an M1 Max (Firestorm), that meant
+> copying all 262,144 pages of a 1 GiB guest: 2.8 µs per page to restore and
+> 1.0 µs per page to capture, including hashing. These copies consumed 96% of
+> the worker's time, limiting it to 0.20 executions per second.
 
 ## Re-execution
 
-The re-execution factor is guest work run divided by new guest work, counted
-in virtual time since actions vary in length by orders of magnitude.
+Before a worker can execute a job, it needs to restore the selected parent
+state. If that state is still retained, the worker can restore it directly.
+Otherwise, it restores the nearest retained ancestor and repeats the actions
+needed to reach the parent.
 
-A job selects a parent and needs the machine in that state. If the parent's
-state is retained, the worker restores it. Otherwise the worker restores the
-nearest retained ancestor and runs the actions from there again. Three inputs
-set the factor.
+The re-execution factor measures this extra work as total guest work divided
+by new guest work. We count both in virtual time because action lengths vary
+by orders of magnitude. The amount of repeated work depends on three things:
 
-- **Access pattern.** Which parents the search draws, and in what order.
-- **Retention.** Which states are retained, how many, and whether workers
+- **Access pattern:** which parents the search selects and in what order.
+- **Retention:** which states it keeps, how many fit, and whether workers
   share them.
-- **Cost of keeping one.** The unique bytes in each retained state. A child is
-  cheap when its parent is retained, because only the pages it wrote are new.
+- **State size:** how many unique bytes each retained state needs. Keeping a
+  child is cheap when its parent is already retained, since only changed pages
+  need additional space.
 
-Take a byte budget, the cost of re-running each edge of the tree, the size of
-each retained state, and the parents the search will draw. The best offline
-schedule knows every draw in advance and may change the retained set between
-draws, within budget, to minimize the total cost of re-running from each
-draw's nearest retained ancestor. That cost is zero when the budget covers
-every drawn state. A search sees draws only as they arrive, so its cost is at
-least that of the best offline schedule.
+A useful lower bound is the best possible retention schedule for a known
+sequence of parent selections. Given a memory budget, state sizes, and the
+cost of repeating each edge in the tree, this schedule could choose which
+states to retain between selections to minimize repeated work. If every
+selected state fits, that cost is zero. A live search cannot know future
+selections, so it can only match or exceed this offline cost.
 
-Retention decisions change what a search runs, so a deterministic search makes
-them from deterministic inputs only.
-
-The floor counts an execution that finds nothing new as new work. Whether the
-search chose it well is a question for the search benchmarks.
+Retention decisions affect what gets executed and must therefore use only
+deterministic inputs. Also, “new work” here means work that has not already
+been run, even if it discovers nothing useful. Search benchmarks evaluate
+whether that work was worth choosing.
 
 > [!NOTE]
-> **Worked example.** The etcd search retains 96 prefixes per worker, with no
-> sharing between workers. Counted in virtual time, one worker runs 2.4 times
-> its new guest work, eight run 4.1 times, and sixteen run 4.9 times.
+> **Worked example: repeated work in etcd.**
+>
+> The etcd search retains 96 prefixes per worker without sharing them between
+> workers. Measured in virtual time, total guest work is 2.4 times new work with
+> one worker, 4.1 times with eight, and 4.9 times with sixteen.
 
 ## Serial work
 
-A deterministic parallel search makes its selection and admission decisions in
-one serial order, so that timing cannot change them
-([Exploration](EXPLORATION.md)). Three limits follow.
+A deterministic parallel search orders its selection and admission decisions
+so that execution timing cannot change them (see [Exploration](EXPLORATION.md)).
+This introduces three limits to parallelism:
 
 - **Coordinator occupancy.** With coordinator time t per job and execution
   time T per worker, the search saturates at T divided by t workers. The
@@ -211,36 +228,41 @@ one serial order, so that timing cannot change them
 - **Admission order.** A result waits until every result before it in the
   order is admitted. A slow execution delays the results behind it, and a
   worker waits once it holds as many finished results as it can buffer.
-- **Critical path.** Under assumption 4, a campaign has a longest chain of
-  selections that each need the result before them. Speedup over one worker is
-  at most total work divided by that chain, whatever the worker count.
+- **Critical path.** Because a selection can depend on an earlier admitted
+  result, some jobs must run in sequence. The longest such chain limits
+  speedup to total work divided by the work along that chain, regardless of
+  how many workers are available.
 
 > [!NOTE]
-> **Worked example.** A Pokémon Blue execution is 1,326 frames, or 134 ms on
-> an M1 Max (Firestorm). Twenty-four workers at that rate need the coordinator
-> to finish each job in under 6 ms. An etcd search on an Intel 285HX took 0.2
-> to 0.4 ms per job, and each of its workers took 0.5 to 2 s per execution, so
-> one coordinator can feed over a thousand such workers.
+> **Worked example: coordinator capacity.**
+>
+> For Pokémon Blue, an execution takes 1,326 frames, or 134 ms on an M1 Max
+> (Firestorm). To keep twenty-four workers busy at that rate, the coordinator
+> would need to process each job in under 6 ms. The etcd search leaves much more
+> room: on an Intel 285HX, coordination took 0.2 to 0.4 ms per job while worker
+> executions took 0.5 to 2 s. At those timings, coordinator occupancy alone
+> would allow over a thousand workers.
 
 ## Memory
 
-Each worker holds its guest's resident pages. Retained states hold the pages
-their executions wrote. Workers that do not share retained states each hold
-their own, so memory grows with the worker count as well as with the search.
-Capacity planning uses the resident peak.
+Memory use grows both as workers are added and as they accumulate retained
+states. Each worker holds its guest's resident pages plus any snapshots it
+retains. When workers do not share snapshots, each pays that storage cost
+separately, so capacity planning needs to account for peak resident memory.
 
 > [!NOTE]
-> **Worked example.** An etcd search with eight workers and 1 GiB of guest RAM
-> each started at 8.4 GB resident and reached 29 GB after 2,400 executions, as
-> the workers' retained states accumulated. At that size a 62 GB host admits
-> about sixteen workers.
+> **Worked example: etcd memory use.**
+>
+> The etcd search with eight workers and 1 GiB of guest RAM each started at
+> 8.4 GB resident and reached 29 GB after 2,400 executions. At that footprint,
+> a 62 GB host has room for about sixteen workers.
 
 ## Scaling
 
-On one chip, the rate should grow linearly with workers until one of these
-limits binds.
+On a single chip, throughput should rise linearly with worker count until it
+runs into one of these limits:
 
-| Limit | Binds when |
+| Limit | What stops scaling |
 |---|---|
 | Memory capacity | Per-worker memory times workers, plus retained states, exceeds host memory |
 | Coordinator occupancy | Execution time per worker divided by the worker count falls below coordinator time per job |
@@ -249,19 +271,21 @@ limits binds.
 | Admission order | Execution times spread widely and workers fill their result buffers |
 | Unshared retained states | Each worker re-runs prefixes that another worker already ran |
 
-The multiple of five in the bandwidth row covers the guest's write, the read
-and write that copy a page into a snapshot, and the read and write that copy
-it back on restore.
+The bandwidth estimate counts roughly five memory transfers for each guest
+write: the write itself, a read and write to capture the page, and another
+read and write to restore it.
 
-A sweep over worker count pins workers to one core type, since core types run
-at different rates. Changing the worker count also changes which parents the
-search selects, so a sweep compares campaigns of different work as well as
-different parallelism. Fixed time per campaign, such as boot and final
-persistence, matters for short campaigns with many workers.
+When measuring scaling, pin workers to one core type so differences in core
+speed do not distort the comparison. Even then, changing the worker count
+also changes which parents the search selects, so the runs differ in both
+work and parallelism. Boot time and final persistence can also dominate short
+campaigns spread across many workers.
 
 > [!NOTE]
-> **Worked example.** The etcd search, in executions per second, on one core
-> type per sweep.
+> **Worked example: etcd scaling.**
+>
+> For the etcd search, a sweep on each core type produced these execution rates
+> per second:
 >
 > | Workers | Intel 285HX P-cores | CIX CP8180 Cortex-A720 |
 > |---|---|---|
@@ -270,18 +294,19 @@ persistence, matters for short campaigns with many workers.
 > | 4 | 4.23 | 1.00 |
 > | 8 | 5.61 | 1.30 |
 >
-> Eight workers give 2.6 and 3.2 times one worker. Re-execution from unshared
-> retained states, worker waiting, and contention each grow with the worker
-> count. The coordinator stays under 0.4 ms per job.
+> Eight workers achieved 2.6x and 3.2x the throughput of one worker on the Intel
+> and CIX chips, respectively. Re-execution, worker waiting, and contention all
+> increased with worker count, while coordinator time stayed below 0.4 ms per
+> job.
 
-Weak scaling grows the campaign with the worker count. Coordinator occupancy
-limits it, since the coordinator's load grows with jobs per second. Guest RAM
-per worker against host memory limits it too.
+Weak scaling increases the campaign size along with the worker count. This
+still runs into coordinator capacity as jobs per second increase, and memory
+capacity as more guests need to fit on the host.
 
 ## Checks
 
-Each cost above rests on an assumption. The check beside it verifies the
-assumption on a new chip or workload.
+The estimates above depend on the chip, backend, and workload. Use these
+measurements to check the assumptions when applying the model elsewhere:
 
 | Assumption | Check |
 |---|---|
