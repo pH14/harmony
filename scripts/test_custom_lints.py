@@ -94,6 +94,17 @@ class PlatformBoundaryLintTests(unittest.TestCase):
             self.assertIsNotNone(LINTS.MISPLACED_WORKLOAD_FILE_RE.search(path))
 
 
+class ToplevelDirectoryTests(unittest.TestCase):
+    def test_skill_directories_are_allowed(self) -> None:
+        files = [".agents/skills/example/SKILL.md", ".claude/skills/example"]
+        self.assertEqual(LINTS.check_toplevel_dirs(files), [])
+
+    def test_unknown_directories_are_rejected(self) -> None:
+        violations = LINTS.check_toplevel_dirs([".skills/example/SKILL.md", "notes/plan.md"])
+        self.assertEqual([(v.rule, v.path) for v in violations],
+                         [("toplevel-dir-allowlist", ".skills"), ("toplevel-dir-allowlist", "notes")])
+
+
 ROOT = SCRIPT.parent.parent
 sys.path.insert(0, str(SCRIPT.parent))
 import ci_contract
