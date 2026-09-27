@@ -203,10 +203,12 @@ stream header list each change as `checkpoint_policy_changes`. A change to one
 of these policies must change that policy's identifier, or the resume records
 no change.
 
-A resume refuses a changed workload identity, controller vocabulary, key
-extraction, duration, replacement, terminal or emulator policy, worker count,
-admission window (`window`), archive entry limit or memory budget
-(`memory_mib`). The execution, frame and wall budgets may change. Test a change
+A resume refuses a changed workload identity or any other workload policy:
+`controller_vocabulary`, `key_policy`, `duration_policy`, `replacement_policy`,
+`terminal_policy` and `emulator_backend`. It also refuses a changed worker
+count, admission window (`window`), archive entry limit, memory budget
+(`memory_mib`) or checkpoint format. The execution, frame and wall budgets may
+change. Test a change
 the resume refuses with rooted segments and a new power-on run instead of
 slices.
 
