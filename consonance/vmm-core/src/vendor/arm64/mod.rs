@@ -456,7 +456,7 @@ impl Vendor for Arm64 {
     }
 
     fn guest_interruptible<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<bool, VmmError> {
-        Ok(vmm.backend_mut().save()?.core.pstate & dispatch::PSTATE_I == 0)
+        Ok(!vmm.arm64_irq_masked()?)
     }
 
     fn pending_deliverable_interrupt<B: Backend<A = Self>>(

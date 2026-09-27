@@ -525,6 +525,7 @@ mod tests {
         let forwarded = boxed.cancellation_flag().expect("latch forwarded");
         assert!(Arc::ptr_eq(&forwarded, &latch));
     }
+
     #[test]
     fn boxed_irq_mask_forwards_supported_unsupported_and_error_results() {
         for mask in [None, Some(false), Some(true)] {

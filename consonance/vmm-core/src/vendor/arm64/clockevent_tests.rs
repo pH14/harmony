@@ -189,3 +189,89 @@ fn absent_or_future_timer_does_not_query_the_backend() {
         assert_eq!(vmm.devices.clockevent.deadline, deadline);
     }
 }
+
+#[test]
+fn idle_to_timer_transition_uses_direct_mask_for_both_checks() {
+    use super::super::board::{CNTFRQ_HZ, PVCLOCK_PPI};
+    use crate::vmm::TerminalReason;
+    const DEADLINE: u64 = 1_000_000;
+    for masked in [false, true] {
+        let mut fast = machine(Some(masked), !masked);
+        let mut fallback = machine(None, masked);
+        for vmm in [&mut fast, &mut fallback] {
+            let gic = vmm.devices.gic.as_mut().unwrap();
+            gic.mmio_write(gicv3::GicFrame::Dist, 0, 0b10, 0).unwrap();
+            gic.mmio_write(gicv3::GicFrame::Redist, 0x1_0080, 1 << PVCLOCK_PPI, 0)
+                .unwrap();
+            gic.mmio_write(gicv3::GicFrame::Redist, 0x1_0100, 1 << PVCLOCK_PPI, 0)
+                .unwrap();
+            gic.set_pmr(0xff);
+            gic.set_group1_enabled(true);
+            vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ / 1000);
+            let trace = vmm.virtual_time_trace.as_mut().unwrap();
+            trace.finish(0, None).unwrap();
+            trace
+                .restore_clockevent_schedule(Some((DEADLINE, PVCLOCK_PPI)))
+                .unwrap();
+            trace
+                .begin(
+                    vmm_backend::ExitReason::Idle,
+                    "idle".into(),
+                    NormalizedEventClass::Idle,
+                    vec![],
+                )
+                .unwrap();
+            assert_eq!(
+                vmm.on_idle().unwrap(),
+                if masked {
+                    Step::Terminal(TerminalReason::Idle)
+                } else {
+                    Step::Continued
+                }
+            );
+            vmm.service_arm_clockevent_due().unwrap();
+            let vns = vmm.effective_vns().unwrap();
+            assert_eq!(vns, if masked { 0 } else { DEADLINE });
+            vmm.virtual_time_trace
+                .as_mut()
+                .unwrap()
+                .finish(vns, None)
+                .unwrap();
+        }
+        assert_eq!(
+            fast.idle_landings(),
+            if masked { &[][..] } else { &[DEADLINE][..] }
+        );
+        assert_eq!(fast.idle_landings(), fallback.idle_landings());
+        assert_eq!(fast.devices.clockevent, fallback.devices.clockevent);
+        assert_eq!(fast.devices.clockevent.line_asserted, !masked);
+        assert_eq!(
+            fast.virtual_time_trace().unwrap().normalized_log(),
+            fallback.virtual_time_trace().unwrap().normalized_log()
+        );
+        assert_eq!(
+            fast.virtual_time_trace().unwrap().schedule(),
+            fallback.virtual_time_trace().unwrap().schedule()
+        );
+        let polls = if masked { 1 } else { 2 };
+        assert_eq!((fast.backend.reads, fast.backend.saves), (polls, 0));
+        assert_eq!(
+            (fallback.backend.reads, fallback.backend.saves),
+            (polls, polls)
+        );
+    }
+}
+
+#[test]
+fn idle_irq_mask_error_does_not_advance_time_or_fall_back() {
+    let mut vmm = machine(Some(false), false);
+    vmm.backend.fail = true;
+    assert!(matches!(
+        vmm.on_idle(),
+        Err(VmmError::Backend(BackendError::PendingCompletion))
+    ));
+    assert_eq!(vmm.effective_vns(), Some(0));
+    assert!(vmm.idle_landings().is_empty());
+    assert_eq!(vmm.terminal_reason(), None);
+    assert_eq!((vmm.backend.reads, vmm.backend.saves), (1, 0));
+}
