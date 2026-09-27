@@ -23,14 +23,10 @@ Its observation descriptor resolves the published handle to guest memory;
 frame evidence comes from the SDK frame-complete lifecycle event, so boundary
 checks do not add observation reads. Apple Silicon uses the direct server path.
 
-Native AArch64 ARM oracle builds may opt into the host SHA-256 backend with
-`--features arm-sha2-asm`. For example, append that feature to the
-`workload-tools` build command when running the Nova oracle on an ARM host.
-The default ARM build keeps its current software backend. The feature only
-accelerates host hashing; it leaves the guest CPU contract, full-state checks,
-and oracle coverage unchanged. Use it for native ARM builds, where the
-`sha2` backend checks the host SHA2 capability and falls back to software when
-the capability is absent.
+Native AArch64 Linux and macOS oracle builds automatically use the host
+SHA-256 backend enabled by `vmm-core`. RustCrypto checks the host SHA2 capability
+and falls back to software when it is absent. This accelerates host hashing;
+the guest CPU contract, full-state checks, and oracle coverage are unchanged.
 
 The `kvm_x86_nova_probe` restore oracle builds a 50-action branching snapshot
 tree, checks 200 in-place restored continuations without
