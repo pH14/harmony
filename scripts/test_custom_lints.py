@@ -55,6 +55,26 @@ class PublicDocumentationTests(unittest.TestCase):
         ])
 
 
+class PublicationConcurrencyTests(unittest.TestCase):
+    def test_only_the_registered_publisher_can_share_a_group(self):
+        path = ci_contract.DOCUMENTATION.path
+        data = {"jobs": {"publish": {"concurrency": {
+            "group": "harmony-pages", "cancel-in-progress": False,
+        }}}}
+        self.assertFalse(LINTS.check_push_concurrency(path, data))
+        self.assertTrue(LINTS.check_push_concurrency(".github/workflows/other.yml", data))
+        data["jobs"]["documentation"] = data["jobs"]["publish"]
+        self.assertTrue(LINTS.check_push_concurrency(path, data))
+
+    def test_publication_must_serialize_without_canceling(self):
+        for concurrency in (None, "harmony-pages", {},
+                            {"group": "harmony-pages", "cancel-in-progress": True},
+                            {"group": "wrong", "cancel-in-progress": False}):
+            with self.subTest(concurrency=concurrency):
+                data = {"jobs": {"publish": {"concurrency": concurrency}}}
+                self.assertTrue(LINTS.check_push_concurrency(ci_contract.DOCUMENTATION.path, data))
+
+
 class RepositoryVocabularyTests(unittest.TestCase):
     def test_words_and_identifier_components_are_rejected(self):
         word = LINTS.PROHIBITED_WORD

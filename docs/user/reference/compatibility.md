@@ -8,13 +8,15 @@ Harmony runs a Linux guest on the same CPU architecture as the host. It does not
 | --- | --- | --- | --- | --- |
 | Linux x86-64 (Intel or AMD) | KVM | Available | Available | Available |
 | Linux Arm64 | KVM | Available | Available | Available |
-| macOS on Apple silicon | Hypervisor.framework | Available; sign the CLI | Available; use one worker | Not wired into this CLI |
+| macOS on Apple silicon | Hypervisor.framework | Available; sign the CLI and use seed `0` | Available; use one worker | Not wired into this CLI |
 | Intel macOS | — | Unsupported | Unsupported | Unsupported |
 | Windows | — | Unsupported | Unsupported | Unsupported |
 
 Native NES search uses a matching host QuickNES library and does not require a guest runtime. See [NES usage](../how-to/nes.md).
 
 Linux needs read/write access to `/dev/kvm`. Inside a VM, the outer hypervisor must expose nested virtualization. Inside a container, access to the underlying hypervisor must still be provided; installing Docker by itself does not provide KVM.
+
+macOS `oci run` rejects nonzero seeds; use the default seed `0`. The fault-search `--seed` controls campaign choices and is not subject to this restriction.
 
 On macOS, Hypervisor.framework permits one VM per process. Use `--workers 1` for a fault campaign.
 

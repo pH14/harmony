@@ -955,13 +955,23 @@ def check_workflow_file(repo_root: Path, rel_path: str, workflow) -> list[Violat
 
 
 def check_push_concurrency(rel_path: str, data: dict) -> list[Violation]:
-    """A push run is never cancelled or replaced by a later push."""
+    """Preserve every push check; serialize only explicitly registered publishers."""
     import ci_contract
 
-    scopes = [("workflow", data.get("concurrency"))]
-    scopes += [(f"job '{job_id}'", job.get("concurrency")) for job_id, job in data["jobs"].items()]
+    scopes = [("workflow", None, data.get("concurrency"))]
+    scopes += [(f"job '{job_id}'", job_id, job.get("concurrency"))
+               for job_id, job in data["jobs"].items()]
     violations = []
-    for owner, concurrency in scopes:
+    for owner, job_id, concurrency in scopes:
+        serial_group = ci_contract.SERIAL_PUBLICATION_JOBS.get((rel_path, job_id))
+        if serial_group is not None:
+            if (not isinstance(concurrency, dict)
+                    or concurrency.get("group") != serial_group
+                    or concurrency.get("cancel-in-progress") is not False):
+                violations.append(Violation("ci-push-concurrency", rel_path, 0,
+                    f"{owner} must serialize publication in '{serial_group}' "
+                    "without canceling a running deployment"))
+            continue
         if concurrency is None:
             continue
         group = concurrency.get("group") if isinstance(concurrency, dict) else concurrency

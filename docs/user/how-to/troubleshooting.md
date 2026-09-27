@@ -10,6 +10,7 @@ Start with `harmony preflight --json`, keep the full error message, and use a fr
 | `/dev/kvm` does not exist | Enable hardware virtualization; in a VM, expose nested virtualization from the outer host |
 | `/dev/kvm` is not writable | Grant your user membership in the host's KVM-access group, then log out and back in |
 | macOS hypervisor creation fails | Check that the host is Apple silicon, `kern.hv_support` is 1, and the CLI has the hypervisor entitlement; re-sign after replacing it |
+| `use --seed 0 on macOS` | macOS OCI execution currently supports only seed zero; leave `--seed` at its default or set it to `0` |
 | Host is an untested cell | Review [the matrix](../reference/compatibility.md); use `--allow-untested` for OCI only if you intend to opt in |
 | `no run loop` or unsupported host | Use a host supported by that command; an opt-in flag cannot add a missing backend |
 | No guest kernel | Point `HARMONY_GUEST_DIR` directly at the architecture directory containing `Image` or `bzImage` |

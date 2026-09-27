@@ -516,6 +516,11 @@ tamper refusal. Its evidence is uploaded with the existing Nova artifact.
 `Release / Harmony / Documentation` renders the end-user site with a strict
 MkDocs build. Pull requests produce an HTML review artifact. Only runs on main
 can reach the separate Pages deployment job, which owns the write and identity
-permissions. Its full-trigger exception expresses this trust boundary, not an
+permissions. `SERIAL_PUBLICATION_JOBS` permits only this publisher to share a
+non-canceling concurrency slot across pushes. After acquiring it, the job checks
+out and strictly builds current main rather than publishing an older artifact.
+Thus a late-arriving workflow still publishes current content even when GitHub
+replaces a pending deployment. Pull-request checks and all build
+jobs retain independent per-push groups. Its full-trigger exception expresses this trust boundary, not an
 extended runtime budget; both jobs are bounded to ten minutes. See
 [SITE.md](SITE.md) for preview and hosting configuration.

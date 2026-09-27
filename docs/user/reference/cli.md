@@ -12,7 +12,7 @@ Exit status is zero only when `ready` is true. Preflight checks filenames and ho
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--seed N` | `0` | Guest execution seed |
+| `--seed N` | `0` | Guest execution seed; macOS OCI supports only `0` |
 | `--out DIR` | Temporary `harmony-run-<pid>` directory | Location of `serial.log` and completed `run.json` |
 | `--ram-mib N` | `512` | Guest memory in MiB |
 | `--timeout SECONDS` | `900` | Host wall-time budget for guest execution, excluding image preparation |

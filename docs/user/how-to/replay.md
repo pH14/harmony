@@ -47,12 +47,12 @@ Check the same violated property IDs or terminal behavior, not just whether *som
 OCI runs do not use `search --replay`. Run the same command again:
 
 ```sh
-harmony oci run ./app.tar --seed 7 --ram-mib 512 \
+harmony oci run ./app.tar --seed 0 --ram-mib 512 \
   --timeout 60 --out repeated -- /app/self-test
 cmp original/serial.log repeated/serial.log
 ```
 
-Include `--allow-untested` again if the original host required it. Compare the input hashes in both `run.json` files before interpreting an output mismatch. A timeout has no completed run digest; diagnose it separately.
+Use the original seed; macOS OCI runs support only seed `0`. Include `--allow-untested` again if the original host required it. Compare the input hashes in both `run.json` files before interpreting an output mismatch. A timeout has no completed run digest; diagnose it separately.
 
 ## Handle a mismatch
 
