@@ -345,12 +345,13 @@ progress line counts `splice_jobs`, `splice_actions` and `splice_cost` under
 `coordinator`.
 
 Splice preparation validates the donor's complete prefix without copying it,
-then walks the leaf's suffix and copies only
-the requested leading tail. Reaching the same prefix node after the declared
+then walks the leaf's suffix and copies only the requested leading tail. Reaching the same prefix node after the declared
 suffix length reuses the donor validation. If prefix nodes differ, their actions
 are compared while validating the leaf prefix, so equivalent noncanonical paths
 and invalid-path error precedence retain their previous behavior. Preparation
 allocates only the returned tail; archive state and selection policy are unchanged.
+Declared path lengths are bounded by the number of stored non-root node slots,
+so malformed lengths cannot turn a parent cycle into an unbounded validation walk.
 
 The splice tests compare bounded reconstruction with the original full-input
 reconstruction, including zero limits and malformed metadata. A clone-count test

@@ -667,6 +667,9 @@ impl<A: Clone + Ord> InputIndex<A> {
     }
 
     fn prefix_is_available(&self, mut node: usize, expected_len: usize) -> bool {
+        if expected_len > self.nodes.len().saturating_sub(1) {
+            return false;
+        }
         for _ in 0..expected_len {
             let Some((parent, _)) = self.step_back(node) else {
                 return false;
@@ -686,6 +689,9 @@ impl<A: Clone + Ord> InputIndex<A> {
     ) -> Result<Vec<A>, &'static str> {
         if !self.prefix_is_available(donor, donor_len) {
             return Err("splice donor prefix is unavailable");
+        }
+        if leaf_len > self.nodes.len().saturating_sub(1) {
+            return Err("splice leaf prefix is unavailable");
         }
         let Some(distance) = leaf_len.checked_sub(donor_len) else {
             return if self.prefix_is_available(leaf, leaf_len) {
@@ -6421,7 +6427,7 @@ mod tests {
 
     #[test]
     fn bounded_splice_tails_match_noncanonical_prefixes() {
-        for case in 0..6 {
+        for case in 0..7 {
             let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
             let mut original = archive.entries[donor].input_node;
             let mut copied = 0;
@@ -6435,7 +6441,7 @@ mod tests {
             for (index, action) in actions.into_iter().rev().enumerate() {
                 let node = super::InputNode {
                     parent: Some(copied),
-                    action: Some(if (case == 1 || case == 5) && index == 1 {
+                    action: Some(if (case == 1 || case == 5 || case == 6) && index == 1 {
                         99
                     } else {
                         action
@@ -6459,7 +6465,7 @@ mod tests {
                         .unwrap()
                         .parent = None
                 }
-                4 => {
+                4 | 6 => {
                     archive.input_index.nodes[copied_root]
                         .as_mut()
                         .unwrap()
@@ -6514,11 +6520,52 @@ mod tests {
     }
 
     #[test]
+    fn bounded_splice_validation_rejects_lengths_exceeding_stored_nodes() {
+        let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
+        let donor_node = archive.entries[donor].input_node;
+        let donor_parent = archive.input_index.nodes[donor_node]
+            .as_ref()
+            .unwrap()
+            .parent;
+        archive.entries[donor].input_len = usize::MAX;
+        archive.input_index.nodes[donor_node]
+            .as_mut()
+            .unwrap()
+            .parent = Some(donor_node);
+        assert_eq!(
+            archive.recorded_splice_tail(parent, donor, leaf, 128),
+            Err("splice donor prefix is unavailable")
+        );
+        archive.entries[donor].input_len = 4;
+        archive.input_index.nodes[donor_node]
+            .as_mut()
+            .unwrap()
+            .parent = donor_parent;
+        let leaf_node = archive.entries[leaf].input_node;
+        archive.entries[leaf].input_len = usize::MAX;
+        archive.input_index.nodes[leaf_node]
+            .as_mut()
+            .unwrap()
+            .parent = Some(leaf_node);
+        assert_eq!(
+            archive.recorded_splice_tail(parent, donor, leaf, 128),
+            Err("splice leaf prefix is unavailable")
+        );
+    }
+
+    #[test]
     fn bounded_splice_tails_clone_only_the_requested_actions() {
         use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
         static CLONES: AtomicUsize = AtomicUsize::new(0);
-        #[derive(Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+        static COMPARISONS: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Debug, Deserialize, Eq, Ord, PartialOrd, Serialize)]
         struct Action(u8);
+        impl PartialEq for Action {
+            fn eq(&self, other: &Self) -> bool {
+                COMPARISONS.fetch_add(1, AtomicOrdering::Relaxed);
+                self.0 == other.0
+            }
+        }
         impl Clone for Action {
             fn clone(&self) -> Self {
                 CLONES.fetch_add(1, AtomicOrdering::Relaxed);
@@ -6528,9 +6575,11 @@ mod tests {
         let (archive, [parent, donor, leaf]) = splice_tail_fixture_with_actions(4096, 256, Action);
         for limit in [0, 1, 128, 256, 512] {
             CLONES.store(0, AtomicOrdering::Relaxed);
+            COMPARISONS.store(0, AtomicOrdering::Relaxed);
             let tail = archive
                 .recorded_splice_tail(parent, donor, leaf, limit)
                 .unwrap();
+            assert_eq!(COMPARISONS.load(AtomicOrdering::Relaxed), 0);
             assert_eq!(tail.len(), limit.min(256));
             assert_eq!(CLONES.load(AtomicOrdering::Relaxed), tail.len());
             assert_eq!(tail.capacity(), tail.len());
