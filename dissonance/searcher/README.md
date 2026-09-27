@@ -194,7 +194,8 @@ cargo bench --locked --manifest-path dissonance/Cargo.toml --bench duration
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench parent_selection
 ```
 
-Cell and holder draws build only the weight vector. Candidate IDs stay in the
+Cell and holder draws build only the weight vector, reserving exactly the
+candidate count even for tiny sets. Candidate IDs stay in the
 ordered map or set, and the selected index is retrieved from its nearer end.
 Weights are computed once in their original order; the weighted draw and RNG
 consumption are unchanged. This removes one temporary candidate vector per
