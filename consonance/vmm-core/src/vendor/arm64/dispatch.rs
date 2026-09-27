@@ -603,6 +603,13 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
+    pub(super) fn arm64_irq_masked(&mut self) -> Result<bool, VmmError> {
+        match self.backend.read_irq_mask()? {
+            Some(masked) => Ok(masked),
+            None => Ok(self.backend.save()?.core.pstate & PSTATE_I != 0),
+        }
+    }
+
     pub(crate) fn service_arm_clockevent_due(&mut self) -> Result<(), VmmError> {
         use super::board::PVCLOCK_PPI;
 
@@ -621,11 +628,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         if guest_clock < deadline {
             return Ok(());
         }
-        let irq_masked = match self.backend.read_irq_mask()? {
-            Some(masked) => masked,
-            None => self.backend.save()?.core.pstate & PSTATE_I != 0,
-        };
-        if irq_masked {
+        if self.arm64_irq_masked()? {
             self.trace_arm_clockevent_defer()?;
             return Ok(());
         }

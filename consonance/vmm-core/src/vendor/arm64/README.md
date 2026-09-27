@@ -53,8 +53,10 @@ backend boundary.
 
 When the paravirtual clockevent is due, `dispatch` queries the backend's IRQ
 mask and defers delivery while `PSTATE.I` is set. HVF supplies that bit directly;
-backends without the query retain the full-state read. The query is made only
-after the existing registration, deadline, and virtual-clock checks. It changes
+backends without the query retain the full-state read. Idle handling uses the
+same query before deciding whether it may advance to a wake deadline. Due-timer
+polling remains behind the existing registration, deadline, and virtual-clock
+checks, and idle polling remains behind the virtual-clock check. It changes
 neither virtual time nor the schedule, deferral, delivery, and acknowledgement
 records. Snapshot capture still reads complete architectural state.
 
