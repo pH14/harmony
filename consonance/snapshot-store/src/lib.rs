@@ -100,46 +100,8 @@ struct Layer {
     refcount: u64,
     children: usize,
     chain_len: u32,
-}
-
-const RESOLVE_CACHE_SLOTS: usize = 4096;
-
-#[derive(Clone, Copy)]
-struct ResolvedPage {
-    snapshot: u64,
-    gfn: u64,
-    page: PageRef,
-}
-
-#[derive(Default)]
-struct ResolveCache {
-    slots: Vec<Option<ResolvedPage>>,
-}
-
-impl ResolveCache {
-    fn index(snapshot: u64, gfn: u64) -> usize {
-        let folded = gfn ^ (gfn >> 12) ^ (gfn >> 24) ^ (gfn >> 36) ^ (gfn >> 48) ^ (gfn >> 60);
-        (folded ^ snapshot.wrapping_mul(0x9e37_79b9_7f4a_7c15)) as usize & (RESOLVE_CACHE_SLOTS - 1)
-    }
-
-    fn get(&self, snapshot: u64, gfn: u64) -> Option<PageRef> {
-        self.slots
-            .get(Self::index(snapshot, gfn))
-            .and_then(Option::as_ref)
-            .filter(|entry| entry.snapshot == snapshot && entry.gfn == gfn)
-            .map(|entry| entry.page)
-    }
-
-    fn insert(&mut self, snapshot: u64, gfn: u64, page: PageRef) {
-        if self.slots.is_empty() {
-            self.slots.resize(RESOLVE_CACHE_SLOTS, None);
-        }
-        self.slots[Self::index(snapshot, gfn)] = Some(ResolvedPage {
-            snapshot,
-            gfn,
-            page,
-        });
-    }
+    #[allow(clippy::disallowed_types)]
+    resolve_cache: RefCell<HashMap<u64, PageRef>>,
 }
 
 pub struct Store {
@@ -153,7 +115,6 @@ pub struct Store {
     page_index: HashMap<PageHash, NonZeroUsize, BuildPageHashHasher>,
     pages: Vec<Option<PageEntry>>,
     free_pages: Vec<NonZeroUsize>,
-    resolve_cache: RefCell<ResolveCache>,
     zero_hash: PageHash,
 }
 
@@ -170,7 +131,6 @@ impl Store {
             page_index: HashMap::default(),
             pages: Vec::new(),
             free_pages: Vec::new(),
-            resolve_cache: RefCell::default(),
             zero_hash: *blake3::hash(&[0u8; PAGE_SIZE]).as_bytes(),
         }
     }
@@ -502,7 +462,6 @@ impl Store {
             self.free_pages = Vec::new();
         }
         if self.layers.is_empty() {
-            self.resolve_cache = RefCell::default();
             self.collectible = Vec::new();
         }
         freed
@@ -593,7 +552,6 @@ impl Store {
     }
 
     fn resolve(&self, start: u64, gfn: u64) -> PageRef {
-        let cache = self.resolve_cache.borrow();
         let mut current = start;
         let result = loop {
             let Some(layer) = self.layers.get(&current) else {
@@ -603,7 +561,7 @@ impl Store {
             if let Ok(index) = layer.pages.binary_search_by_key(&gfn, |&(gfn, _)| gfn) {
                 break layer.pages[index].1;
             }
-            if let Some(page) = cache.get(current, gfn) {
+            if let Some(&page) = layer.resolve_cache.borrow().get(&gfn) {
                 break page;
             }
             let Some(parent) = layer.parent else {
@@ -611,9 +569,11 @@ impl Store {
             };
             current = parent;
         };
-        drop(cache);
         if current != start {
-            self.resolve_cache.borrow_mut().insert(start, gfn, result);
+            self.layers[&start]
+                .resolve_cache
+                .borrow_mut()
+                .insert(gfn, result);
         }
         result
     }
@@ -787,6 +747,7 @@ impl BuilderCore<'_> {
                 refcount: 1,
                 children: 0,
                 chain_len,
+                resolve_cache: RefCell::default(),
             },
         );
         SnapshotId(id)
@@ -1084,19 +1045,20 @@ mod tests {
         let mut out = [0u8; PAGE_SIZE];
         store.read_page(leaf, 0, &mut out).unwrap();
         assert_eq!(out, [9u8; PAGE_SIZE]);
-        assert!(store.resolve_cache.borrow().get(leaf.0, 0).is_some());
-        assert!(store.resolve_cache.borrow().get(mid.0, 0).is_none());
+        assert!(
+            store.layers[&leaf.0]
+                .resolve_cache
+                .borrow()
+                .contains_key(&0)
+        );
+        assert!(store.layers[&mid.0].resolve_cache.borrow().is_empty());
         store.read_page(leaf, 0, &mut out).unwrap();
         assert_eq!(out, [9u8; PAGE_SIZE]);
     }
 
     #[test]
-    fn inherited_scans_have_a_bounded_cache_and_preserve_zero_overrides() {
-        let pages = if cfg!(miri) {
-            16
-        } else {
-            (RESOLVE_CACHE_SLOTS * 2) as u64
-        };
+    fn inherited_scans_retain_cached_answers_and_preserve_zero_overrides() {
+        let pages = if cfg!(miri) { 16 } else { 8192 };
         let mut store = Store::new(cfg(pages));
         let mut builder = store.begin_base();
         builder.write_page(7, &[9; PAGE_SIZE]).unwrap();
@@ -1114,46 +1076,53 @@ mod tests {
                 store.read_page(leaf, gfn, &mut out).unwrap();
                 assert_eq!(out, [if gfn == pages - 1 { 8 } else { 0 }; PAGE_SIZE]);
             }
-            assert!(store.resolve_cache.borrow().slots.len() <= RESOLVE_CACHE_SLOTS);
+            assert_eq!(
+                store.layers[&leaf.0].resolve_cache.borrow().len(),
+                pages as usize
+            );
+            for gfn in 0..pages {
+                assert!(
+                    store.layers[&leaf.0]
+                        .resolve_cache
+                        .borrow()
+                        .contains_key(&gfn)
+                );
+            }
         }
         store.read_page(base, 7, &mut out).unwrap();
         assert_eq!(out, [9; PAGE_SIZE]);
     }
 
     #[test]
-    fn cache_collisions_between_snapshots_never_substitute_page_contents() {
-        let mut store = Store::new(cfg(RESOLVE_CACHE_SLOTS as u64));
+    fn cached_answers_are_snapshot_local_and_reclaimed_with_their_layer() {
+        let mut store = Store::new(cfg(4));
         let mut builder = store.begin_base();
         builder.write_page(0, &[7; PAGE_SIZE]).unwrap();
         let left_base = builder.seal(vec![]);
         let left = store.derive(left_base).unwrap().seal(vec![]);
-        let right_id = store.next_id + 1;
-        let colliding_gfn = (0..RESOLVE_CACHE_SLOTS as u64)
-            .find(|&gfn| ResolveCache::index(left.0, 0) == ResolveCache::index(right_id, gfn))
-            .unwrap();
         let mut builder = store.begin_base();
-        builder.write_page(colliding_gfn, &[8; PAGE_SIZE]).unwrap();
+        builder.write_page(0, &[8; PAGE_SIZE]).unwrap();
         let right_base = builder.seal(vec![]);
         let right = store.derive(right_base).unwrap().seal(vec![]);
         let mut out = [0; PAGE_SIZE];
         for _ in 0..3 {
             store.read_page(left, 0, &mut out).unwrap();
             assert_eq!(out, [7; PAGE_SIZE]);
-            store.read_page(right, colliding_gfn, &mut out).unwrap();
+            store.read_page(right, 0, &mut out).unwrap();
             assert_eq!(out, [8; PAGE_SIZE]);
         }
+        assert_eq!(store.layers[&left.0].resolve_cache.borrow().len(), 1);
+        assert_eq!(store.layers[&right.0].resolve_cache.borrow().len(), 1);
         store.release(left).unwrap();
         store.release(left_base).unwrap();
         store.gc();
+        assert!(!store.layers.contains_key(&left.0));
+        assert_eq!(store.layers[&right.0].resolve_cache.borrow().len(), 1);
         let mut builder = store.begin_base();
         builder.write_page(0, &[9; PAGE_SIZE]).unwrap();
         let replacement = builder.seal(vec![]);
-        assert!(
-            !store
-                .page_ref_eq(right, colliding_gfn, replacement, 0)
-                .unwrap()
-        );
-        store.read_page(right, colliding_gfn, &mut out).unwrap();
+        assert!(!store.page_ref_eq(right, 0, replacement, 0).unwrap());
+        store.read_page(right, 0, &mut out).unwrap();
         assert_eq!(out, [8; PAGE_SIZE]);
     }
 

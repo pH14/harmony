@@ -13,11 +13,11 @@ Unwritten pages are implicitly zero. Repeated writes to a frame replace the
 previous write, and writes equal to the inherited content are discarded.
 
 `read_page` resolves the nearest layer that wrote a frame. Layers are immutable
-after sealing; a store-wide lookup cache makes repeated reads efficient. Page
-contents are interned store-wide by BLAKE3, while the all-zero page is implicit. `vm_state`
-is opaque but its seal-time digest is checked before it is returned. Corrupted
-page data or state produces an integrity error rather than silently returning
-bytes.
+after sealing; each layer caches inherited lookups to make repeated reads
+efficient. Page contents are interned store-wide by BLAKE3, while the all-zero
+page is implicit. `vm_state` is opaque but its seal-time digest is checked before
+it is returned. Corrupted page data or state produces an integrity error rather
+than silently returning bytes.
 
 Layer page tables are immutable sorted arrays of guest frame numbers and
 word-sized page references. Digests stay in the content index and resident-page
@@ -27,14 +27,14 @@ retained layer owns it. These references are private to the store and never appe
 snapshot exports. Flattening carries inherited references into a new base and
 reads only the pages declared dirty from the supplied memory image.
 
-The lookup cache allocates at most 4,096 entries, shared by every snapshot in a
-store. An inherited lookup caches only its requested snapshot and frame; it does
-not populate every traversed ancestor. Collisions replace entries after checking
-the complete snapshot/frame key. Cache entries do not own page references, so
-they cannot keep released content alive. Snapshot IDs are never reused, and a
-live snapshot's ancestry keeps every page its cached lookups can resolve alive.
-The bound trades repeated ancestor traversal on cache misses for memory usage
-independent of the number of frames scanned and retained snapshots.
+An inherited lookup caches its answer only on the requested layer, without
+populating every traversed ancestor. Cached answers remain available until their
+layer is collected; there is no capacity limit or eviction policy. This favors
+repeated restores and reads over limiting cache memory. Cache allocation grows
+with the distinct inherited frames queried on each resident layer, rather than
+multiplying every query across its ancestry. Cache entries do not own page
+references: immutable ancestry keeps the resolved content alive for the layer's
+lifetime, and collecting the layer also drops its cache.
 
 Snapshot IDs are reference-counted. `retain` adds a live reference,
 `release` makes an ID unobservable at zero, and `gc` removes layers no longer
@@ -49,8 +49,8 @@ without scanning live layers. Live snapshot counts and resident VM-state bytes
 are maintained at seal, release, and collection, making `store_stats` constant
 time. Its `bytes_resident` remains a payload measure: page buffers and VM-state
 bytes, excluding allocator overhead, indexes, lookup caches, and materialized
-mappings. An empty content pool releases its index and slot allocations; an
-empty store also releases its lookup cache.
+mappings. An empty content pool releases its index and slot allocations; each
+collected layer releases its lookup cache.
 
 ## Mappings
 
