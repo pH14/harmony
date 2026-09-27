@@ -162,6 +162,8 @@ retention flags and the candidate's winning preferences directly. It avoids
 allocating preference lists for existing holders. Accepted suffixes transfer
 their allocation into the archive; excess capacity is removed before storage.
 These allocation changes preserve ranking, tie breaks, and logical memory charges.
+Prefix-index compaction remaps child indexes in the existing ordered maps,
+preserving their allocations instead of rebuilding every branch map.
 The admission microbenchmark covers rejection and acceptance with short and long
 suffixes:
 
