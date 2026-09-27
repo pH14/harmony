@@ -18,13 +18,15 @@ The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --package nes --backend
 consonance ROM` selects it through the shared CLI.
 
-The campaign binaries, `nes-eval` and the `harmony` CLI use jemalloc with one
+The campaign binaries, `nes-eval` and `harmony search` use jemalloc with one
 arena. A search resumed from a checkpoint restores its snapshots on the main
 thread before the workers start. With several arenas, the memory those
 snapshots free stays in an arena the workers never reuse, and resident memory
 grows past the archive's memory budget. `.cargo/config.toml` compiles the
-setting in through `JEMALLOC_SYS_WITH_MALLOC_CONF`, and each binary exits at
-startup when jemalloc is set to more than one arena.
+setting in through `JEMALLOC_SYS_WITH_MALLOC_CONF`. Cargo reads that file only
+when it runs inside the checkout. A build started from another directory gets
+jemalloc's default arena count, so each search binary checks the setting at
+startup and exits when jemalloc is set to more than one arena.
 
 `src/film.rs` renders a recorded tape to an H.264 MP4 with game audio: it
 streams RGB frames into FFmpeg, muxes the raw PCM track back in, and writes a
