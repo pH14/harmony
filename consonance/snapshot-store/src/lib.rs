@@ -8,6 +8,7 @@ use std::cell::RefCell;
 #[allow(clippy::disallowed_types)]
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 pub const PAGE_SIZE: usize = 4096;
 
@@ -82,17 +83,18 @@ type BuildPageHashHasher = std::hash::BuildHasherDefault<PageHashHasher>;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum PageRef {
     Zero,
-    Data(PageHash),
+    Data(NonZeroUsize),
 }
 
 struct PageEntry {
+    hash: PageHash,
     data: Box<[u8]>,
     refs: u64,
 }
 
 struct Layer {
     parent: Option<u64>,
-    pages: BTreeMap<u64, PageRef>,
+    pages: Box<[(u64, PageRef)]>,
     vm_state: Vec<u8>,
     vm_state_hash: [u8; 32],
     refcount: u64,
@@ -106,7 +108,9 @@ pub struct Store {
     next_id: u64,
     layers: BTreeMap<u64, Layer>,
     #[allow(clippy::disallowed_types)]
-    pages: HashMap<PageHash, PageEntry, BuildPageHashHasher>,
+    page_index: HashMap<PageHash, NonZeroUsize, BuildPageHashHasher>,
+    pages: Vec<Option<PageEntry>>,
+    free_pages: Vec<NonZeroUsize>,
     zero_hash: PageHash,
 }
 
@@ -117,7 +121,9 @@ impl Store {
             next_id: 0,
             layers: BTreeMap::new(),
             #[allow(clippy::disallowed_types)]
-            pages: HashMap::default(),
+            page_index: HashMap::default(),
+            pages: Vec::new(),
+            free_pages: Vec::new(),
             zero_hash: *blake3::hash(&[0u8; PAGE_SIZE]).as_bytes(),
         }
     }
@@ -174,12 +180,11 @@ impl Store {
                 debug_assert!(false, "dangling parent link");
                 break;
             };
-            for (&gfn, &pref) in &layer.pages {
+            for &(gfn, pref) in &layer.pages {
                 inherited.entry(gfn).or_insert(pref);
             }
             cur = layer.parent;
         }
-        let mut candidates: BTreeSet<u64> = inherited.keys().copied().collect();
         let mut dirty_set = BTreeSet::new();
         for &gfn in dirty {
             if gfn >= self.cfg.mem_pages {
@@ -188,14 +193,13 @@ impl Store {
                     mem_pages: self.cfg.mem_pages,
                 });
             }
-            candidates.insert(gfn);
+            inherited.entry(gfn).or_insert(PageRef::Zero);
             dirty_set.insert(gfn);
         }
 
         let mem_pages = self.cfg.mem_pages;
         let mut builder = self.begin_base();
-        for gfn in candidates {
-            let inherited = inherited.get(&gfn).copied().unwrap_or(PageRef::Zero);
+        for (gfn, inherited) in inherited {
             if !dirty_set.contains(&gfn) {
                 builder.core.insert_page_ref(gfn, inherited)?;
                 continue;
@@ -227,8 +231,8 @@ impl Store {
         }
         match self.resolve(snap.0, gfn) {
             PageRef::Zero => out.fill(0),
-            PageRef::Data(hash) => match self.pages.get(&hash) {
-                Some(entry) if blake3::hash(&entry.data).as_bytes() == &hash => {
+            PageRef::Data(id) => match self.pages.get(id.get() - 1).and_then(Option::as_ref) {
+                Some(entry) if blake3::hash(&entry.data).as_bytes() == &entry.hash => {
                     out.copy_from_slice(&entry.data);
                 }
                 Some(_) | None => return Err(StoreError::PageIntegrity { gfn }),
@@ -259,14 +263,14 @@ impl Store {
             });
         }
         let a_ref = self.resolve(a.0, a_gfn);
-        if let PageRef::Data(hash) = a_ref
-            && !self.pages.contains_key(&hash)
+        if let PageRef::Data(id) = a_ref
+            && !self.pages.get(id.get() - 1).is_some_and(Option::is_some)
         {
             return Err(StoreError::PageIntegrity { gfn: a_gfn });
         }
         let b_ref = self.resolve(b.0, b_gfn);
-        if let PageRef::Data(hash) = b_ref
-            && !self.pages.contains_key(&hash)
+        if let PageRef::Data(id) = b_ref
+            && !self.pages.get(id.get() - 1).is_some_and(Option::is_some)
         {
             return Err(StoreError::PageIntegrity { gfn: b_gfn });
         }
@@ -335,7 +339,7 @@ impl Store {
                 let Some(layer) = self.layers.get(&id) else {
                     return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
                 };
-                changed_gfns.extend(layer.pages.keys().copied());
+                changed_gfns.extend(layer.pages.iter().map(|&(gfn, _)| gfn));
                 cur = layer.parent;
             }
         }
@@ -377,7 +381,7 @@ impl Store {
                 debug_assert!(false, "dangling parent link");
                 break;
             };
-            for (&gfn, &pref) in &layer.pages {
+            for &(gfn, pref) in &layer.pages {
                 resolved.entry(gfn).or_insert(pref);
             }
             cur = layer.parent;
@@ -385,13 +389,13 @@ impl Store {
 
         let mut verified_pages = Vec::with_capacity(resolved.len());
         for (&gfn, &pref) in &resolved {
-            let PageRef::Data(hash) = pref else {
+            let PageRef::Data(id) = pref else {
                 continue;
             };
-            let Some(entry) = self.pages.get(&hash) else {
+            let Some(entry) = self.pages.get(id.get() - 1).and_then(Option::as_ref) else {
                 return Err(StoreError::PageIntegrity { gfn });
             };
-            if blake3::hash(&entry.data).as_bytes() != &hash {
+            if blake3::hash(&entry.data).as_bytes() != &entry.hash {
                 return Err(StoreError::PageIntegrity { gfn });
             }
             verified_pages.push((gfn, &*entry.data));
@@ -439,9 +443,9 @@ impl Store {
         for id in dead {
             if let Some(layer) = self.layers.remove(&id) {
                 freed += layer.vm_state.len() as u64;
-                for (_gfn, pref) in layer.pages {
-                    if let PageRef::Data(hash) = pref {
-                        freed += self.release_page_ref(hash);
+                for &(_gfn, pref) in &layer.pages {
+                    if let PageRef::Data(id) = pref {
+                        freed += self.release_page_ref(id);
                     }
                 }
             }
@@ -463,9 +467,9 @@ impl Store {
         let vm_state_bytes: u64 = self.layers.values().map(|l| l.vm_state.len() as u64).sum();
         StoreStats {
             snapshots,
-            stored_unique_pages: self.pages.len() as u64,
+            stored_unique_pages: self.page_index.len() as u64,
             logical_pages_total: snapshots.saturating_mul(self.cfg.mem_pages),
-            bytes_resident: (self.pages.len() as u64).saturating_mul(PAGE_SIZE as u64)
+            bytes_resident: (self.page_index.len() as u64).saturating_mul(PAGE_SIZE as u64)
                 + vm_state_bytes,
         }
     }
@@ -485,14 +489,15 @@ impl Store {
                 mem_pages: self.cfg.mem_pages,
             });
         }
-        let PageRef::Data(hash) = self.resolve(snap.0, gfn) else {
+        let PageRef::Data(id) = self.resolve(snap.0, gfn) else {
             return Err(StoreError::BuilderMisuse(
                 "cannot corrupt an implicit zero page",
             ));
         };
         let target = self
             .pages
-            .get_mut(&hash)
+            .get_mut(id.get() - 1)
+            .and_then(Option::as_mut)
             .and_then(|entry| entry.data.get_mut(byte))
             .ok_or(StoreError::BuilderMisuse(
                 "corruption byte lies outside a resident page",
@@ -542,7 +547,8 @@ impl Store {
                 debug_assert!(false, "dangling parent link");
                 break;
             };
-            if let Some(&p) = layer.pages.get(&gfn) {
+            if let Ok(index) = layer.pages.binary_search_by_key(&gfn, |&(gfn, _)| gfn) {
+                let p = layer.pages[index].1;
                 result = p;
                 break;
             }
@@ -561,24 +567,42 @@ impl Store {
         result
     }
 
-    fn intern_page(&mut self, hash: PageHash, data: &[u8]) {
-        self.pages
-            .entry(hash)
-            .and_modify(|e| e.refs = e.refs.saturating_add(1))
-            .or_insert_with(|| PageEntry {
-                data: data.into(),
-                refs: 1,
-            });
+    fn intern_page(&mut self, hash: PageHash, data: &[u8]) -> NonZeroUsize {
+        if let Some(&id) = self.page_index.get(&hash) {
+            let entry = self.pages[id.get() - 1].as_mut().expect("interned page");
+            entry.refs = entry.refs.saturating_add(1);
+            return id;
+        }
+        let entry = PageEntry {
+            hash,
+            data: data.into(),
+            refs: 1,
+        };
+        let id = match self.free_pages.pop() {
+            Some(id) => {
+                self.pages[id.get() - 1] = Some(entry);
+                id
+            }
+            None => {
+                self.pages.push(Some(entry));
+                NonZeroUsize::new(self.pages.len()).expect("nonempty page table")
+            }
+        };
+        self.page_index.insert(hash, id);
+        id
     }
 
-    fn release_page_ref(&mut self, hash: PageHash) -> u64 {
-        match self.pages.get_mut(&hash) {
+    fn release_page_ref(&mut self, id: NonZeroUsize) -> u64 {
+        let slot = &mut self.pages[id.get() - 1];
+        match slot {
             Some(entry) if entry.refs > 1 => {
                 entry.refs -= 1;
                 0
             }
             Some(_) => {
-                self.pages.remove(&hash);
+                let entry = slot.take().expect("resident page");
+                self.page_index.remove(&entry.hash);
+                self.free_pages.push(id);
                 PAGE_SIZE as u64
             }
             None => {
@@ -614,8 +638,7 @@ impl BuilderCore<'_> {
                 hash, self.store.zero_hash,
                 "non-zero page hashed to zero_hash"
             );
-            self.store.intern_page(hash, data);
-            PageRef::Data(hash)
+            PageRef::Data(self.store.intern_page(hash, data))
         };
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
@@ -624,8 +647,13 @@ impl BuilderCore<'_> {
     }
 
     fn insert_page_ref(&mut self, gfn: u64, pref: PageRef) -> Result<(), StoreError> {
-        if let PageRef::Data(hash) = pref {
-            let Some(entry) = self.store.pages.get_mut(&hash) else {
+        if let PageRef::Data(id) = pref {
+            let Some(entry) = self
+                .store
+                .pages
+                .get_mut(id.get() - 1)
+                .and_then(Option::as_mut)
+            else {
                 return Err(StoreError::PageIntegrity { gfn });
             };
             entry.refs = entry.refs.saturating_add(1);
@@ -647,8 +675,9 @@ impl BuilderCore<'_> {
         }
         let unchanged = match inherited {
             PageRef::Zero => data == &ZERO_PAGE[..],
-            PageRef::Data(hash) => {
-                let Some(entry) = self.store.pages.get(&hash) else {
+            PageRef::Data(id) => {
+                let Some(entry) = self.store.pages.get(id.get() - 1).and_then(Option::as_ref)
+                else {
                     return Err(StoreError::PageIntegrity { gfn });
                 };
                 entry.data.as_ref() == data
@@ -664,18 +693,18 @@ impl BuilderCore<'_> {
     fn seal(mut self, vm_state: Vec<u8>) -> SnapshotId {
         let vm_state_hash = *blake3::hash(&vm_state).as_bytes();
         let pages = std::mem::take(&mut self.pages);
-        let mut kept: BTreeMap<u64, PageRef> = BTreeMap::new();
+        let mut kept = Vec::with_capacity(pages.len());
         for (gfn, pref) in pages {
             let inherited = match self.parent {
                 Some(p) => self.store.resolve(p, gfn),
                 None => PageRef::Zero,
             };
             if pref == inherited {
-                if let PageRef::Data(hash) = pref {
-                    self.store.release_page_ref(hash);
+                if let PageRef::Data(id) = pref {
+                    self.store.release_page_ref(id);
                 }
             } else {
-                kept.insert(gfn, pref);
+                kept.push((gfn, pref));
             }
         }
         let chain_len = match self.parent {
@@ -692,7 +721,7 @@ impl BuilderCore<'_> {
             id,
             Layer {
                 parent: self.parent,
-                pages: kept,
+                pages: kept.into_boxed_slice(),
                 vm_state,
                 vm_state_hash,
                 refcount: 1,
@@ -709,8 +738,8 @@ impl Drop for BuilderCore<'_> {
     fn drop(&mut self) {
         let pages = std::mem::take(&mut self.pages);
         for (_gfn, pref) in pages {
-            if let PageRef::Data(hash) = pref {
-                self.store.release_page_ref(hash);
+            if let PageRef::Data(id) = pref {
+                self.store.release_page_ref(id);
             }
         }
     }
@@ -997,7 +1026,7 @@ mod tests {
         store.read_page(leaf, 0, &mut out).unwrap();
         assert_eq!(
             store.layers[&leaf.0].resolve_cache.borrow().get(&0),
-            Some(&PageRef::Data(*blake3::hash(&[9u8; PAGE_SIZE]).as_bytes()))
+            Some(&store.resolve(mid.0, 0))
         );
         store.read_page(leaf, 0, &mut out).unwrap();
         assert_eq!(out, [9u8; PAGE_SIZE]);
@@ -1227,10 +1256,10 @@ mod tests {
         let base = base_builder.seal(vec![]);
         let other = store.begin_base().seal(vec![]);
 
-        let PageRef::Data(hash) = store.resolve(base.0, 0) else {
+        let PageRef::Data(id) = store.resolve(base.0, 0) else {
             panic!("expected a data page ref");
         };
-        store.pages.remove(&hash);
+        store.pages[id.get() - 1] = None;
 
         assert!(matches!(
             store.page_ref_eq(base, 0, other, 0),

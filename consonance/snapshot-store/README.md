@@ -19,6 +19,14 @@ is opaque but its seal-time digest is checked before it is returned. Corrupted
 page data or state produces an integrity error rather than silently returning
 bytes.
 
+Layer page tables are immutable sorted arrays of guest frame numbers and
+word-sized page references. Digests stay in the content index and resident-page
+records; layer tables and lookup caches refer to a reusable resident-page slot
+instead of copying those digests. A slot remains occupied while any builder or retained
+layer owns it. These references are private to the store and never appear in
+snapshot exports. Flattening carries inherited references into a new base and
+reads only the pages declared dirty from the supplied memory image.
+
 Snapshot IDs are reference-counted. `retain` adds a live reference,
 `release` makes an ID unobservable at zero, and `gc` removes layers no longer
 reachable from a live snapshot or its ancestors. `stats` and `store_stats`
