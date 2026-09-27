@@ -127,3 +127,10 @@ HARMONY_PLATFORM_INITRAMFS=/path/to/initramfs-oci.cpio.gz \
 HARMONY_PLATFORM_FIXTURE=/path/to/fixture-layout \
 cargo test --locked --release -p oci-support --test process_platform -- --ignored --nocapture
 ```
+
+## Host hashing
+
+On native ARM64 Linux and macOS, SHA-256 uses runtime-detected CPU acceleration,
+including when this component is built independently. Other targets and Miri
+retain the existing backend selection. Hash inputs and outputs are unchanged.
+The [host SHA qualification](../../scripts/qualification/README.md) checks independent builds and compares real consumers with software hashing.
