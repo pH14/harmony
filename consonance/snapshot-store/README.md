@@ -29,6 +29,13 @@ reads only the pages declared dirty from the supplied memory image. It validates
 and acquires the inherited references before moving their page table directly
 into the builder, avoiding a second tree containing the same entries.
 
+Snapshot IDs increase at seal time, so every parent has a smaller ID than its
+children. `diff_pages` advances the newer of two ancestry cursors until they
+meet, collecting the frames changed along either path. Identical snapshots need
+no ancestry traversal; other diffs stop at the shared ancestor without building
+temporary ancestor or visited sets. Unrelated bases meet at the end of their
+paths. Returned frames remain sorted and carry the target snapshot's contents.
+
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
 layer is collected; there is no capacity limit or eviction policy. This favors
