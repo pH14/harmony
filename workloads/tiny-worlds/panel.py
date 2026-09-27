@@ -26,7 +26,7 @@ SLOWER, FASTER = 1.25, 0.8
 MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
 REPORT_FIELDS = {"config", "evidence", "first_objective_work", "layout", "parent_draws", "skipped_draws",
-                 "stream_sha256", "success", "verified"}
+                 "stream_sha256", "success", "verified", "work_budget"}
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
@@ -41,6 +41,8 @@ WORLDS = {
     "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 1),
     "boss needing stock and health": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 6,
                                        "boss_hits_back": True}, 1),
+    "boss after a draining approach": ({"inner": 20, "farms": 4, "farm_cap": 14, "boss_stock": 8,
+                                        "boss_hits_back": True, "approach_drain": True}, 1),
     "off-path item": ({"inner": 6, "item_optional": True}, 4),
     "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 4),
     "locked item": ({"inner": 4, "locked": True}, 4),
@@ -48,7 +50,10 @@ WORLDS = {
     "gauntlet": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True}, 1),
     "gauntlet with hidden timing": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True,
                                      "timing": 5}, 1),
+    "boss by the door": ({"inner": 2, "farms": 4, "farm_cap": 14, "boss_stock": 8, "boss_hits_back": True,
+                          "approach_drain": True, "boss_by_door": True, "tail_slots": True}, 1),
 }
+BUDGETS = {"boss by the door": 600_000}
 
 
 def pattern(length: int) -> int:
@@ -157,7 +162,7 @@ def world_requests(world: str, count: int) -> list[dict]:
                     {"minimum": 48, "maximum": 120, "weight": 11}]}}
             search = {"suffix": "one_to_six", "mixture": "energy_splice:6"}
         row = {"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
-                                          "work_budget": WORLD_BUDGET, "broken": False,
+                                          "work_budget": BUDGETS.get(world, WORLD_BUDGET), "broken": False,
                                           "verify": False, "keep": "portfolio"}}
         if search is not None:
             row["request"]["search"] = search
@@ -188,21 +193,22 @@ def legs(report: dict) -> dict:
                 "to crossing entry (tries)": entry,
                 "crossing entry to goal (tries)": None if entry is None or end is None else end - entry}
     evidence = report["evidence"]
+    budget = report["work_budget"]
 
     goal = report["first_objective_work"]
-    goal = goal if goal is not None and goal <= WORLD_BUDGET else None
+    goal = goal if goal is not None and goal <= budget else None
 
     def within(work):
-        return work if work is not None and work <= (WORLD_BUDGET if goal is None else goal) else None
+        return work if work is not None and work <= (budget if goal is None else goal) else None
 
     if report["config"]["family"] == "crossing":
         entry = within(evidence["crossing_first_entry_work"])
-        return {"to the goal": WORLD_BUDGET if goal is None else goal,
+        return {"to the goal": budget if goal is None else goal,
                 "to crossing entry": entry,
                 "crossing entry to goal": None if entry is None or goal is None else goal - entry}
     if report["config"]["family"] == "passive_clock":
         entry = within(evidence["passive_clock"]["first_event_work"][1])
-        return {"to the goal": WORLD_BUDGET if goal is None else goal,
+        return {"to the goal": budget if goal is None else goal,
                 "to wait entry": entry,
                 "wait entry to goal": None if entry is None or goal is None else goal - entry}
     first = [within(w) for w in evidence["map_first"]]
@@ -211,7 +217,7 @@ def legs(report: dict) -> dict:
     def gap(start, end):
         return None if start is None or end is None else end - start
 
-    measured = {"to the goal": WORLD_BUDGET if goal is None else goal}
+    measured = {"to the goal": budget if goal is None else goal}
     parameters = report["config"]["parameters"]
     if parameters.get("gauntlet"):
         full = within(evidence["map_first_stocked"])
