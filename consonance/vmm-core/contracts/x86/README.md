@@ -28,6 +28,8 @@ older policy versions are rejected before restore mutates the VM. Hardware RNG b
 Production CPUID values, MSR dispositions, and virtual-time durations are unchanged.
 
 Changes to guest semantics require a version bump. `contract_hash` is computed
-from the canonical form when the VMM runs, so a snapshot saved under a different
-contract is rejected before restore changes the VM. The old Coffee Lake captures and unused AMD draft remain in Git
+once per process from the canonical form of the embedded policy. Concurrent first
+callers share initialization, and subsequent captures, hashes, and restores copy
+the same 32-byte fingerprint without serializing the policy again. A snapshot
+saved under a different contract is rejected before restore changes the VM. The old Coffee Lake captures and unused AMD draft remain in Git
 history, not in runtime policy or the test matrix.

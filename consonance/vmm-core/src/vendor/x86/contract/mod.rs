@@ -179,6 +179,11 @@ pub fn msr_filter_allow() -> MsrFilter {
 }
 
 pub fn contract_hash() -> [u8; 32] {
+    static HASH: OnceLock<[u8; 32]> = OnceLock::new();
+    *HASH.get_or_init(compute_contract_hash)
+}
+
+fn compute_contract_hash() -> [u8; 32] {
     let canonical = canonical::serialize(contract());
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
@@ -379,8 +384,14 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn contract_hash_is_stable() {
-        assert_eq!(contract_hash(), contract_hash());
-        assert_ne!(contract_hash(), [0u8; 32]);
+        let expected = compute_contract_hash();
+        assert_eq!(contract_hash(), expected);
+        assert_ne!(expected, [0u8; 32]);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| assert_eq!(contract_hash(), expected));
+            }
+        });
     }
 
     #[test]

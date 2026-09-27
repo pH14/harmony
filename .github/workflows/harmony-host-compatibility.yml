@@ -68,6 +68,7 @@ jobs:
         run: |
           cargo fetch --locked
           python3 consonance/vmm-core/qualification/qualify-sha256.py --check
+          python3 consonance/vmm-core/qualification/qualify-contract.py --check
       - name: Start the assembled CLI on this host
         run: |
           set -euo pipefail
@@ -119,6 +120,7 @@ jobs:
         run: |
           cargo fetch --locked
           python3 consonance/vmm-core/qualification/qualify-sha256.py --check
+          python3 consonance/vmm-core/qualification/qualify-contract.py --check
       - name: Start the assembled CLI on this host
         run: |
           set -euo pipefail
