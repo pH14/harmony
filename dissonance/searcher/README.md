@@ -161,6 +161,9 @@ Archive admission visits the same sorted preference winners to build holder
 retention flags and the candidate's winning preferences directly. It avoids
 allocating preference lists for existing holders. Accepted suffixes transfer
 their allocation into the archive; excess capacity is removed before storage.
+`ArchiveCandidate` takes either owned or borrowed suffix storage. Campaign
+admission borrows its pending actions, so rejected and duplicate candidates do
+not copy them. Retained borrowed suffixes become exactly sized owned vectors.
 These allocation changes preserve ranking, tie breaks, and logical memory charges.
 Archive reports stream borrowed input suffixes and milestones through the
 serializer; they keep the same wire fields and ordering without an intermediate

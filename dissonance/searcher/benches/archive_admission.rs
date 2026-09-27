@@ -42,7 +42,7 @@ fn candidate<const P: usize>(
     action: u64,
     key: Key<P>,
     length: usize,
-) -> ArchiveCandidate<u64, Key<P>, ()> {
+) -> ArchiveCandidate<Vec<u64>, Key<P>, ()> {
     ArchiveCandidate {
         suffix: vec![action; length],
         key,
@@ -145,5 +145,31 @@ fn reporting(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, admission, reporting);
+fn pending_suffix_admission(c: &mut Criterion) {
+    for length in [1, 128, 4096] {
+        let mut archive = populated::<4>();
+        let pending_suffix = vec![99; length];
+        c.bench_function(&format!("pending_suffix_rejected_{length}"), |b| {
+            b.iter(|| {
+                black_box(
+                    archive
+                        .insert_after(
+                            None,
+                            None,
+                            1,
+                            ArchiveCandidate {
+                                suffix: black_box(pending_suffix.as_slice()),
+                                key: Key([0; 4]),
+                                milestones: (),
+                            },
+                            (),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
+    }
+}
+
+criterion_group!(benches, admission, reporting, pending_suffix_admission);
 criterion_main!(benches);

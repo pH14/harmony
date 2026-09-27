@@ -1673,7 +1673,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     previous_key,
                     sequence,
                     ArchiveCandidate {
-                        suffix: pending_suffix.clone(),
+                        suffix: pending_suffix.as_slice(),
                         key: workload.complete_candidate_key(candidate.key, &candidate.snapshot)?,
                         milestones: action.milestones,
                     },

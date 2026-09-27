@@ -414,8 +414,8 @@ pub(crate) struct CampaignSpliceTail<A> {
     pub(crate) actions: Vec<A>,
 }
 
-pub struct ArchiveCandidate<A: Ord, K, M> {
-    pub suffix: Vec<A>,
+pub struct ArchiveCandidate<T, K, M> {
+    pub suffix: T,
     pub key: K,
     pub milestones: M,
 }
@@ -1862,23 +1862,23 @@ where
         }
     }
 
-    pub fn insert(
+    pub fn insert<T: AsRef<[A]> + Into<Vec<A>>>(
         &mut self,
         parent_id: Option<usize>,
         execution: u64,
-        candidate: ArchiveCandidate<A, K, M>,
+        candidate: ArchiveCandidate<T, K, M>,
         snapshot: S,
     ) -> Result<Option<usize>, Box<dyn Error>> {
         self.insert_after(parent_id, None, execution, candidate, snapshot)
             .map(|(id, _)| id)
     }
 
-    pub fn insert_after(
+    pub fn insert_after<T: AsRef<[A]> + Into<Vec<A>>>(
         &mut self,
         parent_id: Option<usize>,
         previous: Option<K>,
         execution: u64,
-        candidate: ArchiveCandidate<A, K, M>,
+        candidate: ArchiveCandidate<T, K, M>,
         snapshot: S,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
         let ArchiveCandidate {
@@ -1886,7 +1886,7 @@ where
             key,
             milestones,
         } = candidate;
-        if let Some(existing) = self.existing_input_id(parent_id, &suffix) {
+        if let Some(existing) = self.existing_input_id(parent_id, suffix.as_ref()) {
             return Ok((Some(existing), self.entries[existing].key));
         }
         if parent_id.is_some_and(|id| self.entries.get(id).is_none()) {
@@ -1898,7 +1898,7 @@ where
         let mut lineage =
             parent_id.map_or_else(K::Lineage::default, |id| self.lineages[id].clone());
         K::record(&mut lineage, key);
-        let candidate_cost_in_group = self.cost_in_group_of(parent_id, &suffix, key);
+        let candidate_cost_in_group = self.cost_in_group_of(parent_id, suffix.as_ref(), key);
         let slot = self
             .slots
             .get(&slot_of_key(key))
@@ -1977,7 +1977,11 @@ where
                 );
             }
             if let Some(parent) = parent_id {
-                let tail_cost: u64 = suffix.iter().map(|action| (self.action_cost)(action)).sum();
+                let tail_cost: u64 = suffix
+                    .as_ref()
+                    .iter()
+                    .map(|action| (self.action_cost)(action))
+                    .sum();
                 let entry = &self.entries[parent];
                 let gains = (0..K::preferences().min(8))
                     .filter(|preference| {
@@ -1989,7 +1993,7 @@ where
                     position_of(key),
                     entry.id,
                     self.next_entry_id,
-                    &suffix,
+                    suffix.as_ref(),
                     tail_cost,
                     gains,
                 );
@@ -2008,17 +2012,20 @@ where
         let snapshot_charge = self.snapshot_charge(&snapshot);
         let parent_input_len = parent_id.map_or(0, |parent| self.entries[parent].input_len);
         let input_len = parent_input_len
-            .checked_add(suffix.len())
+            .checked_add(suffix.as_ref().len())
             .ok_or("archive candidate input length overflow")?;
         self.historical_input_actions = self.historical_input_actions.saturating_add(input_len);
-        self.stored_input_actions = self.stored_input_actions.saturating_add(suffix.len());
-        let (input_node, new_nodes) = self.index_retained_input(parent_id, &suffix, stable_id)?;
-        let suffix_len = suffix.len();
+        self.stored_input_actions = self
+            .stored_input_actions
+            .saturating_add(suffix.as_ref().len());
+        let (input_node, new_nodes) =
+            self.index_retained_input(parent_id, suffix.as_ref(), stable_id)?;
+        let suffix_len = suffix.as_ref().len();
         self.entries.push(ArchiveEntry {
             id: stable_id,
             parent_id: parent_id.map(|parent| self.entries[parent].id),
             created_execution: execution,
-            input_suffix: suffix.into_boxed_slice().into_vec(),
+            input_suffix: suffix.into().into_boxed_slice().into_vec(),
             input_len,
             input_node,
             key,
@@ -2805,6 +2812,113 @@ mod tests {
     type TestArchive = Archive<u8, TestKey, (), ()>;
 
     type TimedArchive = Archive<TestAction, TestKey, (), ()>;
+
+    #[test]
+    fn suffix_storage_is_materialized_only_for_retained_candidates() {
+        struct Suffix<'a> {
+            actions: &'a [u8],
+            copies: &'a std::cell::Cell<usize>,
+        }
+        impl AsRef<[u8]> for Suffix<'_> {
+            fn as_ref(&self) -> &[u8] {
+                self.actions
+            }
+        }
+        impl From<Suffix<'_>> for Vec<u8> {
+            fn from(suffix: Suffix<'_>) -> Self {
+                suffix.copies.set(suffix.copies.get() + 1);
+                suffix.actions.to_vec()
+            }
+        }
+        let copies = std::cell::Cell::new(0);
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        let mut insert = |actions: &[u8], quality, parent| {
+            archive.insert(
+                parent,
+                1,
+                ArchiveCandidate {
+                    suffix: Suffix {
+                        actions,
+                        copies: &copies,
+                    },
+                    key: PreferredKey { slot: 0, quality },
+                    milestones: (),
+                },
+                (),
+            )
+        };
+        assert_eq!(insert(&[1], 10, None).unwrap(), Some(0));
+        assert_eq!(copies.get(), 1);
+        assert_eq!(insert(&[1], 20, None).unwrap(), Some(0));
+        assert_eq!(insert(&[2; 128], 0, Some(0)).unwrap(), None);
+        assert!(insert(&[3], 20, Some(99)).is_err());
+        assert_eq!(copies.get(), 1);
+        assert_eq!(insert(&[4, 5], 20, Some(0)).unwrap(), Some(1));
+        assert_eq!(copies.get(), 2);
+        assert_eq!(archive.materialize_input(1).unwrap().actions, [1, 4, 5]);
+        assert_eq!(archive.entries[1].input_suffix.capacity(), 2);
+    }
+
+    #[test]
+    fn borrowed_and_owned_admission_preserve_the_same_archive() {
+        let mut owned = Archive::<u8, PreferredKey, u64, ()>::new(|action| u64::from(*action));
+        let mut borrowed = Archive::<u8, PreferredKey, u64, ()>::new(|action| u64::from(*action));
+        for step in 0..512_u64 {
+            let suffix = vec![1 + (step % 17) as u8; 1 + (step % 9) as usize];
+            let parent = if step % 3 == 0 || owned.entries.is_empty() {
+                None
+            } else {
+                Some(step as usize % owned.entries.len())
+            };
+            let key = PreferredKey {
+                slot: (step % 7) as u8,
+                quality: (step % 11) as u8,
+            };
+            let previous = Some(PreferredKey {
+                slot: 1,
+                quality: 2,
+            });
+            let left = owned
+                .insert_after(
+                    parent,
+                    previous,
+                    step,
+                    ArchiveCandidate {
+                        suffix: suffix.clone(),
+                        key,
+                        milestones: step,
+                    },
+                    (),
+                )
+                .unwrap();
+            let right = borrowed
+                .insert_after(
+                    parent,
+                    previous,
+                    step,
+                    ArchiveCandidate {
+                        suffix: suffix.as_slice(),
+                        key,
+                        milestones: step,
+                    },
+                    (),
+                )
+                .unwrap();
+            assert_eq!(left, right);
+            assert_eq!(
+                postcard::to_stdvec(&owned).unwrap(),
+                postcard::to_stdvec(&borrowed).unwrap()
+            );
+            assert_eq!(
+                owned.resident_memory_bytes(),
+                borrowed.resident_memory_bytes()
+            );
+        }
+        assert_eq!(
+            owned.take_entry_reports_and_snapshots(),
+            borrowed.take_entry_reports_and_snapshots()
+        );
+    }
 
     #[test]
     fn admitted_suffix_keeps_its_allocation() {
