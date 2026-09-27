@@ -2298,6 +2298,7 @@ where
                     }
                 }
             })
+            .take(capacity)
             .count();
         better < capacity
     }
@@ -2656,9 +2657,14 @@ where
                 {
                     continue;
                 }
-                let held = (0..preferences)
-                    .filter(|preference| self.champions_slot(slot, *id, *preference))
-                    .count();
+                let held = if slot.len() <= K::capacity().max(1) {
+                    preferences.min(2)
+                } else {
+                    (0..preferences)
+                        .filter(|preference| self.champions_slot(slot, *id, *preference))
+                        .take(2)
+                        .count()
+                };
                 match held {
                     0 => {}
                     1 => exclusive = exclusive.saturating_add(1),
@@ -2737,6 +2743,62 @@ where
             }
         }
         (reports, snapshots)
+    }
+}
+
+#[cfg(test)]
+impl<A, K, M, S> Archive<A, K, M, S>
+where
+    A: Clone + Debug + Eq + Ord + Serialize + DeserializeOwned,
+    K: ArchiveKey,
+    M: Clone + Copy + Debug + Eq + Serialize + DeserializeOwned,
+    S: Clone,
+{
+    fn champions_slot_reference(&self, slot: &[usize], id: usize, preference: usize) -> bool {
+        let capacity = K::capacity().max(1);
+        let better = slot
+            .iter()
+            .filter(|other| **other != id)
+            .filter(|other| self.entries.get(**other).is_some())
+            .filter(|other| {
+                let other = **other;
+                match self.entries[other]
+                    .key
+                    .preference_cmp(preference, self.entries[id].key)
+                {
+                    Ordering::Greater => true,
+                    Ordering::Less => false,
+                    Ordering::Equal => {
+                        (self.cost_in_group[other], self.entries[other].id)
+                            < (self.cost_in_group[id], self.entries[id].id)
+                    }
+                }
+            })
+            .count();
+        better < capacity
+    }
+
+    fn portfolio_holders_reference(&self, preferences: usize) -> (u64, u64) {
+        let mut exclusive = 0_u64;
+        let mut shared = 0_u64;
+        for slot in self.slots.values() {
+            for id in slot {
+                if !self.active.get(*id).copied().unwrap_or(false)
+                    || self.entries.get(*id).is_none()
+                {
+                    continue;
+                }
+                let held = (0..preferences)
+                    .filter(|preference| self.champions_slot_reference(slot, *id, *preference))
+                    .count();
+                match held {
+                    0 => {}
+                    1 => exclusive = exclusive.saturating_add(1),
+                    _ => shared = shared.saturating_add(1),
+                }
+            }
+        }
+        (exclusive, shared)
     }
 }
 
@@ -2927,6 +2989,253 @@ mod tests {
             owned.take_entry_reports_and_snapshots(),
             borrowed.take_entry_reports_and_snapshots()
         );
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct ReportKey<const P: usize, const C: usize> {
+        slot: u64,
+        scores: [u64; 8],
+    }
+    impl<const P: usize, const C: usize> ArchiveKey for ReportKey<P, C> {
+        type Place = u64;
+        type Progress = ();
+        type Identity = ();
+        type Lineage = ();
+        fn place(self) -> u64 {
+            self.slot
+        }
+        fn progress(self) {}
+        fn identity(self) {}
+        fn preferences() -> usize {
+            P
+        }
+        fn capacity() -> usize {
+            C
+        }
+        fn preference_cmp(self, p: usize, other: Self) -> std::cmp::Ordering {
+            self.scores[p].cmp(&other.scores[p])
+        }
+        fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+        fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    fn portfolio_fixture<const P: usize, const C: usize>(
+        shared: bool,
+    ) -> Archive<u64, ReportKey<P, C>, (), ()> {
+        let mut archive = Archive::new(|_| 1);
+        let mut action = 0;
+        for slot in 0..128 {
+            for preference in 0..if shared { 1 } else { P } {
+                for rank in 0..C {
+                    action += 1;
+                    let mut scores = [0; 8];
+                    if shared {
+                        scores.fill(100 + rank as u64);
+                    } else {
+                        scores[preference] = 100 + rank as u64;
+                    }
+                    archive
+                        .insert(
+                            None,
+                            0,
+                            ArchiveCandidate {
+                                suffix: vec![action],
+                                key: ReportKey { slot, scores },
+                                milestones: (),
+                            },
+                            (),
+                        )
+                        .unwrap();
+                }
+            }
+        }
+        archive
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn paired_portfolio<const P: usize, const C: usize>() {
+        use std::{hint::black_box, time::Instant};
+        for shared in [false, true] {
+            let archive = portfolio_fixture::<P, C>(shared);
+            assert_eq!(
+                archive.portfolio_holders(P),
+                archive.portfolio_holders_reference(P)
+            );
+            if std::env::var_os("DISSONANCE_BENCHMARK_PORTFOLIO").is_none() {
+                continue;
+            }
+            let elapsed = |reference| {
+                let start = Instant::now();
+                for _ in 0..5 {
+                    black_box(if reference {
+                        archive.portfolio_holders_reference(P)
+                    } else {
+                        archive.portfolio_holders(P)
+                    });
+                }
+                start.elapsed().as_secs_f64()
+            };
+            let mut ratios = Vec::new();
+            for round in 0..100 {
+                let flip = round % 2 == 0;
+                let a = elapsed(flip);
+                let b = elapsed(!flip);
+                let c = elapsed(!flip);
+                let d = elapsed(flip);
+                ratios.push(if flip {
+                    (b + c) / (a + d)
+                } else {
+                    (a + d) / (b + c)
+                });
+            }
+            ratios.sort_by(f64::total_cmp);
+            println!(
+                "P={P} C={C} shared={shared}: ratio q25={:.4} median={:.4} q75={:.4}",
+                ratios[25], ratios[50], ratios[75]
+            );
+        }
+    }
+
+    #[test]
+    fn portfolio_classification_matches_reference_fixtures() {
+        paired_portfolio::<2, 1>();
+        paired_portfolio::<2, 2>();
+        paired_portfolio::<4, 1>();
+        paired_portfolio::<4, 2>();
+        paired_portfolio::<8, 1>();
+        paired_portfolio::<8, 2>();
+    }
+
+    fn compare_portfolio_classification<const P: usize, const C: usize>() {
+        let mut archive = Archive::<u64, ReportKey<P, C>, (), ()>::new(|_| 1);
+        let mut rand = RomuDuoJrRand::with_seed(413);
+        for sequence in 0..256 {
+            let mut scores = [0; 8];
+            for score in &mut scores {
+                *score = rand.next_u64() % 4;
+            }
+            archive
+                .insert(
+                    None,
+                    sequence,
+                    ArchiveCandidate {
+                        suffix: vec![sequence; 1 + (sequence % 3) as usize],
+                        key: ReportKey {
+                            slot: sequence % 7,
+                            scores,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap();
+            for preferences in 0..=P.max(1) {
+                assert_eq!(
+                    archive.portfolio_holders(preferences),
+                    archive.portfolio_holders_reference(preferences)
+                );
+            }
+        }
+        for slot in archive.slots.values_mut() {
+            slot.reverse();
+        }
+        assert_eq!(
+            archive.portfolio_holders(P),
+            archive.portfolio_holders_reference(P)
+        );
+        for id in (0..archive.active.len()).step_by(3) {
+            archive.active[id] = false;
+        }
+        for slot in archive.slots.values_mut() {
+            slot.push(usize::MAX);
+        }
+        assert_eq!(
+            archive.portfolio_holders(P),
+            archive.portfolio_holders_reference(P)
+        );
+    }
+
+    #[test]
+    fn portfolio_classification_matches_full_counts_with_ties_and_missing_members() {
+        compare_portfolio_classification::<0, 0>();
+        compare_portfolio_classification::<1, 1>();
+        compare_portfolio_classification::<2, 1>();
+        compare_portfolio_classification::<2, 2>();
+        compare_portfolio_classification::<4, 0>();
+        compare_portfolio_classification::<4, 1>();
+        compare_portfolio_classification::<4, 2>();
+        compare_portfolio_classification::<8, 4>();
+    }
+
+    #[test]
+    fn portfolio_classification_stops_comparing_once_the_result_is_known() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        static COMPARISONS: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+        struct Key(ReportKey<4, 2>);
+        impl ArchiveKey for Key {
+            type Place = u64;
+            type Progress = ();
+            type Identity = ();
+            type Lineage = ();
+            fn place(self) -> u64 {
+                self.0.slot
+            }
+            fn progress(self) {}
+            fn identity(self) {}
+            fn capacity() -> usize {
+                2
+            }
+            fn preferences() -> usize {
+                4
+            }
+            fn preference_cmp(self, preference: usize, other: Self) -> std::cmp::Ordering {
+                COMPARISONS.fetch_add(1, AtomicOrdering::Relaxed);
+                self.0.preference_cmp(preference, other.0)
+            }
+            fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+                self
+            }
+            fn record(_: &mut Self::Lineage, _: Self) {}
+        }
+        for shared in [false, true] {
+            let mut archive = Archive::<u64, Key, (), ()>::new(|_| 1);
+            for id in 0..if shared { 2 } else { 8 } {
+                let mut scores = [0; 8];
+                if shared {
+                    scores.fill(10);
+                } else {
+                    scores[id / 2] = 10;
+                }
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![id as u64],
+                            key: Key(ReportKey { slot: 0, scores }),
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap();
+            }
+            COMPARISONS.store(0, AtomicOrdering::Relaxed);
+            let expected = archive.portfolio_holders_reference(4);
+            let full = COMPARISONS.load(AtomicOrdering::Relaxed);
+            COMPARISONS.store(0, AtomicOrdering::Relaxed);
+            assert_eq!(archive.portfolio_holders(4), expected);
+            let short = COMPARISONS.load(AtomicOrdering::Relaxed);
+            assert!(short < full, "short={short}, full={full}");
+            if shared {
+                assert_eq!(short, 0);
+            }
+        }
     }
 
     #[test]
