@@ -1,2 +1,5 @@
 [target.aarch64-apple-darwin]
 runner = "scripts/macos-hvf-runner.sh"
+
+[env]
+JEMALLOC_SYS_WITH_MALLOC_CONF = "narenas:1"

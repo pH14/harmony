@@ -33,6 +33,7 @@ use sha2::{Digest, Sha256};
 const DEFAULT_MEMORY_BUDGET_MIB: usize = 2048;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    nes_workload::allocator::require_single_arena();
     let mut args = env::args_os().skip(1);
     let mode = args.next().ok_or("usage: smb-campaign <run|replay> ...")?;
     if mode == "run" {

@@ -10,6 +10,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
     not(miri)
 ))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    nes_workload::allocator::require_single_arena();
     real::run()
 }
 

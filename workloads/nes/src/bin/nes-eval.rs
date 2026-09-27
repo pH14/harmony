@@ -55,6 +55,7 @@ fn metroid_game(
 }
 
 fn main() -> Result<()> {
+    nes_workload::allocator::require_single_arena();
     run_cli(|request, rom, out, started| {
         match request.game.as_str() {
             "smb" | "metroid"

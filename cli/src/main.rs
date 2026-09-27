@@ -37,6 +37,7 @@ enum OciCommand {
 mod oci;
 
 fn main() -> ExitCode {
+    nes_workload::allocator::require_single_arena();
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Search(args) => search::run(args),

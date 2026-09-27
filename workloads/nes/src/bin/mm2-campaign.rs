@@ -149,6 +149,7 @@ where
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    nes_workload::allocator::require_single_arena();
     let args = Args::parse()?;
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
