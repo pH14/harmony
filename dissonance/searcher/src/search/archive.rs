@@ -801,6 +801,45 @@ impl<A: Clone + Ord> InputIndex<A> {
             .flatten()
             .map(|mut node| {
                 node.parent = node.parent.and_then(|parent| remap[parent]);
+                if node.children.len() == 1 {
+                    let child = node.children.values_mut().next().expect("one child");
+                    if let Some(mapped) = remap[*child] {
+                        *child = mapped;
+                        return Some(node);
+                    }
+                }
+                node.children = std::mem::take(&mut node.children)
+                    .into_iter()
+                    .filter_map(|(action, child)| remap[child].map(|mapped| (action, mapped)))
+                    .collect();
+                Some(node)
+            })
+            .collect();
+        self.nodes.shrink_to_fit();
+        self.free.clear();
+        self.free.shrink_to_fit();
+        self.live_nodes = self.nodes.len();
+        remap
+    }
+}
+
+#[cfg(test)]
+impl<A: Clone + Ord> InputIndex<A> {
+    fn compact_reference(&mut self) -> Vec<Option<usize>> {
+        let mut remap = vec![None; self.nodes.len()];
+        let mut next = 0_usize;
+        for (old, node) in self.nodes.iter().enumerate() {
+            if node.is_some() {
+                remap[old] = Some(next);
+                next = next.saturating_add(1);
+            }
+        }
+        let old_nodes = std::mem::take(&mut self.nodes);
+        self.nodes = old_nodes
+            .into_iter()
+            .flatten()
+            .map(|mut node| {
+                node.parent = node.parent.and_then(|parent| remap[parent]);
                 node.children = std::mem::take(&mut node.children)
                     .into_iter()
                     .filter_map(|(action, child)| remap[child].map(|mapped| (action, mapped)))
@@ -6327,6 +6366,169 @@ mod tests {
         tail: usize,
     ) -> (Archive<u8, SpliceKey, (), ()>, [usize; 3]) {
         splice_tail_fixture_with_actions(prefix, tail, |action| action)
+    }
+
+    fn compaction_fixture(branches: u16, depth: usize, prune: bool) -> InputIndex<u16> {
+        let mut index = InputIndex::default();
+        let mut leaves = Vec::new();
+        for branch in 0..branches {
+            let mut actions = vec![0; depth.max(1)];
+            actions[0] = branch;
+            let (leaf, _) = index.ensure_path(0, &actions).unwrap();
+            index.set_owner(leaf, Some(u64::from(branch)));
+            leaves.push(leaf);
+        }
+        if prune {
+            for branch in (0..branches).step_by(2) {
+                index.remove_owner_and_prune(leaves[usize::from(branch)], u64::from(branch));
+            }
+        }
+        index
+    }
+
+    fn compare_prefix_compaction(index: &InputIndex<u16>) {
+        let bytes = postcard::to_stdvec(index).unwrap();
+        let mut reference: InputIndex<u16> = postcard::from_bytes(&bytes).unwrap();
+        let mut actual: InputIndex<u16> = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(actual.compact(), reference.compact_reference());
+        assert_eq!(
+            postcard::to_stdvec(&actual).unwrap(),
+            postcard::to_stdvec(&reference).unwrap()
+        );
+        let bytes = postcard::to_stdvec(&actual).unwrap();
+        assert_eq!(actual.compact(), reference.compact_reference());
+        assert_eq!(postcard::to_stdvec(&actual).unwrap(), bytes);
+    }
+
+    #[test]
+    fn single_child_compaction_matches_rebuilt_maps() {
+        for branches in [0, 1, 2, 3, 12, 128] {
+            for depth in [1, 8, 128] {
+                for prune in [false, true] {
+                    compare_prefix_compaction(&compaction_fixture(branches, depth, prune));
+                }
+            }
+        }
+        let mut index = compaction_fixture(128, 8, false);
+        for branch in 0..127 {
+            let mut actions = vec![0; 8];
+            actions[0] = branch;
+            let leaf = index.walk(0, &actions).unwrap();
+            index.remove_owner_and_prune(leaf, u64::from(branch));
+        }
+        assert_eq!(index.nodes[0].as_ref().unwrap().children.len(), 1);
+        compare_prefix_compaction(&index);
+        let child = *index.nodes[0]
+            .as_ref()
+            .unwrap()
+            .children
+            .values()
+            .next()
+            .unwrap();
+        index.nodes[child] = None;
+        compare_prefix_compaction(&index);
+    }
+
+    #[test]
+    fn single_child_compaction_preserves_branching_trees() {
+        let mut index = InputIndex::default();
+        for leaf in 0..2048_u16 {
+            let actions = (0..11).map(|bit| (leaf >> bit) & 1).collect::<Vec<_>>();
+            let (node, _) = index.ensure_path(0, &actions).unwrap();
+            index.set_owner(node, Some(u64::from(leaf)));
+        }
+        assert!(
+            index
+                .nodes
+                .iter()
+                .flatten()
+                .all(|node| node.children.len() != 1)
+        );
+        compare_prefix_compaction(&index);
+        if std::env::var_os("DISSONANCE_BENCHMARK_PREFIX_COMPACTION").is_some() {
+            let bytes = postcard::to_stdvec(&index).unwrap();
+            let ratio = paired_prefix_compaction(&bytes);
+            eprintln!(
+                "prefix compaction binary tree nodes={}: new/old={ratio:.3}",
+                index.nodes.len()
+            );
+        }
+    }
+
+    #[test]
+    fn single_child_compaction_reuses_the_child_map_allocation() {
+        let mut index = compaction_fixture(2, 128, true);
+        let locations = index
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(id, node)| {
+                let node = node.as_ref()?;
+                if node.children.len() != 1 {
+                    return None;
+                }
+                let (key, child) = node.children.first_key_value().unwrap();
+                Some((id, key as *const u16, *child))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(locations.len(), 128);
+        let remap = index.compact();
+        for (old, address, child) in locations {
+            let node = index.nodes[remap[old].unwrap()].as_ref().unwrap();
+            let (key, mapped) = node.children.first_key_value().unwrap();
+            assert_eq!(key as *const u16, address);
+            assert_eq!(Some(*mapped), remap[child]);
+        }
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn paired_prefix_compaction(bytes: &[u8]) -> f64 {
+        use std::{hint::black_box, time::Instant};
+        let mut ratios = Vec::new();
+        for round in 0..80 {
+            let mut elapsed = [0_u128; 2];
+            for new in if round % 2 == 0 {
+                [false, true, true, false]
+            } else {
+                [true, false, false, true]
+            } {
+                let mut index: InputIndex<u16> = postcard::from_bytes(bytes).unwrap();
+                let started = Instant::now();
+                let remap = if new {
+                    index.compact()
+                } else {
+                    index.compact_reference()
+                };
+                black_box(&remap);
+                black_box(&index);
+                elapsed[usize::from(new)] += started.elapsed().as_nanos();
+                drop(remap);
+                drop(index);
+            }
+            ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
+        }
+        ratios.sort_by(f64::total_cmp);
+        ratios[ratios.len() / 2]
+    }
+
+    #[test]
+    fn single_child_compaction_paired_benchmark() {
+        for (branches, depth) in [(1, 8), (1, 1024), (1, 65_536), (64, 128), (4096, 1)] {
+            for prune in [false, true] {
+                let index = compaction_fixture(branches, depth, prune);
+                compare_prefix_compaction(&index);
+                if std::env::var_os("DISSONANCE_BENCHMARK_PREFIX_COMPACTION").is_some() {
+                    let bytes = postcard::to_stdvec(&index).unwrap();
+                    let ratio = paired_prefix_compaction(&bytes);
+                    eprintln!(
+                        "prefix compaction branches={branches} depth={depth} prune={prune}: new/old={ratio:.3}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

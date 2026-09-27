@@ -67,6 +67,15 @@ bypasses the batching threshold and rejects an archive that is still over its
 limit. Because of that lag, the archive's resident bytes are not checked
 against the whole budget during the campaign.
 
+Prefix-tree compaction remaps a single surviving child in its existing map.
+Branching maps are rebuilt so compaction still releases their unused storage;
+missing children follow the same rebuilding path. This preserves node order,
+parent links, owners, and serialized state while avoiding a map allocation and
+free for each retained single-child node. The opt-in
+`DISSONANCE_BENCHMARK_PREFIX_COMPACTION=1` unit benchmark compares this path
+with rebuilding every map in the same binary. Its timings cover prefix-tree
+compaction, not whole-search throughput.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed
