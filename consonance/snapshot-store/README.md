@@ -13,8 +13,8 @@ Unwritten pages are implicitly zero. Repeated writes to a frame replace the
 previous write, and writes equal to the inherited content are discarded.
 
 `read_page` resolves the nearest layer that wrote a frame. Layers are immutable
-after sealing; a store-wide lookup cache makes repeated reads efficient. Page contents are
-interned store-wide by BLAKE3, while the all-zero page is implicit. `vm_state`
+after sealing; a store-wide lookup cache makes repeated reads efficient. Page
+contents are interned store-wide by BLAKE3, while the all-zero page is implicit. `vm_state`
 is opaque but its seal-time digest is checked before it is returned. Corrupted
 page data or state produces an integrity error rather than silently returning
 bytes.
@@ -22,8 +22,8 @@ bytes.
 Layer page tables are immutable sorted arrays of guest frame numbers and
 word-sized page references. Digests stay in the content index and resident-page
 records; layer tables and lookup caches refer to a reusable resident-page slot
-instead of copying those digests. A slot remains occupied while any builder or retained
-layer owns it. These references are private to the store and never appear in
+instead of copying those digests. A slot remains occupied while any builder or
+retained layer owns it. These references are private to the store and never appear in
 snapshot exports. Flattening carries inherited references into a new base and
 reads only the pages declared dirty from the supplied memory image.
 
@@ -58,6 +58,10 @@ empty store also releases its lookup cache.
 returns a private copy-on-write `Mapping`. Writes through the mapping affect
 only the mapping; the immutable store and all snapshots remain unchanged.
 `Mapping::as_slice`, `as_mut_slice`, `len`, and `is_empty` expose the image.
+Population writes through a shared file mapping, then drops it before creating
+the private mapping. The temporary file is unlinked and requires no durability,
+so population does not synchronously flush its contents to disk. Subsequent
+mappings read the populated file through the operating system's page cache.
 
 `Mapping::anonymous` supplies a zero-filled, page-aligned heap backing with the
 same interface. It is useful for tests and interpreter-based safety checks,
