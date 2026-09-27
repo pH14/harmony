@@ -15,7 +15,7 @@ macro_rules! define_arm {
             check: bool,
             ram_len: usize,
             pattern: &str,
-        ) -> ([u8; 32], Vec<u8>)
+        ) -> ([u8; 32], [u8; 32], Vec<u8>)
         where
             B::A: $core::vendor::Vendor,
         {
@@ -44,6 +44,7 @@ macro_rules! define_arm {
             let hash = server.vmm_mut().unwrap().state_hash().unwrap();
             let Reply::Snapshot { id, at, sdk_events, tainted } = server.handle(&Request::Snapshot).unwrap().unwrap() else { panic!("snapshot") };
             let expected_receipt = (at, sdk_events, tainted);
+            let snapshot_hash = server.export_portable_snapshot(id, std::io::sink()).unwrap().state_hash;
             let export = server.export_sparse_snapshot(id, id).unwrap();
             assert!(export.pages.is_empty());
             assert_eq!(server.handle(&Request::Drop(id)).unwrap().unwrap(), Reply::Unit);
@@ -60,7 +61,7 @@ macro_rules! define_arm {
             assert_eq!(server.vmm_mut().unwrap().state_hash().unwrap(), hash);
             assert_eq!(server.snapshot_store_stats().snapshots, 0);
             println!("{{\"kind\":\"{label}_{ram_len}_{pattern}\",\"arm\":\"{}\",\"sample\":{sample},\"iterations\":{iterations},\"ns\":{ns}}}", stringify!($name));
-            (hash, export.sidecar)
+            (hash, snapshot_hash, export.sidecar)
         }
     };
 }
@@ -165,10 +166,11 @@ fn main() {
                                 }
                             }
                         };
-                        if let Some((hash, sidecar)) = prior {
+                        if let Some((hash, snapshot_hash, sidecar)) = prior {
                             assert_eq!(evidence.0, hash);
+                            assert_eq!(evidence.1, snapshot_hash);
                             if !live {
-                                assert_eq!(evidence.1, sidecar);
+                                assert_eq!(evidence.2, sidecar);
                             }
                         }
                         prior = Some(evidence);
@@ -177,5 +179,7 @@ fn main() {
             }
         }
     }
-    println!("Shared capture preserves complete mock sidecars and full VMM hashes");
+    println!(
+        "Shared capture preserves exported snapshot hashes, full VMM hashes, and complete mock sidecars"
+    );
 }

@@ -181,7 +181,9 @@ dense contents. It also measures standalone public save-and-hash-encode calls.
 Setup, VM creation, and export are outside the timed region; RAM hashing and
 snapshot-store work are inside. These are snapshot costs, not guest execution
 throughput. `--hvf` requires a real Apple silicon host with Hypervisor.framework;
-it creates only one VM at a time. Live HVF compares canonical hashes, while
+it creates only one VM at a time. Both modes compare the canonical hashes
+returned by portable snapshot export, which hashes the stored RAM and the
+actual snapshot suffix, as well as standalone VMM hashes. Live HVF
 stored sidecars may differ because the hardware virtual counter advances
 between captures. Portable checks run in Snapshot and Restore and both ARM
 Host Compatibility CI jobs without timing thresholds. Hosted macOS runners
