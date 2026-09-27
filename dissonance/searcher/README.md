@@ -157,6 +157,18 @@ cargo test --manifest-path dissonance/searcher/Cargo.toml
 cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D warnings
 ```
 
+Archive admission visits the same sorted preference winners to build holder
+retention flags and the candidate's winning preferences directly. It avoids
+allocating preference lists for existing holders. Accepted suffixes transfer
+their allocation into the archive; excess capacity is removed before storage.
+These allocation changes preserve ranking, tie breaks, and logical memory charges.
+The admission microbenchmark covers rejection and acceptance with short and long
+suffixes:
+
+```sh
+cargo bench --locked --manifest-path dissonance/Cargo.toml --bench archive_admission
+```
+
 ## Adaptive duration policy
 
 Campaigns can ask the generic searcher for a duration choice through
