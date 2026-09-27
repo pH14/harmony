@@ -7,7 +7,7 @@ Use this guide when your application already has a Linux container image and you
 Harmony accepts a registry or local engine image name, a Docker image archive, or an OCI layout directory:
 
 ```sh
-harmony oci run alpine:3 --out hello -- /bin/echo hello
+harmony oci run busybox:musl --out hello -- /bin/echo hello
 harmony oci run ./app.tar --out app-run
 harmony oci run ./app-layout --out layout-run
 ```

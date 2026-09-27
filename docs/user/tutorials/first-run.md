@@ -10,8 +10,8 @@ Complete [installation](../how-to/install.md). You need a working guest runtime,
 harmony preflight
 mkdir harmony-first-run
 cd harmony-first-run
-docker pull alpine:3
-docker image save -o alpine.tar alpine:3
+docker pull busybox:musl
+docker image save -o busybox.tar busybox:musl
 ```
 
 Saving the image once gives both runs the same bytes, even if the registry tag changes later. Use an image for your host's architecture.
@@ -22,7 +22,7 @@ Saving the image once gives both runs the same bytes, even if the registry tag c
 ## Run the container
 
 ```sh
-harmony oci run ./alpine.tar --seed 7 --timeout 60 \
+harmony oci run ./busybox.tar --seed 7 --timeout 60 \
   --out first -- /bin/echo hello
 ```
 
@@ -46,7 +46,7 @@ The application exit should be `0`. Your digest is a record of this particular r
 ## Repeat the same input
 
 ```sh
-harmony oci run ./alpine.tar --seed 7 --timeout 60 \
+harmony oci run ./busybox.tar --seed 7 --timeout 60 \
   --out second -- /bin/echo hello
 cmp first/serial.log second/serial.log
 ```

@@ -4,7 +4,7 @@
 
 | Input | Requirement |
 | --- | --- |
-| Image name, such as `alpine:3` | Accessible through Docker or Podman; a local image is preferred before attempting a pull |
+| Image name, such as `busybox:musl` | Accessible through Docker or Podman; a local image is preferred before attempting a pull |
 | Docker image archive | Produced by `docker image save` or an equivalent compatible export |
 | OCI layout directory | Contains the OCI metadata and image blobs for the intended platform |
 
