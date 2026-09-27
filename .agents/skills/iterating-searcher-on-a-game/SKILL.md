@@ -21,8 +21,8 @@ game needs or tests a change against the run that has to deliver it.
 - **Power-on run**: a search from a new game. It is the only completion test.
 - **Checkpoint**: a saved whole-search state, a `.ckpt` file. A resume with the
   same seed repeats the original search; its progress lines match apart from
-  timing fields. A resume with another seed keeps the archive and draws new
-  choices.
+  timing-dependent fields. A resume with another seed keeps the archive and
+  draws new choices.
 - **Rooted segment**: a search that starts from a recorded input (`root_input`)
   with an empty archive.
 - **Checkpoint slice**: a resume of a power-on run's checkpoint just before a
@@ -55,7 +55,7 @@ These hold at every step.
    that the counter can move.
 6. Set every stop rule above the largest gap between milestones in the
    control's record, because a tighter rule stops runs that would have passed.
-7. When two seeds stall at one place for longer than the control's largest
+7. When several seeds stall at one place for longer than the control's largest
    gap there, stop the runs, film the place and change the machinery. The
    runner's stall note only reports; stopping is a decision you make. A
    stopped run keeps its progress lines, milestone tapes and checkpoints, and

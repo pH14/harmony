@@ -180,10 +180,13 @@ new seeds from one checkpoint.
   checkpoint's execution count, which is the number in the `.ckpt` file name.
   `milestones.py` prints first tries from power-on, so subtract by hand.
 - Before the slices, resume the checkpoint with its original seed on the
-  unchanged build for a short stretch. Each progress line before its last must
-  match the original run's line at the same try, apart from the timing fields
-  `search_elapsed_millis` and `unix_time`. The last line differs, because a
-  finished run writes its final census there.
+  unchanged build for a short stretch. Compare its progress lines with the
+  original run's at the same tries, up to but excluding the stretch's last try.
+  They must match apart from the timing-dependent fields: `search_elapsed_millis`,
+  `unix_time`, the `coordinator` fields ending in `_ns`, and
+  `coordinator.receives`, which counts worker results as they arrive. The lines
+  at the last try differ, because the resumed run stops reserving work there
+  and writes its final census.
 - A resumed stream cannot be replayed, so resumed runs use witness
   verification.
 - Both arms of a slice must read the same checkpoint. A change that alters the
