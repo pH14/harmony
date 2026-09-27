@@ -185,7 +185,7 @@ pub vmm_core::snapshot::SnapshotError::SparsePagesNotSorted::previous: u64
 pub vmm_core::snapshot::SnapshotError::Store(snapshot_store::StoreError)
 pub struct vmm_core::snapshot::SnapshotEngine
 impl vmm_core::snapshot::SnapshotEngine
-pub fn vmm_core::snapshot::SnapshotEngine::diff_pages(&self, core::option::Option<snapshot_store::SnapshotId>, snapshot_store::SnapshotId) -> core::result::Result<alloc::vec::Vec<(u64, [u8; 4096])>, vmm_core::snapshot::SnapshotError>
+pub fn vmm_core::snapshot::SnapshotEngine::diff_pages(&self, core::option::Option<snapshot_store::SnapshotId>, snapshot_store::SnapshotId) -> core::result::Result<alloc::vec::Vec<(u64, &[u8; 4096])>, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::gc(&mut self) -> u64
 pub fn vmm_core::snapshot::SnapshotEngine::materialize(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::mapping::Mapping, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::max_chain_len(&self) -> u32
