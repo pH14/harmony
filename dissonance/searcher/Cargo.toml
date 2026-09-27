@@ -17,3 +17,7 @@ criterion = "=0.5.1"
 [[bench]]
 name = "empirical_steps"
 harness = false
+
+[[bench]]
+name = "archive_admission"
+harness = false

@@ -1764,10 +1764,9 @@ where
             .collect()
     }
 
-    fn preferences_won(members: &[(K, u64, u64)]) -> Vec<Vec<usize>> {
+    fn visit_preference_winners(members: &[(K, u64, u64)], mut winner: impl FnMut(usize, usize)) {
         let capacity = K::capacity().max(1);
         let preferences = K::preferences().max(1);
-        let mut won = vec![Vec::new(); members.len()];
         let mut order: Vec<usize> = (0..members.len()).collect();
         for preference in 0..preferences {
             order.sort_by(|left, right| {
@@ -1780,9 +1779,16 @@ where
                     .then_with(|| left_id.cmp(&right_id))
             });
             for index in order.iter().take(capacity) {
-                won[*index].push(preference);
+                winner(*index, preference);
             }
         }
+    }
+
+    fn preferences_won(members: &[(K, u64, u64)]) -> Vec<Vec<usize>> {
+        let mut won = vec![Vec::new(); members.len()];
+        Self::visit_preference_winners(members, |index, preference| {
+            won[index].push(preference);
+        });
         won
     }
 
@@ -1792,15 +1798,23 @@ where
         key: K,
         cost_in_group: u64,
     ) -> (Vec<bool>, Vec<usize>) {
-        let mut members = self.slot_members(slot);
+        let mut members = Vec::with_capacity(slot.len() + 1);
+        members.extend(slot.iter().map(|id| {
+            (
+                self.entries[*id].key,
+                self.cost_in_group[*id],
+                self.entries[*id].id,
+            )
+        }));
         members.push((key, cost_in_group, self.next_entry_id));
-        let mut won = Self::preferences_won(&members);
-        let candidate = won.pop().unwrap_or_default();
-        let mut retained: Vec<bool> = won
-            .iter()
-            .map(|preferences| !preferences.is_empty())
-            .collect();
-        retained.push(!candidate.is_empty());
+        let mut retained = vec![false; members.len()];
+        let mut candidate = Vec::new();
+        Self::visit_preference_winners(&members, |index, preference| {
+            retained[index] = true;
+            if index == slot.len() {
+                candidate.push(preference);
+            }
+        });
         (retained, candidate)
     }
 
@@ -2003,11 +2017,12 @@ where
         self.historical_input_actions = self.historical_input_actions.saturating_add(input_len);
         self.stored_input_actions = self.stored_input_actions.saturating_add(suffix.len());
         let (input_node, new_nodes) = self.index_retained_input(parent_id, &suffix, stable_id)?;
+        let suffix_len = suffix.len();
         self.entries.push(ArchiveEntry {
             id: stable_id,
             parent_id: parent_id.map(|parent| self.entries[parent].id),
             created_execution: execution,
-            input_suffix: suffix.clone(),
+            input_suffix: suffix.into_boxed_slice().into_vec(),
             input_len,
             input_node,
             key,
@@ -2088,7 +2103,7 @@ where
         }
         self.history_memory_bytes = self
             .history_memory_bytes
-            .saturating_add(Self::history_entry_memory_charge(suffix.len(), new_nodes));
+            .saturating_add(Self::history_entry_memory_charge(suffix_len, new_nodes));
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
         self.enforce_snapshot_memory_budget()?;
@@ -2794,6 +2809,152 @@ mod tests {
     type TestArchive = Archive<u8, TestKey, (), ()>;
 
     type TimedArchive = Archive<TestAction, TestKey, (), ()>;
+
+    #[test]
+    fn admitted_suffix_keeps_its_allocation() {
+        let mut archive = TestArchive::new(|_| 1);
+        let suffix = vec![1, 2, 3, 4];
+        let allocation = suffix.as_ptr();
+        let id = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix,
+                    key: TestKey::default(),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert suffix")
+            .expect("retain suffix");
+        assert_eq!(archive.entries[id].input_suffix.as_ptr(), allocation);
+        assert_eq!(archive.materialize_input(id).unwrap().actions, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn admitted_suffix_does_not_retain_unused_capacity() {
+        let mut archive = TestArchive::new(|_| 1);
+        let mut suffix = Vec::with_capacity(1024);
+        suffix.extend([1, 2, 3, 4]);
+        let id = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix,
+                    key: TestKey::default(),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        let stored = &archive.entries[id].input_suffix;
+        assert_eq!(stored.capacity(), stored.len());
+        assert_eq!(stored, &[1, 2, 3, 4]);
+    }
+
+    fn check_preference_ranking<K: ArchiveKey>(
+        archive: &Archive<u8, K, (), ()>,
+        slot: &[usize],
+        key: K,
+        cost: u64,
+    ) {
+        let mut members = archive.slot_members(slot);
+        members.push((key, cost, archive.next_entry_id));
+        let mut expected = vec![false; members.len()];
+        let mut candidate = Vec::new();
+        for (index, (key, cost, id)) in members.iter().enumerate() {
+            for preference in 0..K::preferences().max(1) {
+                let ahead = members
+                    .iter()
+                    .filter(|(other, other_cost, other_id)| {
+                        other
+                            .preference_cmp(preference, *key)
+                            .then_with(|| cost.cmp(other_cost))
+                            .then_with(|| id.cmp(other_id))
+                            == Ordering::Greater
+                    })
+                    .count();
+                if ahead < K::capacity().max(1) {
+                    expected[index] = true;
+                    if index == slot.len() {
+                        candidate.push(preference);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            archive.rank_slot_preferences(slot, key, cost),
+            (expected, candidate)
+        );
+    }
+
+    #[test]
+    fn preference_ranking_matches_pairwise_ranks_and_ties() {
+        let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut flat = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        for value in 0..8_u8 {
+            let suffix = vec![value; usize::from(value % 3) + 1];
+            portfolio
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: suffix.clone(),
+                        key: PortfolioKey {
+                            slot: value,
+                            first: value % 3,
+                            second: (value / 3) % 3,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+            flat.insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix,
+                    key: FlatKey([u16::from(value); 4]),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        }
+        for mask in 0..256_u16 {
+            let mut slot = (0..8)
+                .filter(|index| mask & (1 << index) != 0)
+                .collect::<Vec<_>>();
+            for _ in 0..2 {
+                for first in 0..4 {
+                    for second in 0..4 {
+                        for cost in 0..5 {
+                            check_preference_ranking(
+                                &portfolio,
+                                &slot,
+                                PortfolioKey {
+                                    slot: 0,
+                                    first,
+                                    second,
+                                },
+                                cost,
+                            );
+                        }
+                    }
+                }
+                for cost in 0..5 {
+                    check_preference_ranking(&flat, &slot, FlatKey([0; 4]), cost);
+                }
+                slot.reverse();
+            }
+        }
+    }
 
     #[test]
     fn input_index_walk_owner_and_pruning_are_exact() {
