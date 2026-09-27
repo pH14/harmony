@@ -2243,9 +2243,8 @@ where
             .tiers
             .get(&progress)
             .ok_or("tier draw chose an absent tier")?;
-        let candidates = places.keys().copied().collect::<Vec<_>>();
-        let weights = candidates
-            .iter()
+        let weights = places
+            .keys()
             .map(|place| {
                 count_decay(
                     self.cells
@@ -2255,7 +2254,14 @@ where
             })
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
-        Ok(candidates[index])
+        let place = if index < places.len() / 2 {
+            places.keys().nth(index)
+        } else {
+            places.keys().nth_back(places.len() - index - 1)
+        };
+        place
+            .copied()
+            .ok_or_else(|| "cell draw chose an absent cell".into())
     }
 
     fn draw_holder(
@@ -2269,13 +2275,19 @@ where
             .get(&progress)
             .and_then(|places| places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
-        let ids = members.ids.iter().copied().collect::<Vec<_>>();
-        let weights = ids
+        let weights = members
+            .ids
             .iter()
             .map(|id| count_decay(self.selected[*id]))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
-        Ok(ids[index])
+        let id = if index < members.ids.len() / 2 {
+            members.ids.iter().nth(index)
+        } else {
+            members.ids.iter().nth_back(members.ids.len() - index - 1)
+        };
+        id.copied()
+            .ok_or_else(|| "holder draw chose an absent holder".into())
     }
 
     fn champions_slot(&self, slot: &[usize], id: usize, preference: usize) -> bool {
@@ -2754,6 +2766,70 @@ where
     M: Clone + Copy + Debug + Eq + Serialize + DeserializeOwned,
     S: Clone,
 {
+    fn select_parent_candidates_reference(
+        &mut self,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<(usize, SelectorDraw), Box<dyn Error>> {
+        self.ensure_selector_index();
+        if self.active_ids.is_empty() {
+            return Err("archive has no expandable entry".into());
+        }
+        let (progress, rank) = self.draw_tier(rand)?;
+        let place = self.draw_cell_reference(rand, progress)?;
+        let id = self.draw_holder_reference(rand, progress, place)?;
+        Ok((
+            id,
+            SelectorDraw {
+                path: SelectorPath::Tiers,
+                tier_rank: Some(rank),
+            },
+        ))
+    }
+
+    fn draw_cell_reference(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        progress: K::Progress,
+    ) -> Result<K::Place, Box<dyn Error>> {
+        let places = self
+            .tiers
+            .get(&progress)
+            .ok_or("tier draw chose an absent tier")?;
+        let candidates = places.keys().copied().collect::<Vec<_>>();
+        let weights = candidates
+            .iter()
+            .map(|place| {
+                count_decay(
+                    self.cells
+                        .get(&(progress, *place))
+                        .map_or(0, |state| state.draws),
+                )
+            })
+            .collect::<Vec<_>>();
+        let index = draw_weighted(rand, weights.iter().copied())?;
+        Ok(candidates[index])
+    }
+
+    fn draw_holder_reference(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        progress: K::Progress,
+        place: K::Place,
+    ) -> Result<usize, Box<dyn Error>> {
+        let members = self
+            .tiers
+            .get(&progress)
+            .and_then(|places| places.get(&place))
+            .ok_or("cell draw chose an absent cell")?;
+        let ids = members.ids.iter().copied().collect::<Vec<_>>();
+        let weights = ids
+            .iter()
+            .map(|id| count_decay(self.selected[*id]))
+            .collect::<Vec<_>>();
+        let index = draw_weighted(rand, weights.iter().copied())?;
+        Ok(ids[index])
+    }
+
     fn champions_slot_reference(&self, slot: &[usize], id: usize, preference: usize) -> bool {
         let capacity = K::capacity().max(1);
         let better = slot
@@ -2807,9 +2883,10 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, DonorRank, HISTORY_COMPACTION_MIN_DROPS,
-        Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, MAX_TIER_RANK_SHIFT,
-        SelectorAccounting, SelectorDraw, SelectorPath, checked_tier_rank_shift, tier_weight,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState, DonorRank,
+        HISTORY_COMPACTION_MIN_DROPS, Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY,
+        MAX_TIER_RANK_SHIFT, SelectorAccounting, SelectorDraw, SelectorPath,
+        checked_tier_rank_shift, tier_weight,
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
@@ -3762,6 +3839,236 @@ mod tests {
                         postcard::to_stdvec(&reference).unwrap()
                     );
                 }
+            }
+        }
+    }
+
+    fn candidate_draw_fixture(count: usize, draws: u64) -> Archive<u8, SpliceKey, (), ()> {
+        let mut archive = Archive::new(|_| 1);
+        archive.selected = (0..count * 3 + 1)
+            .map(|id| draws.saturating_add((id % 7) as u64))
+            .collect();
+        let mut places = BTreeMap::new();
+        for index in 0..count {
+            let place = u16::try_from(index * 3 + 1).unwrap();
+            places.insert(place, CellMembers::default());
+            archive.cells.insert(
+                ((0, 0), place),
+                CellState {
+                    draws: draws.saturating_add((index % 5) as u64),
+                    ..CellState::default()
+                },
+            );
+        }
+        places.entry(1).or_default().ids = (0..count).map(|id| id * 3 + 1).collect();
+        if count == 0 {
+            places.clear();
+        }
+        archive.tiers.insert((0, 0), places);
+        archive
+    }
+
+    #[test]
+    fn indexed_candidates_preserve_draws_and_rng_state() {
+        for count in [0, 1, 2, 7, 16, 256, 4096] {
+            for draws in [0, 1, 65_535, u64::MAX] {
+                let archive = candidate_draw_fixture(count, draws);
+                for seed in 0..16 {
+                    let mut actual = RomuDuoJrRand::with_seed(seed);
+                    let mut reference = actual;
+                    for _ in 0..32 {
+                        assert_eq!(
+                            archive
+                                .draw_cell(&mut actual, (0, 0))
+                                .map_err(|e| e.to_string()),
+                            archive
+                                .draw_cell_reference(&mut reference, (0, 0))
+                                .map_err(|e| e.to_string())
+                        );
+                        assert_eq!(
+                            postcard::to_stdvec(&actual).unwrap(),
+                            postcard::to_stdvec(&reference).unwrap()
+                        );
+                        assert_eq!(
+                            archive
+                                .draw_holder(&mut actual, (0, 0), 1)
+                                .map_err(|e| e.to_string()),
+                            archive
+                                .draw_holder_reference(&mut reference, (0, 0), 1)
+                                .map_err(|e| e.to_string())
+                        );
+                        assert_eq!(
+                            postcard::to_stdvec(&actual).unwrap(),
+                            postcard::to_stdvec(&reference).unwrap()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_candidate_draws_preserve_missing_state_and_empty_member_errors() {
+        for case in 0..4 {
+            let mut archive = candidate_draw_fixture(7, 1);
+            match case {
+                0 => archive.cells.clear(),
+                1 => archive.tiers.clear(),
+                2 => archive.tiers.get_mut(&(0, 0)).unwrap().clear(),
+                _ => archive
+                    .tiers
+                    .get_mut(&(0, 0))
+                    .unwrap()
+                    .get_mut(&1)
+                    .unwrap()
+                    .ids
+                    .clear(),
+            }
+            let mut actual = RomuDuoJrRand::with_seed(17);
+            let mut reference = actual;
+            for _ in 0..64 {
+                assert_eq!(
+                    archive
+                        .draw_cell(&mut actual, (0, 0))
+                        .map_err(|e| e.to_string()),
+                    archive
+                        .draw_cell_reference(&mut reference, (0, 0))
+                        .map_err(|e| e.to_string())
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&actual).unwrap(),
+                    postcard::to_stdvec(&reference).unwrap()
+                );
+                assert_eq!(
+                    archive
+                        .draw_holder(&mut actual, (0, 0), 1)
+                        .map_err(|e| e.to_string()),
+                    archive
+                        .draw_holder_reference(&mut reference, (0, 0), 1)
+                        .map_err(|e| e.to_string())
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&actual).unwrap(),
+                    postcard::to_stdvec(&reference).unwrap()
+                );
+            }
+        }
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn paired_candidate_timing(
+        mut draw: impl FnMut(bool, &mut RomuDuoJrRand),
+        repeats: usize,
+    ) -> f64 {
+        use std::time::Instant;
+        let mut ratios = Vec::new();
+        for round in 0..80 {
+            let mut elapsed = [0_u128; 2];
+            for new in if round % 2 == 0 {
+                [false, true, true, false]
+            } else {
+                [true, false, false, true]
+            } {
+                let mut rand = RomuDuoJrRand::with_seed(round);
+                let start = Instant::now();
+                for _ in 0..repeats {
+                    draw(new, &mut rand);
+                }
+                elapsed[usize::from(new)] += start.elapsed().as_nanos();
+            }
+            ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
+        }
+        ratios.sort_by(f64::total_cmp);
+        ratios[ratios.len() / 2]
+    }
+
+    #[test]
+    fn indexed_candidate_draw_benchmark() {
+        use std::hint::black_box;
+        if std::env::var_os("DISSONANCE_BENCHMARK_CANDIDATES").is_none() {
+            return;
+        }
+        for count in [1, 2, 16, 256, 4096] {
+            for draws in [0, u64::MAX] {
+                let archive = candidate_draw_fixture(count, draws);
+                for holder in [false, true] {
+                    let ratio = paired_candidate_timing(
+                        |new, rand| {
+                            if holder {
+                                black_box(if new {
+                                    archive.draw_holder(rand, (0, 0), 1)
+                                } else {
+                                    archive.draw_holder_reference(rand, (0, 0), 1)
+                                })
+                                .unwrap();
+                            } else {
+                                black_box(if new {
+                                    archive.draw_cell(rand, (0, 0))
+                                } else {
+                                    archive.draw_cell_reference(rand, (0, 0))
+                                })
+                                .unwrap();
+                            }
+                        },
+                        (16_384 / count).max(8),
+                    );
+                    eprintln!(
+                        "candidate_draw count={count} draws={draws} holder={holder} ratio={ratio:.4}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_candidates_preserve_complete_parent_selection() {
+        use std::hint::black_box;
+        for count in [1, 16, 256, 4096] {
+            let mut archive = Archive::<u64, TierKey<3>, (), ()>::new(|_| 1);
+            for tier in 0..count {
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![tier as u64],
+                            key: TierKey(tier),
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap();
+            }
+            let mut actual = RomuDuoJrRand::with_seed(419);
+            let mut reference = actual;
+            for _ in 0..256 {
+                assert_eq!(
+                    archive.select_parent(&mut actual).unwrap(),
+                    archive
+                        .select_parent_candidates_reference(&mut reference)
+                        .unwrap()
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&actual).unwrap(),
+                    postcard::to_stdvec(&reference).unwrap()
+                );
+            }
+            if std::env::var_os("DISSONANCE_BENCHMARK_CANDIDATES").is_some() {
+                let ratio = paired_candidate_timing(
+                    |new, rand| {
+                        black_box(if new {
+                            archive.select_parent(rand)
+                        } else {
+                            archive.select_parent_candidates_reference(rand)
+                        })
+                        .unwrap();
+                    },
+                    1024,
+                );
+                eprintln!("complete_parent tiers={count} ratio={ratio:.4}");
             }
         }
     }

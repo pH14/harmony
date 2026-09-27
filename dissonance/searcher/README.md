@@ -194,6 +194,20 @@ cargo bench --locked --manifest-path dissonance/Cargo.toml --bench duration
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench parent_selection
 ```
 
+Cell and holder draws build only the weight vector. Candidate IDs stay in the
+ordered map or set, and the selected index is retrieved from its nearer end.
+Weights are computed once in their original order; the weighted draw and RNG
+consumption are unchanged. This removes one temporary candidate vector per
+cell draw and one per holder draw, without adding retained state.
+
+The candidate-draw differential tests compare IDs, errors, and exact RNG state
+with the previous implementation. The opt-in paired benchmark includes isolated
+cell/holder draws and complete parent selection with zero-sized place keys:
+
+```sh
+DISSONANCE_BENCHMARK_CANDIDATES=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib indexed_candidate -- --nocapture --test-threads=1
+```
+
 ## Adaptive duration policy
 
 Campaigns can ask the generic searcher for a duration choice through
