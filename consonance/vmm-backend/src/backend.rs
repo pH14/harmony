@@ -56,6 +56,10 @@ pub trait Backend {
 
     fn take_accepted_interrupt(&mut self) -> Option<<Self::A as Arch>::IntId>;
 
+    fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+        Ok(None)
+    }
+
     fn complete_read(&mut self, value: u64) -> Result<()>;
 
     fn complete_fault(&mut self) -> Result<()>;
@@ -146,6 +150,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).take_accepted_interrupt()
     }
 
+    fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+        (**self).read_irq_mask()
+    }
+
     fn complete_read(&mut self, value: u64) -> Result<()> {
         (**self).complete_read(value)
     }
@@ -227,6 +235,8 @@ mod tests {
         validation_calls: Arc<AtomicUsize>,
         preparation_calls: usize,
         preparation_error: bool,
+        irq_mask: Option<bool>,
+        irq_mask_error: bool,
         #[cfg(feature = "xsave-diagnostics")]
         breakpoint_requests: Vec<u64>,
         #[cfg(feature = "xsave-diagnostics")]
@@ -316,6 +326,14 @@ mod tests {
         #[cfg(feature = "xsave-diagnostics")]
         fn diagnostic_debug_hits(&self) -> Vec<u64> {
             self.debug_hits.clone()
+        }
+
+        fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+            if self.irq_mask_error {
+                Err(BackendError::PendingCompletion)
+            } else {
+                Ok(self.irq_mask)
+            }
         }
 
         fn save(&mut self) -> Result<VcpuState> {
@@ -506,5 +524,23 @@ mod tests {
             Box::new(crate::MockBackend::new().with_cancellation_flag(Arc::clone(&latch)));
         let forwarded = boxed.cancellation_flag().expect("latch forwarded");
         assert!(Arc::ptr_eq(&forwarded, &latch));
+    }
+    #[test]
+    fn boxed_irq_mask_forwards_supported_unsupported_and_error_results() {
+        for mask in [None, Some(false), Some(true)] {
+            let mut backend: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+                irq_mask: mask,
+                ..Default::default()
+            });
+            assert_eq!(backend.read_irq_mask().unwrap(), mask);
+        }
+        let mut backend: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+            irq_mask_error: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            backend.read_irq_mask(),
+            Err(BackendError::PendingCompletion)
+        ));
     }
 }

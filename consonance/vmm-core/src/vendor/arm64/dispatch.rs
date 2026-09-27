@@ -621,7 +621,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         if guest_clock < deadline {
             return Ok(());
         }
-        if self.backend.save()?.core.pstate & PSTATE_I != 0 {
+        let irq_masked = match self.backend.read_irq_mask()? {
+            Some(masked) => masked,
+            None => self.backend.save()?.core.pstate & PSTATE_I != 0,
+        };
+        if irq_masked {
             self.trace_arm_clockevent_defer()?;
             return Ok(());
         }
@@ -1504,3 +1508,7 @@ mod tests {
         assert!(normalize_virtual_time_exit_arm64(&serial).is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "clockevent_tests.rs"]
+mod clockevent_tests;

@@ -994,6 +994,13 @@ impl Backend for HvfBackend {
         Ok(())
     }
 
+    fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        Ok(Some(self.reg(HV_REG_CPSR)? & (1 << 7) != 0))
+    }
+
     fn save(&mut self) -> Result<Arm64VcpuState> {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);

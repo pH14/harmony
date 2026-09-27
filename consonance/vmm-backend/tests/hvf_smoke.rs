@@ -518,3 +518,62 @@ fn set_policy_compares_every_policy_with_the_host() {
         .set_policy(&isar0(0x20))
         .expect("a later policy is checked against the host, not the earlier policy");
 }
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn irq_mask_read_tracks_guest_execution_and_restore_without_changing_state() {
+    const MSR_DAIFCLR_I: u32 = 0xd503_42ff;
+    const MSR_DAIFSET_I: u32 = 0xd503_42df;
+    let mut guest = Guest::new(&[
+        movz(1, (MMIO_GPA >> 16) as u32, 16),
+        MSR_DAIFCLR_I,
+        str_x(0, 1),
+        MSR_DAIFSET_I,
+        str_x(0, 1),
+        B_SELF,
+    ]);
+    guest.restart();
+    for expected in [false, true] {
+        guest.next_store();
+        let before = guest.save();
+        assert_eq!(before.core.pstate & (1 << 7) != 0, expected);
+        assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(expected));
+        assert!(same_state(&guest.save(), &before));
+        let mut opposite = before;
+        opposite.core.pstate ^= 1 << 7;
+        guest.restore(&opposite);
+        assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(!expected));
+        guest.restore(&before);
+        assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(expected));
+    }
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn irq_mask_read_rejects_pending_completion() {
+    let mut guest = Guest::new(&[
+        movz(1, (MMIO_GPA >> 16) as u32, 16),
+        ldr_x(0, 1),
+        str_x(0, 1),
+        B_SELF,
+    ]);
+    guest.restart();
+    assert!(matches!(
+        guest.backend.run().unwrap(),
+        Exit::Common(CommonExit::Mmio { write: None, .. })
+    ));
+    assert!(matches!(
+        guest.backend.read_irq_mask(),
+        Err(BackendError::PendingCompletion)
+    ));
+    assert!(matches!(
+        guest.backend.save(),
+        Err(BackendError::PendingCompletion)
+    ));
+    guest.backend.complete_read(0x5a).unwrap();
+    assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(true));
+    assert_eq!(guest.next_store(), 0x5a);
+}
+
+#[path = "hvf_smoke/irq_poll.rs"]
+mod irq_poll;
