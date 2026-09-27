@@ -285,6 +285,7 @@ jobs:
         run: |
           cargo fetch --locked
           python3 consonance/vmm-core/qualification/qualify-sha256.py --check
+          python3 consonance/vmm-core/qualification/qualify-contract.py --check
       - name: Grant /dev/kvm access
         if: steps.scope.outputs.enabled == 'true'
         run: |

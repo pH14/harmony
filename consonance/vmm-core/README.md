@@ -134,6 +134,26 @@ the software control deliberately disables acceleration on every architecture.
 These are host hashing costs, not guest execution throughput. The executable's
 SHA-256 is printed with the results to bind both arms to the same build.
 
+The contract-cache qualification compares the production x86 fingerprint with a
+same-source VMM copy whose only change bypasses the fingerprint cache. Both use
+the same SHA backend in one executable. It checks concurrent first callers,
+fresh-process initialization, zero allocations for warmed fingerprint reads,
+complete state hashes and CPU/device captures, full-memory restores, and rejection
+of a changed contract. Timings include allocation-counter overhead on both sides.
+Capture timings cover CPU/device state, while restore timings include comparing
+the complete RAM image. These mock-backend measurements do not measure guest
+execution or hypervisor entry costs.
+
+```sh
+python3 consonance/vmm-core/qualification/qualify-contract.py --check
+python3 consonance/vmm-core/qualification/qualify-contract.py
+python3 consonance/vmm-core/qualification/qualify-contract.py --miri
+```
+
+The full run reports nine alternating pairs at 4 KiB, 64 KiB, 1 MiB, and
+128 MiB RAM. Allocation bytes are cumulative requests, not peak RSS. `--miri`
+exercises the qualification allocator, including reallocation and deallocation.
+
 The x86 exit dispatcher finishes the current instruction's device-access chain
 before returning a stopped endpoint. Continuation accesses retain their device,
 virtual-time, and trace accounting, but do not enter the next guest instruction
