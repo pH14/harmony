@@ -2,6 +2,10 @@
 
 #![recursion_limit = "256"]
 
+#[cfg(not(miri))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::{
     env,
     error::Error,
