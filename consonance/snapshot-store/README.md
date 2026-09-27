@@ -25,7 +25,9 @@ records; layer tables and lookup caches refer to a reusable resident-page slot
 instead of copying those digests. A slot remains occupied while any builder or
 retained layer owns it. These references are private to the store and never appear in
 snapshot exports. Flattening carries inherited references into a new base and
-reads only the pages declared dirty from the supplied memory image.
+reads only the pages declared dirty from the supplied memory image. It validates
+and acquires the inherited references before moving their page table directly
+into the builder, avoiding a second tree containing the same entries.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their

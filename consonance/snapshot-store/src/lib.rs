@@ -200,17 +200,37 @@ impl Store {
                     mem_pages: self.cfg.mem_pages,
                 });
             }
-            inherited.entry(gfn).or_insert(PageRef::Zero);
             dirty_set.insert(gfn);
         }
 
-        let mem_pages = self.cfg.mem_pages;
-        let mut builder = self.begin_base();
-        for (gfn, inherited) in inherited {
-            if !dirty_set.contains(&gfn) {
-                builder.core.insert_page_ref(gfn, inherited)?;
-                continue;
+        for (&gfn, &pref) in &inherited {
+            if let PageRef::Data(id) = pref
+                && !self.pages.get(id.get() - 1).is_some_and(Option::is_some)
+            {
+                return Err(StoreError::PageIntegrity { gfn });
             }
+        }
+        for &pref in inherited.values() {
+            if let PageRef::Data(id) = pref {
+                let entry = self.pages[id.get() - 1].as_mut().expect("inherited page");
+                entry.refs = entry.refs.saturating_add(1);
+            }
+        }
+        let mem_pages = self.cfg.mem_pages;
+        let mut builder = BaseBuilder {
+            core: BuilderCore {
+                store: self,
+                parent: None,
+                pages: inherited,
+            },
+        };
+        for gfn in dirty_set {
+            let inherited = builder
+                .core
+                .pages
+                .get(&gfn)
+                .copied()
+                .unwrap_or(PageRef::Zero);
             let offset = usize::try_from(gfn)
                 .ok()
                 .and_then(|gfn| gfn.checked_mul(PAGE_SIZE))
@@ -1363,5 +1383,31 @@ mod tests {
             store.page_ref_eq(other, 0, base, 0),
             Err(StoreError::PageIntegrity { gfn: 0 })
         ));
+    }
+
+    #[test]
+    fn flatten_rejects_missing_content_before_acquiring_inherited_refs() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[2; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let PageRef::Data(first) = store.resolve(base.0, 0) else {
+            unreachable!();
+        };
+        let PageRef::Data(second) = store.resolve(base.0, 1) else {
+            unreachable!();
+        };
+        let removed = store.pages[second.get() - 1].take();
+        let before = store.pages[first.get() - 1].as_ref().unwrap().refs;
+        assert!(matches!(
+            store.flatten_base(base, &[0; 2 * PAGE_SIZE], &[], vec![]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert_eq!(store.pages[first.get() - 1].as_ref().unwrap().refs, before);
+        assert_eq!(store.store_stats().snapshots, 1);
+        store.pages[second.get() - 1] = removed;
+        store.release(base).unwrap();
+        assert_eq!(store.gc(), (2 * PAGE_SIZE) as u64);
     }
 }
