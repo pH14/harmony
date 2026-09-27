@@ -162,8 +162,6 @@ retention flags and the candidate's winning preferences directly. It avoids
 allocating preference lists for existing holders. Accepted suffixes transfer
 their allocation into the archive; excess capacity is removed before storage.
 These allocation changes preserve ranking, tie breaks, and logical memory charges.
-Prefix-index compaction remaps child indexes in the existing ordered maps,
-preserving their allocations instead of rebuilding every branch map.
 Archive reports stream borrowed input suffixes and milestones through the
 serializer; they keep the same wire fields and ordering without an intermediate
 vector of owned entries.

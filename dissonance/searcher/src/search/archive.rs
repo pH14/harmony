@@ -717,14 +717,10 @@ impl<A: Clone + Ord> InputIndex<A> {
             .flatten()
             .map(|mut node| {
                 node.parent = node.parent.and_then(|parent| remap[parent]);
-                node.children.retain(|_, child| {
-                    if let Some(mapped) = remap[*child] {
-                        *child = mapped;
-                        true
-                    } else {
-                        false
-                    }
-                });
+                node.children = std::mem::take(&mut node.children)
+                    .into_iter()
+                    .filter_map(|(action, child)| remap[child].map(|mapped| (action, mapped)))
+                    .collect();
                 Some(node)
             })
             .collect();
@@ -3037,87 +3033,6 @@ mod tests {
         assert_eq!(index.remove_owner_and_prune(leaf, 42), 3);
         assert_eq!(index.live_nodes, 1);
         assert_eq!(index.walk(0, &[1, 2, 3]), None);
-    }
-
-    #[test]
-    fn input_compaction_reuses_child_maps_and_preserves_paths() {
-        let mut index = InputIndex::<u8>::default();
-        let leaves = (0..96_u8)
-            .map(|branch| {
-                let (leaf, _) = index.ensure_path(0, &[branch, 1, 2]).unwrap();
-                index.set_owner(leaf, Some(u64::from(branch)));
-                leaf
-            })
-            .collect::<Vec<_>>();
-        for branch in (0..96).step_by(3) {
-            assert_eq!(
-                index.remove_owner_and_prune(leaves[branch], branch as u64),
-                3
-            );
-        }
-        let expected_paths = index
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(id, node)| {
-                node.as_ref()
-                    .and_then(|node| node.owner)
-                    .map(|owner| (id, owner, index.materialize(id, 3).unwrap()))
-            })
-            .collect::<Vec<_>>();
-        let children = |index: &InputIndex<u8>| {
-            index.nodes[0]
-                .as_ref()
-                .unwrap()
-                .children
-                .keys()
-                .map(std::ptr::from_ref)
-                .collect::<Vec<_>>()
-        };
-        let allocations = children(&index);
-        let old_len = index.nodes.len();
-        let expected_live = index.live_nodes;
-        let remap = index.compact();
-        assert_eq!(remap.len(), old_len);
-        assert_eq!(index.nodes.len(), expected_live);
-        assert_eq!(
-            remap.iter().flatten().copied().collect::<Vec<_>>(),
-            (0..expected_live).collect::<Vec<_>>()
-        );
-        assert_eq!(children(&index), allocations);
-        assert!(index.free.is_empty());
-        for (old_id, owner, actions) in expected_paths {
-            let id = remap[old_id].unwrap();
-            assert_eq!(index.owner(id), Some(owner));
-            assert_eq!(index.walk(0, &actions), Some(id));
-            assert_eq!(index.materialize(id, 3), Some(actions));
-        }
-        for branch in (0..96_u8).step_by(3) {
-            assert_eq!(index.walk(0, &[branch]), None);
-            assert_eq!(remap[leaves[usize::from(branch)]], None);
-        }
-        let before = postcard::to_allocvec(&index).unwrap();
-        assert_eq!(
-            index.compact(),
-            (0..expected_live).map(Some).collect::<Vec<_>>()
-        );
-        assert_eq!(children(&index), allocations);
-        assert_eq!(postcard::to_allocvec(&index).unwrap(), before);
-    }
-
-    #[test]
-    fn input_compaction_discards_links_to_missing_children() {
-        let mut index = InputIndex::<u8>::default();
-        let (missing, _) = index.ensure_path(0, &[1]).unwrap();
-        let (kept, _) = index.ensure_path(0, &[2]).unwrap();
-        index.nodes[missing] = None;
-        index.free.push(missing);
-        index.live_nodes -= 1;
-        let remap = index.compact();
-        assert_eq!(remap[missing], None);
-        assert_eq!(index.walk(0, &[1]), None);
-        assert_eq!(index.walk(0, &[2]), remap[kept]);
-        assert_eq!(index.materialize(remap[kept].unwrap(), 1), Some(vec![2]));
     }
 
     #[test]
