@@ -191,3 +191,13 @@ module writes candidate manifests from the actual OCI preparation API. The
 example describes default Linux x86 sessions; the tools probe uses the same
 writer for its separately named Nova A–E scope, described in
 `workloads/tools/README.md`. Neither mode broadens the controlled workload scope.
+
+## Reusing native evaluation
+
+`eval::run_cli` reads the common request, checks the external ROM/core hashes,
+and prepares the output directory. A game-specific evaluator supplies the
+workload and run policy to `eval::evaluate`. That module owns search limits,
+checkpoint/resume configuration, progress and resource phases, witness and
+milestone verification, and result export. `nes-eval` keeps the existing game
+dispatch and option validation. Dedicated workload binaries can reuse the same
+protocol and validation machinery without copying the evaluation loop.
