@@ -378,6 +378,8 @@ def compare(base, candidate):
             continue
         if a['identity']['policies'] != b['identity']['policies']:
             raise ValueError('adapter policy changed: ' + cell)
+        if 'actions' in a['search_request'] or 'actions' in b['search_request']:
+            raise ValueError('action-capped campaign records cannot be compared: ' + cell)
         for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
             if a['search_request'].get(key) != b['search_request'].get(key):
                 raise ValueError('comparison changed ' + key + ': ' + cell)
