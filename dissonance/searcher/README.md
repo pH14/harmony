@@ -266,6 +266,10 @@ holders in each slot, which on every line would take most of the
 coordinator's time, and the draws of tens of thousands of cells on every line
 would add gigabytes of progress log.
 
+Continuation edges copy their action tail only after the existing-cost check
+accepts the edge; equal-cost and more expensive routes leave the bank unchanged
+without allocating an action vector.
+
 The energy mixtures choose among three input strategies: the retained-input
 table, the alphabet, and a splice, which appends to the parent the recorded
 route from another holder of the parent's slot to that holder's deepest
