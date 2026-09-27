@@ -284,18 +284,17 @@ pub mod entries_by_suffix {
     use super::{ArchiveEntryReport, ArchiveKey, EntrySelectorCounters, Input};
 
     #[derive(Deserialize, Serialize)]
-    #[serde(
-        bound = "A: Serialize + DeserializeOwned + Ord + Clone, K: ArchiveKey, M: Serialize + \
-                     DeserializeOwned + Clone"
-    )]
-    struct Wire<A: Ord, K, M> {
+    #[serde(bound(
+        deserialize = "I: DeserializeOwned, T: DeserializeOwned, K: ArchiveKey, M: DeserializeOwned"
+    ))]
+    struct Wire<I, T, K, M> {
         id: u64,
         parent_id: Option<u64>,
         created_execution: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        input: Option<Input<A>>,
+        input: Option<I>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        input_suffix: Option<Vec<A>>,
+        input_suffix: Option<T>,
         key: K,
         milestones: M,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -317,31 +316,28 @@ pub mod entries_by_suffix {
             .enumerate()
             .map(|(index, entry)| (entry.id, index))
             .collect();
-        let wires: Vec<Wire<A, K, M>> = entries
-            .iter()
-            .map(|entry| {
-                let parent = entry
-                    .parent_id
-                    .and_then(|id| index_of.get(&id))
-                    .map(|index| &entries[*index].input.actions)
-                    .filter(|parent| entry.input.actions.starts_with(parent));
-                let (input, input_suffix) = match parent {
-                    Some(parent) => (None, Some(entry.input.actions[parent.len()..].to_vec())),
-                    None => (Some(entry.input.clone()), None),
-                };
-                Wire {
-                    id: entry.id,
-                    parent_id: entry.parent_id,
-                    created_execution: entry.created_execution,
-                    input,
-                    input_suffix,
-                    key: entry.key,
-                    milestones: entry.milestones.clone(),
-                    selector: entry.selector,
-                }
-            })
-            .collect();
-        wires.serialize(serializer)
+        let wires = entries.iter().map(|entry| {
+            let parent = entry
+                .parent_id
+                .and_then(|id| index_of.get(&id))
+                .map(|index| &entries[*index].input.actions)
+                .filter(|parent| entry.input.actions.starts_with(parent));
+            let (input, input_suffix) = match parent {
+                Some(parent) => (None, Some(&entry.input.actions[parent.len()..])),
+                None => (Some(&entry.input), None),
+            };
+            Wire {
+                id: entry.id,
+                parent_id: entry.parent_id,
+                created_execution: entry.created_execution,
+                input,
+                input_suffix,
+                key: entry.key,
+                milestones: &entry.milestones,
+                selector: entry.selector,
+            }
+        });
+        serializer.collect_seq(wires)
     }
 
     pub fn deserialize<'de, D, A, K, M>(
@@ -353,7 +349,7 @@ pub mod entries_by_suffix {
         K: ArchiveKey,
         M: Serialize + DeserializeOwned + Clone,
     {
-        let wires = Vec::<Wire<A, K, M>>::deserialize(deserializer)?;
+        let wires = Vec::<Wire<Input<A>, Vec<A>, K, M>>::deserialize(deserializer)?;
         let mut entries: Vec<ArchiveEntryReport<A, K, M>> = Vec::with_capacity(wires.len());
         let mut index_of = std::collections::BTreeMap::<u64, usize>::new();
         for wire in wires {
@@ -2958,6 +2954,68 @@ mod tests {
                 slot.reverse();
             }
         }
+    }
+
+    #[test]
+    fn suffix_report_serialization_borrows_actions_and_milestones() {
+        use super::{ArchiveEntryReport, entries_by_suffix};
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        static CLONES: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+        struct Counted(u8);
+
+        impl Clone for Counted {
+            fn clone(&self) -> Self {
+                CLONES.fetch_add(1, AtomicOrdering::Relaxed);
+                Self(self.0)
+            }
+        }
+
+        #[derive(Deserialize, Serialize)]
+        struct Reports {
+            #[serde(with = "entries_by_suffix")]
+            entries: Vec<ArchiveEntryReport<Counted, FlatKey, Vec<Counted>>>,
+        }
+
+        let entry = |id, parent_id, actions: &[u8]| ArchiveEntryReport {
+            id,
+            parent_id,
+            created_execution: 7,
+            input: Input {
+                actions: actions.iter().copied().map(Counted).collect(),
+            },
+            key: FlatKey([0; 4]),
+            milestones: vec![Counted(3)],
+            selector: None,
+        };
+        let reports = Reports {
+            entries: vec![
+                entry(10, None, &[1, 2]),
+                entry(11, Some(10), &[1, 2, 4]),
+                entry(12, Some(99), &[5]),
+                entry(13, Some(10), &[1, 9]),
+                entry(14, Some(10), &[1, 2]),
+            ],
+        };
+        let expected = concat!(
+            r#"{"entries":["#,
+            r#"{"id":10,"parent_id":null,"created_execution":7,"input":{"actions":[1,2]},"key":[0,0,0,0],"milestones":[3]},"#,
+            r#"{"id":11,"parent_id":10,"created_execution":7,"input_suffix":[4],"key":[0,0,0,0],"milestones":[3]},"#,
+            r#"{"id":12,"parent_id":99,"created_execution":7,"input":{"actions":[5]},"key":[0,0,0,0],"milestones":[3]},"#,
+            r#"{"id":13,"parent_id":10,"created_execution":7,"input":{"actions":[1,9]},"key":[0,0,0,0],"milestones":[3]},"#,
+            r#"{"id":14,"parent_id":10,"created_execution":7,"input_suffix":[],"key":[0,0,0,0],"milestones":[3]}]}"#,
+        );
+        CLONES.store(0, AtomicOrdering::Relaxed);
+        assert_eq!(serde_json::to_string(&reports).unwrap(), expected);
+        assert_eq!(CLONES.load(AtomicOrdering::Relaxed), 0);
+        let restored: Reports = serde_json::from_str(expected).unwrap();
+        assert_eq!(restored.entries, reports.entries);
+        let empty = Reports {
+            entries: Vec::new(),
+        };
+        assert_eq!(serde_json::to_string(&empty).unwrap(), r#"{"entries":[]}"#);
     }
 
     #[test]
