@@ -76,6 +76,13 @@ free for each retained single-child node. The opt-in
 with rebuilding every map in the same binary. Its timings cover prefix-tree
 compaction, not whole-search throughput.
 
+Compaction also removes stale continuation-landing markers by walking their
+sorted IDs together with the rebuilt entry-ID index. It does not build another
+set of every live ID or perform a tree lookup for each marker. The retained
+markers and logical memory accounting are unchanged.
+`DISSONANCE_BENCHMARK_LANDINGS_CLEANUP=1` enables paired measurements of this
+cleanup against the original temporary-set implementation.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed

@@ -1362,12 +1362,7 @@ where
             }
         }
         self.cells.retain(|_, state| state.active > 0);
-        let live_ids = self
-            .entries
-            .iter()
-            .map(|entry| entry.id)
-            .collect::<BTreeSet<_>>();
-        self.landed.retain(|id| live_ids.contains(id));
+        self.retain_indexed_landings();
 
         if let Some(bank) = &mut self.continuations {
             let live = self
@@ -1411,6 +1406,16 @@ where
         }
         self.enforce_snapshot_memory_budget()?;
         Ok(())
+    }
+
+    fn retain_indexed_landings(&mut self) {
+        let mut live = self.id_to_index.keys().peekable();
+        self.landed.retain(|id| {
+            while live.peek().is_some_and(|live| *live < id) {
+                live.next();
+            }
+            live.peek().is_some_and(|live| *live == id)
+        });
     }
 
     pub(crate) fn preserve_inactive_snapshots(
@@ -2876,6 +2881,15 @@ where
     M: Clone + Copy + Debug + Eq + Serialize + DeserializeOwned,
     S: Clone,
 {
+    fn retain_indexed_landings_reference(&mut self) {
+        let live_ids = self
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<BTreeSet<_>>();
+        self.landed.retain(|id| live_ids.contains(id));
+    }
+
     fn recorded_splice_tail_reference(
         &self,
         parent: usize,
@@ -5663,6 +5677,173 @@ mod tests {
             .map(|(snapshot, selections)| (snapshot.is_some(), selections))
             .collect();
         assert_eq!(census, vec![(true, 0), (true, 4)]);
+    }
+
+    fn indexed_landings_fixture(entries: usize, stride: usize, stale: bool) -> TestArchive {
+        let mut archive = TestArchive::new(|_| 1);
+        for index in 0..entries {
+            let id = u64::try_from(index).unwrap() * 3 + 1;
+            archive.entries.push(super::ArchiveEntry {
+                id,
+                parent_id: None,
+                created_execution: 0,
+                input_suffix: Vec::new(),
+                input_len: 0,
+                input_node: 0,
+                key: TestKey::default(),
+                milestones: (),
+                snapshot: None,
+            });
+            archive.id_to_index.insert(id, index);
+            if stride != 0 && index % stride == 0 {
+                archive.landed.insert(id);
+                if stale {
+                    archive.landed.insert(id + 1);
+                }
+            }
+        }
+        archive
+    }
+
+    #[test]
+    fn indexed_landings_match_rebuilt_live_ids() {
+        for entries in [0, 1, 12, 128, 4096] {
+            for stride in [0, 1, 7, 64] {
+                for stale in [false, true] {
+                    let mut actual = indexed_landings_fixture(entries, stride, stale);
+                    actual.landed.insert(u64::MAX);
+                    let bytes = postcard::to_stdvec(&actual).unwrap();
+                    let mut reference: TestArchive = postcard::from_bytes(&bytes).unwrap();
+                    actual.retain_indexed_landings();
+                    reference.retain_indexed_landings_reference();
+                    assert_eq!(
+                        postcard::to_stdvec(&actual).unwrap(),
+                        postcard::to_stdvec(&reference).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_landings_match_irregular_and_extreme_ids() {
+        let mut rand = RomuDuoJrRand::with_seed(427);
+        for count in 0..128 {
+            let mut actual = indexed_landings_fixture(count, 0, false);
+            actual.id_to_index.clear();
+            for (index, entry) in actual.entries.iter_mut().enumerate() {
+                entry.id = match index % 17 {
+                    0 => 0,
+                    1 => u64::MAX,
+                    _ => rand.next_u64() % 1024,
+                };
+                actual.id_to_index.insert(entry.id, index);
+            }
+            actual.landed.extend([0, u64::MAX]);
+            for _ in 0..count * 4 {
+                actual.landed.insert(rand.next_u64() % 1024);
+            }
+            let bytes = postcard::to_stdvec(&actual).unwrap();
+            let mut reference: TestArchive = postcard::from_bytes(&bytes).unwrap();
+            actual.retain_indexed_landings();
+            reference.retain_indexed_landings_reference();
+            assert_eq!(
+                postcard::to_stdvec(&actual).unwrap(),
+                postcard::to_stdvec(&reference).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_keeps_landings_for_retained_metadata() {
+        let mut archive = archive_with_prunable_history();
+        let pinned = archive.entries[HISTORY_COMPACTION_MIN_DROPS / 2].id;
+        archive.pin_metadata(pinned).unwrap();
+        archive.landed = archive.entries.iter().map(|entry| entry.id).collect();
+        archive.landed.insert(u64::MAX);
+        archive.compact_history(true).unwrap();
+        let expected = archive
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(expected.contains(&pinned));
+        assert!(expected.len() < HISTORY_COMPACTION_MIN_DROPS);
+        assert_eq!(archive.landed, expected);
+        archive.unpin_metadata(pinned);
+        archive.compact_history(true).unwrap();
+        assert!(!archive.landed.contains(&pinned));
+        assert_eq!(
+            archive.landed,
+            archive.entries.iter().map(|entry| entry.id).collect()
+        );
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn paired_landings_cleanup(archive: &mut TestArchive) -> f64 {
+        use std::{hint::black_box, time::Instant};
+        let original = archive.landed.clone();
+        let mut ratios = Vec::new();
+        for round in 0..80 {
+            let mut elapsed = [0_u128; 2];
+            for new in if round % 2 == 0 {
+                [false, true, true, false]
+            } else {
+                [true, false, false, true]
+            } {
+                archive.landed = original.clone();
+                let started = Instant::now();
+                if new {
+                    archive.retain_indexed_landings();
+                } else {
+                    archive.retain_indexed_landings_reference();
+                }
+                black_box(&archive.landed);
+                elapsed[usize::from(new)] += started.elapsed().as_nanos();
+            }
+            ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
+        }
+        ratios.sort_by(f64::total_cmp);
+        ratios[ratios.len() / 2]
+    }
+
+    #[test]
+    fn indexed_landings_paired_benchmark() {
+        if std::env::var_os("DISSONANCE_BENCHMARK_LANDINGS_CLEANUP").is_none() {
+            return;
+        }
+        for entries in [128, 4096, 65_536] {
+            for stride in [0, 1, 64] {
+                for stale in [false, true] {
+                    if stride == 0 && stale {
+                        continue;
+                    }
+                    let mut archive = indexed_landings_fixture(entries, stride, stale);
+                    let landed = archive.landed.len();
+                    let ratio = paired_landings_cleanup(&mut archive);
+                    eprintln!(
+                        "landings cleanup entries={entries} landed={landed} stride={stride} stale={stale}: new/old={ratio:.3}"
+                    );
+                }
+            }
+        }
+        for entries in [32, 128, 512, 4096] {
+            let mut archive = indexed_landings_fixture(entries, 0, false);
+            archive.id_to_index.clear();
+            for (index, entry) in archive.entries.iter_mut().enumerate() {
+                entry.id *= 64;
+                archive.id_to_index.insert(entry.id, index);
+            }
+            archive.landed = (0..u64::try_from(entries).unwrap() * 192).collect();
+            let landed = archive.landed.len();
+            let ratio = paired_landings_cleanup(&mut archive);
+            eprintln!(
+                "landings cleanup heavily pruned entries={entries} landed={landed}: new/old={ratio:.3}"
+            );
+        }
     }
 
     #[test]
