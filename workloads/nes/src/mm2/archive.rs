@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, preference_tuple,
+        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, WILY5_REFIGHTS_COMPLETE,
+        WILY5_STAGE, preference_tuple,
     },
     search::{
         archive::{
@@ -174,11 +175,14 @@ pub struct Mm2ArchiveReport {
 
 #[must_use]
 pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Milestones {
+    let boss_defeated = state.boss_phase >= BOSS_PHASE_DEFEATED;
+    let defeated_boss = state.weapons_obtained & !genesis_weapons != 0
+        || (boss_defeated
+            && (state.stage != WILY5_STAGE || state.refighting_mask == WILY5_REFIGHTS_COMPLETE));
     Mm2Milestones {
         max_screen: state.screen,
-        reached_boss: state.boss_health != 0,
-        defeated_boss: state.weapons_obtained & !genesis_weapons != 0
-            || state.boss_phase >= BOSS_PHASE_DEFEATED,
+        reached_boss: defeated_boss || state.boss_fight_underway() || boss_defeated,
+        defeated_boss,
     }
 }
 
@@ -259,6 +263,37 @@ mod tests {
             weapons_obtained: weapons,
             ..Mm2MechanicalState::default()
         }
+    }
+
+    #[test]
+    fn wily5_milestones_require_all_refights_for_stage_clear() {
+        let mut intermediate = state(100, 28, 0);
+        intermediate.stage = 12;
+        intermediate.boss_phase = BOSS_PHASE_DEFEATED;
+        intermediate.refighting_mask = 0x7f;
+        let value = milestones(intermediate, 0);
+        assert!(value.reached_boss);
+        assert!(!value.defeated_boss);
+
+        intermediate.refighting_mask = WILY5_REFIGHTS_COMPLETE;
+        let complete = milestones(intermediate, 0);
+        assert!(complete.reached_boss);
+        assert!(complete.defeated_boss);
+    }
+
+    #[test]
+    fn stale_boss_health_after_continue_does_not_report_an_encounter() {
+        let mut restarted = state(128, 28, 255);
+        restarted.stage = 11;
+        restarted.screen = 22;
+        restarted.room = 22;
+        restarted.boss_health = 28;
+        assert!(!milestones(restarted, 255).reached_boss);
+        restarted.boss_phase = 2;
+        assert!(milestones(restarted, 255).reached_boss);
+        restarted.boss_phase = BOSS_PHASE_DEFEATED;
+        restarted.boss_health = 0;
+        assert!(milestones(restarted, 255).reached_boss);
     }
 
     #[test]

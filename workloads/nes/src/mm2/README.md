@@ -12,7 +12,7 @@ these runs do not constitute a continuous whole-game solution. The adapter also
 preserves the earlier probe/campaign tools for examining recorded discoveries.
 No gameplay route, weapon choice, obstacle target, or boss weakness is injected.
 
-The decoder documents RAM addresses alongside their definitions in `target.rs`.
+The decoder defines RAM addresses in `target.rs`.
 It observes stage/screen/room, position and posture, health, weapon/menu state,
 weapon energy, boss/enemy damage, active platforms, and terminal events. It
 corrects wrapped coordinates and transition states that caused false deaths in
@@ -22,6 +22,21 @@ weapon menu. The v2 controller identifier corrects the prototype's stale
 `no_start` label. No control is selected based on a named situation. That
 vocabulary is the adapter's alphabet sampler and nothing else about drawing;
 the searcher owns the suffix draw and the retained-input table.
+
+The menu decoder reads bank `0x29 == 0x0d`; byte `0x04` is sprite scratch
+and can equal the old menu marker during ordinary play. Enemy damage requires
+an active object, a hit flag, and stable object identity (or a confirmed kill).
+It persists across action endpoints and film replay; despawns do not earn damage.
+A nonzero stale boss meter after Continue is not an encounter without an active
+boss phase.
+
+Wily 4 exposes the live barrier/trap mask and usable Crash shots (energy divided
+by four). Wily 5 exposes the refight mask and active boss identity, normalizes
+the stage byte borrowed during teleport only with a trusted Wily 5 origin, and
+does not settle intermediate refight awards. The Wily Machine's shell break is
+separate from damage; its second-form meter refill is not damage. These fields
+are decoder observations; the v20 archive policy remains unchanged pending the
+whole-game progress audit.
 
 The v20 key buckets position at 16 pixels. Health and weapon energy are
 same-slot preferences: they choose which endpoint holds a slot and add no
@@ -61,3 +76,31 @@ wall needs still has ammunition. Both stop once a boss is down, because the
 target refuses actions from there.
 
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
+
+## Completion replay fixture
+
+`fixtures/completion-input.json` is the unmodified 6,800-action completion tape
+from commit `ea4d3116c` (#362). It is a replay oracle, not a root for new searches
+or evidence of an autonomous power-on completion. No ROM or emulator is included.
+
+With external `HARMONY_MM2_ROM` and `HARMONY_QUICKNES_CORE` paths, run:
+
+```sh
+cargo run --release --manifest-path workloads/nes/Cargo.toml --bin mm2-replay -- \
+  workloads/nes/src/mm2/fixtures/completion-input.json --verify-completion
+```
+
+The replay queues the whole tape at power-on and runs continuously without
+intermediate restores. Verification requires all 254,990 frames and the recorded
+ending RAM marker (stage 5, boss phase 255, health 6, two lives, all weapons).
+`--trace-output PATH` records decoded state and diagnostic RAM at action
+boundaries; `--film-from INDEX --film-output PATH` captures a trailing film.
+
+`recorded_tests.rs` pins the relevant RAM bytes from this tape at zero-based
+action endpoints 232, 902–903, 3263, 4486, 4522, 5401 and 6437. The tests cover
+sprite scratch versus menu bank, confirmed damage and replay tracking,
+Boobeam targets/ammunition, stale Continue health, borrowed teleport stage,
+and Machine refill. Unrelated bytes are zeroed in each focused decoder test.
+The stream and checkpoint formats advance to v2 because decoded state and
+encounter evidence changed; old search checkpoints must not resume under these
+readings.
