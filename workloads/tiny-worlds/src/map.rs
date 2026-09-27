@@ -495,7 +495,13 @@ impl Config {
 
     fn health_cap(&self, layout: &Layout) -> u8 {
         if self.boss_hits_back {
-            self.boss_stock + 2 + if self.approach_drain { layout.farm_to_goal / 3 } else { 0 }
+            self.boss_stock
+                + 2
+                + if self.approach_drain {
+                    layout.farm_to_goal / 3
+                } else {
+                    0
+                }
         } else if self.gauntlet {
             layout.door_to_goal + 2
         } else {
@@ -756,7 +762,11 @@ impl Config {
         Key {
             stock: s.stock,
             place: Self::place(s),
-            context: if self.tail_slots { u16::from(s.tail) } else { 0 },
+            context: if self.tail_slots {
+                u16::from(s.tail)
+            } else {
+                0
+            },
             charge: 0,
             health: s.health,
             goal: s.goal,
