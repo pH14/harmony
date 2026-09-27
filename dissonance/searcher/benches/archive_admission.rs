@@ -171,5 +171,81 @@ fn pending_suffix_admission(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, admission, reporting, pending_suffix_admission);
+#[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct LineageKey<const N: usize>(u64);
+
+impl<const N: usize> ArchiveKey for LineageKey<N> {
+    type Place = ();
+    type Progress = ();
+    type Identity = ();
+    type Lineage = Vec<[u8; 3]>;
+
+    fn place(self) {}
+    fn progress(self) {}
+    fn identity(self) {}
+    fn capacity() -> usize {
+        1
+    }
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
+        self.0.cmp(&other.0)
+    }
+    fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+        self
+    }
+    fn record(lineage: &mut Self::Lineage, _key: Self) {
+        if lineage.is_empty() {
+            lineage.extend((0..N).map(|index| [0, (index / 256) as u8, index as u8]));
+        }
+    }
+}
+
+fn rejected_lineage<const N: usize>(c: &mut Criterion) {
+    let mut archive = Archive::<u64, LineageKey<N>, (), ()>::new(|_| 1);
+    let parent = archive
+        .insert(
+            None,
+            0,
+            ArchiveCandidate {
+                suffix: vec![1],
+                key: LineageKey(10),
+                milestones: (),
+            },
+            (),
+        )
+        .unwrap()
+        .unwrap();
+    c.bench_function(&format!("rejected_lineage_{N}"), |b| {
+        b.iter(|| {
+            black_box(
+                archive
+                    .insert(
+                        Some(parent),
+                        1,
+                        ArchiveCandidate {
+                            suffix: [2].as_slice(),
+                            key: LineageKey(0),
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap(),
+            )
+        });
+    });
+}
+
+fn lineage_admission(c: &mut Criterion) {
+    rejected_lineage::<0>(c);
+    rejected_lineage::<16>(c);
+    rejected_lineage::<128>(c);
+    rejected_lineage::<4096>(c);
+}
+
+criterion_group!(
+    benches,
+    admission,
+    reporting,
+    pending_suffix_admission,
+    lineage_admission
+);
 criterion_main!(benches);
