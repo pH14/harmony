@@ -315,6 +315,22 @@ would add gigabytes of progress log.
 Continuation edges copy their action tail only after the existing-cost check
 accepts the edge; equal-cost and more expensive routes leave the bank unchanged
 without allocating an action vector.
+Pending-source updates use one tree-entry lookup, reusing the vacant position
+when queuing a source for the first time. Existing-source refreshes keep their
+sequence and update the same fields; a preference change moves the same queue
+entry. This changes neither dispatch order nor serialized state or memory charges.
+
+The pending-entry differential test compares serialized bank state and dispatches
+through mixed recording, queuing, popping, removal, and saturated-counter cases.
+An opt-in paired benchmark compares the original and single-lookup queue updates
+in the same release binary, alternating ABBA/BAAB timing blocks:
+
+```sh
+DISSONANCE_BENCHMARK_PENDING_ENTRY=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib pending_entry -- --nocapture --test-threads=1
+```
+
+Modes 0–3 measure new-source insertion, reprioritization, same-preference refresh,
+and the no-outgoing-edge control respectively.
 
 The energy mixtures choose among three input strategies: the retained-input
 table, the alphabet, and a splice, which appends to the parent the recorded

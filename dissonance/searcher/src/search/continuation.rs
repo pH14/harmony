@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     mem::size_of,
 };
 
@@ -162,8 +162,9 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
         if !self.exits.contains_key(&source) {
             return;
         }
-        match self.pending_source.get_mut(&source) {
-            Some(held) => {
+        match self.pending_source.entry(source) {
+            Entry::Occupied(occupied) => {
+                let held = occupied.into_mut();
                 let previous = (held.preference, held.sequence);
                 held.parent = parent;
                 held.wave = wave;
@@ -175,20 +176,17 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                     self.pending.insert((preference, sequence), source);
                 }
             }
-            None => {
+            Entry::Vacant(vacant) => {
                 let sequence = self.next_sequence;
                 self.next_sequence = self.next_sequence.saturating_add(1);
                 self.pending.insert((preference, sequence), source);
-                self.pending_source.insert(
-                    source,
-                    Pending {
-                        sequence,
-                        preference,
-                        parent,
-                        wave,
-                        cursor: None,
-                    },
-                );
+                vacant.insert(Pending {
+                    sequence,
+                    preference,
+                    parent,
+                    wave,
+                    cursor: None,
+                });
                 self.memory_bytes = self.memory_bytes.saturating_add(Self::pending_bytes());
             }
         }
@@ -338,8 +336,230 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
 }
 
 #[cfg(test)]
+impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
+    fn improved_reference(&mut self, source: P, parent: u64, wave: u32, preference: u8) {
+        self.improved_work = self.improved_work.saturating_add(1);
+        if !self.exits.contains_key(&source) {
+            return;
+        }
+        match self.pending_source.get_mut(&source) {
+            Some(held) => {
+                let previous = (held.preference, held.sequence);
+                held.parent = parent;
+                held.wave = wave;
+                held.cursor = None;
+                if preference != held.preference {
+                    held.preference = preference;
+                    let sequence = held.sequence;
+                    self.pending.remove(&previous);
+                    self.pending.insert((preference, sequence), source);
+                }
+            }
+            None => {
+                let sequence = self.next_sequence;
+                self.next_sequence = self.next_sequence.saturating_add(1);
+                self.pending.insert((preference, sequence), source);
+                self.pending_source.insert(
+                    source,
+                    Pending {
+                        sequence,
+                        preference,
+                        parent,
+                        wave,
+                        cursor: None,
+                    },
+                );
+                self.memory_bytes = self.memory_bytes.saturating_add(Self::pending_bytes());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_entry_updates_preserve_serialized_bank_and_dispatches() {
+        use crate::search::rand::RomuDuoJrRand;
+        let mut rand = RomuDuoJrRand::with_seed(421);
+        let mut actual = ContinuationBank::<u64, u8>::new(8);
+        let mut reference = ContinuationBank::<u64, u8>::new(8);
+        for step in 0..4096 {
+            let from = rand.next_u64() % 32;
+            let to = rand.next_u64() % 32;
+            let len = (rand.next_u64() % 11) as usize;
+            let actions = vec![(step % 256) as u8; len];
+            let cost = rand.next_u64() % 32;
+            let gains = rand.next_u64() as u8;
+            actual.record(from, to, step, step + 1, &actions, cost, gains);
+            reference.record(from, to, step, step + 1, &actions, cost, gains);
+            let preference = (rand.next_u64() % 8) as u8;
+            actual.improved(from, step + 2, step as u32, preference);
+            reference.improved_reference(from, step + 2, step as u32, preference);
+            if step % 3 == 0 {
+                let highest = step % 2 == 0;
+                assert_eq!(actual.pop(highest), reference.pop(highest));
+            }
+            if step % 17 == 0 {
+                actual.remove_source(to);
+                reference.remove_source(to);
+            }
+            if step % 19 == 0 {
+                actual.remove_place(from);
+                reference.remove_place(from);
+            }
+            if step % 31 == 0 {
+                actual.retain_preferences(4);
+                reference.retain_preferences(4);
+            }
+            if step == 4000 {
+                actual.next_sequence = u64::MAX;
+                reference.next_sequence = u64::MAX;
+                actual.improved_work = u64::MAX;
+                reference.improved_work = u64::MAX;
+            }
+            assert_eq!(
+                postcard::to_stdvec(&actual).unwrap(),
+                postcard::to_stdvec(&reference).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn pending_entry_insertion_avoids_the_second_tree_search() {
+        use std::{
+            cmp::Ordering,
+            sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        };
+        static COMPARISONS: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+        struct Key(u64);
+        impl Ord for Key {
+            fn cmp(&self, other: &Self) -> Ordering {
+                COMPARISONS.fetch_add(1, AtomicOrdering::Relaxed);
+                self.0.cmp(&other.0)
+            }
+        }
+        impl PartialOrd for Key {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        let fixture = || {
+            let mut bank = ContinuationBank::new(1);
+            for source in 1..=128 {
+                bank.record(Key(source), Key(0), source, source + 1, &[7_u8], 1, 0);
+                if source <= 64 {
+                    bank.improved_reference(Key(source), source, 0, 1);
+                }
+            }
+            bank
+        };
+        let mut reference = fixture();
+        let mut actual = fixture();
+        COMPARISONS.store(0, AtomicOrdering::Relaxed);
+        reference.improved_reference(Key(65), 100, 1, 2);
+        let baseline = COMPARISONS.load(AtomicOrdering::Relaxed);
+        COMPARISONS.store(0, AtomicOrdering::Relaxed);
+        actual.improved(Key(65), 100, 1, 2);
+        let candidate = COMPARISONS.load(AtomicOrdering::Relaxed);
+        assert!(
+            candidate < baseline,
+            "candidate={candidate}, baseline={baseline}"
+        );
+        assert_eq!(
+            postcard::to_stdvec(&actual).unwrap(),
+            postcard::to_stdvec(&reference).unwrap()
+        );
+    }
+
+    fn pending_entry_fixture(count: u64) -> ContinuationBank<u64, u8> {
+        let mut bank = ContinuationBank::new(6);
+        for source in 1..=count + 128 {
+            bank.record(source, 0, source, source + 1, &[7; 6], 1, 3);
+            if source <= count {
+                bank.improved_reference(source, source + 2, 0, 1);
+            }
+        }
+        bank
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn pending_entry_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        if std::env::var_os("DISSONANCE_BENCHMARK_PENDING_ENTRY").is_none() {
+            return;
+        }
+        for count in [0_u64, 1, 16, 256, 4096] {
+            for shuffled in [false, true] {
+                for mode in 0..4 {
+                    if count == 0 && mode != 0 {
+                        continue;
+                    }
+                    let mut banks = [pending_entry_fixture(count), pending_entry_fixture(count)];
+                    let batch = count.clamp(1, 128);
+                    let mut ratios = Vec::new();
+                    for round in 0..100 {
+                        let mut elapsed = [0_u128; 2];
+                        for new in if round % 2 == 0 {
+                            [false, true, true, false]
+                        } else {
+                            [true, false, false, true]
+                        } {
+                            let bank = &mut banks[usize::from(new)];
+                            if mode == 1 {
+                                for id in 1..=batch {
+                                    bank.improved_reference(id, 0, 0, 1);
+                                }
+                            }
+                            let start = Instant::now();
+                            for repetition in 0..if mode == 0 { 1 } else { 32 } {
+                                for index in 0..batch {
+                                    let id = black_box(
+                                        1 + if shuffled { index * 73 % batch } else { index },
+                                    );
+                                    let source = match mode {
+                                        0 => count + id,
+                                        3 => count + 128 + id,
+                                        _ => id,
+                                    };
+                                    let preference = if mode == 1 { 2 + repetition % 2 } else { 1 };
+                                    if new {
+                                        bank.improved(source, id + 3, 1, preference);
+                                    } else {
+                                        bank.improved_reference(source, id + 3, 1, preference);
+                                    }
+                                }
+                            }
+                            elapsed[usize::from(new)] += start.elapsed().as_nanos();
+                            if mode == 0 {
+                                for id in 1..=batch {
+                                    bank.drop_pending(count + id);
+                                }
+                            }
+                        }
+                        assert_eq!(
+                            postcard::to_stdvec(&banks[0]).unwrap(),
+                            postcard::to_stdvec(&banks[1]).unwrap()
+                        );
+                        ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
+                    }
+                    ratios.sort_by(f64::total_cmp);
+                    eprintln!(
+                        "pending_entry count={count} shuffled={shuffled} mode={mode} ratio={:.4} p10={:.4} p90={:.4}",
+                        ratios[ratios.len() / 2],
+                        ratios[ratios.len() / 10],
+                        ratios[ratios.len() * 9 / 10]
+                    );
+                }
+            }
+        }
+    }
 
     fn bank() -> ContinuationBank<u8, u8> {
         ContinuationBank::new(4)
