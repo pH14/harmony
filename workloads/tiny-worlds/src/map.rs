@@ -15,6 +15,7 @@ const GAUNTLET_HITS: u64 = 63;
 const OUTER_ODDS: u64 = 4;
 const OUTER_HIT: u8 = 1;
 const FARM_ODDS: u64 = 8;
+const DRAIN_ODDS: u64 = 2;
 const TAIL_ACTIONS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -45,6 +46,12 @@ pub struct Config {
     pub timing: u8,
     #[serde(default)]
     pub gauntlet: bool,
+    #[serde(default)]
+    pub approach_drain: bool,
+    #[serde(default)]
+    pub boss_by_door: bool,
+    #[serde(default)]
+    pub tail_slots: bool,
 }
 
 fn one() -> u8 {
@@ -82,6 +89,7 @@ pub struct Layout {
     pub loops: u8,
     pub entry: u8,
     pub farms: Vec<u8>,
+    pub farm_to_goal: u8,
     pub items: Vec<u8>,
     pub key: Option<u8>,
 }
@@ -143,8 +151,17 @@ impl Config {
         if self.gauntlet && (self.items < 2 || self.farms == 0) {
             return Err("a map gauntlet needs several items and farms".into());
         }
-        if self.boss_hits_back && !(1..=6).contains(&self.boss_stock) {
-            return Err("a map boss that hits back needs a boss stock of 1..=6".into());
+        if self.boss_hits_back && !(1..=8).contains(&self.boss_stock) {
+            return Err("a map boss that hits back needs a boss stock of 1..=8".into());
+        }
+        if self.approach_drain && !self.boss_hits_back {
+            return Err("a draining approach needs a boss that hits back".into());
+        }
+        if self.boss_by_door && self.boss_stock == 0 {
+            return Err("a boss by the door needs a boss stock".into());
+        }
+        if self.tail_slots && !self.gauntlet && !self.approach_drain {
+            return Err("tail slots need a gauntlet or a draining approach".into());
         }
         if self.boss_stock > 0
             && (self.items > 1 || self.farms < 2 || self.boss_stock > self.farm_cap)
@@ -324,6 +341,11 @@ impl Config {
                     .filter(|&c| !inner[usize::from(c)] && Some(c) != key)
                     .max_by_key(|&c| (from_door[usize::from(c)], std::cmp::Reverse(c)))
                     .expect("an outer room besides the key")
+            } else if self.boss_by_door {
+                (0..self.cells())
+                    .filter(|&c| !inner[usize::from(c)] && doors[usize::from(c)] != 0b1111)
+                    .min_by_key(|&c| (from_door[usize::from(c)], c))
+                    .expect("an outer room with a wall")
             } else {
                 farthest(&from_door, false)
             };
@@ -382,6 +404,12 @@ impl Config {
         while farms.len() < usize::from(self.farms) && !rooms.is_empty() {
             farms.push(rooms.swap_remove(pick(&mut rand, rooms.len())));
         }
+        let from_goal = self.distances(&doors, goal);
+        let farm_to_goal = farms
+            .iter()
+            .map(|&farm| from_goal[usize::from(farm)])
+            .max()
+            .unwrap_or(0);
         Layout {
             start_to_door: from_door[0],
             door_to_item: item.map(|item| from_entry[usize::from(item)] + 1),
@@ -399,6 +427,7 @@ impl Config {
             loops: added,
             entry,
             farms,
+            farm_to_goal,
             items,
             key,
         }
@@ -466,7 +495,7 @@ impl Config {
 
     fn health_cap(&self, layout: &Layout) -> u8 {
         if self.boss_hits_back {
-            self.boss_stock + 2
+            self.boss_stock + 2 + if self.approach_drain { layout.farm_to_goal / 3 } else { 0 }
         } else if self.gauntlet {
             layout.door_to_goal + 2
         } else {
@@ -502,7 +531,7 @@ impl Config {
             && s.hits + s.stock <= self.cap()
             && (!self.boss_hits_back || s.hits + s.health <= self.health_cap(layout))
             && s.tail < 1 << (2 * TAIL_ACTIONS)
-            && (self.gauntlet || (s.tail == 0 && !s.dead))
+            && (self.gauntlet || self.approach_drain || (s.tail == 0 && !s.dead))
             && (!s.dead || s.health == 0)
             && (self.boss_stock == 0 || s.item || s.stock == 0)
             && (s.item || Some(s.cell) != layout.item)
@@ -567,6 +596,27 @@ impl Config {
 
     fn enter(&self, layout: &Layout, s: State, cell: u8, hits: bool) -> State {
         if hits
+            && self.approach_drain
+            && s.item
+            && cell != layout.goal
+            && !layout.farms.contains(&cell)
+        {
+            let wound = self.roll(cell, s.tail ^ 0x40).is_multiple_of(DRAIN_ODDS);
+            let spend = self.roll(cell, s.tail ^ 0x20).is_multiple_of(DRAIN_ODDS);
+            if wound && s.health == 0 {
+                return State { dead: true, ..s };
+            }
+            return self.arrive(
+                layout,
+                State {
+                    health: s.health - u8::from(wound),
+                    stock: s.stock.saturating_sub(u8::from(spend)),
+                    ..s
+                },
+                cell,
+            );
+        }
+        if hits
             && self.gauntlet
             && !layout.inner[usize::from(cell)]
             && self.roll(cell, s.tail).is_multiple_of(OUTER_ODDS)
@@ -610,7 +660,7 @@ impl Config {
             return s;
         }
         let action = (action + s.phase) % 4;
-        let tail = if self.gauntlet {
+        let tail = if self.gauntlet || self.approach_drain {
             ((s.tail << 2) | action) & ((1 << (2 * TAIL_ACTIONS)) - 1)
         } else {
             0
@@ -706,7 +756,7 @@ impl Config {
         Key {
             stock: s.stock,
             place: Self::place(s),
-            context: 0,
+            context: if self.tail_slots { u16::from(s.tail) } else { 0 },
             charge: 0,
             health: s.health,
             goal: s.goal,
@@ -755,6 +805,9 @@ mod tests {
             boss_hits_back: false,
             timing: 0,
             gauntlet: false,
+            approach_drain: false,
+            boss_by_door: false,
+            tail_slots: false,
         }
     }
 
