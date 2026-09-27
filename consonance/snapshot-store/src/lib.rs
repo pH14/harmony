@@ -99,8 +99,46 @@ struct Layer {
     vm_state_hash: [u8; 32],
     refcount: u64,
     chain_len: u32,
-    #[allow(clippy::disallowed_types)]
-    resolve_cache: RefCell<HashMap<u64, PageRef>>,
+}
+
+const RESOLVE_CACHE_SLOTS: usize = 4096;
+
+#[derive(Clone, Copy)]
+struct ResolvedPage {
+    snapshot: u64,
+    gfn: u64,
+    page: PageRef,
+}
+
+#[derive(Default)]
+struct ResolveCache {
+    slots: Vec<Option<ResolvedPage>>,
+}
+
+impl ResolveCache {
+    fn index(snapshot: u64, gfn: u64) -> usize {
+        let folded = gfn ^ (gfn >> 12) ^ (gfn >> 24) ^ (gfn >> 36) ^ (gfn >> 48) ^ (gfn >> 60);
+        (folded ^ snapshot.wrapping_mul(0x9e37_79b9_7f4a_7c15)) as usize & (RESOLVE_CACHE_SLOTS - 1)
+    }
+
+    fn get(&self, snapshot: u64, gfn: u64) -> Option<PageRef> {
+        self.slots
+            .get(Self::index(snapshot, gfn))
+            .and_then(Option::as_ref)
+            .filter(|entry| entry.snapshot == snapshot && entry.gfn == gfn)
+            .map(|entry| entry.page)
+    }
+
+    fn insert(&mut self, snapshot: u64, gfn: u64, page: PageRef) {
+        if self.slots.is_empty() {
+            self.slots.resize(RESOLVE_CACHE_SLOTS, None);
+        }
+        self.slots[Self::index(snapshot, gfn)] = Some(ResolvedPage {
+            snapshot,
+            gfn,
+            page,
+        });
+    }
 }
 
 pub struct Store {
@@ -111,6 +149,7 @@ pub struct Store {
     page_index: HashMap<PageHash, NonZeroUsize, BuildPageHashHasher>,
     pages: Vec<Option<PageEntry>>,
     free_pages: Vec<NonZeroUsize>,
+    resolve_cache: RefCell<ResolveCache>,
     zero_hash: PageHash,
 }
 
@@ -124,6 +163,7 @@ impl Store {
             page_index: HashMap::default(),
             pages: Vec::new(),
             free_pages: Vec::new(),
+            resolve_cache: RefCell::default(),
             zero_hash: *blake3::hash(&[0u8; PAGE_SIZE]).as_bytes(),
         }
     }
@@ -539,30 +579,27 @@ impl Store {
     }
 
     fn resolve(&self, start: u64, gfn: u64) -> PageRef {
-        let mut visited: Vec<u64> = Vec::new();
-        let mut cur = Some(start);
-        let mut result = PageRef::Zero;
-        while let Some(id) = cur {
-            let Some(layer) = self.layers.get(&id) else {
+        let cache = self.resolve_cache.borrow();
+        let mut current = start;
+        let result = loop {
+            let Some(layer) = self.layers.get(&current) else {
                 debug_assert!(false, "dangling parent link");
-                break;
+                break PageRef::Zero;
             };
             if let Ok(index) = layer.pages.binary_search_by_key(&gfn, |&(gfn, _)| gfn) {
-                let p = layer.pages[index].1;
-                result = p;
-                break;
+                break layer.pages[index].1;
             }
-            if let Some(&p) = layer.resolve_cache.borrow().get(&gfn) {
-                result = p;
-                break;
+            if let Some(page) = cache.get(current, gfn) {
+                break page;
             }
-            visited.push(id);
-            cur = layer.parent;
-        }
-        for id in visited {
-            if let Some(layer) = self.layers.get(&id) {
-                layer.resolve_cache.borrow_mut().insert(gfn, result);
-            }
+            let Some(parent) = layer.parent else {
+                break PageRef::Zero;
+            };
+            current = parent;
+        };
+        drop(cache);
+        if current != start {
+            self.resolve_cache.borrow_mut().insert(start, gfn, result);
         }
         result
     }
@@ -726,8 +763,6 @@ impl BuilderCore<'_> {
                 vm_state_hash,
                 refcount: 1,
                 chain_len,
-                #[allow(clippy::disallowed_types)]
-                resolve_cache: RefCell::new(HashMap::new()),
             },
         );
         SnapshotId(id)
@@ -1015,21 +1050,87 @@ mod tests {
     }
 
     #[test]
-    fn resolve_memoizes_along_the_path() {
+    fn inherited_reads_cache_only_the_requested_snapshot() {
         let mut store = Store::new(cfg(4));
-        let base = store.begin_base().seal(vec![]);
-        let mut b = store.derive(base).unwrap();
-        b.write_page(0, &[9u8; PAGE_SIZE]).unwrap();
-        let mid = b.seal(vec![]);
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[9u8; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let mid = store.derive(base).unwrap().seal(vec![]);
         let leaf = store.derive(mid).unwrap().seal(vec![]);
         let mut out = [0u8; PAGE_SIZE];
         store.read_page(leaf, 0, &mut out).unwrap();
-        assert_eq!(
-            store.layers[&leaf.0].resolve_cache.borrow().get(&0),
-            Some(&store.resolve(mid.0, 0))
-        );
+        assert_eq!(out, [9u8; PAGE_SIZE]);
+        assert!(store.resolve_cache.borrow().get(leaf.0, 0).is_some());
+        assert!(store.resolve_cache.borrow().get(mid.0, 0).is_none());
         store.read_page(leaf, 0, &mut out).unwrap();
         assert_eq!(out, [9u8; PAGE_SIZE]);
+    }
+
+    #[test]
+    fn inherited_scans_have_a_bounded_cache_and_preserve_zero_overrides() {
+        let pages = if cfg!(miri) {
+            16
+        } else {
+            (RESOLVE_CACHE_SLOTS * 2) as u64
+        };
+        let mut store = Store::new(cfg(pages));
+        let mut builder = store.begin_base();
+        builder.write_page(7, &[9; PAGE_SIZE]).unwrap();
+        builder.write_page(pages - 1, &[8; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let mut builder = store.derive(base).unwrap();
+        builder.write_page(7, &[0; PAGE_SIZE]).unwrap();
+        let mut leaf = builder.seal(vec![]);
+        for _ in 0..8 {
+            leaf = store.derive(leaf).unwrap().seal(vec![]);
+        }
+        let mut out = [0; PAGE_SIZE];
+        for _ in 0..2 {
+            for gfn in 0..pages {
+                store.read_page(leaf, gfn, &mut out).unwrap();
+                assert_eq!(out, [if gfn == pages - 1 { 8 } else { 0 }; PAGE_SIZE]);
+            }
+            assert!(store.resolve_cache.borrow().slots.len() <= RESOLVE_CACHE_SLOTS);
+        }
+        store.read_page(base, 7, &mut out).unwrap();
+        assert_eq!(out, [9; PAGE_SIZE]);
+    }
+
+    #[test]
+    fn cache_collisions_between_snapshots_never_substitute_page_contents() {
+        let mut store = Store::new(cfg(RESOLVE_CACHE_SLOTS as u64));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[7; PAGE_SIZE]).unwrap();
+        let left_base = builder.seal(vec![]);
+        let left = store.derive(left_base).unwrap().seal(vec![]);
+        let right_id = store.next_id + 1;
+        let colliding_gfn = (0..RESOLVE_CACHE_SLOTS as u64)
+            .find(|&gfn| ResolveCache::index(left.0, 0) == ResolveCache::index(right_id, gfn))
+            .unwrap();
+        let mut builder = store.begin_base();
+        builder.write_page(colliding_gfn, &[8; PAGE_SIZE]).unwrap();
+        let right_base = builder.seal(vec![]);
+        let right = store.derive(right_base).unwrap().seal(vec![]);
+        let mut out = [0; PAGE_SIZE];
+        for _ in 0..3 {
+            store.read_page(left, 0, &mut out).unwrap();
+            assert_eq!(out, [7; PAGE_SIZE]);
+            store.read_page(right, colliding_gfn, &mut out).unwrap();
+            assert_eq!(out, [8; PAGE_SIZE]);
+        }
+        store.release(left).unwrap();
+        store.release(left_base).unwrap();
+        store.gc();
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[9; PAGE_SIZE]).unwrap();
+        let replacement = builder.seal(vec![]);
+        assert!(
+            !store
+                .page_ref_eq(right, colliding_gfn, replacement, 0)
+                .unwrap()
+        );
+        store.read_page(right, colliding_gfn, &mut out).unwrap();
+        assert_eq!(out, [8; PAGE_SIZE]);
     }
 
     #[test]
