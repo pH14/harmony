@@ -33,6 +33,13 @@ technical scope and is built as a passion project that fits within the quiet gap
 > [!WARNING]
 > Everything you read after this point, including any linked docs, has been written by an LLM. Apologies in advance.
 
+## User documentation
+
+The [Harmony documentation site](https://ph14.github.io/harmony/) covers installation,
+OCI workloads, platform compatibility, SDK integration, fault search, and replay.
+Start with [installation](docs/user/how-to/install.md) or the
+[first-run tutorial](docs/user/tutorials/first-run.md).
+
 ## Try the CLI
 
 ```sh

@@ -1,0 +1,87 @@
+site_name: Harmony
+site_description: Run Linux workloads reproducibly. Find failures. Replay what happened.
+site_url: https://ph14.github.io/harmony/
+repo_url: https://github.com/pH14/harmony
+repo_name: pH14/harmony
+edit_uri: ''
+docs_dir: docs/user
+site_dir: site
+strict: true
+theme:
+  name: material
+  language: en
+  font: false
+  logo: assets/harmony.svg
+  favicon: assets/harmony.svg
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+plugins:
+  - search
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.details
+extra_css:
+  - assets/styles.css
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    not_found: warn
+    unrecognized_links: warn
+    anchors: warn
+nav:
+  - Home: index.md
+  - Tutorials:
+      - tutorials/index.md
+      - Your first reproducible run: tutorials/first-run.md
+      - Your first fault search: tutorials/first-search.md
+  - How-to guides:
+      - how-to/index.md
+      - Install Harmony: how-to/install.md
+      - Run your OCI image: how-to/oci.md
+      - Prepare a fault workload: how-to/fault-workload.md
+      - Replay a failure: how-to/replay.md
+      - Add SDK assertions: how-to/sdk.md
+      - Search an NES workload: how-to/nes.md
+      - Troubleshoot a run: how-to/troubleshooting.md
+  - Reference:
+      - reference/index.md
+      - System compatibility: reference/compatibility.md
+      - Command line: reference/cli.md
+      - OCI image contract: reference/oci.md
+      - Workload bundles: reference/bundles.md
+      - Guest SDK: reference/sdk.md
+      - Run artifacts: reference/artifacts.md
+  - Explanation:
+      - explanation/index.md
+      - Determinism and replay: explanation/determinism.md
+      - Searching for failures: explanation/search.md
+      - Writing useful assertions: explanation/assertions.md

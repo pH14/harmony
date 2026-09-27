@@ -36,6 +36,21 @@ jobs:
 """
 
 
+class PublicDocumentationTests(unittest.TestCase):
+    def test_site_sources_and_only_named_assets_are_allowed(self):
+        self.assertFalse(LINTS.check_docs_allowlist([
+            "docs/SITE.md", "docs/requirements.txt", "docs/user/index.md",
+            "docs/user/how-to/install.md", "docs/user/assets/styles.css",
+            "docs/user/assets/harmony.svg",
+        ]))
+        violations = LINTS.check_docs_allowlist([
+            "docs/private-notes.md", "docs/user/stray.js", "docs/user/site/index.html",
+        ])
+        self.assertEqual([v.rule for v in violations], [
+            "docs-allowlist", "docs-markdown-only", "docs-markdown-only",
+        ])
+
+
 class RepositoryVocabularyTests(unittest.TestCase):
     def test_words_and_identifier_components_are_rejected(self):
         word = LINTS.PROHIBITED_WORD

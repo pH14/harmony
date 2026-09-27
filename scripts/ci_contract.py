@@ -577,8 +577,21 @@ RELEASE = Workflow(
     ),
 )
 
+DOCUMENTATION = Workflow(
+    path=f"{WORKFLOW_DIR}/docs.yml",
+    name="Release / Harmony / Documentation",
+    owner="Harmony",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(
+        Job("Documentation", "pr", 10),
+        Job("Publish", "full", 10,
+            exception="Only trusted main runs may publish; pull requests build read-only artifacts."),
+    ),
+)
+
 WORKFLOWS = (
     REPOSITORY_CHECKS,
+    DOCUMENTATION,
     HARMONY_HOST_COMPATIBILITY,
     CONSONANCE_CHECKS,
     CONSONANCE_ANALYSIS,

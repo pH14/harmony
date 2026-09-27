@@ -47,6 +47,7 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
+| `Release / Harmony / Documentation` | `docs.yml` | pull_request, push (main), workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
@@ -309,3 +310,12 @@ arbitrary script, prove a change selector correct, or see GitHub's retained
 registry of branch-only workflows. Inspect `gh workflow list --all` before
 disabling an obsolete registry entry; disabling one preserves its old runs and
 is separate from repository lint.
+
+## User documentation
+
+`Release / Harmony / Documentation` renders the end-user site with a strict
+MkDocs build. Pull requests produce an HTML review artifact. Only runs on main
+can reach the separate Pages deployment job, which owns the write and identity
+permissions. Its full-trigger exception expresses this trust boundary, not an
+extended runtime budget; both jobs are bounded to ten minutes. See
+[SITE.md](SITE.md) for preview and hosting configuration.
