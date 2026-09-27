@@ -134,7 +134,9 @@ location keeps the best state under each, so at most two, and one state holds
 both places when it leads on both. The two disagree only on a resource trade:
 ten missiles at twenty health takes the first, five missiles at two hundred
 health takes the second, and a route that needs the survivable state keeps it
-beside the stocked one.
+beside the stocked one. The order is recorded as `preference_policy`, apart
+from `key_policy`, so a search checkpoint resumes under a revised order and
+re-ranks each location's holders from their stored keys.
 
 The primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.

@@ -156,6 +156,25 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
         self.versions.len()
     }
 
+    pub fn to_resume_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        if !self.versions.is_empty() {
+            return Err("draw tables hold recorded versions, which only stream replay uses".into());
+        }
+        Ok(postcard::to_allocvec(&self.tables)?)
+    }
+
+    pub fn from_resume_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>>
+    where
+        A: serde::de::DeserializeOwned,
+    {
+        let mut tables: EmpiricalStepTables<A> = postcard::from_bytes(bytes)?;
+        tables.continue_history_hash();
+        Ok(Self {
+            tables,
+            versions: BTreeMap::new(),
+        })
+    }
+
     pub fn fold_source(&mut self, suffix: &[A]) -> Result<(), Box<dyn Error>> {
         self.tables.fold_retained(suffix)?;
         Ok(())
