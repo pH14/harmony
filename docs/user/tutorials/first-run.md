@@ -19,10 +19,12 @@ Saving the image once gives both runs the same bytes, even if the registry tag c
 !!! note "A host classified as untested"
     If preflight's only remaining blocker is an `expected`/untested support-matrix cell, add `--allow-untested` to **both** `oci run` commands below. This opts into that host; it does not fix missing runtime files or unsupported workloads.
 
+Use seed `0` for this cross-platform example. macOS OCI execution currently rejects nonzero seeds.
+
 ## Run the container
 
 ```sh
-harmony oci run ./busybox.tar --seed 7 --timeout 60 \
+harmony oci run ./busybox.tar --seed 0 --timeout 60 \
   --out first -- /bin/echo hello
 ```
 
@@ -46,7 +48,7 @@ The application exit should be `0`. Your digest is a record of this particular r
 ## Repeat the same input
 
 ```sh
-harmony oci run ./busybox.tar --seed 7 --timeout 60 \
+harmony oci run ./busybox.tar --seed 0 --timeout 60 \
   --out second -- /bin/echo hello
 cmp first/serial.log second/serial.log
 ```

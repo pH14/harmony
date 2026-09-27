@@ -27,9 +27,11 @@ Build or export a Linux image for your host's architecture. Images remain subjec
 Without `--`, Harmony combines the image's `ENTRYPOINT` and `CMD`. Arguments after `--` replace that whole command; they are not appended to the image entrypoint.
 
 ```sh
-harmony oci run ./app.tar --seed 42 --ram-mib 1024 \
-  --timeout 300 --out experiment-42 -- /app/my-service --self-test
+harmony oci run ./app.tar --seed 0 --ram-mib 1024 \
+  --timeout 300 --out experiment-0 -- /app/my-service --self-test
 ```
+
+macOS OCI runs currently require `--seed 0` (the default). Linux OCI runs also accept other seed values. This limit does not apply to the fault-search campaign seed.
 
 Use the image's own scripts for pipelines or shell expansion:
 

@@ -16,7 +16,7 @@ On Ubuntu 24.04, install the host tools:
 sudo apt-get update
 sudo apt-get install -y build-essential git pkg-config libssl-dev \
   flex bison libelf-dev bc cpio kmod bzip2 wget python3 \
-  xz-utils patch curl ca-certificates
+  xz-utils patch curl ca-certificates rsync
 ```
 
 On macOS with Apple silicon, install the Xcode command-line tools first:

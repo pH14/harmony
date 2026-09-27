@@ -589,6 +589,13 @@ DOCUMENTATION = Workflow(
     ),
 )
 
+# Publication may coalesce queued deployments, but never cancel a running one.
+# Check jobs keep their per-push groups. The publisher checks out current main
+# inside this shared slot, so even a late older run publishes current content.
+SERIAL_PUBLICATION_JOBS = {
+    (DOCUMENTATION.path, "publish"): "harmony-pages",
+}
+
 WORKFLOWS = (
     REPOSITORY_CHECKS,
     DOCUMENTATION,

@@ -33,7 +33,12 @@ validated 1.x version when updating dependencies.
 pushes to main. Pull requests upload a downloadable HTML artifact without
 publishing it. Only a main-branch push or manual dispatch on main can upload a
 Pages artifact and deploy, through the `github-pages` environment. Deployment
-permissions are scoped to that job. The workflow is registered in
+permissions are scoped to that job. Publication uses one shared concurrency slot
+and checks out and strictly builds current main inside it. Even if an older
+workflow reaches publication late, it publishes current content. This also
+avoids losing the latest content when GitHub replaces a pending job. Review
+artifacts remain tied to their original revision, and checks still run
+independently for every push. The workflow is registered in
 `scripts/ci_contract.py`.
 
 The repository's Settings → Pages source must be **GitHub Actions** (`build_type:
