@@ -514,17 +514,33 @@ impl InputPolicy for FaultWorkload {
     }
 }
 
-const PARK_FEEDBACK_SCALE: u64 = 1024;
+const PARK_FEEDBACK_SCALE: u128 = 1024;
+
+const PARK_FEEDBACK_PRIOR_LANDINGS: u128 = 10;
 
 fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
+    let all_reads: u128 = evidence.park_reads.values().copied().map(u128::from).sum();
+    let all_landings: u128 = evidence
+        .park_sites
+        .values()
+        .copied()
+        .map(u128::from)
+        .sum::<u128>()
+        .max(1);
     evidence
         .park_reads
         .iter()
         .filter(|(_, reads)| **reads > 0)
         .map(|(site, reads)| {
-            let landings = evidence.park_sites.get(site).copied().unwrap_or(0);
-            let weight = PARK_FEEDBACK_SCALE.saturating_mul(reads.saturating_add(1))
-                / landings.saturating_add(2);
+            let landings = u128::from(evidence.park_sites.get(site).copied().unwrap_or(0));
+            let numerator = u128::from(*reads)
+                .saturating_mul(all_landings)
+                .saturating_add(PARK_FEEDBACK_PRIOR_LANDINGS.saturating_mul(all_reads))
+                .saturating_mul(PARK_FEEDBACK_SCALE);
+            let denominator = landings
+                .saturating_add(PARK_FEEDBACK_PRIOR_LANDINGS)
+                .saturating_mul(all_landings);
+            let weight = u64::try_from(numerator / denominator).unwrap_or(u64::MAX);
             (*site, weight.max(1))
         })
         .collect()
@@ -899,16 +915,21 @@ mod tests {
     }
 
     #[test]
-    fn park_feedback_is_the_smoothed_read_rate_of_each_read_site() {
+    fn park_feedback_shrinks_each_site_read_rate_toward_the_campaign_read_rate() {
         let evidence = FaultCampaignEvidence {
-            park_sites: BTreeMap::from([(4, 2), (8, 98), (12, 5)]),
-            park_reads: BTreeMap::from([(4, 2), (8, 1), (16, 1)]),
+            park_sites: BTreeMap::from([(4, 1), (8, 19), (12, 80)]),
+            park_reads: BTreeMap::from([(4, 1), (8, 6), (16, 0)]),
             ..FaultCampaignEvidence::default()
         };
         assert_eq!(
             park_feedback(&evidence),
-            BTreeMap::from([(4, 768), (8, 20), (16, 1024)])
+            BTreeMap::from([(4, 158), (8, 236)])
         );
+        let unlanded = FaultCampaignEvidence {
+            park_reads: BTreeMap::from([(4, 1)]),
+            ..FaultCampaignEvidence::default()
+        };
+        assert_eq!(park_feedback(&unlanded), BTreeMap::from([(4, 1126)]));
         assert!(park_feedback(&FaultCampaignEvidence::default()).is_empty());
     }
 
