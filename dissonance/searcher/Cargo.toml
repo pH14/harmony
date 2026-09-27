@@ -25,3 +25,7 @@ harness = false
 [[bench]]
 name = "duration"
 harness = false
+
+[[bench]]
+name = "parent_selection"
+harness = false
