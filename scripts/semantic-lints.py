@@ -37,6 +37,9 @@ API_URL = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-1.13.0"
 RETRY_DELAYS = (1, 2, 4, 8, 16)
 STATE_CONTENT_LIMIT = 100_000
+MIN_CONTENT_WINDOW = 1_024
+CONTENT_OVERLAP = 1_024
+JUDGMENT_FORMAT_VERSION = 2
 REQUEST_TIMEOUT_SECONDS = 30
 
 # Calibrated in the pull request that pins MODEL; see its description for the
@@ -660,12 +663,7 @@ def ask(
 # ---------------------------------------------------------------------------
 
 def _state_for(path: str, content: str, context: dict | None = None) -> dict:
-    state: dict = {"path": path}
-    if len(content) > STATE_CONTENT_LIMIT:
-        state["content"] = content[:STATE_CONTENT_LIMIT]
-        state["truncated"] = True
-    else:
-        state["content"] = content
+    state: dict = {"path": path, "content": content}
     if context is not None:
         state["context"] = context
     return state
@@ -677,8 +675,50 @@ def _cache_key(path: str, content: str, questions: dict, context: dict | None = 
     digest = hashlib.sha256()
     digest.update(
         f"{path}\0{content}\0{MODEL}\0{STATE_CONTENT_LIMIT}\0{question_text}"
-        f"\0{context_text}".encode())
+        f"\0{context_text}\0{JUDGMENT_FORMAT_VERSION}\0{MIN_CONTENT_WINDOW}"
+        f"\0{CONTENT_OVERLAP}".encode())
     return digest.hexdigest()
+
+
+def _token_budget_error(error: JevHTTPError) -> bool:
+    if error.status != 400:
+        return False
+    try:
+        body = json.loads(error.body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return isinstance(detail, dict) and detail.get("error_type") == "max_tokens_exceeded"
+
+
+def _content_ranges(length: int):
+    start = 0
+    while True:
+        end = min(length, start + STATE_CONTENT_LIMIT)
+        yield start, end
+        if end == length:
+            return
+        start = end - min(CONTENT_OVERLAP, STATE_CONTENT_LIMIT // 8)
+
+
+def _valid_judgments(judgments, questions: dict, length: int) -> bool:
+    if not isinstance(judgments, list) or not judgments:
+        return False
+    covered = 0
+    for judgment in judgments:
+        if not isinstance(judgment, dict):
+            return False
+        start, end = judgment.get("start"), judgment.get("end")
+        if type(start) is not int or type(end) is not int:
+            return False
+        if not (0 <= start <= covered and start <= end <= length):
+            return False
+        if end == start and not (length == 0 and len(judgments) == 1):
+            return False
+        if not _valid_answers(judgment.get("answers"), questions):
+            return False
+        covered = max(covered, end)
+    return covered == length
 
 
 def judge_file(
@@ -687,18 +727,38 @@ def judge_file(
     cache: dict,
     post: Callable[[str, dict, bytes], bytes] = _http_post,
     usage_totals: dict | None = None,
-) -> dict:
+) -> list[dict]:
     content = (repo_root / path).read_text(errors="replace")
     questions = questions_for(path)
     context = context_for(repo_root, path, content)
     key = _cache_key(path, content, questions, context)
-    if key in cache and _valid_answers(cache[key], questions):
+    if key in cache and _valid_judgments(cache[key], questions, len(content)):
         return cache[key]
     cache.pop(key, None)
-    answers = ask(_state_for(path, content, context), questions,
-                  post=post, usage_totals=usage_totals)
-    cache[key] = answers
-    return answers
+
+    def judge_range(start: int, end: int) -> list[dict]:
+        state = _state_for(path, content[start:end], context)
+        if start != 0 or end != len(content):
+            state["content_range"] = {
+                "start_character": start, "end_character": end,
+                "total_characters": len(content),
+            }
+        try:
+            answers = ask(state, questions, post=post, usage_totals=usage_totals)
+        except JevHTTPError as error:
+            if not _token_budget_error(error) or end - start <= MIN_CONTENT_WINDOW:
+                raise
+            middle = (start + end) // 2
+            overlap = min(CONTENT_OVERLAP, (end - start) // 8)
+            return (judge_range(start, middle + overlap)
+                    + judge_range(middle - overlap, end))
+        return [{"start": start, "end": end, "answers": answers}]
+
+    judgments = []
+    for start, end in _content_ranges(len(content)):
+        judgments.extend(judge_range(start, end))
+    cache[key] = judgments
+    return judgments
 
 
 def load_cache(repo_root: Path) -> dict:
@@ -876,6 +936,9 @@ REMEDIATION = {
 
 def _format_signal(path: str, answers: dict) -> str:
     parts = []
+    span = answers.get("_content_range")
+    if span is not None:
+        parts.append(f"characters=[{span[0]},{span[1]})")
     file_kind = answers.get("file_kind")
     if file_kind:
         parts.append(f"file_kind={file_kind['choice']} (confidence={file_kind['confidence']:.2f})")
@@ -995,12 +1058,13 @@ def select_files(repo_root: Path, candidates: list[str]) -> list[str]:
 # Run
 # ---------------------------------------------------------------------------
 
-def _dump_row(path: str, question_id: str, answer: dict) -> list[str]:
+def _dump_row(path: str, question_id: str, answer: dict, start: int, end: int) -> list[str]:
+    offsets = [str(start), str(end)]
     if "noul" in answer:
-        return [path, question_id, str(answer["noul"]), ""]
+        return [path, question_id, str(answer["noul"]), ""] + offsets
     if "choice" in answer:
-        return [path, question_id, str(answer["choice"]), str(answer.get("confidence", ""))]
-    return [path, question_id, json.dumps(answer), ""]
+        return [path, question_id, str(answer["choice"]), str(answer.get("confidence", ""))] + offsets
+    return [path, question_id, json.dumps(answer), ""] + offsets
 
 
 def run(
@@ -1032,18 +1096,26 @@ def run(
 
     for path in files:
         try:
-            answers = judge_file(repo_root, path, cache, post, usage_totals)
+            judgments = judge_file(repo_root, path, cache, post, usage_totals)
         except (JevHTTPError, OSError) as error:
             errors.append((path, str(error)))
             continue
-        if dump_rows is not None:
-            for question_id, answer in answers.items():
-                dump_rows.append(_dump_row(path, question_id, answer))
-        failed_rules, warned_rules = evaluate(answers)
-        for rule_name in failed_rules:
-            new_failures.append((rule_name, path, answers))
-        for rule_name in warned_rules:
-            new_warnings.append((rule_name, path, answers))
+        failures, warnings = {}, {}
+        for judgment in judgments:
+            answers = judgment["answers"]
+            if dump_rows is not None:
+                for question_id, answer in answers.items():
+                    dump_rows.append(_dump_row(
+                        path, question_id, answer, judgment["start"], judgment["end"]))
+            failed_rules, warned_rules = evaluate(answers)
+            signal = {**answers, "_content_range": [judgment["start"], judgment["end"]]}
+            for rule_name in failed_rules:
+                failures.setdefault(rule_name, signal)
+            for rule_name in warned_rules:
+                warnings.setdefault(rule_name, signal)
+        new_failures.extend((rule, path, answer) for rule, answer in failures.items())
+        new_warnings.extend((rule, path, answer) for rule, answer in warnings.items()
+                            if rule not in failures)
 
     return new_failures, new_warnings, usage_totals, errors
 
@@ -1078,7 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--changed-from", metavar="REV")
     parser.add_argument("--all", action="store_true")
-    parser.add_argument("--dump", type=Path, help="Write a raw answer per file/question as TSV; do not commit it.")
+    parser.add_argument("--dump", type=Path, help="Write raw answers with file/range/question as TSV; do not commit it.")
     args = parser.parse_args(argv)
     if bool(args.all) == bool(args.changed_from):
         parser.error("pass exactly one of --all or --changed-from REV")
@@ -1105,7 +1177,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dump:
         with (root / args.dump).open("w") as f:
-            f.write("path\tquestion\tvalue\tconfidence\n")
+            f.write("path\tquestion\tvalue\tconfidence\tstart_character\tend_character\n")
             for row in dump_rows:
                 f.write("\t".join(row) + "\n")
 
