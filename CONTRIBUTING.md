@@ -62,3 +62,6 @@ Keep project concepts in `docs/` and component details in the nearest README.
 Describe the current system rather than recording the sequence used to build
 it. Git commits and pull requests preserve implementation history, while
 GitHub issues hold future work.
+
+Agent skills live in `.agents/skills/<name>/`, where Codex finds them. Each
+has a symlink at `.claude/skills/<name>` so Claude Code finds the same copy.

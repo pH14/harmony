@@ -1560,6 +1560,7 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
 # ---------------------------------------------------------------------------
 
 TOPLEVEL_DIR_ALLOWLIST = {
+    ".agents",
     ".cargo",
     ".claude",
     ".codex",
