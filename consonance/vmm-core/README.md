@@ -24,7 +24,13 @@ fingerprint encodings cover the complete state records used for restore, while
 the complete portable artifact digest covers the same persisted bytes. The
 VMST uses the current version 6 wire format; a present `xsave_restore_bv`
 intentionally changes the VCPU identity.
-Snapshots can be restored into a copy-on-write memory mapping. Portable format
+Snapshots can be restored into a copy-on-write memory mapping. In-place restore
+combines the snapshot difference and the guest dirty set before loading page
+contents. The resulting sorted plan borrows integrity-checked store pages and
+copies each selected page directly into guest RAM. Page-write validation sorts
+small address/reference records, rejects duplicates and invalid ranges before
+any write, then coalesces instruction-cache invalidation ranges in the same pass
+that copies the pages. It does not sort or allocate temporary page payloads. Portable format
 6 preserves pending SDK stops, unanswered service requests, response sequences,
 pending host effects and reseeds, the recorded input prefix, schedule failure,
 and command nonce. Replay restores these without reseeding or reapplying consumed

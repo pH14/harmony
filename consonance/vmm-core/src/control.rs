@@ -398,7 +398,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
             if !self.engine.pages_equal(base_id, gfn, target_id, gfn)? {
-                pages.push((gfn, Arc::new(page)));
+                pages.push((gfn, Arc::new(*page)));
             }
         }
         let vm_state = self.engine.vm_state_bytes(target_id)?;
@@ -994,33 +994,25 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         vm_state: &<B::A as Vendor>::Snapshot,
     ) -> Result<u64, ()> {
         let from = self.current_image;
-        let mut pages = self.engine.diff_pages(from, store_id).map_err(|_| ())?;
-
         let dirty = {
             let vmm = self.vmm.as_mut().ok_or(())?;
             vmm.retire_pending_completion().map_err(|_| ())?;
             vmm.drain_dirty_pages()
         };
-        match dirty {
-            Some(gfns) => {
-                let mut included = pages.iter().map(|(gfn, _)| *gfn).collect::<BTreeSet<_>>();
-                for gfn in gfns {
-                    if included.insert(gfn) {
-                        pages.push((gfn, self.engine.read_page(store_id, gfn).map_err(|_| ())?));
-                    }
-                }
-                pages.sort_unstable_by_key(|(gfn, _)| *gfn);
-            }
-            None if from.is_none() => {}
-            None => return Err(()),
+        if dirty.is_none() && from.is_some() {
+            return Err(());
         }
+        let pages = self
+            .engine
+            .restore_pages(from, store_id, dirty.as_deref().unwrap_or(&[]))
+            .map_err(|_| ())?;
 
         let bytes = u64::try_from(pages.len())
             .ok()
             .and_then(|count| count.checked_mul(4096))
             .ok_or(())?;
         let vmm = self.vmm.as_mut().ok_or(())?;
-        vmm.write_guest_pages(&pages).map_err(|_| ())?;
+        vmm.write_guest_page_refs(&pages).map_err(|_| ())?;
         vmm.restore_vm_state(vm_state).map_err(|_| ())?;
         vmm.prepare_snapshot().map_err(|_| ())?;
         Ok(bytes)

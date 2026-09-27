@@ -178,8 +178,17 @@ impl SnapshotEngine {
         &self,
         from: Option<SnapshotId>,
         to: SnapshotId,
-    ) -> Result<Vec<(u64, [u8; PAGE_SIZE])>, SnapshotError> {
+    ) -> Result<Vec<(u64, &[u8; PAGE_SIZE])>, SnapshotError> {
         Ok(self.store.diff_pages(from, to)?)
+    }
+
+    pub fn restore_pages(
+        &self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+        dirty: &[u64],
+    ) -> Result<Vec<(u64, &[u8; PAGE_SIZE])>, SnapshotError> {
+        Ok(self.store.restore_pages(from, to, dirty)?)
     }
 
     pub fn read_page(&self, snap: SnapshotId, gfn: u64) -> Result<[u8; PAGE_SIZE], SnapshotError> {
@@ -303,11 +312,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            eng.diff_pages(Some(child), base).unwrap(),
+            eng.diff_pages(Some(child), base)
+                .unwrap()
+                .into_iter()
+                .map(|(gfn, page)| (gfn, *page))
+                .collect::<Vec<_>>(),
             vec![(1, [0u8; PAGE_SIZE])]
         );
         assert_eq!(
-            eng.diff_pages(None, child).unwrap(),
+            eng.diff_pages(None, child)
+                .unwrap()
+                .into_iter()
+                .map(|(gfn, page)| (gfn, *page))
+                .collect::<Vec<_>>(),
             vec![
                 (0, [0x10u8; PAGE_SIZE]),
                 (1, [0x20u8; PAGE_SIZE]),
@@ -327,7 +344,11 @@ mod tests {
         let child = eng.snapshot_sparse_derive(base, &pages, b"child").unwrap();
         assert_eq!(eng.stats(child).unwrap().owned_pages, 2);
         assert_eq!(
-            eng.diff_pages(Some(base), child).unwrap(),
+            eng.diff_pages(Some(base), child)
+                .unwrap()
+                .into_iter()
+                .map(|(gfn, page)| (gfn, *page))
+                .collect::<Vec<_>>(),
             pages,
             "sparse derive preserves target-resolved pages"
         );

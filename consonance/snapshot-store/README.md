@@ -37,7 +37,15 @@ children. `diff_pages` advances the newer of two ancestry cursors until they
 meet, collecting the frames changed along either path. Identical snapshots need
 no ancestry traversal; other diffs stop at the shared ancestor without building
 temporary ancestor or visited sets. Unrelated bases meet at the end of their
-paths. Returned frames remain sorted and carry the target snapshot's contents.
+paths. Returned frames remain sorted and borrow the target snapshot's contents.
+`restore_pages(from, to, dirty)` includes the current guest's dirty frames in
+that same sorted, deduplicated plan; with no known source snapshot it includes
+the complete image. Every selected resident page is integrity-checked before
+the plan is returned. Plans borrow immutable page data from the store, including
+a shared zero page, so collecting or mutating the store is impossible while a
+plan is in use. Consumers can copy directly into destination RAM without an
+intermediate page-sized allocation or copy. Owned exports copy only the pages
+that must outlive the store borrow.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their

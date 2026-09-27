@@ -256,16 +256,22 @@ impl Store {
                 mem_pages: self.cfg.mem_pages,
             });
         }
+        out.copy_from_slice(self.checked_page(snap, gfn)?);
+        Ok(())
+    }
+
+    fn checked_page(&self, snap: SnapshotId, gfn: u64) -> Result<&[u8; PAGE_SIZE], StoreError> {
         match self.resolve(snap.0, gfn) {
-            PageRef::Zero => out.fill(0),
+            PageRef::Zero => Ok(&ZERO_PAGE),
             PageRef::Data(id) => match self.pages.get(id.get() - 1).and_then(Option::as_ref) {
-                Some(entry) if blake3::hash(&entry.data).as_bytes() == &entry.hash => {
-                    out.copy_from_slice(&entry.data);
-                }
-                Some(_) | None => return Err(StoreError::PageIntegrity { gfn }),
+                Some(entry) if blake3::hash(&entry.data).as_bytes() == &entry.hash => entry
+                    .data
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| StoreError::PageIntegrity { gfn }),
+                Some(_) | None => Err(StoreError::PageIntegrity { gfn }),
             },
         }
-        Ok(())
     }
 
     pub fn page_ref_eq(
@@ -308,24 +314,40 @@ impl Store {
         &self,
         from: Option<SnapshotId>,
         to: SnapshotId,
-    ) -> Result<Vec<(u64, [u8; PAGE_SIZE])>, StoreError> {
+    ) -> Result<Vec<(u64, &[u8; PAGE_SIZE])>, StoreError> {
+        self.restore_pages(from, to, &[])
+    }
+
+    pub fn restore_pages(
+        &self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+        dirty: &[u64],
+    ) -> Result<Vec<(u64, &[u8; PAGE_SIZE])>, StoreError> {
         self.live_layer(to)?;
+        if from == Some(to) && dirty.is_empty() {
+            return Ok(Vec::new());
+        }
+        for &gfn in dirty {
+            if gfn >= self.cfg.mem_pages {
+                return Err(StoreError::GfnOutOfRange {
+                    gfn,
+                    mem_pages: self.cfg.mem_pages,
+                });
+            }
+        }
 
         let Some(from) = from else {
-            let mut pages = Vec::new();
-            for gfn in 0..self.cfg.mem_pages {
-                let mut page = [0u8; PAGE_SIZE];
-                self.read_page(to, gfn, &mut page)?;
-                pages.push((gfn, page));
-            }
-            return Ok(pages);
+            return (0..self.cfg.mem_pages)
+                .map(|gfn| Ok((gfn, self.checked_page(to, gfn)?)))
+                .collect();
         };
 
         self.live_layer(from)?;
 
         let mut left = Some(from.0);
         let mut right = Some(to.0);
-        let mut changed_gfns = BTreeSet::new();
+        let mut changed_gfns: BTreeSet<_> = dirty.iter().copied().collect();
         while left != right {
             let id = left.max(right).expect("distinct ancestry cursors");
             let Some(layer) = self.layers.get(&id) else {
@@ -344,9 +366,7 @@ impl Store {
 
         let mut pages = Vec::with_capacity(changed_gfns.len());
         for gfn in changed_gfns {
-            let mut page = [0u8; PAGE_SIZE];
-            self.read_page(to, gfn, &mut page)?;
-            pages.push((gfn, page));
+            pages.push((gfn, self.checked_page(to, gfn)?));
         }
         Ok(pages)
     }
@@ -1017,6 +1037,47 @@ mod tests {
     }
 
     #[test]
+    fn restore_pages_borrows_validated_contents_and_merges_dirty_frames() {
+        let mut store = Store::new(cfg(4));
+        let mut builder = store.begin_base();
+        builder.write_page(1, &[7; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let mut builder = store.derive(base).unwrap();
+        builder.write_page(2, &[9; PAGE_SIZE]).unwrap();
+        let child = builder.seal(vec![]);
+        let plan = store
+            .restore_pages(Some(base), child, &[3, 1, 2, 1])
+            .unwrap();
+        assert_eq!(
+            plan.iter().map(|&(gfn, _)| gfn).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        for &(gfn, page) in &plan {
+            let source = match store.resolve(child.0, gfn) {
+                PageRef::Zero => &ZERO_PAGE[..],
+                PageRef::Data(id) => store.pages[id.get() - 1].as_ref().unwrap().data.as_ref(),
+            };
+            assert_eq!(page.as_ptr(), source.as_ptr());
+        }
+        assert_eq!(plan[0].1, &[7; PAGE_SIZE]);
+        assert_eq!(plan[1].1, &[9; PAGE_SIZE]);
+        assert_eq!(plan[2].1, &ZERO_PAGE);
+        assert!(matches!(
+            store.restore_pages(None, child, &[4]),
+            Err(StoreError::GfnOutOfRange { gfn: 4, .. })
+        ));
+        assert_eq!(store.restore_pages(None, child, &[3, 3]).unwrap().len(), 4);
+        let PageRef::Data(id) = store.resolve(child.0, 2) else {
+            panic!("stored page")
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[100] ^= 1;
+        assert!(matches!(
+            store.restore_pages(Some(base), child, &[1]),
+            Err(StoreError::PageIntegrity { gfn: 2 })
+        ));
+    }
+
+    #[test]
     fn inherited_reads_cache_only_the_requested_snapshot() {
         let mut store = Store::new(cfg(4));
         let mut builder = store.begin_base();
@@ -1122,7 +1183,12 @@ mod tests {
         let right = right_builder.seal(vec![]);
 
         assert_eq!(
-            store.diff_pages(Some(left), right).unwrap(),
+            store
+                .diff_pages(Some(left), right)
+                .unwrap()
+                .into_iter()
+                .map(|(gfn, page)| (gfn, *page))
+                .collect::<Vec<_>>(),
             vec![(1, [0u8; PAGE_SIZE]), (2, [0x22u8; PAGE_SIZE])]
         );
     }
@@ -1140,11 +1206,21 @@ mod tests {
         let child = child_builder.seal(vec![]);
 
         assert_eq!(
-            store.diff_pages(Some(base), child).unwrap(),
+            store
+                .diff_pages(Some(base), child)
+                .unwrap()
+                .into_iter()
+                .map(|(gfn, page)| (gfn, *page))
+                .collect::<Vec<_>>(),
             vec![(0, [0u8; PAGE_SIZE]), (2, [0x20u8; PAGE_SIZE])]
         );
         assert_eq!(
-            store.diff_pages(Some(child), base).unwrap(),
+            store
+                .diff_pages(Some(child), base)
+                .unwrap()
+                .into_iter()
+                .map(|(gfn, page)| (gfn, *page))
+                .collect::<Vec<_>>(),
             vec![(0, [0x10u8; PAGE_SIZE]), (2, [0u8; PAGE_SIZE])]
         );
     }
@@ -1170,7 +1246,12 @@ mod tests {
         let child = child_builder.seal(vec![]);
 
         assert_eq!(
-            store.diff_pages(None, child).unwrap(),
+            store
+                .diff_pages(None, child)
+                .unwrap()
+                .into_iter()
+                .map(|(gfn, page)| (gfn, *page))
+                .collect::<Vec<_>>(),
             vec![
                 (0, [0u8; PAGE_SIZE]),
                 (1, [0x11u8; PAGE_SIZE]),
