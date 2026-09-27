@@ -52,6 +52,7 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
+| `Release / Harmony / Documentation` | `docs.yml` | pull_request, push (main), workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
@@ -509,3 +510,12 @@ The Harmony NES Nova lane also runs `cli/tests/nes.sh` against the pinned native
 runner. It checks the shared CLI's prepared-input execution, exact replay, prefix
 branching, nonempty rooted searches, additional-budget continuation and artifact
 tamper refusal. Its evidence is uploaded with the existing Nova artifact.
+
+## User documentation
+
+`Release / Harmony / Documentation` renders the end-user site with a strict
+MkDocs build. Pull requests produce an HTML review artifact. Only runs on main
+can reach the separate Pages deployment job, which owns the write and identity
+permissions. Its full-trigger exception expresses this trust boundary, not an
+extended runtime budget; both jobs are bounded to ten minutes. See
+[SITE.md](SITE.md) for preview and hosting configuration.

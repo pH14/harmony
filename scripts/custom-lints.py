@@ -1600,6 +1600,7 @@ DOCS_ALLOWLIST = {
     "docs/PROTOCOL.md",
     "docs/TESTING.md",
     "docs/WORKFLOWS.md",
+    "docs/SITE.md",
 }
 
 
@@ -1607,6 +1608,17 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
     violations = []
     for rel_path in files:
         if not rel_path.startswith("docs/"):
+            continue
+        # The public site is a distinct end-user documentation tree. Keep
+        # non-Markdown exceptions exact so generated output and stray assets
+        # cannot broaden the repository documentation allowance.
+        if rel_path in {
+            "docs/requirements.txt",
+            "docs/user/assets/harmony.svg",
+            "docs/user/assets/styles.css",
+        }:
+            continue
+        if rel_path.startswith("docs/user/") and rel_path.endswith(".md"):
             continue
         if not rel_path.endswith(".md"):
             violations.append(Violation(

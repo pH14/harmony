@@ -32,3 +32,6 @@ __pycache__/
 # Local semantic-lints cache and calibration dump; both are per-machine scratch.
 /.semantic-lints-cache.json
 /semantic-lints-calibration.tsv
+
+# Generated user documentation.
+/site/
