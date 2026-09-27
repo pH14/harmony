@@ -13,7 +13,7 @@ Unwritten pages are implicitly zero. Repeated writes to a frame replace the
 previous write, and writes equal to the inherited content are discarded.
 
 `read_page` resolves the nearest layer that wrote a frame. Layers are immutable
-after sealing; a lookup cache makes repeated reads efficient. Page contents are
+after sealing; a store-wide lookup cache makes repeated reads efficient. Page contents are
 interned store-wide by BLAKE3, while the all-zero page is implicit. `vm_state`
 is opaque but its seal-time digest is checked before it is returned. Corrupted
 page data or state produces an integrity error rather than silently returning
@@ -26,6 +26,15 @@ instead of copying those digests. A slot remains occupied while any builder or r
 layer owns it. These references are private to the store and never appear in
 snapshot exports. Flattening carries inherited references into a new base and
 reads only the pages declared dirty from the supplied memory image.
+
+The lookup cache allocates at most 4,096 entries, shared by every snapshot in a
+store. An inherited lookup caches only its requested snapshot and frame; it does
+not populate every traversed ancestor. Collisions replace entries after checking
+the complete snapshot/frame key. Cache entries do not own page references, so
+they cannot keep released content alive. Snapshot IDs are never reused, and a
+live snapshot's ancestry keeps every page its cached lookups can resolve alive.
+The bound trades repeated ancestor traversal on cache misses for memory usage
+independent of the number of frames scanned and retained snapshots.
 
 Snapshot IDs are reference-counted. `retain` adds a live reference,
 `release` makes an ID unobservable at zero, and `gc` removes layers no longer
