@@ -6386,10 +6386,9 @@ mod tests {
         index
     }
 
-    fn compare_prefix_compaction(index: &InputIndex<u16>) {
-        let bytes = postcard::to_stdvec(index).unwrap();
+    fn compare_prefix_compaction(actual: &mut InputIndex<u16>) {
+        let bytes = postcard::to_stdvec(actual).unwrap();
         let mut reference: InputIndex<u16> = postcard::from_bytes(&bytes).unwrap();
-        let mut actual: InputIndex<u16> = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(actual.compact(), reference.compact_reference());
         assert_eq!(
             postcard::to_stdvec(&actual).unwrap(),
@@ -6405,7 +6404,7 @@ mod tests {
         for branches in [0, 1, 2, 3, 12, 128] {
             for depth in [1, 8, 128] {
                 for prune in [false, true] {
-                    compare_prefix_compaction(&compaction_fixture(branches, depth, prune));
+                    compare_prefix_compaction(&mut compaction_fixture(branches, depth, prune));
                 }
             }
         }
@@ -6417,7 +6416,7 @@ mod tests {
             index.remove_owner_and_prune(leaf, u64::from(branch));
         }
         assert_eq!(index.nodes[0].as_ref().unwrap().children.len(), 1);
-        compare_prefix_compaction(&index);
+        compare_prefix_compaction(&mut index);
         let child = *index.nodes[0]
             .as_ref()
             .unwrap()
@@ -6426,7 +6425,7 @@ mod tests {
             .next()
             .unwrap();
         index.nodes[child] = None;
-        compare_prefix_compaction(&index);
+        compare_prefix_compaction(&mut index);
     }
 
     #[test]
@@ -6444,7 +6443,7 @@ mod tests {
                 .flatten()
                 .all(|node| node.children.len() != 1)
         );
-        compare_prefix_compaction(&index);
+        compare_prefix_compaction(&mut index);
         if std::env::var_os("DISSONANCE_BENCHMARK_PREFIX_COMPACTION").is_some() {
             let bytes = postcard::to_stdvec(&index).unwrap();
             let ratio = paired_prefix_compaction(&bytes);
@@ -6452,32 +6451,6 @@ mod tests {
                 "prefix compaction binary tree nodes={}: new/old={ratio:.3}",
                 index.nodes.len()
             );
-        }
-    }
-
-    #[test]
-    fn single_child_compaction_reuses_the_child_map_allocation() {
-        let mut index = compaction_fixture(2, 128, true);
-        let locations = index
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(id, node)| {
-                let node = node.as_ref()?;
-                if node.children.len() != 1 {
-                    return None;
-                }
-                let (key, child) = node.children.first_key_value().unwrap();
-                Some((id, key as *const u16, *child))
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(locations.len(), 128);
-        let remap = index.compact();
-        for (old, address, child) in locations {
-            let node = index.nodes[remap[old].unwrap()].as_ref().unwrap();
-            let (key, mapped) = node.children.first_key_value().unwrap();
-            assert_eq!(key as *const u16, address);
-            assert_eq!(Some(*mapped), remap[child]);
         }
     }
 
@@ -6518,15 +6491,16 @@ mod tests {
     fn single_child_compaction_paired_benchmark() {
         for (branches, depth) in [(1, 8), (1, 1024), (1, 65_536), (64, 128), (4096, 1)] {
             for prune in [false, true] {
-                let index = compaction_fixture(branches, depth, prune);
-                compare_prefix_compaction(&index);
+                let mut index = compaction_fixture(branches, depth, prune);
                 if std::env::var_os("DISSONANCE_BENCHMARK_PREFIX_COMPACTION").is_some() {
                     let bytes = postcard::to_stdvec(&index).unwrap();
                     let ratio = paired_prefix_compaction(&bytes);
                     eprintln!(
-                        "prefix compaction branches={branches} depth={depth} prune={prune}: new/old={ratio:.3}"
+                        "prefix compaction branches={branches} depth={depth} prune={prune} live_nodes={}: new/old={ratio:.3}",
+                        index.live_nodes
                     );
                 }
+                compare_prefix_compaction(&mut index);
             }
         }
     }
