@@ -161,6 +161,34 @@ The full run reports nine alternating pairs at 4 KiB, 64 KiB, 1 MiB, and
 128 MiB RAM. Allocation bytes are cumulative requests, not peak RSS. `--miri`
 exercises the qualification allocator, including reallocation and deallocation.
 
+The snapshot-capture qualification compares production control requests with a
+same-source VMM copy that restores the two independent CPU captures. Both arms
+run in one release executable, whose SHA-256 is printed with the results.
+
+```sh
+python3 consonance/vmm-core/qualification/qualify-capture.py --check
+python3 consonance/vmm-core/qualification/qualify-capture.py
+python3 consonance/vmm-core/qualification/qualify-capture.py --hvf --check
+python3 consonance/vmm-core/qualification/qualify-capture.py --hvf
+```
+
+The portable check compares complete exported sidecars and full VMM state
+hashes for x86 and ARM mock backends, including populated XSAVE and ARM SIMD
+state. Snapshot receipts and cleanup are checked on every timed request. The
+full run reports nine alternating timing pairs for snapshot-and-release over
+16 KiB and 1 MiB RAM, with zero, sparse (every sixteenth page populated), and
+dense contents. It also measures standalone public save-and-hash-encode calls.
+Setup, VM creation, and export are outside the timed region; RAM hashing and
+snapshot-store work are inside. These are snapshot costs, not guest execution
+throughput. `--hvf` requires a real Apple silicon host with Hypervisor.framework;
+it creates only one VM at a time. Both modes compare the canonical hashes
+returned by portable snapshot export, which hashes the stored RAM and the
+actual snapshot suffix, as well as standalone VMM hashes. Live HVF
+stored sidecars may differ because the hardware virtual counter advances
+between captures. Portable checks run in Snapshot and Restore and both ARM
+Host Compatibility CI jobs without timing thresholds. Hosted macOS runners
+cannot run the live HVF qualification because nested HVF is unavailable.
+
 The x86 exit dispatcher finishes the current instruction's device-access chain
 before returning a stopped endpoint. Continuation accesses retain their device,
 virtual-time, and trace accounting, but do not enter the next guest instruction
@@ -222,6 +250,16 @@ preparation succeed. A failed entry, completion chain, preparation, or live
 restore cannot publish a cached CPU image as a new snapshot or hash. Raw backend
 register reads remain available to service an exit; they are not snapshot
 admission checks.
+
+A control-server snapshot captures the raw CPU state once and uses that same
+request-local capture for both the stored VM state and the canonical hash
+suffix. Snapshot admission checks still run before publication, and the SDK
+snapshot stays between VM-state construction and suffix construction. No guest
+execution or backend mutation occurs between these consumers. The raw capture
+is discarded after the request; it is not cached for later snapshots. Stored
+ARM timer counters and canonical counter normalization retain their distinct
+representations. Standalone snapshot and hash reads retain their own capture
+and readiness checks.
 
 KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,

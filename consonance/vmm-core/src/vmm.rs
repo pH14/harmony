@@ -875,6 +875,20 @@ where
         self.build_snapshot_state(&vcpu)
     }
 
+    pub(crate) fn capture_vm_state(
+        &mut self,
+    ) -> Result<(<B::A as Vendor>::Snapshot, VcpuOf<B>), VmmError> {
+        self.ensure_snapshot_ready()?;
+        let vcpu = match &self.saved_state {
+            Some(s) => s.clone(),
+            None => self.backend.save()?,
+        };
+        <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
+        self.check_guest_mode(&vcpu)?;
+        let snapshot = self.build_snapshot_state(&vcpu)?;
+        Ok((snapshot, vcpu))
+    }
+
     fn check_guest_mode(&self, vcpu: &VcpuOf<B>) -> Result<(), VmmError> {
         if self.require_long_mode {
             <B::A as Vendor>::check_long_mode_vcpu(vcpu)?;
@@ -1201,12 +1215,19 @@ where
 
     pub(crate) fn state_blob_suffix(&mut self) -> Result<Vec<u8>, VmmError> {
         self.ensure_snapshot_ready()?;
-        let mut out = Vec::new();
         let vcpu = match &self.saved_state {
             Some(state) => state.clone(),
             None => self.backend.save()?,
         };
-        let vcpu = <B::A as Vendor>::logical_identity_vcpu(&vcpu)?;
+        self.state_blob_suffix_from_vcpu(&vcpu)
+    }
+
+    pub(crate) fn state_blob_suffix_from_vcpu(
+        &self,
+        vcpu: &VcpuOf<B>,
+    ) -> Result<Vec<u8>, VmmError> {
+        let mut out = Vec::new();
+        let vcpu = <B::A as Vendor>::logical_identity_vcpu(vcpu)?;
         if let Some(db) = &self.doorbell_pages {
             put_chunk(&mut out, b"DOOR", db.as_bytes());
         }
@@ -6058,6 +6079,50 @@ mod tests {
         }
         fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
             self.inner.capabilities()
+        }
+    }
+
+    #[test]
+    fn control_snapshots_capture_once_and_observe_the_next_cpu_state() {
+        use crate::control::{ControlServer, server_caps};
+        use control_proto::{Reply, Request};
+
+        let backend = CountSaveBackend {
+            inner: configured_mock(Vec::new()),
+            save_calls: std::cell::Cell::new(0),
+            fail_after: usize::MAX,
+        };
+        let mut vmm = Vmm::new(backend, GuestRam::new(4096).unwrap());
+        vmm.wire_snapshot_hashing();
+        let mut server = ControlServer::new(vmm, Box::new(|| panic!("unused factory")));
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let mut prior = None;
+        for (calls, value) in [(1, 7), (2, 19)] {
+            let mut state = VcpuState::default();
+            state.regs.rax = value;
+            server.vmm_mut().unwrap().backend.restore(&state).unwrap();
+            let Reply::Snapshot { id, .. } = server.handle(&Request::Snapshot).unwrap().unwrap()
+            else {
+                panic!("snapshot reply");
+            };
+            let vmm = server.vmm().unwrap();
+            assert_eq!(vmm.backend.save_calls.get(), calls);
+            assert!(vmm.saved_state.is_none());
+            let sidecar = server.export_sparse_snapshot(id, id).unwrap().sidecar;
+            let decoded = crate::portable_snapshot::decode_sparse_sidecar(&sidecar).unwrap();
+            let snapshot = vm_state::VmState::decode(&decoded.vm_state).unwrap();
+            assert_eq!(snapshot.regs.rax, value);
+            if let Some(previous_suffix) = prior {
+                assert_ne!(decoded.state_blob_suffix, previous_suffix);
+            }
+            prior = Some(decoded.state_blob_suffix);
+            assert_eq!(
+                server.handle(&Request::Drop(id)).unwrap().unwrap(),
+                Reply::Unit
+            );
         }
     }
 
