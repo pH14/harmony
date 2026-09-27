@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod arm64_contract;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -161,6 +163,10 @@ fn main() {
         assert_eq!(black_box(&data[..]), [1, 2, 3]);
         drop(data);
         assert!(ALLOCATIONS.load(Ordering::Relaxed) > before);
+        return;
+    }
+    if args.iter().any(|x| x == "--arm64") {
+        arm64_contract::run(&args);
         return;
     }
     if args.iter().any(|x| x == "--concurrent") {

@@ -31,7 +31,11 @@ other than the host's, so the baseline cannot hold one width for both backends.
 `contract::contract_hash` covers the policy with the backend's ASID width
 applied. A snapshot records that hash, and a restore into a backend with a
 different ASID width fails with `SnapshotError::ContractMismatch`, because the
-guest kernel has already sized its ASID allocator from the saved width.
+guest kernel has already sized its ASID allocator from the saved width. The
+fingerprint is initialized once per process for each ASID width, in separate
+thread-safe caches. Snapshot capture and validation reuse it without rebuilding
+the policy or allocating. The policy and virtual-time inputs are immutable for
+each width; changing either still changes the fingerprint in a new build.
 
 Both arm64 backends refuse a baseline field above the host when the policy is
 applied, so a baseline that over-claims fails at boot. The ignored test

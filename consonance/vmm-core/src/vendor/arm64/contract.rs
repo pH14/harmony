@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 use vmm_backend::{Arm64AsidBits, Arm64Policy, IdRegModel, SysregTrapPolicy};
 
 use crate::virtual_time::VirtualTimeTiming;
@@ -70,6 +71,16 @@ pub fn policy(asid_bits: Arm64AsidBits) -> Arm64Policy {
 }
 
 pub fn contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
+    static EIGHT: OnceLock<[u8; 32]> = OnceLock::new();
+    static SIXTEEN: OnceLock<[u8; 32]> = OnceLock::new();
+    let hash = match asid_bits {
+        Arm64AsidBits::Eight => &EIGHT,
+        Arm64AsidBits::Sixteen => &SIXTEEN,
+    };
+    *hash.get_or_init(|| compute_contract_hash(asid_bits))
+}
+
+fn compute_contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
     let p = policy(asid_bits);
     let mut h = Sha256::new();
     h.update(b"harmony-arm64-cross-host-baseline-v3\0");
@@ -146,6 +157,12 @@ mod tests {
     fn asid_width_changes_only_the_asid_field_and_the_contract_hash() {
         let eight = policy(Arm64AsidBits::Eight);
         let sixteen = policy(Arm64AsidBits::Sixteen);
+        for asid_bits in [Arm64AsidBits::Eight, Arm64AsidBits::Sixteen] {
+            assert_eq!(
+                contract_hash(asid_bits),
+                recompute(&policy(asid_bits), virtual_time_timing())
+            );
+        }
         assert_eq!(eight.id_regs.regs[&0xc038], 0x0000_0111_0f10_0002);
         assert_eq!(sixteen.id_regs.regs[&0xc038], 0x0000_0111_0f10_0022);
         let mut rest = sixteen.id_regs.regs.clone();
