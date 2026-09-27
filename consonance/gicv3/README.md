@@ -35,3 +35,37 @@ The unit qualification module keeps the previous scans as controls in the same
 executable. Deterministic and randomized comparisons cover every supported
 controller size, priority masking, pending and level inputs, active interrupts,
 acceptance, EOI, and restored snapshots.
+
+Pending arbitration selects the best enabled Group-1 candidate below PMR before
+checking active priorities. An active interrupt that blocks that candidate also
+blocks every worse candidate, so the check can stop at its first blocker. With
+no candidate, or with PMR zero, no active-priority scan is needed. Candidate
+iteration stays in increasing INTID order, accepts only a strictly better
+priority, and stops at priority zero; lowest-INTID ties are therefore preserved.
+Four-word bitmap groups skip empty ranges together, without retaining a cache.
+`input_deliverable` keeps its existing independent single-input check.
+
+Run the native qualification separately from other CPU-heavy work:
+
+```sh
+cargo test --release -p gicv3 --lib qualify_ -- --ignored --nocapture --test-threads=1
+```
+
+It alternates control/proposed order across nine pairs for 14 workloads and
+three controller sizes (32, 96, and 992 interrupts). The workloads include no
+pending work, a single timer, nesting, dense pending/active sets, priority ties,
+masked priorities, level-only inputs, and winners or active interrupts in the
+last bitmap word. A delivery-cycle check also compares every returned interrupt
+and the complete final snapshot, with each arm starting from a fresh controller.
+Wall-clock measurements are confined to these ignored tests and never influence
+the modeled state. There are no timing assertions in CI.
+
+On an Apple M1 Max, the 96-interrupt configuration used by HVF measured roughly
+376 ns to 3.8 ns for acknowledgement with one active interrupt, 28 ns to 9 ns for
+an empty pending query, and 30 ns to 20 ns for a single timer query. A complete
+modeled pulse/query/accept/acknowledge/EOI cycle fell from about 438 ns to 45 ns.
+All 84 query configurations improved in that run, including dense and
+maximum-size guards. These are controller-only measurements, not whole-VM or
+search throughput; they exclude guest execution and Hypervisor.framework calls.
+The controller layout, retained memory, snapshot bytes, and public API are
+unchanged.

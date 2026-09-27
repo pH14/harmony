@@ -120,7 +120,7 @@ fn arbitration_matches_full_scan_across_implemented_ranges() {
                 g.set_pmr(pmr);
                 for priority in [0, 1, 42, 128, 255] {
                     assert_eq!(
-                        priority < g.running_priority(),
+                        g.preempts_active(priority),
                         priority < g.baseline_running_priority()
                     );
                 }
@@ -378,4 +378,36 @@ fn qualify_delivery_cycle() {
         }
         assert_eq!(endpoints[0], endpoints[1]);
     }
+}
+
+#[test]
+fn minimum_candidate_still_checks_active_blockers_and_lowest_intid_ties() {
+    let mut g = populated(960, 0);
+    g.priority[..992].fill(200);
+    g.priority[3] = 0;
+    g.priority[991] = 0;
+    g.priority[900] = 0;
+    g.active[900 / 32] = 1 << (900 % 32);
+    let before = g.snapshot();
+    assert_eq!(g.peek_interrupt(), None);
+    assert_eq!(g.take_interrupt(), None);
+    assert_eq!(g.snapshot(), before);
+    g.priority[900] = 1;
+    assert_eq!(g.take_interrupt(), Some(3));
+    assert_eq!(g.peek_interrupt(), None);
+    g.eoi(3).unwrap();
+    assert_eq!(g.peek_interrupt(), Some(991));
+    g.set_pmr(0);
+    assert_eq!(g.peek_interrupt(), None);
+    g.set_pmr(255);
+    assert_eq!(g.take_interrupt(), Some(991));
+
+    let mut tied = populated(960, 0);
+    tied.priority[..992].fill(200);
+    tied.priority[4] = 100;
+    tied.priority[900] = 100;
+    assert_eq!(tied.take_interrupt(), Some(4));
+    assert_eq!(tied.peek_interrupt(), None);
+    tied.eoi(4).unwrap();
+    assert_eq!(tied.take_interrupt(), Some(900));
 }
