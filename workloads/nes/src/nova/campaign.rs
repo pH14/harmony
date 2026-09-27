@@ -13,10 +13,10 @@ use sha2::{Digest, Sha256};
 use crate::{
     nova::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_NOVA_ACTIONS, NovaArchiveKey,
-            NovaArchiveReport, NovaMilestoneInputs, NovaMilestoneTimes, NovaMilestones,
-            NovaProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
-            merge_milestones, merge_progress_watermark, milestone_key, milestones, sample_chord,
+            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, NovaArchiveKey, NovaArchiveReport,
+            NovaMilestoneInputs, NovaMilestoneTimes, NovaMilestones, NovaProgressWatermark,
+            REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
+            merge_progress_watermark, milestone_key, milestones, sample_chord,
         },
         target::{
             ButtonChord, NovaInput, NovaLevel, NovaObservations, NovaSnapshot, NovaTarget,
@@ -289,7 +289,6 @@ pub struct NovaCampaignConfig {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
-    pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
     pub continue_after_victory: bool,
@@ -308,7 +307,6 @@ impl NovaCampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
-            action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             stop_rollout_on_objective: !self.continue_after_victory,
@@ -501,14 +499,6 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
             return Err("Nova stream carries an unknown game policy".into());
         }
         Ok(NovaCampaignRun)
-    }
-
-    fn max_action_limit(&self) -> usize {
-        if self.whole_game {
-            8192
-        } else {
-            MAX_NOVA_ACTIONS
-        }
     }
 
     fn max_action_cost(&self) -> u64 {

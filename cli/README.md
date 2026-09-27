@@ -41,7 +41,7 @@ command-line words, and `--wall-minutes` bounds a search in host time. `--replay
 runs a recorded action list, such as a search's own `bug-1.json`, instead of
 searching. Both modes write `report.json`.
 
-`--seed`, `--workers`, `--executions`, and `--actions` bound the campaign's logical
+`--seed`, `--workers`, and `--executions` bound the campaign's logical
 work. `--out` selects a fresh output directory. Every package writes
 `stream.jsonl` and `report.json`, retaining campaign choices and results; NES
 adds `prepared.json` and `checkpoint.json`, and faults adds

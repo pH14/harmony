@@ -11,7 +11,7 @@ pub const SUFFIX_ONE_TO_SIX_IDENTIFIER: &str = "one_to_six";
 pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str =
     "one_to_six_within_3_max_action_cost_full_hold";
 
-pub const SUFFIX_COST_BOUND_MAX_ACTIONS: u64 = 3;
+pub const SUFFIX_COST_BOUND_FULL_HOLDS: u64 = 3;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
@@ -23,7 +23,7 @@ pub enum SuffixShape {
 
 impl SuffixShape {
     #[must_use]
-    pub(crate) fn max_actions(self) -> usize {
+    pub(crate) fn longest_draw(self) -> usize {
         match self {
             Self::OneOrTwo => 2,
             Self::OneToSix | Self::OneToSixBounded => 6,
@@ -39,7 +39,7 @@ impl SuffixShape {
         if self != Self::OneToSixBounded {
             return;
         }
-        let bound = SUFFIX_COST_BOUND_MAX_ACTIONS.saturating_mul(max_action_cost);
+        let bound = SUFFIX_COST_BOUND_FULL_HOLDS.saturating_mul(max_action_cost);
         let mut total = 0_u64;
         let reached = suffix.iter().position(|action| {
             total = total.saturating_add(cost(action));

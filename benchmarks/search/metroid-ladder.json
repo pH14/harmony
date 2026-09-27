@@ -143,7 +143,6 @@
   6144
  ],
  "search": {
-  "actions": 4096,
   "executions": 3000000,
   "frames": 1000000000,
   "mixture": "energy_splice:6",

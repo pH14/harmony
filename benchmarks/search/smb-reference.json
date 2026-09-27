@@ -16,7 +16,6 @@
   ],
   "search": {
     "executions": 600000,
-    "actions": 8192,
     "window": 2,
     "wall_seconds": 600,
     "suffix": "one_to_six_within_3_max_action_cost_full_hold",

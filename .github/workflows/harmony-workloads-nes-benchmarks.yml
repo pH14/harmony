@@ -176,7 +176,6 @@ jobs:
               --executions 10000 \
               --workers 4 \
               --fixed-execution-soak \
-              --action-limit 512 \
               --wall-seconds 4500 \
               --memory-budget-mib 2048 \
             2>&1 | tee nova-consonance-report/campaign.txt

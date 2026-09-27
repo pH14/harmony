@@ -444,7 +444,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     deepest_leaf: Vec<(K, usize)>,
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
-    frontier_cap: Option<usize>,
+    selector_indexed: bool,
     active_ids: ActiveIds,
     tiers: BTreeMap<K::Progress, BTreeMap<K::Place, CellMembers>>,
     donors: BTreeMap<Slot<K>, BTreeSet<DonorRank<K>>>,
@@ -780,7 +780,7 @@ where
             deepest_leaf: Vec::new(),
             action_cost,
             live_progress: None,
-            frontier_cap: None,
+            selector_indexed: false,
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
             donors: BTreeMap::new(),
@@ -820,7 +820,7 @@ where
         self.snapshot_memory_charge = Some(charge);
     }
 
-    pub(crate) fn establish_liveness_anchor(&mut self, max_actions: usize) {
+    pub(crate) fn establish_liveness_anchor(&mut self) {
         if self.memory_limit.is_none() {
             return;
         }
@@ -831,7 +831,6 @@ where
                     .copied()
                     .unwrap_or(false)
                     && self.entries[index].snapshot.is_some()
-                    && self.entries[index].input_len < max_actions
             })
         }) {
             return;
@@ -840,7 +839,7 @@ where
             .entries
             .iter()
             .enumerate()
-            .find(|(index, entry)| {
+            .find(|(index, _)| {
                 self.active.get(*index).copied().unwrap_or(false)
                     && self
                         .snapshot_selectable
@@ -848,7 +847,6 @@ where
                         .copied()
                         .unwrap_or(false)
                     && self.entries[*index].snapshot.is_some()
-                    && entry.input_len < max_actions
             })
             .map(|(_, entry)| entry.id);
     }
@@ -1262,12 +1260,12 @@ where
             .historical_entries_dropped
             .saturating_add(u64::try_from(dropped).unwrap_or(u64::MAX));
 
-        let frontier_cap = self.frontier_cap.take();
+        let selector_indexed = std::mem::take(&mut self.selector_indexed);
         self.active_ids = ActiveIds::default();
         self.tiers.clear();
         self.donors.clear();
-        if let Some(cap) = frontier_cap {
-            self.rebuild_selector_index(cap);
+        if selector_indexed {
+            self.rebuild_selector_index();
         }
         self.enforce_snapshot_memory_budget()?;
         Ok(())
@@ -1491,9 +1489,9 @@ where
         true
     }
 
-    fn rebuild_selector_index(&mut self, max_actions: usize) {
-        self.frontier_cap = Some(max_actions);
-        self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
+    fn rebuild_selector_index(&mut self) {
+        self.selector_indexed = true;
+        self.active_ids = ActiveIds::from_ids(self.active_ids());
         self.tiers.clear();
         self.donors.clear();
         let active = self.active_ids.ids().collect::<Vec<_>>();
@@ -1502,12 +1500,16 @@ where
         }
     }
 
-    pub(crate) fn prepare_selection(&mut self, max_actions: usize) {
-        if self.frontier_cap != Some(max_actions) {
-            self.rebuild_selector_index(max_actions);
+    pub(crate) fn prepare_selection(&mut self) {
+        self.ensure_selector_index();
+        self.establish_liveness_anchor();
+        self.reactivate_liveness_anchor();
+    }
+
+    fn ensure_selector_index(&mut self) {
+        if !self.selector_indexed {
+            self.rebuild_selector_index();
         }
-        self.establish_liveness_anchor(max_actions);
-        self.reactivate_liveness_anchor(max_actions);
     }
 
     fn activate_membership(&mut self, index: usize) {
@@ -1516,11 +1518,11 @@ where
         self.cells.entry(cell_of(key)).or_default().active += 1;
     }
 
-    fn reactivate_liveness_anchor(&mut self, max_actions: usize) -> bool {
+    fn reactivate_liveness_anchor(&mut self) -> bool {
         if !self.active_ids.is_empty() {
             return false;
         }
-        self.establish_liveness_anchor(max_actions);
+        self.establish_liveness_anchor();
         let Some(anchor) = self.liveness_anchor else {
             return false;
         };
@@ -1533,7 +1535,6 @@ where
             .copied()
             .unwrap_or(false)
             || self.entries[index].snapshot.is_none()
-            || self.entries[index].input_len >= max_actions
         {
             return false;
         }
@@ -1574,7 +1575,7 @@ where
                     self.liveness_anchor_reactivations.saturating_add(1);
             }
         }
-        self.rebuild_selector_index(max_actions);
+        self.rebuild_selector_index();
         !self.active_ids.is_empty()
     }
 
@@ -1584,10 +1585,7 @@ where
     }
 
     fn index_insert(&mut self, id: usize) {
-        let Some(cap) = self.frontier_cap else {
-            return;
-        };
-        if self.entries[id].input_len >= cap {
+        if !self.selector_indexed {
             return;
         }
         self.active_ids.insert(id);
@@ -1595,7 +1593,7 @@ where
     }
 
     fn index_remove(&mut self, id: usize) {
-        if self.frontier_cap.is_none() {
+        if !self.selector_indexed {
             return;
         }
         self.active_ids.remove(id);
@@ -1649,7 +1647,7 @@ where
     }
 
     fn update_index_deepest_leaf(&mut self, id: usize, previous: (K, usize), current: (K, usize)) {
-        if self.frontier_cap.is_none() {
+        if !self.selector_indexed {
             return;
         }
         let key = self.entries[id].key;
@@ -2007,12 +2005,9 @@ where
     pub(crate) fn splice_tail_for_campaign(
         &mut self,
         parent: usize,
-        max_actions: usize,
-        cap: usize,
+        longest_tail: usize,
     ) -> Option<CampaignSpliceTail<A>> {
-        if self.frontier_cap != Some(max_actions) {
-            self.rebuild_selector_index(max_actions);
-        }
+        self.ensure_selector_index();
         let parent_key = self.entries[parent].key;
         let donor_id = self
             .donors
@@ -2025,7 +2020,7 @@ where
             return None;
         }
         let actions = self
-            .recorded_splice_tail(parent, donor_id, leaf_id, cap)
+            .recorded_splice_tail(parent, donor_id, leaf_id, longest_tail)
             .ok()?;
         Some(CampaignSpliceTail {
             donor_id,
@@ -2039,7 +2034,7 @@ where
         parent: usize,
         donor: usize,
         leaf: usize,
-        cap: usize,
+        longest_tail: usize,
     ) -> Result<Vec<A>, &'static str> {
         let parent_entry = self
             .entries
@@ -2078,28 +2073,22 @@ where
         if suffix.is_empty() {
             return Err("splice leaf has no actions past its donor");
         }
-        Ok(suffix.iter().take(cap).cloned().collect())
+        Ok(suffix.iter().take(longest_tail).cloned().collect())
     }
 
-    fn active_ids(&self, max_actions: usize) -> Vec<usize> {
+    fn active_ids(&self) -> Vec<usize> {
         self.active
             .iter()
             .enumerate()
-            .filter_map(|(id, active)| {
-                (*active && self.origin_resident(id) && self.entries[id].input_len < max_actions)
-                    .then_some(id)
-            })
+            .filter_map(|(id, active)| (*active && self.origin_resident(id)).then_some(id))
             .collect()
     }
 
     pub fn select_parent(
         &mut self,
         rand: &mut RomuDuoJrRand,
-        max_actions: usize,
     ) -> Result<(usize, SelectorDraw), Box<dyn Error>> {
-        if self.frontier_cap != Some(max_actions) {
-            self.rebuild_selector_index(max_actions);
-        }
+        self.ensure_selector_index();
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
@@ -2296,8 +2285,8 @@ where
         self.stored_input_actions
     }
 
-    pub(crate) fn enable_continuations(&mut self, action_cap: usize) {
-        self.continuations = (K::preferences() > 0).then(|| ContinuationBank::new(action_cap));
+    pub(crate) fn enable_continuations(&mut self, longest_edge: usize) {
+        self.continuations = (K::preferences() > 0).then(|| ContinuationBank::new(longest_edge));
     }
 
     pub(crate) fn set_admission_wave(&mut self, wave: u32) {
@@ -2701,8 +2690,6 @@ mod tests {
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
 
-    const MAX_COMPLETION_ACTIONS: usize = 8_192;
-
     type TestArchive = Archive<u8, TestKey, (), ()>;
 
     type TimedArchive = Archive<TestAction, TestKey, (), ()>;
@@ -3005,7 +2992,7 @@ mod tests {
         }
         let mut rand = RomuDuoJrRand::with_seed(0x5417_0008);
         let error = archive
-            .select_parent(&mut rand, 64)
+            .select_parent(&mut rand)
             .expect_err("a shift above the largest supported one is rejected")
             .to_string();
         assert_eq!(
@@ -3367,7 +3354,7 @@ mod tests {
     #[test]
     fn a_richer_arrival_from_another_cell_resets_its_cells_draw_count() {
         let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
-        archive.rebuild_selector_index(64);
+        archive.rebuild_selector_index();
         let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         assert!(archive.opened_new_cell(first));
         let beside = insert_resource(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("beside");
@@ -3396,7 +3383,7 @@ mod tests {
     #[test]
     fn opening_a_new_cell_resets_the_parents_cell_draw_count() {
         let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
-        archive.rebuild_selector_index(64);
+        archive.rebuild_selector_index();
         let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
@@ -3481,7 +3468,7 @@ mod tests {
         let mut drawn = [0_u32; 2];
         for _ in 0..512 {
             let (id, _) = archive
-                .select_parent(&mut rand, 64)
+                .select_parent(&mut rand)
                 .expect("draw a portfolio parent");
             drawn[id] += 1;
         }
@@ -3515,7 +3502,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(0x7ea1_f0f0);
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, 64)
+                .select_parent(&mut rand)
                 .expect("draw a portfolio parent");
             archive.record_selection(id, &draw);
         }
@@ -3710,7 +3697,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(1);
         for _ in 0..32 {
             let (selected, _) = archive
-                .select_parent(&mut rand, 8)
+                .select_parent(&mut rand)
                 .expect("select from budgeted residents");
             assert_ne!(selected, 0);
         }
@@ -3780,7 +3767,7 @@ mod tests {
                 .expect("insert entry")
                 .expect("retain entry");
         }
-        archive.establish_liveness_anchor(64);
+        archive.establish_liveness_anchor();
         let anchor_bytes = archive.liveness_anchor_memory_bytes();
         assert!(anchor_bytes > 0, "the anchor holds an irreducible charge");
 
@@ -3811,7 +3798,7 @@ mod tests {
                     .expect("insert entry")
                     .expect("retain entry");
             }
-            archive.establish_liveness_anchor(64);
+            archive.establish_liveness_anchor();
             archive
         };
 
@@ -3871,7 +3858,7 @@ mod tests {
                 .expect("insert entry")
                 .expect("retain entry");
         }
-        archive.establish_liveness_anchor(64);
+        archive.establish_liveness_anchor();
         let anchor = archive
             .liveness_anchor
             .expect("an active entry anchors the run");
@@ -4057,7 +4044,7 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for _ in 0..64 {
             let (selected, _) = archive
-                .select_parent(&mut rand, 8)
+                .select_parent(&mut rand)
                 .expect("select from replayable entries");
             seen.insert(selected);
         }
@@ -4104,8 +4091,8 @@ mod tests {
             )
             .expect("insert root")
             .expect("retain root");
-        archive.rebuild_selector_index(1);
-        archive.establish_liveness_anchor(1);
+        archive.rebuild_selector_index();
+        archive.establish_liveness_anchor();
         archive.cost_in_group[0] = 100;
         for (id, suffix) in [(1_u64, 1_u8), (2, 2)] {
             archive
@@ -4127,15 +4114,15 @@ mod tests {
         archive.active_ids = ActiveIds::default();
 
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
-        assert!(archive.select_parent(&mut rand, 1).is_err());
+        assert!(archive.select_parent(&mut rand).is_err());
         assert_eq!(archive.liveness_anchor_reactivations(), 0);
-        archive.prepare_selection(1);
+        archive.prepare_selection();
         assert_eq!(archive.liveness_anchor_reactivations(), 1);
-        let (selected, _) = archive
-            .select_parent(&mut rand, 1)
+        archive
+            .select_parent(&mut rand)
             .expect("budgeted anchor keeps selection live");
-        assert_eq!(archive.entries[selected].input_len, 0);
-        assert!(archive.entries[selected].input_len < 1);
+        assert!(archive.active[0]);
+        assert!(archive.active_ids().contains(&0));
         assert!(
             archive
                 .slots
@@ -4162,8 +4149,8 @@ mod tests {
             )
             .expect("insert root")
             .expect("retain root");
-        archive.rebuild_selector_index(1);
-        archive.establish_liveness_anchor(1);
+        archive.rebuild_selector_index();
+        archive.establish_liveness_anchor();
         archive
             .insert(
                 None,
@@ -4187,14 +4174,13 @@ mod tests {
                 .all(|members| members.len() <= MAX_ENTRIES_PER_KEY)
         );
         archive.active_ids = ActiveIds::default();
-        archive.prepare_selection(1);
+        archive.prepare_selection();
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
         let (selected, _) = archive
-            .select_parent(&mut rand, 1)
+            .select_parent(&mut rand)
             .expect("displaced anchor reactivates");
         assert_eq!(archive.entries[selected].id, 0);
         assert_eq!(archive.active_count(), 1);
-        assert!(archive.entries[selected].input_len < 1);
     }
 
     fn archive_with_prunable_history() -> Archive<u8, FlatKey, (), ()> {
@@ -4537,10 +4523,10 @@ mod tests {
             );
         }
         assert_eq!(archive.live_progress(), Some((FlatKey([1, 0, 0, 0]), 2, 4)));
-        assert!(archive.active_ids(1).is_empty());
+        assert_eq!(archive.active_ids(), vec![0, 1, 2, 3]);
         archive.active[1] = false;
         archive.snapshot_selectable[2] = false;
-        assert_eq!(archive.active_ids(2), vec![0, 3]);
+        assert_eq!(archive.active_ids(), vec![0, 3]);
     }
     #[test]
     fn live_donor_index_tracks_a_new_deepest_descendant() {
@@ -4560,7 +4546,7 @@ mod tests {
             )
             .expect("insert root")
             .expect("retain root");
-        archive.rebuild_selector_index(8);
+        archive.rebuild_selector_index();
         let child = archive
             .insert(
                 Some(root),
@@ -4809,14 +4795,12 @@ mod tests {
         let middle = insert(&mut archive, Some(root), [1, 2, 3, 6], vec![0, 1]);
         let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
         let dispatched = archive
-            .splice_tail_for_campaign(arrival, MAX_COMPLETION_ACTIONS, 8)
+            .splice_tail_for_campaign(arrival, 8)
             .expect("dispatch-time splice");
         assert_eq!((dispatched.donor_id, dispatched.leaf_id), (root, leaf));
         assert_eq!(dispatched.actions, vec![1, 2]);
         assert!(
-            archive
-                .splice_tail_for_campaign(beside, MAX_COMPLETION_ACTIONS, 8)
-                .is_none(),
+            archive.splice_tail_for_campaign(beside, 8).is_none(),
             "a donor in another slot of the same cell does not splice"
         );
         assert_eq!(
@@ -4828,7 +4812,7 @@ mod tests {
         let later = insert(&mut archive, Some(leaf), [1, 2, 3, 8], vec![0, 1, 2, 3]);
         assert_eq!(
             archive
-                .splice_tail_for_campaign(arrival, MAX_COMPLETION_ACTIONS, 8)
+                .splice_tail_for_campaign(arrival, 8)
                 .map(|splice| splice.actions),
             Some(vec![1, 2, 3]),
             "a later admission may advance the current donor frontier"
@@ -4846,9 +4830,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            archive
-                .splice_tail_for_campaign(leaf, MAX_COMPLETION_ACTIONS, 8)
-                .is_none(),
+            archive.splice_tail_for_campaign(leaf, 8).is_none(),
             "the deepest entry has no deeper donor in its slot"
         );
     }
@@ -4859,7 +4841,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_0001);
         for _ in 0..128 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
+                .select_parent(&mut rand)
                 .expect("selection under a flat key");
             assert!(id < keys.len());
             assert_eq!(draw.tier_rank, Some(0));
@@ -5110,7 +5092,7 @@ mod tests {
             .expect("a leaf ahead by progress splices past its parent");
         assert_eq!(tail, vec![3]);
         let campaign = archive
-            .splice_tail_for_campaign(parent, 64, 8)
+            .splice_tail_for_campaign(parent, 8)
             .expect("the campaign splice finds the same leaf");
         assert_eq!(campaign.donor_id, donor);
         assert_eq!(campaign.leaf_id, leaf);
@@ -5142,9 +5124,7 @@ mod tests {
     fn draw_counts(archive: &mut TestArchive, seed: u64, draws: usize) -> Vec<u64> {
         let mut rand = RomuDuoJrRand::with_seed(seed);
         for _ in 0..draws {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("a tier draw");
+            let (id, draw) = archive.select_parent(&mut rand).expect("a tier draw");
             archive.record_selection(id, &draw);
         }
         archive.selected.clone()

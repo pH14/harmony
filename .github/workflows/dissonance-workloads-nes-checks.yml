@@ -80,7 +80,7 @@ jobs:
           cargo build --locked --release -p harmony-cli
           timeout -k 10 120 target/release/harmony search --package nes --backend native \
             --core "${NOVA_BUILD}/quicknes_libretro.so" \
-            --seed 20260901 --workers 1 --executions 4 --actions 8 \
+            --seed 20260901 --workers 1 --executions 4 \
             --out nova-native-check/search "${NOVA_BUILD}/nova.nes" \
             2>&1 | tee nova-native-check/console.txt
           python3 - <<'PY'

@@ -89,8 +89,6 @@ mod search_cli_tests {
                 "8",
                 "--executions",
                 "1000",
-                "--actions",
-                "12",
                 "--ram-mib",
                 "1024",
                 "--knobs",

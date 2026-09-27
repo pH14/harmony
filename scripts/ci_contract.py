@@ -77,7 +77,7 @@ class Job(NamedTuple):
     # Why a `full` job lives inside a Checks workflow. Registered exceptions
     # are the only way a Checks workflow mixes trigger classes.
     exception: str = ""
-    # Workspace packages whose lint and unit tests this job owns.
+    # Cargo packages whose lint and unit tests this job owns.
     crates: tuple[str, ...] = ()
     # Integration test targets this job owns, as `<package>:<target>`.
     test_targets: tuple[str, ...] = ()
@@ -142,6 +142,7 @@ CARGO_MANIFESTS = (
     "workloads/nes-machine/Cargo.toml",
     "workloads/nes-protocol/Cargo.toml",
     "workloads/tools/Cargo.toml",
+    "workloads/tiny-worlds/Cargo.toml",
 )
 
 # Every `cargo deny` invocation, as the arguments that follow `cargo deny`.
@@ -156,6 +157,7 @@ DENY_COMMANDS = (
     "--manifest-path workloads/fault-policy/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/faults/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/tools/Cargo.toml check --config deny.toml",
+    "--manifest-path workloads/tiny-worlds/Cargo.toml check --config deny.toml",
     "--manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses",
     "--manifest-path consonance/harmony-linux/sdk/Cargo.toml check --config deny.toml licenses",
     "--manifest-path consonance/harmony-linux/supervisor/Cargo.toml check --config deny.toml licenses",
@@ -491,6 +493,16 @@ DISSONANCE_NES_CHECKS = Workflow(
     ),
 )
 
+DISSONANCE_TINY_WORLDS_CHECKS = Workflow(
+    path=f"{WORKFLOW_DIR}/dissonance-workloads-tiny-worlds-checks.yml",
+    name="Checks / Dissonance Workloads / Tiny Worlds",
+    owner="Dissonance Workloads",
+    triggers=("pull_request", "push"),
+    jobs=(
+        Job("World Mechanics", "pr", 15, crates=("tiny-worlds",)),
+    ),
+)
+
 HARMONY_NES_CHECKS = Workflow(
     path=f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml",
     name="Checks / Harmony Workloads / NES",
@@ -590,6 +602,7 @@ WORKFLOWS = (
     HARMONY_CHECKS,
     HARMONY_ANALYSIS,
     DISSONANCE_NES_CHECKS,
+    DISSONANCE_TINY_WORLDS_CHECKS,
     HARMONY_NES_CHECKS,
     HARMONY_OCI_CHECKS,
     DISSONANCE_NES_BENCHMARKS,

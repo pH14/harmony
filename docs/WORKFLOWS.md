@@ -42,6 +42,7 @@ what owns it, and the linter rejects them.
 | `Checks / Harmony` | `harmony-checks.yml` | pull_request, push |
 | `Checks / Harmony / Analysis` | `harmony-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Dissonance Workloads / NES` | `dissonance-workloads-nes-checks.yml` | pull_request, push |
+| `Checks / Dissonance Workloads / Tiny Worlds` | `dissonance-workloads-tiny-worlds-checks.yml` | pull_request, push |
 | `Checks / Harmony Workloads / NES` | `harmony-workloads-nes-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Harmony Workloads / OCI` | `harmony-workloads-oci-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
@@ -67,6 +68,10 @@ backend each one runs, and the linter requires each composition to keep a
 bounded Checks workflow and a full Benchmarks workflow, and requires each
 workflow to actually run its registered backend. A Harmony composition reduced
 to native execution alone fails `ci-nes-compositions`.
+
+`Checks / Dissonance Workloads / Tiny Worlds` builds the standalone workload and
+runs mechanics, archive-retention, replay, work-accounting, formatting, and Clippy
+checks with one build worker and one test thread.
 
 ## Bounded checks and full benchmarks
 

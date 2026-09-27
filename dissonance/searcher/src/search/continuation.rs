@@ -41,7 +41,7 @@ struct Pending<P> {
 }
 
 pub(crate) struct ContinuationBank<P: Ord, A> {
-    action_cap: usize,
+    longest_edge: usize,
     edges: BTreeMap<(P, P), Edge<A>>,
     exits: BTreeMap<P, BTreeSet<P>>,
     entrances: BTreeMap<P, BTreeSet<P>>,
@@ -53,9 +53,9 @@ pub(crate) struct ContinuationBank<P: Ord, A> {
 }
 
 impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
-    pub fn new(action_cap: usize) -> Self {
+    pub fn new(longest_edge: usize) -> Self {
         Self {
-            action_cap,
+            longest_edge,
             edges: BTreeMap::new(),
             exits: BTreeMap::new(),
             entrances: BTreeMap::new(),
@@ -115,7 +115,7 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
         cost: u64,
         gains: u8,
     ) {
-        if from == to || actions.is_empty() || actions.len() > self.action_cap {
+        if from == to || actions.is_empty() || actions.len() > self.longest_edge {
             return;
         }
         let edge = Edge {

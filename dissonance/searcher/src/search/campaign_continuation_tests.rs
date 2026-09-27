@@ -154,10 +154,6 @@ impl InputPolicy for TestWorkload {
         }
     }
 
-    fn max_action_limit(&self) -> usize {
-        64
-    }
-
     fn max_action_cost(&self) -> u64 {
         2
     }
@@ -287,7 +283,6 @@ fn continuation_config(
         campaign_seed: 947,
         workers,
         execution_budget: 800,
-        action_limit: 64,
         host: "test".into(),
         wall_budget: None,
         stop_rollout_on_objective: true,

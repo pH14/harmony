@@ -298,7 +298,6 @@ pub struct SmbCampaignConfig {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
-    pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
     pub continue_after_victory: bool,
@@ -326,7 +325,6 @@ impl SmbCampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
-            action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             stop_rollout_on_objective: !self.continue_after_victory,
@@ -596,10 +594,6 @@ where
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         crate::smb::archive::sample_chord_from_masks(rand, run.vocabulary.masks())
-    }
-
-    fn max_action_limit(&self) -> usize {
-        crate::smb::archive::MAX_SMB_COMPLETION_ACTIONS
     }
 
     fn max_action_cost(&self) -> u64 {
@@ -1016,7 +1010,6 @@ mod tests {
             campaign_seed,
             workers,
             execution_budget,
-            action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
             continue_after_victory: false,
@@ -1183,10 +1176,8 @@ mod tests {
                 &mut target,
                 &origin,
                 &[],
-                0,
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 1)],
-                96,
                 crate::search::archive::RetentionPolicy::Unprobed,
                 true,
             )
@@ -1245,10 +1236,8 @@ mod tests {
                 &mut first,
                 &snapshot,
                 &[],
-                1,
                 SmbMilestones::default(),
                 &suffix,
-                96,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
                 false,
             )
@@ -1259,10 +1248,8 @@ mod tests {
                 &mut second,
                 &snapshot,
                 &[],
-                1,
                 SmbMilestones::default(),
                 &suffix,
-                96,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
                 false,
             )
@@ -1299,10 +1286,8 @@ mod tests {
                 &mut target,
                 &won,
                 &[],
-                0,
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 4)],
-                96,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
                 true,
             )
@@ -1362,7 +1347,6 @@ mod tests {
         assert_eq!(live.origin.resume_actions, 0);
         assert_eq!(live.resume_policy, "snapshot_root");
         assert_eq!(live.archive.entries[0].id, 0);
-        assert!(live.archive.entries[0].input.actions.len() <= config.action_limit);
         let (replay, replay_checkpoint) =
             replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&checkpoint))
                 .expect("replay snapshot-root campaign");
@@ -1724,11 +1708,10 @@ mod tests {
     }
 
     #[test]
-    fn budgeted_64_entry_campaign_reactivates_at_action_limit_and_replays_exactly() {
+    fn budgeted_64_entry_campaign_replays_exactly() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca34, 4, 8_192);
         config.retention = crate::search::archive::RetentionPolicy::Unprobed;
-        config.action_limit = 16;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
         let mut stream = Vec::new();
@@ -2029,11 +2012,7 @@ mod tests {
         let counts = tree_live.tree_import.expect("tree import counts");
         let source_retained = u64::try_from(source.entries.len() - 1).expect("count");
         assert_eq!(
-            counts.imported
-                + counts.duplicate
-                + counts.rejected
-                + counts.terminal
-                + counts.over_limit,
+            counts.imported + counts.duplicate + counts.rejected + counts.terminal,
             source_retained
         );
         assert!(counts.imported >= 1);

@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Dissonance Workloads / Tiny Worlds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dissonance-tiny-worlds-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 1
+  CARGO_INCREMENTAL: 0
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  world-mechanics:
+    name: World Mechanics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dissonance-tiny-worlds
+          workspaces: |
+            workloads/tiny-worlds -> target
+      - name: Build and check world mechanics
+        run: |
+          cargo "+$HARMONY_RUST_TOOLCHAIN" build --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml
+          cargo "+$HARMONY_RUST_TOOLCHAIN" test --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml -- --test-threads=1
+          cargo "+$HARMONY_RUST_TOOLCHAIN" fmt --manifest-path workloads/tiny-worlds/Cargo.toml -- --check
+          cargo "+$HARMONY_RUST_TOOLCHAIN" clippy --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml --all-targets -- -D warnings
