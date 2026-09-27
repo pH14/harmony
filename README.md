@@ -66,6 +66,8 @@ See [CLI documentation](cli/README.md) for prerequisites and run artifacts.
   explorer and a machine.
 - [Testing](docs/TESTING.md) describes the oracles and corpus used to test the
   determinism claim.
+- [Performance](docs/PERFORMANCE.md) estimates how fast a search could run on
+  a chip and explains where measured performance falls short.
 
 Component details live in READMEs beside their code. Development setup and
 repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
