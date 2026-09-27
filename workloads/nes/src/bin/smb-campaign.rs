@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#[cfg(not(miri))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::{
     env,
     error::Error,
@@ -29,6 +33,7 @@ use sha2::{Digest, Sha256};
 const DEFAULT_MEMORY_BUDGET_MIB: usize = 2048;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    nes_workload::allocator::require_single_arena();
     let mut args = env::args_os().skip(1);
     let mode = args.next().ok_or("usage: smb-campaign <run|replay> ...")?;
     if mode == "run" {
