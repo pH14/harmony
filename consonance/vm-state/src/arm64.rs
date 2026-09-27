@@ -4,8 +4,8 @@ use zerocopy::little_endian::U64;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::codec::{
-    Reader, decode_contract_hash, decode_mp_state, decode_timers, encode_mp_state, encode_timers,
-    put_section, read_fixed,
+    Reader, decode_contract_hash, decode_mp_state, decode_timers, encode_mp_state,
+    encoding_capacity, put_section, put_timers, read_fixed, timer_payload_len,
 };
 use crate::error::VmStateError;
 use crate::records::SnapshotRecords;
@@ -350,8 +350,31 @@ fn decode_interrupts(w: &Arm64InterruptsWire) -> Result<Arm64Interrupts, VmState
 
 impl Arm64VmState {
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
+        self.encode_with_counter(self.vtimer.counter)
+    }
+
+    fn encode_with_counter(&self, counter: u64) -> Result<Vec<u8>, VmStateError> {
+        let mut vtimer = Arm64VtimerWire::from(&self.vtimer);
+        vtimer.counter = counter.into();
         let section_count = SECTION_COUNT + u16::from(!self.engine_state.is_empty());
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(encoding_capacity(
+            [
+                size_of::<Arm64RegsWire>(),
+                size_of::<Arm64SysregsWire>(),
+                1,
+                size_of::<VtimeWire>(),
+                timer_payload_len(&self.timers)?,
+                self.hypercall.len(),
+                self.devices.0.len(),
+                self.contract_hash.len(),
+                size_of::<Arm64SimdFpWire>(),
+                size_of::<Arm64DebugWire>(),
+                size_of::<Arm64VtimerWire>(),
+                size_of::<Arm64InterruptsWire>(),
+            ]
+            .into_iter()
+            .chain((!self.engine_state.is_empty()).then_some(self.engine_state.len())),
+        )?);
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
@@ -374,7 +397,7 @@ impl Arm64VmState {
         )?;
         put_section(&mut out, TAG_MP_STATE, &[encode_mp_state(self.mp_state)])?;
         put_section(&mut out, TAG_VTIME, VtimeWire::from(&self.vtime).as_bytes())?;
-        put_section(&mut out, TAG_TIMERS, &encode_timers(&self.timers)?)?;
+        put_timers(&mut out, TAG_TIMERS, &self.timers)?;
         put_section(&mut out, TAG_HYPERCALL, &self.hypercall)?;
         put_section(&mut out, TAG_DEVICES, &self.devices.0)?;
         put_section(&mut out, TAG_CONTRACT_HASH, &self.contract_hash)?;
@@ -388,11 +411,7 @@ impl Arm64VmState {
             TAG_DEBUG,
             Arm64DebugWire::from(&self.debug).as_bytes(),
         )?;
-        put_section(
-            &mut out,
-            TAG_VTIMER,
-            Arm64VtimerWire::from(&self.vtimer).as_bytes(),
-        )?;
+        put_section(&mut out, TAG_VTIMER, vtimer.as_bytes())?;
         put_section(
             &mut out,
             TAG_INTERRUPTS,
@@ -524,9 +543,7 @@ impl SnapshotRecords for Arm64VmState {
     }
 
     fn encode_for_hash(&self) -> Result<Vec<u8>, VmStateError> {
-        let mut hashed = self.clone();
-        hashed.vtimer.counter = 0;
-        Arm64VmState::encode(&hashed)
+        self.encode_with_counter(0)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, VmStateError> {

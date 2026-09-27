@@ -30,7 +30,12 @@ duplicates, and trailing bytes return typed errors.
 stores. It defaults to `encode`; the ARM implementation zeroes the virtual
 counter, which runs off the host counter and therefore differs between two runs
 of the same guest. The stored encoding keeps the counter, because a restore
-needs the value the guest was reading.
+needs the value the guest was reading. ARM writes the selected counter directly
+into its timer wire record; producing a hash encoding does not clone the snapshot
+or its device payload. Both encoders validate section lengths and reserve the
+complete output size once, so growing the output cannot repeatedly copy earlier
+sections or leave capacity sized for an extra growth step. MSR and timer records
+are written directly into that output, without temporary section buffers.
 
 `peek_version` validates the magic and reads the version without decoding the
 rest of the blob. `VM_STATE_VERSION` identifies the only writer and reader
@@ -52,3 +57,29 @@ restore. Run its checks with:
 cargo test -p vm-state
 cargo fmt --all -- --check
 ```
+
+## Encoding qualification
+
+The qualification compiles current and original encoding routines into one
+release executable. The reference uses current record types, decoders, and
+dependencies, with the encoding routines from `4ef653f1f` substituted from
+`qualification/reference-*.rs`; its ARM hash path retains the full-state clone.
+It compares complete bytes, decoded records, ARM counter normalization without
+mutating the source, and rejection of invalid timer queues. Cases include empty
+and populated optional records and device payloads from zero bytes to 1 MiB.
+The VMM comparison substitutes only the codec dependency and checks full state
+blobs, capture/restore, and state hashes for both mock architectures.
+
+```sh
+python3 consonance/vm-state/qualification/qualify-codec.py --check
+python3 consonance/vm-state/qualification/qualify-codec.py
+```
+
+The full run reports nine alternating pairs using the normal system allocator;
+every timed output is compared with the original encoder's bytes. Reported
+latency includes that comparison. Output capacity is a buffer size, not RSS or
+an allocation count. The VMM timing covers a 4 KiB mock VM with snapshot hashing
+wired; it does not measure guest execution or hypervisor calls. The executable's
+SHA-256 binds both arms to one build. Update the frozen encoding routines when
+intentionally changing the wire format, keeping them independent of the optimized
+implementation.

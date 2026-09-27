@@ -47,7 +47,29 @@ impl VmState {
         let section_count = SECTION_COUNT
             + u16::from(!self.engine_state.is_empty())
             + u16::from(self.xsave_restore_bv.is_some());
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(encoding_capacity(
+            [
+                size_of::<RegsWire>(),
+                size_of::<SregsWire>(),
+                size_of::<XcrsWire>(),
+                size_of::<DebugRegsWire>(),
+                size_of::<EventsWire>(),
+                1,
+                sequence_len(4, self.msrs.0.len(), size_of::<MsrPairWire>())?,
+                self.xsave.0.len(),
+                size_of::<VtimeWire>(),
+                timer_payload_len(&self.timers)?,
+                self.hypercall.len(),
+                self.devices.0.len(),
+                self.contract_hash.len(),
+            ]
+            .into_iter()
+            .chain((!self.engine_state.is_empty()).then_some(self.engine_state.len()))
+            .chain(
+                self.xsave_restore_bv
+                    .map(|_| size_of::<XsaveRestoreBvWire>()),
+            ),
+        )?);
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
@@ -72,10 +94,10 @@ impl VmState {
             EventsWire::from(&self.events).as_bytes(),
         )?;
         put_section(&mut out, TAG_MP_STATE, &[encode_mp_state(self.mp_state)])?;
-        put_section(&mut out, TAG_MSRS, &encode_msrs(&self.msrs)?)?;
+        put_msrs(&mut out, &self.msrs)?;
         put_section(&mut out, TAG_XSAVE, &self.xsave.0)?;
         put_section(&mut out, TAG_VTIME, VtimeWire::from(&self.vtime).as_bytes())?;
-        put_section(&mut out, TAG_TIMERS, &encode_timers(&self.timers)?)?;
+        put_timers(&mut out, TAG_TIMERS, &self.timers)?;
         put_section(&mut out, TAG_HYPERCALL, &self.hypercall)?;
         put_section(&mut out, TAG_DEVICES, &self.devices.0)?;
         put_section(&mut out, TAG_CONTRACT_HASH, &self.contract_hash)?;
@@ -217,11 +239,28 @@ impl VmState {
     }
 }
 
+pub(crate) fn encoding_capacity(
+    lengths: impl IntoIterator<Item = usize>,
+) -> Result<usize, VmStateError> {
+    lengths.into_iter().try_fold(HEADER_LEN, |total, len| {
+        u32::try_from(len).map_err(|_| VmStateError::InvalidField)?;
+        total
+            .checked_add(6)
+            .and_then(|n| n.checked_add(len))
+            .ok_or(VmStateError::InvalidField)
+    })
+}
+
 pub(crate) fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result<(), VmStateError> {
-    let len = u32::try_from(payload.len()).map_err(|_| VmStateError::InvalidField)?;
+    put_section_header(out, tag, payload.len())?;
+    out.extend_from_slice(payload);
+    Ok(())
+}
+
+fn put_section_header(out: &mut Vec<u8>, tag: u16, len: usize) -> Result<(), VmStateError> {
+    let len = u32::try_from(len).map_err(|_| VmStateError::InvalidField)?;
     out.extend_from_slice(&tag.to_le_bytes());
     out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(payload);
     Ok(())
 }
 
@@ -246,18 +285,29 @@ pub(crate) fn decode_mp_state(payload: &[u8]) -> Result<MpState, VmStateError> {
     }
 }
 
-fn encode_msrs(msrs: &MsrBlock) -> Result<Vec<u8>, VmStateError> {
+fn sequence_len(prefix: usize, count: usize, record_len: usize) -> Result<usize, VmStateError> {
+    count
+        .checked_mul(record_len)
+        .and_then(|n| n.checked_add(prefix))
+        .ok_or(VmStateError::InvalidField)
+}
+
+fn put_msrs(out: &mut Vec<u8>, msrs: &MsrBlock) -> Result<(), VmStateError> {
     let count = u32::try_from(msrs.0.len()).map_err(|_| VmStateError::InvalidField)?;
-    let mut payload = Vec::with_capacity(4 + msrs.0.len() * 12);
-    payload.extend_from_slice(&count.to_le_bytes());
+    put_section_header(
+        out,
+        TAG_MSRS,
+        sequence_len(4, msrs.0.len(), size_of::<MsrPairWire>())?,
+    )?;
+    out.extend_from_slice(&count.to_le_bytes());
     for (&index, &value) in &msrs.0 {
         let pair = MsrPairWire {
             index: index.into(),
             value: value.into(),
         };
-        payload.extend_from_slice(pair.as_bytes());
+        out.extend_from_slice(pair.as_bytes());
     }
-    Ok(payload)
+    Ok(())
 }
 
 fn decode_msrs(payload: &[u8]) -> Result<MsrBlock, VmStateError> {
@@ -306,13 +356,20 @@ fn validate_timers(entries: &[TimerEntry], next_seq: u64) -> Result<(), VmStateE
     Ok(())
 }
 
-pub(crate) fn encode_timers(timers: &TimerQueueState) -> Result<Vec<u8>, VmStateError> {
+pub(crate) fn timer_payload_len(timers: &TimerQueueState) -> Result<usize, VmStateError> {
+    sequence_len(12, timers.entries.len(), size_of::<TimerEntryWire>())
+}
+
+pub(crate) fn put_timers(
+    out: &mut Vec<u8>,
+    tag: u16,
+    timers: &TimerQueueState,
+) -> Result<(), VmStateError> {
     let count = u32::try_from(timers.entries.len()).map_err(|_| VmStateError::InvalidField)?;
     validate_timers(&timers.entries, timers.next_seq)?;
-
-    let mut payload = Vec::with_capacity(12 + timers.entries.len() * 32);
-    payload.extend_from_slice(&timers.next_seq.to_le_bytes());
-    payload.extend_from_slice(&count.to_le_bytes());
+    put_section_header(out, tag, timer_payload_len(timers)?)?;
+    out.extend_from_slice(&timers.next_seq.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
     for e in &timers.entries {
         let w = TimerEntryWire {
             deadline_vns: e.deadline_vns.into(),
@@ -320,9 +377,9 @@ pub(crate) fn encode_timers(timers: &TimerQueueState) -> Result<Vec<u8>, VmState
             token: e.token.into(),
             period_vns: e.period_vns.into(),
         };
-        payload.extend_from_slice(w.as_bytes());
+        out.extend_from_slice(w.as_bytes());
     }
-    Ok(payload)
+    Ok(())
 }
 
 pub(crate) fn decode_timers(payload: &[u8]) -> Result<TimerQueueState, VmStateError> {
