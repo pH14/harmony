@@ -3,14 +3,18 @@
 `benchmarks/search/README.md` describes the runner, manifests and assets. Each
 workload's README describes its milestones, tapes, film tool and probe. This
 file lists what the process uses and the details that cost time when missed.
+Rooted starts, milestone tapes, named milestones, `milestones.py` and the
+ladder exist for Metroid only today; another game adds them in step 1.
 
 ## Runner
 
 - `benchmarks/search/eval.py build` builds `nes-eval` and `nes-film`. Build
   the change and its base separately. `eval.py run` runs a manifest with one
   build; both arms of a comparison use the same manifest.
-- `eval.py compare` compares two run directories. `milestones.py` prints the
-  first try at each milestone. `eval.py ladder` scores rooted chains.
+- `eval.py compare` compares two run directories. Its milestone medians leave
+  out runs that never reached the milestone, so compute medians with censored
+  runs counted at the tries they reached. `milestones.py` prints the first try
+  at each milestone. `eval.py ladder` scores rooted chains.
 - Manifests with private paths, ROMs, cores and run output stay outside the
   repository.
 - Set `frames` above `executions` times the frames per try, or the frame
@@ -23,10 +27,12 @@ file lists what the process uses and the details that cost time when missed.
 - `checkpoint_on_progress` keeps a checkpoint at each new milestone and top
   tier; `checkpoint_every` adds interval checkpoints. They go to
   `campaign/checkpoints/` with one shared `snapshots.store`, so keep the whole
-  directory.
+  directory. The checkpoint that opens a hard part is the first
+  `-milestone.ckpt` at or after the first try of its opening milestone.
 - A case with `resume` continues a checkpoint. Budgets count from power-on, so
   set `executions` to the checkpoint's execution count plus the slice length.
-  Legs are tries after the resume.
+  Legs are tries after the resume: a milestone's first try, which counts from
+  power-on, minus the checkpoint's execution count in its file name.
 - A resume with the original seed repeats the original run, apart from
   timing-dependent fields. Another seed keeps the archive and draws new
   choices.
@@ -64,7 +70,9 @@ file lists what the process uses and the details that cost time when missed.
 - A run keeps inputs only for the witness and the milestone tapes. Filming
   other archive states needs their inputs written out.
 
-## SMB check
+## Regression checks
 
-Run `benchmarks/search/smb-regression-three.json` with the change and with
-main, then `eval.py compare` the two run directories. Every cell must solve.
+- Run `benchmarks/search/smb-regression-three.json` with the change and with
+  main, then `eval.py compare` the two run directories. Every cell must solve.
+- `uv run workloads/tiny-worlds/scale.py` measures slowdown, core scaling and
+  memory between two builds, for the CPU and memory cost.

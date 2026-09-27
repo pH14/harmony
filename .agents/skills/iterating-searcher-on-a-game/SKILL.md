@@ -29,7 +29,7 @@ tiny worlds.
 - **Rooted segment**: a search that starts from a recorded input with an empty
   archive.
 - **Checkpoint slice**: a resume of a power-on run's checkpoint just before a
-  hard part, run for a few million tries.
+  hard part.
 - **Handoff**: the state a search carries into a hard part. The
   **best-stocked state** holds the most of the resources the hard part
   consumes, of any state the search has found at the hard part's start. The
@@ -116,14 +116,17 @@ runs choose their own order, name each hard part by its entry and exit
 milestones and read its legs per seed.
 
 Check that the game's workload supplies what this process reads, and add what
-is missing as workload code before any searcher work:
+is missing as workload code before any searcher work. The game's `Reporting`
+implementation and `workloads/nes/src/bin/nes-eval.rs` show what exists:
 
 - A named milestone for each area entry, item, boss and the ending, with its
   first try, plus reporting-only milestones inside a long hard part so a stall
   has a named place.
 - A tape per milestone's first arrival, and best-stocked tapes beside it.
 - What a place is, what orders progress, and which arrival at a place is
-  preferable: the three things a workload supplies to the archive.
+  preferable: the three things a workload supplies to the archive. The
+  progress order must rise through every part of the game, or the search
+  keeps no checkpoint and gives no new tier there.
 - Checkpoint support, a film tool, a probe that prints the decoded state, and
   an end-of-run census of the archive per place.
 - Runner support for the game's whole-game mode, rooted starts and resumes.
@@ -217,9 +220,9 @@ are in [reference/tiny-worlds.md](reference/tiny-worlds.md).
 
 Slice each hard part the change targets and each hard part a watch leg names.
 Resume the checkpoint that opens that hard part with the changed searcher and
-with the unchanged searcher, three or more seeds each, for a few million tries.
-The archive and the delivered states come along, so every slice includes the
-handoff.
+with the unchanged searcher, under three or more new seeds each. Set the budget
+above the slowest pass of that part in any earlier run (rule 4). The archive
+and the delivered states come along, so every slice includes the handoff.
 
 - Confirm from counters or film that the change fired during the slice.
 - Read each leg as tries after the resume. Compare the arms' median tries with
@@ -256,7 +259,7 @@ only after the game shows where the loss is. The steps are in
 ## Reference files
 
 - [reference/tools.md](reference/tools.md): the runner, checkpoint and resume
-  fields, films, probes and the SMB check.
+  fields, films, probes and the regression checks.
 - [reference/tiny-worlds.md](reference/tiny-worlds.md): panel commands and
   verdicts, the scorecard, and improving a world.
 - [reference/research.md](reference/research.md): the published work behind
