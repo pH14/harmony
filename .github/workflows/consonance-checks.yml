@@ -154,6 +154,15 @@ jobs:
           filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'Device State')
           cargo nextest run --all-features -p vmm-core --lib -E "$filter"
 
+      - name: GIC arbitration matches the full-scan controls
+        run: |
+          cargo test --locked --release -p gicv3 --lib \
+            device::performance_tests::qualify_arbitration \
+            -- --ignored --exact --nocapture --test-threads=1
+          cargo test --locked --release -p gicv3 --lib \
+            device::performance_tests::qualify_delivery_cycle \
+            -- --ignored --exact --nocapture --test-threads=1
+
   virtual-time:
     name: Virtual Time
     runs-on: ubuntu-24.04

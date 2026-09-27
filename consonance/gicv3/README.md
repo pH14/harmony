@@ -28,8 +28,8 @@ GIC.
 
 Active-interrupt acknowledgement walks only set bits inside the configured
 interrupt range. It retains priority-first selection and lowest-INTID tie
-breaking without inspecting every inactive interrupt slot. This adds no cached
-state or allocation and does not change the snapshot format.
+breaking without inspecting every inactive interrupt slot. Queries read immutable
+controller state and allocate no memory.
 
 The unit qualification module keeps the previous scans as controls in the same
 executable. Deterministic and randomized comparisons cover every supported
@@ -58,14 +58,6 @@ masked priorities, level-only inputs, and winners or active interrupts in the
 last bitmap word. A delivery-cycle check also compares every returned interrupt
 and the complete final snapshot, with each arm starting from a fresh controller.
 Wall-clock measurements are confined to these ignored tests and never influence
-the modeled state. There are no timing assertions in CI.
-
-On an Apple M1 Max, the 96-interrupt configuration used by HVF measured roughly
-376 ns to 3.8 ns for acknowledgement with one active interrupt, 28 ns to 9 ns for
-an empty pending query, and 30 ns to 20 ns for a single timer query. A complete
-modeled pulse/query/accept/acknowledge/EOI cycle fell from about 438 ns to 45 ns.
-All 84 query configurations improved in that run, including dense and
-maximum-size guards. These are controller-only measurements, not whole-VM or
-search throughput; they exclude guest execution and Hypervisor.framework calls.
-The controller layout, retained memory, snapshot bytes, and public API are
-unchanged.
+the modeled state. The Device State CI job runs both qualifications in release mode to check the
+controls and endpoints; its shared-runner timings are informational. There are
+no timing assertions in CI.
