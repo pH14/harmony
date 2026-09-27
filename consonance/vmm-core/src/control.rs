@@ -902,7 +902,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.last_seal_dirty_gfns = None;
         let control = self.capture_control_state();
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-        let vm_state = match vmm.save_vm_state() {
+        let (vm_state, vcpu) = match vmm.capture_vm_state() {
             Ok(s) => s,
             Err(VmmError::ContractViolation(reason)) => {
                 return Ok(Err(ControlError::SnapshotRefused { reason }));
@@ -916,7 +916,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Err(ServeError::Service(error));
             }
         };
-        let mut state_blob_suffix = vmm.state_blob_suffix()?;
+        let mut state_blob_suffix = vmm.state_blob_suffix_from_vcpu(&vcpu)?;
+        drop(vcpu);
         control.append_hash(&mut state_blob_suffix);
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
         let at = vm_state.vtime().snapshot_vns;
