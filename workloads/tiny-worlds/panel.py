@@ -25,6 +25,8 @@ WORLD_BUDGET = 200_000
 SLOWER, FASTER = 1.25, 0.8
 MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
+REPORT_FIELDS = {"config", "evidence", "first_objective_work", "layout", "parent_draws", "skipped_draws",
+                 "stream_sha256", "success", "verified"}
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
@@ -356,7 +358,9 @@ def execute(binary: Path, job: dict) -> dict:
                              capture_output=True, text=True, check=False)
     if process.returncode:
         raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
-    report = json.loads(process.stdout)
+    report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
+    report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
+                          if key.startswith("map_")}
     report["arm"] = job["arm"]
     return report
 
