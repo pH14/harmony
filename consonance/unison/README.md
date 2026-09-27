@@ -40,3 +40,10 @@ The `unison` binary runs the toy comparison and prints JSON; exit code 0 means
 no difference was observed, 2 reports a detected difference, and 1 reports an
 input or harness error. Unit, property, mutation, CLI, determinism, and public-
 API tests cover exact counts, edge cases, and serialized reports.
+
+## Host hashing
+
+On native ARM64 Linux and macOS, SHA-256 uses runtime-detected CPU acceleration,
+including when this component is built independently. Other targets and Miri
+retain the existing backend selection. Hash inputs and outputs are unchanged.
+The [host SHA qualification](../../scripts/qualification/README.md) checks independent builds and compares real consumers with software hashing.

@@ -164,12 +164,12 @@ fn main() {
         return;
     }
     if args.iter().any(|x| x == "--concurrent") {
-        let gate = std::sync::Barrier::new(8);
+        let barrier = std::sync::Barrier::new(8);
         let results = std::thread::scope(|scope| {
             let threads: Vec<_> = (0..8)
                 .map(|_| {
                     scope.spawn(|| {
-                        gate.wait();
+                        barrier.wait();
                         cached()
                     })
                 })

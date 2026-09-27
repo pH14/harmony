@@ -451,3 +451,10 @@ from the recorded one, so stream draw-table hashes after a resume differ from an
 uninterrupted run. A resumed stream cannot be replayed. Workloads opt in through
 `Reporting::evidence_checkpoint` and `Reporting::evidence_from_checkpoint`.
 
+
+## Host hashing
+
+On native ARM64 Linux and macOS, SHA-256 uses runtime-detected CPU acceleration,
+including when this component is built independently. Other targets and Miri
+retain the existing backend selection. Hash inputs and outputs are unchanged.
+The [host SHA qualification](../../scripts/qualification/README.md) checks independent builds and compares real consumers with software hashing.
