@@ -12,7 +12,7 @@ A workload bundle brings together services, a traffic driver, optional operation
 
 The execution environment can save a stopped state and restore it to try a different continuation. This lets the campaign explore alternatives without always repeating all the preceding work. Wait lengths and fault timing are selected by the search, and the actual durations are stored in the resulting input.
 
-You control the campaign's budget through workers, executions, and actions. Fault search can also be bounded by host time. Increasing the budget gives the search more opportunity; it is not a guarantee that a particular bug will be found.
+You control the campaign's budget through workers and executions. Fault search can also be bounded by host time. Increasing the budget gives the search more opportunity; it is not a guarantee that a particular bug will be found.
 
 ## Discovery and confirmation are separate
 
