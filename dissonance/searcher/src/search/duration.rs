@@ -338,20 +338,20 @@ impl<C: Copy + Ord> DurationPolicies<C> {
         if !duration.get().is_power_of_two() {
             return Err("duration observation is not a logarithmic choice");
         }
-        if !self.policies.contains_key(&context) {
-            if self.order.len() == MAX_DURATION_CONTEXTS {
-                let old = self
-                    .order
-                    .pop_front()
-                    .ok_or("duration context order is inconsistent")?;
-                self.policies.remove(&old);
-            }
-            self.order.push_back(context);
-            self.policies.insert(context, DurationPolicy::new());
+        if let Some(policy) = self.policies.get_mut(&context) {
+            return policy.observe(duration, useful, execution_work);
         }
+        if self.order.len() == MAX_DURATION_CONTEXTS {
+            let old = self
+                .order
+                .pop_front()
+                .ok_or("duration context order is inconsistent")?;
+            self.policies.remove(&old);
+        }
+        self.order.push_back(context);
         self.policies
-            .get_mut(&context)
-            .ok_or("duration context was not retained")?
+            .entry(context)
+            .or_default()
             .observe(duration, useful, execution_work)
     }
 
@@ -453,6 +453,121 @@ mod tests {
 
     fn positive(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("positive")
+    }
+
+    #[test]
+    fn observing_a_retained_context_searches_the_map_once() {
+        use std::{
+            cmp::Ordering,
+            sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        };
+
+        static COMPARISONS: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Clone, Copy, Eq, PartialEq)]
+        struct Context(u16);
+
+        impl Ord for Context {
+            fn cmp(&self, other: &Self) -> Ordering {
+                COMPARISONS.fetch_add(1, AtomicOrdering::Relaxed);
+                self.0.cmp(&other.0)
+            }
+        }
+
+        impl PartialOrd for Context {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut policies = DurationPolicies::new();
+        for context in 0..MAX_DURATION_CONTEXTS as u16 {
+            policies
+                .observe(Context(context), positive(1), true, positive(1))
+                .unwrap();
+        }
+        for context in [0, 127, 255] {
+            COMPARISONS.store(0, AtomicOrdering::Relaxed);
+            assert!(policies.policies.get_mut(&Context(context)).is_some());
+            let once = COMPARISONS.load(AtomicOrdering::Relaxed);
+            assert!(once > 0);
+            COMPARISONS.store(0, AtomicOrdering::Relaxed);
+            policies
+                .observe(Context(context), positive(2), false, positive(3))
+                .unwrap();
+            assert_eq!(COMPARISONS.load(AtomicOrdering::Relaxed), once);
+        }
+    }
+
+    #[test]
+    fn context_updates_match_the_original_lookup_path() {
+        fn original_observe(
+            policies: &mut DurationPolicies<u16>,
+            context: u16,
+            duration: NonZeroU64,
+            useful: bool,
+            work: NonZeroU64,
+        ) -> Result<(), &'static str> {
+            if !duration.get().is_power_of_two() {
+                return Err("duration observation is not a logarithmic choice");
+            }
+            if !policies.policies.contains_key(&context) {
+                if policies.order.len() == MAX_DURATION_CONTEXTS {
+                    let old = policies
+                        .order
+                        .pop_front()
+                        .ok_or("duration context order is inconsistent")?;
+                    policies.policies.remove(&old);
+                }
+                policies.order.push_back(context);
+                policies.policies.insert(context, DurationPolicy::new());
+            }
+            policies
+                .policies
+                .get_mut(&context)
+                .ok_or("duration context was not retained")?
+                .observe(duration, useful, work)
+        }
+
+        let mut actual = DurationPolicies::<u16>::new();
+        let mut expected = DurationPolicies::<u16>::new();
+        let mut actual_rand = RomuDuoJrRand::with_seed(51);
+        let mut expected_rand = actual_rand;
+        for round in 0..1600_u16 {
+            let context = if round < 512 {
+                round % 256
+            } else {
+                round.wrapping_mul(37) % 384
+            };
+            let duration = positive(if round % 113 == 0 {
+                3
+            } else {
+                1_u64 << (round % 64)
+            });
+            let useful = round % 2 == 0;
+            let work = positive(u64::MAX - u64::from(round));
+            assert_eq!(
+                actual.observe(context, duration, useful, work),
+                original_observe(&mut expected, context, duration, useful, work)
+            );
+            assert_eq!(actual, expected);
+            assert_eq!(actual.memory_bytes(), expected.memory_bytes());
+            for context in [context, 511] {
+                assert_eq!(
+                    actual.draw(context, &mut actual_rand, positive(u64::MAX)),
+                    expected.draw(context, &mut expected_rand, positive(u64::MAX))
+                );
+            }
+            assert_eq!(actual_rand.next_u64(), expected_rand.next_u64());
+            if round % 64 == 0 {
+                assert_eq!(
+                    postcard::to_allocvec(&actual.checkpoint()).unwrap(),
+                    postcard::to_allocvec(&expected.checkpoint()).unwrap()
+                );
+                actual = DurationPolicies::from_checkpoint(actual.checkpoint()).unwrap();
+                expected = DurationPolicies::from_checkpoint(expected.checkpoint()).unwrap();
+            }
+        }
     }
 
     #[test]
