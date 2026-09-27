@@ -323,51 +323,22 @@ impl Store {
 
         self.live_layer(from)?;
 
-        let mut from_ancestors = BTreeSet::new();
-        let mut cur = Some(from.0);
-        while let Some(id) = cur {
-            if !from_ancestors.insert(id) {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
-            }
-            let Some(layer) = self.layers.get(&id) else {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
-            };
-            cur = layer.parent;
-        }
-
-        let mut common = None;
-        let mut to_visited = BTreeSet::new();
-        cur = Some(to.0);
-        while let Some(id) = cur {
-            if !to_visited.insert(id) {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
-            }
-            if from_ancestors.contains(&id) {
-                common = Some(id);
-                break;
-            }
-            let Some(layer) = self.layers.get(&id) else {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
-            };
-            cur = layer.parent;
-        }
-
+        let mut left = Some(from.0);
+        let mut right = Some(to.0);
         let mut changed_gfns = BTreeSet::new();
-        for start in [from.0, to.0] {
-            let mut side_visited = BTreeSet::new();
-            cur = Some(start);
-            while let Some(id) = cur {
-                if Some(id) == common {
-                    break;
-                }
-                if !side_visited.insert(id) {
-                    return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
-                }
-                let Some(layer) = self.layers.get(&id) else {
-                    return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
-                };
-                changed_gfns.extend(layer.pages.iter().map(|&(gfn, _)| gfn));
-                cur = layer.parent;
+        while left != right {
+            let id = left.max(right).expect("distinct ancestry cursors");
+            let Some(layer) = self.layers.get(&id) else {
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+            };
+            if layer.parent.is_some_and(|parent| parent >= id) {
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+            }
+            changed_gfns.extend(layer.pages.iter().map(|&(gfn, _)| gfn));
+            if left == Some(id) {
+                left = layer.parent;
+            } else {
+                right = layer.parent;
             }
         }
 
