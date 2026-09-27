@@ -2,8 +2,8 @@
 
 This document gives the fastest rate a search can reach on a workload and a
 chip, called its speed of light. It also gives a method for accounting for the
-gap between that rate and a measured one. The model and two worked examples
-come first. The assumptions behind the model follow, then consonance and
+gap between that rate and a measured one. The model and worked examples come
+first. The assumptions behind the model follow, then consonance and
 dissonance measured against it.
 
 ## The model
@@ -30,7 +30,8 @@ arrives every 25 µs of guest work. Page copies cost 10% when the guest writes a
 new page every 10 µs.
 
 A chip's ceiling is the sum of its cores' rates at the floor, with performance
-and efficiency cores measured separately.
+and efficiency cores measured separately. A search confined to one core type
+reaches it only with one search per type.
 
 Memory decides how close a search gets to that ceiling. Each worker holds its
 guest's resident pages, which limits how many workers a host can run. Each
@@ -43,20 +44,21 @@ work a second time.
 ## Accounting for the gap
 
 A search's efficiency is its measured rate divided by the chip's ceiling. The
-gap is the product of four factors. Each factor is at least one, and a search
-at its ceiling has all four at one.
+gap is the product of five factors. Each factor is at least one, and a search
+at its ceiling has all five at one.
 
 ```text
 ceiling = measured rate × host overhead × re-execution
-                        × cores in use × worker waiting
+                        × cores in use × worker waiting × contention
 ```
 
 | Factor | Ratio | Measured by |
 |---|---|---|
-| Host overhead | Worker busy time over guest time | Per-phase accounting of exits, pages, and observation |
-| Re-execution | Guest work run over new guest work | Execution ticks, split into new and re-run |
+| Host overhead | Worker busy time over guest time | Guest and host cycle counts, and per-phase accounting of exits, pages, and observation |
+| Re-execution | Guest work run over new guest work | Virtual time run, split into new and re-run |
 | Cores in use | The chip's ceiling over the ceiling of the cores the workers run on | Worker count and core type |
 | Worker waiting | Worker wall time over worker busy time | Per-worker timelines, split into waiting for admission and waiting for a reservation |
+| Contention | Guest time per unit of new work with every worker running, over that time with one | Guest cycles on a full run against a one-worker run on the same core type |
 
 > [!NOTE]
 > **Worked example: an emulator search at its floor.** On an M1 Max
@@ -65,31 +67,49 @@ ceiling = measured rate × host overhead × re-execution
 > frames per second, so host overhead is one within measurement error. Every
 > frame the search ran was one an action requested, so re-execution is one as
 > well. A Pokémon Blue snapshot is 58 KiB, so a gigabyte holds about 17,000
-> and the archive can keep one for every endpoint. Only cores in use and
-> worker waiting remain.
+> and the archive can keep one for every endpoint. Only cores in use, worker
+> waiting, and contention remain.
 
 > [!NOTE]
-> **Worked example: a Linux guest search at about a tenth of its chip.** An
-> Intel 285HX has 8 P-cores and 16 E-cores. Applied to consonance searches over
-> Linux OCI images on it, the model puts the rate at roughly a tenth of the
-> chip's ceiling.
+> **Worked example: one Linux guest search on four core types.** The etcd
+> historical case ran as a consonance search with one worker pinned to one
+> core. Guest time is the worker's busy time scaled by its share of guest
+> cycles. Re-execution is virtual time run over new virtual time.
 >
-> | Factor | Estimate | Basis |
-> |---|---|---|
-> | Host overhead | About 1.3x | A SQLite search spent 25% of worker cycles in the host. |
-> | Re-execution | About 3x | Replaying an etcd search's campaign stream through its cache gives 91,521 actions run for 28,878 new ones. |
-> | Cores in use | 2.2x to 2.6x | Taking an E-core as 0.6 to 0.8 of a P-core, the chip is worth 17.6 to 20.8 P-cores. The SQLite search ran eight workers. |
-> | Worker waiting | Unknown | Not measured. |
+> | | Intel 285HX P-core | Intel 285HX E-core | CIX CP8180 (Cortex-A720) | CIX CP8180 (Cortex-A520) |
+> |---|---|---|---|---|
+> | New guest time per execution | 60 ms | 87 ms | 215 ms | 838 ms |
+> | Ceiling per core | 16.6/s | 11.5/s | 4.7/s | 1.2/s |
+> | Measured rate | 2.14/s | 1.19/s | 0.40/s | 0.066/s |
+> | Host overhead | 3.2x | 4.0x | 4.9x | 8.2x |
+> | Re-execution | 2.4x | 2.4x | 2.4x | 2.2x |
+> | Gap | 7.8x | 9.7x | 11.7x | 18x |
 >
-> The product is 9x to 11x before worker waiting. The SQLite search ran 5.5
-> executions per second on eight workers. If it re-executes as much as the etcd
-> search, its ceiling on this chip is 50 to 60 executions per second.
+> One worker was busy for the whole run, so worker waiting and contention are
+> one. An E-core ran the same executions at 0.56 of a P-core's rate, and a
+> Cortex-A520 at 0.17 of a Cortex-A720's.
+
+> [!NOTE]
+> **Worked example: the same search on every core of one type.** On the Intel
+> 285HX, eight workers on the P-cores ran 5.6 executions per second, 2.6 times
+> one worker. Sixteen workers on the E-cores ran 4.2 per second, 3.5 times one
+> worker. Eight workers on the Cortex-A720 cores of a CIX CP8180 ran 1.3 per
+> second, 3.2 times one worker.
 >
-> The largest factor comes from each worker keeping its own bounded cache of
-> prefixes, since a Linux guest's snapshot is megabytes. Memory probably limits
-> cores in use as well, since guest RAM and that cache are paid per worker.
-> The factors come from two workloads, so the first measurement to take is all
-> four on one workload.
+> | Factor | 8 P-cores | 16 E-cores | 8 Cortex-A720 |
+> |---|---|---|---|
+> | Host overhead | 2.9x | 3.3x | 4.2x |
+> | Re-execution | 4.1x | 4.9x | 3.5x |
+> | Worker waiting | 1.5x | 1.9x | 1.6x |
+> | Contention | 1.4x | 1.4x | 1.3x |
+> | Gap to the cores' ceiling | 24x | 44x | 29x |
+>
+> Re-execution grows with the worker count because each worker keeps its own
+> cache of 96 prefixes, so a worker re-runs prefixes other workers already
+> ran. Restores also cost more per page with every worker running, which
+> points at memory bandwidth as the source of contention. The coordinator
+> spent under 0.4 ms per job and waited on results for over 99% of each run,
+> so it plays no part in the worker waiting.
 
 ## Assumptions behind the costs
 
@@ -151,7 +171,7 @@ above the floor.
 | Cost | Floor | consonance |
 |---|---|---|
 | Guest time | Native CPU time of new guest work | The guest runs natively under KVM or HVF. The guest's clock driver and paravirtual devices add instructions. |
-| Exits | One per arbitrated event | One per arbitrated event, plus one per execution tick, which the guest takes at every syscall, context switch, and idle-poll turn. |
+| Exits | One per arbitrated event | One per arbitrated event, plus one per execution tick, which the guest takes at every syscall, context switch, and idle-poll turn. On arm64 the guest also exits after every interrupt unmask, and KVM completes each MMIO exit with a second call into the kernel. |
 | Restore | Pages that differ from the next parent | Those pages are copied in place. |
 | Preservation | Pages written since the parent | KVM's dirty log finds the written pages. HVF has no dirty log, so every boundary captures all of guest RAM. Pages are hashed with BLAKE3 and interned. |
 | Whole-state hash | None | SHA-256 over all guest RAM for each checkpoint that requests one. |
@@ -164,10 +184,23 @@ The execution tick is the largest exit term above the floor, since syscalls and
 context switches far outnumber arbitrated events.
 
 > [!NOTE]
-> **Worked example.** A SQLite search on an Intel 285HX, unpinned, took 21,000
-> exits per worker second, one per 36 µs of guest work. At 2 to 3 µs each, the
-> exits cost 6% to 8% of guest time. At ten times that cost under nested
-> virtualization, the same exits cost more than half the guest time.
+> **Worked example.** The etcd search on one Intel 285HX P-core took 75,000
+> exits per execution against 148 ms of guest time, one per 2 µs of guest work.
+> Most were the execution tick's port writes. The host spent about 2.5 µs per
+> exit, 1.3 times the guest time in all. On a CIX CP8180 (Cortex-A720) the
+> same search took 262,000 exits per execution at about 5.8 µs each. The
+> largest source there was the unmask fence, and each of its MMIO exits
+> returned to user space twice. At ten times the cost under nested
+> virtualization, this workload's exits would cost about thirteen times its
+> guest time.
+
+> [!NOTE]
+> **Worked example.** On an M1 Max (Firestorm), the etcd search with 1 GiB of
+> guest RAM ran 0.20 executions per second on one worker. Each restore copied
+> all 262,144 pages at 2.8 µs per page, and each boundary captured all of them
+> at 1.0 µs per page with hashing. Those copies took 96% of the worker's time.
+> An Icestorm core at background priority ran the same executions at 0.04 per
+> second, with each page costing five to six times as much.
 
 Write-protecting guest pages after each boundary would give HVF a dirty log, at
 one fault per first write to a page. Hypervisor.framework allows one VM per
@@ -200,11 +233,12 @@ eviction under the logical budget. A workload that caches prefixes per worker
 also re-runs work that another worker already ran.
 
 > [!NOTE]
-> **Worked example.** An etcd search caches 96 prefixes per worker. Replaying
-> its campaign stream through that cache gives 91,521 actions run for 28,878
-> new ones, a factor of 3.2 counted by actions. On the same stream, an
-> unbounded cache per worker cuts the actions run 2.3x. A cache shared across
-> workers cuts them 3.2x, to new work only.
+> **Worked example.** An etcd search caches 96 prefixes per worker. Counted in
+> virtual time, one worker runs 2.4 times its new guest work, eight run 4.1
+> times, and sixteen run 4.9 times. Replaying one campaign stream through
+> that cache gives 91,521 actions run for 28,878 new ones. On the same
+> stream, an unbounded cache per worker cuts the actions run 2.3x. A cache
+> shared across workers cuts them 3.2x, to new work only.
 
 Eviction decisions are part of the recorded campaign and must replay, so a
 retention policy uses only deterministic inputs, such as the selector's draw
@@ -230,8 +264,9 @@ shorter an execution, the fewer workers one coordinator can feed.
 > [!NOTE]
 > **Worked example.** A Pokémon Blue execution is 1,326 frames, or 134 ms on
 > an M1 Max (Firestorm). Twenty-four workers at that rate need the coordinator
-> to finish each job in under 6 ms. An etcd execution takes about half a second
-> on an Intel 285HX P-core, so the same 6 ms allows about 80 workers.
+> to finish each job in under 6 ms. An etcd search on an Intel 285HX took 0.2
+> to 0.4 ms per job, and each of its workers took 0.5 to 2 s per execution, so
+> one coordinator could feed over a thousand such workers.
 
 Results are admitted in reservation order. Each worker holds one or two result
 slots, which free at admission, and the window bounds how far reservations run
@@ -262,7 +297,10 @@ kernel enforces resident size. Capacity planning uses the resident peak.
 
 > [!NOTE]
 > **Worked example.** A Metroid search with an 8 GiB logical budget peaks at
-> 10.2 to 11.0 GB resident, 19% to 28% above the budget.
+> 10.2 to 11.0 GB resident, 19% to 28% above the budget. An etcd search with
+> eight workers and 1 GiB of guest RAM each started at 8.4 GB resident and
+> reached 29 GB after 2,400 executions, as the workers' snapshots accumulated.
+> At that size a 62 GB host admits about sixteen workers.
 
 ## Scaling
 
@@ -276,16 +314,33 @@ limits binds.
 | Memory bandwidth | Workers times bytes written per second, times about five, exceeds the chip's bandwidth |
 | Ready parents | Fewer parents are ready for selection than there are workers |
 | Admission wait | Execution times spread widely and workers fill their result slots |
+| Per-worker caches | Each worker re-runs prefixes that another worker already ran |
 
 The multiple of five in the bandwidth row covers the guest's write, the copy
 into a snapshot, the hash, and the copy back on restore.
 
 A sweep over worker count pins workers to one core type, since performance and
-efficiency cores run at different rates. Changing the worker count also changes
-which parents the search selects, so a sweep compares campaigns of different
-work as well as different parallelism. Boot, setup, confirmation replays, and
-final persistence add fixed time per campaign, which matters for short
-campaigns with many workers.
+efficiency cores run at different rates. consonance refuses an affinity that
+spans core types, so a search on a hybrid chip runs on one type. Changing the
+worker count also changes which parents the search selects, so a sweep
+compares campaigns of different work as well as different parallelism. Boot,
+setup, confirmation replays, and final persistence add fixed time per
+campaign, which matters for short campaigns with many workers.
+
+> [!NOTE]
+> **Worked example.** The etcd search, in executions per second, on one core
+> type per sweep.
+>
+> | Workers | Intel 285HX P-cores | CIX CP8180 Cortex-A720 |
+> |---|---|---|
+> | 1 | 2.14 | 0.40 |
+> | 2 | 2.75 | 0.74 |
+> | 4 | 4.23 | 1.00 |
+> | 8 | 5.61 | 1.30 |
+>
+> Eight workers give 2.6 and 3.2 times one worker. Re-execution from
+> per-worker caches, worker waiting, and contention each grow with the worker
+> count. The coordinator stays idle for over 99% of each run.
 
 Weak scaling grows the campaign with the worker count. The coordinator limits
 it, since its occupancy grows with jobs per second. Guest RAM per worker against
@@ -322,6 +377,7 @@ assumption on a new chip or workload.
 | A page costs about 1 µs to copy, twice that if hashed | Page microbenchmark per chip |
 | Guest cycles match native cycles for the same work | Guest cycles per instruction under the search against the same code run natively |
 | An efficiency core runs at a fixed fraction of a performance core's rate | Fixed workload pinned to each core type |
+| Per-core rates add across workers | Guest time per unit of new work on a full run against a one-worker run |
 | Idle virtual time costs little CPU | Busy and idle split in per-phase accounting |
 | A Linux guest's snapshot is megabytes | Pages preserved per boundary in per-phase accounting |
 | Coordinator time per job is milliseconds | Coordinator profile on a many-worker run |
