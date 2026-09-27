@@ -43,7 +43,6 @@ pub struct SearchOptions {
     pub seed: u64,
     pub workers: u32,
     pub executions: u64,
-    pub actions: usize,
     pub output: PathBuf,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -51,7 +50,6 @@ pub struct SearchIdentity {
     pub seed: u64,
     pub workers: u32,
     pub executions: u64,
-    pub actions: usize,
 }
 impl From<&SearchOptions> for SearchIdentity {
     fn from(options: &SearchOptions) -> Self {
@@ -59,7 +57,6 @@ impl From<&SearchOptions> for SearchIdentity {
             seed: options.seed,
             workers: options.workers,
             executions: options.executions,
-            actions: options.actions,
         }
     }
 }
@@ -93,8 +90,8 @@ impl PreparedIdentity {
     }
 }
 fn validate_output(options: &SearchOptions) -> Result<(), Box<dyn Error>> {
-    if options.workers == 0 || options.actions == 0 || options.executions == 0 {
-        return Err("workers, actions, and executions must be positive".into());
+    if options.workers == 0 || options.executions == 0 {
+        return Err("workers and executions must be positive".into());
     }
     if options.output.exists() && fs::read_dir(&options.output)?.next().is_some() {
         return Err("search output directory must be empty; choose a new --out path".into());
@@ -139,7 +136,6 @@ where
         campaign_seed: options.seed,
         workers: options.workers,
         execution_budget: options.executions,
-        action_limit: options.actions,
         host: "harmony-search".into(),
         wall_budget: None,
         stop_rollout_on_objective: true,

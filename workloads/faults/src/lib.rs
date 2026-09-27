@@ -34,4 +34,4 @@ pub mod consonance;
 
 pub use bundle::FaultVocabulary;
 pub use package::{Artifacts, Options, RecordedActions, Report, parse_recorded_input};
-pub use target::{DEFAULT_HORIZON_NANOS, FaultAction, MAX_FAULT_ACTIONS};
+pub use target::{DEFAULT_HORIZON_NANOS, FaultAction};

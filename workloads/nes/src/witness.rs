@@ -32,10 +32,8 @@ pub fn replay_witness<G: Workload>(
             &mut target,
             &snapshot,
             &[],
-            i,
             aggregate,
             &[*action],
-            input.actions.len(),
             RetentionPolicy::Unprobed,
             true,
         )?;

@@ -16,7 +16,6 @@
   ],
   "search": {
     "executions": 400000,
-    "actions": 8192,
     "window": 2,
     "result_slots": 2,
     "wall_seconds": 900,
@@ -44,7 +43,6 @@
       "origin": "level 1 gameplay genesis",
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
-        "actions": 512,
         "executions": 100000,
         "frames": 5000000
       }
@@ -73,7 +71,6 @@
       "origin": "power-on local match, default stage, native Hard AI",
       "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
       "search": {
-        "actions": 512,
         "executions": 20000,
         "frames": 3000000
       }
@@ -85,7 +82,6 @@
       "origin": "isolated level 9 setup; no gameplay tape",
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
-        "actions": 512,
         "executions": 100000,
         "frames": 5000000
       }
@@ -97,7 +93,6 @@
       "origin": "isolated level 17 setup; no gameplay tape",
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
-        "actions": 512,
         "executions": 100000,
         "frames": 5000000
       }
@@ -109,7 +104,6 @@
       "origin": "isolated level 25 setup; no gameplay tape",
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
-        "actions": 512,
         "executions": 100000,
         "frames": 5000000
       }
@@ -121,7 +115,6 @@
       "origin": "isolated level 33 setup; no gameplay tape",
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
-        "actions": 512,
         "executions": 100000,
         "frames": 5000000
       }
@@ -133,7 +126,6 @@
       "origin": "power-on level 1 genesis; all 40 level flags required",
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
-        "actions": 8192,
         "executions": 500000,
         "frames": 40000000
       },
@@ -202,7 +194,6 @@
       "origin": "power-on local match, default stage, native Easy AI",
       "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
       "search": {
-        "actions": 512,
         "executions": 20000,
         "frames": 3000000
       }
@@ -214,7 +205,6 @@
       "origin": "power-on local match, default stage, native Fair AI",
       "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
       "search": {
-        "actions": 512,
         "executions": 20000,
         "frames": 3000000
       }

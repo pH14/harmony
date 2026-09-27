@@ -33,7 +33,7 @@ use crate::{
     },
     bundle::FaultVocabulary,
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
-    target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
+    target::{FaultAction, FaultObservations, FaultSnapshot},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
@@ -135,7 +135,6 @@ pub struct FaultCampaignConfig {
     pub vocabulary: FaultVocabulary,
     pub workers: u32,
     pub execution_budget: u64,
-    pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
     pub archive_entry_limit: usize,
@@ -153,7 +152,6 @@ impl FaultCampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
-            action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             stop_rollout_on_objective: true,
@@ -207,10 +205,8 @@ fn execute_job(
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
     replay: &[FaultAction],
-    parent_actions: usize,
     parent_milestones: FaultMilestones,
     suffix: &[FaultAction],
-    max_actions: usize,
     stop_rollout_on_objective: bool,
 ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
     target.restore(origin_snapshot)?;
@@ -221,7 +217,6 @@ fn execute_job(
         target.apply(*action);
     }
     let mut aggregate = parent_milestones;
-    let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = outcome(target);
     let mut objective_seen = parent_outcome.objective_reached;
@@ -235,10 +230,6 @@ fn execute_job(
         });
     }
     for action in suffix {
-        if length >= max_actions {
-            break;
-        }
-        length = length.saturating_add(1);
         target.apply(*action);
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
@@ -345,10 +336,6 @@ impl Reporting for FaultWorkload {
 }
 
 impl InputPolicy for FaultWorkload {
-    fn max_action_limit(&self) -> usize {
-        MAX_FAULT_ACTIONS
-    }
-
     fn max_action_cost(&self) -> u64 {
         u64::from(u16::MAX)
     }
@@ -602,10 +589,8 @@ impl TargetExecution for FaultWorkload {
         target: &mut FaultTarget,
         origin_snapshot: &FaultSnapshot,
         replay: &[FaultAction],
-        parent_actions: usize,
         parent_milestones: FaultMilestones,
         suffix: &[FaultAction],
-        max_actions: usize,
         _retention: RetentionPolicy,
         stop_rollout_on_objective: bool,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
@@ -613,10 +598,8 @@ impl TargetExecution for FaultWorkload {
             target,
             origin_snapshot,
             replay,
-            parent_actions,
             parent_milestones,
             suffix,
-            max_actions,
             stop_rollout_on_objective,
         )
     }

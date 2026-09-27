@@ -25,7 +25,6 @@ struct ChallengeDescriptor {
     emulator_backend: String,
     terminal_policy: String,
     workers: u32,
-    action_limit: usize,
     screen_budget: u64,
 }
 
@@ -41,7 +40,6 @@ struct PrivateManifest {
     expected_level: u8,
     expected_progress: u16,
     workers: u32,
-    action_limit: usize,
     screen_budget: u64,
     rom_sha256: String,
     emulator_backend: String,
@@ -288,7 +286,7 @@ fn write_fixture(
     let checkpoint_bytes = checkpoint.to_bytes()?;
     let checkpoint_sha256 = sha256(&checkpoint_bytes);
     let challenge = ChallengeDescriptor {
-        format: "dissonance-fixture-challenge-v2",
+        format: "dissonance-fixture-challenge-v3",
         id: target.id.clone(),
         checkpoint_file: "checkpoint.bin",
         checkpoint_sha256: checkpoint_sha256.clone(),
@@ -300,11 +298,10 @@ fn write_fixture(
         }
         .identifier(),
         workers: 12,
-        action_limit: 512,
         screen_budget: 30_000,
     };
     let manifest = PrivateManifest {
-        format: "dissonance-fixture-private-power-on-v1",
+        format: "dissonance-fixture-private-power-on-v2",
         logical_checkpoint_path: target.id.clone(),
         prefix_origin: "quicknes-power-on",
         prefix_path: prefix_path.to_string_lossy().into_owned(),
@@ -314,7 +311,6 @@ fn write_fixture(
         expected_level: target.level,
         expected_progress: 0,
         workers: 12,
-        action_limit: 512,
         screen_budget: 30_000,
         rom_sha256: rom_sha256.to_owned(),
         emulator_backend: emulator_backend.to_owned(),

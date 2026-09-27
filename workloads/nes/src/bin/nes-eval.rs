@@ -70,7 +70,6 @@ struct Request {
     executions: u64,
     #[serde(default)]
     frames: Option<u64>,
-    actions: usize,
     memory_mib: usize,
     window: usize,
     #[serde(default = "default_result_slots")]
@@ -178,7 +177,6 @@ where
         campaign_seed: request.seed,
         workers: request.workers,
         execution_budget: request.executions,
-        action_limit: request.actions,
         host: "nes-eval".into(),
         wall_budget: Some(Duration::from_secs(request.wall_seconds)),
         stop_rollout_on_objective: true,
@@ -195,15 +193,11 @@ where
     };
     if request.workers == 0
         || request.executions == 0
-        || request.actions == 0
         || request.memory_mib == 0
         || request.window == 0
         || request.wall_seconds == 0
     {
         return Err("search limits must be positive".into());
-    }
-    if request.actions > game.max_action_limit() {
-        return Err("actions exceed the adapter limit".into());
     }
     let result_buffering = match request.result_slots {
         1 => ResultBuffering::OnePerWorker,
@@ -212,7 +206,7 @@ where
     };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
+        &json!({"format":"nes-eval-identity-v2", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
     )?;
     let mut stream = StreamDigest {
         file: if full {

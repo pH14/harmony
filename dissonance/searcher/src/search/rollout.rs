@@ -106,10 +106,8 @@ pub fn execute_job<G: Workload + ?Sized>(
     target: &mut G::Target,
     origin_snapshot: &G::Snapshot,
     replay: &[G::Action],
-    parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
-    max_actions: usize,
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
@@ -134,10 +132,8 @@ pub fn execute_job<G: Workload + ?Sized>(
     }
     execute_suffix(
         &mut WorkloadRollout::new(workload, run, target),
-        parent_actions,
         parent_milestones,
         suffix,
-        max_actions,
         retention,
         stop_rollout_on_objective,
     )
@@ -145,15 +141,12 @@ pub fn execute_job<G: Workload + ?Sized>(
 
 pub fn execute_suffix<G: Workload + ?Sized>(
     target: &mut impl Rollout<G>,
-    parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: &[G::Action],
-    max_actions: usize,
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     let mut milestones = parent_milestones;
-    let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = target.outcome()?;
     let mut objective_seen = parent_outcome.objective_reached;
@@ -167,10 +160,6 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         });
     }
     for action in suffix {
-        if length >= max_actions {
-            break;
-        }
-        length = length.saturating_add(1);
         target.apply(action, &mut milestones)?;
         let raw_outcome = target.outcome()?;
         let objective_reached = raw_outcome.objective_reached && !objective_seen;

@@ -11,8 +11,6 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_HORIZON_NANOS: u64 = 500_000_000;
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
-pub const MAX_FAULT_ACTIONS: usize = 256;
-
 const NS_SHIFT: u32 = 24;
 const NS_ASSERT: u8 = 1;
 const NS_STATE: u8 = 2;

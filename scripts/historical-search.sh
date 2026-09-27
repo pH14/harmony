@@ -10,11 +10,11 @@ set -euo pipefail
 
 : "${CASE_ID:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${RAM_MIB:?}"
-: "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
+: "${SEED:?}" "${WORKERS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 knobs=${KNOBS-}
 
-for name in RAM_MIB SEED WORKERS ACTIONS EXECUTIONS WALL_MINUTES; do
+for name in RAM_MIB SEED WORKERS EXECUTIONS WALL_MINUTES; do
     value=${!name}
     [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
         echo "historical-search: infra-failure (${name} must be positive)" >&2
@@ -48,7 +48,6 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     --seed "${SEED}" \
     --workers "${WORKERS}" \
     --executions "${EXECUTIONS}" \
-    --actions "${ACTIONS}" \
     --ram-mib "${RAM_MIB}" \
     --knobs "${knobs}" \
     --wall-minutes "${WALL_MINUTES}" \
@@ -155,13 +154,13 @@ jq -n \
     --argjson cli_exit_status "${status}" --argjson watchdog_cutoffs "${watchdog_cutoffs}" \
     --argjson execution_failures "${execution_failures}" \
     --argjson seed "${SEED}" --argjson workers "${WORKERS}" \
-    --argjson executions_budget "${EXECUTIONS}" --argjson actions "${ACTIONS}" \
+    --argjson executions_budget "${EXECUTIONS}" \
     --argjson ram_mib "${RAM_MIB}" \
     --argjson wall_minutes "${WALL_MINUTES}" --arg knobs "${knobs}" \
     --arg reproducer "${reproducer}" \
     '{case_id:$case_id, software:$software, version:$version,
       image_prefix:$image_prefix, seed:$seed, workers:$workers,
-      executions_budget:$executions_budget, actions:$actions,
+      executions_budget:$executions_budget,
       ram_mib:$ram_mib, wall_minutes:$wall_minutes,
       knobs:$knobs, execution_status:$execution_status,
       cli_exit_status:$cli_exit_status, watchdog_cutoffs:$watchdog_cutoffs,

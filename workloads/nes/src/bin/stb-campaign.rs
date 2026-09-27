@@ -41,7 +41,6 @@ struct Args {
     seed: u64,
     executions: u64,
     workers: u32,
-    action_limit: usize,
     fixed_execution_soak: bool,
     host: String,
     memory_budget_mib: Option<usize>,
@@ -69,7 +68,6 @@ impl Args {
         let mut seed = 1_u64;
         let mut executions = DEFAULT_EXECUTIONS;
         let mut workers = DEFAULT_WORKERS;
-        let mut action_limit = 512_usize;
         let mut fixed_execution_soak = false;
         let mut host = "local-stb-trial".to_owned();
         let mut memory_budget_mib = None;
@@ -96,7 +94,6 @@ impl Args {
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
-                "--action-limit" => action_limit = parse_number("action-limit", value)?,
                 "--host" => host = value.into_string().map_err(|_| "host is not UTF-8")?,
                 "--memory-budget-mib" => {
                     memory_budget_mib = Some(parse_number("memory-budget-mib", value)?)
@@ -113,13 +110,6 @@ impl Args {
         if executions == 0 {
             return Err("executions must be at least 1".into());
         }
-        if action_limit == 0 || action_limit > nes_workload::stb::archive::MAX_STB_ACTIONS {
-            return Err(format!(
-                "action-limit must be between 1 and {}",
-                nes_workload::stb::archive::MAX_STB_ACTIONS
-            )
-            .into());
-        }
         Ok(Self {
             core,
             rom,
@@ -127,7 +117,6 @@ impl Args {
             seed,
             executions,
             workers,
-            action_limit,
             fixed_execution_soak,
             host,
             memory_budget_mib,
@@ -162,7 +151,6 @@ fn campaign_config(args: &Args) -> StbCampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,
         execution_budget: args.executions,
-        action_limit: args.action_limit,
         host: args.host.clone(),
         wall_budget: None,
         continue_after_victory: args.fixed_execution_soak,
@@ -467,7 +455,6 @@ mod tests {
         let args = Args::parse_from(required_args(&[])).expect("arguments parse");
         assert_eq!(args.executions, super::DEFAULT_EXECUTIONS);
         assert_eq!(args.workers, super::DEFAULT_WORKERS);
-        assert_eq!(args.action_limit, 512);
         assert!(!args.fixed_execution_soak);
         assert_eq!(args.ai, super::StbAi::Hard);
     }
@@ -500,7 +487,6 @@ mod tests {
     fn zero_worker_and_execution_values_are_rejected() {
         assert!(Args::parse_from(required_args(&["--workers", "0"])).is_err());
         assert!(Args::parse_from(required_args(&["--executions", "0"])).is_err());
-        assert!(Args::parse_from(required_args(&["--action-limit", "0"])).is_err());
     }
 
     #[test]

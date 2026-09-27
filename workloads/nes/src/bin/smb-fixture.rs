@@ -23,8 +23,8 @@ use nes_workload::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const MANIFEST_FORMAT: &str = "dissonance-fixture-private-v2";
-const CHALLENGE_FORMAT: &str = "dissonance-fixture-challenge-v2";
+const MANIFEST_FORMAT: &str = "dissonance-fixture-private-v3";
+const CHALLENGE_FORMAT: &str = "dissonance-fixture-challenge-v3";
 const EVALUATOR_WORKERS: u32 = 12;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -40,7 +40,6 @@ struct PrivateManifest {
     expected_progress: u16,
     action_count: usize,
     workers: u32,
-    action_limit: usize,
     screen_budget: u64,
     rom_sha256: String,
     emulator_backend: String,
@@ -59,7 +58,6 @@ struct ChallengeDescriptor {
     emulator_backend: String,
     terminal_policy: String,
     workers: u32,
-    action_limit: usize,
     screen_budget: u64,
 }
 
@@ -172,7 +170,6 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         return Err("logical checkpoint path must not be empty".into());
     }
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
-    let action_limit = usize::try_from(parse_u64(&args.next().ok_or("missing action limit")?)?)?;
     let screen_budget = parse_u64(&args.next().ok_or("missing screen budget")?)?;
     let mut base_prefix_path = None;
     while let Some(flag) = args.next() {
@@ -237,7 +234,6 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         expected_progress: 0,
         action_count: prefix.actions.len(),
         workers: EVALUATOR_WORKERS,
-        action_limit,
         screen_budget,
         rom_sha256: rom_sha256.clone(),
         emulator_backend: game.emulator_identity().to_owned(),
@@ -258,7 +254,6 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         }
         .identifier(),
         workers: EVALUATOR_WORKERS,
-        action_limit,
         screen_budget,
     };
     fs::write(output.join("prefix.json"), prefix_bytes)?;
@@ -293,7 +288,6 @@ fn verify(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box
         || challenge.rom_sha256 != manifest.rom_sha256
         || challenge.emulator_backend != manifest.emulator_backend
         || challenge.workers != manifest.workers
-        || challenge.action_limit != manifest.action_limit
         || challenge.screen_budget != manifest.screen_budget
     {
         return Err("private and worker-visible fixture descriptors disagree".into());

@@ -19,8 +19,6 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-
-pub const MAX_NOVA_ACTIONS: usize = 8_192;
 pub const KEY_POLICY_IDENTIFIER: &str = "nova_peer_places_level_spatial_32_place_preference_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";

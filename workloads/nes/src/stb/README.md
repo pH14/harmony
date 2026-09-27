@@ -244,7 +244,7 @@ HARMONY_STB_CORRECTNESS=1 HARMONY_STB_AI=hard \
 workloads/nes/target/release/stb-campaign \
   --core workloads/nes/build/stb/quicknes_libretro.so \
   --rom workloads/nes/build/stb/stb.nes --output workloads/nes/build/stb-artifact \
-  --ai hard --seed 1 --executions 20000 --workers 2 --action-limit 512
+  --ai hard --seed 1 --executions 20000 --workers 2
 ```
 
 For the Easy/Fair soak cells, select the corresponding AI, use

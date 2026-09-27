@@ -14,7 +14,6 @@
   ],
   "search": {
     "executions": 100000,
-    "actions": 512,
     "window": 2,
     "result_slots": 2,
     "wall_seconds": 1800,
@@ -66,7 +65,6 @@
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
         "executions": 500000,
-        "actions": 8192,
         "wall_seconds": 3300
       },
       "whole_game": true

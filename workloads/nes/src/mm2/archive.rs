@@ -19,8 +19,6 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-
-pub const MAX_MM2_ACTIONS: usize = 8_192;
 pub const KEY_POLICY_IDENTIFIER: &str = "mm2_bosses_tiers_location_boss_damage_enemy_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v20";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
