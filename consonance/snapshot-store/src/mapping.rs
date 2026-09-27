@@ -47,7 +47,7 @@ impl Mapping {
                 })?;
             map[start..end].copy_from_slice(data);
         }
-        map.flush()
+        Ok(())
     }
 
     pub(crate) fn new(file: File, len: u64) -> io::Result<Mapping> {
@@ -181,6 +181,25 @@ mod tests {
         assert_eq!(&img[PAGE_SIZE..2 * PAGE_SIZE], &[0u8; PAGE_SIZE][..]);
         assert_eq!(&img[2 * PAGE_SIZE..3 * PAGE_SIZE], &[0u8; PAGE_SIZE][..]);
         assert_eq!(&img[3 * PAGE_SIZE..], &b[..]);
+    }
+
+    #[test]
+    fn populated_file_survives_private_writes_and_remapping() {
+        let (file, len) = sized(3);
+        let page = [0xA5u8; PAGE_SIZE];
+        Mapping::populate(&file, len, std::iter::once((1, &page[..]))).unwrap();
+        let mut first = Mapping::new(file, len).unwrap();
+        assert_eq!(&first.as_slice()[PAGE_SIZE..2 * PAGE_SIZE], &page);
+        first.as_mut_slice().fill(0xFF);
+
+        let Backing::Mapped { map, _file: file } = first.backing else {
+            unreachable!();
+        };
+        drop(map);
+        let second = Mapping::new(file, len).unwrap();
+        assert_eq!(&second.as_slice()[..PAGE_SIZE], &[0; PAGE_SIZE]);
+        assert_eq!(&second.as_slice()[PAGE_SIZE..2 * PAGE_SIZE], &page);
+        assert_eq!(&second.as_slice()[2 * PAGE_SIZE..], &[0; PAGE_SIZE]);
     }
 
     #[cfg(unix)]
