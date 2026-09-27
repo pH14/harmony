@@ -113,7 +113,7 @@ fn recorded_actions_902_903_preserve_confirmed_damage_in_render_tracking() {
     ]);
     assert_eq!(enemy_damage_between(&before, &after), 2);
     let state = decode_state(&before).unwrap();
-    let mut tracking = RenderTracking::new(before, state, state.stage);
+    let mut tracking = RenderTracking::new(before, state, Some(state.stage), false, 0);
     assert_eq!(tracking.update(after).unwrap().enemy_damage, 2);
     assert_eq!(tracking.update(after).unwrap().enemy_damage, 2);
 }

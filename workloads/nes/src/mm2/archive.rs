@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, WILY5_REFIGHTS_COMPLETE,
-        WILY5_STAGE, preference_tuple,
+        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Scene, Mm2Snapshot,
+        WILY5_REFIGHTS_COMPLETE, WILY5_STAGE, preference_tuple,
     },
     search::{
         archive::{
@@ -20,15 +20,32 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_bosses_tiers_location_boss_damage_enemy_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v20";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "mm2_whole_game_inventory_encounters_tiers_spatial_32_resources_preference_v21";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
 pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct Mm2Progress {
+    pub ending: bool,
+    pub bosses: u8,
+    pub castle_clears: u8,
+    pub refights: u8,
+    pub machine_shell: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {
     pub bosses: u8,
+    pub castle_clears: u8,
+    pub capabilities: u8,
+    pub refighting_mask: u8,
+    pub refight_boss: u8,
+    pub boobeam_targets: u16,
+    pub machine_shell: bool,
+    pub ending: bool,
     pub stage: u8,
     pub screen: u8,
     pub room: u8,
@@ -45,8 +62,20 @@ pub struct Mm2ArchiveKey {
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool);
-    type Progress = u8;
+    type Place = (
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        bool,
+        (u8, u8, u8, u16, bool),
+    );
+    type Progress = Mm2Progress;
     type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
@@ -61,11 +90,24 @@ impl ArchiveKey for Mm2ArchiveKey {
             self.posture,
             self.platforms,
             self.menu != MENU_CLOSED,
+            (
+                self.capabilities,
+                self.refighting_mask,
+                self.refight_boss,
+                self.boobeam_targets,
+                self.machine_shell,
+            ),
         )
     }
 
     fn progress(self) -> Self::Progress {
-        self.bosses
+        Mm2Progress {
+            ending: self.ending,
+            bosses: self.bosses,
+            castle_clears: self.castle_clears,
+            refights: self.refighting_mask.count_ones() as u8,
+            machine_shell: self.machine_shell,
+        }
     }
 
     fn identity(self) -> Self::Identity {
@@ -102,6 +144,13 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
     let (bosses, health, energy) = preference_tuple(state);
     Mm2ArchiveKey {
         bosses,
+        castle_clears: state.castle_clears,
+        capabilities: state.weapons_obtained,
+        refighting_mask: state.refighting_mask,
+        refight_boss: state.refight_boss,
+        boobeam_targets: state.boobeam_targets,
+        machine_shell: state.wily_machine_shell_broken,
+        ending: state.scene == Mm2Scene::Ending,
         health,
         energy,
         stage: state.stage,
@@ -120,6 +169,9 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2Milestones {
+    pub robot_masters: u8,
+    pub castle_clears: u8,
+    pub ending: bool,
     pub max_screen: u8,
     pub reached_boss: bool,
     pub defeated_boss: bool,
@@ -141,6 +193,7 @@ pub struct Mm2MilestoneInputs {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ProgressWatermark {
+    pub whole_game: Mm2Progress,
     pub bosses: u8,
     pub stage: u8,
     pub screen: u8,
@@ -180,6 +233,9 @@ pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Mileston
         || (boss_defeated
             && (state.stage != WILY5_STAGE || state.refighting_mask == WILY5_REFIGHTS_COMPLETE));
     Mm2Milestones {
+        robot_masters: state.weapons_obtained,
+        castle_clears: state.castle_clears,
+        ending: state.scene == Mm2Scene::Ending,
         max_screen: state.screen,
         reached_boss: defeated_boss || state.boss_fight_underway() || boss_defeated,
         defeated_boss,
@@ -187,19 +243,30 @@ pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Mileston
 }
 
 pub fn merge_milestones(into: &mut Mm2Milestones, from: Mm2Milestones) {
+    into.robot_masters |= from.robot_masters;
+    into.castle_clears = into.castle_clears.max(from.castle_clears);
+    into.ending |= from.ending;
     into.max_screen = into.max_screen.max(from.max_screen);
     into.reached_boss |= from.reached_boss;
     into.defeated_boss |= from.defeated_boss;
 }
 
 #[must_use]
-pub fn milestone_key(value: Mm2Milestones) -> (bool, bool, u8) {
-    (value.defeated_boss, value.reached_boss, value.max_screen)
+pub fn milestone_key(value: Mm2Milestones) -> (bool, u32, u8, bool, bool, u8) {
+    (
+        value.ending,
+        value.robot_masters.count_ones(),
+        value.castle_clears,
+        value.defeated_boss,
+        value.reached_boss,
+        value.max_screen,
+    )
 }
 
 #[must_use]
 pub fn progress_watermark(state: Mm2MechanicalState) -> Mm2ProgressWatermark {
     Mm2ProgressWatermark {
+        whole_game: archive_key(state).progress(),
         bosses: state.bosses_beaten(),
         stage: state.stage,
         screen: state.screen,
@@ -260,9 +327,58 @@ mod tests {
             y: 0xb4,
             health,
             lives: 2,
+            player_state: 3,
             weapons_obtained: weapons,
             ..Mm2MechanicalState::default()
         }
+    }
+
+    #[test]
+    fn whole_game_encounter_masks_preserve_distinct_states_and_order_progress() {
+        let mut first = state(100, 28, 255);
+        first.stage = 12;
+        first.castle_clears = 4;
+        first.refighting_mask = 1;
+        let mut other = first;
+        other.refighting_mask = 2;
+        assert_eq!(archive_key(first).progress(), archive_key(other).progress());
+        assert_ne!(archive_key(first).place(), archive_key(other).place());
+        other.refighting_mask = 3;
+        assert!(archive_key(other).progress() > archive_key(first).progress());
+        first.refighting_mask = 255;
+        other = first;
+        other.wily_machine_shell_broken = true;
+        assert!(archive_key(other).progress() > archive_key(first).progress());
+        first.stage = 11;
+        first.boobeam_targets = 3;
+        other = first;
+        other.boobeam_targets = 2;
+        assert_ne!(archive_key(first).place(), archive_key(other).place());
+    }
+
+    #[test]
+    fn whole_game_inventory_sets_need_distinct_places() {
+        let metal = archive_key(state(100, 28, 0x40));
+        let air = archive_key(state(100, 28, 0x02));
+        assert_eq!(metal.progress(), air.progress());
+        assert_ne!(metal.place(), air.place());
+    }
+
+    #[test]
+    fn whole_game_castle_clear_must_advance_the_tier() {
+        let mut before = state(100, 28, 255);
+        before.stage = 12;
+        before.castle_clears = 4;
+        before.refighting_mask = 255;
+        before.wily_machine_shell_broken = true;
+        let after = Mm2MechanicalState {
+            stage: 13,
+            castle_clears: 5,
+            refighting_mask: 0,
+            wily_machine_shell_broken: false,
+            ..before
+        };
+        assert!(archive_key(after).progress() > archive_key(before).progress());
     }
 
     #[test]
@@ -313,10 +429,10 @@ mod tests {
     #[test]
     fn one_location_uses_resources_only_for_preference() {
         let weak = archive_key(state(100, 4, 0));
-        let strong = archive_key(state(100, 20, 0x40));
+        let strong = archive_key(state(100, 20, 0));
         assert_eq!(weak.place(), strong.place());
         assert_eq!(weak.identity(), strong.identity());
-        assert_ne!(weak.progress(), strong.progress());
+        assert_eq!(weak.progress(), strong.progress());
         assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         assert_eq!(Mm2ArchiveKey::capacity(), 1);
     }

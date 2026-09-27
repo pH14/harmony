@@ -37,6 +37,7 @@ struct Args {
     executions: u64,
     workers: u32,
     stage: Mm2Stage,
+    whole_game: bool,
     marketing_soak: bool,
     fixed_execution_soak: bool,
     host: String,
@@ -67,6 +68,7 @@ impl Args {
         let mut executions = 4_000_u64;
         let mut workers = 2_u32;
         let mut stage = Mm2Stage::default();
+        let mut whole_game = false;
         let mut marketing_soak = false;
         let mut fixed_execution_soak = false;
         let mut host = "github-actions".to_owned();
@@ -75,6 +77,10 @@ impl Args {
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
+            if flag == "--whole-game" {
+                whole_game = true;
+                continue;
+            }
             if flag == "--marketing-soak" {
                 marketing_soak = true;
                 continue;
@@ -122,6 +128,7 @@ impl Args {
             executions,
             workers,
             stage,
+            whole_game,
             marketing_soak,
             fixed_execution_soak,
             host,
@@ -154,8 +161,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(path) => serde_json::from_slice::<Mm2Input>(&fs::read(path)?)?.actions,
         None => power_on_walk(),
     };
-    let game = Mm2Game::new_at_stage_after(&rom, &args.core, &core_sha256, prefix, args.stage)
-        .with_champion_input_path(args.output.join("champion-input.json"));
+    if args.whole_game && args.prefix_input.is_some() {
+        return Err("whole-game prefix requires explicit rooted support".into());
+    }
+    let game = if args.whole_game {
+        Mm2Game::new_whole_game(&rom, &args.core, &core_sha256)
+    } else {
+        Mm2Game::new_at_stage_after(&rom, &args.core, &core_sha256, prefix, args.stage)
+    }
+    .with_champion_input_path(args.output.join("champion-input.json"));
     let config = campaign_config(&args);
     if args.marketing_soak {
         run_marketing_soak(&game, &config, &args.output)
@@ -233,7 +247,8 @@ fn run_marketing_soak(
         },
         "fixed_execution_soak": config.continue_after_victory,
         "verification": "champion_endpoint_reported",
-        "stage": game.stage().number(),
+        "stage": if game.is_whole_game() { None } else { Some(game.stage().number()) },
+        "whole_game": game.is_whole_game(),
         "campaign_seed": live.campaign_seed,
         "workers": live.telemetry.workers.len(),
         "execution_budget": live.execution_budget,
@@ -296,13 +311,15 @@ fn run_qualified_campaign(
     let stream_path = output.join("stream.jsonl");
     let stream_file = fs::File::create(&stream_path)?;
     let mut stream = BufWriter::new(stream_file);
+    let mut progress = BufWriter::new(fs::File::create(output.join("progress.jsonl"))?);
     let (live, checkpoint) = run_mm2_campaign_checkpointed(
         game,
         config,
         &Mm2CampaignOrigin::Genesis,
         &mut stream,
-        None,
+        Some(&mut progress),
     )?;
+    progress.flush()?;
     drop(stream);
 
     let stream_bytes = fs::read(&stream_path)?;
@@ -332,7 +349,7 @@ fn run_qualified_campaign(
     let best_endpoint = write_best_observation(game, best_input, output)?;
     let media = render_video(game, best_input, output, 180)?;
     if media.video.input_endpoint != best_endpoint {
-        return Err("video-enabled replay changed Nova's decoded input endpoint".into());
+        return Err("video-enabled replay changed Mega Man 2's decoded input endpoint".into());
     }
     let verdict = json!({
         "mode": if config.continue_after_victory {
@@ -342,7 +359,8 @@ fn run_qualified_campaign(
         },
         "fixed_execution_soak": config.continue_after_victory,
         "replay_verified": replay_verified,
-        "stage": game.stage().number(),
+        "stage": if game.is_whole_game() { None } else { Some(game.stage().number()) },
+        "whole_game": game.is_whole_game(),
         "stream_sha256": live.stream_sha256,
         "report_sha256": sha256(&report_bytes),
         "checkpoint_sha256": sha256(&checkpoint_bytes),

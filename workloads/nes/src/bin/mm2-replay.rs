@@ -14,7 +14,9 @@ use machine::{
 };
 use nes_workload::{
     film::{FPS, Film},
-    mm2::target::{Mm2Input, decode_state},
+    mm2::target::{Mm2Input, Mm2Target, decode_state},
+    search::archive::ArchiveKey,
+    target::{ExitKind, Target},
 };
 use sha2::{Digest, Sha256};
 
@@ -161,6 +163,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     let core_sha256 = format!("{:x}", Sha256::digest(&core));
     let input_sha256 = format!("{:x}", Sha256::digest(&input_bytes));
     let mut machine = QuickNesMachine::from_rom_bytes(&rom, &core_path, &core_sha256)?;
+    let mut target = if options.verify_completion {
+        Some(Mm2Target::from_rom_bytes_whole_game(
+            &rom,
+            &core_path,
+            &core_sha256,
+        )?)
+    } else {
+        None
+    };
+    let prefix_len = target
+        .as_ref()
+        .map_or(0, |target| target.genesis_prefix().len());
+    if let Some(target) = &target
+        && input.actions.get(..prefix_len) != Some(target.genesis_prefix())
+    {
+        return Err("completion fixture does not match the ordinary power-on prefix".into());
+    }
+    let mut named_progress = nes_workload::mm2::progress::NamedProgress::default();
+    let mut last_milestone_tier = None;
+    let mut castle_arrivals = Vec::new();
+    let mut first_ending = None;
     let power_on = machine.snapshot()?;
     machine.branch(power_on, &reproducer(&input.actions))?;
     machine.drop_snapshot(power_on)?;
@@ -199,6 +222,72 @@ fn main() -> Result<(), Box<dyn Error>> {
             StopReason::Deadline { .. }
         ) {
             return Err("raw replay stopped before its next action boundary".into());
+        }
+        if index >= prefix_len
+            && let Some(target) = &mut target
+        {
+            let previous_clears = target.castle_clears();
+            target.apply(&action);
+            if target.exit_kind() != ExitKind::Ok {
+                return Err(format!("target failed at action {index}").into());
+            }
+            for observation in target.last_action_observations() {
+                let discoveries =
+                    named_progress.observe(observation, index as u64, observation.frame_count);
+                for name in discoveries {
+                    if name == "ending"
+                        || (name.ends_with("_defeated") && !name.contains("_refight_"))
+                    {
+                        let tier =
+                            nes_workload::mm2::archive::archive_key(observation.decoded).progress();
+                        if last_milestone_tier.is_some_and(|previous| tier <= previous) {
+                            return Err(
+                                format!("progress did not rise at {name}, action {index}").into()
+                            );
+                        }
+                        last_milestone_tier = Some(tier);
+                    }
+                }
+            }
+            let raw = decode_state(&machine.read_wram()?)?;
+            let state = target.mechanical_state();
+            if (
+                state.x,
+                state.y,
+                state.health,
+                state.lives,
+                state.weapons_obtained,
+                state.boss_health,
+                state.boss_phase,
+                state.weapon,
+                state.weapon_energies,
+            ) != (
+                raw.x,
+                raw.y,
+                raw.health,
+                raw.lives,
+                raw.weapons_obtained,
+                raw.boss_health,
+                raw.boss_phase,
+                raw.weapon,
+                raw.weapon_energies,
+            ) {
+                return Err(format!("target differs from continuous replay at action {index}: {state:?} versus {raw:?}").into());
+            }
+            if target.castle_clears() > previous_clears {
+                castle_arrivals.push((index, target.castle_clears()));
+            }
+            if target.ending_reached() && first_ending.is_none() {
+                first_ending = Some(index);
+            }
+            if [1000, 4500, 6400].contains(&index) {
+                let snapshot = target.snapshot().ok_or("cannot snapshot replay oracle")?;
+                let observation = target.observe();
+                target.restore(&snapshot)?;
+                if target.observe() != observation {
+                    return Err(format!("snapshot changed observation at action {index}").into());
+                }
+            }
         }
         if film_request
             .as_ref()
@@ -239,6 +328,64 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     let endpoint = decode_state(&machine.read_wram()?)?;
     if options.verify_completion {
+        if nes_workload::mm2::progress::required_milestones()
+            .iter()
+            .any(|name| {
+                named_progress
+                    .first_seen
+                    .get(name)
+                    .is_none_or(Option::is_none)
+            })
+        {
+            return Err("completion fixture missed a named milestone".into());
+        }
+        for (name, index) in [
+            ("heat_defeated", 976),
+            ("air_defeated", 1392),
+            ("wood_defeated", 1845),
+            ("bubble_defeated", 2276),
+            ("quick_defeated", 2560),
+            ("flash_defeated", 2769),
+            ("metal_defeated", 394),
+            ("crash_defeated", 3197),
+            ("wily1_entered", 3213),
+            ("wily1_boss_defeated", 3603),
+            ("wily2_entered", 3603),
+            ("wily2_boss_defeated", 4010),
+            ("wily3_entered", 4010),
+            ("wily3_boss_defeated", 4177),
+            ("wily4_entered", 4177),
+            ("wily4_boss_defeated", 5074),
+            ("wily5_entered", 5074),
+            ("wily5_boss_defeated", 6456),
+            ("wily6_entered", 6456),
+            ("wily6_boss_defeated", 6696),
+            ("ending", 6697),
+        ] {
+            if named_progress
+                .first_seen
+                .get(name)
+                .and_then(|stamp| *stamp)
+                .map(|stamp| stamp.execution)
+                != Some(index)
+            {
+                return Err(
+                    format!("milestone {name} did not occur at recorded action {index}").into(),
+                );
+            }
+        }
+        if first_ending != Some(6697)
+            || castle_arrivals
+                .iter()
+                .map(|(_, count)| *count)
+                .collect::<Vec<_>>()
+                != [1, 2, 3, 4, 5, 6]
+        {
+            return Err(format!(
+                "whole-game progress mismatch: ending={first_ending:?}, castles={castle_arrivals:?}"
+            )
+            .into());
+        }
         if input.actions.len() != 6_800 || machine.now().0 != 254_990 {
             return Err("completion fixture must replay 6,800 actions and 254,990 frames".into());
         }
@@ -259,6 +406,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "format": "mm2-raw-replay-v2",
             "restore_policy": "power_on_only",
             "completion_verified": options.verify_completion,
+            "target_castle_arrivals": castle_arrivals,
+            "named_progress": named_progress,
+            "milestone_unit": "zero-based tape action index; not search executions",
+            "target_first_ending_action": first_ending,
             "input": input_path,
             "rom": rom_path,
             "core": core_path,

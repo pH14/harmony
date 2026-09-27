@@ -6,10 +6,12 @@ This package carries the native Mega Man 2 adapter onto the refactored campaign
 contracts. The generic engine receives opaque keys, typed actions, observations,
 and snapshots. This module owns every RAM address and game interpretation.
 
-Registered cases start from power-on menus selecting one of the eight ordinary
-Robot Master stages. A stage clear is reported as an independent stage result;
-these runs do not constitute a continuous whole-game solution. The adapter also
-preserves the earlier probe/campaign tools for examining recorded discoveries.
+`Mm2Game::new_whole_game` and `mm2-campaign --whole-game` start at the
+ordinary power-on stage-select menu, after the same fixed title-screen input
+used by independent-stage cases. The search chooses the Robot Master order,
+continues through deaths and individual boss defeats, and succeeds only at the
+ending. Every frame after the menu origin is chosen by the search's generic
+controller alphabet. Independent-stage cases still stop at their first clear.
 No gameplay route, weapon choice, obstacle target, or boss weakness is injected.
 
 The decoder defines RAM addresses in `target.rs`.
@@ -34,27 +36,37 @@ Wily 4 exposes the live barrier/trap mask and usable Crash shots (energy divided
 by four). Wily 5 exposes the refight mask and active boss identity, normalizes
 the stage byte borrowed during teleport only with a trusted Wily 5 origin, and
 does not settle intermediate refight awards. The Wily Machine's shell break is
-separate from damage; its second-form meter refill is not damage. These fields
-are decoder observations; the v20 archive policy remains unchanged pending the
-whole-game progress audit.
+separate from damage; its second-form meter refill is not damage. Their observations also distinguish irreversible encounter states in the archive.
 
-The v20 key buckets position at 16 pixels. Health and weapon energy are
-same-slot preferences: they choose which endpoint holds a slot and add no
-slots. It removes the prototype's
-rooms-visited lineage reward: returning to the same endpoint has the same key,
-regardless of the number of rooms visited. Stage, room and screen bytes identify
-locations; the progress relation uses boss clears and current boss damage.
-Boss damage is zero until the boss loads its health, so a Wily boss that spawns
-for its approach with an empty meter reads as no damage rather than a full bar,
-and it is full once the phase byte reports the boss dead. A Wily boss grants no
-weapon, so a cleared boss is a granted weapon or that same defeated phase byte.
-Boss clears are the progress tier. The place is the stage, screen, room, boss
-damage, enemy damage, the 32-pixel position bucket, posture, platforms and
-whether the menu is open. The holder identity is the 16-pixel position bucket,
-the weapon and the menu state.
-Summed energy remains a documented resource-preference tradeoff, not dominance.
-The v17 prototype is preserved in the preceding commit and benchmark build;
-replay rejects a different recorded policy instead of silently reinterpreting it.
+The v21 key keeps v20's 32-pixel places and 16-pixel holder identities, posture,
+platforms, menu, weapon identity, boss damage and confirmed enemy damage. Health
+and summed weapon energy remain preferences within a slot, not extra places.
+The whole-game audit found two v20 collisions: different one-weapon inventories
+shared a place, and a confirmed Wily 5 clear did not outrank its reset Wily 6
+encounter. The key therefore adds the weapon capability mask, Boobeam target
+mask, refight mask/identity and Machine form. Its progress order is ending,
+Robot Master count, confirmed castle-clear count, refight count, then Machine
+shell break. A castle clear outranks the encounter state that resets afterward.
+No rooms-visited reward or resource-level cells are introduced. Summed energy
+remains a resource-preference tradeoff, not dominance.
+
+## Named progress
+
+`workload_diagnostics.named_progress.first_seen` reports the first search
+execution and route frame for each event. The required vocabulary is
+`heat_defeated`, `air_defeated`, `wood_defeated`, `bubble_defeated`,
+`quick_defeated`, `flash_defeated`, `metal_defeated`, `crash_defeated`,
+`wily1_entered` through `wily6_entered`, their corresponding
+`wilyN_boss_defeated` events, and `ending`. Robot Masters can occur in any order.
+The Wily bosses are Mecha Dragon, Picopico-kun, Guts Tank, Boobeam Trap,
+Wily Machine, and Alien, respectively. Castle boss defeats are confirmed by
+the transition to the next stage, rather than a transient empty health meter.
+
+Reporting also names `wilyN_room_R`, each `wily5_NAME_refight_defeated`, and
+`wily5_machine_shell_broken`. These describe long legs without ranking room
+numbers as progress. Dead observations cannot discover milestones. Each run's
+hard parts are named by their own entry and exit events. Aggregate reports are
+unions across search branches; only a witness tape establishes one trajectory.
 
 `retained_diagnostics` carries the end-of-run census of the live archive.
 `live_entries_by_screen` maps a screen to
@@ -71,9 +83,8 @@ capture at stage genesis: the capture buffers are bounded, and a chain prefix
 long enough to reach a castle stage would overflow them during construction.
 `mm2-energy-probe` prints the twelve weapon-energy bytes at each action
 endpoint, the last of which is the energy-tank count rather than a meter. The
-decoded state keeps only their sum, which cannot say whether the one weapon a
-wall needs still has ammunition. Both stop once a boss is down, because the
-target refuses actions from there.
+decoded state also keeps the twelve individual bytes. These stage tools stop at
+a boss clear; `mm2-replay` replays an entire power-on tape through the ending.
 
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
 
@@ -101,6 +112,13 @@ action endpoints 232, 902–903, 3263, 4486, 4522, 5401 and 6437. The tests cove
 sprite scratch versus menu bank, confirmed damage and replay tracking,
 Boobeam targets/ammunition, stale Continue health, borrowed teleport stage,
 and Machine refill. Unrelated bytes are zeroed in each focused decoder test.
-The stream and checkpoint formats advance to v2 because decoded state and
+The stream and checkpoint formats advance to v3 because decoded state and
 encounter evidence changed; old search checkpoints must not resume under these
 readings.
+
+Completion verification also drives the whole-game target beside continuous raw
+replay, checks mechanical agreement after every action, restores snapshots at
+three points, and checks every required milestone at its recorded action index.
+The six castle clears occur at actions 3603, 4010, 4177, 5074, 6456 and 6696;
+the ending appears at 6697. Replay milestone stamps use tape action indices,
+explicitly labelled in the output, rather than search executions.

@@ -18,6 +18,7 @@ use crate::{
             REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
             merge_progress_watermark, milestone_key, milestones, progress_watermark, sample_chord,
         },
+        progress::NamedProgress,
         target::{
             ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
             power_on_walk, preference_tuple, walk_to_stage_select,
@@ -40,8 +41,8 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v2";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v3";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -64,11 +65,27 @@ pub struct Mm2Game {
     core_sha256: String,
     prefix: Vec<ButtonChord>,
     stage: Mm2Stage,
+    whole_game: bool,
     identity: String,
     champion_input_path: Option<PathBuf>,
 }
 
 impl Mm2Game {
+    #[must_use]
+    pub fn new_whole_game(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+        let mut game = Self::new_at_stage(rom, core_path, core_sha256, Mm2Stage::default());
+        game.whole_game = true;
+        game.identity = game
+            .identity
+            .replace("genesis=mm2-stage-select-v2:6:", "genesis=mm2-power-on-v1:");
+        game
+    }
+
+    #[must_use]
+    pub fn is_whole_game(&self) -> bool {
+        self.whole_game
+    }
+
     #[must_use]
     pub fn new_at_stage(rom: &[u8], core_path: &Path, core_sha256: &str, stage: Mm2Stage) -> Self {
         Self::new_at_stage_after(rom, core_path, core_sha256, power_on_walk(), stage)
@@ -100,6 +117,7 @@ impl Mm2Game {
             core_sha256: core_sha256.to_owned(),
             prefix,
             stage,
+            whole_game: false,
             identity,
             champion_input_path: None,
         }
@@ -151,6 +169,7 @@ pub struct Mm2CampaignRun;
 
 #[derive(Clone, Default)]
 pub struct Mm2CampaignEvidence {
+    named_progress: NamedProgress,
     aggregate: Mm2Milestones,
     watermark: Mm2ProgressWatermark,
     first_reached: Mm2MilestoneTimes,
@@ -262,6 +281,9 @@ fn merge_action_milestones(aggregate: &mut Mm2Milestones, target: &Mm2Target, ge
         return;
     }
     for observation in target.last_action_observations() {
+        if observation.dead {
+            continue;
+        }
         merge_milestones(aggregate, milestones(observation.decoded, genesis_weapons));
     }
 }
@@ -294,10 +316,17 @@ fn execute_suffix(
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
-        objective_reached: target.exit_kind() == ExitKind::Ok && target.defeated_a_boss(),
+        objective_reached: target.exit_kind() == ExitKind::Ok
+            && (if target.is_whole_game() {
+                target.ending_reached()
+            } else {
+                target.defeated_a_boss()
+            }),
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
+        } else if target.ending_reached()
+            || (!target.is_whole_game() && (target.is_dead() || target.defeated_a_boss()))
+        {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -318,12 +347,19 @@ fn execute_suffix(
         } else {
             target.last_action_observations().to_vec()
         };
-        let raw_objective = target.exit_kind() == ExitKind::Ok && target.defeated_a_boss();
+        let raw_objective = target.exit_kind() == ExitKind::Ok
+            && (if target.is_whole_game() {
+                target.ending_reached()
+            } else {
+                target.defeated_a_boss()
+            });
         let objective_reached = raw_objective && !objective_seen;
         objective_seen |= raw_objective;
         let disposition = if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
+        } else if target.ending_reached()
+            || (!target.is_whole_game() && (target.is_dead() || target.defeated_a_boss()))
+        {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -411,6 +447,19 @@ impl CampaignTypes for Mm2Game {
 }
 
 impl Reporting for Mm2Game {
+    fn checkpoint_marks(evidence: &Mm2CampaignEvidence) -> usize {
+        evidence
+            .named_progress
+            .first_seen
+            .values()
+            .filter(|seen| seen.is_some())
+            .count()
+    }
+
+    fn diagnostics(evidence: &Mm2CampaignEvidence) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"named_progress": evidence.named_progress}))
+    }
+
     fn retained_diagnostics<'a>(
         snapshots: impl Iterator<Item = (Option<&'a Mm2Snapshot>, u64)>,
     ) -> Option<serde_json::Value> {
@@ -532,7 +581,14 @@ impl InputPolicy for Mm2Game {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (
+                TERMINAL_POLICY_FIELD,
+                if self.whole_game {
+                    "whole_game_ending"
+                } else {
+                    TERMINAL_POLICY_IDENTIFIER
+                },
+            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -581,6 +637,14 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
+        if self.whole_game {
+            return Mm2Target::from_rom_bytes_whole_game(
+                &self.rom,
+                &self.core_path,
+                &self.core_sha256,
+            )
+            .map_err(|error| error.to_string());
+        }
         Mm2Target::from_rom_bytes_after(
             &self.rom,
             &self.core_path,
@@ -658,7 +722,9 @@ impl Evaluation for Mm2Game {
     fn execution_disposition(&self, target: &Mm2Target) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
+        } else if target.ending_reached()
+            || (!target.is_whole_game() && (target.is_dead() || target.defeated_a_boss()))
+        {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -670,7 +736,12 @@ impl Evaluation for Mm2Game {
         _run: &Mm2CampaignRun,
         target: &Mm2Target,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(target.exit_kind() == ExitKind::Ok && target.defeated_a_boss())
+        Ok(target.exit_kind() == ExitKind::Ok
+            && (if target.is_whole_game() {
+                target.ending_reached()
+            } else {
+                target.defeated_a_boss()
+            }))
     }
 
     fn current_key(&self, target: &Mm2Target) -> Result<Mm2ArchiveKey, Box<dyn Error>> {
@@ -709,6 +780,7 @@ impl Evaluation for Mm2Game {
         let state = target.mechanical_state();
         evidence.watermark = evidence.watermark.max(progress_watermark(state));
         evidence.genesis_screen.get_or_insert(state.screen);
+        evidence.named_progress.observe(&target.observe(), 0, 0);
         Ok(())
     }
 
@@ -744,6 +816,11 @@ impl Evaluation for Mm2Game {
     where
         F: FnOnce() -> Result<Mm2Input, Box<dyn Error>>,
     {
+        for observation in &action.observations {
+            evidence
+                .named_progress
+                .observe(observation, sequence, observation.frame_count);
+        }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
         let genesis_screen = evidence.genesis_screen.unwrap_or(0);
@@ -865,6 +942,24 @@ mod tests {
         let mut foreign = policies;
         foreign.insert("stage".to_owned(), "understood-by-search".to_owned());
         assert!(game.resolve_recorded(&foreign).is_err());
+    }
+
+    #[test]
+    fn whole_game_origin_and_terminal_contract_differ_from_stage_search() {
+        let stage = Mm2Game::new_at_stage(&[], Path::new("core"), "digest", Mm2Stage::default());
+        let whole = Mm2Game::new_whole_game(&[], Path::new("core"), "digest");
+        assert!(!stage.is_whole_game());
+        assert!(whole.is_whole_game());
+        assert_ne!(stage.emulator_identity(), whole.emulator_identity());
+        assert_ne!(
+            stage.policies(&Mm2CampaignRun),
+            whole.policies(&Mm2CampaignRun)
+        );
+        assert!(
+            whole
+                .resolve_recorded(&stage.policies(&Mm2CampaignRun))
+                .is_err()
+        );
     }
 
     #[test]
