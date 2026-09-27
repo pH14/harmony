@@ -49,8 +49,6 @@ const GICR_PIDR2: u64 = 0xFFE8;
 const GIC_PIDR2_ARCH_GICV3: u32 = 3 << 4;
 const SGI_FRAME_BASE: u64 = 0x1_0000;
 
-const IDLE_PRIORITY: u16 = 256;
-
 #[derive(Clone, Debug)]
 pub struct Gicv3 {
     impl_spis: u32,
@@ -69,6 +67,8 @@ pub struct Gicv3 {
     cntv_cval: u64,
     timer_fired: bool,
 }
+
+const IDLE_PRIORITY: u16 = 256;
 
 impl Gicv3 {
     pub fn new(cfg: GicConfig) -> Result<Gicv3, GicError> {
@@ -410,36 +410,66 @@ impl Gicv3 {
         best
     }
 
-    pub fn peek_interrupt(&self) -> Option<u32> {
-        if self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1 {
-            return None;
-        }
-        let running = self.running_priority();
-        let pmr = u16::from(self.pmr);
-        let mut best: Option<(u16, u32)> = None;
-        for w in 0..BITMAP_WORDS {
-            let mut bits = (self.pending[w] | self.line_level[w])
-                & self.enable[w]
-                & self.group[w]
-                & !self.active[w];
-            while bits != 0 {
-                let bit = bits.trailing_zeros();
-                bits &= bits - 1;
-                let intid = (w as u32) * 32 + bit;
-                if !self.implemented(intid) {
-                    continue;
-                }
-                let prio = u16::from(self.priority[intid as usize]);
-                if prio >= pmr || prio >= running {
-                    continue;
-                }
-                let key = (prio, intid);
-                if best.is_none_or(|b| key < b) {
-                    best = Some(key);
+    fn preempts_active(&self, priority: u16) -> bool {
+        for (chunk, words) in self.active.as_chunks::<4>().0.iter().enumerate() {
+            if words.iter().all(|&bits| bits == 0) {
+                continue;
+            }
+            for (word, &active) in words.iter().enumerate() {
+                let mut bits = active;
+                while bits != 0 {
+                    let bit = bits.trailing_zeros();
+                    bits &= bits - 1;
+                    let intid = (chunk * 128 + word * 32) as u32 + bit;
+                    if self.implemented(intid)
+                        && u16::from(self.priority[intid as usize]) <= priority
+                    {
+                        return false;
+                    }
                 }
             }
         }
-        best.map(|(_, intid)| intid)
+        true
+    }
+
+    pub fn peek_interrupt(&self) -> Option<u32> {
+        if self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1 || self.pmr == 0 {
+            return None;
+        }
+        let mut priority_limit = u16::from(self.pmr);
+        let mut best = None;
+        'candidates: for chunk in 0..BITMAP_WORDS / 4 {
+            let words: [u32; 4] = core::array::from_fn(|word| {
+                let w = chunk * 4 + word;
+                (self.pending[w] | self.line_level[w])
+                    & self.enable[w]
+                    & self.group[w]
+                    & !self.active[w]
+            });
+            if words == [0; 4] {
+                continue;
+            }
+            for (word, mut bits) in words.into_iter().enumerate() {
+                while bits != 0 {
+                    let bit = bits.trailing_zeros();
+                    bits &= bits - 1;
+                    let intid = (chunk * 128 + word * 32) as u32 + bit;
+                    if !self.implemented(intid) {
+                        continue;
+                    }
+                    let priority = u16::from(self.priority[intid as usize]);
+                    if priority < priority_limit {
+                        priority_limit = priority;
+                        best = Some(intid);
+                        if priority == 0 {
+                            break 'candidates;
+                        }
+                    }
+                }
+            }
+        }
+        let best = best?;
+        self.preempts_active(priority_limit).then_some(best)
     }
 
     pub fn has_deliverable(&self) -> bool {
