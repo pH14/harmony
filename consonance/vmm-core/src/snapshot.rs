@@ -182,7 +182,7 @@ impl SnapshotEngine {
         Ok(self.store.diff_pages(from, to)?)
     }
 
-    pub fn restore_pages(
+    pub(crate) fn restore_pages(
         &self,
         from: Option<SnapshotId>,
         to: SnapshotId,
