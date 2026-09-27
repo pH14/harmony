@@ -26,13 +26,15 @@ SLOWER, FASTER = 1.25, 0.8
 MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
 REPORT_FIELDS = {"config", "evidence", "first_objective_work", "layout", "parent_draws", "skipped_draws",
-                 "stream_sha256", "success", "verified"}
+                 "stream_sha256", "success", "verified", "work_budget"}
 WORLDS = {
     "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
     "whole-map re-walk": ({"inner": 4, "items": 9}, 1),
     "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 1),
     "boss needing stock and health": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 6,
                                        "boss_hits_back": True}, 1),
+    "boss after a draining approach": ({"inner": 20, "farms": 4, "farm_cap": 14, "boss_stock": 8,
+                                        "boss_hits_back": True, "approach_drain": True}, 1),
     "off-path item": ({"inner": 6, "item_optional": True}, 4),
     "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 4),
     "locked item": ({"inner": 4, "locked": True}, 4),
@@ -40,7 +42,10 @@ WORLDS = {
     "gauntlet": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True}, 1),
     "gauntlet with hidden timing": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True,
                                      "timing": 5}, 1),
+    "boss by the door": ({"inner": 2, "farms": 4, "farm_cap": 14, "boss_stock": 8, "boss_hits_back": True,
+                          "approach_drain": True, "boss_by_door": True, "tail_slots": True}, 1),
 }
+BUDGETS = {"boss by the door": 600_000}
 
 
 def pattern(length: int) -> int:
@@ -134,16 +139,17 @@ def world_requests(world: str, count: int) -> list[dict]:
             "width": 8, "height": 8, "layout": secrets.randbits(64), "loops": 7, "corridor": 2,
             "shaft": 3, **fields}}
         rows.append({"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
-                                               "work_budget": WORLD_BUDGET, "broken": False,
+                                               "work_budget": BUDGETS.get(world, WORLD_BUDGET), "broken": False,
                                                "verify": False, "keep": "portfolio"}})
     return rows
 
 
 def legs(report: dict) -> dict:
     evidence = report["evidence"]
+    budget = report["work_budget"]
 
     def within(work):
-        return work if work is not None and work <= WORLD_BUDGET else None
+        return work if work is not None and work <= budget else None
 
     goal = within(report["first_objective_work"])
     first = [within(w) for w in evidence["map_first"]]
@@ -152,7 +158,7 @@ def legs(report: dict) -> dict:
     def gap(start, end):
         return None if start is None or end is None else end - start
 
-    measured = {"to the goal": WORLD_BUDGET if goal is None else goal}
+    measured = {"to the goal": budget if goal is None else goal}
     parameters = report["config"]["parameters"]
     if parameters.get("gauntlet"):
         full = within(evidence["map_first_stocked"])
