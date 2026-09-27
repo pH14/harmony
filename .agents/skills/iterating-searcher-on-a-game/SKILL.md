@@ -20,8 +20,9 @@ game needs or tests a change against the run that has to deliver it.
   their tries or stall, usually a boss or a closed-off area.
 - **Power-on run**: a search from a new game. It is the only completion test.
 - **Checkpoint**: a saved whole-search state, a `.ckpt` file. A resume with the
-  same seed repeats the original progress lines exactly. A resume with another
-  seed keeps the archive and draws new choices.
+  same seed repeats the original search; its progress lines match apart from
+  timing fields. A resume with another seed keeps the archive and draws new
+  choices.
 - **Rooted segment**: a search that starts from a recorded input (`root_input`)
   with an empty archive.
 - **Checkpoint slice**: a resume of a power-on run's checkpoint just before a

@@ -68,8 +68,8 @@ Act on the result this way:
 - Drop a change that is clearly bad on any world.
 - A world still undecided at its limit means the change is not plausible. The
   panel's exit status is the verdict: nonzero for any clearly bad or
-  undecided world. A leg whose interval crosses only 0.8 never blocks, since
-  it can only be faster.
+  undecided world. At the layout limit, an undecided leg blocks only when its
+  interval reaches above 1.25 with a low end above 1.0.
 - A plausible change is one the panel did not reject. Carry every watch leg to
   the game: name the matching game leg and measure it in the slices.
 - A world whose `identical runs` count equals its layout count never ran the
@@ -103,8 +103,8 @@ run:
   how often a replayed input lands. Write that reason in one line.
 - Write every prediction before the game run starts, and never edit a filed
   prediction. An update is a new line filed before any outcome is known.
-- Count a leg only when both runs reach both of its ends, and count a run that
-  never reaches the far end as censored at its budget.
+- Count a leg only when both runs reach both of its ends. A run that never
+  reaches the far end is censored at the tries it reached.
 - A few seeds cannot resolve effects as small as 0.8 to 0.9, so a game run
   checks a prediction near 1.0 only for a large miss.
 - A world whose measured rate differs from the game's cannot predict a change

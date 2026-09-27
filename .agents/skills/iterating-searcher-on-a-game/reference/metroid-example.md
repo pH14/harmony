@@ -50,9 +50,8 @@ just after the Kraid kill. The chain shows three things:
   has to pick and carry the state itself, which a chain never tests.
 
 A segment's budget must exceed the slowest pass of that part in any earlier
-run. Rooted starts leave Kraid's hideout 1.0M to 1.45M tries after the kill,
-and power-on runs take 2.3M to 3.9M, so a 1M budget stops segments that would
-pass.
+run. The first segment from the Kraid kill ended twice at 1M tries per seed
+without a pass, and passed on all three seeds at 3M.
 
 ## What the game reading must handle
 
