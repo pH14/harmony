@@ -1021,9 +1021,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     {
         return Err("chain pre-objective work differs from first-objective accounting".into());
     }
-    Ok(
-        serde_json::json!({"engine_source_sha256":env!("TINY_ENGINE_SOURCE_SHA256"),
-        "workload_source_sha256":env!("TINY_WORKLOAD_SOURCE_SHA256"),"seed":seed,"broken":workload.broken,
+    Ok(serde_json::json!({"seed":seed,"broken":workload.broken,
         "config":workload.config,"work_budget":budget,"work":work,"work_overshoot":work.saturating_sub(budget),
         "chain_parent_selections":report.archive.evidence.chain_parent_selections,
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
@@ -1036,8 +1034,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         "success":first_objective_work.is_some_and(|w|w<=budget),
         "elapsed_seconds":elapsed,"stream_bytes":stream.0.len(),"stream_sha256":report.stream_sha256,
         "resident_memory_bytes":report.resident_memory_bytes,"evidence":report.archive.evidence,
-        "exported_entry_count":report.archive.entries.len(),"live_entries":report.live_entries,"selector":report.archive.selector,"verified":verify}),
-    )
+        "exported_entry_count":report.archive.entries.len(),"live_entries":report.live_entries,"selector":report.archive.selector,"verified":verify}))
 }
 
 fn campaign_config<const CAPACITY_TWO: bool>(
