@@ -126,7 +126,7 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
         if from == to || actions.is_empty() || actions.len() > self.longest_edge {
             return;
         }
-        let edge = Edge {
+        let edge = || Edge {
             donor,
             leaf,
             cost,
@@ -138,6 +138,7 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                 if cost >= held.cost {
                     return;
                 }
+                let edge = edge();
                 self.memory_bytes = self
                     .memory_bytes
                     .saturating_sub(Self::edge_bytes(held.actions.len()))
@@ -145,6 +146,7 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                 *held = edge;
             }
             None => {
+                let edge = edge();
                 self.memory_bytes = self
                     .memory_bytes
                     .saturating_add(Self::edge_bytes(actions.len()));
@@ -388,6 +390,57 @@ mod tests {
         assert_eq!(
             (taken.donor, taken.leaf, taken.actions),
             (30, 31, vec![9, 9])
+        );
+    }
+
+    #[test]
+    fn rejected_edges_do_not_clone_actions_or_change_state() {
+        use std::{cell::Cell, rc::Rc};
+
+        #[derive(Serialize)]
+        struct Action {
+            value: u8,
+            #[serde(skip)]
+            clones: Rc<Cell<usize>>,
+        }
+
+        impl Clone for Action {
+            fn clone(&self) -> Self {
+                self.clones.set(self.clones.get() + 1);
+                Self {
+                    value: self.value,
+                    clones: Rc::clone(&self.clones),
+                }
+            }
+        }
+
+        let clones = Rc::new(Cell::new(0));
+        let actions = (0..128)
+            .map(|value| Action {
+                value,
+                clones: Rc::clone(&clones),
+            })
+            .collect::<Vec<_>>();
+        let mut bank = ContinuationBank::<u8, Action>::new(128);
+        bank.record(1, 2, 10, 11, &actions, 100, 1);
+        assert_eq!(clones.get(), 128);
+        let before = postcard::to_allocvec(&bank).unwrap();
+        for cost in [100, 101, u64::MAX] {
+            bank.record(1, 2, 20, 21, &actions, cost, 7);
+            assert_eq!(clones.get(), 128);
+            assert_eq!(postcard::to_allocvec(&bank).unwrap(), before);
+        }
+        bank.record(1, 2, 30, 31, &actions[..64], 99, 2);
+        assert_eq!(clones.get(), 192);
+        let held = bank.edges.get(&(1, 2)).unwrap();
+        assert_eq!(
+            (held.donor, held.leaf, held.cost, held.gains),
+            (30, 31, 99, 2)
+        );
+        assert_eq!(held.actions.len(), 64);
+        assert_eq!(
+            bank.memory_bytes(),
+            ContinuationBank::<u8, Action>::edge_bytes(64)
         );
     }
 
