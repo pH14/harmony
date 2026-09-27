@@ -172,14 +172,17 @@ fn tier_weight(rank: u8, shift: u32) -> u64 {
     1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * shift)
 }
 
-fn draw_weighted(rand: &mut RomuDuoJrRand, weights: &[u64]) -> Result<usize, Box<dyn Error>> {
+fn draw_weighted(
+    rand: &mut RomuDuoJrRand,
+    weights: impl Iterator<Item = u64> + Clone,
+) -> Result<usize, Box<dyn Error>> {
     let total = weights
-        .iter()
-        .fold(0_u64, |sum, weight| sum.saturating_add(*weight));
+        .clone()
+        .fold(0_u64, |sum, weight| sum.saturating_add(weight));
     let total = NonZeroUsize::new(usize::try_from(total)?).ok_or("weighted draw over nothing")?;
     let mut draw = u64::try_from(rand.below(total))?;
-    for (index, weight) in weights.iter().enumerate() {
-        if draw < *weight {
+    for (index, weight) in weights.enumerate() {
+        if draw < weight {
             return Ok(index);
         }
         draw -= weight;
@@ -2218,12 +2221,17 @@ where
 
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
         let shift = checked_tier_rank_shift(K::tier_rank_shift())?;
-        let tiers = self.tiers.keys().rev().copied().collect::<Vec<_>>();
-        let weights = (0..tiers.len())
-            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift))
-            .collect::<Vec<_>>();
-        let index = draw_weighted(rand, &weights)?;
-        Ok((tiers[index], u8::try_from(index).unwrap_or(u8::MAX)))
+        let weights = (0..self.tiers.len())
+            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift));
+        let index = draw_weighted(rand, weights)?;
+        let progress = self
+            .tiers
+            .keys()
+            .rev()
+            .nth(index)
+            .copied()
+            .ok_or("tier draw chose an absent tier")?;
+        Ok((progress, u8::try_from(index).unwrap_or(u8::MAX)))
     }
 
     fn draw_cell(
@@ -2246,7 +2254,7 @@ where
                 )
             })
             .collect::<Vec<_>>();
-        let index = draw_weighted(rand, &weights)?;
+        let index = draw_weighted(rand, weights.iter().copied())?;
         Ok(candidates[index])
     }
 
@@ -2266,7 +2274,7 @@ where
             .iter()
             .map(|id| count_decay(self.selected[*id]))
             .collect::<Vec<_>>();
-        let index = draw_weighted(rand, &weights)?;
+        let index = draw_weighted(rand, weights.iter().copied())?;
         Ok(ids[index])
     }
 
@@ -3393,6 +3401,126 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    fn materialized_weighted_reference(
+        rand: &mut RomuDuoJrRand,
+        weights: &[u64],
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let total = weights
+            .iter()
+            .fold(0_u64, |sum, weight| sum.saturating_add(*weight));
+        let total = std::num::NonZeroUsize::new(usize::try_from(total)?)
+            .ok_or("weighted draw over nothing")?;
+        let mut draw = u64::try_from(rand.below(total))?;
+        for (index, weight) in weights.iter().enumerate() {
+            if draw < *weight {
+                return Ok(index);
+            }
+            draw -= weight;
+        }
+        Err("weighted draw exceeded its total".into())
+    }
+
+    #[test]
+    fn streamed_weights_preserve_draws_errors_and_rng_state() {
+        let mut cases = vec![
+            vec![],
+            vec![0],
+            vec![u64::MAX, 1],
+            vec![1, u64::MAX],
+            vec![u64::MAX; 4],
+        ];
+        for encoding in 0..256 {
+            cases.push(
+                (0..4)
+                    .map(|offset| (encoding >> (offset * 2)) & 3)
+                    .collect(),
+            );
+        }
+        for weights in cases {
+            for seed in 0..64 {
+                let mut reference = RomuDuoJrRand::with_seed(seed);
+                let mut actual = reference;
+                for _ in 0..16 {
+                    let expected = materialized_weighted_reference(&mut reference, &weights)
+                        .map_err(|error| error.to_string());
+                    let result = super::draw_weighted(&mut actual, weights.iter().copied())
+                        .map_err(|error| error.to_string());
+                    assert_eq!(result, expected);
+                    assert_eq!(
+                        postcard::to_stdvec(&actual).unwrap(),
+                        postcard::to_stdvec(&reference).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct TierKey<const SHIFT: u32>(usize);
+
+    impl<const SHIFT: u32> ArchiveKey for TierKey<SHIFT> {
+        type Place = ();
+        type Progress = usize;
+        type Identity = ();
+        type Lineage = ();
+        fn place(self) {}
+        fn progress(self) -> usize {
+            self.0
+        }
+        fn identity(self) {}
+        fn tier_rank_shift() -> u32 {
+            SHIFT
+        }
+        fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+        fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    fn compare_streamed_tiers<const SHIFT: u32>() {
+        for count in [0, 1, 2, 7, 8, 9, 16, 255, 256, 257, 4096] {
+            let mut archive = Archive::<u8, TierKey<SHIFT>, (), ()>::new(|_| 1);
+            for tier in 0..count {
+                archive.tiers.insert(tier * 3 + 5, BTreeMap::new());
+            }
+            let tiers = archive.tiers.keys().rev().copied().collect::<Vec<_>>();
+            let weights = (0..tiers.len())
+                .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), SHIFT))
+                .collect::<Vec<_>>();
+            for seed in 0..32 {
+                let mut reference = RomuDuoJrRand::with_seed(seed);
+                let mut actual = reference;
+                for _ in 0..64 {
+                    let expected = materialized_weighted_reference(&mut reference, &weights)
+                        .map(|index| (tiers[index], u8::try_from(index).unwrap_or(u8::MAX)))
+                        .map_err(|error| error.to_string());
+                    assert_eq!(
+                        archive
+                            .draw_tier(&mut actual)
+                            .map_err(|error| error.to_string()),
+                        expected
+                    );
+                    assert_eq!(
+                        postcard::to_stdvec(&actual).unwrap(),
+                        postcard::to_stdvec(&reference).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_tiers_preserve_materialized_selection_and_rng_state() {
+        compare_streamed_tiers::<0>();
+        compare_streamed_tiers::<1>();
+        compare_streamed_tiers::<2>();
+        compare_streamed_tiers::<3>();
+        compare_streamed_tiers::<4>();
+        compare_streamed_tiers::<5>();
+        compare_streamed_tiers::<6>();
+        compare_streamed_tiers::<7>();
     }
 
     #[test]

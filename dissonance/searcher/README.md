@@ -177,6 +177,7 @@ plus serialization of reports with independent roots and shared prefixes:
 ```sh
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench archive_admission
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench duration
+cargo bench --locked --manifest-path dissonance/Cargo.toml --bench parent_selection
 ```
 
 ## Adaptive duration policy
@@ -242,6 +243,10 @@ ordered feedback, exact replay, and planted draw, checkpoint, and remaining
 work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
+
+Tier selection iterates rank weights and reads the selected progress value from
+the ordered tier map. This avoids two temporary vectors per parent selection;
+weights, traversal order, saturating totals, and RNG consumption stay identical.
 
 One selector exists, `tier_cell_count_decay_v3`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
