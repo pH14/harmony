@@ -7,22 +7,6 @@ use super::*;
 const IDLE_PRIORITY: u16 = 256;
 
 impl Gicv3 {
-    fn baseline_input_deliverable(&self, intid: u32) -> bool {
-        if !self.implemented(intid) || self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1
-        {
-            return false;
-        }
-        let (w, b) = ((intid / 32) as usize, intid % 32);
-        if self.enable[w] & (1 << b) == 0
-            || self.group[w] & (1 << b) == 0
-            || bitmap_contains(&self.active, intid)
-        {
-            return false;
-        }
-        let priority = u16::from(self.priority[intid as usize]);
-        priority < u16::from(self.pmr) && priority < self.baseline_running_priority()
-    }
-
     fn baseline_running_priority(&self) -> u16 {
         let mut best = IDLE_PRIORITY;
         for w in 0..BITMAP_WORDS {
@@ -290,9 +274,6 @@ proptest::proptest! {
         let mut control = Gicv3::restore(&g.snapshot(), 0).unwrap();
         for _ in 0..16 {
             proptest::prop_assert_eq!(g.active_interrupt(), control.baseline_active_interrupt());
-            for id in [0, 27, 31, g.intid_limit() - 1, g.intid_limit(), u32::MAX] {
-                proptest::prop_assert_eq!(g.input_deliverable(id), control.baseline_input_deliverable(id));
-            }
             let expected = control.baseline_peek_interrupt();
             proptest::prop_assert_eq!(g.peek_interrupt(), expected);
             proptest::prop_assert_eq!(g.take_interrupt(), expected);

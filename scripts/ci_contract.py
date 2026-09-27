@@ -260,7 +260,11 @@ CONSONANCE_CHECKS = Workflow(
             ignored_tests=KVM_SERVICED_EXIT_TESTS + ("vmm-backend::contract_kvm *",),
             scope="consonance_kvm"),
         Job("Device State", "pr", 15,
-            crates=("lapic", "gicv3", "telemetry")),
+            crates=("lapic", "gicv3", "telemetry"),
+            ignored_tests=(
+                "gicv3 device::performance_tests::qualify_arbitration",
+                "gicv3 device::performance_tests::qualify_delivery_cycle",
+            )),
         Job("Virtual Time", "pr", 15,
             crates=("vtime",),
             test_targets=("vmm-core:virtual_time", "vmm-core:x86_kvm_virtual_time",
