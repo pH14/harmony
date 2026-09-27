@@ -2243,16 +2243,14 @@ where
             .tiers
             .get(&progress)
             .ok_or("tier draw chose an absent tier")?;
-        let weights = places
-            .keys()
-            .map(|place| {
-                count_decay(
-                    self.cells
-                        .get(&(progress, *place))
-                        .map_or(0, |state| state.draws),
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut weights = Vec::with_capacity(places.len());
+        weights.extend(places.keys().map(|place| {
+            count_decay(
+                self.cells
+                    .get(&(progress, *place))
+                    .map_or(0, |state| state.draws),
+            )
+        }));
         let index = draw_weighted(rand, weights.iter().copied())?;
         let place = if index < places.len() / 2 {
             places.keys().nth(index)
@@ -2275,11 +2273,8 @@ where
             .get(&progress)
             .and_then(|places| places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
-        let weights = members
-            .ids
-            .iter()
-            .map(|id| count_decay(self.selected[*id]))
-            .collect::<Vec<_>>();
+        let mut weights = Vec::with_capacity(members.ids.len());
+        weights.extend(members.ids.iter().map(|id| count_decay(self.selected[*id])));
         let index = draw_weighted(rand, weights.iter().copied())?;
         let id = if index < members.ids.len() / 2 {
             members.ids.iter().nth(index)
