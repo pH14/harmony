@@ -64,6 +64,10 @@ jobs:
           cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
             --no-fail-fast 2>&1 | tee -a host-tests.log
           scripts/check-portable-tests.sh host-tests.log "$PORTABLE_TEST_FLOOR"
+      - name: Compare ARM and software SHA-256 in one executable
+        run: |
+          cargo fetch --locked
+          python3 consonance/vmm-core/qualification/qualify-sha256.py --check
       - name: Start the assembled CLI on this host
         run: |
           set -euo pipefail
@@ -111,6 +115,10 @@ jobs:
           cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
             --no-fail-fast 2>&1 | tee -a host-tests.log
           scripts/check-portable-tests.sh host-tests.log "$PORTABLE_TEST_FLOOR"
+      - name: Compare ARM and software SHA-256 in one executable
+        run: |
+          cargo fetch --locked
+          python3 consonance/vmm-core/qualification/qualify-sha256.py --check
       - name: Start the assembled CLI on this host
         run: |
           set -euo pipefail

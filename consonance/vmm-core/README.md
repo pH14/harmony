@@ -124,7 +124,9 @@ python3 consonance/vmm-core/qualification/qualify-sha256.py
 
 `--check` compares digests across padding boundaries, streaming chunk sizes,
 unaligned inputs, cloned prefix states, and complete VMM state hashes. The
-Snapshot and Restore CI job runs it without timing thresholds. The full run
+Snapshot and Restore and both ARM Host Compatibility CI jobs run it without
+timing thresholds. Backend selection is checked against the features reported
+by the compiler artifacts for the actual build, including cached artifacts. The full run
 also reports nine alternating software/native timing pairs for small and large
 digests and whole-state hashes over zero and populated RAM from 4 KiB through
 128 MiB. Each timed result is checked. ARM timings qualify this build change;

@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -48,8 +49,9 @@ def main():
         shutil.copytree(component / "src", baseline / "src")
         shutil.copytree(component / "contracts", baseline / "contracts")
         original = (component / "Cargo.toml").read_text()
-        assert original.count('sha2 = "0.10"') == 1
-        assert original.count('sha2 = { version = "0.10", features = ["asm"] }') == 1
+        if (original.count('sha2 = "0.10"') != 1
+                or original.count('sha2 = { version = "0.10", features = ["asm"] }') != 1):
+            raise SystemExit("Update the qualification for the changed SHA-256 dependency declaration")
         frozen = original.replace('name = "vmm-core"', 'name = "vmm-core-reference"', 1)
         frozen = re.sub(r'path = "([^"]+)"',
                         lambda m: 'path = ' + json.dumps(str((component / m[1]).resolve())), frozen)
@@ -83,17 +85,34 @@ sha2-reference = {{ path = "sha2-reference", features = ["force-soft"] }}
         shutil.copyfile(component / "qualification" / "sha256.rs", root / "src" / "main.rs")
         cargo = ["cargo", "--offline", "--manifest-path", str(root / "Cargo.toml")]
         target = Path(metadata["target_directory"]) / "sha256-qualification"
-        subprocess.run([cargo[0], "build", *cargo[1:], "--release", "--target-dir", str(target), "--target", host], cwd=repo, check=True)
-        resolved = json.loads(subprocess.check_output(
-            [cargo[0], "metadata", *cargo[1:], "--locked", "--format-version", "1", "--filter-platform", host], cwd=repo))
-        names = {p["id"]: p["name"] for p in resolved["packages"]}
-        features = {names[n["id"]]: n["features"] for n in resolved["resolve"]["nodes"]
-                    if names[n["id"]] in {"sha2", "sha2-reference"}}
-        assert "force-soft" in features["sha2-reference"]
-        assert not {"force-soft", "force-soft-compact"}.intersection(features["sha2"])
-        if host.startswith("aarch64-") and ("linux" in host or "apple-darwin" in host):
-            assert "asm" in features["sha2"]
-        binary = target / host / "release" / "qualify-sha256"
+        build = subprocess.run(
+            [cargo[0], "build", *cargo[1:], "--release", "--target-dir", str(target),
+             "--target", host, "--message-format=json"],
+            cwd=repo, text=True, stdout=subprocess.PIPE)
+        features = {}
+        binary = None
+        names = {"sha2": "sha2", "sha2_reference": "sha2-reference"}
+        for line in build.stdout.splitlines():
+            message = json.loads(line)
+            if message["reason"] == "compiler-message":
+                print(message["message"]["rendered"], file=sys.stderr, end="")
+            if message["reason"] != "compiler-artifact":
+                continue
+            name = message["target"]["name"]
+            if name in names:
+                features[names[name]] = message["features"]
+            if name == "qualify-sha256" and message.get("executable"):
+                binary = Path(message["executable"])
+        build.check_returncode()
+        if binary is None:
+            raise SystemExit("The qualification executable was not built")
+        if "force-soft" not in features["sha2-reference"]:
+            raise SystemExit("The control was not compiled with software hashing")
+        if {"force-soft", "force-soft-compact"}.intersection(features["sha2"]):
+            raise SystemExit("The production hasher was compiled with forced software hashing")
+        native_arm = host.startswith("aarch64-") and ("linux" in host or "apple-darwin" in host)
+        if ("asm" in features["sha2"]) != native_arm:
+            raise SystemExit("The compiled SHA-256 backend does not match the native target")
         print(json.dumps({"binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                           "sha2_version": sha["version"], "sha2_checksum": expected,
                           "host": host, "features": features}), flush=True)
