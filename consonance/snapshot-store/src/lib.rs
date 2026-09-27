@@ -98,6 +98,7 @@ struct Layer {
     vm_state: Vec<u8>,
     vm_state_hash: [u8; 32],
     refcount: u64,
+    children: usize,
     chain_len: u32,
 }
 
@@ -145,6 +146,9 @@ pub struct Store {
     cfg: StoreConfig,
     next_id: u64,
     layers: BTreeMap<u64, Layer>,
+    collectible: Vec<u64>,
+    live_snapshots: u64,
+    vm_state_bytes: u64,
     #[allow(clippy::disallowed_types)]
     page_index: HashMap<PageHash, NonZeroUsize, BuildPageHashHasher>,
     pages: Vec<Option<PageEntry>>,
@@ -159,6 +163,9 @@ impl Store {
             cfg,
             next_id: 0,
             layers: BTreeMap::new(),
+            collectible: Vec::new(),
+            live_snapshots: 0,
+            vm_state_bytes: 0,
             #[allow(clippy::disallowed_types)]
             page_index: HashMap::default(),
             pages: Vec::new(),
@@ -456,39 +463,47 @@ impl Store {
     pub fn release(&mut self, snap: SnapshotId) -> Result<u64, StoreError> {
         let layer = self.live_layer_mut(snap)?;
         layer.refcount -= 1;
-        Ok(layer.refcount)
+        let remaining = layer.refcount;
+        let collectible = remaining == 0 && layer.children == 0;
+        if remaining == 0 {
+            self.live_snapshots -= 1;
+        }
+        if collectible {
+            self.collectible.push(snap.0);
+        }
+        Ok(remaining)
     }
 
     pub fn gc(&mut self) -> u64 {
-        let mut reachable: BTreeSet<u64> = BTreeSet::new();
-        for (&id, layer) in &self.layers {
-            if layer.refcount == 0 {
-                continue;
-            }
-            let mut cur = Some(id);
-            while let Some(c) = cur {
-                if !reachable.insert(c) {
-                    break;
+        let mut freed = 0u64;
+        while let Some(id) = self.collectible.pop() {
+            let layer = self.layers.remove(&id).expect("collectible layer");
+            debug_assert_eq!(layer.refcount, 0);
+            debug_assert_eq!(layer.children, 0);
+            let state_bytes = layer.vm_state.len() as u64;
+            self.vm_state_bytes -= state_bytes;
+            freed += state_bytes;
+            for &(_gfn, pref) in &layer.pages {
+                if let PageRef::Data(id) = pref {
+                    freed += self.release_page_ref(id);
                 }
-                cur = self.layers.get(&c).and_then(|l| l.parent);
+            }
+            if let Some(parent) = layer.parent {
+                let ancestor = self.layers.get_mut(&parent).expect("retained parent");
+                ancestor.children -= 1;
+                if ancestor.children == 0 && ancestor.refcount == 0 {
+                    self.collectible.push(parent);
+                }
             }
         }
-        let dead: Vec<u64> = self
-            .layers
-            .keys()
-            .copied()
-            .filter(|id| !reachable.contains(id))
-            .collect();
-        let mut freed = 0u64;
-        for id in dead {
-            if let Some(layer) = self.layers.remove(&id) {
-                freed += layer.vm_state.len() as u64;
-                for &(_gfn, pref) in &layer.pages {
-                    if let PageRef::Data(id) = pref {
-                        freed += self.release_page_ref(id);
-                    }
-                }
-            }
+        if self.page_index.is_empty() {
+            self.page_index.shrink_to_fit();
+            self.pages = Vec::new();
+            self.free_pages = Vec::new();
+        }
+        if self.layers.is_empty() {
+            self.resolve_cache = RefCell::default();
+            self.collectible = Vec::new();
         }
         freed
     }
@@ -503,14 +518,13 @@ impl Store {
     }
 
     pub fn store_stats(&self) -> StoreStats {
-        let snapshots = self.layers.values().filter(|l| l.refcount > 0).count() as u64;
-        let vm_state_bytes: u64 = self.layers.values().map(|l| l.vm_state.len() as u64).sum();
+        let snapshots = self.live_snapshots;
         StoreStats {
             snapshots,
             stored_unique_pages: self.page_index.len() as u64,
             logical_pages_total: snapshots.saturating_mul(self.cfg.mem_pages),
             bytes_resident: (self.page_index.len() as u64).saturating_mul(PAGE_SIZE as u64)
-                + vm_state_bytes,
+                + self.vm_state_bytes,
         }
     }
 
@@ -752,6 +766,15 @@ impl BuilderCore<'_> {
                 .map_or(1, |l| l.chain_len.saturating_add(1)),
             None => 1,
         };
+        if let Some(parent) = self.parent {
+            self.store
+                .layers
+                .get_mut(&parent)
+                .expect("live parent")
+                .children += 1;
+        }
+        self.store.live_snapshots += 1;
+        self.store.vm_state_bytes += vm_state.len() as u64;
         let id = self.store.next_id;
         self.store.next_id += 1;
         self.store.layers.insert(
@@ -762,6 +785,7 @@ impl BuilderCore<'_> {
                 vm_state,
                 vm_state_hash,
                 refcount: 1,
+                children: 0,
                 chain_len,
             },
         );

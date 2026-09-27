@@ -42,6 +42,16 @@ reachable from a live snapshot or its ancestors. `stats` and `store_stats`
 report logical size, owned pages, chain depth, unique content, and resident
 payload bytes.
 
+Each layer counts its resident direct children. Releasing the last external
+reference queues a childless layer for collection; removing it can queue its
+released parent. Collection follows those newly unreachable chains iteratively,
+without scanning live layers. Live snapshot counts and resident VM-state bytes
+are maintained at seal, release, and collection, making `store_stats` constant
+time. Its `bytes_resident` remains a payload measure: page buffers and VM-state
+bytes, excluding allocator overhead, indexes, lookup caches, and materialized
+mappings. An empty content pool releases its index and slot allocations; an
+empty store also releases its lookup cache.
+
 ## Mappings
 
 `Store::materialize` resolves a full image into a sparse temporary file and
