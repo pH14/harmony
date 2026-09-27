@@ -34,7 +34,6 @@ Use a fresh output directory: OCI runs may overwrite files in an existing direct
 | `--seed N` | `0` | Campaign seed; retain it for replay |
 | `--workers N` | `1` | Campaign workers; use one on macOS fault campaigns |
 | `--executions N` | `1000` | Logical campaign execution budget |
-| `--actions N` | `128` | Action budget per generated execution |
 | `--out DIR` | `harmony-search` | Campaign directory; choose a fresh path |
 | `--core FILE` | `HARMONY_QUICKNES_CORE` | Native NES host library |
 | `--kernel FILE` | Discovered guest kernel | VM execution |
@@ -46,7 +45,7 @@ Use a fresh output directory: OCI runs may overwrite files in an existing direct
 | `--replay INPUT.json` | None | Faults only: execute a recorded action list instead of searching |
 | `--repeat N` | `1` | Faults replay repetition count |
 
-Some package-specific flags are accepted by the common parser but unused by another package. In particular, `--replay` is not a native NES replay interface, and `--wall-minutes` does not bound NES search. Faults requires positive workers, executions, and actions.
+Some package-specific flags are accepted by the common parser but unused by another package. In particular, `--replay` is not a native NES replay interface, and `--wall-minutes` does not bound NES search. Faults requires positive workers and executions.
 
 A completed search or replay returns zero even if it found a bug. In automation, inspect `report.json`'s `bug_found`, replay outcomes, and failure counters rather than treating CLI success as a passing application test.
 

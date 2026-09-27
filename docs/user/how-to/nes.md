@@ -32,7 +32,7 @@ Given your ROM and host library:
 ```sh
 harmony search --package nes ./smb.nes \
   --core /absolute/path/to/quicknes_libretro.so \
-  --seed 7 --workers 1 --executions 100 --actions 32 --out nes-run
+  --seed 7 --workers 1 --executions 100 --out nes-run
 ```
 
 Use the actual path you chose when building the shared library. `HARMONY_QUICKNES_CORE` can supply the default path. Native search does not use KVM/HVF or the Linux guest runtime, so a failing OCI preflight is not necessarily a blocker.
@@ -56,7 +56,7 @@ The resulting layout is `consonance/harmony-linux/build/nes.oci`. The command be
 ```sh
 harmony search --package nes --backend consonance ./smb.nes \
   --image ./nes.oci --seed 7 --workers 1 \
-  --executions 100 --actions 32 --out nes-vm-run
+  --executions 100 --out nes-vm-run
 ```
 
 Guest kernel and initramfs discovery uses `HARMONY_GUEST_DIR`. Supply explicit paths with `--kernel` and `--base-initramfs` if necessary. `HARMONY_NES_IMAGE` can supply the image path.

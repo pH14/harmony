@@ -53,7 +53,7 @@ Save your image, then start with a small budget:
 ```sh
 docker image save -o cluster.tar my-cluster:test
 harmony search --package faults ./cluster.tar \
-  --seed 11 --workers 1 --executions 100 --actions 12 \
+  --seed 11 --workers 1 --executions 100 \
   --ram-mib 1024 --wall-minutes 5 --out cluster-search
 ```
 

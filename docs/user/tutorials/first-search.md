@@ -46,7 +46,7 @@ The workload uses the static BusyBox musl image. Do not generalize this example 
 
 ```sh
 harmony search --package faults ./workload.tar \
-  --seed 7 --workers 1 --executions 20 --actions 4 \
+  --seed 7 --workers 1 --executions 20 \
   --wall-minutes 2 --out search-run
 ```
 
