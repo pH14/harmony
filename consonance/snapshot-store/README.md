@@ -10,7 +10,10 @@ page harvesting and memslot management.
 Create a `Store` with a fixed number of guest pages, write pages through a
 `BaseBuilder` or `DeltaBuilder`, and consume the builder with `seal(vm_state)`.
 Unwritten pages are implicitly zero. Repeated writes to a frame replace the
-previous write, and writes equal to the inherited content are discarded.
+previous write, and writes equal to the inherited content are discarded. A base
+builder omits zero-page entries immediately, including when a zero write replaces
+a buffered nonzero page. Flattening leaves unchanged inherited entries in place
+without acquiring and releasing the same reference again.
 
 `read_page` resolves the nearest layer that wrote a frame. Layers are immutable
 after sealing; each layer caches inherited lookups to make repeated reads

@@ -632,7 +632,14 @@ impl BuilderCore<'_> {
                 mem_pages: self.store.cfg.mem_pages,
             });
         }
-        let pref = if data == &ZERO_PAGE[..] {
+        let is_zero = data == &ZERO_PAGE[..];
+        if is_zero && self.parent.is_none() {
+            if let Some(PageRef::Data(old)) = self.pages.remove(&gfn) {
+                self.store.release_page_ref(old);
+            }
+            return Ok(());
+        }
+        let pref = if is_zero {
             PageRef::Zero
         } else {
             let hash = *blake3::hash(data).as_bytes();
@@ -642,24 +649,6 @@ impl BuilderCore<'_> {
             );
             PageRef::Data(self.store.intern_page(hash, data))
         };
-        if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
-            self.store.release_page_ref(old);
-        }
-        Ok(())
-    }
-
-    fn insert_page_ref(&mut self, gfn: u64, pref: PageRef) -> Result<(), StoreError> {
-        if let PageRef::Data(id) = pref {
-            let Some(entry) = self
-                .store
-                .pages
-                .get_mut(id.get() - 1)
-                .and_then(Option::as_mut)
-            else {
-                return Err(StoreError::PageIntegrity { gfn });
-            };
-            entry.refs = entry.refs.saturating_add(1);
-        }
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
         }
@@ -686,7 +675,7 @@ impl BuilderCore<'_> {
             }
         };
         if unchanged {
-            self.insert_page_ref(gfn, inherited)
+            Ok(())
         } else {
             self.write_page(gfn, data)
         }
@@ -959,6 +948,7 @@ mod tests {
         let mut store = Store::new(cfg(8));
         let mut b = store.begin_base();
         b.write_page(3, &[0u8; PAGE_SIZE]).unwrap();
+        assert!(b.core.pages.is_empty());
         let base = b.seal(vec![]);
         assert_eq!(store.store_stats().stored_unique_pages, 0);
         assert_eq!(store.stats(base).unwrap().owned_pages, 0);
@@ -1020,6 +1010,7 @@ mod tests {
         assert_eq!(b.core.store.store_stats().stored_unique_pages, 1);
         b.write_page(0, &[0u8; PAGE_SIZE]).unwrap();
         assert_eq!(b.core.store.store_stats().stored_unique_pages, 0);
+        assert!(b.core.pages.is_empty());
         let snap = b.seal(vec![]);
         assert_eq!(store.stats(snap).unwrap().owned_pages, 0);
         assert_eq!(store.store_stats().stored_unique_pages, 0);
