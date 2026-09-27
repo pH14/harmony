@@ -1895,33 +1895,34 @@ where
         let parent_ctx =
             parent_id.map(|id| (previous.unwrap_or(self.entries[id].key), &self.lineages[id]));
         let key = key.complete(parent_ctx);
-        let mut lineage =
-            parent_id.map_or_else(K::Lineage::default, |id| self.lineages[id].clone());
-        K::record(&mut lineage, key);
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, suffix.as_ref(), key);
         let slot = self
             .slots
             .get(&slot_of_key(key))
-            .cloned()
+            .map(Vec::as_slice)
             .unwrap_or_default();
+        let (ranked, won_preferences) =
+            self.rank_slot_preferences(slot, key, candidate_cost_in_group);
+        let admitted = ranked.last().copied().unwrap_or(true);
+        if !admitted {
+            self.rejected = self.rejected.saturating_add(1);
+            return Ok((None, key));
+        }
+        let slot = slot.to_vec();
+        let mut lineage =
+            parent_id.map_or_else(K::Lineage::default, |id| self.lineages[id].clone());
+        K::record(&mut lineage, key);
         let new_cell = self
             .cells
             .get(&cell_of(key))
             .is_none_or(|state| state.active == 0);
         let new_slot = slot.is_empty();
-        let (ranked, won_preferences) =
-            self.rank_slot_preferences(&slot, key, candidate_cost_in_group);
-        let admitted = ranked.last().copied().unwrap_or(true);
         let displaced: Vec<usize> = slot
             .iter()
             .copied()
             .zip(&ranked)
             .filter_map(|(id, retained)| (!retained).then_some(id))
             .collect();
-        if !admitted {
-            self.rejected = self.rejected.saturating_add(1);
-            return Ok((None, key));
-        }
         let population_retirements = self
             .active_count
             .saturating_sub(self.max_entries)
@@ -5129,6 +5130,115 @@ mod tests {
             lineage.push(key.value);
         }
     }
+    #[test]
+    fn rejected_candidates_do_not_clone_or_record_lineage() {
+        use std::{cell::Cell, rc::Rc};
+
+        #[derive(Default, Deserialize, Serialize)]
+        struct Lineage {
+            values: Vec<u8>,
+            #[serde(skip)]
+            clones: Rc<Cell<usize>>,
+            #[serde(skip)]
+            records: Rc<Cell<usize>>,
+        }
+        impl Clone for Lineage {
+            fn clone(&self) -> Self {
+                self.clones.set(self.clones.get() + 1);
+                Self {
+                    values: self.values.clone(),
+                    clones: Rc::clone(&self.clones),
+                    records: Rc::clone(&self.records),
+                }
+            }
+        }
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+        struct Key(u8);
+        impl ArchiveKey for Key {
+            type Place = ();
+            type Progress = ();
+            type Identity = ();
+            type Lineage = Lineage;
+            fn place(self) {}
+            fn progress(self) {}
+            fn identity(self) {}
+            fn capacity() -> usize {
+                1
+            }
+            fn preference_cmp(self, _: usize, other: Self) -> Ordering {
+                self.0.cmp(&other.0)
+            }
+            fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
+                Self(
+                    self.0.saturating_add(
+                        parent
+                            .and_then(|(_, lineage)| lineage.values.last().copied())
+                            .unwrap_or(0),
+                    ),
+                )
+            }
+            fn record(lineage: &mut Self::Lineage, key: Self) {
+                lineage.records.set(lineage.records.get() + 1);
+                lineage.values.push(key.0);
+            }
+        }
+        let mut archive = Archive::<u8, Key, (), ()>::new(|_| 1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: Key(10),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap();
+        let clones = Rc::clone(&archive.lineages[0].clones);
+        let records = Rc::clone(&archive.lineages[0].records);
+        for execution in 1..=32 {
+            assert_eq!(
+                archive
+                    .insert_after(
+                        Some(0),
+                        Some(Key(99)),
+                        execution,
+                        ArchiveCandidate {
+                            suffix: [2].as_slice(),
+                            key: Key(0),
+                            milestones: (),
+                        },
+                        ()
+                    )
+                    .unwrap(),
+                (None, Key(10))
+            );
+        }
+        assert_eq!(clones.get(), 0);
+        assert_eq!(records.get(), 1);
+        assert_eq!(archive.lineages[0].values, [10]);
+        assert_eq!(
+            archive
+                .insert_after(
+                    Some(0),
+                    None,
+                    33,
+                    ArchiveCandidate {
+                        suffix: [3].as_slice(),
+                        key: Key(20),
+                        milestones: (),
+                    },
+                    ()
+                )
+                .unwrap(),
+            (Some(1), Key(30))
+        );
+        assert_eq!(clones.get(), 1);
+        assert_eq!(records.get(), 2);
+        assert_eq!(archive.lineages[1].values, [10, 30]);
+    }
+
     #[test]
     fn lineage_is_inherited_across_classes() {
         let mut archive = Archive::<u8, LineageKey, (), ()>::new(|_| 1);
