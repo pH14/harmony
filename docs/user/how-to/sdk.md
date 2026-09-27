@@ -73,7 +73,7 @@ The static target is useful for a small Rust application, but static linking alo
 For this example, a Dockerfile in `my-app` can package the binary (replace `my-app` if your Cargo package has another name):
 
 ```dockerfile
-FROM alpine:3
+FROM busybox:musl
 COPY target/x86_64-unknown-linux-musl/release/my-app /app/sdk-demo
 ENTRYPOINT ["/app/sdk-demo"]
 ```

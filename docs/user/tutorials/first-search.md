@@ -28,7 +28,7 @@ printf '@always 1 0\n'
 Create `Dockerfile`:
 
 ```dockerfile
-FROM alpine:3
+FROM busybox:musl
 COPY bundle /etc/harmony/bundle
 COPY check.sh /app/check.sh
 ```
@@ -40,7 +40,7 @@ docker build -t harmony-first-search .
 docker image save -o workload.tar harmony-first-search
 ```
 
-The workload uses Alpine's static BusyBox commands. Do not generalize this example to every dynamically linked Alpine application; consult [compatibility](../reference/compatibility.md#workload-restrictions).
+The workload uses the static BusyBox musl image. Do not generalize this example to every dynamically linked musl application; consult [compatibility](../reference/compatibility.md#workload-restrictions).
 
 ## 2. Run a bounded campaign
 

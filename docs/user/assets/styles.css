@@ -33,3 +33,11 @@
   .doc-cards { grid-template-columns: 1fr; }
   .md-typeset .hero h1 { font-size: 2rem; }
 }
+[data-md-color-scheme="slate"] .md-typeset .md-button {
+  color: #98dcca;
+  border-color: #98dcca;
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary {
+  background-color: #98dcca;
+  color: #102d29;
+}
