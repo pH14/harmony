@@ -68,6 +68,42 @@ fn abandoned_rewrites_do_not_change_live_content_or_page_accounting() {
     }
 }
 
+#[test]
+fn collection_reclaims_a_released_chain_without_losing_its_live_tip() {
+    let depth = if cfg!(miri) { 16 } else { 4096 };
+    let mut s = store(1);
+    let mut builder = s.begin_base();
+    builder.write_page(0, &page(7)).unwrap();
+    let mut tip = builder.seal(vec![1]);
+    for _ in 1..depth {
+        let next = s.derive(tip).unwrap().seal(vec![1]);
+        s.release(tip).unwrap();
+        assert_eq!(s.gc(), 0);
+        assert_eq!(s.store_stats().snapshots, 1);
+        tip = next;
+    }
+    let mut out = page(0);
+    s.read_page(tip, 0, &mut out).unwrap();
+    assert_eq!(out, page(7));
+    assert_eq!(s.store_stats().bytes_resident, PAGE_SIZE as u64 + depth);
+    s.retain(tip).unwrap();
+    assert_eq!(s.release(tip).unwrap(), 1);
+    assert_eq!(s.gc(), 0);
+    assert_eq!(s.release(tip).unwrap(), 0);
+    assert_eq!(s.gc(), PAGE_SIZE as u64 + depth);
+    assert_eq!(s.gc(), 0);
+    assert_eq!(s.store_stats().snapshots, 0);
+    assert_eq!(s.store_stats().stored_unique_pages, 0);
+    assert_eq!(s.store_stats().bytes_resident, 0);
+
+    let mut builder = s.begin_base();
+    builder.write_page(0, &page(9)).unwrap();
+    let fresh = builder.seal(vec![2]);
+    s.read_page(fresh, 0, &mut out).unwrap();
+    assert_eq!(out, page(9));
+    assert_eq!(s.store_stats().snapshots, 1);
+}
+
 fn base_of_n(store: &mut Store, n: u8) -> SnapshotId {
     let mut b = store.begin_base();
     for i in 0..n {

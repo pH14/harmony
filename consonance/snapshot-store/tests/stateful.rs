@@ -104,6 +104,11 @@ enum Transition {
         writes: Writes,
         vm_state: Vec<u8>,
     },
+    Flatten {
+        parent: usize,
+        writes: Writes,
+        vm_state: Vec<u8>,
+    },
     Read {
         snap: usize,
         gfn: u64,
@@ -164,8 +169,11 @@ impl ReferenceStateMachine for StoreRef {
         let vm_state = prop::collection::vec(any::<u8>(), 0..12);
         let sel = || prop::sample::select(live.clone());
         prop_oneof![
-            3 => (sel(), writes, vm_state).prop_map(|(parent, writes, vm_state)| {
+            3 => (sel(), writes.clone(), vm_state.clone()).prop_map(|(parent, writes, vm_state)| {
                 Transition::Derive { parent, writes, vm_state }
+            }),
+            1 => (sel(), writes, vm_state).prop_map(|(parent, writes, vm_state)| {
+                Transition::Flatten { parent, writes, vm_state }
             }),
             4 => (sel(), 0..MEM_PAGES).prop_map(|(snap, gfn)| Transition::Read { snap, gfn }),
             1 => sel().prop_map(|snap| Transition::Materialize { snap }),
@@ -196,6 +204,23 @@ impl ReferenceStateMachine for StoreRef {
                     resident: true,
                 });
             }
+            Transition::Flatten {
+                parent,
+                writes,
+                vm_state,
+            } => {
+                let (seeds, _) = apply_writes(&state.snaps[*parent].seeds, writes);
+                let owned_pages = seeds.iter().filter(|&&seed| seed != 0).count() as u64;
+                state.snaps.push(RefSnap {
+                    seeds,
+                    vm_state: vm_state.clone(),
+                    refcount: 1,
+                    owned_pages,
+                    chain_len: 1,
+                    parent: None,
+                    resident: true,
+                });
+            }
             Transition::Retain { snap } => state.snaps[*snap].refcount += 1,
             Transition::Release { snap } => state.snaps[*snap].refcount -= 1,
             Transition::Gc => state.gc(),
@@ -208,7 +233,7 @@ impl ReferenceStateMachine for StoreRef {
         let live = |i: usize| state.snaps.get(i).is_some_and(|s| s.refcount > 0);
         match transition {
             Transition::Gc => true,
-            Transition::Derive { parent, .. } => live(*parent),
+            Transition::Derive { parent, .. } | Transition::Flatten { parent, .. } => live(*parent),
             Transition::Read { snap, gfn } => live(*snap) && *gfn < MEM_PAGES,
             Transition::Materialize { snap }
             | Transition::Retain { snap }
@@ -264,6 +289,21 @@ impl StateMachineTest for StoreMachine {
                     builder.write_page(gfn, &page(seed)).unwrap();
                 }
                 let id = builder.seal(vm_state.clone());
+                assert_eq!(sut.store.vm_state(id).unwrap(), &vm_state[..]);
+                sut.ids.push(id);
+            }
+            Transition::Flatten {
+                parent,
+                writes,
+                vm_state,
+            } => {
+                let expected = ref_state.snaps.last().unwrap();
+                let image: Vec<u8> = expected.seeds.iter().flat_map(|&seed| page(seed)).collect();
+                let dirty: Vec<u64> = writes.iter().map(|&(gfn, _)| gfn).collect();
+                let id = sut
+                    .store
+                    .flatten_base(sut.ids[parent], &image, &dirty, vm_state.clone())
+                    .unwrap();
                 assert_eq!(sut.store.vm_state(id).unwrap(), &vm_state[..]);
                 sut.ids.push(id);
             }
