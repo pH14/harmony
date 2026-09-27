@@ -33,6 +33,7 @@ proptest! {
             (any::<u8>(), 0u8..4, prop::collection::vec((0u64..PAGES as u64, 0u8..5), 0..8)),
             1..24,
         ),
+        dirty in prop::collection::vec(0u64..PAGES as u64, 0..16),
     ) {
         let mut store = Store::new(StoreConfig { mem_pages: PAGES as u64 });
         let root = store.begin_base().seal(vec![]);
@@ -90,10 +91,23 @@ proptest! {
                     .map(|gfn| (gfn, [snapshots[to].contents[gfn as usize]; PAGE_SIZE]))
                     .collect();
                 prop_assert_eq!(
-                    store.diff_pages(Some(snapshots[from].id), snapshots[to].id).unwrap(),
+                    store.diff_pages(Some(snapshots[from].id), snapshots[to].id).unwrap().into_iter().map(|(gfn, page)| (gfn, *page)).collect::<Vec<_>>(),
                     expected,
                     "from model node {} to {}", from, to,
                 );
+                let mut memory: Vec<_> = snapshots[from].contents.iter()
+                    .map(|&value| [value; PAGE_SIZE]).collect();
+                for &gfn in &dirty {
+                    memory[gfn as usize].fill(0xFF);
+                }
+                let pages = store.restore_pages(Some(snapshots[from].id), snapshots[to].id, &dirty).unwrap();
+                prop_assert!(pages.windows(2).all(|pair| pair[0].0 < pair[1].0));
+                for (gfn, page) in pages {
+                    memory[gfn as usize].copy_from_slice(page);
+                }
+                let expected: Vec<_> = snapshots[to].contents.iter()
+                    .map(|&value| [value; PAGE_SIZE]).collect();
+                prop_assert_eq!(memory, expected, "restored model node {} from {}", to, from);
             }
         }
     }

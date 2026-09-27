@@ -635,10 +635,24 @@ where
     }
 
     pub fn write_guest_pages(&mut self, pages: &[(u64, [u8; 4096])]) -> Result<(), VmmError> {
+        self.write_guest_page_iter(pages.iter().map(|(gfn, page)| (*gfn, page)))
+    }
+
+    pub(crate) fn write_guest_page_refs(
+        &mut self,
+        pages: &[(u64, &[u8; 4096])],
+    ) -> Result<(), VmmError> {
+        self.write_guest_page_iter(pages.iter().copied())
+    }
+
+    fn write_guest_page_iter<'a>(
+        &mut self,
+        pages: impl ExactSizeIterator<Item = (u64, &'a [u8; 4096])>,
+    ) -> Result<(), VmmError> {
         const PAGE_SIZE: usize = 4096;
         const PAGE_SIZE_U64: u64 = PAGE_SIZE as u64;
 
-        if pages.is_empty() {
+        if pages.len() == 0 {
             return Ok(());
         }
         let ram_len = self.ram.len();
@@ -654,15 +668,9 @@ where
             )));
         }
 
-        let mut seen = std::collections::BTreeSet::new();
         let mut validated = Vec::with_capacity(pages.len());
         for (gfn, page) in pages {
-            if !seen.insert(*gfn) {
-                return Err(VmmError::ContractViolation(format!(
-                    "write_guest_pages: duplicate GFN {gfn}"
-                )));
-            }
-            let gfn_usize = usize::try_from(*gfn).map_err(|_| {
+            let gfn_usize = usize::try_from(gfn).map_err(|_| {
                 VmmError::ContractViolation(format!(
                     "write_guest_pages: GFN {gfn} does not fit the host address space"
                 ))
@@ -700,16 +708,19 @@ where
             }
             validated.push((offset, end, page));
         }
+        validated.sort_unstable_by_key(|&(offset, _, _)| offset);
+        if let Some(pair) = validated.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            return Err(VmmError::ContractViolation(format!(
+                "write_guest_pages: duplicate GFN {}",
+                pair[0].0 / PAGE_SIZE
+            )));
+        }
 
         let ram = self.ram.as_mut_bytes();
         let base = ram.as_mut_ptr() as usize;
+        let mut written = Vec::new();
         for &(offset, end, page) in &validated {
             ram[offset..end].copy_from_slice(page);
-        }
-        let mut offsets: Vec<usize> = validated.iter().map(|&(offset, _, _)| offset).collect();
-        offsets.sort_unstable();
-        let mut written: Vec<(usize, usize)> = Vec::new();
-        for offset in offsets {
             extend_written(&mut written, offset, PAGE_SIZE);
         }
         self.invalidate_written_instructions(base, &written);
@@ -3307,6 +3318,29 @@ mod tests {
         assert_eq!(vmm.guest_memory(), &before);
         assert!(vmm.host_dirty.is_empty());
         assert!(!vmm.host_dirty_wholesale);
+    }
+
+    #[test]
+    fn borrowed_guest_pages_validate_before_writing_unsorted_input() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let before = vmm.guest_memory().to_vec();
+        let a = [0x13; 4096];
+        let b = [0x27; 4096];
+        assert!(
+            vmm.write_guest_page_refs(&[(3, &a), (1, &b), (3, &b)])
+                .is_err()
+        );
+        assert_eq!(vmm.guest_memory(), before);
+        assert!(!vmm.host_dirty_wholesale);
+        assert!(
+            vmm.write_guest_page_refs(&[(1, &a), ((TEST_RAM / 4096) as u64, &b)])
+                .is_err()
+        );
+        assert_eq!(vmm.guest_memory(), before);
+        vmm.write_guest_page_refs(&[(3, &a), (1, &b)]).unwrap();
+        assert_eq!(&vmm.guest_memory()[4096..8192], &b);
+        assert_eq!(&vmm.guest_memory()[3 * 4096..4 * 4096], &a);
+        assert!(vmm.host_dirty_wholesale);
     }
 
     #[test]
