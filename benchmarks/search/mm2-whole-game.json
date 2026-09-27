@@ -1,0 +1,27 @@
+{
+  "format": "harmony-search-eval-v1",
+  "id": "mm2-whole-game-v1",
+  "seeds": [20260927, 20260928, 20260929],
+  "workers": [6],
+  "memory_mib": [16384],
+  "search": {
+    "executions": 2000000,
+    "frames": 3000000000,
+    "window": 2,
+    "result_slots": 2,
+    "wall_seconds": 14400,
+    "suffix": "one_to_six_within_3_max_action_cost_full_hold",
+    "mixture": "energy_splice:6",
+    "verification": "witness",
+    "checkpoint_every": 50000,
+    "checkpoint_on_progress": true
+  },
+  "cases": [{
+    "id": "mm2-power-on",
+    "game": "mm2",
+    "whole_game": true,
+    "origin": "power-on stage select; search chooses Robot Master order",
+    "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+    "require_solved": false
+  }]
+}

@@ -8,7 +8,10 @@ use machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::target::{ExitKind, Target};
+use crate::{
+    nes_backend::NesBackend,
+    target::{ExitKind, Target},
+};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
@@ -42,7 +45,7 @@ const PLAYER_X: usize = 0x460;
 const PLAYER_Y: usize = 0x4a0;
 const PLAYER_HEALTH: usize = 0x6c0;
 const WEAPON_ENERGY: usize = 0x9c;
-const WEAPON_ENERGY_BYTES: usize = 12;
+pub(super) const WEAPON_ENERGY_BYTES: usize = 12;
 const OBJECT_ID_TABLE: usize = 0x400;
 const OBJECT_FLAG_TABLE: usize = 0x420;
 const OBJECT_SLOTS: usize = 0x20;
@@ -1570,10 +1573,16 @@ impl Target for Mm2Target {
             self.failed = true;
             return None;
         };
-        let Ok(emulator_state) = self.machine.take_snapshot(snap) else {
+        let exported = self.machine.export_nes(snap, None);
+        let Ok(emulator_state) = exported else {
             self.failed = true;
+            let _ = self.machine.release_exported(snap);
             return None;
         };
+        if self.machine.release_exported(snap).is_err() {
+            self.failed = true;
+            return None;
+        }
         Some(Mm2Snapshot {
             emulator_state,
             observation: self.observation.clone(),
@@ -1587,8 +1596,16 @@ impl Target for Mm2Target {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
+        let imported = self
+            .machine
+            .import_nes(&snapshot.emulator_state)
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = self.machine.replay(imported) {
+            let _ = self.machine.drop_snapshot(imported);
+            return Err(error.to_string().into());
+        }
         self.machine
-            .restore_bytes(&snapshot.emulator_state)
+            .drop_snapshot(imported)
             .map_err(|error| error.to_string())?;
         self.current_wram = self
             .machine
@@ -1608,6 +1625,62 @@ impl Target for Mm2Target {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot_target() -> Mm2Target {
+        let machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
+        Mm2Target::from_machine_whole_game(machine, &[]).expect("target")
+    }
+
+    #[test]
+    fn compressed_snapshot_round_trips_core_and_game_evidence() {
+        let mut target = snapshot_target();
+        target.observation.frame_count = 47;
+        target.observation.decoded.enemy_damage = 5;
+        target.observation.changed_indices = vec![1, 2];
+        target.observation.log_line = "saved observation".to_owned();
+        target.trusted_stage = Some(WILY5_STAGE);
+        target.final_stage_seen = true;
+        target.castle_completion_mask = 3;
+        let saved = target.snapshot().expect("snapshot");
+        let held = target.machine.snapshot().expect("raw snapshot");
+        let raw = target.machine.take_snapshot(held).expect("raw state");
+        assert!(saved.emulator_state.len() < raw.len());
+        assert_eq!(saved.emulator_state.capacity(), saved.emulator_state.len());
+        let bytes = postcard::to_allocvec(&saved).expect("encode checkpoint snapshot");
+        let decoded: Mm2Snapshot =
+            postcard::from_bytes(&bytes).expect("decode checkpoint snapshot");
+        let mut restored = snapshot_target();
+        restored
+            .restore(&decoded)
+            .expect("restore compressed state");
+        assert_eq!(restored.snapshot().expect("restored snapshot"), saved);
+        let held = restored.machine.snapshot().expect("restored raw snapshot");
+        assert_eq!(
+            restored
+                .machine
+                .take_snapshot(held)
+                .expect("restored raw state"),
+            raw
+        );
+    }
+
+    #[test]
+    fn invalid_snapshot_encoding_does_not_change_the_target() {
+        let mut target = snapshot_target();
+        let saved = target.snapshot().expect("snapshot");
+        let held = target.machine.snapshot().expect("raw snapshot");
+        let raw = target.machine.take_snapshot(held).expect("raw state");
+        let mut oversized = saved.emulator_state.clone();
+        oversized[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut short = lz4_flex::block::compress_prepend_size(&raw[..raw.len() - 1]);
+        short[..4].copy_from_slice(&u32::try_from(raw.len()).unwrap().to_le_bytes());
+        for encoding in [raw, vec![4, 0, 0, 0, 0xf0], oversized, short] {
+            let mut invalid = saved.clone();
+            invalid.emulator_state = encoding;
+            assert!(target.restore(&invalid).is_err());
+            assert_eq!(target.snapshot().expect("unchanged snapshot"), saved);
+        }
+    }
 
     #[test]
     fn stages_parse_by_number_and_name() {

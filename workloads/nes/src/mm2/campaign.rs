@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -19,13 +19,14 @@ use crate::{
             merge_progress_watermark, milestone_key, milestones, progress_watermark, sample_chord,
         },
         progress::NamedProgress,
+        stock::StockedProgress,
         target::{
             ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
             power_on_walk, preference_tuple, walk_to_stage_select,
         },
     },
     search::{
-        archive::RetentionPolicy,
+        archive::{ArchiveKey, RetentionPolicy},
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
@@ -41,8 +42,8 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v3";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v5";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v5";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -50,6 +51,10 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
+const REPORTING_POLICY_FIELD: &str = "reporting_policy";
+const SNAPSHOT_ENCODING_FIELD: &str = "snapshot_encoding";
+const SNAPSHOT_ENCODING_IDENTIFIER: &str = "quicknes_lz4_size_prefixed_v1";
+const REPORTING_POLICY_IDENTIFIER: &str = "playable_entrances_stocked_records_v2";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_start_taps_no_select_v2";
 const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_first_boss_defeated";
 
@@ -68,6 +73,8 @@ pub struct Mm2Game {
     whole_game: bool,
     identity: String,
     champion_input_path: Option<PathBuf>,
+    root_input: Mm2Input,
+    milestone_input_dir: Option<PathBuf>,
 }
 
 impl Mm2Game {
@@ -120,6 +127,8 @@ impl Mm2Game {
             whole_game: false,
             identity,
             champion_input_path: None,
+            root_input: Mm2Input::default(),
+            milestone_input_dir: None,
         }
     }
 
@@ -127,6 +136,43 @@ impl Mm2Game {
     pub fn with_champion_input_path(mut self, path: PathBuf) -> Self {
         self.champion_input_path = Some(path);
         self
+    }
+
+    #[must_use]
+    pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
+        self.milestone_input_dir = Some(directory);
+        self
+    }
+
+    fn publish_tapes(&self, names: &[String], input: &Mm2Input) -> Result<(), Box<dyn Error>> {
+        if let Some(directory) = &self.milestone_input_dir {
+            if names.is_empty() {
+                return Ok(());
+            }
+            std::fs::create_dir_all(directory)?;
+            let bytes = serde_json::to_vec(input)?;
+            for name in names {
+                let path = directory.join(format!("{name}.json"));
+                let temporary = path.with_extension("json.tmp");
+                std::fs::write(&temporary, &bytes)?;
+                std::fs::rename(temporary, path)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn with_root_input(mut self, input: Mm2Input) -> Result<Self, Box<dyn Error>> {
+        if !self.root_input.actions.is_empty() {
+            return Err("MM2 root input has already been set".into());
+        }
+        if input.actions.is_empty() {
+            return Err("MM2 root input must contain at least one action".into());
+        }
+        let digest = postcard_value_sha256(&input)?;
+        self.identity
+            .push_str(&format!(";root-input-sha256={digest}"));
+        self.root_input = input;
+        Ok(self)
     }
 
     pub fn walk_to_stage_select(
@@ -167,9 +213,10 @@ impl Mm2Game {
 #[derive(Clone, Copy, Debug)]
 pub struct Mm2CampaignRun;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Mm2CampaignEvidence {
     named_progress: NamedProgress,
+    stocked_progress: StockedProgress,
     aggregate: Mm2Milestones,
     watermark: Mm2ProgressWatermark,
     first_reached: Mm2MilestoneTimes,
@@ -447,6 +494,36 @@ impl CampaignTypes for Mm2Game {
 }
 
 impl Reporting for Mm2Game {
+    fn evidence_checkpoint(evidence: &Mm2CampaignEvidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(postcard::to_allocvec(evidence)?)
+    }
+
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Mm2CampaignEvidence, Box<dyn Error>> {
+        let evidence: Mm2CampaignEvidence = postcard::from_bytes(bytes)?;
+        if crate::mm2::progress::required_milestones()
+            .iter()
+            .any(|name| !evidence.named_progress.first_seen.contains_key(name))
+        {
+            return Err("MM2 checkpoint is missing required named milestones".into());
+        }
+        Ok(evidence)
+    }
+
+    fn merge_witness_diagnostics(
+        evidence: &mut Mm2CampaignEvidence,
+        observations: &[Mm2Observations],
+        sequence: u64,
+    ) {
+        let action_end = observations
+            .last()
+            .map_or(0, |observation| observation.frame_count);
+        for observation in observations {
+            evidence
+                .named_progress
+                .observe(observation, sequence, action_end);
+        }
+    }
+
     fn checkpoint_marks(evidence: &Mm2CampaignEvidence) -> usize {
         evidence
             .named_progress
@@ -463,13 +540,16 @@ impl Reporting for Mm2Game {
     fn retained_diagnostics<'a>(
         snapshots: impl Iterator<Item = (Option<&'a Mm2Snapshot>, u64)>,
     ) -> Option<serde_json::Value> {
+        #[derive(Default, Serialize)]
+        struct PlaceCensus {
+            entries: u64,
+            selections: u64,
+            max_health: u8,
+            max_lives: u8,
+            max_weapon_energies: [u8; crate::mm2::target::WEAPON_ENERGY_BYTES],
+        }
         let (mut active, mut missing) = (0_u64, 0_u64);
-        let (mut weapons, mut stage, mut screen) = (0, 0, 0);
-        let mut health = vec![0_u8; 256];
-        let mut energy = vec![0_u16; 256];
-        let mut entries = vec![0_u64; 256];
-        let mut selected = vec![0_u64; 256];
-        let mut rows = BTreeMap::<(u8, u8), [u64; 2]>::new();
+        let mut places = BTreeMap::new();
         for (snapshot, selections) in snapshots {
             active += 1;
             let Some(snapshot) = snapshot else {
@@ -477,49 +557,30 @@ impl Reporting for Mm2Game {
                 continue;
             };
             let state = snapshot.state();
-            weapons |= state.weapons_obtained;
-            stage = stage.max(state.stage);
-            screen = screen.max(state.screen);
-            let here = usize::from(state.screen);
-            health[here] = health[here].max(state.health);
-            energy[here] = energy[here].max(state.weapon_energy);
-            entries[here] += 1;
-            selected[here] = selected[here].saturating_add(selections);
-            let row = rows.entry((state.screen, state.y / 16)).or_default();
-            *row = [row[0] + 1, row[1].saturating_add(selections)];
+            let place: &mut PlaceCensus = places.entry(archive_key(state).place()).or_default();
+            place.entries += 1;
+            place.selections = place.selections.saturating_add(selections);
+            place.max_health = place.max_health.max(state.health);
+            place.max_lives = place.max_lives.max(state.lives);
+            for (maximum, energy) in place
+                .max_weapon_energies
+                .iter_mut()
+                .zip(state.weapon_energies)
+            {
+                *maximum = (*maximum).max(energy);
+            }
         }
-        let deepest = usize::from(screen);
         Some(serde_json::json!({
-            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
-            "active_entries": active, "missing_snapshots": missing,
-            "weapons_union": weapons, "max_stage": stage, "max_screen": screen,
-            "deepest_screen_max_health": health[deepest],
-            "deepest_screen_max_weapon_energy": energy[deepest],
-            "live_entries_by_screen": entries
-                .iter()
-                .enumerate()
-                .filter(|(_, count)| **count > 0)
-                .map(|(here, count)| {
-                    (
-                        here.to_string(),
-                        [
-                            *count,
-                            u64::from(health[here]),
-                            u64::from(energy[here]),
-                            selected[here],
-                        ],
-                    )
-                })
-                .collect::<BTreeMap<_, _>>(),
-            "live_entries_by_screen_format": "screen -> [entries, max health, max summed energy, selections]",
-            "live_entries_by_screen_row": rows
-                .iter()
-                .map(|((here, row), best)| (format!("{here}:{row}"), *best))
-                .collect::<BTreeMap<_, _>>(),
-            "live_entries_by_screen_row_format": "screen:16-pixel row from the top -> [entries, selections]",
-            "temporary_screen_table_bytes": 256 * 4
+            "scope": "independent resource maxima over cached active endpoints per archive place; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active,
+            "missing_snapshots": missing,
+            "places": places.into_iter().map(|(key, census)| serde_json::json!({
+                "place": key,
+                "resources_and_draws": census,
+            })).collect::<Vec<_>>(),
         }))
     }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -581,6 +642,8 @@ impl InputPolicy for Mm2Game {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
+            (REPORTING_POLICY_FIELD, REPORTING_POLICY_IDENTIFIER),
+            (SNAPSHOT_ENCODING_FIELD, SNAPSHOT_ENCODING_IDENTIFIER),
             (
                 TERMINAL_POLICY_FIELD,
                 if self.whole_game {
@@ -637,22 +700,24 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
-        if self.whole_game {
-            return Mm2Target::from_rom_bytes_whole_game(
+        let mut target = if self.whole_game {
+            Mm2Target::from_rom_bytes_whole_game(&self.rom, &self.core_path, &self.core_sha256)
+        } else {
+            Mm2Target::from_rom_bytes_after(
                 &self.rom,
                 &self.core_path,
                 &self.core_sha256,
+                &self.prefix,
+                self.stage,
             )
-            .map_err(|error| error.to_string());
         }
-        Mm2Target::from_rom_bytes_after(
-            &self.rom,
-            &self.core_path,
-            &self.core_sha256,
-            &self.prefix,
-            self.stage,
-        )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        if !self.root_input.actions.is_empty() {
+            target
+                .advance_genesis(&self.root_input.actions)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(target)
     }
 
     fn reset(&self, target: &mut Mm2Target) {
@@ -780,7 +845,13 @@ impl Evaluation for Mm2Game {
         let state = target.mechanical_state();
         evidence.watermark = evidence.watermark.max(progress_watermark(state));
         evidence.genesis_screen.get_or_insert(state.screen);
-        evidence.named_progress.observe(&target.observe(), 0, 0);
+        let observation = target.observe();
+        let mut tapes = evidence.named_progress.observe(&observation, 0, 0);
+        for name in &tapes {
+            evidence.stocked_progress.anchor(name, &observation);
+        }
+        tapes.extend(evidence.stocked_progress.observe(&observation));
+        self.publish_tapes(&tapes, &Mm2Input::default())?;
         Ok(())
     }
 
@@ -816,10 +887,22 @@ impl Evaluation for Mm2Game {
     where
         F: FnOnce() -> Result<Mm2Input, Box<dyn Error>>,
     {
+        let mut tapes = Vec::new();
+        let action_end = action
+            .observations
+            .last()
+            .map_or(0, |last| last.frame_count);
         for observation in &action.observations {
-            evidence
+            let discovered = evidence
                 .named_progress
-                .observe(observation, sequence, observation.frame_count);
+                .observe(observation, sequence, action_end);
+            for name in &discovered {
+                evidence.stocked_progress.anchor(name, observation);
+            }
+            tapes.extend(discovered);
+        }
+        if let Some(endpoint) = action.observations.last() {
+            tapes.extend(evidence.stocked_progress.observe(endpoint));
         }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
@@ -830,8 +913,9 @@ impl Evaluation for Mm2Game {
             || (action.milestones.defeated_boss && evidence.first_inputs.first_clear.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
+        if first_input_needed || champion.is_some() || !tapes.is_empty() {
             let input = input()?;
+            self.publish_tapes(&tapes, &input)?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,
@@ -919,14 +1003,39 @@ mod tests {
 
         assert_eq!(census["active_entries"], 4);
         assert_eq!(census["missing_snapshots"], 1);
-        assert_eq!(census["max_screen"], 4);
-        assert_eq!(census["deepest_screen_max_health"], 28);
-        let screens = &census["live_entries_by_screen"];
-        assert_eq!(screens["4"], serde_json::json!([2, 28, 0, 3]));
-        assert_eq!(screens["2"], serde_json::json!([1, 20, 0, 11]));
-        let rows = &census["live_entries_by_screen_row"];
-        assert_eq!(rows["4:0"], serde_json::json!([1, 3]));
-        assert_eq!(rows["4:12"], serde_json::json!([1, 0]));
+        let places = census["places"].as_array().unwrap();
+        assert_eq!(places.len(), 3);
+        assert_eq!(
+            places
+                .iter()
+                .map(|place| place["resources_and_draws"]["selections"].as_u64().unwrap())
+                .sum::<u64>(),
+            14
+        );
+        assert!(
+            places
+                .iter()
+                .any(|place| place["resources_and_draws"]["max_health"] == 28)
+        );
+    }
+
+    #[test]
+    fn census_separates_matching_coordinates_in_different_stages_and_inventories() {
+        use crate::mm2::target::Mm2MechanicalState;
+        let snapshots = [(8, 255), (9, 255), (2, 1), (2, 2)].map(|(stage, weapons)| {
+            Mm2Snapshot::for_census_tests(Mm2MechanicalState {
+                stage,
+                weapons_obtained: weapons,
+                screen: 1,
+                room: 2,
+                health: 28,
+                ..Default::default()
+            })
+        });
+        let census =
+            Mm2Game::retained_diagnostics(snapshots.iter().map(|snapshot| (Some(snapshot), 1)))
+                .unwrap();
+        assert_eq!(census["places"].as_array().unwrap().len(), 4);
     }
 
     #[test]
@@ -939,9 +1048,105 @@ mod tests {
         );
         let policies = game.policies(&Mm2CampaignRun);
         let Mm2CampaignRun = game.resolve_recorded(&policies).expect("resolve");
+        let mut missing_reporting = policies.clone();
+        missing_reporting.remove(REPORTING_POLICY_FIELD);
+        assert!(game.resolve_recorded(&missing_reporting).is_err());
+        let mut missing_encoding = policies.clone();
+        missing_encoding.remove(SNAPSHOT_ENCODING_FIELD);
+        assert!(game.resolve_recorded(&missing_encoding).is_err());
+        let mut raw_encoding = policies.clone();
+        raw_encoding.insert(
+            SNAPSHOT_ENCODING_FIELD.to_owned(),
+            "quicknes_raw_v1".to_owned(),
+        );
+        assert!(game.resolve_recorded(&raw_encoding).is_err());
         let mut foreign = policies;
         foreign.insert("stage".to_owned(), "understood-by-search".to_owned());
         assert!(game.resolve_recorded(&foreign).is_err());
+    }
+
+    #[test]
+    fn milestone_tapes_keep_first_arrival_and_stock_records_across_resume() {
+        use crate::mm2::target::{Mm2MechanicalState, Mm2Scene};
+        let directory = std::env::temp_dir().join(format!("mm2-stock-test-{}", std::process::id()));
+        let game = Mm2Game::new_whole_game(&[], Path::new("unused"), "unused")
+            .with_milestone_input_dir(directory.clone());
+        let mut evidence = Mm2CampaignEvidence::default();
+        let action = |health| Mm2CampaignActionResult {
+            action: ButtonChord::new(0, 1),
+            observations: vec![Mm2Observations {
+                decoded: Mm2MechanicalState {
+                    stage: 8,
+                    room: 36,
+                    weapons_obtained: 255,
+                    health,
+                    scene: Mm2Scene::Gameplay,
+                    current_bank: 14,
+                    player_state: 3,
+                    ..Default::default()
+                },
+                frame_count: 100,
+                changed_indices: Vec::new(),
+                dead: false,
+                fall_run: 0,
+                log_line: String::new(),
+            }],
+            milestones: Mm2Milestones::default(),
+            outcome: Outcome::default(),
+            candidate: None,
+        };
+        let tape = |length| Mm2Input {
+            actions: vec![ButtonChord::new(0, 1); length],
+        };
+        game.merge_action_evidence(&mut evidence, &action(4), 10, || Ok(tape(1)))
+            .unwrap();
+        let mut evidence =
+            Mm2Game::evidence_from_checkpoint(&Mm2Game::evidence_checkpoint(&evidence).unwrap())
+                .unwrap();
+        game.merge_action_evidence(&mut evidence, &action(28), 20, || Ok(tape(2)))
+            .unwrap();
+        game.merge_action_evidence(&mut evidence, &action(4), 30, || {
+            panic!("inferior state must not materialize input")
+        })
+        .unwrap();
+        let read = |name: &str| -> Mm2Input {
+            serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap()).unwrap()
+        };
+        assert_eq!(read("wily1_room_36.json"), tape(1));
+        assert_eq!(read("wily1_room_36-health.json"), tape(2));
+        assert_eq!(
+            evidence.named_progress.first_seen["wily1_room_36"]
+                .unwrap()
+                .execution,
+            10
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn evidence_checkpoint_preserves_named_progress_and_rejects_missing_vocabulary() {
+        let mut evidence = Mm2CampaignEvidence::default();
+        evidence.named_progress.first_seen.insert(
+            "metal_defeated".into(),
+            Some(crate::mm2::progress::FirstSeen {
+                execution: 42,
+                route_action_end_frame: 123,
+            }),
+        );
+        evidence
+            .champion_input
+            .actions
+            .push(ButtonChord::new(0x81, 4));
+        let bytes = Mm2Game::evidence_checkpoint(&evidence).unwrap();
+        let restored = Mm2Game::evidence_from_checkpoint(&bytes).unwrap();
+        assert_eq!(restored.named_progress, evidence.named_progress);
+        assert_eq!(restored.champion_input, evidence.champion_input);
+        assert_eq!(Mm2Game::evidence_checkpoint(&restored).unwrap(), bytes);
+        evidence.named_progress.first_seen.remove("ending");
+        assert!(
+            Mm2Game::evidence_from_checkpoint(&Mm2Game::evidence_checkpoint(&evidence).unwrap())
+                .is_err()
+        );
     }
 
     #[test]
@@ -960,6 +1165,25 @@ mod tests {
                 .resolve_recorded(&stage.policies(&Mm2CampaignRun))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn rooted_tapes_have_distinct_checkpoint_identities() {
+        let game = || Mm2Game::new_whole_game(&[], Path::new("core"), "digest");
+        let root = |buttons| Mm2Input {
+            actions: vec![ButtonChord::new(buttons, 4)],
+        };
+        let first = game().with_root_input(root(0x81)).unwrap();
+        let second = game().with_root_input(root(0x80)).unwrap();
+        assert_ne!(first.emulator_identity(), second.emulator_identity());
+        assert_ne!(first.emulator_identity(), game().emulator_identity());
+        assert!(
+            first
+                .resolve_recorded(&second.policies(&Mm2CampaignRun))
+                .is_err()
+        );
+        assert!(game().with_root_input(Mm2Input::default()).is_err());
+        assert!(first.with_root_input(root(0)).is_err());
     }
 
     #[test]

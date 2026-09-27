@@ -9,11 +9,15 @@ use nes_workload::{
 };
 use sha2::{Digest, Sha256};
 
-const USAGE: &str = "usage: mm2-film <stage> <chain-prefix.json> <input.json> <output.mp4>";
+const USAGE: &str =
+    "usage: mm2-film <stage|whole-game> <chain-prefix-or-root.json> <input.json> <output.mp4>";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
-    let stage = Mm2Stage::parse(&args.next().ok_or(USAGE)?)?;
+    let mode = args.next().ok_or(USAGE)?;
+    let stage = (mode != "whole-game")
+        .then(|| Mm2Stage::parse(&mode))
+        .transpose()?;
     let prefix_path = PathBuf::from(args.next().ok_or(USAGE)?);
     let input_path = PathBuf::from(args.next().ok_or(USAGE)?);
     let video = PathBuf::from(args.next().ok_or(USAGE)?);
@@ -35,8 +39,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prefix: Mm2Input = serde_json::from_slice(&fs::read(&prefix_path)?)?;
     let input: Mm2Input = serde_json::from_slice(&fs::read(&input_path)?)?;
 
-    let mut target =
-        Mm2Target::from_rom_bytes_after(&rom, &core_path, &core_sha256, &prefix.actions, stage)?;
+    let mut target = if let Some(stage) = stage {
+        Mm2Target::from_rom_bytes_after(&rom, &core_path, &core_sha256, &prefix.actions, stage)?
+    } else {
+        let mut target = Mm2Target::from_rom_bytes_whole_game(&rom, &core_path, &core_sha256)?;
+        target.advance_genesis(&prefix.actions)?;
+        target
+    };
     target.start_capturing();
 
     let first_action = input.actions.first().ok_or("the input has no actions")?;
@@ -53,7 +62,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut applied = 1_usize;
     for action in &input.actions[1..] {
-        if target.is_dead() || target.defeated_a_boss() || target.exit_kind() != ExitKind::Ok {
+        if target.exit_kind() != ExitKind::Ok
+            || target.ending_reached()
+            || (stage.is_some() && (target.is_dead() || target.defeated_a_boss()))
+        {
             break;
         }
         target.apply(action);

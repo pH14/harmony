@@ -35,7 +35,7 @@ impl Default for NamedProgress {
 pub fn required_milestones() -> Vec<String> {
     ROBOT_MASTERS
         .iter()
-        .map(|name| format!("{name}_defeated"))
+        .flat_map(|name| [format!("{name}_entered"), format!("{name}_defeated")])
         .chain((1..=6).flat_map(|stage| {
             [
                 format!("wily{stage}_entered"),
@@ -53,8 +53,18 @@ impl NamedProgress {
             return Vec::new();
         }
         let mut reached = Vec::new();
+        let playable = state.current_bank == 0x0e
+            && state.health > 0
+            && (2..=10).contains(&state.player_state)
+            && state.scene != Mm2Scene::Ending;
+        if state.stage < 8 && playable {
+            let name = ROBOT_MASTERS[usize::from(state.stage)];
+            reached.push(format!("{name}_entered"));
+            reached.push(format!("{name}_room_{}", state.room));
+        }
         for (bit, name) in ROBOT_MASTERS.iter().enumerate() {
             if state.weapons_obtained & (1 << bit) != 0 {
+                reached.push(format!("{name}_entered"));
                 reached.push(format!("{name}_defeated"));
             }
         }
@@ -64,7 +74,7 @@ impl NamedProgress {
                 reached.push(format!("wily{stage}_boss_defeated"));
             }
         }
-        if (8..=13).contains(&state.stage) && state.weapons_obtained == 255 && state.health > 0 {
+        if (8..=13).contains(&state.stage) && state.weapons_obtained == 255 && playable {
             let stage = state.stage - 7;
             reached.push(format!("wily{stage}_entered"));
             reached.push(format!("wily{stage}_room_{}", state.room));
@@ -128,7 +138,7 @@ mod tests {
             log_line: String::new(),
         };
         let mut progress = NamedProgress::default();
-        assert_eq!(progress.observe(&observation, 42, 100).len(), 21);
+        assert_eq!(progress.observe(&observation, 42, 100).len(), 29);
         assert!(
             progress
                 .first_seen
@@ -136,6 +146,73 @@ mod tests {
                 .all(|stamp| stamp.is_some_and(|stamp| stamp.execution == 42))
         );
         assert!(progress.observe(&observation, 43, 101).is_empty());
+    }
+
+    #[test]
+    fn recorded_robot_entry_requires_gameplay_bank_not_reused_menu_stage_bytes() {
+        use crate::mm2::target::{WRAM_SIZE, decode_state};
+        let recorded = |stage, room, health, player_state, bank| {
+            let mut ram = [0_u8; WRAM_SIZE];
+            ram[0x2a] = stage;
+            ram[0x20] = room;
+            ram[0x6c0] = health;
+            ram[0x2c] = player_state;
+            ram[0x29] = bank;
+            Mm2Observations {
+                decoded: decode_state(&ram).unwrap(),
+                frame_count: 0,
+                changed_indices: Vec::new(),
+                dead: false,
+                fall_run: 0,
+                log_line: String::new(),
+            }
+        };
+        assert!(NamedProgress::reached(&recorded(6, 1, 0, 0, 13)).is_empty());
+        assert_eq!(
+            NamedProgress::reached(&recorded(6, 0, 28, 3, 14)),
+            ["metal_entered", "metal_room_0"]
+        );
+        assert!(NamedProgress::reached(&recorded(0, 0, 8, 11, 13)).is_empty());
+        assert!(NamedProgress::reached(&recorded(5, 0, 2, 11, 14)).is_empty());
+        assert_eq!(
+            NamedProgress::reached(&recorded(0, 2, 14, 5, 14)),
+            ["heat_entered", "heat_room_2"]
+        );
+        let mut dead = recorded(0, 2, 14, 5, 14);
+        dead.dead = true;
+        assert!(NamedProgress::reached(&dead).is_empty());
+    }
+
+    #[test]
+    fn castle_entry_waits_for_the_playable_starting_room_after_the_award() {
+        let mut observation = Mm2Observations {
+            decoded: Mm2MechanicalState {
+                stage: 9,
+                room: 0,
+                health: 8,
+                player_state: 11,
+                current_bank: 13,
+                castle_clears: 1,
+                weapons_obtained: 255,
+                ..Default::default()
+            },
+            frame_count: 0,
+            changed_indices: Vec::new(),
+            dead: false,
+            fall_run: 0,
+            log_line: String::new(),
+        };
+        let before = NamedProgress::reached(&observation);
+        assert!(before.contains(&"wily1_boss_defeated".to_owned()));
+        assert!(!before.contains(&"wily2_entered".to_owned()));
+        observation.decoded.current_bank = 14;
+        observation.decoded.player_state = 6;
+        observation.decoded.health = 28;
+        observation.decoded.room = 22;
+        let after = NamedProgress::reached(&observation);
+        assert!(after.contains(&"wily2_entered".to_owned()));
+        assert!(after.contains(&"wily2_room_22".to_owned()));
+        assert!(!after.contains(&"wily2_room_0".to_owned()));
     }
 
     #[test]

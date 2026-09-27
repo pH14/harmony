@@ -3,4 +3,5 @@
 pub mod archive;
 pub mod campaign;
 pub mod progress;
+mod stock;
 pub mod target;
