@@ -138,8 +138,11 @@ passed is a campaign failure: it appears under `never_satisfied` in both
 `park_reads` counts, by landing site, the holds after which the held thread
 read shared memory that another process changed during the hold.
 The campaign turns these counts into draw feedback: each site with a read
-weighs `1024 * (reads + 1) / (landings + 2)`, at least 1, and the weights
-change at each draw-table update. Once any site has a weight, half of the drawn
+weighs `1024 * (reads + 10 * r) / (landings + 10)`, at least 1, where `r` is
+the campaign's reads per landing across all sites. A site with few landings
+weighs close to the campaign rate, so one read in one landing counts for less
+than several reads in a few dozen landings. The weights change at each
+draw-table update. Once any site has a weight, half of the drawn
 parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
 range that is the site alone or the site plus or minus `2^k` bytes for `k` from
 6 through 12, each of the eight widths equally likely.
