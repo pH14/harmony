@@ -277,6 +277,16 @@ through an action counts too. The prompt carries a bounded excerpt of each of
 those files and the digest of the whole file, so a change anywhere in one
 reselects the workflow and invalidates its cached judgment.
 
+The subject file is judged in overlapping character ranges covering its entire
+content. A service token-budget rejection splits that range into smaller,
+overlapping ranges while retaining the same questions and composed context.
+Any range's finding applies to the file; a clean range cannot cancel it. The
+cache stores the complete set of judgments and their coverage. A range that
+still cannot be judged, a malformed answer, or another service error fails the
+check. Findings identify their character range. Raw answer dumps contain one
+row per range and question, with `start_character` and `end_character` columns.
+Offsets are zero-based characters and the end is exclusive.
+
 | Rule | Asks |
 | --- | --- |
 | `ci-owner-mismatch` | Does the work belong to the owner the name claims? |

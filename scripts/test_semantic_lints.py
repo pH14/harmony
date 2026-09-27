@@ -151,17 +151,167 @@ class VerdictTests(RequiresApiKey):
         self.assertEqual(new_warnings, [])
 
 
-class TruncationTests(unittest.TestCase):
-    def test_long_content_is_cut_to_100000_chars(self) -> None:
+class ContentStateTests(unittest.TestCase):
+    def test_state_preserves_the_entire_supplied_excerpt(self) -> None:
         content = "a" * 120_000
         state = LINTS._state_for("big.md", content)
-        self.assertEqual(len(state["content"]), 100_000)
-        self.assertTrue(state["truncated"])
-
-    def test_short_content_is_not_marked_truncated(self) -> None:
-        state = LINTS._state_for("small.md", "short")
+        self.assertEqual(state["content"], content)
         self.assertNotIn("truncated", state)
-        self.assertEqual(state["content"], "short")
+
+
+class ContentWindowTests(RequiresApiKey):
+    def setUp(self):
+        super().setUp()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.path = "sample.txt"
+        for name, value in [("STATE_CONTENT_LIMIT", 80),
+                            ("MIN_CONTENT_WINDOW", 8), ("CONTENT_OVERLAP", 8)]:
+            patcher = mock.patch.object(LINTS, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_content(self, content, post, cache=None):
+        (self.root / self.path).write_text(content)
+        return LINTS.run(self.root, [self.path], post=post, cache=cache)
+
+    def test_all_characters_are_judged_and_late_findings_survive(self):
+        content = "a" * 150 + "FORBIDDEN" + "z" * 90
+        calls = []
+        def post(url, headers, body):
+            payload = json.loads(body)
+            calls.append(payload)
+            bad = "FORBIDDEN" in payload["state"]["content"]
+            return make_post(full_answers(records_runs=0.99 if bad else 0.01))(url, headers, body)
+        cache = {}
+        failures, warnings, usage, errors = self.run_content(content, post, cache)
+        self.assertEqual([(rule, path) for rule, path, _ in failures], [("run-record", self.path)])
+        self.assertEqual(warnings, [])
+        self.assertEqual(errors, [])
+        covered = set()
+        for call in calls:
+            state = call["state"]
+            span = state["content_range"]
+            start, end = span["start_character"], span["end_character"]
+            self.assertEqual(state["content"], content[start:end])
+            self.assertLessEqual(len(state["content"]), 80)
+            covered.update(range(start, end))
+        self.assertEqual(covered, set(range(len(content))))
+        self.assertEqual(usage, {"input_tokens": 7 * len(calls), "output_tokens": 3 * len(calls)})
+        before = len(calls)
+        self.run_content(content, post, cache)
+        self.assertEqual(len(calls), before)
+
+    def test_findings_and_dump_identify_the_range_without_polluting_cache(self):
+        content = "a" * 150 + "FORBIDDEN" + "z" * 90
+        (self.root / self.path).write_text(content)
+        def post(url, headers, body):
+            bad = "FORBIDDEN" in json.loads(body)["state"]["content"]
+            return make_post(full_answers(records_runs=0.99 if bad else 0.01))(url, headers, body)
+        cache, rows = {}, []
+        first = LINTS.run(self.root, [self.path], post=post, cache=cache, dump_rows=rows)
+        self.assertEqual(len(first[0]), 1)
+        signal = first[0][0][2]
+        start, end = signal["_content_range"]
+        self.assertIn("FORBIDDEN", content[start:end])
+        self.assertIn(f"characters=[{start},{end})", LINTS._format_signal(self.path, signal))
+        self.assertTrue(all(len(row) == 6 for row in rows))
+        scores = [row for row in rows if row[1] == "records_runs"]
+        self.assertEqual([(int(row[4]), int(row[5])) for row in scores],
+                         list(LINTS._content_ranges(len(content))))
+        cached_rows = []
+        with mock.patch.object(LINTS, "ask", side_effect=AssertionError("cache miss")):
+            second = LINTS.run(self.root, [self.path], cache=cache, dump_rows=cached_rows)
+        self.assertEqual(first[:2], second[:2])
+        self.assertEqual(rows, cached_rows)
+        self.assertTrue(LINTS._valid_judgments(next(iter(cache.values())),
+                                              LINTS.questions_for(self.path), len(content)))
+
+    def test_overlap_keeps_a_boundary_finding_together(self):
+        content = "a" * 76 + "FORBIDDEN" + "z" * 40
+        def post(url, headers, body):
+            bad = "FORBIDDEN" in json.loads(body)["state"]["content"]
+            return make_post(full_answers(file_kind="status_report" if bad else "fixture"))(url, headers, body)
+        failures, _, _, errors = self.run_content(content, post)
+        self.assertEqual([rule for rule, _, _ in failures], ["run-record"])
+        self.assertEqual(errors, [])
+
+    def test_token_rejection_splits_without_losing_context_or_coverage(self):
+        content = "abcdefghij" * 17
+        accepted = []
+        context = {"contract": "retained in every request"}
+        def post(url, headers, body):
+            payload = json.loads(body)
+            self.assertEqual(payload["state"]["context"], context)
+            if len(payload["state"]["content"]) > 24:
+                raise LINTS.JevHTTPError(400, b'{"detail":{"error_type":"max_tokens_exceeded"}}')
+            accepted.append(payload)
+            return make_post(full_answers(file_kind="fixture"))(url, headers, body)
+        cache = {}
+        with mock.patch.object(LINTS, "context_for", return_value=context):
+            result = self.run_content(content, post, cache)
+            before = len(accepted)
+            self.run_content(content, post, cache)
+        self.assertEqual(result[0:2], ([], []))
+        self.assertEqual(result[3], [])
+        self.assertEqual(len(accepted), before)
+        covered = set()
+        for payload in accepted:
+            span = payload["state"]["content_range"]
+            covered.update(range(span["start_character"], span["end_character"]))
+        self.assertEqual(covered, set(range(len(content))))
+
+    def test_unjudged_tail_leaves_no_partial_cache(self):
+        cache = {}
+        def post(url, headers, body):
+            state = json.loads(body)["state"]
+            if "BADTAIL" in state["content"]:
+                raise LINTS.JevHTTPError(422, b"invalid request")
+            return make_post(full_answers())(url, headers, body)
+        result = self.run_content("a" * 100 + "BADTAIL", post, cache)
+        self.assertEqual([path for path, _ in result[3]], [self.path])
+        self.assertEqual(cache, {})
+
+    def test_other_bad_requests_do_not_split(self):
+        for body in [b'{"detail":{"error_type":"other"}}', b'not json']:
+            calls = []
+            def post(url, headers, request):
+                calls.append(request)
+                raise LINTS.JevHTTPError(400, body)
+            result = self.run_content("a" * 150, post)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(result[3]), 1)
+
+    def test_unresolved_budget_error_stops_and_does_not_cache(self):
+        cache, calls = {}, []
+        def post(url, headers, body):
+            calls.append(json.loads(body))
+            raise LINTS.JevHTTPError(400, b'{"detail":{"error_type":"max_tokens_exceeded"}}')
+        result = self.run_content("a" * 150, post, cache)
+        self.assertEqual(len(result[3]), 1)
+        self.assertEqual(cache, {})
+        self.assertLess(len(calls), 12)
+        self.assertLessEqual(len(calls[-1]["state"]["content"]), 8)
+
+    def test_cache_with_missing_coverage_is_rejudged(self):
+        content = "a" * 150
+        cache, calls = {}, []
+        post = make_post(full_answers(), calls)
+        self.run_content(content, post, cache)
+        key = next(iter(cache))
+        cache[key].pop()
+        before = len(calls)
+        self.run_content(content, post, cache)
+        self.assertGreater(len(calls), before)
+        self.assertTrue(LINTS._valid_judgments(cache[key], LINTS.questions_for(self.path), len(content)))
+
+    def test_empty_file_is_judged_once_and_cached(self):
+        cache, calls = {}, []
+        post = make_post(full_answers(), calls)
+        self.run_content("", post, cache)
+        self.run_content("", post, cache)
+        self.assertEqual(len(calls), 1)
 
 
 class RetryTests(unittest.TestCase):
@@ -287,7 +437,7 @@ class CacheTests(RequiresApiKey):
             result = LINTS.run(root, ["notes.txt"], post=make_post(full_answers(), calls), cache=cache)
             self.assertEqual(len(calls), 1)
             self.assertEqual(result[3], [])
-            self.assertTrue(LINTS._valid_answers(cache[key], questions))
+            self.assertTrue(LINTS._valid_judgments(cache[key], questions, len(content)))
 
 
 
