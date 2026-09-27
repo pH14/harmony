@@ -400,8 +400,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seeds", type=int, default=6, help="runtime seeds per arm")
     parser.add_argument("--jobs", type=int, default=6, help="parallel processes")
-    parser.add_argument("--binary", type=Path, help="prebuilt tiny-worlds executable")
-    parser.add_argument("--compare", type=Path, metavar="BASELINE",
+    parser.add_argument("--binary", type=lambda p: Path(p).resolve(), help="prebuilt tiny-worlds executable")
+    parser.add_argument("--compare", type=lambda p: Path(p).resolve(), metavar="BASELINE",
                         help="also run the Metroid worlds on this baseline executable and on --binary")
     parser.add_argument("--world-scale", type=int, default=16,
                         help="starting layouts per heavy Metroid world; light worlds run four times as many")
