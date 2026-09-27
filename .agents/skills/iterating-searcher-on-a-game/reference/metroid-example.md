@@ -50,8 +50,9 @@ just after the Kraid kill. The chain shows three things:
   has to pick and carry the state itself, which a chain never tests.
 
 A segment's budget must exceed the slowest pass of that part in any earlier
-run. Leaving Kraid's hideout takes about 1M tries from the kill, so segments
-from there run 3M tries per seed.
+run. Rooted starts leave Kraid's hideout 1.0M to 1.45M tries after the kill,
+and power-on runs take 2.3M to 3.9M, so a 1M budget stops segments that would
+pass.
 
 ## What the game reading must handle
 
@@ -63,8 +64,15 @@ handles these cases, and a new game's reading needs the same checks:
   both boss bytes to `0x82`. The reading counts bit 7 as the defeat and each
   raised statue as an item; otherwise the raise looks like losing a boss and
   the raised state has the same key as before, so the archive never keeps it.
-- **Progress the key must see.** Zebetite hits and Mother Brain's hits are part
-  of the Tourian boss reading, so the key ranks progress in the fight.
+- **Progress the key must see.** Mother Brain's hits are the Tourian boss
+  reading, and the Zebetite hits still needed are part of the place, so each
+  hit on a column or on her opens a new place.
+- **Readings that blink or get reused.** The frame after a hit, Kraid's slot
+  shows a flash value, and after Samus leaves the room an ordinary enemy
+  reuses the slot. Both read as zero health, which a key scores as a kill. The
+  reading holds its last value across flash frames, clears it when the map
+  cell changes, and takes a kill only from the game's defeat bits. Mega Man
+  2's dragon reading showed the same defect.
 - **Readings that change with the screen.** Each Tourian screen loads its own
   Zebetite slots on entry, so a sum over columns rises when Samus changes
   screens. Mother Brain's own hit byte only rises, and the reading uses it.
@@ -74,8 +82,8 @@ handles these cases, and a new game's reading needs the same checks:
 
 ## The handoff at Tourian
 
-The power-on search passes Kraid and Ridley and stalls in Tourian, and the
-handoff comparison shows why:
+In the example baseline, power-on runs passed Kraid and Ridley and stalled in
+Tourian. The handoff comparison showed why:
 
 - Power-on lines enter Tourian with 7 to 94 of 299 energy.
 - Full-energy states exist one item tier lower, in Ridley's area, millions of
@@ -89,9 +97,10 @@ handoff comparison shows why:
 
 The gap is carrying a stocked state to the tier rise. That carry has to be
 searched: at the same position and pose, two lineages differ in the frame
-counter, the random bytes and about 130 other RAM bytes, so one lineage's
-recorded actions mistime jumps and meet different enemies within a few actions
-when replayed from another.
+counter, the random bytes and about 130 other RAM bytes. One lineage's
+recorded actions replayed from another mistime jumps and meet different
+enemies within a few actions. About 30 such joins of higher-energy states
+onto the Tourian route entered Tourian with at most 33.5 energy.
 
 ## Mechanisms a change must respect
 

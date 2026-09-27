@@ -112,9 +112,9 @@ cell's seed.
 
 - Take roots from `campaign/milestone-inputs/` of a finished cell. `NAME.json`
   is the first arrival; `NAME-energy.json`, `NAME-missiles.json` and
-  `NAME-boss.json` are the best-stocked arrivals. The runner verifies only the
-  first-arrival tape, so replay a best-stocked tape with `metroid-map-probe`
-  before rooting at it.
+  `NAME-boss.json` are the best-stocked arrivals. A finished run replays every
+  tape in that folder twice and checks it reaches its milestone. Probe a tape
+  with `metroid-map-probe` to read its resources before rooting at it.
 - A tape from a power-on run is a full input from power-on and roots directly.
   A tape from a rooted run starts at its root. Rooting at it needs the full
   input: the root's actions, the idle actions for the frames the rooted start
@@ -179,11 +179,15 @@ new seeds from one checkpoint.
   The legs are tries after the resume: a milestone's first try minus the
   checkpoint's execution count, which is the number in the `.ckpt` file name.
   `milestones.py` prints first tries from power-on, so subtract by hand.
+- Before the slices, resume the checkpoint with its original seed on the
+  unchanged build for a short stretch. Its progress lines must match the
+  original run's apart from the timing fields `search_elapsed_millis` and
+  `unix_time`.
 - A resumed stream cannot be replayed, so resumed runs use witness
   verification.
-- When a change alters the checkpoint format, the old checkpoints no longer
-  load. Rerun the baseline power-on run on the change's base to regenerate
-  them.
+- Both arms of a slice must read the same checkpoint. A change that alters the
+  checkpoint format cannot be tested with slices; use rooted segments and a
+  power-on run.
 
 ## What a resume accepts
 
@@ -191,7 +195,9 @@ A resume may change the suffix, mixture and retention policies, the selector,
 the continuation policy, the objective stop, the draw table policy, the
 preference portfolio and a workload's `preference_policy`. The draw tables and
 slot holders are rebuilt from the archive entries, and the origin record and
-stream header list each change as `checkpoint_policy_changes`.
+stream header list each change as `checkpoint_policy_changes`. A change to one
+of these policies must change that policy's identifier, or the resume records
+no change.
 
 A resume refuses a changed workload identity, controller vocabulary, key
 extraction, duration, replacement, terminal or emulator policy, worker count,
@@ -214,9 +220,10 @@ python3 benchmarks/search/eval.py compare /private/runs/metroid-poweron-base \
   `kraid_door`, the boss rooms or another game, read
   `workload_diagnostics.named_progress.first_seen` from the last line of
   `campaign/progress.jsonl`, or add the milestones to the script.
-- Every 100,000th progress line carries `selector.draws_by_cell`, the draws
-  each place has received, and `selector.tier_draws_by_rank`. These are the
-  data for a heatmap while a run is going or after it was stopped.
+- The progress line at every 100,000th try carries `selector.draws_by_cell`,
+  the draws each place has received. Every line carries
+  `selector.tier_draws_by_rank`. These are the data for a heatmap while a run
+  is going or after it was stopped.
 - The final progress record's `retained_diagnostics` holds the archive census,
   written only when a run finishes:
   `live_entries_by_map_cell` maps `area:map_x:map_y` to entries, best health,
@@ -234,7 +241,7 @@ cargo build --release --locked --manifest-path workloads/nes/Cargo.toml \
 export HARMONY_METROID_ROM=/private/assets/metroid.nes
 export HARMONY_QUICKNES_CORE=/private/assets/quicknes_libretro.so
 workloads/nes/target/release/metroid-film TAPE.json out.mp4
-workloads/nes/target/release/metroid-map-probe TAPE.json --wram 6877:2DC
+workloads/nes/target/release/metroid-map-probe TAPE.json --wram 0:256
 ```
 
 Add `--root ROOT.json` to either tool only for a tape from a rooted run.
@@ -248,9 +255,9 @@ Add `--root ROOT.json` to either tool only for a tape from a rooted run.
   area, the run or a checkpoint reader has to write their inputs out.
 - A rooted witness is only the part after the root, so film a rooted tape with
   `--root` and watch the milestone tapes, which carry the route.
-- `metroid-map-probe` prints the map cell and resources at each action endpoint,
-  and `--wram START:LEN` prints cartridge RAM, which is how reading defects
-  show up.
+- `metroid-map-probe` prints the map cell and resources at each action endpoint.
+  `--wram START:LEN` also prints the 2 KiB internal RAM from START, in hex,
+  for LEN bytes, in decimal. Reading defects show up in these bytes.
 - `nes-progress metroid CORE ROM TAPE.json` replays a tape from power-on and
   reports its named milestones.
 - Mega Man 2 has `mm2-film <stage> <chain-prefix.json> <input.json>

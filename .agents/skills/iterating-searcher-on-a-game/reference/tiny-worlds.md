@@ -23,8 +23,8 @@ cargo build --release --locked --manifest-path workloads/tiny-worlds/Cargo.toml
 cp workloads/tiny-worlds/target/release/tiny-worlds /private/tiny/candidate
 ```
 
-Record the commit each executable came from; the reports carry build-time
-source hashes but no commit names.
+Record the commit each executable came from, because the reports do not name
+it.
 
 ## Rules and compare runs
 
@@ -59,14 +59,17 @@ and how many layouts reached the leg's end in each run.
 | undecided | The interval crosses 0.8 or 1.25. The world doubles its layouts and runs again, up to its limit. |
 | watch | Undecided at the limit, reaching above 1.25 with a low end at or below 1.0. The world passes, and the leg is named. A leg that reaches above 1.25 with a low end above 1.0 leaves the world undecided. |
 
-Goal misses get their own verdict from a sign test on the layouts where only
-one run missed the goal; more misses by at least 5% of layouts is clearly bad.
+Goal misses get their own verdict from the layouts where only one run missed
+the goal. More misses by at least 5% of layouts, with a one-sided sign test
+below p = 0.01, is clearly bad.
 
 Act on the result this way:
 
 - Drop a change that is clearly bad on any world.
-- A world still undecided at its limit means the change is not plausible. A
-  verdict needs every interval resolved; an undecided interval is never a pass.
+- A world still undecided at its limit means the change is not plausible. The
+  panel's exit status is the verdict: nonzero for any clearly bad or
+  undecided world. A leg whose interval crosses only 0.8 never blocks, since
+  it can only be faster.
 - A plausible change is one the panel did not reject. Carry every watch leg to
   the game: name the matching game leg and measure it in the slices.
 - A world whose `identical runs` count equals its layout count never ran the
@@ -93,7 +96,7 @@ run:
 | Game leg | Its two ends, such as Tourian entry to `tourian_bottom`, and its unit, such as tries after the resume. |
 | Prediction | The ratio of changed to unchanged tries: a median and an 80% range. |
 | Filed | When the prediction was written, which must be before the game run starts. |
-| Outcome | The measured ratio per seed and hit or miss against the range. |
+| Outcome | The median ratio across seeds, each seed's ratio, and hit or miss: a hit is a median inside the range. |
 
 - Start each prediction from the matching world's leg ratio, then move it
   toward 1.0 where the world's measured rates differ from the game's, such as

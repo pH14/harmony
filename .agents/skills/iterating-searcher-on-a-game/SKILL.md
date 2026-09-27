@@ -47,20 +47,21 @@ These hold at every step.
 3. Run the cheapest test that can answer the question first: recorded
    artifacts, then a probe of 200K to 500K tries from a saved state, then the
    panel, then long runs.
-4. Before any launch longer than ten minutes, write down the question, the
-   arms, the counter you will read, the stop rule and the expected wall time.
+4. Before every launch, write down the question, the arms, the counter you
+   will read, the stop rule and the expected wall time.
    Skip a launch whose result would change no decision.
 5. Before a long run, show with a short probe that the target is reachable and
    that the counter can move.
 6. Set every stop rule above the largest gap between milestones in the
    control's record, because a tighter rule stops runs that would have passed.
 7. When two seeds stall at one place for longer than the control's largest
-   gap there, stop the runs, film the place and change the machinery. A
+   gap there, stop the runs, film the place and change the machinery. The
+   runner's stall note only reports; stopping is a decision you make. A
    stopped run keeps its progress lines, milestone tapes and checkpoints, and
    writes no witness or final census.
 8. Confirm a change actually acts during the run before reading its outcome,
    because a change that never fires looks like a null result.
-9. Count an unfinished or killed run as censored at its budget.
+9. Count an unfinished or stopped run as censored at the tries it reached.
 10. Reason from what the hard part needs. Treat the current searcher's limits
     as things to change, never as reasons a change cannot help.
 11. Improve the general search machinery. The searcher carries no game names,
@@ -71,7 +72,8 @@ These hold at every step.
     merges before any game work builds on it, so game branches never conflict
     in the searcher.
 13. Check every searcher change on the SMB three cells and the etcd case
-    against main.
+    against main. A change made for another game also runs Metroid checkpoint
+    slices.
 14. Keep run records, panel output, seed tables and plans out of the
     repository; the numbers a decision rests on go in the pull request
     description.
@@ -178,13 +180,15 @@ For each hard part, measure two numbers on at least three seeds:
 
 Also compare the resources the delivered state held on entry with the best the
 archive held anywhere at that tier. Work on the hard part with the biggest
-difference first. In Metroid that is Tourian: runs entered with 7 to 94 of 299
-energy, while full-energy states sat far from Tourian for more than 15M tries.
+difference first. In the Metroid example that was Tourian: power-on runs
+entered with 7 to 94 of 299 energy, while full-energy states sat far from
+Tourian for more than 15M tries.
 
-Recorded inputs do not transfer between lineages. At the same position, the
+Recorded inputs transfer poorly between lineages. At the same position, the
 frame counter, the random bytes and about 130 other RAM bytes differ, so a
-replayed route mistimes jumps within a few actions. A change that carries a
-stocked state to a hard part has to search the route.
+replayed route mistimes jumps within a few actions, and a continuation hop
+replayed from another state lands in 12% to 24% of tries. A change that
+carries a stocked state to a hard part has to search the route.
 
 ### Step 5: Diagnose the gap and write one change
 
@@ -196,8 +200,9 @@ stocked state to a hard part has to search the route.
 3. Find the existing searcher component that does the job badly: selection,
    retention and preference, continuation replay, the suffix draw, or the
    workload's key. Change that component, in general terms.
-4. Make one change per test. Check that it can resume from a checkpoint (the
-   fields a resume accepts are in [reference/tools.md](reference/tools.md)).
+4. Make one change per test. Check that it can resume from a checkpoint, and
+   give the policy it alters a new identifier so the resume records the
+   change (details in [reference/tools.md](reference/tools.md)).
 
 ### Step 6: Panel
 
@@ -228,16 +233,18 @@ and the delivered states come along, so every slice includes the handoff.
 
 - Confirm from the progress counters or film that the change fired during the
   slice.
-- Read each leg as tries after the resume, and compare changed with unchanged
-  per seed against the leg's scorecard range. A few seeds cannot resolve
-  effects as small as 0.8 to 0.9, so a slice catches only large differences.
+- Read each leg as tries after the resume. Compare the median ratio of changed
+  to unchanged across seeds with the leg's scorecard range, and list each
+  seed's ratio. A few seeds cannot resolve effects as small as 0.8 to 0.9, so
+  a slice catches only large differences.
 - Add the outcome to the scorecard next to its prediction, hit or miss.
 - If the change fails, film the failed attempts and return to step 5.
 
 ### Step 8: Power-on run
 
 Run the change from power-on on the baseline's seeds. Compare the tries to each
-milestone per seed with the baseline. This is the final test, because only a
+milestone per seed with the baseline, and report emulator frames next to
+tries, because a change can cut tries while adding frames per try. This is the final test, because only a
 single run shows the search picking and carrying the state itself.
 
 ### Step 9: Regression checks and pull request
