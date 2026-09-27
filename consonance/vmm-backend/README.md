@@ -51,6 +51,27 @@ reads the vCPU. Completed MMIO reads and eagerly completed MMIO writes remain
 capturable; placeholder ARM64 sysreg exits remain uncapturable while their
 completion is pending.
 
+`Backend::read_irq_mask` optionally reads the CPU's architectural IRQ mask
+without capturing a complete snapshot. `Some(true)` means the mask is set;
+`None` means the caller must obtain it from full state. This query does not
+enter the guest, acknowledge an IRQ, or test the interrupt controller's pending
+state. Errors propagate rather than falling back to another read. HVF reads
+`PSTATE.I` through one CPSR access and rejects pending completions before the
+read, as its snapshot capture does. Other backends currently return `None`.
+The boxed backend forwards the query so live sessions use the same path.
+
+The ignored HVF `irq_mask_polling_matches_full_capture` comparison alternates
+full capture and direct reads in one binary, both alone and after each exit of
+a synthetic guest loop. It checks every guest output, RAM, exit counts, and
+modeled CPU state except the host-driven virtual counter. Run it with:
+
+```sh
+cargo test --release -p vmm-backend --test hvf_smoke irq_mask_polling_matches_full_capture -- --ignored --nocapture
+```
+
+It reports local timings without a timing assertion. This isolates polling
+cost; it does not measure whole-workload throughput or snapshot performance.
+
 Both Linux KVM backends expose a cancellation latch for the session watchdog.
 The watchdog interrupts a blocked KVM run with a signal and sets the latch;
 the backend refuses subsequent guest entry after cancellation.

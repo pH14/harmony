@@ -51,6 +51,13 @@ owns its GIC in the kernel and does not expose an arbitrary userspace INTID
 injection fabric. The shared run loop therefore treats that distinction as a
 backend boundary.
 
+When the paravirtual clockevent is due, `dispatch` queries the backend's IRQ
+mask and defers delivery while `PSTATE.I` is set. HVF supplies that bit directly;
+backends without the query retain the full-state read. The query is made only
+after the existing registration, deadline, and virtual-clock checks. It changes
+neither virtual time nor the schedule, deferral, delivery, and acknowledgement
+records. Snapshot capture still reads complete architectural state.
+
 `records` converts live arm64 vCPU and GIC state to the `vm-state` records. The
 architectural comparator in the parent module compares vCPU and canonical GIC
 fields independently of snapshot hashes.
