@@ -658,6 +658,81 @@ impl<A: Clone + Ord> InputIndex<A> {
         Some(reversed)
     }
 
+    fn step_back(&self, node: usize) -> Option<(usize, &A)> {
+        if node == 0 {
+            return None;
+        }
+        let current = self.nodes.get(node)?.as_ref()?;
+        Some((current.parent?, current.action.as_ref()?))
+    }
+
+    fn prefix_is_available(&self, mut node: usize, expected_len: usize) -> bool {
+        for _ in 0..expected_len {
+            let Some((parent, _)) = self.step_back(node) else {
+                return false;
+            };
+            node = parent;
+        }
+        node == 0
+    }
+
+    fn materialize_splice_tail(
+        &self,
+        mut donor: usize,
+        donor_len: usize,
+        mut leaf: usize,
+        leaf_len: usize,
+        limit: usize,
+    ) -> Result<Vec<A>, &'static str> {
+        if !self.prefix_is_available(donor, donor_len) {
+            return Err("splice donor prefix is unavailable");
+        }
+        let Some(distance) = leaf_len.checked_sub(donor_len) else {
+            return if self.prefix_is_available(leaf, leaf_len) {
+                Err("splice leaf is not a descendant of its donor")
+            } else {
+                Err("splice leaf prefix is unavailable")
+            };
+        };
+        let kept = distance.min(limit);
+        for _ in kept..distance {
+            leaf = self
+                .step_back(leaf)
+                .ok_or("splice leaf prefix is unavailable")?
+                .0;
+        }
+        let mut suffix = Vec::with_capacity(kept);
+        for _ in 0..kept {
+            let (parent, action) = self
+                .step_back(leaf)
+                .ok_or("splice leaf prefix is unavailable")?;
+            suffix.push(action.clone());
+            leaf = parent;
+        }
+        if leaf != donor {
+            let mut matches = true;
+            for _ in 0..donor_len {
+                let (parent, action) = self
+                    .step_back(leaf)
+                    .ok_or("splice leaf prefix is unavailable")?;
+                let (donor_parent, donor_action) = self
+                    .step_back(donor)
+                    .ok_or("splice donor prefix is unavailable")?;
+                matches &= action == donor_action;
+                leaf = parent;
+                donor = donor_parent;
+            }
+            if leaf != 0 {
+                return Err("splice leaf prefix is unavailable");
+            }
+            if !matches {
+                return Err("splice leaf is not a descendant of its donor");
+            }
+        }
+        suffix.reverse();
+        Ok(suffix)
+    }
+
     fn actions_between(&self, ancestor: usize, mut node: usize, distance: usize) -> Option<Vec<A>> {
         let mut reversed = Vec::with_capacity(distance);
         for _ in 0..distance {
@@ -2170,25 +2245,20 @@ where
         if cell_of(parent_key) != cell_of(donor_entry.key) {
             return Err("splice donor is outside the parent's selection cell");
         }
-        let donor_input = self
-            .input_index
-            .materialize(donor_entry.input_node, donor_entry.input_len)
-            .ok_or("splice donor prefix is unavailable")?;
-        let leaf_input = self
-            .input_index
-            .materialize(leaf_entry.input_node, leaf_entry.input_len)
-            .ok_or("splice leaf prefix is unavailable")?;
-        if !leaf_input.starts_with(&donor_input) {
-            return Err("splice leaf is not a descendant of its donor");
-        }
+        let suffix = self.input_index.materialize_splice_tail(
+            donor_entry.input_node,
+            donor_entry.input_len,
+            leaf_entry.input_node,
+            leaf_entry.input_len,
+            longest_tail,
+        )?;
         if !leaf_advances((leaf_entry.key, leaf), (parent_key, parent)) {
             return Err("splice leaf does not advance past the parent");
         }
-        let suffix = &leaf_input[donor_input.len()..];
-        if suffix.is_empty() {
+        if leaf_entry.input_len == donor_entry.input_len {
             return Err("splice leaf has no actions past its donor");
         }
-        Ok(suffix.iter().take(longest_tail).cloned().collect())
+        Ok(suffix)
     }
 
     fn active_ids(&self) -> Vec<usize> {
@@ -2761,6 +2831,53 @@ where
     M: Clone + Copy + Debug + Eq + Serialize + DeserializeOwned,
     S: Clone,
 {
+    fn recorded_splice_tail_reference(
+        &self,
+        parent: usize,
+        donor: usize,
+        leaf: usize,
+        longest_tail: usize,
+    ) -> Result<Vec<A>, &'static str> {
+        let parent_entry = self
+            .entries
+            .get(parent)
+            .ok_or("splice parent id is outside the archive")?;
+        let donor_entry = self
+            .entries
+            .get(donor)
+            .ok_or("splice donor id is outside the archive")?;
+        let leaf_entry = self
+            .entries
+            .get(leaf)
+            .ok_or("splice leaf id is outside the archive")?;
+        if donor == parent {
+            return Err("splice donor is the selected parent");
+        }
+        let parent_key = parent_entry.key;
+        if cell_of(parent_key) != cell_of(donor_entry.key) {
+            return Err("splice donor is outside the parent's selection cell");
+        }
+        let donor_input = self
+            .input_index
+            .materialize(donor_entry.input_node, donor_entry.input_len)
+            .ok_or("splice donor prefix is unavailable")?;
+        let leaf_input = self
+            .input_index
+            .materialize(leaf_entry.input_node, leaf_entry.input_len)
+            .ok_or("splice leaf prefix is unavailable")?;
+        if !leaf_input.starts_with(&donor_input) {
+            return Err("splice leaf is not a descendant of its donor");
+        }
+        if !leaf_advances((leaf_entry.key, leaf), (parent_key, parent)) {
+            return Err("splice leaf does not advance past the parent");
+        }
+        let suffix = &leaf_input[donor_input.len()..];
+        if suffix.is_empty() {
+            return Err("splice leaf has no actions past its donor");
+        }
+        Ok(suffix.iter().take(longest_tail).cloned().collect())
+    }
+
     fn select_parent_candidates_reference(
         &mut self,
         rand: &mut RomuDuoJrRand,
@@ -6135,6 +6252,298 @@ mod tests {
             )
             .expect("extend pinned parent after compaction")
             .expect("retain child of pinned parent");
+    }
+
+    fn splice_tail_fixture_with_actions<A>(
+        prefix: usize,
+        tail: usize,
+        action: impl Fn(u8) -> A,
+    ) -> (Archive<A, SpliceKey, (), ()>, [usize; 3])
+    where
+        A: Clone + std::fmt::Debug + Ord + Serialize + serde::de::DeserializeOwned,
+    {
+        let mut archive = Archive::new(|_| 1);
+        let key = SpliceKey {
+            class_label: 1,
+            class_progress: 0,
+            cell_progress: 0,
+            slot: 0,
+        };
+        let parent = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![action(255)],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        let donor = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![action(1); prefix],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        let leaf = archive
+            .insert(
+                Some(donor),
+                0,
+                ArchiveCandidate {
+                    suffix: (0..tail)
+                        .map(|i| action(2 + (i % 200) as u8))
+                        .collect::<Vec<_>>(),
+                    key: SpliceKey {
+                        cell_progress: 1,
+                        ..key
+                    },
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        (archive, [parent, donor, leaf])
+    }
+
+    fn splice_tail_fixture(
+        prefix: usize,
+        tail: usize,
+    ) -> (Archive<u8, SpliceKey, (), ()>, [usize; 3]) {
+        splice_tail_fixture_with_actions(prefix, tail, |action| action)
+    }
+
+    #[test]
+    fn bounded_splice_tails_match_complete_inputs() {
+        use std::hint::black_box;
+        for (prefix, tail, limit) in [
+            (0, 1, 128),
+            (0, 4096, 128),
+            (1, 4096, 128),
+            (0, 4096, 4096),
+            (4096, 4096, 4096),
+            (1, 6, 128),
+            (128, 6, 128),
+            (4096, 6, 128),
+            (65536, 6, 128),
+            (128, 128, 128),
+            (4096, 128, 128),
+            (65536, 128, 128),
+            (128, 4096, 128),
+            (4096, 4096, 128),
+            (65536, 4096, 128),
+            (4096, 128, 0),
+            (4096, 128, 1),
+        ] {
+            let (archive, [parent, donor, leaf]) = splice_tail_fixture(prefix, tail);
+            assert_eq!(
+                archive.recorded_splice_tail(parent, donor, leaf, limit),
+                archive.recorded_splice_tail_reference(parent, donor, leaf, limit)
+            );
+            if std::env::var_os("DISSONANCE_BENCHMARK_SPLICE_TAIL").is_some() {
+                let ratio = paired_candidate_timing(
+                    |new, _| {
+                        black_box(if new {
+                            archive.recorded_splice_tail(parent, donor, leaf, limit)
+                        } else {
+                            archive.recorded_splice_tail_reference(parent, donor, leaf, limit)
+                        })
+                        .unwrap();
+                    },
+                    (4096 / (prefix + tail)).clamp(2, 128),
+                );
+                eprintln!("splice_tail prefix={prefix} tail={tail} limit={limit} ratio={ratio:.4}");
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_splice_tails_preserve_errors_and_validation_order() {
+        for case in 0..12 {
+            let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
+            let donor_node = archive.entries[donor].input_node;
+            let leaf_node = archive.entries[leaf].input_node;
+            match case {
+                0 => {}
+                1 => archive.entries[donor].input_len += 1,
+                2 => archive.entries[leaf].input_len += 1,
+                3 => archive.input_index.nodes[donor_node] = None,
+                4 => archive.input_index.nodes[leaf_node] = None,
+                5 => {
+                    archive.input_index.nodes[donor_node]
+                        .as_mut()
+                        .unwrap()
+                        .parent = Some(donor_node)
+                }
+                6 => {
+                    archive.input_index.nodes[leaf_node]
+                        .as_mut()
+                        .unwrap()
+                        .action = None
+                }
+                7 => archive.entries[leaf].key.cell_progress = 0,
+                8 => archive.entries[donor].key.class_label = 2,
+                9 => {
+                    archive.entries[leaf].input_node = donor_node;
+                    archive.entries[leaf].input_len = 4;
+                }
+                10 => {
+                    archive.entries[leaf].input_node = archive.entries[parent].input_node;
+                    archive.entries[leaf].input_len = 1;
+                }
+                _ => archive.entries[leaf].input_node = usize::MAX,
+            }
+            for p in [parent, donor, leaf, usize::MAX] {
+                for d in [parent, donor, leaf, usize::MAX] {
+                    for l in [parent, donor, leaf, usize::MAX] {
+                        for limit in [0, 1, 6, 128, usize::MAX] {
+                            assert_eq!(
+                                archive.recorded_splice_tail(p, d, l, limit),
+                                archive.recorded_splice_tail_reference(p, d, l, limit),
+                                "case={case} p={p} d={d} l={l} limit={limit}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_splice_tails_match_noncanonical_prefixes() {
+        for case in 0..6 {
+            let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
+            let mut original = archive.entries[donor].input_node;
+            let mut copied = 0;
+            let copied_root = archive.input_index.nodes.len();
+            let mut actions = Vec::new();
+            while original != 0 {
+                let node = archive.input_index.nodes[original].as_ref().unwrap();
+                actions.push(node.action.unwrap());
+                original = node.parent.unwrap();
+            }
+            for (index, action) in actions.into_iter().rev().enumerate() {
+                let node = super::InputNode {
+                    parent: Some(copied),
+                    action: Some(if (case == 1 || case == 5) && index == 1 {
+                        99
+                    } else {
+                        action
+                    }),
+                    children: BTreeMap::new(),
+                    owner: None,
+                };
+                copied = archive.input_index.nodes.len();
+                archive.input_index.nodes.push(Some(node));
+            }
+            match case {
+                2 => {
+                    archive.input_index.nodes[copied_root]
+                        .as_mut()
+                        .unwrap()
+                        .action = None
+                }
+                3 | 5 => {
+                    archive.input_index.nodes[copied_root]
+                        .as_mut()
+                        .unwrap()
+                        .parent = None
+                }
+                4 => {
+                    archive.input_index.nodes[copied_root]
+                        .as_mut()
+                        .unwrap()
+                        .parent = Some(copied_root)
+                }
+                _ => {}
+            }
+            let mut start = archive.entries[leaf].input_node;
+            for _ in 0..5 {
+                start = archive.input_index.nodes[start]
+                    .as_ref()
+                    .unwrap()
+                    .parent
+                    .unwrap();
+            }
+            archive.input_index.nodes[start].as_mut().unwrap().parent = Some(copied);
+            for limit in [0, 1, 6, 128] {
+                assert_eq!(
+                    archive.recorded_splice_tail(parent, donor, leaf, limit),
+                    archive.recorded_splice_tail_reference(parent, donor, leaf, limit)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_splice_tails_validate_mixed_prefix_metadata() {
+        let mut rand = RomuDuoJrRand::with_seed(423);
+        for case in 0..512 {
+            let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
+            let node_count = archive.input_index.nodes.len();
+            let leaf_node = archive.entries[leaf].input_node;
+            let node = archive.input_index.nodes[leaf_node].as_mut().unwrap();
+            node.parent = Some((rand.next_u64() as usize) % (node_count + 2));
+            if case % 5 == 0 {
+                node.action = None;
+            }
+            archive.entries[leaf].input_node = (rand.next_u64() as usize) % (node_count + 2);
+            archive.entries[leaf].input_len = (rand.next_u64() % 16) as usize;
+            if case % 4 == 0 {
+                archive.entries[donor].input_node = (rand.next_u64() as usize) % (node_count + 2);
+                archive.entries[donor].input_len = (rand.next_u64() % 16) as usize;
+            }
+            for limit in [0, 1, 128] {
+                assert_eq!(
+                    archive.recorded_splice_tail(parent, donor, leaf, limit),
+                    archive.recorded_splice_tail_reference(parent, donor, leaf, limit),
+                    "case={case}, limit={limit}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_splice_tails_clone_only_the_requested_actions() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        static CLONES: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+        struct Action(u8);
+        impl Clone for Action {
+            fn clone(&self) -> Self {
+                CLONES.fetch_add(1, AtomicOrdering::Relaxed);
+                Self(self.0)
+            }
+        }
+        let (archive, [parent, donor, leaf]) = splice_tail_fixture_with_actions(4096, 256, Action);
+        for limit in [0, 1, 128, 256, 512] {
+            CLONES.store(0, AtomicOrdering::Relaxed);
+            let tail = archive
+                .recorded_splice_tail(parent, donor, leaf, limit)
+                .unwrap();
+            assert_eq!(tail.len(), limit.min(256));
+            assert_eq!(CLONES.load(AtomicOrdering::Relaxed), tail.len());
+            assert_eq!(tail.capacity(), tail.len());
+            CLONES.store(0, AtomicOrdering::Relaxed);
+            let reference = archive
+                .recorded_splice_tail_reference(parent, donor, leaf, limit)
+                .unwrap();
+            assert_eq!(
+                CLONES.load(AtomicOrdering::Relaxed),
+                4096 + 4352 + tail.len()
+            );
+            assert_eq!(tail, reference);
+        }
     }
 
     #[test]

@@ -344,6 +344,23 @@ splice that opens nothing loses its share sooner than a short draw. The live
 progress line counts `splice_jobs`, `splice_actions` and `splice_cost` under
 `coordinator`.
 
+Splice preparation validates the donor's complete prefix without copying it,
+then walks the leaf's suffix and copies only
+the requested leading tail. Reaching the same prefix node after the declared
+suffix length reuses the donor validation. If prefix nodes differ, their actions
+are compared while validating the leaf prefix, so equivalent noncanonical paths
+and invalid-path error precedence retain their previous behavior. Preparation
+allocates only the returned tail; archive state and selection policy are unchanged.
+
+The splice tests compare bounded reconstruction with the original full-input
+reconstruction, including zero limits and malformed metadata. A clone-count test
+checks that the archive copies only returned actions. Run the same-binary paired
+benchmark with:
+
+```sh
+DISSONANCE_BENCHMARK_SPLICE_TAIL=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib bounded_splice -- --nocapture --test-threads=1
+```
+
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
 type, so two holders that differ only in what they carry share one set of
