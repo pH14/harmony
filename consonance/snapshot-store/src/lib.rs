@@ -256,12 +256,19 @@ impl Store {
                 mem_pages: self.cfg.mem_pages,
             });
         }
-        out.copy_from_slice(self.checked_page(snap, gfn)?);
+        match self.resolve(snap.0, gfn) {
+            PageRef::Zero => out.fill(0),
+            pref => out.copy_from_slice(self.checked_page_ref(pref, gfn)?),
+        }
         Ok(())
     }
 
     fn checked_page(&self, snap: SnapshotId, gfn: u64) -> Result<&[u8; PAGE_SIZE], StoreError> {
-        match self.resolve(snap.0, gfn) {
+        self.checked_page_ref(self.resolve(snap.0, gfn), gfn)
+    }
+
+    fn checked_page_ref(&self, pref: PageRef, gfn: u64) -> Result<&[u8; PAGE_SIZE], StoreError> {
+        match pref {
             PageRef::Zero => Ok(&ZERO_PAGE),
             PageRef::Data(id) => match self.pages.get(id.get() - 1).and_then(Option::as_ref) {
                 Some(entry) if blake3::hash(&entry.data).as_bytes() == &entry.hash => entry
