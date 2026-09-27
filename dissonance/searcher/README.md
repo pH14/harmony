@@ -164,8 +164,11 @@ their allocation into the archive; excess capacity is removed before storage.
 These allocation changes preserve ranking, tie breaks, and logical memory charges.
 Prefix-index compaction remaps child indexes in the existing ordered maps,
 preserving their allocations instead of rebuilding every branch map.
-The admission microbenchmark covers rejection and acceptance with short and long
-suffixes:
+Archive reports stream borrowed input suffixes and milestones through the
+serializer; they keep the same wire fields and ordering without an intermediate
+vector of owned entries.
+The microbenchmarks cover rejection and acceptance with short and long suffixes,
+plus serialization of reports with independent roots and shared prefixes:
 
 ```sh
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench archive_admission

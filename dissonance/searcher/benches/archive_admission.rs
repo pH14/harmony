@@ -3,7 +3,9 @@
 use std::{cmp::Ordering, hint::black_box};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use searcher::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
+use searcher::search::archive::{
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, Input, entries_by_suffix,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -110,5 +112,38 @@ fn admission(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, admission);
+#[derive(Serialize)]
+struct Reports {
+    #[serde(serialize_with = "entries_by_suffix::serialize")]
+    entries: Vec<ArchiveEntryReport<u64, Key, Vec<u8>>>,
+}
+
+fn reporting(c: &mut Criterion) {
+    for (name, length, chain) in [
+        ("roots_short", 8, false),
+        ("roots_long", 128, false),
+        ("chain", 128, true),
+    ] {
+        let reports = Reports {
+            entries: (0..512_u64)
+                .map(|id| ArchiveEntryReport {
+                    id,
+                    parent_id: (chain && id % 128 != 0).then(|| id - 1),
+                    created_execution: id,
+                    input: Input {
+                        actions: vec![7; length + if chain { id as usize % 128 } else { 0 }],
+                    },
+                    key: Key([id; 4]),
+                    milestones: vec![1; 16],
+                    selector: None,
+                })
+                .collect(),
+        };
+        c.bench_function(&format!("archive_report_{name}_512"), |b| {
+            b.iter(|| black_box(serde_json::to_vec(black_box(&reports)).unwrap()));
+        });
+    }
+}
+
+criterion_group!(benches, admission, reporting);
 criterion_main!(benches);
