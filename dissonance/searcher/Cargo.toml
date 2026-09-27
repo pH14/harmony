@@ -21,3 +21,7 @@ harness = false
 [[bench]]
 name = "archive_admission"
 harness = false
+
+[[bench]]
+name = "duration"
+harness = false

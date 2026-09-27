@@ -170,6 +170,7 @@ plus serialization of reports with independent roots and shared prefixes:
 
 ```sh
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench archive_admission
+cargo bench --locked --manifest-path dissonance/Cargo.toml --bench duration
 ```
 
 ## Adaptive duration policy
@@ -218,6 +219,8 @@ recorded action expansion, and checks those bounded context checkpoints. It
 does not serialize the complete context table for every job.
 Full policy checkpoints contain the policy identity, FIFO context order, and
 bounded histories; decoding rejects oversized context or observation arrays.
+An admitted observation updates an existing context through one map lookup;
+a new context follows the same FIFO eviction and history allocation rules.
 The context table must fit a fixed reserve that the archive's memory budget
 excludes. The coordinator checks the table against that reserve after each
 admission.
