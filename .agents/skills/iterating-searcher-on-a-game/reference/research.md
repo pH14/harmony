@@ -34,7 +34,7 @@ part needs) and the power-on run (carry it there in one search).
 **Absplore.** "Learning Abstract Models for Strategic Exploration and Fast
 Reward Transfer", ICML 2020, arXiv 2007.05896. It explores an
 abstract graph of places and then learns which transitions between them are
-reliable, rejecting arrivals that only look valid. Metroid showed the same
+reliable, rejecting arrivals that only look valid. Game runs showed the same
 split: a recorded route from one state usually fails from another state at
 the same place, so a transition has to be re-established from the state that
 will use it.
