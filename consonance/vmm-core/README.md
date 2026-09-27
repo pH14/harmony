@@ -134,19 +134,26 @@ the software control deliberately disables acceleration on every architecture.
 These are host hashing costs, not guest execution throughput. The executable's
 SHA-256 is printed with the results to bind both arms to the same build.
 
-The contract-cache qualification compares the production x86 fingerprint with a
+The contract-cache qualification compares the production x86 or ARM fingerprint with a
 same-source VMM copy whose only change bypasses the fingerprint cache. Both use
 the same SHA backend in one executable. It checks concurrent first callers,
 fresh-process initialization, zero allocations for warmed fingerprint reads,
 complete state hashes and CPU/device captures, full-memory restores, and rejection
-of a changed contract. Timings include allocation-counter overhead on both sides.
+of a changed contract. ARM checks cover both ASID widths, including concurrent
+initialization of the two caches and rejection of cross-width restores. Default
+runs count allocations; use `--system-allocator` for timings with the normal
+allocator and without allocation instrumentation. In that mode, the allocation
+fields are disabled counters and must not be interpreted as allocation counts.
 Capture timings cover CPU/device state, while restore timings include comparing
 the complete RAM image. These mock-backend measurements do not measure guest
 execution or hypervisor entry costs.
 
 ```sh
 python3 consonance/vmm-core/qualification/qualify-contract.py --check
-python3 consonance/vmm-core/qualification/qualify-contract.py
+python3 consonance/vmm-core/qualification/qualify-contract.py --system-allocator
+python3 consonance/vmm-core/qualification/qualify-contract.py --architecture arm64 --check
+python3 consonance/vmm-core/qualification/qualify-contract.py --architecture arm64
+python3 consonance/vmm-core/qualification/qualify-contract.py --architecture arm64 --system-allocator
 python3 consonance/vmm-core/qualification/qualify-contract.py --miri
 ```
 

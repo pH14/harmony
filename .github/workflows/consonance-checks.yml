@@ -286,6 +286,7 @@ jobs:
           cargo fetch --locked
           python3 consonance/vmm-core/qualification/qualify-sha256.py --check
           python3 consonance/vmm-core/qualification/qualify-contract.py --check
+          python3 consonance/vmm-core/qualification/qualify-contract.py --architecture arm64 --check
           cargo fetch --locked --manifest-path dissonance/Cargo.toml
           python3 scripts/qualify-host-sha256.py --check
       - name: Grant /dev/kvm access
