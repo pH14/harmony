@@ -108,8 +108,10 @@ ceiling = measured rate × host overhead × re-execution
 > cache of 96 prefixes, so a worker re-runs prefixes other workers already
 > ran. Restores also cost more per page with every worker running, which
 > points at memory bandwidth as the source of contention. The coordinator
-> spent under 0.4 ms per job and waited on results for over 99% of each run,
-> so it plays no part in the worker waiting.
+> spent under 0.4 ms of processing per job, so its processing time does not
+> limit the rate. It admits results in reservation order, and completed
+> results waited behind earlier ones, so part of the worker waiting can be
+> admission wait. Per-worker timelines would split the two.
 
 ## Assumptions behind the costs
 
@@ -160,11 +162,12 @@ above the floor.
   the next job does not depend on them.
 - **Re-execution against memory.** Take a byte budget, the cost of re-running
   each edge of the tree, the size of each retained state, and the parents the
-  selector will draw. The best static choice retains the set within budget
-  that minimizes the total cost of re-running from each draw's nearest retained
-  ancestor. That cost is zero when the budget covers every drawn state. An
-  online policy sees draws only as they arrive, so its cost is at least that
-  of the static choice.
+  selector will draw. The best offline schedule knows every draw in advance
+  and may change the retained set between draws, within budget, to minimize
+  the total cost of re-running from each draw's nearest retained ancestor.
+  That cost is zero when the budget covers every drawn state. An online policy
+  sees draws only as they arrive, so its cost is at least that of the best
+  offline schedule.
 
 ## consonance against the model
 
@@ -320,8 +323,9 @@ The multiple of five in the bandwidth row covers the guest's write, the copy
 into a snapshot, the hash, and the copy back on restore.
 
 A sweep over worker count pins workers to one core type, since performance and
-efficiency cores run at different rates. consonance refuses an affinity that
-spans core types, so a search on a hybrid chip runs on one type. Changing the
+efficiency cores run at different rates. On Linux x86-64, consonance refuses
+an affinity that spans core types, so a search on a hybrid chip runs on one
+type. The arm64 backend accepts a mixed affinity. Changing the
 worker count also changes which parents the search selects, so a sweep
 compares campaigns of different work as well as different parallelism. Boot,
 setup, confirmation replays, and final persistence add fixed time per
@@ -340,7 +344,7 @@ campaign, which matters for short campaigns with many workers.
 >
 > Eight workers give 2.6 and 3.2 times one worker. Re-execution from
 > per-worker caches, worker waiting, and contention each grow with the worker
-> count. The coordinator stays idle for over 99% of each run.
+> count. The coordinator's processing stays under 0.4 ms per job.
 
 Weak scaling grows the campaign with the worker count. The coordinator limits
 it, since its occupancy grows with jobs per second. Guest RAM per worker against
