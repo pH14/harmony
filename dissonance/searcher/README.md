@@ -98,7 +98,21 @@ stored once. The stream header carries `preference_portfolio`, and a recording w
 portfolio differs from the compiled key is rejected. `selector.portfolio`
 reports the preference count, holders held under one preference and under
 several, replacements per preference, and admissions that improved
-more than one preference at once.
+more than one preference at once. Portfolio reporting stops at the counts needed
+to classify a holder: `capacity()` better entries disqualify a preference, and
+two won preferences establish a shared holder. A slot with at most its capacity
+of entries needs no preference comparisons. These shortcuts change only reporting
+work, not admission rankings or the reported exclusive/shared counts.
+
+For a paired comparison with the original full-count reporting implementation:
+
+```sh
+DISSONANCE_BENCHMARK_PORTFOLIO=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib portfolio_classification_matches_reference_fixtures -- --nocapture
+```
+
+The paired measurement alternates baseline/candidate/candidate/baseline blocks
+and their inverse to reduce sensitivity to concurrent host load. Without the
+environment variable, this test checks the same fixtures without timing them.
 
 Each contract depends on `CampaignTypes` and can be implemented independently.
 A complete adapter receives the aggregate `Workload` implementation automatically.
