@@ -13,9 +13,11 @@ from quality_scope import kani_required
 
 
 def changed_paths(kind, event, base, before):
-    if event not in {"pull_request", "push"}:
+    if event == "workflow_dispatch" and kind == "harmony_nes":
+        command = ["git", "ls-files", "-z"]
+    elif event not in {"pull_request", "push"}:
         raise ValueError(f"unsupported event for {kind}: {event}")
-    if event == "pull_request":
+    elif event == "pull_request":
         if not base:
             raise ValueError("pull requests require a base SHA")
         command = ["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...HEAD"]
@@ -59,6 +61,8 @@ def main():
     result = selection(args.kind, args.target, paths)
     label = f"{args.kind} {args.target}".strip()
     status = "Selected by changed files; test steps follow." if result["enabled"] else "Not applicable: no relevant files changed. Test steps were not run."
+    if os.environ.get("EVENT_NAME") == "workflow_dispatch" and result["enabled"]:
+        status = "Selected by manual dispatch over the tracked source tree; test steps follow."
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
         summary.write(f"### {label}\n\n{status}\n")
     for key, value in result.items():
