@@ -32,8 +32,9 @@ confirmed_bug=$(jq -cn --argjson replay "${confirmed_replay}" '{execution:12,
     actions:[{"Wait":50}], stop:"Assertion", violations:[2], sometimes:[24],
     state_hash:"abc", confirmed:true, replay:$replay}')
 
-jq -cn --argjson bug "${confirmed_bug}" '{mode:"search", package:"faults", executions:2,
-    execution_ticks:2, execution_failures:0, bug_found:true, bugs:[$bug]}' >"${work}/report.json"
+jq -cn --argjson bug "${confirmed_bug}" '{mode:"search", package:"faults", workers:2,
+    executions:2, execution_ticks:2, execution_failures:0, bug_found:true,
+    bugs:[$bug]}' >"${work}/report.json"
 jq -cn '{watchdog_cutoffs:3, execution_failures:0, executions:2,
     execution_ticks:2}' >"${work}/summary.json"
 jq -cn --argjson bug "${confirmed_bug}" '{mode:"search", package:"faults", executions:2,
@@ -51,7 +52,7 @@ run_search() {
         cd "${work}"
         export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
         export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
-        export SEED=1 WORKERS=1 EXECUTIONS=2 WALL_MINUTES=1
+        export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
         export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
         export FAKE_REPORT="${work}/report.json" FAKE_SUMMARY="${work}/summary.json"
         export FAKE_EXIT_STATUS=${exit_status} GITHUB_STEP_SUMMARY="${work}/summary.md"
@@ -60,7 +61,7 @@ run_search() {
 }
 
 run_search
-jq -e '.watchdog_cutoffs == 3 and .cli_exit_status == 0 and
+jq -e '.watchdog_cutoffs == 3 and .cli_exit_status == 0 and .workers == 2 and
        .execution_failures == 0 and .oracle == "pass" and
        .execution_status == "completed_with_watchdog_cutoffs"' \
     "${work}/reports/pgcic.search/panel-status.json" >/dev/null
@@ -79,7 +80,7 @@ if (
     cd "${work}"
     export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
-    export SEED=1 WORKERS=1 EXECUTIONS=2 WALL_MINUTES=1
+    export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
     export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
     export FAKE_REPORT="${work}/failure-report.json" FAKE_SUMMARY="${work}/failure-summary.json"
     export FAKE_EXIT_STATUS=0 GITHUB_STEP_SUMMARY="${work}/summary.md"
@@ -97,7 +98,7 @@ if (
     cd "${work}"
     export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
-    export SEED=1 WORKERS=1 EXECUTIONS=2 WALL_MINUTES=1
+    export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
     export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 KNOBS=
     export FAKE_REPORT="${work}/miss-report.json" FAKE_SUMMARY="${work}/summary.json"
     export FAKE_EXIT_STATUS=0 GITHUB_STEP_SUMMARY="${work}/summary.md"

@@ -92,7 +92,6 @@
     }
   },
   "search": {
-        "workers": 4,
     "executions": 4000,
     "wall_minutes": 150
   },

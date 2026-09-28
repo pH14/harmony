@@ -59,7 +59,6 @@
     "knobs": {}
   },
   "search": {
-        "workers": 4,
     "executions": 20000,
     "wall_minutes": 300
   },
