@@ -15,10 +15,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let input_path = args
         .next()
-        .ok_or("usage: mm2-tape-probe <input.json> [root.json]")?;
-    let root_path = args.next();
-    if args.next().is_some() {
-        return Err("unexpected arguments".into());
+        .ok_or("usage: mm2-tape-probe <input.json> [root.json] [--screenshot frame.ppm]")?;
+    let mut root_path = None;
+    let mut screenshot = None;
+    while let Some(argument) = args.next() {
+        if argument == "--screenshot" && screenshot.is_none() {
+            screenshot = Some(PathBuf::from(args.next().ok_or("missing screenshot path")?));
+        } else if !argument.starts_with("--") && root_path.is_none() {
+            root_path = Some(argument);
+        } else {
+            return Err("unexpected arguments".into());
+        }
     }
     let rom = fs::read(env::var_os("HARMONY_MM2_ROM").ok_or("HARMONY_MM2_ROM")?)?;
     let core = PathBuf::from(env::var_os("HARMONY_QUICKNES_CORE").ok_or("HARMONY_QUICKNES_CORE")?);
@@ -29,6 +36,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         target.advance_genesis(&root.actions)?;
     }
     let input: Mm2Input = serde_json::from_slice(&fs::read(input_path)?)?;
+    if screenshot.is_some() {
+        target.start_capturing();
+    }
+    let mut last_frame = None;
     let mut progress = NamedProgress::default();
     progress.observe(&target.observe(), 0, target.frames_clocked());
     for (index, action) in input.actions.iter().enumerate() {
@@ -44,11 +55,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         for observation in target.last_action_observations() {
             progress.observe(observation, u64::try_from(index + 1)?, end_frame);
         }
+        if screenshot.is_some() {
+            last_frame = target.drain_frames().pop().or(last_frame);
+            target.drain_audio();
+        }
+    }
+    if let Some(path) = &screenshot {
+        let frame = last_frame.ok_or("screenshot requires at least one captured input action")?;
+        let mut bytes = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
+        bytes.extend_from_slice(&frame.rgb24);
+        fs::write(path, bytes)?;
     }
     println!(
         "{}",
         serde_json::json!({
             "actions": input.actions.len(),
+            "screenshot": screenshot,
             "milestone_counter_unit": "one-based tape action index; zero means already present at root; not search executions",
             "named_progress": progress,
             "endpoint": target.mechanical_state(),

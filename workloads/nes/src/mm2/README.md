@@ -190,6 +190,7 @@ With `HARMONY_MM2_ROM` and `HARMONY_QUICKNES_CORE` set:
 
 ```sh
 mm2-tape-probe input.json
+mm2-tape-probe input.json --screenshot endpoint.ppm
 mm2-tape-probe rooted-input.json root.json
 mm2-film whole-game empty-input.json input.json film.mp4
 mm2-film whole-game root.json rooted-input.json rooted-film.mp4
@@ -226,3 +227,8 @@ keeps its stocked tapes in the actual starting room: for example, Wily 2
 transitions through room 0 before play begins in room 22. Boss-clear milestones
 still record the stage transition. Already-completed milestones can be inferred
 at a rooted start, where their tape counter is zero.
+
+The probe's optional `--screenshot` writes the final captured frame as a PPM
+image without launching a video encoder. Capture buffers are drained after
+each action. This permits single-core visual inspection alongside a bounded
+search. An empty input has no new frame and cannot produce a screenshot.
