@@ -43,6 +43,14 @@ that copies the pages. It does not sort or allocate temporary page payloads. Por
 pending host effects and reseeds, the recorded input prefix, schedule failure,
 and command nonce. Replay restores these without reseeding or reapplying consumed
 inputs; an explicit branch selects a new plan and retains the command nonce.
+Control restores borrow the retained SDK snapshot. Replay restores its service
+handler and recorded environment once during preparation, before committing CPU
+or RAM changes; a preparation failure leaves the live execution intact. The
+prepared environment is moved into the restored VM, then its event prefix,
+pending stop, pending snapshot flag, and coverage thresholds are restored from
+the borrowed snapshot. Branches install their new environment plan while
+preserving the same captured SDK metadata. The stored snapshot remains owned by
+the server and reusable; the restored VM owns the state it can mutate.
 Whole-state hashes include this control state and the recorded prefix used for
 duplicate-input rejection. Writers always emit the current format, and readers
 reject older envelopes. Complete reads allocate incrementally from received
@@ -188,6 +196,28 @@ stored sidecars may differ because the hardware virtual counter advances
 between captures. Portable checks run in Snapshot and Restore and both ARM
 Host Compatibility CI jobs without timing thresholds. Hosted macOS runners
 cannot run the live HVF qualification because nested HVF is unavailable.
+
+The SDK-restore qualification compares this path with a same-source VMM copy
+that clones the entire SDK snapshot and restores the replay environment twice.
+Both versions run in one release executable, identified by its printed SHA-256.
+
+```sh
+python3 consonance/vmm-core/qualification/qualify-restore.py --check
+python3 consonance/vmm-core/qualification/qualify-restore.py
+```
+
+It checks repeated Replay and Branch requests on mock x86 and ARM machines in
+both memcpy and in-place restore modes. Each arm captures the resulting VM and
+compares complete sparse sidecars across versions; replay also reproduces its
+original sidecar, and neither path changes the reusable source snapshot. The
+fixtures have 16 KiB RAM and service-handler states of 0, 4 KiB, 64 KiB, and
+1 MiB. A separate history fixture contains 256 recorded answers and 256 pending
+payloads of 256 bytes each. The full run reports nine alternating timing pairs. `--filter handler_4096`
+repeats just the small-state cases. Timing includes the complete control restore operation; construction, source
+snapshot capture, and output comparisons are outside the measured loop. These
+measure host restore work above mock backends, not live hypervisor or guest
+throughput. Snapshot and Restore and both ARM Host Compatibility CI jobs run
+`--check` without timing thresholds.
 
 The x86 exit dispatcher finishes the current instruction's device-access chain
 before returning a stopped endpoint. Continuation accesses retain their device,
