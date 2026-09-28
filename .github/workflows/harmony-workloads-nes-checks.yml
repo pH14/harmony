@@ -13,6 +13,11 @@ on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
+    inputs:
+      rebuild_guest:
+        description: Rebuild guest prerequisites and run the bounded Nova check.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,9 +39,30 @@ env:
   HARMONY_QUICKNES_BUILD_JOBS: "2"
 
 jobs:
+  guest-image:
+    name: NES Guest Image
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_guest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this check is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_nes
+      - name: Prepare the exact guest prerequisites
+        if: steps.scope.outputs.enabled == 'true'
+        uses: ./.github/actions/prepare-nes-guest
+        with:
+          rebuild: ${{ inputs.rebuild_guest == true }}
   nova:
     name: Nova
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: guest-image
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_guest)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -69,20 +95,28 @@ jobs:
         run: |
           workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Restore the qualified guest runtime
+      - name: Download the prepared runtime
         if: steps.scope.outputs.enabled == 'true'
-        uses: ./.github/actions/platform-runtime
+        uses: actions/download-artifact@v4
         with:
-          report: harmony-nes-check
-      - name: Recover the NES guest image
-        id: guest-image
+          name: nes-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+      - name: Compute the exact image name
         if: steps.scope.outputs.enabled == 'true'
-        uses: ./.github/actions/nes-guest-image
-      - name: Require an exact NES guest image
-        if: steps.scope.outputs.enabled == 'true' && steps.guest-image.outputs.hit != 'true'
+        id: guest-image
+        run: echo "key=$(python3 scripts/nes-guest-image-key.py)" >>"$GITHUB_OUTPUT"
+      - name: Download the prepared image
+        if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: nes-guest-image-v1-${{ steps.guest-image.outputs.key }}
+          path: consonance/harmony-linux/build/nes.oci
+      - name: Verify prepared runtime provenance
+        if: steps.scope.outputs.enabled == 'true'
         run: |
-          echo '::error::No NES guest image matches this source. Run Benchmarks / Harmony Workloads / NES on this branch to publish one, then rerun this check.'
-          exit 1
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 --output harmony-nes-check/provenance.json
+          python3 -c 'import json; assert json.load(open("harmony-nes-check/provenance.json"))["scope"] == "exact-input"'
       - name: Grant nested KVM access
         if: steps.scope.outputs.enabled == 'true'
         run: |
@@ -170,7 +204,7 @@ jobs:
 
   backend-equivalence:
     name: Backend Equivalence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.rebuild_guest)
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:

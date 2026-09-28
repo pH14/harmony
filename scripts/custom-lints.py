@@ -805,7 +805,7 @@ def check_registry_jobs(workflow) -> list[Violation]:
         if not isinstance(job.timeout_minutes, int) or job.timeout_minutes <= 0:
             violations.append(Violation("ci-pr-job-timeout", path, 0,
                 f"{subject} declares no budget"))
-        elif job.trigger == "pr" and job.timeout_minutes > ci_contract.PR_BOUNDED_MINUTES:
+        elif job.trigger == "pr" and job.timeout_minutes > ci_contract.pull_request_budget(workflow.path, job.name):
             violations.append(Violation("ci-pr-job-timeout", path, 0,
                 f"{subject} reaches pull requests with a "
                 f"{job.timeout_minutes} minute budget"))
@@ -957,10 +957,11 @@ def check_job_contract(rel_path: str, job_id: str, job: dict, registered, pr_tri
         if pr_triggered and not runs_on_pr:
             violations.append(Violation("ci-trigger-routing", rel_path, 0,
                 f"job '{job_id}' is a registered pull request check but its guard excludes pull requests"))
-        if not declared or not 0 < timeout <= PR_JOB_MAX_TIMEOUT_MINUTES:
+        budget = ci_contract.pull_request_budget(rel_path, registered.name)
+        if not declared or not 0 < timeout <= budget:
             violations.append(Violation("ci-pr-job-timeout", rel_path, 0,
                 f"job '{job_id}' has timeout-minutes={timeout} and must set "
-                f"<= {PR_JOB_MAX_TIMEOUT_MINUTES}"))
+                f"<= {budget}"))
     else:
         if runs_on_pr:
             violations.append(Violation("ci-trigger-routing", rel_path, 0,
@@ -1793,7 +1794,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "ci-pr-job-timeout": (
             f"Every job a pull request reaches must finish inside "
-            f"{PR_JOB_MAX_TIMEOUT_MINUTES} minutes, and every job's declared bound must "
+            f"{PR_JOB_MAX_TIMEOUT_MINUTES} minutes except registered artifact-build prerequisites, and every job's declared bound must "
             "match the budget scripts/ci_contract.py records for it. Split the work, or "
             "register the long run as a schedule or dispatch job with its reason."
         ),

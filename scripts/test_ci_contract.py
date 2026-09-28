@@ -74,7 +74,7 @@ class RoutingTests(unittest.TestCase):
                 if job.trigger != "pr":
                     continue
                 with self.subTest(job=f"{workflow.name} / {job.name}"):
-                    self.assertLessEqual(job.timeout_minutes, ci_contract.PR_BOUNDED_MINUTES)
+                    self.assertLessEqual(job.timeout_minutes, ci_contract.pull_request_budget(workflow.path, job.name))
 
     def test_a_bounded_workflow_carries_full_work_only_by_exception(self):
         for workflow in ci_contract.WORKFLOWS:

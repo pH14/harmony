@@ -69,6 +69,18 @@ bounded Checks workflow and a full Benchmarks workflow, and requires each
 workflow to actually run its registered backend. A Harmony composition reduced
 to native execution alone fails `ci-nes-compositions`.
 
+The Harmony NES Checks and Benchmarks workflows prepare their exact runtime and
+ROM-free NES image in one prerequisite job. The shared `prepare-nes-guest`
+action reuses source-matched artifacts when available and builds missing ones.
+Nova waits for that job and downloads its artifacts from the same workflow run;
+a cache miss is construction work, not a validation failure. All four benchmark
+replicas consume the same prepared image. Runtime provenance is checked before
+publication and after download; image artifact names retain the exact source
+key. No manual benchmark dispatch or failed-check retry is required to populate
+an image for a pull request. A manual Checks run with `rebuild_guest=true`
+exercises cold construction followed by bounded Nova validation instead of the
+full backend-equivalence job.
+
 `Checks / Dissonance Workloads / Tiny Worlds` builds the standalone workload and
 runs mechanics, archive-retention, replay, work-accounting, formatting, and Clippy
 checks with one build worker and one test thread.
@@ -79,7 +91,11 @@ Every job declares a trigger class.
 
 - **`pr`** jobs run on pull requests and on pushes to main, and finish inside 15
   minutes. This bound holds for `pull_request`, `pull_request_target` and
-  `merge_group`.
+  `merge_group`. The sole artifact-build exception is `NES Guest Image` in
+  `Checks / Harmony Workloads / NES`, capped at 45 minutes for cold construction
+  of the exact runtime and ROM-free image. Its Nova validation consumer retains
+  the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` explicitly registers this
+  prerequisite; it does not permit full searches on pull requests.
 - **`full`** jobs run on a schedule or a manual dispatch and declare their own
   ceiling.
 
@@ -103,8 +119,8 @@ the job, which states why the work cannot fit the bound:
 | `Checks / Harmony Workloads / OCI` | `Docker` | 90 | Building the pinned Docker workload image and booting it twice under nested KVM exceeds the pull request budget. |
 | `Checks / Harmony Workloads / OCI` | `K3s` | 90 | Building the pinned K3s workload image and bringing a cluster up twice exceeds the pull request budget. |
 
-An exception narrows which jobs may mix trigger classes; it does not let a `pr`
-job run longer.
+A trigger-class exception does not let a `pr` job run longer. Artifact build
+budgets are registered separately and apply only to the named prerequisite.
 
 ## Change selection
 
