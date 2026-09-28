@@ -563,7 +563,26 @@ mod tests {
         drop(first);
         assert_eq!(index.stats().segments, 1);
         drop(second);
-        assert_eq!(index.stats().charged, PAGE, "the open segment stays");
+        assert_eq!(index.stats().charged, 0);
+        assert_eq!(index.stats().segments, 0);
+    }
+
+    #[test]
+    fn eviction_reclaims_the_open_segment_once_its_extents_are_gone() {
+        let per_entry = extent_len(1, 0, 1).unwrap();
+        let index = LocalIndex::with_segment_bytes(2 * per_entry, 2 * per_entry);
+        let space = ns("a");
+        let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let b = put(&index, space, b"b", None, &[(1, 1)], &[]).unwrap();
+        index.release(a);
+        index.release(b);
+        let c = put(&index, space, b"c", None, &[(2, 1)], &[]).unwrap();
+        let d = put(&index, space, b"d", None, &[(3, 1)], &[]).unwrap();
+        let stats = index.stats();
+        assert_eq!((stats.evictions, stats.refusals), (2, 0));
+        assert!(stats.charged <= stats.budget);
+        index.release(c);
+        index.release(d);
     }
 
     #[test]
