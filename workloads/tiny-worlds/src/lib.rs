@@ -206,6 +206,8 @@ pub struct Evidence {
     pub map_first: Vec<Option<u64>>,
     pub map_first_tier: Vec<Option<u64>>,
     pub map_first_stocked: Option<u64>,
+    pub admitted_job_work: u64,
+    pub job_start_work: u64,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -218,7 +220,7 @@ pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
 pub struct Observation {
     before: State,
     after: State,
-    execution_work: u64,
+    work_in_job: u64,
     job_work: Option<u64>,
 }
 pub struct Target {
@@ -448,7 +450,7 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         target.observation = Some(Observation {
             before,
             after: target.state,
-            execution_work: target.work + 1,
+            work_in_job: target.work + 1,
             job_work: None,
         });
         target.work += 1;
@@ -483,6 +485,13 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
             stop_rollout_on_objective,
         )?;
         let work = target.work - start_work;
+        for observation in result
+            .actions
+            .iter_mut()
+            .flat_map(|action| action.observations.iter_mut())
+        {
+            observation.work_in_job -= start_work;
+        }
         if let Some(observation) = result
             .actions
             .first_mut()
@@ -552,6 +561,11 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
         F: FnOnce() -> Result<Input<u8>, Box<dyn Error>>,
     {
         for observation in &a.observations {
+            if let Some(work) = observation.job_work {
+                e.job_start_work = e.admitted_job_work;
+                e.admitted_job_work += work;
+            }
+            let reached_work = e.job_start_work + observation.work_in_job;
             e.observations += 1;
             if observation.job_work.is_some() && self.scale.is_none() {
                 let key = self.config.key(observation.before, false);
@@ -663,7 +677,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     }
                     if after.stage != before.stage {
                         e.chain_first_reach_work[usize::from(after.stage)]
-                            .get_or_insert(observation.execution_work);
+                            .get_or_insert(reached_work);
                         e.chain_stage_entries[usize::from(after.stage)] += 1;
                         e.chain_entry_charge[usize::from(after.stage)]
                             [usize::from(after.charge)] += 1;
@@ -676,7 +690,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     e.backtrack_first_items[0] = Some(0);
                     if after.items > before.items {
                         e.backtrack_first_items[usize::from(after.items)]
-                            .get_or_insert(observation.execution_work);
+                            .get_or_insert(reached_work);
                     }
                 }
                 (World::Map(w), State::Map(before), State::Map(after)) => {
@@ -691,14 +705,13 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     ];
                     for (first, reached) in e.map_first.iter_mut().zip(reached) {
                         if reached {
-                            first.get_or_insert(observation.execution_work);
+                            first.get_or_insert(reached_work);
                         }
                     }
                     e.map_first_tier.resize(usize::from(w.top_tier()) + 1, None);
                     e.map_first_tier[0] = Some(0);
                     if w.tier(after) > w.tier(before) {
-                        e.map_first_tier[usize::from(w.tier(after))]
-                            .get_or_insert(observation.execution_work);
+                        e.map_first_tier[usize::from(w.tier(after))].get_or_insert(reached_work);
                     }
                     if w.gauntlet
                         && after.arm == 0
@@ -706,8 +719,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         && w.tier(after) == w.top_tier()
                         && after.health >= layout.door_to_goal
                     {
-                        e.map_first_stocked
-                            .get_or_insert(observation.execution_work);
+                        e.map_first_stocked.get_or_insert(reached_work);
                     }
                     if w.boss_stock > 0
                         && after.item
@@ -716,8 +728,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         && after.stock >= w.boss_stock
                         && (!w.boss_hits_back || after.health >= w.boss_stock)
                     {
-                        e.map_first_stocked
-                            .get_or_insert(observation.execution_work);
+                        e.map_first_stocked.get_or_insert(reached_work);
                     }
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
@@ -788,7 +799,7 @@ pub fn run_scaled(
     if budget == 0 || budget > Scale::MAX_WORK_BUDGET {
         return Err(format!("scaled work budget must be 1..={}", Scale::MAX_WORK_BUDGET).into());
     }
-    let config = campaign_config(workload, seed, budget);
+    let config = campaign_config(workload, seed, budget, scale.workers);
     let mut stream = CountingStream(0);
     let started = telemetry_now();
     let live = run_campaign_checkpointed_with_options(
@@ -833,9 +844,13 @@ pub fn run_kept(
     seed: u64,
     budget: u64,
     verify: bool,
+    workers: u32,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
+    if !(1..=64).contains(&workers) {
+        return Err("workers must be 1..=64".into());
+    }
     let mut report = match keep {
-        Keep::Portfolio => campaign(workload, seed, budget, verify)?,
+        Keep::Portfolio => campaign(workload, seed, budget, verify, workers)?,
         Keep::CapacityTwo => campaign(
             &Workload::<true> {
                 config: workload.config.clone(),
@@ -845,6 +860,7 @@ pub fn run_kept(
             seed,
             budget,
             verify,
+            workers,
         )?,
     };
     report["keep"] = serde_json::to_value(keep)?;
@@ -857,7 +873,7 @@ pub fn run(
     budget: u64,
     verify: bool,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    campaign(workload, seed, budget, verify)
+    campaign(workload, seed, budget, verify, 1)
 }
 
 fn campaign<const CAPACITY_TWO: bool>(
@@ -865,6 +881,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     seed: u64,
     budget: u64,
     verify: bool,
+    workers: u32,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     workload.config.validate()?;
     if workload.scale.is_some() {
@@ -873,7 +890,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     if budget == 0 || budget > 2_000_000 {
         return Err("work budget must be 1..=2000000".into());
     }
-    let config = campaign_config(workload, seed, budget);
+    let config = campaign_config(workload, seed, budget, workers);
     let mut stream = BoundedStream(Vec::new());
     let started = telemetry_now();
     let live = run_campaign_checkpointed_with_options(
@@ -1060,8 +1077,13 @@ fn campaign_config<const CAPACITY_TWO: bool>(
     workload: &Workload<CAPACITY_TWO>,
     seed: u64,
     budget: u64,
+    workers: u32,
 ) -> CampaignConfig<Workload<CAPACITY_TWO>> {
-    let scale = workload.scale.unwrap_or_default();
+    let scale = workload.scale.unwrap_or(Scale {
+        workers,
+        window: searcher::search::campaign::default_window(workers),
+        ..Scale::default()
+    });
     CampaignConfig {
         campaign_seed: seed,
         workers: scale.workers,
@@ -1170,7 +1192,7 @@ mod tests {
                 snapshots,
             },
         };
-        let config = campaign_config(&w, crate::test_seed(), 20);
+        let config = campaign_config(&w, crate::test_seed(), 20, 1);
         let mut stream = BoundedStream(Vec::new());
         let (report, _) = run_campaign_checkpointed_with_options(
             &w,
@@ -1519,7 +1541,7 @@ mod tests {
                 let result = CampaignActionResult::<Workload> {
                     action,
                     observations: vec![Observation {
-                        execution_work: 0,
+                        work_in_job: 0,
                         job_work: None,
                         before: State::Maze(before),
                         after: State::Maze(after),
@@ -1542,7 +1564,7 @@ mod tests {
                 let result = CampaignActionResult::<Workload> {
                     action,
                     observations: vec![Observation {
-                        execution_work: 0,
+                        work_in_job: 0,
                         job_work: None,
                         before: State::Maze(before),
                         after: State::Maze(config.step(before, action)),
@@ -1571,6 +1593,16 @@ mod tests {
     }
 
     #[test]
+    fn a_run_with_many_workers_replays() {
+        let w = world();
+        for workers in [2, 4, 16] {
+            let report = run_kept(&w, Keep::Portfolio, test_seed(), 2000, true, workers).unwrap();
+            assert_eq!(report["verified"], true, "{workers} workers");
+        }
+        assert!(run_kept(&w, Keep::Portfolio, test_seed(), 2000, true, 65).is_err());
+    }
+
+    #[test]
     fn capacity_two_keeps_two_holders_under_one_preference_and_replays() {
         assert_eq!(
             (Key::<false>::capacity(), Key::<false>::preferences()),
@@ -1584,7 +1616,7 @@ mod tests {
         let key = w.config.key(w.config.initial(), false);
         assert_eq!(key.kept::<true>().kept::<false>(), key);
         for keep in [Keep::Portfolio, Keep::CapacityTwo] {
-            let report = run_kept(&w, keep, test_seed(), 2000, true).unwrap();
+            let report = run_kept(&w, keep, test_seed(), 2000, true, 1).unwrap();
             assert_eq!(report["verified"], true);
             assert_eq!(report["keep"], serde_json::to_value(keep).unwrap());
         }
