@@ -1273,6 +1273,9 @@ mod tests {
         let pid = libc::pid_t::try_from(session.process_id().unwrap()).unwrap();
         // SAFETY: kill only signals the child process this test spawned.
         assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+        let mut status = 0;
+        // SAFETY: waitpid reaps only the child this test spawned and writes its status into a live local.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
     }
 
     fn namespace() -> Namespace {
