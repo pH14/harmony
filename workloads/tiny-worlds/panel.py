@@ -320,7 +320,8 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
         missed = (sum(not r["success"] for r in b), sum(not r["success"] for r in c))
         misses, arm_only, base_only = missed_goals(b, c)
         if misses == "undecided":
-            misses = "undecided" if arm_only - base_only >= MISS_BAND * len(b) else "watch"
+            misses = ("undecided" if arm_only - base_only >= MISS_BAND * len(b)
+                      and sign_test(arm_only, base_only) < 0.05 else "watch")
         identical = sum(x["stream_sha256"] == y["stream_sha256"] for x, y in zip(b, c))
         verdicts = []
         for _, _, ratio, low, high in results[world]:
