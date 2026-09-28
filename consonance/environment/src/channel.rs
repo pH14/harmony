@@ -130,23 +130,28 @@ impl Effect {
 
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        self.encode_into(&mut out);
+        out
+    }
+
+    #[inline]
+    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         match self {
             Self::WriteMemory { gpa, bytes } => {
                 out.push(1);
-                put_u64(&mut out, *gpa);
-                put_bytes(&mut out, bytes);
+                put_u64(out, *gpa);
+                put_bytes(out, bytes);
             }
             Self::XorMemory { gpa, bytes } => {
                 out.push(3);
-                put_u64(&mut out, *gpa);
-                put_bytes(&mut out, bytes);
+                put_u64(out, *gpa);
+                put_bytes(out, bytes);
             }
             Self::InjectInterrupt { vector } => {
                 out.push(2);
-                put_u32(&mut out, *vector);
+                put_u32(out, *vector);
             }
         }
-        out
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {

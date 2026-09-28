@@ -28,6 +28,11 @@ codec bounds lengths and validates ordering. Mechanical effects describe memory
 writes, memory XOR, and interrupt delivery; packages choose when and why to use
 them. The VMM validates their machine addresses before applying them.
 
+`InputSpec` writes service configuration and effects directly into its output,
+filling each nested length after encoding. Standalone configuration and effect
+encoders share those writers and retain the same bytes. This avoids temporary
+per-effect buffers while preserving field order, tags, and length framing.
+
 `InputSpec::decode` accepts one transport message and caps the complete blob at
 `MAX_CHANNEL_BYTES`. `InputSpec::decode_snapshot` runs the same strict parser
 for a caller-bounded captured section, so a long input history may contain more
