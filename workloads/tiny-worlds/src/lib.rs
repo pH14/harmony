@@ -235,7 +235,7 @@ pub struct Snapshot {
 #[serde(deny_unknown_fields)]
 pub struct Scale {
     pub workers: u32,
-    pub reservations_per_worker: usize,
+    pub window: usize,
     pub results_per_worker: usize,
     pub memory_budget_mib: usize,
     pub archive_entries: usize,
@@ -246,7 +246,7 @@ impl Default for Scale {
     fn default() -> Self {
         Self {
             workers: 1,
-            reservations_per_worker: 1,
+            window: 1,
             results_per_worker: 1,
             memory_budget_mib: 32,
             archive_entries: 4096,
@@ -259,11 +259,11 @@ impl Scale {
     pub const MAX_WORK_BUDGET: u64 = 10_000_000_000;
 
     pub fn validate(&self) -> Result<(), String> {
-        if !(1..=16).contains(&self.workers) {
-            return Err("scale workers must be 1..=16".into());
+        if !(1..=64).contains(&self.workers) {
+            return Err("scale workers must be 1..=64".into());
         }
-        if !(1..=8).contains(&self.reservations_per_worker) {
-            return Err("scale reservations per worker must be 1..=8".into());
+        if !(1..=512).contains(&self.window) {
+            return Err("scale window must be 1..=512".into());
         }
         if !(1..=2).contains(&self.results_per_worker) {
             return Err("scale results per worker must be 1..=2".into());
@@ -1071,7 +1071,7 @@ fn campaign_config<const CAPACITY_TWO: bool>(
         stop_rollout_on_objective: true,
         stop_campaign_on_objective: workload.scale.is_none(),
         archive_entry_limit: scale.archive_entries,
-        reservations_per_worker: scale.reservations_per_worker,
+        window: scale.window,
         memory_budget_mib: Some(scale.memory_budget_mib),
         materialize_final_artifacts: workload.scale.is_none(),
         run: (),
@@ -1620,11 +1620,15 @@ mod tests {
                 ..Scale::default()
             },
             Scale {
-                workers: 17,
+                workers: 65,
                 ..Scale::default()
             },
             Scale {
-                reservations_per_worker: 9,
+                window: 0,
+                ..Scale::default()
+            },
+            Scale {
+                window: 513,
                 ..Scale::default()
             },
             Scale {
@@ -1670,7 +1674,7 @@ mod tests {
                 broken: false,
                 scale: Some(Scale {
                     workers: 2,
-                    reservations_per_worker: 2,
+                    window: 4,
                     results_per_worker,
                     action_cost_ns: 1_000,
                     snapshot_bytes,

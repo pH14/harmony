@@ -234,7 +234,7 @@ fn run_qualified_campaign(
         "match_completed": champion_endpoint.match_over(),
         "emulator_identity": game.emulator_identity(),
         "campaign_seed": live.campaign_seed,
-        "workers": live.workers,
+        "workers": live.telemetry.workers.len(),
         "execution_budget": live.execution_budget,
         "executions": live.executions_completed,
         "execution_budget_exact": live.executions_completed == live.execution_budget,

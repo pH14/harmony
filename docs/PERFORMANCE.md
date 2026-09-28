@@ -305,9 +305,8 @@ write: the write itself, a read and write to capture the page, and another
 read and write to restore it.
 
 When measuring scaling, pin workers to one core type so differences in core
-speed do not distort the comparison. Even then, changing the worker count
-also changes which parents the search selects, so the runs differ in both
-work and parallelism. Boot time and final persistence can also dominate short
+speed do not distort the comparison. With a fixed admission window the search selects the
+same parents at every worker count, so the runs differ only in parallelism. Boot time and final persistence can also dominate short
 campaigns spread across many workers.
 
 > [!NOTE]

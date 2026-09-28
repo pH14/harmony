@@ -56,7 +56,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 8;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 9;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -120,20 +120,17 @@ impl Debug for ThreadPlacement {
     }
 }
 
-pub const DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER: usize = 1;
-
-const fn admission_window_depth(workers: usize, reservations_per_worker: usize) -> usize {
-    workers.saturating_mul(reservations_per_worker)
+#[must_use]
+pub const fn default_window(workers: u32) -> usize {
+    workers as usize
 }
 
-const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v3";
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_v4";
 const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
 const DEFAULT_MIXTURE_WEIGHT: u8 = 128;
 
-fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
-    format!(
-        "{SCHEDULE_POLICY_WINDOW_PREFIX}{reservations_per_worker}{SCHEDULE_POLICY_WINDOW_SUFFIX}"
-    )
+fn schedule_policy_identifier(window: usize) -> String {
+    format!("{SCHEDULE_POLICY_WINDOW_PREFIX}{window}{SCHEDULE_POLICY_WINDOW_SUFFIX}")
 }
 
 fn schedule_policy_window(policy: &str) -> Option<usize> {
@@ -609,7 +606,7 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub stop_rollout_on_objective: bool,
     pub stop_campaign_on_objective: bool,
     pub archive_entry_limit: usize,
-    pub reservations_per_worker: usize,
+    pub window: usize,
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub run: G::Run,
@@ -625,7 +622,6 @@ pub struct CampaignStreamHeader<T> {
     pub schema_version: u32,
     pub format: String,
     pub campaign_seed: u64,
-    pub workers: u32,
     pub schedule_policy: String,
     pub progress_policy: String,
     pub host: String,
@@ -660,7 +656,7 @@ pub struct CampaignStreamHeader<T> {
     pub parent_scheduler: String,
     pub preference_portfolio: String,
     pub executor_mode: String,
-    pub worker_seed_derivation: String,
+    pub selection_seed_derivation: String,
     pub workload_identity_sha256: String,
     pub action_cost_unit: String,
     pub execution_work_unit: String,
@@ -691,7 +687,6 @@ pub enum CampaignAdmissionDecision {
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 pub struct CampaignJobRecord<C, K = ()> {
     pub sequence: u64,
-    pub worker: u32,
     pub parent_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_energy: Option<u16>,
@@ -726,7 +721,6 @@ pub struct CampaignJobRecord<C, K = ()> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 pub struct CampaignSkipRecord<C, K = ()> {
-    pub worker: u32,
     pub parent_id: u64,
     pub mutation_seed: u64,
     pub mixture_weight: u8,
@@ -804,7 +798,7 @@ const RESUMABLE_POLICY_FIELDS: [&str; 10] = [
 pub struct CampaignModeReport<A: Ord, R> {
     pub mode: String,
     pub campaign_seed: u64,
-    pub workers: u32,
+    pub window: usize,
     pub host: String,
     pub schedule_identity: String,
     pub origin: CampaignOriginRecord,
@@ -828,7 +822,7 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub retention_policy: String,
     pub parent_scheduler: String,
     pub executor_mode: String,
-    pub worker_seed_derivation: String,
+    pub selection_seed_derivation: String,
     pub workload_identity_sha256: String,
     pub action_cost_unit: String,
     pub execution_work_unit: String,
@@ -872,8 +866,6 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub input_index_nodes: usize,
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub historical_cells: usize,
-    pub jobs_per_worker: Vec<u64>,
-    pub skips_per_worker: Vec<u64>,
     pub stream_sha256: String,
     pub archive: R,
     #[serde(skip)]
@@ -1283,15 +1275,14 @@ fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>>
     }
 }
 
-pub fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, Box<dyn Error>> {
-    let mut hasher = Sha256::new();
-    hasher.update(campaign_seed.to_le_bytes());
-    hasher.update(worker_index.to_le_bytes());
-    let digest = hasher.finalize();
-    let bytes: [u8; 8] = digest[..8]
-        .try_into()
-        .map_err(|_| "worker seed digest is too short")?;
-    Ok(u64::from_le_bytes(bytes))
+#[must_use]
+pub fn derive_selection_seed(campaign_seed: u64) -> u64 {
+    let digest = Sha256::digest(campaign_seed.to_le_bytes());
+    u64::from_le_bytes(
+        digest[..8]
+            .try_into()
+            .expect("a SHA-256 digest has eight bytes"),
+    )
 }
 
 pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
@@ -1923,8 +1914,7 @@ fn stream_header<G: Workload>(
         schema_version: CAMPAIGN_SCHEMA_VERSION,
         format: workload.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
-        workers: config.workers,
-        schedule_policy: schedule_policy_identifier(config.reservations_per_worker),
+        schedule_policy: schedule_policy_identifier(config.window),
         progress_policy: CAMPAIGN_PROGRESS_POLICY.to_owned(),
         host: config.host.clone(),
         origin_kind: origin.kind.clone(),
@@ -1955,8 +1945,7 @@ fn stream_header<G: Workload>(
         parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
         preference_portfolio: preference_portfolio_identifier::<G::Key>(),
         executor_mode: "snapshot_resume_archive".to_owned(),
-        worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
-            .to_owned(),
+        selection_seed_derivation: "sha256(campaign_seed_le)[0..8] as u64 le".to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
         action_cost_unit: workload.action_cost_unit().to_owned(),
         execution_work_unit: workload.execution_work_unit().to_owned(),
@@ -2000,8 +1989,6 @@ struct CampaignCounters {
     executions_to_first_objective: Option<u64>,
     duplicates_skipped: u64,
     draw_state_memory_bytes: usize,
-    jobs_per_worker: Vec<u64>,
-    skips_per_worker: Vec<u64>,
 }
 
 fn execution_work_delta(before: u64, after: u64, scope: &str) -> Result<u64, Box<dyn Error>> {
@@ -2230,7 +2217,7 @@ impl CampaignCounters {
         }
     }
 
-    fn new(workers: u32) -> Self {
+    fn new() -> Self {
         Self {
             bootstrap_execution_work: 0,
             tree_import: None,
@@ -2239,8 +2226,6 @@ impl CampaignCounters {
             executions_to_first_objective: None,
             duplicates_skipped: 0,
             draw_state_memory_bytes: 0,
-            jobs_per_worker: vec![0; workers as usize],
-            skips_per_worker: vec![0; workers as usize],
         }
     }
 }
@@ -2293,7 +2278,7 @@ fn build_report<G: Workload>(
     let report = CampaignModeReport {
         mode: "campaign".to_owned(),
         campaign_seed: header.campaign_seed,
-        workers: header.workers,
+        window: schedule_policy_window(&header.schedule_policy).unwrap_or_default(),
         host: header.host.clone(),
         schedule_identity: CAMPAIGN_SCHEDULE_IDENTITY.to_owned(),
         origin,
@@ -2313,7 +2298,7 @@ fn build_report<G: Workload>(
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
         executor_mode: header.executor_mode.clone(),
-        worker_seed_derivation: header.worker_seed_derivation.clone(),
+        selection_seed_derivation: header.selection_seed_derivation.clone(),
         workload_identity_sha256: header.workload_identity_sha256.clone(),
         action_cost_unit: header.action_cost_unit.clone(),
         execution_work_unit: header.execution_work_unit.clone(),
@@ -2344,8 +2329,6 @@ fn build_report<G: Workload>(
         input_reconstructions,
         input_index_nodes,
         historical_cells,
-        jobs_per_worker: counters.jobs_per_worker.clone(),
-        skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
         archive,
         telemetry: CampaignTelemetry::default(),
@@ -2450,7 +2433,7 @@ struct CoreCheckpoint<G: Workload + ?Sized> {
 }
 
 struct SearchResume<G: Workload + ?Sized> {
-    rands: Vec<RomuDuoJrRand>,
+    rand: RomuDuoJrRand,
     reserved: u64,
     next_admission: usize,
     profile: LiveCoordinatorProfile,
@@ -2461,7 +2444,6 @@ struct SearchResume<G: Workload + ?Sized> {
 #[serde(bound = "")]
 struct PendingJob<G: Workload + ?Sized> {
     snapshot_id: u64,
-    worker: u32,
     parent_id: u64,
     continuation_energy: Option<u16>,
     continuation_wave: u32,
@@ -2768,8 +2750,8 @@ where
     if !archive_entry_limit_is_valid(config.archive_entry_limit) {
         return Err("campaign archive entry limit is outside its bounded range".into());
     }
-    if config.reservations_per_worker == 0 {
-        return Err("campaign reservations per worker must be at least one".into());
+    if config.window == 0 {
+        return Err("campaign admission window must hold at least one reservation".into());
     }
     if config.memory_budget_mib == Some(0) {
         return Err("campaign memory budget must be nonzero".into());
@@ -2818,7 +2800,7 @@ where
         config.archive_entry_limit,
         config.memory_budget_mib,
     );
-    let mut counters = CampaignCounters::new(config.workers);
+    let mut counters = CampaignCounters::new();
     let mut telemetry = CampaignTelemetry::default();
     let bootstrap_started = now();
     let resume = match search_checkpoint.take() {
@@ -2850,13 +2832,7 @@ where
     }
 
     let workers = config.workers as usize;
-    let mut rands = Vec::with_capacity(workers);
-    for index in 0..config.workers {
-        rands.push(RomuDuoJrRand::with_seed(derive_worker_seed(
-            config.campaign_seed,
-            index,
-        )?));
-    }
+    let mut rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
 
     #[allow(clippy::disallowed_methods)]
     let telemetry_started = std::time::Instant::now();
@@ -2868,7 +2844,7 @@ where
     let mut resumed_admission = 0_usize;
     let mut resumed_in_flight = None;
     if let Some(resume) = resume {
-        rands = resume.rands;
+        rand = resume.rand;
         reserved = resume.reserved;
         coordinator_profile = resume.profile;
         resumed_admission = resume.next_admission;
@@ -2929,13 +2905,12 @@ where
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
             let select = |core: &mut CoordinatorCore<G>,
-                          rands: &mut [RomuDuoJrRand],
+                          rand: &mut RomuDuoJrRand,
                           draw_state: &mut DrawTables<G::Action>,
                           duration_policies: &DurationPolicies<G::Key>,
                           writer: &mut StreamWriter<'_>,
                           counters: &mut CampaignCounters,
-                          reserved: &mut u64,
-                          worker: u32|
+                          reserved: &mut u64|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
                 if *reserved >= config.execution_budget
                     || work_budget.is_some_and(|budget| {
@@ -2956,7 +2931,6 @@ where
                 {
                     return Ok(None);
                 }
-                let rand = &mut rands[worker as usize];
                 let mut consecutive_skips = 0_u64;
                 let (continuation_energy, continuation) = continuation_attempt(
                     core,
@@ -3002,7 +2976,6 @@ where
                         },
                         PendingJob {
                             snapshot_id,
-                            worker,
                             parent_id,
                             continuation_energy,
                             continuation_wave: continuation.wave.saturating_add(1),
@@ -3143,7 +3116,6 @@ where
                         let draw_checkpoint_after =
                             workload.finish_stream_record(&config.run, draw_state, &[])?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
-                            worker,
                             parent_id,
                             mutation_seed,
                             mixture_weight,
@@ -3163,8 +3135,6 @@ where
                         core.archive.maintain_memory_budget()?;
                         core.archive.prepare_selection();
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
-                        counters.skips_per_worker[worker as usize] =
-                            counters.skips_per_worker[worker as usize].saturating_add(1);
                         consecutive_skips = consecutive_skips.saturating_add(1);
                         continue;
                     }
@@ -3183,7 +3153,6 @@ where
                         },
                         PendingJob {
                             snapshot_id,
-                            worker,
                             parent_id,
                             continuation_energy,
                             continuation_wave: 0,
@@ -3203,7 +3172,7 @@ where
                 }
             };
 
-            let pipeline_depth = admission_window_depth(workers, config.reservations_per_worker);
+            let pipeline_depth = config.window;
             let mut pending = BTreeMap::<usize, PendingJob<G>>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
             let mut queued_specs = VecDeque::with_capacity(
@@ -3236,18 +3205,15 @@ where
                 pipeline_depth
             };
             for _ in 0..prefill {
-                let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
-                let worker = u32::try_from(worker_index)?;
                 let selection_started = profile_now();
                 let selected = select(
                     &mut core,
-                    &mut rands,
+                    &mut rand,
                     &mut draw_state,
                     &duration_policies,
                     &mut writer,
                     &mut counters,
                     &mut reserved,
-                    worker,
                 )?;
                 coordinator_profile.selection_ns = coordinator_profile
                     .selection_ns
@@ -3360,7 +3326,6 @@ where
                 while let Some(completed_job) = completed.remove(&next_admission) {
                     spec_records.remove(&next_admission);
                     let pending_job = completed_job.pending;
-                    let worker_index = usize::try_from(pending_job.worker)?;
                     let result = completed_job.result;
                     let execution_work = completed_job.execution_work;
                     let result_sha256 = completed_job.result_sha256;
@@ -3503,7 +3468,6 @@ where
                     writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
                         continuation_energy: pending_job.continuation_energy,
                         sequence,
-                        worker: pending_job.worker,
                         parent_id: pending_job.parent_id,
                         mutation_seed: pending_job.mutation_seed,
                         execution_work,
@@ -3526,8 +3490,6 @@ where
                     coordinator_profile.stream_write_ns = coordinator_profile
                         .stream_write_ns
                         .saturating_add(profile_elapsed(stream_started));
-                    counters.jobs_per_worker[worker_index] =
-                        counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_execution_work =
                         counters.job_execution_work.saturating_add(execution_work);
                     if objectives_before == 0 && core.objectives_reached > 0 {
@@ -3590,18 +3552,15 @@ where
                         }
                     }
                     next_admission = next_admission.saturating_add(1);
-                    let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
-                    let worker = u32::try_from(worker_index)?;
                     let selection_started = profile_now();
                     let selected = select(
                         &mut core,
-                        &mut rands,
+                        &mut rand,
                         &mut draw_state,
                         &duration_policies,
                         &mut writer,
                         &mut counters,
                         &mut reserved,
-                        worker,
                     )?;
                     coordinator_profile.selection_ns = coordinator_profile
                         .selection_ns
@@ -3653,7 +3612,7 @@ where
                             &core,
                             &draw_state,
                             &duration_policies,
-                            &rands,
+                            &rand,
                             &counters,
                             &coordinator_profile,
                             reserved,
@@ -3780,10 +3739,7 @@ fn search_checkpoint_header<G: Workload>(
 ) -> CheckpointHeader {
     let mut policies = recorded_policies(workload, &config.run);
     for (field, value) in [
-        (
-            "schedule_policy",
-            schedule_policy_identifier(config.reservations_per_worker),
-        ),
+        ("schedule_policy", schedule_policy_identifier(config.window)),
         (
             "suffix_policy",
             suffix_shape_identifier(config.suffix).to_owned(),
@@ -3815,8 +3771,7 @@ fn search_checkpoint_header<G: Workload>(
         reason: reason.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
         campaign_seed: config.campaign_seed,
-        workers: config.workers,
-        reservations_per_worker: config.reservations_per_worker,
+        window: config.window,
         archive_entry_limit: config.archive_entry_limit,
         memory_budget_mib: config.memory_budget_mib,
         policies,
@@ -3877,10 +3832,8 @@ fn restore_search_checkpoint<G: Workload>(
     if header.workload_identity_sha256 != expected.workload_identity_sha256 {
         return Err("search checkpoint belongs to a different workload".into());
     }
-    if header.workers != expected.workers
-        || header.reservations_per_worker != expected.reservations_per_worker
-    {
-        return Err("search checkpoint worker count and admission window must match".into());
+    if header.window != expected.window {
+        return Err("search checkpoint admission window must match the campaign".into());
     }
     if header.archive_entry_limit != expected.archive_entry_limit
         || header.memory_budget_mib != expected.memory_budget_mib
@@ -3893,7 +3846,7 @@ fn restore_search_checkpoint<G: Workload>(
     let evidence: Vec<u8> = reader.next()?;
     let draw: Vec<u8> = reader.next()?;
     let durations = reader.next()?;
-    let mut rands: Vec<RomuDuoJrRand> = reader.next()?;
+    let mut rand: RomuDuoJrRand = reader.next()?;
     let restored_counters: CampaignCounters = reader.next()?;
     let profile: LiveCoordinatorProfile = reader.next()?;
     let in_flight: Vec<InFlightJob<G>> = reader.next()?;
@@ -3931,14 +3884,7 @@ fn restore_search_checkpoint<G: Workload>(
     *duration_policies = DurationPolicies::from_checkpoint(durations)?;
     *counters = restored_counters;
     if header.campaign_seed != config.campaign_seed {
-        rands = (0..config.workers)
-            .map(|index| {
-                derive_worker_seed(config.campaign_seed, index).map(RomuDuoJrRand::with_seed)
-            })
-            .collect::<Result<_, _>>()?;
-    }
-    if rands.len() != config.workers as usize || counters.jobs_per_worker.len() != rands.len() {
-        return Err("search checkpoint worker state does not match its worker count".into());
+        rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
     }
     let reserved = usize::try_from(header.reserved)?;
     if in_flight
@@ -3953,7 +3899,7 @@ fn restore_search_checkpoint<G: Workload>(
         return Err("search checkpoint admission count disagrees with its archive".into());
     }
     Ok(SearchResume {
-        rands,
+        rand,
         reserved: header.reserved,
         next_admission: header.next_admission,
         profile,
@@ -3970,7 +3916,7 @@ fn write_search_checkpoint<G: Workload>(
     core: &CoordinatorCore<G>,
     draw_state: &DrawTables<G::Action>,
     duration_policies: &DurationPolicies<G::Key>,
-    rands: &[RomuDuoJrRand],
+    rand: &RomuDuoJrRand,
     counters: &CampaignCounters,
     profile: &LiveCoordinatorProfile,
     reserved: u64,
@@ -4011,7 +3957,7 @@ fn write_search_checkpoint<G: Workload>(
         postcard::to_io(&evidence, &mut *out)?;
         postcard::to_io(&draw, &mut *out)?;
         postcard::to_io(&duration_policies.checkpoint(), &mut *out)?;
-        postcard::to_io(rands, &mut *out)?;
+        postcard::to_io(rand, &mut *out)?;
         postcard::to_io(counters, &mut *out)?;
         postcard::to_io(profile, &mut *out)?;
         postcard::to_io(&in_flight, &mut *out)?;
@@ -4303,7 +4249,7 @@ where
     core.bounded_progress_curve = true;
     core.archive
         .enable_continuations(replay_suffix.longest_draw());
-    let mut counters = CampaignCounters::new(header.workers);
+    let mut counters = CampaignCounters::new();
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
     })?;
@@ -4352,11 +4298,8 @@ where
 
     core.archive.prepare_selection();
 
-    let replay_window_depth = admission_window_depth(
-        usize::try_from(header.workers)?,
-        schedule_policy_window(&header.schedule_policy)
-            .ok_or("campaign stream schedule policy is not recognized")?,
-    );
+    let replay_window_depth = schedule_policy_window(&header.schedule_policy)
+        .ok_or("campaign stream schedule policy is not recognized")?;
     let mut duration_admissions = VecDeque::new();
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
@@ -4493,10 +4436,6 @@ where
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
-                let worker = usize::try_from(skip.worker)?;
-                if worker >= counters.skips_per_worker.len() {
-                    return Err("recorded skip names an unknown worker".into());
-                }
                 if skip.selector.path == SelectorPath::Continuation {
                     return Err("continuations cannot be recorded skips".into());
                 }
@@ -4505,8 +4444,6 @@ where
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
-                counters.skips_per_worker[worker] =
-                    counters.skips_per_worker[worker].saturating_add(1);
                 let draw_checkpoint_after =
                     workload.finish_stream_record(&replay_run, &mut draw_state, &[])?;
                 if draw_checkpoint_after != skip.draw_checkpoint_after {
@@ -4814,12 +4751,6 @@ where
                 }
                 core.archive
                     .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
-                let worker = usize::try_from(job.worker)?;
-                if worker >= counters.jobs_per_worker.len() {
-                    return Err("recorded job names an unknown worker".into());
-                }
-                counters.jobs_per_worker[worker] =
-                    counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_execution_work =
                     counters.job_execution_work.saturating_add(execution_work);
                 duration_work.push_back((
@@ -4876,17 +4807,17 @@ mod tests {
         CampaignConfig, CampaignCounters, CampaignExecutionOptions, CampaignJobRecord,
         CampaignJobResult, CampaignOrigin, CampaignOutcome, CampaignProgressRecord,
         CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
-        ContinuationAccounting, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-        DrawTables, DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation,
-        InputPolicy, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
-        PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry,
-        TargetExecution, ThreadPlacement, WorkloadPolicies, admission_window_depth,
-        archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
-        draws_continuation, draws_highest_preference, execution_work_delta, finish_record,
-        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        record_mixture_outcome, replay_campaign_checkpointed, replay_splice,
-        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
+        ContinuationAccounting, CoordinatorCore, DrawTables, DurationAdmission,
+        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
+        LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, PlacedThread, Reporting, RomuDuoJrRand,
+        SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution, ThreadPlacement,
+        WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
+        completed_results_within_bound, default_window, draws_continuation,
+        draws_highest_preference, execution_work_delta, finish_record, is_zero_usize,
+        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
+        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
+        replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
+        retained_archive_indexes, run_campaign_checkpointed,
         run_campaign_checkpointed_with_options, schedule_policy_identifier,
         schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
@@ -5625,7 +5556,7 @@ mod tests {
                 stop_rollout_on_objective,
                 stop_campaign_on_objective,
                 archive_entry_limit: 16,
-                reservations_per_worker: 1,
+                window: 1,
                 memory_budget_mib: None,
                 materialize_final_artifacts: true,
                 run: (),
@@ -5670,8 +5601,8 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":8,"format":"campaign-v1","campaign_seed":7,"workers":2,
-"schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
+    const RECORDED_HEADER: &str = r#"{"schema_version":9,"format":"campaign-v1","campaign_seed":7,
+"schedule_policy":"deterministic_window_2_v4","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
 "archive_entry_limit":128,"action_vocabulary":"test_inputs",
@@ -5679,7 +5610,7 @@ mod tests {
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
 "parent_scheduler":"tier_cell_count_decay_v3","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
-"worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
+"selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
     #[test]
@@ -6155,9 +6086,8 @@ mod tests {
 
     #[test]
     fn sliding_window_depth_is_the_only_selection_staleness() {
-        let workers = 3;
-        let depth = admission_window_depth(workers, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
-        assert_eq!(depth, workers * DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        let depth = default_window(3);
+        assert_eq!(depth, 3);
 
         let mut next_selection = 0_usize;
         let mut selected = Vec::new();
@@ -6185,17 +6115,8 @@ mod tests {
     }
 
     #[test]
-    fn sliding_window_depth_saturates_without_overflow() {
-        assert_eq!(
-            admission_window_depth(0, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
-            0
-        );
-        assert_eq!(admission_window_depth(usize::MAX, 1), usize::MAX);
-    }
-
-    #[test]
     fn the_first_objective_counters_exclude_jobs_that_drain_after_the_objective() {
-        let mut counters = CampaignCounters::new(4);
+        let mut counters = CampaignCounters::new();
         counters.bootstrap_execution_work = 1_000;
         counters.job_execution_work = 250;
         counters.note_first_objective(11);
@@ -6218,7 +6139,7 @@ mod tests {
 
     #[test]
     fn a_run_that_never_reaches_its_objective_has_no_first_objective_counters() {
-        let mut counters = CampaignCounters::new(1);
+        let mut counters = CampaignCounters::new();
         counters.bootstrap_execution_work = 10;
         counters.job_execution_work = 20;
         assert_eq!(counters.work_to_first_objective, None);
@@ -6227,36 +6148,18 @@ mod tests {
 
     #[test]
     fn schedule_policy_dispatch_accepts_only_current_windows() {
-        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
-        assert_eq!(current, "deterministic_window_1_per_worker_v3");
-        assert_eq!(
-            schedule_policy_window(&current),
-            Some(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER)
-        );
-        assert!(schedule_policy_is_supported(&current));
-        assert!(schedule_policy_is_supported(
+        let current = schedule_policy_identifier(default_window(1));
+        assert_eq!(current, "deterministic_window_1_v4");
+        assert_eq!(schedule_policy_window(&current), Some(1));
+        assert!(schedule_policy_is_supported("deterministic_window_64_v4"));
+        assert!(!schedule_policy_is_supported(
             "deterministic_window_4_per_worker_v3"
         ));
-        assert!(!schedule_policy_is_supported(
-            "deterministic_window_4_per_worker_v2"
-        ));
-        assert!(!schedule_policy_is_supported(
-            "deterministic_window_4_per_worker_v1"
-        ));
-        assert!(!schedule_policy_is_supported(
-            "deterministic_window_64_per_worker_v1"
-        ));
+        assert!(!schedule_policy_is_supported("deterministic_window_0_v4"));
         assert!(!schedule_policy_is_supported("unknown-schedule"));
-        assert!(!schedule_policy_is_supported(
-            "deterministic_window_0_per_worker_v3"
-        ));
         assert_eq!(
-            schedule_policy_window("deterministic_window_4_per_worker_v3"),
-            Some(4)
-        );
-        assert_eq!(
-            schedule_policy_window("deterministic_window_4_per_worker_v1"),
-            None
+            schedule_policy_window("deterministic_window_16_v4"),
+            Some(16)
         );
     }
 
@@ -6308,10 +6211,7 @@ mod tests {
         let compact = RECORDED_HEADER.replace('\n', "");
         let header: CampaignStreamHeader<()> =
             serde_json::from_str(&compact).expect("recorded header parses");
-        assert_eq!(
-            header.schedule_policy,
-            "deterministic_window_1_per_worker_v3"
-        );
+        assert_eq!(header.schedule_policy, "deterministic_window_2_v4");
         assert_eq!(
             header.progress_policy,
             "mechanical_watermark_bounded_1024_v2"
@@ -6433,7 +6333,7 @@ mod tests {
 
     #[test]
     fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
-        let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
+        let line = r#"{"event":"job","sequence":1,"parent_id":0,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
 "selector":{"path":"tiers","tier_rank":0},
 "draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
@@ -6512,7 +6412,7 @@ mod tests {
             stop_rollout_on_objective: false,
             stop_campaign_on_objective: false,
             archive_entry_limit: 32,
-            reservations_per_worker: 2,
+            window: 4,
             memory_budget_mib: Some(8),
             materialize_final_artifacts: true,
             run: (),
@@ -6672,7 +6572,7 @@ mod tests {
             stop_rollout_on_objective: false,
             stop_campaign_on_objective: false,
             archive_entry_limit: 32,
-            reservations_per_worker: 1,
+            window: 3,
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             run: (),

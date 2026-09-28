@@ -405,7 +405,7 @@ fn fixture_config() -> CampaignConfig<TimingWorkload> {
         stop_rollout_on_objective: false,
         stop_campaign_on_objective: false,
         archive_entry_limit: 256,
-        reservations_per_worker: 2,
+        window: 4,
         memory_budget_mib: None,
         materialize_final_artifacts: true,
         run: (),
@@ -533,9 +533,16 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
     )
     .expect("adaptive campaign");
 
-    assert_eq!(live.0.workers, 2);
+    assert_eq!(live.0.window, 4);
     assert!(live.0.executions_completed >= 8);
-    assert!(live.0.jobs_per_worker.iter().all(|jobs| *jobs > 0));
+    assert_eq!(live.0.telemetry.workers.len(), 2);
+    assert!(
+        live.0
+            .telemetry
+            .workers
+            .iter()
+            .all(|worker| worker.jobs > 0)
+    );
     let jobs = duration_job_values(&stream);
     assert!(jobs.len() >= 4, "expected several adaptive jobs");
     let contexts: BTreeSet<u8> = jobs

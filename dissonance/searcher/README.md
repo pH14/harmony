@@ -13,7 +13,10 @@ value, and ranks the cells in progress tiers. A workload provides the key, a
 progress order and an ordered list of state preferences; the generic
 archive uses only those and retains bounded representatives. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
-and process results in recorded admission order. The stream records the
+and process results in recorded admission order. The window is the number of
+reservations in flight and is set apart from the worker count. One coordinator
+random generator draws every selection, so a fixed seed and window write the
+same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay. Reserved jobs pin the snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
@@ -520,7 +523,7 @@ Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
 list it by entry id and offset. Each `.ckpt` file holds its header, that index,
 and the postcard body; `checkpoints.jsonl` records write time and sizes.
-`CampaignOrigin::SearchCheckpoint` resumes one. The worker count, admission
+`CampaignOrigin::SearchCheckpoint` resumes one. The admission
 window, limits, workload identity and the workload policies that give stored
 inputs and keys their meaning must match. The suffix, mixture and retention
 policies, the selector, the continuation policy and the objective stop may
@@ -530,10 +533,13 @@ change, because their state is rebuilt from the archive entries: new draw
 tables fold every entry's suffix, and each slot re-ranks its holders under the
 new preference order and capacity. The origin record and stream header list
 each change as `checkpoint_policy_changes`. The same seed
-repeats the original progress lines; another seed derives new worker random
-states and keeps everything else. The draw tables continue their table hash
+repeats the original progress lines; another seed derives a new selection random
+state and keeps everything else. The draw tables continue their table hash
 from the recorded one, so stream draw-table hashes after a resume differ from an
-uninterrupted run. A resumed stream cannot be replayed. Workloads opt in through
+uninterrupted run. A resumed stream cannot be replayed. The checkpoint stores
+every reservation between the next admission and the last reservation, whether
+queued, running or finished, and the resumed run dispatches them again, so it
+may use a different worker count. Workloads opt in through
 `Reporting::evidence_checkpoint` and `Reporting::evidence_from_checkpoint`.
 
 

@@ -54,7 +54,7 @@ use machine::consonance::{ConsonanceMachine, ConsonancePortable, identity as con
 pub use crate::search::campaign::{
     CampaignAdmissionDecision as SmbCampaignAdmissionDecision,
     CampaignConfig as GenericCampaignConfig, CampaignOriginRecord as SmbCampaignOriginRecord,
-    RESUME_IDENTIFIER, TreeImportCounts as SmbTreeImportCounts, derive_worker_seed,
+    RESUME_IDENTIFIER, TreeImportCounts as SmbTreeImportCounts, derive_selection_seed,
 };
 
 pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint>;
@@ -302,7 +302,7 @@ pub struct SmbCampaignConfig {
     pub wall_budget: Option<std::time::Duration>,
     pub continue_after_victory: bool,
     pub archive_entry_limit: usize,
-    pub reservations_per_worker: usize,
+    pub window: usize,
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub vocabulary: SmbButtonVocabulary,
@@ -330,7 +330,7 @@ impl SmbCampaignConfig {
             stop_rollout_on_objective: !self.continue_after_victory,
             stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
-            reservations_per_worker: self.reservations_per_worker,
+            window: self.window,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: SmbCampaignRun {
@@ -915,11 +915,9 @@ mod tests {
         DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignOrigin, SmbCampaignProgressRecord,
         SmbCampaignRun, SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint,
-        SmbSnapshotCheckpointEntry, SmbTerminalPredicate, SuffixShape, derive_worker_seed,
+        SmbSnapshotCheckpointEntry, SmbTerminalPredicate, SuffixShape, derive_selection_seed,
     };
-    use crate::search::campaign::{
-        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, InputPolicy, TargetExecution,
-    };
+    use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution, default_window};
     use crate::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables};
     use crate::{
         smb::archive::SmbArchiveReport,
@@ -1014,7 +1012,7 @@ mod tests {
             wall_budget: None,
             continue_after_victory: false,
             archive_entry_limit: 32_768,
-            reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+            window: default_window(workers),
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission,
@@ -1025,15 +1023,10 @@ mod tests {
     }
 
     #[test]
-    fn worker_seed_derivation_is_stable() {
-        let seeds = (0..3)
-            .map(|index| derive_worker_seed(0x5eed_ca00, index).expect("derive worker seed"))
-            .collect::<Vec<_>>();
-        assert_eq!(seeds.len(), 3);
-        assert_ne!(seeds[0], seeds[1]);
-        assert_ne!(seeds[1], seeds[2]);
-        let again = derive_worker_seed(0x5eed_ca00, 0).expect("derive worker seed again");
-        assert_eq!(seeds[0], again);
+    fn selection_seed_derivation_is_stable() {
+        let seed = derive_selection_seed(0x5eed_ca00);
+        assert_eq!(seed, derive_selection_seed(0x5eed_ca00));
+        assert_ne!(seed, derive_selection_seed(0x5eed_ca01));
     }
 
     fn evidence_action(milestones: SmbMilestones) -> SmbCampaignActionResult {
@@ -1436,7 +1429,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"")
+                .contains("\"schedule_policy\":\"deterministic_window_12_v4\"")
         );
     }
 
@@ -1464,12 +1457,12 @@ mod tests {
     fn a_zero_reservation_window_is_refused_by_the_public_campaign_entry() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca40, 2, 8);
-        config.reservations_per_worker = 0;
+        config.window = 0;
         let mut stream = Vec::new();
         let error = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect_err("a zero window is refused");
         assert!(
-            error.to_string().contains("reservations per worker"),
+            error.to_string().contains("admission window"),
             "unexpected error: {error}"
         );
         assert!(
@@ -1482,7 +1475,7 @@ mod tests {
     fn a_live_window_of_sixty_four_records_and_replays_as_a_window() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca41, 2, 256);
-        config.reservations_per_worker = 64;
+        config.window = 128;
         config.memory_budget_mib = Some(4);
         let mut stream = Vec::new();
         let (live, live_checkpoint) = run_smb_campaign_checkpointed(
@@ -1499,7 +1492,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v3\""),
+                .contains("\"schedule_policy\":\"deterministic_window_128_v4\""),
             "unexpected header: {}",
             recorded.lines().next().unwrap_or_default()
         );
@@ -1509,8 +1502,8 @@ mod tests {
         assert_eq!(live, replay);
         assert_eq!(live_checkpoint, replay_checkpoint);
         let legacy_tagged = recorded.replacen(
+            "deterministic_window_128_v4",
             "deterministic_window_64_per_worker_v3",
-            "deterministic_window_64_per_worker_v1",
             1,
         );
         assert!(
@@ -1537,8 +1530,7 @@ mod tests {
         replay_smb_campaign(&rom, recorded.as_bytes(), None).expect("its own namespace replays");
 
         for historical in [
-            recorded.replacen("_per_worker_v3", "_per_worker_v1", 1),
-            recorded.replacen("_per_worker_v3", "_per_worker_v2", 1),
+            recorded.replacen("_window_2_v4", "_window_1_per_worker_v3", 1),
             recorded.replacen(
                 "mechanical_watermark_bounded_1024_v2",
                 "mechanical_watermark_v1",
@@ -1554,11 +1546,8 @@ mod tests {
             );
         }
 
-        let without_schedule = recorded.replacen(
-            "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
-            "",
-            1,
-        );
+        let without_schedule =
+            recorded.replacen("\"schedule_policy\":\"deterministic_window_2_v4\",", "", 1);
         assert!(
             replay_smb_campaign(&rom, without_schedule.as_bytes(), None).is_err(),
             "a recording without the current schedule policy is refused"
@@ -1667,7 +1656,14 @@ mod tests {
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign");
         assert_eq!(live.executions_completed, 32);
-        assert_eq!(live.jobs_per_worker.iter().sum::<u64>(), 32);
+        assert_eq!(
+            live.telemetry
+                .workers
+                .iter()
+                .map(|worker| worker.jobs)
+                .sum::<u64>(),
+            32
+        );
         assert_eq!(live.objectives_reached, 0);
         assert_eq!(live.objective_witness, None);
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
@@ -1901,7 +1897,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
-            ("deterministic_window_1_per_worker_v3", "unknown_order_v9"),
+            ("deterministic_window_1_v4", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(
@@ -1969,7 +1965,9 @@ mod tests {
         }
         assert_eq!(
             live.duplicates_skipped,
-            live.skips_per_worker.iter().sum::<u64>()
+            text.lines()
+                .filter(|line| line.contains("\"skip\""))
+                .count() as u64
         );
     }
 

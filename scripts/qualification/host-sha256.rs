@@ -66,18 +66,9 @@ fn main() {
         );
     }
     compare(
-        || {
-            searcher::search::campaign::derive_worker_seed(black_box(0x1234), black_box(17))
-                .unwrap()
-        },
-        || {
-            searcher_reference::search::campaign::derive_worker_seed(
-                black_box(0x1234),
-                black_box(17),
-            )
-            .unwrap()
-        },
-        "worker_seed",
+        || searcher::search::campaign::derive_selection_seed(black_box(0x1234)),
+        || searcher_reference::search::campaign::derive_selection_seed(black_box(0x1234)),
+        "selection_seed",
         12,
         check,
     );

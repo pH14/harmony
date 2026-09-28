@@ -32,7 +32,7 @@ def graph(nodes: int, places: int, levels: int) -> dict:
 
 def scale(workers: int, memory_mib: int, cost_ns: int, snapshot_bytes: int, reservations: int = 2,
           results: int = 1) -> dict:
-    return {"workers": workers, "reservations_per_worker": reservations, "results_per_worker": results,
+    return {"workers": workers, "window": workers * reservations, "results_per_worker": results,
             "memory_budget_mib": memory_mib, "archive_entries": 4_194_304, "action_cost_ns": cost_ns,
             "snapshot_bytes": snapshot_bytes}
 

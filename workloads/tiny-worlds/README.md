@@ -68,8 +68,8 @@ field is required:
 
 | Field | Bounds | Meaning |
 | --- | --- | --- |
-| `workers` | 1–16 | Worker threads. |
-| `reservations_per_worker` | 1–8 | Admission window per worker. |
+| `workers` | 1–64 | Worker threads. |
+| `window` | 1–512 | Reservations in flight. The stream depends on the window and not on the worker count. |
 | `results_per_worker` | 1–2 | Finished results a worker may hold before admission: `ResultBuffering::OnePerWorker` or `TwoPerWorker`. |
 | `memory_budget_mib` | 1–16,384 | The searcher's logical memory budget. |
 | `archive_entries` | 1–4,194,304 | Archive entry limit. |
@@ -398,8 +398,8 @@ uv run workloads/tiny-worlds/scale.py cores --cost-ns 4000000 --work 6000 --repe
 uv run workloads/tiny-worlds/scale.py memory --workers 2 --work 1000000
 ```
 
-Every run uses a 4,194,304-entry archive limit, two reservations per worker and
-one result per worker unless `cores` sets them.
+Every run uses a 4,194,304-entry archive limit, a window of two reservations per worker
+and one result per worker unless `cores` sets them.
 `slowdown` and `cores` use one runtime seed and one graph layout for all their
 runs, so every build and worker count explores the same graph. A try on the
 graph averages about 1.3 transitions, so `--cost-ns 4000000` gives about 5.2 ms
