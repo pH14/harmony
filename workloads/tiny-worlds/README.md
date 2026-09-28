@@ -408,6 +408,8 @@ uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare bas
 `--workers N` uses `N` workers and an admission window of `N` when `N` is
 greater than one, to check the window sizes a multi-worker search uses. The
 default rare crossing requests use one worker and their explicit window of two.
+`--world NAME`, repeatable, limits the comparison to the named worlds on fresh
+layouts.
 
 | World | Settings | Game behaviour | Legs |
 | --- | --- | --- | --- |
@@ -473,7 +475,13 @@ worlds in 0.3% (no timing) and 2.3% (hidden timing), the boss after a draining
 approach in 2.3%, and the boss by the door in 3.7%. The simulated comparisons
 for a world draw from one pool of 512 layouts (2,048 for the off-path and
 locked worlds; 343 layouts with three seeds each for the two newest boss
-worlds), so they share layouts and these rates are rough. Each world also counts the layouts whose event streams are identical on
+worlds), so they share layouts and these rates are rough. At these rates an
+unchanged build fails at least one of the 12 worlds in about 9% of comparisons.
+When a candidate fails exactly one world and the failing measure lies inside the
+1st to 99th percentile of the same measure in that world's unchanged
+comparisons, rerun that world alone with `--world` before dropping the
+candidate, and judge it by the rerun. A fail outside that range, or fails on two
+or more worlds, stand. Each world also counts the layouts whose event streams are identical on
 both executables, which happens where the change never acts. A comparison that
 takes every world to its limit takes about 20 minutes with `--jobs 10`.
 

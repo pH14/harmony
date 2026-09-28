@@ -293,13 +293,13 @@ def missed_goals(base: list[dict], candidate: list[dict]) -> tuple[str, int, int
     return "undecided", arm_only, base_only
 
 
-def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
-    runs = {world: ([], []) for world in WORLDS}
-    done = dict.fromkeys(WORLDS, 0)
-    target = dict.fromkeys(WORLDS, scale)
+def compare(baseline: Path, candidate: Path, scale: int, jobs: int, worlds: list[str]) -> int:
+    runs = {world: ([], []) for world in worlds}
+    done = dict.fromkeys(worlds, 0)
+    target = dict.fromkeys(worlds, scale)
     results = {}
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        while open_worlds := [w for w in WORLDS if done[w] < target[w]]:
+        while open_worlds := [w for w in worlds if done[w] < target[w]]:
             batch = [job for w in open_worlds for job in world_requests(w, target[w] - done[w])]
             pairs = list(pool.map(lambda job: (execute(baseline, job), execute(candidate, job)), batch))
             for world in open_worlds:
@@ -315,7 +315,7 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
                              or any(verdict(low, high) == "undecided" for _, _, _, low, high in results[world]))):
                     target[world] = min(2 * target[world], MAX_WORLD_SCALE)
     failed = []
-    for world in WORLDS:
+    for world in worlds:
         b, c = runs[world]
         missed = (sum(not r["success"] for r in b), sum(not r["success"] for r in c))
         misses, arm_only, base_only = missed_goals(b, c)
@@ -347,7 +347,7 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
         for (leg, reached, ratio, low, high), v in zip(results[world], verdicts):
             print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}")
     runs_total = sum(2 * len(b) for b, _ in runs.values())
-    print(f"{runs_total} world runs; clearly bad or undecided on {len(failed)} of {len(WORLDS)} worlds")
+    print(f"{runs_total} world runs; clearly bad or undecided on {len(failed)} of {len(worlds)} worlds")
     return 1 if failed else 0
 
 
@@ -486,6 +486,8 @@ def main() -> int:
                         help="starting layouts per comparison world; light map worlds run four times as many")
     parser.add_argument("--workers", type=int, default=1,
                         help="search workers per run; values above one also set the admission window")
+    parser.add_argument("--world", action="append", choices=list(WORLDS),
+                        help="compare only this world; repeat for several")
     args = parser.parse_args()
     if not 1 <= args.workers <= 64:
         parser.error("--workers must be 1..64")
@@ -512,7 +514,7 @@ def main() -> int:
         print(f"{'PASS' if ok else 'FAIL'}  {name}: {value}")
     print(f"{len(rows)} runs, {failed} failed rules")
     if args.compare:
-        failed += compare(args.compare, binary, args.world_scale, args.jobs)
+        failed += compare(args.compare, binary, args.world_scale, args.jobs, args.world or list(WORLDS))
     return 1 if failed else 0
 
 
