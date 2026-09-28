@@ -11,7 +11,10 @@ use std::{
 
 use consonance_client::{
     cache::{CacheError, CacheIndex, Lease, Namespace},
-    session::{PortableSnapshot, Session, SessionConfig, SessionError, identity_with_config},
+    session::{
+        SearchSession, Session, SessionConfig, SessionError, WorkerLauncher, WorkerSession,
+        identity_with_config,
+    },
 };
 use control_proto::{SnapId, StopReason};
 use environment::{
@@ -33,6 +36,7 @@ use crate::target::{
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
 pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-v1";
+pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
 const WALL_LIMIT: Duration = Duration::from_secs(60);
@@ -173,6 +177,7 @@ struct Config {
     initramfs: Vec<u8>,
     session: SessionConfig,
     cache: Option<Arc<dyn CacheIndex>>,
+    worker: Option<WorkerLauncher>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,7 +230,7 @@ struct LiveTelemetry {
 
 struct Live {
     key: [u8; 32],
-    session: Session,
+    session: Box<dyn SearchSession>,
     setup: SnapId,
     windows: ActionWindows,
     chain: Chain,
@@ -295,6 +300,7 @@ impl FaultTarget {
         initramfs: &[u8],
         config: &FaultConfig,
         cache: Option<Arc<dyn CacheIndex>>,
+        worker: Option<WorkerLauncher>,
     ) -> Result<Self, String> {
         let config = Arc::new(Config {
             key: Sha256::digest(identity(kernel, initramfs, config)).into(),
@@ -302,6 +308,7 @@ impl FaultTarget {
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
             cache,
+            worker,
         });
         let (observation, root_seal) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
@@ -322,7 +329,7 @@ impl FaultTarget {
 
     pub fn fresh(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
         LIVE.with(|slot| slot.borrow_mut().take());
-        Self::new(kernel, initramfs, config, None)
+        Self::new(kernel, initramfs, config, None, None)
     }
 
     #[must_use]
@@ -475,14 +482,6 @@ impl FaultTarget {
         })
     }
 
-    pub fn portable_snapshot(&self) -> Result<PortableSnapshot, String> {
-        with_live(&self.config, |live| {
-            live.session
-                .setup_snapshot()
-                .map_err(|error| format!("portable snapshot: {error}"))
-        })
-    }
-
     pub fn apply(&mut self, action: FaultAction) {
         self.apply_as(action, RunKind::New);
     }
@@ -545,7 +544,7 @@ fn with_live<T>(
         }
         let live = slot.as_mut().ok_or("the session was not initialized")?;
         let result = operation(live);
-        if live.abandoned {
+        if live.abandoned || live.session.abandoned() {
             *slot = None;
         }
         result
@@ -576,16 +575,31 @@ fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
 }
 
 impl Live {
-    fn boot(config: &Config) -> Result<Self, String> {
-        let boot_started = started();
+    fn open(config: &Config) -> Result<Box<dyn SearchSession>, Box<dyn Error>> {
+        if let Some(launcher) = &config.worker {
+            return Ok(Box::new(WorkerSession::spawn(
+                launcher,
+                &config.kernel,
+                &config.initramfs,
+                &config.session,
+                &[],
+                SESSION_SERVICE,
+            )?));
+        }
         let mut session = Session::new_with_config_and_payloads(
             &config.kernel,
             &config.initramfs,
             config.session.clone(),
             Vec::new(),
-        )
-        .map_err(|error| format!("fault guest boot failed: {error}"))?;
+        )?;
         session.set_service_factory(service_factory());
+        Ok(Box::new(session))
+    }
+
+    fn boot(config: &Config) -> Result<Self, String> {
+        let boot_started = started();
+        let mut session =
+            Self::open(config).map_err(|error| format!("fault guest boot failed: {error}"))?;
         let (setup, root_seal) = session.setup_handle();
         let shared = match &config.cache {
             Some(index) => {
@@ -991,7 +1005,7 @@ pub fn from_paths(
 ) -> Result<FaultTarget, String> {
     let kernel = std::fs::read(kernel).map_err(|error| format!("read kernel: {error}"))?;
     let initramfs = std::fs::read(initramfs).map_err(|error| format!("read initramfs: {error}"))?;
-    FaultTarget::new(&kernel, &initramfs, config, None)
+    FaultTarget::new(&kernel, &initramfs, config, None, None)
 }
 
 #[cfg(test)]
@@ -1010,6 +1024,7 @@ mod tests {
                 }
                 .session_config(),
                 cache: None,
+                worker: None,
             }),
             actions: Vec::new(),
             observation: FaultObservations::default(),

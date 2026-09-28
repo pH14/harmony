@@ -201,6 +201,35 @@ fn run_nes_consonance(
     }
 }
 
+const SESSION_WORKER: &str = "session-worker";
+
+pub fn serve_session_worker() -> Result<ExitCode, Box<dyn Error>> {
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    {
+        use faults_workload::consonance::{SESSION_SERVICE, service_factory};
+        consonance_client::session::serve_inherited(|service| {
+            (service == SESSION_SERVICE).then(service_factory)
+        })?;
+        Ok(ExitCode::SUCCESS)
+    }
+    #[cfg(not(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    )))]
+    {
+        Err("session workers require a supported virtualization host".into())
+    }
+}
+
 fn run_faults_consonance(
     input: &std::path::Path,
     kernel: Option<PathBuf>,
@@ -246,6 +275,9 @@ fn run_faults_consonance(
                 &prepared.vocabulary,
                 options,
                 &placement.ok_or("search requires a worker placement")?,
+                Some(consonance_client::session::WorkerLauncher::current_exe(
+                    vec![SESSION_WORKER.into()],
+                )?),
             )?,
         };
         println!(

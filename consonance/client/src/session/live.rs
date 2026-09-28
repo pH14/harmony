@@ -13,7 +13,7 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
 
 use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
-use crate::cache::{ANCHOR_DEPTH, CacheIndex, Lease, Namespace};
+use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace, WritableExtent};
 use crate::watchdog::Watchdog;
 
 #[cfg(target_arch = "aarch64")]
@@ -241,21 +241,37 @@ impl Session {
         target: SnapId,
     ) -> Result<Lease, Box<dyn Error>> {
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
+        let extent = self.write_delta(
+            parent.map(|(snap, _)| snap),
+            target,
+            |len| Ok(index.extent(len)?),
+            WritableExtent::bytes_mut,
+        )?;
+        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent)?)
+    }
+
+    pub(super) fn write_delta<T>(
+        &self,
+        parent: Option<SnapId>,
+        target: SnapId,
+        allocate: impl FnOnce(usize) -> Result<T, Box<dyn Error>>,
+        bytes: impl FnOnce(&mut T) -> &mut [u8],
+    ) -> Result<T, Box<dyn Error>> {
         let delta = self
             .client
             .transport()
-            .export_sparse_delta(self.setup, parent.map(|(snap, _)| snap), target)
+            .export_sparse_delta(self.setup, parent, target)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         let len = extent_len(delta.pages.len(), delta.reverted.len(), delta.sidecar.len())
             .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
-        let mut extent = index.extent(len)?;
+        let mut out = allocate(len)?;
         write_extent(
-            extent.bytes_mut(),
+            bytes(&mut out),
             &delta.pages,
             &delta.reverted,
             &delta.sidecar,
         )?;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent)?)
+        Ok(out)
     }
 
     pub fn import_cached(
@@ -265,9 +281,18 @@ impl Session {
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
         let chain = index.chain(lease)?;
-        let deltas = chain
+        let extents: Vec<&[u8]> = chain.iter().map(CommittedExtent::bytes).collect();
+        self.import_extents(&extents, near)
+    }
+
+    pub(super) fn import_extents(
+        &mut self,
+        extents: &[&[u8]],
+        near: SnapId,
+    ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let deltas = extents
             .iter()
-            .map(|extent| read_extent(extent.bytes()))
+            .map(|extent| read_extent(extent))
             .collect::<Result<Vec<_>, _>>()?;
         let resolved = resolve(&deltas)?;
         let receipt = self
@@ -311,7 +336,20 @@ impl Session {
         effects: Vec<(u64, Effect)>,
     ) -> Result<(), Box<dyn Error>> {
         let spec = service_branch_spec(self.config.seed, config, payloads, effects)?;
-        branch_spec(&mut self.client, snapshot, &spec)
+        self.branch_input(snapshot, &spec)
+    }
+
+    pub(super) fn branch_input(
+        &mut self,
+        snapshot: SnapId,
+        spec: &InputSpec,
+    ) -> Result<(), Box<dyn Error>> {
+        branch_spec(&mut self.client, snapshot, spec)
+    }
+
+    #[must_use]
+    pub fn abandoned(&self) -> bool {
+        self.abandoned
     }
 
     pub fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {

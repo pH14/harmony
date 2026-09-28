@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use consonance_client::cache::CacheIndex;
+use consonance_client::{cache::CacheIndex, session::WorkerLauncher};
 
 use searcher::{
     search::{
@@ -72,6 +72,7 @@ pub struct FaultWorkload {
     identity: String,
     root_seal: OnceLock<u64>,
     snapshot_cache: Option<Arc<dyn CacheIndex>>,
+    session_worker: Option<WorkerLauncher>,
 }
 
 impl FaultWorkload {
@@ -84,12 +85,19 @@ impl FaultWorkload {
             identity: identity(kernel, initramfs, config),
             root_seal: OnceLock::new(),
             snapshot_cache: None,
+            session_worker: None,
         }
     }
 
     #[must_use]
     pub fn with_snapshot_cache(mut self, cache: Option<Arc<dyn CacheIndex>>) -> Self {
         self.snapshot_cache = cache;
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_worker(mut self, worker: Option<WorkerLauncher>) -> Self {
+        self.session_worker = worker;
         self
     }
 
@@ -555,6 +563,7 @@ impl TargetExecution for FaultWorkload {
             &self.initramfs,
             &self.config,
             self.snapshot_cache.clone(),
+            self.session_worker.clone(),
         )?;
         let seal = *self.root_seal.get_or_init(|| target.root_seal());
         if seal != target.root_seal() {

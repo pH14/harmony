@@ -696,6 +696,28 @@ mod live;
     not(miri)
 ))]
 pub use live::{Session, host_minor_faults};
+#[cfg(all(
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ),
+    not(miri)
+))]
+mod worker;
+#[cfg(all(
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ),
+    not(miri)
+))]
+pub use worker::{SearchSession, WORKER_FD_ENV, WorkerLauncher, WorkerSession, serve_inherited};
 
 pub type SdkEvent = (u64, u32, Vec<u8>);
 
