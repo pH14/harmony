@@ -19,8 +19,8 @@ without acquiring and releasing the same reference again.
 after sealing; each layer caches inherited lookups to make repeated reads
 efficient. Page contents are interned store-wide by BLAKE3, while the all-zero
 page is implicit. `vm_state` is opaque but its seal-time digest is checked before
-it is returned. Corrupted page data or state produces an integrity error rather
-than silently returning bytes.
+it is returned. Outside restore plans, corrupted page data or state produces an
+integrity error rather than silently returning bytes.
 
 Layer page tables are immutable sorted arrays of guest frame numbers and
 word-sized page references. Digests stay in the content index and resident-page
@@ -40,8 +40,9 @@ temporary ancestor or visited sets. Unrelated bases meet at the end of their
 paths. Returned frames remain sorted and borrow the target snapshot's contents.
 `restore_pages(from, to, dirty)` includes the current guest's dirty frames in
 that same sorted, deduplicated plan; with no known source snapshot it includes
-the complete image. Every selected resident page is integrity-checked before
-the plan is returned. Plans borrow immutable page data from the store, including
+the complete image. Restore plans skip the per-page BLAKE3 check because hosts
+are assumed to have ECC memory; a missing page entry is still an integrity
+error. Plans borrow immutable page data from the store, including
 a shared zero page, so collecting or mutating the store is impossible while a
 plan is in use. Consumers can copy directly into destination RAM without an
 intermediate page-sized allocation or copy. Owned exports copy only the pages

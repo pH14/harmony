@@ -3412,9 +3412,7 @@ mod tests {
             })
             .unwrap();
         let before = s.vmm.as_ref().unwrap().guest_memory().to_vec();
-        s.engine
-            .corrupt_page_for_test(store_id, 2, 0, 0x01)
-            .unwrap();
+        s.engine.remove_page_for_test(store_id, 2).unwrap();
 
         assert!(s.restore_in_place(store_id, &vm_state).is_err());
         assert_eq!(s.vmm.as_ref().unwrap().guest_memory(), before);

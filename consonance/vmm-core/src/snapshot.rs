@@ -267,6 +267,15 @@ impl SnapshotEngine {
     }
 
     #[cfg(test)]
+    pub(crate) fn remove_page_for_test(
+        &mut self,
+        snap: SnapshotId,
+        gfn: u64,
+    ) -> Result<(), SnapshotError> {
+        Ok(self.store.remove_page_for_test(snap, gfn)?)
+    }
+
+    #[cfg(test)]
     pub(crate) fn corrupt_page_for_test(
         &mut self,
         snap: SnapshotId,
