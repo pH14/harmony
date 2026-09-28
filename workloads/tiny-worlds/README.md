@@ -106,6 +106,7 @@ representation or action choice affects the same world transitions.
 | `trap` | Follow a corridor to the goal, or enter a side corridor to an item whose rooms never reach the goal. | Hide the item from the progress tier. |
 | `map` | Enter a branch of a grid of rooms, take the item at its far end, leave through the same door, and cross the rest of the map to the goal. | Hide the item from the progress tier. |
 | `graph` | Walk a long line of nodes, with hashed jumps, to its last node. | Hide the progress tier. |
+| `crossing` | Reach a short exit while a large pool of flat-tier places competes for attempts. | Hide partial exit progress. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -229,7 +230,7 @@ family's reachability holds by construction.
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain` and `graph` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, and `crossing` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
@@ -316,15 +317,17 @@ it to a change. The panel is not a CI check.
 
 ### Comparing a searcher change
 
-`--compare BASELINE` also runs the Metroid worlds on the baseline executable and
+`--compare BASELINE` also runs the game-mechanism worlds on the baseline executable and
 on `--binary` or the fresh build, with the same layouts and runtime seeds on both:
 
 ```sh
 uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare baseline
 ```
 
-| World | Settings | Metroid behaviour | Legs |
+| World | Settings | Game behaviour | Legs |
 | --- | --- | --- | --- |
+| Flat archive crossing | 1,024 places, four exit steps, randomized layout and action pattern | Mega Man 2: an easy local crossing competes with a populated flat-tier archive | To entry, entry to goal, total work |
+| Fresh crossing | Same transitions, rooted at the exit entrance | Control for crossing difficulty without the competing archive | To entry (zero), entry to goal, total work |
 | Farm loop | `inner` 20, 4 farms | Refills away from the next item draw the search back | To the item, out of the item region, out to the goal |
 | Whole-map re-walk | `inner` 4, 9 items | Each item sends a new tier back across the map | To the last item, last item to the goal |
 | Boss needing far stock | `inner` 20, 4 farms, `boss_stock` 24 | Kraid and Ridley need missiles farmed far from the boss | To the item, item to stocked arrival, stocked arrival to kill |
@@ -422,3 +425,40 @@ cargo clippy --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml
 Tests cover exhaustive reachability, dead trap items, snapshot restoration, archive retention in
 both insertion orders, controlled objective witnesses, chain boundaries, route
 alignment, trace validation, replay, and execution-work accounting.
+
+## Archive competition diagnostic
+
+The `crossing` family separates a pool of flat-tier places from a short exit
+path. Required parameters are `cells` (2–60,000), `length` (1–8), `pattern`
+(two bits per exit step), `layout` (pool jump seed), and `rooted`.
+Pool action 0 advances one place; actions 1 and 2 jump deterministically to
+another pool place; action 3 waits. Only advancing from the last pool place
+enters the exit. Correct exit actions advance; incorrect actions reset to the
+exit entrance.
+The exit has no direct transition back to the remote pool. All resources
+and tiers stay constant. The control hides partial exit progress from the key.
+
+`rooted=true` starts at the exit entrance with the exact same transitions and
+resources. Compare its objective work with entry-to-objective work from a
+pool start, reporting approach censoring separately. Diagnostics record first
+exit-entry work and actions in the pool and exit. Each pool position is its own
+place, unlike maze histories that compete as identities within a few places.
+Graphs and crossings cannot be chain stages. The normal 4,096-entry campaign
+limit still applies; choosing more places does not guarantee their retention.
+
+This diagnostic is motivated by Mega Man 2's Metal room 18→19 contrast between
+a fresh archive and a populated archive. Calibration reproduces an easy fresh
+crossing and a much slower identical crossing under flat-tier competition.
+This is a simplified local retry model: the exit cannot return to the remote
+pool, whereas a game can eventually revisit earlier areas. Tiny work counts
+actions, so a forecast of game execution counts still needs a scorecard.
+
+For the crossing comparison worlds, 300 simulated comparisons of unchanged
+searchers with independent runtime seeds rejected 3.7% of populated-pool
+comparisons (all undecided) and 3.3% of fresh-crossing comparisons (3.0%
+undecided and 0.3% clearly bad). These use the default 16 initial layouts,
+the existing adaptive doubling and 256-layout limit, and 2,000 bootstrap draws.
+Each world draws from one pool of 512 shared layouts, so these are approximate
+rates, not 300 independent experiments. All underlying runs reached the goal;
+rejections came from work intervals. This sampling noise limits forecasts
+from small cohorts and does not override the panel's rejection rule.

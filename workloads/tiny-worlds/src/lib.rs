@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod backtrack;
 pub mod chain;
+pub mod crossing;
 pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
@@ -170,6 +171,9 @@ impl<const CAPACITY_TWO: bool> ArchiveKey for Key<CAPACITY_TWO> {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Evidence {
+    pub crossing_first_entry_work: Option<u64>,
+    pub crossing_actions: u64,
+    pub crossing_pool_actions: u64,
     pub route_trace: Vec<route::Trace>,
     pub observations: u64,
     pub chain_stage_actions: Vec<u64>,
@@ -717,6 +721,19 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     }
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
+                (World::Crossing(w), State::Crossing(before), State::Crossing(after)) => {
+                    if w.rooted {
+                        e.crossing_first_entry_work.get_or_insert(0);
+                    }
+                    if before.position < w.cells && after.position >= w.cells {
+                        e.crossing_first_entry_work
+                            .get_or_insert(observation.execution_work);
+                    }
+                    if !w.goal(before) {
+                        e.crossing_actions += u64::from(before.position >= w.cells);
+                        e.crossing_pool_actions += u64::from(before.position < w.cells);
+                    }
+                }
                 _ => return Err("observation family mismatch".into()),
             }
             e.objectives += u64::from(self.config.goal(observation.after));

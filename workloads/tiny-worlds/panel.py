@@ -26,6 +26,8 @@ SLOWER, FASTER = 1.25, 0.8
 MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
 WORLDS = {
+    "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
+    "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
     "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
     "whole-map re-walk": ({"inner": 4, "items": 9}, 1),
     "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 1),
@@ -131,6 +133,9 @@ def world_requests(world: str, count: int) -> list[dict]:
         config = {"family": "map", "parameters": {
             "width": 8, "height": 8, "layout": secrets.randbits(64), "loops": 7, "corridor": 2,
             "shaft": 3, **fields}}
+        if "cells" in fields:
+            config = {"family": "crossing", "parameters": {
+                **fields, "layout": secrets.randbits(64), "pattern": secrets.randbits(2 * fields["length"])}}
         rows.append({"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
                                                "work_budget": WORLD_BUDGET, "broken": False,
                                                "verify": False, "keep": "portfolio"}})
@@ -144,6 +149,11 @@ def legs(report: dict) -> dict:
         return work if work is not None and work <= WORLD_BUDGET else None
 
     goal = within(report["first_objective_work"])
+    if report["config"]["family"] == "crossing":
+        entry = within(evidence["crossing_first_entry_work"])
+        return {"to the goal": WORLD_BUDGET if goal is None else goal,
+                "to crossing entry": entry,
+                "crossing entry to goal": None if entry is None or goal is None else goal - entry}
     first = [within(w) for w in evidence["map_first"]]
     tiers = [within(w) for w in evidence["map_first_tier"]]
 
@@ -402,9 +412,9 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=6, help="parallel processes")
     parser.add_argument("--binary", type=lambda p: Path(p).resolve(), help="prebuilt tiny-worlds executable")
     parser.add_argument("--compare", type=lambda p: Path(p).resolve(), metavar="BASELINE",
-                        help="also run the Metroid worlds on this baseline executable and on --binary")
+                        help="also run the game-mechanism worlds on this baseline executable and on --binary")
     parser.add_argument("--world-scale", type=int, default=16,
-                        help="starting layouts per heavy Metroid world; light worlds run four times as many")
+                        help="starting layouts per comparison world; light map worlds run four times as many")
     args = parser.parse_args()
     if args.seeds < 3:
         parser.error("--seeds must be at least 3")
