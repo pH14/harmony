@@ -82,8 +82,8 @@ jobs:
       - name: Download the prepared image
         uses: actions/download-artifact@v4
         with:
-          name: nes-guest-image-v1-${{ steps.guest-image.outputs.key }}
-          path: consonance/harmony-linux/build/nes.oci
+          name: nes-guest-image-v2-${{ steps.guest-image.outputs.key }}
+          path: consonance/harmony-linux/build
       - name: Verify exact platform runtime
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
@@ -196,7 +196,7 @@ jobs:
             consonance/harmony-linux/build/nes.oci.sha256 \
             consonance/harmony-linux/build/x86_64/runtime-manifest.json \
             "${NOVA_BUILD}/nova.nes" \
-            "${NOVA_BUILD}/libquicknes_libretro.a" \
+            consonance/harmony-linux/build/nes-quicknes.a \
             >nova-consonance-report/workload.sha256
           {
             echo "## Nova inside Consonance"
@@ -245,6 +245,7 @@ jobs:
             consonance/harmony-linux/build/nes.oci
             consonance/harmony-linux/build/nes.oci.sha256
             consonance/harmony-linux/build/nes-build-provenance
+            consonance/harmony-linux/build/nes-quicknes.a
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

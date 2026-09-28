@@ -14,21 +14,36 @@ runs:
       with:
         require-exact: 'false'
         report: nes-guest-build
+    - name: Recover a prior NES-built runtime
+      if: steps.runtime.outputs.scope != 'exact-input'
+      uses: actions/cache/restore@v4
+      with:
+        path: consonance/harmony-linux/build/x86_64
+        key: nes-platform-v1-x86_64-${{ steps.runtime.outputs.source-key }}
+    - name: Inspect the recovered runtime
+      id: runtime-ready
+      shell: bash
+      run: |
+        python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+          --artifacts consonance/harmony-linux/build/x86_64 --output nes-guest-build/recovered.json || true
+        scope=$(python3 -c 'import json; print(json.load(open("nes-guest-build/recovered.json"))["scope"])')
+        echo "scope=$scope" >>"$GITHUB_OUTPUT"
     - name: Recover the exact NES image when available
       id: image
       uses: ./.github/actions/nes-guest-image
     - name: Install cold-build dependencies
-      if: inputs.rebuild == 'true' || steps.runtime.outputs.scope != 'exact-input' || steps.image.outputs.hit != 'true'
+      if: inputs.rebuild == 'true' || steps.runtime-ready.outputs.scope != 'exact-input' || steps.image.outputs.hit != 'true'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends \
           bc binutils bison build-essential bzip2 cpio flex g++ kmod libelf-dev libssl-dev python3 shellcheck wget
         rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+        rustup default "$HARMONY_RUST_TOOLCHAIN"
         rustup toolchain install "$HARMONY_GUEST_TOOLCHAIN" --profile minimal \
           --component rust-src --target x86_64-unknown-linux-musl
     - name: Build a missing exact runtime
-      if: inputs.rebuild == 'true' || steps.runtime.outputs.scope != 'exact-input'
+      if: inputs.rebuild == 'true' || steps.runtime-ready.outputs.scope != 'exact-input'
       shell: bash
       env:
         HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
@@ -51,36 +66,47 @@ runs:
         HARMONY_QUICKNES_STATIC_LIB: ${{ github.workspace }}/workloads/nes/build/guest/libquicknes_libretro.a
         HARMONY_QUICKNES_BUILD_JOBS: '2'
       run: |
+        mkdir -p workloads/nes/build/guest
         scripts/build-quicknes-core.sh workloads/nes/build/guest/quicknes_libretro.so
         make -C consonance/harmony-linux fetch
         rm -rf consonance/harmony-linux/build/nes.oci
         workloads/nes-guest/build-base-image.sh
         test -s consonance/harmony-linux/build/nes.oci/index.json
+        install -m 0644 "$HARMONY_QUICKNES_STATIC_LIB" consonance/harmony-linux/build/nes-quicknes.a
     - name: Publish the runtime for this run
       uses: actions/upload-artifact@v4
       with:
         name: nes-guest-runtime
         path: consonance/harmony-linux/build/x86_64
         if-no-files-found: error
-        retention-days: 1
+        retention-days: 30
     - name: Publish the exact image for this run and future checks
       uses: actions/upload-artifact@v4
       with:
-        name: nes-guest-image-v1-${{ steps.image.outputs.key }}
-        path: consonance/harmony-linux/build/nes.oci
+        name: nes-guest-image-v2-${{ steps.image.outputs.key }}
+        path: |
+          consonance/harmony-linux/build/nes.oci
+          consonance/harmony-linux/build/nes.oci.sha256
+          consonance/harmony-linux/build/nes-build-provenance
+          consonance/harmony-linux/build/nes-quicknes.a
         if-no-files-found: error
         retention-days: 30
+        include-hidden-files: true
     - name: Cache the exact runtime
-      if: inputs.rebuild == 'true' || steps.runtime.outputs.scope != 'exact-input'
+      if: inputs.rebuild == 'true' || steps.runtime-ready.outputs.scope != 'exact-input'
       uses: actions/cache/save@v4
       continue-on-error: true
       with:
         path: consonance/harmony-linux/build/x86_64
-        key: consonance-platform-v1-x86_64-${{ steps.runtime.outputs.source-key }}
+        key: nes-platform-v1-x86_64-${{ steps.runtime.outputs.source-key }}
     - name: Cache the exact image
       if: inputs.rebuild == 'true' || steps.image.outputs.hit != 'true'
       uses: actions/cache/save@v4
       continue-on-error: true
       with:
-        path: consonance/harmony-linux/build/nes.oci
-        key: nes-guest-image-v1-${{ steps.image.outputs.key }}
+        path: |
+          consonance/harmony-linux/build/nes.oci
+          consonance/harmony-linux/build/nes.oci.sha256
+          consonance/harmony-linux/build/nes-build-provenance
+          consonance/harmony-linux/build/nes-quicknes.a
+        key: nes-guest-image-v2-${{ steps.image.outputs.key }}
