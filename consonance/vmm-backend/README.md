@@ -47,12 +47,15 @@ Exit counters include continuation accesses exactly once. Virtual-time policy,
 device models, snapshot formats, and entropy live above this crate.
 
 ARM64 snapshot capture rejects a pending exit or staged completion before it
-reads the vCPU. Completed MMIO reads and eagerly completed MMIO writes remain
-capturable; placeholder ARM64 sysreg exits remain uncapturable while their
-completion is pending. The ARM64 KVM backend counts and times the `KVM_RUN`
-that completes each MMIO write and reports the totals through
-`Backend::store_completions`, since that entry is host cost the exit table
-cannot see.
+reads the vCPU. Completed MMIO reads and MMIO writes remain capturable;
+placeholder ARM64 sysreg exits remain uncapturable while their completion is
+pending. The ARM64 KVM backend leaves an MMIO write, or a read once its data is
+supplied, for the next `KVM_RUN` to complete, so each access costs one entry.
+`save` and `restore` first complete it with one immediate-exit entry, so the
+captured registers are past the access and a restore never leaves a completion
+to land on the restored registers. The backend counts and times those entries
+and reports the totals through `Backend::store_completions`, since they are
+host cost the exit table cannot see.
 
 `Backend::read_irq_mask` optionally reads the CPU's architectural IRQ mask
 without capturing a complete snapshot. `Some(true)` means the mask is set;
