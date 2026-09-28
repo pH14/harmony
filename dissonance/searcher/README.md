@@ -48,8 +48,8 @@ their input policies and reject unknown or retired identifiers during replay.
 Workers pull jobs from one shared queue, so an idle worker takes the next
 queued job while another worker is still busy. One bound limits the jobs that
 are queued, running or finished but not yet admitted: workers times
-`ResultBuffering::capacity()`, one per worker by default and two with
-`ResultBuffering::TwoPerWorker`. A job takes its place in the bound before it is
+`ResultBuffering::capacity()`: one per worker by default, and two or four with
+`ResultBuffering::TwoPerWorker` or `ResultBuffering::FourPerWorker`. A job takes its place in the bound before it is
 dispatched and releases it at ordered admission, so completed snapshots cannot
 pile up behind a slow job. The logical window,
 selection order, snapshot pins and campaign bytes are the same at any bound. Memory held by finished
