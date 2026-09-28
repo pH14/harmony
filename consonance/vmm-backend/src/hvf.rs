@@ -67,7 +67,9 @@ const SCTLR_M: u64 = 1;
 const ESR_EC_WFX: u64 = 0x01;
 const ESR_EC_HVC64: u64 = 0x16;
 const ESR_EC_SYSREG: u64 = 0x18;
+const ESR_EC_INSTRUCTION_ABORT_LOWER: u64 = 0x20;
 const ESR_EC_DATA_ABORT_LOWER: u64 = 0x24;
+const GUEST_PAGE: u64 = 4096;
 const ESR_EC_DATA_ABORT_SAME: u64 = 0x25;
 
 const PSTATE_MODE_MASK: u64 = 0x1f;
@@ -190,6 +192,7 @@ unsafe extern "C" {
     fn hv_vm_destroy() -> i32;
     fn hv_vm_map(addr: *mut c_void, ipa: u64, size: usize, flags: u64) -> i32;
     fn hv_vm_unmap(ipa: u64, size: usize) -> i32;
+    fn hv_vm_protect(ipa: u64, size: usize, flags: u64) -> i32;
 
     fn hv_vcpu_create(vcpu: *mut u64, exit: *mut *const HvVcpuExit, config: *mut c_void) -> i32;
     fn hv_vcpu_destroy(vcpu: u64) -> i32;
@@ -226,6 +229,27 @@ fn hv(operation: &'static str, status: i32) -> Result<()> {
 
 fn exit_ec(syndrome: u64) -> u64 {
     syndrome >> 26
+}
+
+fn tracked_write_fault(exit: &HvExitException, regions: &[(u64, usize)]) -> Option<u64> {
+    let ec = exit_ec(exit.syndrome);
+    let ipa = exit.physical_address;
+    ((ec == ESR_EC_DATA_ABORT_LOWER || ec == ESR_EC_INSTRUCTION_ABORT_LOWER)
+        && regions
+            .iter()
+            .any(|&(gpa, len)| ipa >= gpa && ipa - gpa < len as u64))
+    .then_some(ipa & !(HV_PAGE_SIZE as u64 - 1))
+}
+
+fn contiguous_runs<'a>(pages: impl IntoIterator<Item = &'a u64>) -> Vec<(u64, usize)> {
+    let mut runs: Vec<(u64, usize)> = Vec::new();
+    for &page in pages {
+        match runs.last_mut() {
+            Some((start, len)) if *start + *len as u64 == page => *len += HV_PAGE_SIZE,
+            _ => runs.push((page, HV_PAGE_SIZE)),
+        }
+    }
+    runs
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -406,6 +430,7 @@ pub struct HvfBackend {
     accepted_irq: Option<GicIntId>,
     counts: ExitCounts,
     regions: Vec<(u64, usize)>,
+    writable: std::collections::BTreeSet<u64>,
     host_ranges: Vec<(usize, usize)>,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
@@ -470,6 +495,7 @@ impl HvfBackend {
             accepted_irq: None,
             counts: ExitCounts::default(),
             regions: Vec::new(),
+            writable: std::collections::BTreeSet::new(),
             host_ranges: Vec::new(),
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
@@ -660,6 +686,26 @@ impl HvfBackend {
             // SAFETY: HVF owns this exit page for the vCPU lifetime and run has
             // completed its write before returning.
             let raw = unsafe { *self.exit.as_ptr() };
+            if raw.reason == HV_EXIT_REASON_EXCEPTION
+                && let Some(page) = tracked_write_fault(&raw.exception, &self.regions)
+            {
+                if !self.writable.insert(page) {
+                    return Err(BackendError::Internal(
+                        "HVF reported a write fault on a page it already made writable",
+                    ));
+                }
+                // SAFETY: the page lies inside a region this backend mapped with
+                // `hv_vm_map`, so the call only changes the guest's permissions on
+                // memory the backend already exposes.
+                hv("hv_vm_protect", unsafe {
+                    hv_vm_protect(
+                        page,
+                        HV_PAGE_SIZE,
+                        HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC,
+                    )
+                })?;
+                continue;
+            }
             match raw.reason {
                 HV_EXIT_REASON_CANCELED => {
                     return Err(BackendError::Internal("HVF vCPU run canceled"));
@@ -868,13 +914,30 @@ impl Backend for HvfBackend {
                 host.as_mut_ptr().cast(),
                 gpa.0,
                 host.len(),
-                HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC,
+                HV_MEMORY_READ | HV_MEMORY_EXEC,
             )
         })?;
         self.regions.push((gpa.0, host.len()));
         self.host_ranges
             .push((host.as_mut_ptr() as usize, host.len()));
         Ok(())
+    }
+
+    fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        for (start, len) in contiguous_runs(&self.writable) {
+            // SAFETY: every recorded page lies inside a region this backend
+            // mapped with `hv_vm_map`, and the call only removes the guest's
+            // write permission there.
+            hv("hv_vm_protect", unsafe {
+                hv_vm_protect(start, len, HV_MEMORY_READ | HV_MEMORY_EXEC)
+            })?;
+        }
+        let per_page = HV_PAGE_SIZE as u64 / GUEST_PAGE;
+        let gfns = std::mem::take(&mut self.writable)
+            .into_iter()
+            .flat_map(|page| (page / GUEST_PAGE..).take(per_page as usize))
+            .collect();
+        Ok(gfns)
     }
 
     fn run(&mut self) -> Result<Exit<Arm64>> {
@@ -1216,6 +1279,33 @@ mod tests {
                 physical_address: ipa,
             },
         }
+    }
+
+    #[test]
+    fn lower_el_aborts_inside_mapped_ram_are_tracked_writes() {
+        let regions = [(0x4000_0000, 0x10_0000)];
+        let fault = |ec: u64, ipa: u64| {
+            tracked_write_fault(&raw_exit((ec << 26) | 0x1c1_8047, ipa).exception, &regions)
+        };
+        assert_eq!(fault(0x24, 0x4002_4ff8), Some(0x4002_4000));
+        assert_eq!(fault(0x20, 0x400f_fff8), Some(0x400f_c000));
+        assert_eq!(fault(0x24, 0x0900_0000), None, "outside RAM");
+        assert_eq!(fault(0x24, 0x4010_0000), None, "one past RAM");
+        assert_eq!(fault(0x25, 0x4002_4ff8), None);
+    }
+
+    #[test]
+    fn written_pages_coalesce_into_contiguous_protect_runs() {
+        let page = HV_PAGE_SIZE as u64;
+        assert_eq!(
+            contiguous_runs(&[0, page, 2 * page, 5 * page, 6 * page, 9 * page]),
+            [
+                (0, 3 * HV_PAGE_SIZE),
+                (5 * page, 2 * HV_PAGE_SIZE),
+                (9 * page, HV_PAGE_SIZE)
+            ]
+        );
+        assert!(contiguous_runs(&[]).is_empty());
     }
 
     #[test]
