@@ -204,6 +204,18 @@ class WorkflowFileTests(unittest.TestCase):
 
     def test_nes_runtime_cache_cannot_populate_the_qualified_cache(self):
         action = yaml.safe_load((ROOT / ".github/actions/prepare-nes-guest/action.yml").read_text())
+        steps = action["runs"]["steps"]
+        restore_index = next(i for i, step in enumerate(steps)
+                             if step.get("uses") == "actions/cache/restore@v4")
+        cleanup = steps[restore_index - 1]
+        self.assertEqual(cleanup["if"], steps[restore_index]["if"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = root / "consonance/harmony-linux/build/x86_64/build-provenance/stale"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("qualified runtime evidence")
+            subprocess.run(["bash", "-eu", "-c", cleanup["run"]], cwd=root, check=True)
+            self.assertFalse((root / "consonance/harmony-linux/build/x86_64").exists())
         saves = [step["with"] for step in action["runs"]["steps"]
                  if step.get("uses") == "actions/cache/save@v4"]
         self.assertTrue(any(item["key"].startswith("nes-platform-v1-") for item in saves))

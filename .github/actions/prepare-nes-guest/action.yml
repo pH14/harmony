@@ -14,6 +14,10 @@ runs:
       with:
         require-exact: 'false'
         report: nes-guest-build
+    - name: Clear a non-exact runtime before restoring the NES cache
+      if: steps.runtime.outputs.scope != 'exact-input'
+      shell: bash
+      run: rm -rf consonance/harmony-linux/build/x86_64
     - name: Recover a prior NES-built runtime
       if: steps.runtime.outputs.scope != 'exact-input'
       uses: actions/cache/restore@v4
