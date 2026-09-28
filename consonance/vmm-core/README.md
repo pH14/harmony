@@ -224,6 +224,9 @@ the same fixtures, hash/sidecar checks, timing boundaries, and optional `--hvf`
 mode. Portable `--encoding --check` runs in the same CI jobs. The checked-in
 reference encoder also checks all pending-stop variants, pending-snapshot flags,
 and empty/populated coverage thresholds against direct encoding in unit tests.
+Add `--jemalloc` to either comparison to use the Harmony CLI's allocator; the
+default uses the host system allocator. Each run prints its allocator, comparison,
+and executable identity. The two arms always run inside the same executable.
 
 The control-state capture qualification compares reuse of serialized control
 history against serializing it again for storage, in one executable:
