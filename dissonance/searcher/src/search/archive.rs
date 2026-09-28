@@ -136,7 +136,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v3";
+pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v4";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -147,6 +147,8 @@ const MAX_TIER_RANK_SHIFT: u32 = (u64::BITS - 1) / TIER_RANK_CAP as u32;
 const COUNT_DECAY_EXPONENT: u32 = 2;
 
 const COUNT_DECAY_SCALE: u64 = 1 << 32;
+
+const BEST_HOLDER_SHARE_DENOMINATOR: usize = 4;
 
 #[must_use]
 fn count_decay(draws: u64) -> u64 {
@@ -202,6 +204,8 @@ pub struct SelectorDraw {
     pub path: SelectorPath,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_rank: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_preference: Option<u8>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -230,6 +234,8 @@ pub struct SelectorAccounting {
     pub cell_resets: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tier_draws_by_rank: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub best_holder_draws: Vec<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub draws_by_cell: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -912,7 +918,10 @@ where
             productive: Vec::new(),
             opened_cell: Vec::new(),
             opened_slot: Vec::new(),
-            selector_accounting: SelectorAccounting::default(),
+            selector_accounting: SelectorAccounting {
+                best_holder_draws: vec![0; K::preferences()],
+                ..SelectorAccounting::default()
+            },
             cost_in_group: Vec::new(),
             replacement_cost_displaced: 0,
             portfolio_replacements: vec![0; K::preferences().max(1)],
@@ -1856,6 +1865,9 @@ where
         snapshots: Vec<(u64, S)>,
     ) -> Result<(), &'static str> {
         self.action_cost = action_cost;
+        self.selector_accounting
+            .best_holder_draws
+            .resize(K::preferences(), 0);
         self.snapshot_memory_charge = if self.memory_limit.is_some() {
             Some(charge.ok_or("a memory-budgeted archive needs its snapshot charge")?)
         } else {
@@ -2329,12 +2341,13 @@ where
         }
         let (progress, rank) = self.draw_tier(rand)?;
         let place = self.draw_cell(rand, progress)?;
-        let id = self.draw_holder(rand, progress, place)?;
+        let (id, best_preference) = self.draw_holder(rand, progress, place)?;
         Ok((
             id,
             SelectorDraw {
                 path: SelectorPath::Tiers,
                 tier_rank: Some(rank),
+                best_preference,
             },
         ))
     }
@@ -2382,17 +2395,60 @@ where
             .ok_or_else(|| "cell draw chose an absent cell".into())
     }
 
+    fn draw_best_share(&self, rand: &mut RomuDuoJrRand) -> Result<Option<usize>, Box<dyn Error>> {
+        let preferences = K::preferences();
+        let Some(outcomes) =
+            NonZeroUsize::new(preferences.saturating_mul(BEST_HOLDER_SHARE_DENOMINATOR))
+        else {
+            return Ok(None);
+        };
+        let outcome = rand.below(outcomes);
+        Ok((outcome < preferences).then_some(outcome))
+    }
+
+    fn best_holder(
+        &self,
+        members: &CellMembers,
+        preference: usize,
+    ) -> Result<usize, Box<dyn Error>> {
+        members
+            .ids
+            .iter()
+            .copied()
+            .reduce(|best, id| {
+                let ordering = self.entries[id]
+                    .key
+                    .preference_cmp(preference, self.entries[best].key)
+                    .then_with(|| {
+                        (self.cost_in_group[best], self.entries[best].id)
+                            .cmp(&(self.cost_in_group[id], self.entries[id].id))
+                    });
+                if ordering == Ordering::Greater {
+                    id
+                } else {
+                    best
+                }
+            })
+            .ok_or_else(|| "cell draw chose an empty cell".into())
+    }
+
     fn draw_holder(
         &self,
         rand: &mut RomuDuoJrRand,
         progress: K::Progress,
         place: K::Place,
-    ) -> Result<usize, Box<dyn Error>> {
+    ) -> Result<(usize, Option<u8>), Box<dyn Error>> {
         let members = self
             .tiers
             .get(&progress)
             .and_then(|places| places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
+        if let Some(preference) = self.draw_best_share(rand)? {
+            return Ok((
+                self.best_holder(members, preference)?,
+                Some(u8::try_from(preference)?),
+            ));
+        }
         let mut weights = Vec::with_capacity(members.ids.len());
         weights.extend(members.ids.iter().map(|id| count_decay(self.selected[*id])));
         let index = draw_weighted(rand, weights.iter().copied())?;
@@ -2402,6 +2458,7 @@ where
             members.ids.iter().nth_back(members.ids.len() - index - 1)
         };
         id.copied()
+            .map(|id| (id, None))
             .ok_or_else(|| "holder draw chose an absent holder".into())
     }
 
@@ -2742,6 +2799,13 @@ where
                     self.selector_accounting.cell_selections.saturating_add(1);
             }
         }
+        if let Some(count) = draw.best_preference.and_then(|preference| {
+            self.selector_accounting
+                .best_holder_draws
+                .get_mut(usize::from(preference))
+        }) {
+            *count = count.saturating_add(1);
+        }
         if let Some(rank) = draw.tier_rank {
             let rank = usize::from(rank);
             if self.selector_accounting.tier_draws_by_rank.len() <= rank {
@@ -2947,12 +3011,13 @@ where
         }
         let (progress, rank) = self.draw_tier(rand)?;
         let place = self.draw_cell_reference(rand, progress)?;
-        let id = self.draw_holder_reference(rand, progress, place)?;
+        let (id, best_preference) = self.draw_holder_reference(rand, progress, place)?;
         Ok((
             id,
             SelectorDraw {
                 path: SelectorPath::Tiers,
                 tier_rank: Some(rank),
+                best_preference,
             },
         ))
     }
@@ -2986,19 +3051,37 @@ where
         rand: &mut RomuDuoJrRand,
         progress: K::Progress,
         place: K::Place,
-    ) -> Result<usize, Box<dyn Error>> {
+    ) -> Result<(usize, Option<u8>), Box<dyn Error>> {
         let members = self
             .tiers
             .get(&progress)
             .and_then(|places| places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
         let ids = members.ids.iter().copied().collect::<Vec<_>>();
+        let preferences = K::preferences();
+        if preferences > 0 {
+            let outcome = rand.below(
+                NonZeroUsize::new(preferences * BEST_HOLDER_SHARE_DENOMINATOR)
+                    .ok_or("empty share draw")?,
+            );
+            if outcome < preferences {
+                let mut ranked = ids.clone();
+                ranked.sort_by(|left, right| {
+                    self.entries[*right]
+                        .key
+                        .preference_cmp(outcome, self.entries[*left].key)
+                        .then_with(|| self.cost_in_group[*left].cmp(&self.cost_in_group[*right]))
+                        .then_with(|| self.entries[*left].id.cmp(&self.entries[*right].id))
+                });
+                return Ok((ranked[0], Some(u8::try_from(outcome)?)));
+            }
+        }
         let weights = ids
             .iter()
             .map(|id| count_decay(self.selected[*id]))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
-        Ok(ids[index])
+        Ok((ids[index], None))
     }
 
     fn champions_slot_reference(&self, slot: &[usize], id: usize, preference: usize) -> bool {
@@ -4799,6 +4882,7 @@ mod tests {
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
         for _ in 0..5 {
             archive.record_selection(first, &draw);
@@ -4825,6 +4909,7 @@ mod tests {
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
         for _ in 0..7 {
             archive.record_selection(first, &draw);
@@ -4949,6 +5034,32 @@ mod tests {
         assert_eq!(portfolio.exclusive_holders, 2);
         assert_eq!(portfolio.shared_holders, 0);
         assert_eq!(report.cell_selections, 64);
+    }
+    #[test]
+    fn a_quarter_of_holder_draws_go_to_the_best_holder_of_each_preference() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let first = insert_portfolio(&mut archive, 1, 10, 20).expect("first-resource holder");
+        let second = insert_portfolio(&mut archive, 2, 5, 200).expect("second-resource holder");
+        assert_eq!(archive.selector_report().best_holder_draws, vec![0, 0]);
+        let mut rand = RomuDuoJrRand::with_seed(0xbe57_0004);
+        for _ in 0..8_000 {
+            let (id, draw) = archive.select_parent(&mut rand).expect("draw a parent");
+            match draw.best_preference {
+                Some(0) => assert_eq!(id, first),
+                Some(1) => assert_eq!(id, second),
+                Some(other) => panic!("draw named preference {other}"),
+                None => {}
+            }
+            archive.record_selection(id, &draw);
+        }
+        let draws = archive.selector_report().best_holder_draws;
+        assert_eq!(draws.len(), 2);
+        for count in draws {
+            assert!(
+                (800..1_200).contains(&count),
+                "{count} best-holder draws of 8,000"
+            );
+        }
     }
     #[test]
     fn taking_one_preference_from_a_surviving_holder_queues_its_exits() {
@@ -5667,6 +5778,7 @@ mod tests {
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
         for _ in 0..4 {
             archive.record_selection(1, &draw);
@@ -5882,6 +5994,7 @@ mod tests {
             &SelectorDraw {
                 path: SelectorPath::Tiers,
                 tier_rank: Some(0),
+                best_preference: None,
             },
         );
         assert_eq!(archive.selected[id], 1);
@@ -5895,6 +6008,7 @@ mod tests {
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
         for _ in 0..19 {
             archive.record_selection(0, &draw);
@@ -6435,6 +6549,7 @@ mod tests {
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
         for _ in 0..3 {
             archive.record_selection(survivor, &draw);
@@ -7355,6 +7470,7 @@ mod tests {
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
         for _ in 0..1000 {
             archive.record_selection(0, &draw);
@@ -7372,6 +7488,7 @@ mod tests {
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
         for _ in 0..1000 {
             archive.record_selection(0, &draw);

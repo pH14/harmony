@@ -304,7 +304,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_cell_count_decay_v3`, and the stream header names
+One selector exists, `tier_cell_count_decay_v4`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
@@ -316,8 +316,14 @@ largest accepted shift is seven, because a larger one overflows the leading
 tier's 64-bit weight; a draw under a larger shift fails with an error. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
-until it catches up and every cell keeps a share. Within the cell each holder
-weighs `1 / (1 + selections)^2` over its own selection count. There is no uniform path, no sampling window and no
+until it catches up and every cell keeps a share. Within the cell, a quarter
+of the draws go to the cell's best holder under each preference, split evenly
+across the key's preferences; ties go to the lower cost and then the older
+entry, and a holder best under several preferences takes each of their parts.
+This keeps a cell's best-stocked states drawn often when the cell holds many
+holders, so searches that leave the cell start from them. The other draws weigh each holder
+`1 / (1 + selections)^2` over its own selection count, and a key without
+preferences draws every holder that way. There is no uniform path, no sampling window and no
 retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
 
@@ -331,7 +337,8 @@ also resets when a selection from the cell opens a cell that held nothing, so
 the cells at the edge of explored ground keep drawing while they keep opening
 new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
-`cell_resets`, `tier_draws_by_rank` and the draws each cell received, and
+`cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference and
+the draws each cell received, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear only on every 100,000th execution's
 line and the final line. Counting portfolio holders compares every pair of
