@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     metroid::target::{
         ButtonChord, MetroidInput, MetroidMechanicalState, MetroidObservations, MetroidSnapshot,
-        preference_tuple,
+        health_cap, preference_tuple,
     },
     search::{
         archive::{
@@ -20,8 +20,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_tier_items_boss_engaged_mother_brain_defeat_item_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
-pub const PREFERENCE_IDENTIFIER: &str =
-    "items_tanks_missiles_health_then_items_tanks_health_missiles";
+pub const PREFERENCE_IDENTIFIER: &str = "items_tanks_missiles_health_then_items_tanks_balance_missiles_health_energy_first_at_zero_balance";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -135,7 +134,7 @@ impl ArchiveKey for MetroidArchiveKey {
     fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
         match preference {
             0 => self.preference().cmp(&other.preference()),
-            _ => self.health_preference().cmp(&other.health_preference()),
+            _ => self.balance_cmp(other),
         }
     }
 
@@ -194,8 +193,35 @@ impl MetroidArchiveKey {
         (self.items, self.tanks, self.missiles, self.health)
     }
 
-    fn health_preference(self) -> (u8, u8, u16, u8) {
-        (self.items, self.tanks, self.health, self.missiles)
+    fn balance(self) -> (u64, u64) {
+        if self.missile_capacity == 0 {
+            return (0, 1);
+        }
+        let missiles = (u64::from(self.missiles), u64::from(self.missile_capacity));
+        let energy = (
+            u64::from(self.health),
+            u64::from(health_cap(self.energy_tanks)),
+        );
+        if missiles.0 * energy.1 <= energy.0 * missiles.1 {
+            missiles
+        } else {
+            energy
+        }
+    }
+
+    fn balance_cmp(self, other: Self) -> Ordering {
+        let tiers = (self.items, self.tanks).cmp(&(other.items, other.tanks));
+        if tiers != Ordering::Equal {
+            return tiers;
+        }
+        let (mine, theirs) = (self.balance(), other.balance());
+        if mine.0 == 0 && theirs.0 == 0 {
+            return (self.health, self.missiles).cmp(&(other.health, other.missiles));
+        }
+        (mine.0 * theirs.1)
+            .cmp(&(theirs.0 * mine.1))
+            .then(self.missiles.cmp(&other.missiles))
+            .then(self.health.cmp(&other.health))
     }
 }
 
@@ -780,11 +806,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stocked_energy_arrival_is_held_beside_the_missile_holder() {
+    fn a_balanced_arrival_is_held_beside_the_missile_holder() {
         for reversed in [false, true] {
             let mut archive = MetroidArchive::new(chord_time);
             let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
-            let mut states = [tourian(10, 11, 534, 39, 0), tourian(10, 11, 834, 9, 0)];
+            let mut states = [tourian(10, 11, 534, 39, 0), tourian(10, 11, 834, 25, 0)];
             if reversed {
                 states.reverse();
             }
@@ -897,5 +923,126 @@ mod tests {
         for preference in 0..MetroidArchiveKey::preferences() {
             assert_eq!(key.preference_cmp(preference, bare), Ordering::Equal);
         }
+    }
+
+    #[test]
+    fn an_energy_arrival_less_balanced_than_the_missile_holder_is_not_held() {
+        let mut archive = MetroidArchive::new(chord_time);
+        let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
+        let stocked = held(
+            &mut archive,
+            Some(root),
+            1,
+            0x10,
+            tourian(10, 11, 534, 39, 0),
+        )
+        .expect("stocked");
+        assert!(
+            held(
+                &mut archive,
+                Some(root),
+                2,
+                0x20,
+                tourian(10, 11, 834, 9, 0)
+            )
+            .is_none()
+        );
+        assert!(archive.active[stocked]);
+    }
+
+    fn stock(
+        missiles: u8,
+        missile_capacity: u8,
+        health: u16,
+        energy_tanks: u8,
+    ) -> MetroidArchiveKey {
+        MetroidArchiveKey {
+            missiles,
+            missile_capacity,
+            health,
+            energy_tanks,
+            ..MetroidArchiveKey::default()
+        }
+    }
+
+    fn stock_grid() -> Vec<MetroidArchiveKey> {
+        let mut keys = Vec::new();
+        for (missile_capacity, missiles) in [
+            (0, 0),
+            (10, 0),
+            (10, 3),
+            (10, 10),
+            (20, 3),
+            (20, 10),
+            (75, 20),
+            (u8::MAX, u8::MAX),
+        ] {
+            for energy_tanks in [0, 1, u8::MAX] {
+                for health in [1, 99, 500, 999, 1500, u16::MAX] {
+                    if u32::from(health) <= health_cap(energy_tanks) {
+                        keys.push(stock(missiles, missile_capacity, health, energy_tanks));
+                    }
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn the_balance_preference_is_a_total_order() {
+        let keys = stock_grid();
+        for a in &keys {
+            assert_eq!(a.preference_cmp(1, *a), Ordering::Equal);
+            for b in &keys {
+                assert_eq!(a.preference_cmp(1, *b), b.preference_cmp(1, *a).reverse());
+                for c in &keys {
+                    if a.preference_cmp(1, *b).is_ge() && b.preference_cmp(1, *c).is_ge() {
+                        assert!(a.preference_cmp(1, *c).is_ge(), "{a:?} {b:?} {c:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn two_states_at_zero_balance_are_ordered_energy_first() {
+        let healthy = stock(0, 20, 800, 0);
+        let hurt = stock(0, 20, 300, 0);
+        assert_eq!(healthy.preference_cmp(1, hurt), Ordering::Greater);
+        let unarmed = stock(0, 0, 800, 0);
+        assert_eq!(unarmed.preference_cmp(1, hurt), Ordering::Greater);
+    }
+
+    #[test]
+    fn before_the_first_missile_tank_the_balance_preference_is_the_energy_first_order() {
+        let mut keys = Vec::new();
+        for items in [0, 1] {
+            for tanks in [0, 2] {
+                for health in [1, 300, 999, 1500] {
+                    keys.push(MetroidArchiveKey {
+                        items,
+                        tanks,
+                        ..stock(0, 0, health, 1)
+                    });
+                }
+            }
+        }
+        for a in &keys {
+            for b in &keys {
+                assert_eq!(
+                    a.preference_cmp(1, *b),
+                    (a.items, a.tanks, a.health, a.missiles)
+                        .cmp(&(b.items, b.tanks, b.health, b.missiles))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_balanced_state_holds_the_balance_preference_over_a_lopsided_one() {
+        let balanced = stock(10, 20, 500, 0);
+        let lopsided = stock(20, 20, 100, 0);
+        assert_eq!(balanced.preference_cmp(1, lopsided), Ordering::Greater);
+        assert_eq!(balanced.preference_cmp(0, lopsided), Ordering::Less);
     }
 }
