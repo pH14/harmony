@@ -438,7 +438,8 @@ impl Vendor for Arm64 {
     }
 
     fn post_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
-        vmm.service_arm_clockevent_due()
+        vmm.service_arm_clockevent_due()?;
+        vmm.sync_arm_irq_pending()
     }
 
     fn normalize_virtual_time_exit(

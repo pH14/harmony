@@ -23,7 +23,8 @@ architecture vendor, advances virtual time by the assigned integer duration,
 dispatches devices and protocol services, and completes any pending backend
 operation. Timer deadlines are applied at exit boundaries. An idle guest can
 advance to the next deterministic deadline through the same clock; no host
-clock is consulted.
+clock is consulted. A guest idling in its polling loop writes the idle register
+(arm64) or idle port (x86), which advances the clock the same way as a halt.
 
 The run loop also times each backend run and each exit it services, keyed by
 exit reason, address or port, and direction. `ControlServer::host_telemetry`

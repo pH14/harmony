@@ -17,7 +17,8 @@ pub const GUEST_CLOCK_OFF: usize = 0x10;
 pub const GUEST_CLOCK_HZ_OFF: usize = 0x18;
 pub const FLAGS_OFF: usize = 0x20;
 pub const VCPU_INDEX_OFF: usize = 0x24;
-pub const RESERVED_OFF: usize = 0x28;
+pub const IRQ_PENDING_OFF: usize = 0x28;
+pub const RESERVED_OFF: usize = 0x2C;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PvclockFields {
@@ -99,6 +100,23 @@ pub fn stamp_canonical(page: &mut [u8], vns: u64, guest_clock: u64, guest_clock_
     }
     page[..PVCLOCK_PAGE_LEN].copy_from_slice(&canonical);
     true
+}
+
+pub fn set_irq_pending(page: &mut [u8], pending: bool) -> bool {
+    if page.len() < PVCLOCK_PAGE_LEN {
+        return false;
+    }
+    let value = u32::from(pending);
+    if get_u32(page, IRQ_PENDING_OFF) == value {
+        return false;
+    }
+    put_u32(page, IRQ_PENDING_OFF, value);
+    true
+}
+
+#[must_use]
+pub fn irq_pending(page: &[u8]) -> bool {
+    page.len() >= PVCLOCK_PAGE_LEN && get_u32(page, IRQ_PENDING_OFF) != 0
 }
 
 pub fn read(page: &[u8]) -> Option<PvclockFields> {
@@ -275,7 +293,36 @@ mod tests {
         assert!(!stamp_canonical(&mut short, 1, 2, 3));
         assert!(!published(&short, 1, 2, 3));
         assert!(read(&short).is_none());
+        assert!(!set_irq_pending(&mut short, true));
+        assert!(!irq_pending(&short));
         assert!(short.iter().all(|&b| b == 0), "no partial write");
+    }
+
+    #[test]
+    fn irq_pending_is_its_own_word_and_survives_refreshes() {
+        let mut page = fresh_page();
+        assert!(stamp(&mut page, 10, 20, 30));
+        assert!(!irq_pending(&page));
+        assert!(set_irq_pending(&mut page, true));
+        assert!(
+            !set_irq_pending(&mut page, true),
+            "an unchanged word is not rewritten"
+        );
+        assert_eq!(
+            page[IRQ_PENDING_OFF..IRQ_PENDING_OFF + 4],
+            1u32.to_le_bytes()
+        );
+        assert!(stamp(&mut page, 11, 21, 30));
+        assert!(irq_pending(&page), "a refresh keeps the pending word");
+        assert!(published(&page, 11, 21, 30));
+        assert!(set_irq_pending(&mut page, false));
+        assert!(!irq_pending(&page));
+        assert!(set_irq_pending(&mut page, true));
+        assert!(stamp_canonical(&mut page, 12, 22, 30));
+        assert!(
+            !irq_pending(&page),
+            "the canonical first stamp starts with nothing pending"
+        );
     }
 
     #[test]

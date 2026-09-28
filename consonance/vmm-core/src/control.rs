@@ -1560,14 +1560,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(vns) })));
             }
 
-            let next_host_event = [
+            let next_wake = [
                 self.schedule.keys().next().copied(),
                 self.reseed_schedule.keys().next().copied(),
+                until.deadline.map(|deadline| deadline.0),
             ]
             .into_iter()
             .flatten()
             .min();
-            vmm.set_idle_wake_vns(next_host_event);
+            vmm.set_idle_wake_vns(next_wake);
 
             match vmm.step()? {
                 Step::Continued => {}
@@ -7336,6 +7337,36 @@ mod tests {
 
     fn idle_server() -> ControlServer<IdleBackend> {
         ControlServer::new(idle_vmm(0x1D1E), Box::new(|| Ok(idle_vmm(0x1D1E))))
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
+    fn an_idle_guest_lands_exactly_on_the_run_deadline() {
+        let mut s = idle_server();
+        assert_eq!(
+            s.handle(&Request::Hello(server_caps())).unwrap(),
+            Ok(Reply::Hello(server_caps()))
+        );
+        let deadline = 5_000_000;
+        let reply = s
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(deadline)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply,
+            Reply::Stop(StopReason::Deadline {
+                vtime: Moment(deadline)
+            })
+        );
     }
 
     fn idle_seeded_env(seed: u64) -> Reproducer {

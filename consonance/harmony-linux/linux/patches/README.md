@@ -22,11 +22,13 @@ interfaces.
 ## Architecture series
 
 The x86 series supplies the paravirtual clock, counter confinement and
-emulation, syscall tick, and x86-specific clock and trap plumbing.
+emulation, syscall tick, idle port, and x86-specific clock and trap plumbing.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,
-canonical state, and counter trap switch.
+canonical state, counter trap switch, and idle register. Its IRQ-unmask fence
+exits only while the clock page's `irq_pending` word says a due deadline waits
+for the unmask.
 
 After a clock or trap patch changes, run the matching instruction reachability
 scan and update its reviewed allowlist when the deliberate instruction count

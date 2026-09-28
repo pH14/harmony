@@ -42,6 +42,7 @@ pub(crate) const IA32_TSC_ADJUST: u32 = 0x3b;
 pub(crate) const DOORBELL_PORT: u16 = 0x0CA1;
 
 pub(crate) const VIRTUAL_TIME_TICK_PORT: u16 = 0x0CA3;
+pub(crate) const IDLE_PORT: u16 = 0x0CA4;
 
 pub(crate) const RFLAGS_IF: u64 = 1 << 9;
 
@@ -182,6 +183,16 @@ impl<B: Backend<A = X86>> Vmm<B> {
             self.advance_virtual_time_for_port(port)?;
             return Ok(Step::Continued);
         }
+        if port == IDLE_PORT {
+            require_dword_io("OUT", port, size)?;
+            if value != 1 {
+                return Err(VmmError::ContractViolation(format!(
+                    "idle protocol fault: OUT {port:#06x} value {value:#x} (must be 1)"
+                )));
+            }
+            self.advance_virtual_time_for_port(port)?;
+            return self.on_idle();
+        }
         self.advance_virtual_time_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
             require_byte_io("OUT", port, size)?;
@@ -213,10 +224,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
-        if port == VIRTUAL_TIME_TICK_PORT {
+        if port == VIRTUAL_TIME_TICK_PORT || port == IDLE_PORT {
             return Err(VmmError::ContractViolation(format!(
-                "execution-tick protocol fault: IN {port:#06x} (size {size}); the tick port is \
-                 write-only"
+                "execution-tick protocol fault: IN {port:#06x} (size {size}); the tick and idle \
+                 ports are write-only"
             )));
         }
         self.advance_virtual_time_for_port(port)?;

@@ -684,6 +684,104 @@ fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
 }
 
 #[test]
+fn arm64_pending_word_marks_a_deferred_deadline_until_the_fence_delivers_it() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::PVCLOCK;
+
+    let mut state = Arm64VcpuState::default();
+    state.core.pstate = 1 << 7;
+    let mut backend = MockArm64Backend::with_exits([
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(0x1000),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(125),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x24),
+            size: 4,
+            write: Some(1),
+        }),
+    ]);
+    backend.set_policy(&Arm64Policy::default()).unwrap();
+    backend.set_state(state);
+    let mut v = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+    wire_virtual_time_clock(&mut v);
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(!vtime::pvclock::irq_pending(v.pvclock_page().unwrap()));
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(
+        vtime::pvclock::irq_pending(v.pvclock_page().unwrap()),
+        "a due deadline deferred under PSTATE.I asks the guest for the unmask fence"
+    );
+
+    let mut unmasked = v.save_vm_state().unwrap();
+    unmasked.regs.pstate &= !(1 << 7);
+    v.restore_vm_state(&unmasked).unwrap();
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(v.has_pending_guest_interrupt().unwrap());
+    assert!(
+        !vtime::pvclock::irq_pending(v.pvclock_page().unwrap()),
+        "delivery clears the pending word"
+    );
+}
+
+#[test]
+fn arm64_idle_register_jumps_to_the_clockevent_deadline() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::{CNTFRQ_HZ, PVCLOCK};
+
+    let page_gpa = 0x1000;
+    let deadline_vns = 50_000;
+    let deadline_ticks = deadline_vns * CNTFRQ_HZ / 1_000_000_000;
+    let mut v = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(page_gpa),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(deadline_ticks),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x28),
+            size: 4,
+            write: Some(1),
+        }),
+    ]);
+    wire_virtual_time_clock(&mut v);
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(!v.has_pending_guest_interrupt().unwrap());
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.effective_vns(), Some(deadline_vns));
+    assert_eq!(v.idle_landings(), &[deadline_vns]);
+    assert!(v.has_pending_guest_interrupt().unwrap());
+
+    for (size, write) in [(4u8, Some(0u64)), (4, Some(2)), (8, Some(1)), (4, None)] {
+        let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x28),
+            size,
+            write,
+        })]);
+        wire_virtual_time_clock(&mut v);
+        assert!(
+            v.step().is_err(),
+            "idle access size {size} write {write:?} must fail closed"
+        );
+    }
+}
+
+#[test]
 fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
     use vmm_backend::Gpa;
     use vmm_core::vendor::arm64::board::PVCLOCK;
