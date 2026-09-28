@@ -299,7 +299,7 @@ mod shared_state_serialization_tests {
             if cfg!(miri) && len > 1025 {
                 continue;
             }
-            let bytes: Vec<_> = (0..len).map(|i| (i % 256) as u8).collect();
+            let bytes: Vec<_> = (0..len).map(|i| (i % 251) as u8).collect();
             let state = SharedState::from_bytes(&bytes, None);
             assert_eq!(
                 serde_json::to_vec(&state).unwrap(),
