@@ -963,7 +963,7 @@ fn campaign<const CAPACITY_TWO: bool>(
         route_length,
     )?;
     let mut work = 0;
-    let mut last_job_work = 0;
+    let mut jobs_after_budget = 0_usize;
     let mut first_objective_work = None;
     let mut continuation_work = 0;
     let mut continuation_jobs = 0;
@@ -992,8 +992,10 @@ fn campaign<const CAPACITY_TWO: bool>(
         }
         if let CampaignStreamRecord::Job(job) = &record {
             let job_work = job.execution_work;
+            if work >= budget {
+                jobs_after_budget += 1;
+            }
             work += job_work;
-            last_job_work = job_work;
             if let Some(&(tier, place)) = parents.get(&job.sequence) {
                 if matches!(workload.config, World::Map(_)) {
                     timeline.push([work - job_work, u64::from(tier), u64::from(place)]);
@@ -1041,8 +1043,8 @@ fn campaign<const CAPACITY_TWO: bool>(
             serde_json::json!([pre_objective, path, rank, skips])
         })
         .collect();
-    if work > budget && work - last_job_work >= budget {
-        return Err("a job started after the work budget was spent".into());
+    if jobs_after_budget >= config.window {
+        return Err("a job was reserved after the work budget was spent".into());
     }
     if work != report.execution_work {
         return Err("independent work accounting mismatch".into());
@@ -1617,6 +1619,9 @@ mod tests {
             assert_eq!(report["verified"], true, "{workers} workers");
         }
         assert!(run_kept(&w, Keep::Portfolio, test_seed(), 2000, true, 65).is_err());
+        let spent = run_kept(&w, Keep::Portfolio, test_seed(), 40, true, 16).unwrap();
+        assert_eq!(spent["verified"], true);
+        assert!(spent["work_overshoot"].as_u64().unwrap() > 0);
     }
 
     #[test]
