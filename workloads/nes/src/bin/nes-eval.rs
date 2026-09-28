@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#[cfg(not(miri))]
-#[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
 use nes_workload::{
     eval::{Result, evaluate, run_cli},
     metroid::{
@@ -55,7 +51,7 @@ fn metroid_game(
 }
 
 fn main() -> Result<()> {
-    nes_workload::allocator::require_single_arena();
+    nes_workload::allocator::use_one_malloc_arena();
     run_cli(|request, rom, out, started| {
         match request.game.as_str() {
             "smb" | "metroid"

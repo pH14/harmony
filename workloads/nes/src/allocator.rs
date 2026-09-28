@@ -1,21 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#[cfg(not(miri))]
-pub fn require_single_arena() {
-    match tikv_jemalloc_ctl::opt::narenas::read() {
-        Ok(1) => {}
-        Ok(count) => {
-            eprintln!(
-                "error: jemalloc is set to {count} arenas and the search binaries need 1; build with JEMALLOC_SYS_WITH_MALLOC_CONF=narenas:1, which .cargo/config.toml sets"
-            );
-            std::process::exit(1);
-        }
-        Err(err) => {
-            eprintln!("error: reading the jemalloc arena count failed: {err}");
-            std::process::exit(1);
-        }
+#[cfg(all(target_os = "linux", target_env = "gnu", not(miri)))]
+pub fn use_one_malloc_arena() {
+    // SAFETY: mallopt only changes glibc's allocator tuning and takes no pointers. It runs first in main, before the search starts any thread, so no other thread is inside malloc.
+    let set = unsafe { libc::mallopt(libc::M_ARENA_MAX, 1) };
+    if set != 1 {
+        eprintln!(
+            "error: mallopt(M_ARENA_MAX, 1) failed; the search binaries need glibc limited to one malloc arena"
+        );
+        std::process::exit(1);
     }
 }
 
-#[cfg(miri)]
-pub fn require_single_arena() {}
+#[cfg(not(all(target_os = "linux", target_env = "gnu", not(miri))))]
+pub fn use_one_malloc_arena() {}

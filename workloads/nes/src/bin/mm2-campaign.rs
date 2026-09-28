@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#[cfg(not(miri))]
-#[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
 use std::{
     env,
     error::Error,
@@ -149,7 +145,7 @@ where
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    nes_workload::allocator::require_single_arena();
+    nes_workload::allocator::use_one_malloc_arena();
     let args = Args::parse()?;
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;

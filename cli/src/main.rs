@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#[cfg(not(miri))]
-#[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
 mod host;
 mod preflight;
 mod search;
@@ -40,7 +36,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Search(args) => {
-            nes_workload::allocator::require_single_arena();
+            nes_workload::allocator::use_one_malloc_arena();
             search::run(args)
         }
         Command::Preflight { json } => preflight::run(json),
