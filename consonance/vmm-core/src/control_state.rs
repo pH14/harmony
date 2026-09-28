@@ -116,11 +116,12 @@ impl ControlState {
         Ok(state)
     }
 
-    pub fn append_hash(&self, suffix: &mut Vec<u8>) {
+    pub fn encode_and_append_hash(&self, suffix: &mut Vec<u8>) -> Vec<u8> {
         let state = self.encode();
         suffix.extend_from_slice(b"CPLN");
         suffix.extend_from_slice(&(state.len() as u64).to_le_bytes());
         suffix.extend_from_slice(&state);
+        state
     }
 }
 
@@ -290,7 +291,15 @@ mod tests {
     fn hash_observes_pending_work_and_consumed_history() {
         let baseline = state();
         let mut suffix = Vec::new();
-        baseline.append_hash(&mut suffix);
+        let encoded = baseline.encode_and_append_hash(&mut suffix);
+        assert_eq!(encoded, baseline.encode());
+        assert_eq!(&suffix[..4], b"CPLN");
+        assert_eq!(&suffix[4..12], &(encoded.len() as u64).to_le_bytes());
+        assert_eq!(&suffix[12..], encoded.as_slice());
+        assert_eq!(
+            ControlState::decode(&encoded).unwrap(),
+            Some(baseline.clone())
+        );
         for altered in [
             ControlState {
                 exec_nonce: 18,
@@ -307,13 +316,13 @@ mod tests {
             },
         ] {
             let mut other = Vec::new();
-            altered.append_hash(&mut other);
+            altered.encode_and_append_hash(&mut other);
             assert_ne!(other, suffix);
         }
         let mut history = baseline;
         history.recorded = InputSpec::seeded(10);
         let mut same = Vec::new();
-        history.append_hash(&mut same);
+        history.encode_and_append_hash(&mut same);
         assert_ne!(same, suffix);
         let empty = ControlState {
             recorded: history.recorded,
@@ -322,7 +331,7 @@ mod tests {
             exec_nonce: 0,
         };
         let mut unchanged = b"existing-state".to_vec();
-        empty.append_hash(&mut unchanged);
+        empty.encode_and_append_hash(&mut unchanged);
         assert!(unchanged.starts_with(b"existing-stateCPLN"));
     }
 }

@@ -290,6 +290,7 @@ jobs:
           python3 consonance/vm-state/qualification/qualify-codec.py --check
           python3 consonance/vmm-core/qualification/qualify-capture.py --check
           python3 consonance/vmm-core/qualification/qualify-sdk-capture.py --check
+          python3 consonance/vmm-core/qualification/qualify-control-capture.py --check
           python3 consonance/vmm-core/qualification/qualify-restore.py --check
           cargo fetch --locked --manifest-path dissonance/Cargo.toml
           python3 scripts/qualify-host-sha256.py --check
