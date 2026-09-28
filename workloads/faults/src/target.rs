@@ -35,6 +35,42 @@ pub enum FaultAction {
     Interrupt(u32),
 }
 
+impl FaultAction {
+    #[must_use]
+    pub fn key_bytes(&self) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        let (tag, payload): (u8, &[&[u8]]) = match self {
+            Self::Wait(ticks) => (0, &[&ticks.get().to_le_bytes()]),
+            Self::Kill(node) => (1, &[&node.to_le_bytes()]),
+            Self::EventKill { node, rarity } => (2, &[&node.to_le_bytes(), &[*rarity]]),
+            Self::EventPark {
+                node,
+                rarity,
+                hold_us,
+            } => (
+                3,
+                &[&node.to_le_bytes(), &[*rarity], &hold_us.to_le_bytes()],
+            ),
+            Self::Pause(node, micros) => (4, &[&node.to_le_bytes(), &micros.to_le_bytes()]),
+            Self::Restart(node) => (5, &[&node.to_le_bytes()]),
+            Self::Hook(id) => (6, &[&id.to_le_bytes()]),
+            Self::Interrupt(id) => (7, &[&id.to_le_bytes()]),
+        };
+        out[0] = tag;
+        let mut at = 1;
+        for field in payload {
+            out[at..at + field.len()].copy_from_slice(field);
+            at += field.len();
+        }
+        out
+    }
+}
+
+#[must_use]
+pub fn actions_key(actions: &[FaultAction]) -> Vec<u8> {
+    actions.iter().flat_map(FaultAction::key_bytes).collect()
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultSnapshot {
     pub actions: Vec<FaultAction>,

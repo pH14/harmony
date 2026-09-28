@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, io::Write, num::NonZeroU64, path::PathBuf, sync::OnceLock};
+use std::{
+    error::Error,
+    io::Write,
+    num::NonZeroU64,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
+
+use consonance_client::cache::CacheIndex;
 
 use searcher::{
     search::{
@@ -63,6 +71,7 @@ pub struct FaultWorkload {
     config: FaultConfig,
     identity: String,
     root_seal: OnceLock<u64>,
+    snapshot_cache: Option<Arc<dyn CacheIndex>>,
 }
 
 impl FaultWorkload {
@@ -74,7 +83,14 @@ impl FaultWorkload {
             config: config.clone(),
             identity: identity(kernel, initramfs, config),
             root_seal: OnceLock::new(),
+            snapshot_cache: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_snapshot_cache(mut self, cache: Option<Arc<dyn CacheIndex>>) -> Self {
+        self.snapshot_cache = cache;
+        self
     }
 
     #[must_use]
@@ -534,7 +550,12 @@ fn held_suffix(
 
 impl TargetExecution for FaultWorkload {
     fn new_target(&self) -> Result<FaultTarget, String> {
-        let target = FaultTarget::new(&self.kernel, &self.initramfs, &self.config)?;
+        let target = FaultTarget::new(
+            &self.kernel,
+            &self.initramfs,
+            &self.config,
+            self.snapshot_cache.clone(),
+        )?;
         let seal = *self.root_seal.get_or_init(|| target.root_seal());
         if seal != target.root_seal() {
             return Err(format!(

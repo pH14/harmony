@@ -43,6 +43,8 @@ pub struct Args {
     #[arg(long)]
     wall_minutes: Option<u64>,
     #[arg(long)]
+    snapshot_cache_mib: Option<u64>,
+    #[arg(long)]
     replay: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     repeat: u32,
@@ -141,6 +143,7 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
             .map(str::to_owned)
             .collect(),
         wall_minutes: args.wall_minutes,
+        snapshot_cache_mib: args.snapshot_cache_mib,
         output: args.out.clone(),
     })
 }
@@ -293,6 +296,7 @@ mod tests {
             ram_mib: 1024,
             knobs: None,
             wall_minutes: None,
+            snapshot_cache_mib: None,
             replay: None,
             repeat: 1,
         }

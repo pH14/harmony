@@ -67,13 +67,24 @@ the host-plane effect its last action stages, runs to the action's horizon
 deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
-reported. A bounded LRU keeps recent prefixes resident and rebuilds evicted
-ones from their longest cached ancestor.
+reported. Each session keeps only its current chain of prefix snapshots, at
+most 32 past the setup snapshot. Every sealed prefix is published to the
+search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
+A prefix that the chain does not hold is imported from the longest cached
+prefix in the shared cache, and only the remaining actions run again. Chain
+bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
+missing prefix is rebuilt from the chain's longest matching link.
+`--snapshot-cache-mib` sets the shared budget; 0 turns the cache off. Without
+it the budget is the free memory left after each worker's footprint (twice the
+guest RAM plus 512 MiB) and a 1 GiB reserve. The run prints the budget, or why
+the cache is off, and `campaign-summary.json` records the cache's counters
+under `snapshot_cache`.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
-time; the prefix cache's exact hits, ancestor hits, misses, evictions, entries,
-and resident bytes; and the VMM's exit, guest-run, and snapshot counters under
+time; the chain's exact hits, ancestor hits, misses, evictions, entries, and
+resident bytes; shared cache imports and publications with their time, and
+refused publications; and the VMM's exit, guest-run, and snapshot counters under
 `vmm.`. `campaign-summary.json` includes the whole telemetry record.
 The shared session watchdog follows deterministic virtual-time progress, so a
 slowly advancing instrumented guest can finish a long action while one stuck

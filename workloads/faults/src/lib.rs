@@ -2,6 +2,8 @@
 
 pub mod archive;
 pub mod bundle;
+#[cfg(feature = "consonance")]
+pub mod chain;
 pub mod package;
 pub mod prepare;
 pub mod report;

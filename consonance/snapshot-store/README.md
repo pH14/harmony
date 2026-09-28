@@ -47,6 +47,14 @@ plan is in use. Consumers can copy directly into destination RAM without an
 intermediate page-sized allocation or copy. Owned exports copy only the pages
 that must outlive the store borrow.
 
+`page_delta(base, parent, target)` lists what a target adds over a parent that
+itself derives from `base`: pages that differ from the parent, with their
+stored BLAKE3 hashes, and the page numbers that returned to the base's content.
+With no parent the delta is every page that differs from the base. The hashes
+come from the content index, so an export hashes nothing.
+`DeltaBuilder::write_hashed_page` hashes the page once, rejects it when the
+hash differs from the one supplied, and interns it under that hash.
+
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
 layer is collected; there is no capacity limit or eviction policy. This favors

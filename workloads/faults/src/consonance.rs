@@ -9,8 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use consonance_client::session::{
-    PortableSnapshot, Session, SessionConfig, SessionError, identity_with_config,
+use consonance_client::{
+    cache::{CacheError, CacheIndex, Lease, Namespace},
+    session::{PortableSnapshot, Session, SessionConfig, SessionError, identity_with_config},
 };
 use control_proto::{SnapId, StopReason};
 use environment::{
@@ -24,9 +25,10 @@ use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_w
 use searcher::target::ExitKind;
 use sha2::{Digest, Sha256};
 
+use crate::chain::{Chain, Hit, Point, Shared};
 use crate::target::{
     ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, action_delta,
-    decode_sdk_events, standing_windows,
+    actions_key, decode_sdk_events, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -34,7 +36,6 @@ pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-v1";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
 const WALL_LIMIT: Duration = Duration::from_secs(60);
-const SNAPSHOT_CACHE_LIMIT: usize = 96;
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
@@ -171,13 +172,7 @@ struct Config {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     session: SessionConfig,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Cached {
-    snap: SnapId,
-    moment: u64,
-    stamp: u64,
+    cache: Option<Arc<dyn CacheIndex>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,6 +218,9 @@ struct LiveTelemetry {
     ancestor_hits: u64,
     misses: u64,
     evictions: u64,
+    imports: Spent,
+    publishes: Spent,
+    refusals: u64,
 }
 
 struct Live {
@@ -230,8 +228,7 @@ struct Live {
     session: Session,
     setup: SnapId,
     windows: ActionWindows,
-    snapshots: BTreeMap<Vec<FaultAction>, Cached>,
-    uses: u64,
+    chain: Chain,
     horizons_run: u64,
     abandoned: bool,
     telemetry: LiveTelemetry,
@@ -293,12 +290,18 @@ impl Drop for FaultTarget {
 }
 
 impl FaultTarget {
-    pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
+    pub fn new(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &FaultConfig,
+        cache: Option<Arc<dyn CacheIndex>>,
+    ) -> Result<Self, String> {
         let config = Arc::new(Config {
             key: Sha256::digest(identity(kernel, initramfs, config)).into(),
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
+            cache,
         });
         let (observation, root_seal) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
@@ -319,7 +322,7 @@ impl FaultTarget {
 
     pub fn fresh(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
         LIVE.with(|slot| slot.borrow_mut().take());
-        Self::new(kernel, initramfs, config)
+        Self::new(kernel, initramfs, config, None)
     }
 
     #[must_use]
@@ -584,15 +587,18 @@ impl Live {
         .map_err(|error| format!("fault guest boot failed: {error}"))?;
         session.set_service_factory(service_factory());
         let (setup, root_seal) = session.setup_handle();
-        let mut snapshots = BTreeMap::new();
-        snapshots.insert(
-            Vec::new(),
-            Cached {
-                snap: setup,
-                moment: root_seal,
-                stamp: 0,
-            },
-        );
+        let shared = match &config.cache {
+            Some(index) => {
+                let setup_hash = session
+                    .state_hash()
+                    .map_err(|error| format!("setup state hash: {error}"))?;
+                Some(Shared {
+                    index: Arc::clone(index),
+                    namespace: Namespace::new(&[&config.key, SERVICE_IDENTITY, &setup_hash]),
+                })
+            }
+            None => None,
+        };
         let mut telemetry = LiveTelemetry::default();
         telemetry.boot.since(boot_started);
         Ok(Self {
@@ -603,8 +609,13 @@ impl Live {
                 root_seal,
                 horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
             },
-            snapshots,
-            uses: 0,
+            chain: Chain::new(
+                Point {
+                    snap: setup,
+                    moment: root_seal,
+                },
+                shared,
+            ),
             horizons_run: 0,
             abandoned: false,
             telemetry,
@@ -637,15 +648,20 @@ impl Live {
             ("cache.ancestor_hits".to_owned(), t.ancestor_hits),
             ("cache.misses".to_owned(), t.misses),
             ("cache.evictions".to_owned(), t.evictions),
+            ("shared.import.count".to_owned(), t.imports.count),
+            ("shared.import.ns".to_owned(), t.imports.nanos),
+            ("shared.publish.count".to_owned(), t.publishes.count),
+            ("shared.publish.ns".to_owned(), t.publishes.nanos),
+            ("shared.refusals".to_owned(), t.refusals),
         ]);
         if resident {
             let bytes = self
-                .snapshots
-                .values()
-                .filter_map(|cached| self.session.snapshot_owned_pages(cached.snap))
+                .chain
+                .points()
+                .filter_map(|point| self.session.snapshot_owned_pages(point.snap))
                 .sum::<u64>()
                 .saturating_mul(4096);
-            out.push(("cache.entries".to_owned(), self.snapshots.len() as u64));
+            out.push(("cache.entries".to_owned(), self.chain.links() as u64));
             out.push(("cache.resident_bytes".to_owned(), bytes));
         }
         out.extend(
@@ -678,70 +694,114 @@ impl Live {
         result
     }
 
-    fn cached(&mut self, actions: &[FaultAction]) -> Option<Cached> {
-        self.uses = self.uses.saturating_add(1);
-        let uses = self.uses;
-        self.snapshots.get_mut(actions).map(|cached| {
-            cached.stamp = uses;
-            *cached
-        })
+    fn drop_snapshots(&mut self, snapshots: Vec<SnapId>) -> Result<(), String> {
+        for snapshot in snapshots {
+            let drop_started = started();
+            self.session
+                .drop_snapshot(snapshot)
+                .map_err(|error| format!("drop snapshot: {error}"))?;
+            self.telemetry.drops.since(drop_started);
+            self.telemetry.evictions = self.telemetry.evictions.saturating_add(1);
+        }
+        Ok(())
     }
 
-    fn remember(
+    fn push_link(
         &mut self,
-        actions: Vec<FaultAction>,
+        actions: &[FaultAction],
+        point: Point,
+        lease: Option<Lease>,
+    ) -> Result<Point, String> {
+        let evicted = self.chain.push(actions, point, lease);
+        self.drop_snapshots(evicted.into_iter().collect())?;
+        Ok(point)
+    }
+
+    fn publish(&mut self, actions: &[FaultAction], snap: SnapId) -> Result<Option<Lease>, String> {
+        let Some(shared) = self.chain.shared() else {
+            return Ok(None);
+        };
+        let publish_started = started();
+        let published = self.session.publish_snapshot(
+            shared.index.as_ref(),
+            shared.namespace,
+            &actions_key(actions),
+            self.chain.parent_for(actions.len()),
+            snap,
+        );
+        self.telemetry.publishes.since(publish_started);
+        match published {
+            Ok(lease) => Ok(Some(lease)),
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<CacheError>(),
+                    Some(CacheError::Refused { .. })
+                ) =>
+            {
+                self.telemetry.refusals = self.telemetry.refusals.saturating_add(1);
+                Ok(None)
+            }
+            Err(error) => Err(format!("publish snapshot: {error}")),
+        }
+    }
+
+    fn seal_link(
+        &mut self,
+        actions: &[FaultAction],
         snap: SnapId,
         moment: u64,
-    ) -> Result<Cached, String> {
-        self.uses = self.uses.saturating_add(1);
-        let cached = Cached {
-            snap,
-            moment,
-            stamp: self.uses,
-        };
-        self.snapshots.insert(actions, cached);
-        while self.snapshots.len() > SNAPSHOT_CACHE_LIMIT.saturating_add(1) {
-            let Some(victim) = self
-                .snapshots
-                .iter()
-                .filter(|(prefix, _)| !prefix.is_empty())
-                .min_by_key(|(_, cached)| cached.stamp)
-                .map(|(prefix, _)| prefix.clone())
-            else {
-                break;
-            };
-            if let Some(victim) = self.snapshots.remove(&victim) {
-                let drop_started = started();
-                self.session
-                    .drop_snapshot(victim.snap)
-                    .map_err(|error| format!("drop snapshot: {error}"))?;
-                self.telemetry.drops.since(drop_started);
-                self.telemetry.evictions = self.telemetry.evictions.saturating_add(1);
-            }
+    ) -> Result<Point, String> {
+        let lease = self.publish(actions, snap)?;
+        self.push_link(actions, Point { snap, moment }, lease)
+    }
+
+    fn find(&mut self, actions: &[FaultAction]) -> Result<usize, String> {
+        let at = self.chain.local(actions);
+        let local = self.chain.depth(at);
+        if local == actions.len() {
+            return Ok(at);
         }
-        Ok(cached)
+        let Some(lease) = self.chain.deeper_shared(actions, local) else {
+            return Ok(at);
+        };
+        let index = self
+            .chain
+            .shared()
+            .map(|shared| Arc::clone(&shared.index))
+            .ok_or("a shared lease without a shared cache")?;
+        let import_started = started();
+        let near = self.chain.point(at).snap;
+        let imported = self.session.import_cached(index.as_ref(), &lease, near);
+        self.telemetry.imports.since(import_started);
+        let (snap, moment) = match imported {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.chain.release(lease);
+                return Err(format!("import snapshot: {error}"));
+            }
+        };
+        let dropped = self.chain.truncate(at.saturating_add(1));
+        self.drop_snapshots(dropped)?;
+        let len = Chain::actions_in(&lease);
+        self.push_link(&actions[..len], Point { snap, moment }, Some(lease))?;
+        Ok(self.chain.links() - 1)
     }
 
     fn ensure_prefix(
         &mut self,
         actions: &[FaultAction],
-    ) -> Result<Result<Cached, FaultObservations>, String> {
-        if let Some(cached) = self.cached(actions) {
-            self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
-            return Ok(Ok(cached));
-        }
-        let start = (0..actions.len())
-            .rev()
-            .find(|length| self.snapshots.contains_key(&actions[..*length]))
-            .unwrap_or(0);
-        if start == 0 {
-            self.telemetry.misses = self.telemetry.misses.saturating_add(1);
-        } else {
-            self.telemetry.ancestor_hits = self.telemetry.ancestor_hits.saturating_add(1);
-        }
-        let mut last = self
-            .cached(&actions[..start])
-            .ok_or("the fault setup snapshot is missing")?;
+    ) -> Result<Result<Point, FaultObservations>, String> {
+        let at = self.find(actions)?;
+        let start = self.chain.depth(at);
+        let counter = match Hit::of(start, actions.len()) {
+            Hit::Exact => &mut self.telemetry.exact_hits,
+            Hit::Ancestor => &mut self.telemetry.ancestor_hits,
+            Hit::Miss => &mut self.telemetry.misses,
+        };
+        *counter = counter.saturating_add(1);
+        let dropped = self.chain.truncate(at.saturating_add(1));
+        self.drop_snapshots(dropped)?;
+        let mut last = self.chain.point(at);
         for index in start..actions.len() {
             self.branch(last, &actions[..=index])?;
             let (observation, sealed) =
@@ -749,7 +809,7 @@ impl Live {
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
-            last = self.remember(actions[..=index].to_vec(), snap, moment)?;
+            last = self.seal_link(&actions[..=index], snap, moment)?;
         }
         Ok(Ok(last))
     }
@@ -762,9 +822,11 @@ impl Live {
     ) -> Result<FaultObservations, String> {
         let mut next = prefix.to_vec();
         next.push(action);
-        if let Some(cached) = self.cached(&next) {
+        let at = self.find(&next)?;
+        if self.chain.depth(at) == next.len() {
             self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
-            self.replay(cached.snap)?;
+            let snap = self.chain.point(at).snap;
+            self.replay(snap)?;
             return self.observe(FaultStop::Deadline);
         }
         let parent = match self.ensure_prefix(prefix)? {
@@ -783,12 +845,12 @@ impl Live {
         self.branch(parent, &next)?;
         let (observation, sealed) = self.run_action(&next, prefix.len(), parent.moment, kind)?;
         if let Some((snap, moment)) = sealed {
-            self.remember(next, snap, moment)?;
+            self.seal_link(&next, snap, moment)?;
         }
         Ok(observation)
     }
 
-    fn branch(&mut self, parent: Cached, actions: &[FaultAction]) -> Result<(), String> {
+    fn branch(&mut self, parent: Point, actions: &[FaultAction]) -> Result<(), String> {
         let config = branch_config(self.windows, actions)
             .map_err(|error| format!("branch configuration: {error}"))?;
         let effects = self.staged_effects(actions, parent.moment)?;
@@ -929,7 +991,7 @@ pub fn from_paths(
 ) -> Result<FaultTarget, String> {
     let kernel = std::fs::read(kernel).map_err(|error| format!("read kernel: {error}"))?;
     let initramfs = std::fs::read(initramfs).map_err(|error| format!("read initramfs: {error}"))?;
-    FaultTarget::new(&kernel, &initramfs, config)
+    FaultTarget::new(&kernel, &initramfs, config, None)
 }
 
 #[cfg(test)]
@@ -947,6 +1009,7 @@ mod tests {
                     ram_mib: DEFAULT_RAM_MIB,
                 }
                 .session_config(),
+                cache: None,
             }),
             actions: Vec::new(),
             observation: FaultObservations::default(),

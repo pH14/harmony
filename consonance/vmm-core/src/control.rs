@@ -25,9 +25,9 @@ use crate::control_state::{ControlState, ScheduleFailure};
 use crate::exec::ExecSession;
 use crate::host_telemetry::{Cost, HostTelemetry};
 use crate::portable_snapshot::{
-    PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparsePortableSidecarRef,
-    SparsePortableSnapshot, SparsePortableSnapshotReceipt, decode_sparse_sidecar,
-    encode_sparse_sidecar,
+    PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparseDelta,
+    SparsePortableSidecarRef, SparsePortableSnapshot, SparsePortableSnapshotReceipt,
+    decode_sparse_sidecar, encode_sparse_sidecar,
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
@@ -412,14 +412,55 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         base: SnapId,
         target: SnapId,
     ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
-        let base_id = *self
-            .snaps
-            .get(&base.0)
-            .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
-        let target_id = *self
-            .snaps
-            .get(&target.0)
-            .ok_or(PortableSnapshotError::UnknownSnapshot(target.0))?;
+        let base_id = self.store_id(base)?;
+        let target_id = self.store_id(target)?;
+        let sidecar = self.sparse_sidecar(target, target_id)?;
+        let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
+        let mut pages = Vec::with_capacity(candidates.len());
+        for (gfn, page) in candidates {
+            if !self.engine.pages_equal(base_id, gfn, target_id, gfn)? {
+                pages.push((gfn, Arc::new(*page)));
+            }
+        }
+        Ok(SparsePortableSnapshot { pages, sidecar })
+    }
+
+    pub fn export_sparse_delta(
+        &self,
+        setup: SnapId,
+        parent: Option<SnapId>,
+        target: SnapId,
+    ) -> Result<SparseDelta<'_>, PortableSnapshotError> {
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        let setup_id = self.store_id(setup)?;
+        let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
+        let target_id = self.store_id(target)?;
+        let sidecar = self.sparse_sidecar(target, target_id)?;
+        let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
+        let (mut cost, pages) = self.export_telemetry.get();
+        cost.add(started.elapsed().as_nanos());
+        self.export_telemetry
+            .set((cost, pages.saturating_add(delta.changed.len() as u64)));
+        Ok(SparseDelta {
+            pages: delta.changed,
+            reverted: delta.reverted,
+            sidecar,
+        })
+    }
+
+    fn store_id(&self, snap: SnapId) -> Result<snapshot_store::SnapshotId, PortableSnapshotError> {
+        self.snaps
+            .get(&snap.0)
+            .copied()
+            .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))
+    }
+
+    fn sparse_sidecar(
+        &self,
+        target: SnapId,
+        target_id: snapshot_store::SnapshotId,
+    ) -> Result<Vec<u8>, PortableSnapshotError> {
         let meta = self
             .snapshot_meta
             .get(&target.0)
@@ -429,15 +470,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse export target lacks a canonical state-blob suffix",
             ));
         }
-        let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
-        let mut pages = Vec::with_capacity(candidates.len());
-        for (gfn, page) in candidates {
-            if !self.engine.pages_equal(base_id, gfn, target_id, gfn)? {
-                pages.push((gfn, Arc::new(*page)));
-            }
-        }
         let vm_state = self.engine.vm_state_bytes(target_id)?;
-        let sidecar = encode_sparse_sidecar(&SparsePortableSidecarRef {
+        encode_sparse_sidecar(&SparsePortableSidecarRef {
             vm_state,
             sdk: self.sdk_snaps.get(&target.0).map(|s| &s.channel),
             policy: &meta.policy,
@@ -448,8 +482,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             trace_schedules: meta.trace_schedules,
             tainted: meta.tainted,
             state_blob_suffix: &meta.state_blob_suffix,
-        })?;
-        Ok(SparsePortableSnapshot { pages, sidecar })
+        })
     }
 
     pub fn import_sparse_snapshot(
@@ -468,7 +501,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
-        let receipt = self.import_sparse_snapshot_parts_untimed(base, pages, sidecar)?;
+        let receipt = self.import_sparse_untimed(
+            base,
+            pages.iter().map(|(gfn, _)| *gfn),
+            sidecar,
+            |engine, base_id, vm_state| {
+                let mut owned_pages = Vec::new();
+                owned_pages
+                    .try_reserve_exact(pages.len())
+                    .map_err(|_| PortableSnapshotError::Malformed("sparse page allocation"))?;
+                for (gfn, page) in pages {
+                    owned_pages.push((*gfn, **page));
+                }
+                Ok(engine.snapshot_sparse_derive(base_id, &owned_pages, vm_state)?)
+            },
+        )?;
         self.telemetry.imports.add(started.elapsed().as_nanos());
         self.telemetry.import_pages = self
             .telemetry
@@ -477,30 +524,71 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(receipt)
     }
 
-    fn import_sparse_snapshot_parts_untimed(
+    pub fn import_sparse_delta(
         &mut self,
-        base: SnapId,
-        pages: &[(u64, Arc<[u8; 4096]>)],
+        setup: SnapId,
+        near: SnapId,
+        pages: &[(u64, &[u8; 32], &[u8; 4096])],
         sidecar: &[u8],
     ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
-        let base_id = *self
-            .snaps
-            .get(&base.0)
-            .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        let setup_id = self.store_id(setup)?;
+        let mut written = 0usize;
+        let receipt = self.import_sparse_untimed(
+            near,
+            pages.iter().map(|(gfn, _, _)| *gfn),
+            sidecar,
+            |engine, near_id, vm_state| {
+                let rows: Vec<_> = pages.iter().map(|&(gfn, hash, _)| (gfn, hash)).collect();
+                let rebase = engine.rebase(setup_id, near_id, &rows)?;
+                let mut merged: Vec<(u64, &[u8; 32], &[u8; 4096])> = rebase
+                    .keep
+                    .iter()
+                    .map(|&index| pages[index])
+                    .chain(
+                        rebase
+                            .origin
+                            .iter()
+                            .map(|(gfn, hash, data)| (*gfn, hash, &**data)),
+                    )
+                    .collect();
+                merged.sort_unstable_by_key(|row| row.0);
+                written = merged.len();
+                Ok(engine.snapshot_hashed_derive(near_id, &merged, vm_state)?)
+            },
+        )?;
+        self.telemetry.imports.add(started.elapsed().as_nanos());
+        self.telemetry.import_pages = self.telemetry.import_pages.saturating_add(written as u64);
+        Ok(receipt)
+    }
+
+    fn import_sparse_untimed(
+        &mut self,
+        base: SnapId,
+        gfns: impl Iterator<Item = u64>,
+        sidecar: &[u8],
+        derive: impl FnOnce(
+            &mut SnapshotEngine,
+            snapshot_store::SnapshotId,
+            &[u8],
+        ) -> Result<snapshot_store::SnapshotId, PortableSnapshotError>,
+    ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
+        let base_id = self.store_id(base)?;
         let mut previous = None;
-        for (gfn, _) in pages {
-            if let Some(error) = sparse_page_order_error(previous, *gfn) {
+        for gfn in gfns {
+            if let Some(error) = sparse_page_order_error(previous, gfn) {
                 return Err(PortableSnapshotError::Snapshot(error));
             }
-            if *gfn >= self.engine.mem_pages() {
+            if gfn >= self.engine.mem_pages() {
                 return Err(PortableSnapshotError::Snapshot(
                     SnapshotError::SparsePageOutOfRange {
-                        gfn: *gfn,
+                        gfn,
                         pages: self.engine.mem_pages(),
                     },
                 ));
             }
-            previous = Some(*gfn);
+            previous = Some(gfn);
         }
 
         let portable = decode_sparse_sidecar(sidecar)?;
@@ -531,16 +619,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .next_snap
             .checked_add(1)
             .ok_or(PortableSnapshotError::Malformed("snapshot handle overflow"))?;
-        let mut owned_pages = Vec::new();
-        owned_pages
-            .try_reserve_exact(pages.len())
-            .map_err(|_| PortableSnapshotError::Malformed("sparse page allocation"))?;
-        for (gfn, page) in pages {
-            owned_pages.push((*gfn, **page));
-        }
-        let store_id =
-            self.engine
-                .snapshot_sparse_derive(base_id, &owned_pages, &portable.vm_state)?;
+        let store_id = derive(&mut self.engine, base_id, &portable.vm_state)?;
 
         self.next_snap = next_snap;
         self.snaps.insert(id, store_id);
@@ -4428,6 +4507,108 @@ mod tests {
             round_trip.state_hash, source_hash,
             "restored state_blob_suffix keeps an on-demand whole-state hash correct"
         );
+        assert_eq!(run_all(&mut source), run_all(&mut destination));
+        assert_eq!(hash(&mut source), hash(&mut destination));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the replay half materializes a snapshot-store mapping, while sparse export/import validation is exercised by Miri-safe unit tests"
+    )]
+    fn sparse_delta_chain_replays_in_another_server() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        let setup_page = image[4096..8192].to_vec();
+        image[4096..8192].fill(0xA5);
+        image[3 * 4096..4 * 4096].fill(0x5A);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        image[4096..8192].copy_from_slice(&setup_page);
+        image[2 * 4096..3 * 4096].fill(0x77);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+
+        let anchor = source.export_sparse_delta(setup, None, parent).unwrap();
+        assert_eq!(
+            anchor.pages.iter().map(|page| page.0).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert!(anchor.reverted.is_empty());
+        let delta = source
+            .export_sparse_delta(setup, Some(parent), target)
+            .unwrap();
+        assert_eq!(
+            delta.pages.iter().map(|page| page.0).collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(delta.reverted, vec![1]);
+        let owned: Vec<(u64, [u8; 32], [u8; 4096])> = [delta.pages[0], anchor.pages[1]]
+            .into_iter()
+            .map(|(gfn, hash, page)| (gfn, *hash, *page))
+            .collect();
+        let sidecar = delta.sidecar.clone();
+        let source_hash = hash(&mut source);
+        let resolved: Vec<_> = owned
+            .iter()
+            .map(|(gfn, hash, page)| (*gfn, hash, page))
+            .collect();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let destination_setup = snap(&mut destination);
+        let mut planted = *resolved[1].2;
+        planted[9] ^= 1;
+        let tampered = vec![resolved[0], (resolved[1].0, resolved[1].1, &planted)];
+        assert!(
+            destination
+                .import_sparse_delta(destination_setup, destination_setup, &tampered, &sidecar)
+                .is_err()
+        );
+        let imported = destination
+            .import_sparse_delta(destination_setup, destination_setup, &resolved, &sidecar)
+            .unwrap();
+        assert_eq!(imported.id.0, destination_setup.0 + 1);
+
+        let mut near_image = destination.vmm().unwrap().guest_memory().to_vec();
+        near_image[..4096].fill(0x11);
+        near_image[3 * 4096..4 * 4096].fill(0x5A);
+        destination
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&near_image)
+            .unwrap();
+        let near = snap(&mut destination);
+        let pages_before = destination.host_telemetry().import_pages;
+        let rebased = destination
+            .import_sparse_delta(destination_setup, near, &resolved, &sidecar)
+            .unwrap();
+        assert_eq!(
+            destination.host_telemetry().import_pages - pages_before,
+            2,
+            "page 3 already matches near; page 0 returns to its setup content"
+        );
+
+        for id in [imported.id, rebased.id] {
+            assert_eq!(
+                destination.handle(&Request::Replay(id)).unwrap(),
+                Ok(Reply::Unit)
+            );
+            assert_eq!(hash(&mut destination), source_hash);
+        }
         assert_eq!(run_all(&mut source), run_all(&mut destination));
         assert_eq!(hash(&mut source), hash(&mut destination));
     }
