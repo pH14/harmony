@@ -42,7 +42,9 @@ VMST uses the current version 6 wire format; a present `xsave_restore_bv`
 intentionally changes the VCPU identity.
 Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page
-contents. The resulting sorted plan borrows integrity-checked store pages and
+contents. The control server holds a store reference on the image the VM last
+sealed or restored, so dropping that snapshot's handle keeps the difference
+small instead of forcing a full-image copy. The resulting sorted plan borrows integrity-checked store pages and
 copies each selected page directly into guest RAM. Page-write validation sorts
 small address/reference records, rejects duplicates and invalid ranges before
 any write, then coalesces instruction-cache invalidation ranges in the same pass
