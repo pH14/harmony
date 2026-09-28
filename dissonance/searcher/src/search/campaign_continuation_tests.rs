@@ -65,6 +65,9 @@ struct TestTarget {
 
 impl TestTarget {
     fn apply(&mut self, action: &TestAction) {
+        std::thread::sleep(std::time::Duration::from_micros(
+            u64::from(action.input % 4) * 25,
+        ));
         self.value = self.value.wrapping_add(action.input);
         self.execution_work = self
             .execution_work
@@ -297,7 +300,7 @@ fn continuation_config(
         stop_rollout_on_objective: true,
         stop_campaign_on_objective: true,
         archive_entry_limit: 128,
-        reservations_per_worker: 2,
+        window: 2 * workers as usize,
         memory_budget_mib: Some(budget_mib),
         materialize_final_artifacts: true,
         run: (),
@@ -697,6 +700,85 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
 }
 
 #[test]
+fn a_fixed_window_writes_the_same_stream_at_any_worker_count() {
+    let streams = [1, 4, 16, 64].map(|workers| {
+        let mut config = continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 12);
+        config.window = 16;
+        config.stop_campaign_on_objective = false;
+        let mut stream = Vec::new();
+        run_campaign_checkpointed_with_options(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        stream
+    });
+    for (workers, stream) in [4, 16, 64].iter().zip(&streams[1..]) {
+        assert!(
+            stream == &streams[0],
+            "{workers} workers changed the stream"
+        );
+    }
+}
+
+#[test]
+fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
+    let directory = checkpoint_directory("worker-count");
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.window = 8;
+    config.stop_campaign_on_objective = false;
+    let (original, original_progress) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(170),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    assert!(
+        original.0.telemetry.admission.results_held > 0,
+        "no result waited for admission"
+    );
+    let mut kept = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ckpt")
+        })
+        .collect::<Vec<_>>();
+    kept.sort();
+    assert_eq!(kept.len(), 2, "kept {kept:?}");
+    for path in kept {
+        let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
+            .parse()
+            .unwrap();
+        for workers in [1, 3, 8] {
+            config.workers = workers;
+            let (resumed, resumed_progress) = run_with_checkpoints(
+                &config,
+                &CampaignOrigin::SearchCheckpoint { path: path.clone() },
+                None,
+            );
+            assert_eq!(
+                progress_lines_after(&resumed_progress, resume_at),
+                progress_lines_after(&original_progress, resume_at),
+                "{workers} workers resumed at {resume_at} diverged"
+            );
+            assert_eq!(resumed.0.archive, original.0.archive);
+            assert_eq!(resumed.0.execution_work, original.0.execution_work);
+        }
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
 fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
     let directory = checkpoint_directory("reseed");
     let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
@@ -730,18 +812,18 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
         progress_lines_after(&original_progress, 300)
     );
     config.workers = 2;
-    let error = run_campaign_checkpointed_with_options(
-        &TestWorkload,
+    let (fewer_workers, fewer_workers_progress) = run_with_checkpoints(
         &config,
         &CampaignOrigin::SearchCheckpoint {
             path: directory.join("000000000300-interval.ckpt"),
         },
-        &mut Vec::new(),
         None,
-        CampaignExecutionOptions::default(),
-    )
-    .expect_err("a checkpoint resumed with another worker count");
-    assert!(error.to_string().contains("worker count"), "{error}");
+    );
+    assert_eq!(fewer_workers.0.stream_sha256, resumed.0.stream_sha256);
+    assert_eq!(
+        progress_lines_after(&fewer_workers_progress, 300),
+        progress_lines_after(&resumed_progress, 300)
+    );
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
@@ -883,14 +965,12 @@ fn campaign_counters_with_an_import_round_trip_through_postcard() {
         executions_to_first_objective: Some(9),
         duplicates_skipped: 11,
         draw_state_memory_bytes: 13,
-        jobs_per_worker: vec![1, 2],
-        skips_per_worker: vec![0, 1],
     };
     let decoded: CampaignCounters =
         postcard::from_bytes(&postcard::to_allocvec(&counters).unwrap()).unwrap();
     assert_eq!(decoded.tree_import, counters.tree_import);
     assert_eq!(decoded.job_execution_work, 7);
-    assert_eq!(decoded.skips_per_worker, vec![0, 1]);
+    assert_eq!(decoded.duplicates_skipped, 11);
 }
 
 #[test]
@@ -900,8 +980,7 @@ fn a_resume_refuses_a_changed_workload_policy() {
         reason: "interval".to_owned(),
         workload_identity_sha256: String::new(),
         campaign_seed: 1,
-        workers: 1,
-        reservations_per_worker: 1,
+        window: 1,
         archive_entry_limit: 8,
         memory_budget_mib: None,
         policies: BTreeMap::from([

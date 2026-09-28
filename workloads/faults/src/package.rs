@@ -418,7 +418,7 @@ mod live {
             "root_seal": archive.root_seal,
             "vocabulary": vocabulary.identifier(),
             "campaign_seed": campaign_report.campaign.campaign_seed,
-            "workers": campaign_report.campaign.workers,
+            "workers": campaign_report.campaign.telemetry.workers.len(),
             "execution_budget": campaign_report.campaign.execution_budget,
             "executions": campaign_report.campaign.executions_completed,
             "execution_ticks": campaign_report.campaign.execution_work,

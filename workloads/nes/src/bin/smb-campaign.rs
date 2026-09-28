@@ -11,7 +11,7 @@ use std::{
 
 use nes_workload::{
     search::archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, retention_policy_from_identifier},
-    search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+    search::campaign::default_window,
     search::draw::{
         DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
     },
@@ -86,7 +86,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut write_final_artifacts = true;
     let mut archive_entry_limit = MAX_ARCHIVE_ENTRIES;
     let mut memory_budget_mib = Some(DEFAULT_MEMORY_BUDGET_MIB);
-    let mut reservations_per_worker = DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER;
+    let mut window = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -137,16 +137,17 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --archive-entry-limit value")?
                     .to_string_lossy(),
             )?)?;
-        } else if flag == "--window-per-worker" {
-            reservations_per_worker = usize::try_from(parse_u64(
+        } else if flag == "--window" {
+            let reservations = usize::try_from(parse_u64(
                 &args
                     .next()
-                    .ok_or("missing --window-per-worker value")?
+                    .ok_or("missing --window value")?
                     .to_string_lossy(),
             )?)?;
-            if reservations_per_worker == 0 {
-                return Err("--window-per-worker must be at least 1".into());
+            if reservations == 0 {
+                return Err("--window must be at least 1".into());
             }
+            window = Some(reservations);
         } else if flag == "--memory-budget-mib" {
             memory_budget_mib = Some(usize::try_from(parse_u64(
                 &args
@@ -184,7 +185,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         wall_budget,
         continue_after_victory: false,
         archive_entry_limit,
-        reservations_per_worker,
+        window: window.unwrap_or(default_window(workers)),
         memory_budget_mib,
         materialize_final_artifacts: write_final_artifacts,
         retention,
@@ -431,7 +432,7 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
     serde_json::json!({
         "mode": report.mode,
         "campaign_seed": report.campaign_seed,
-        "workers": report.workers,
+        "workers": report.telemetry.workers.len(),
         "host": report.host,
         "origin": report.origin.kind,
         "executions_completed": report.executions_completed,
@@ -448,7 +449,7 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "executions_to_first_victory": report.executions_to_first_objective,
         "frames_emulated": report.execution_work,
         "frames_to_first_victory": report.work_to_first_objective,
-        "jobs_per_worker": report.jobs_per_worker,
+        "window": report.window,
         "stream_sha256": report.stream_sha256,
     })
 }

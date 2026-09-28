@@ -314,7 +314,7 @@ mod real {
             },
             "emulator_backend": emulator_backend,
             "campaign_seed": report.campaign_seed,
-            "workers": report.workers,
+            "workers": report.telemetry.workers.len(),
             "memory_budget_mib": args.memory_budget_mib,
             "archive_memory_budget_mib": memory_budget.archive_memory_budget_mib,
             "process_memory_reserve_mib": memory_budget.process_memory_reserve_mib,
@@ -333,7 +333,7 @@ mod real {
             "milestones": report.archive.milestones,
             "first_reached": report.archive.first_reached,
             "progress_curve": report.archive.progress_curve,
-            "jobs_per_worker": report.jobs_per_worker,
+            "window": report.window,
             "best_input_actions": best_input.actions.len(),
             "best_input_frames": best_input_frames,
         });

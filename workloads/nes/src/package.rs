@@ -7,10 +7,7 @@ use crate::{
 };
 use searcher::search::{
     archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
-    campaign::{
-        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-        run_campaign_checkpointed,
-    },
+    campaign::{CampaignConfig, CampaignOrigin, default_window, run_campaign_checkpointed},
     draw::{DrawMixture, SuffixShape},
 };
 use serde::{Deserialize, Serialize};
@@ -141,7 +138,7 @@ where
         stop_rollout_on_objective: true,
         stop_campaign_on_objective: true,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-        reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+        window: default_window(options.workers),
         memory_budget_mib: None,
         materialize_final_artifacts: true,
         run,

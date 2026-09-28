@@ -427,8 +427,7 @@ impl MetroidCampaignConfig {
             stop_rollout_on_objective: !self.continue_after_victory,
             stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
-            reservations_per_worker:
-                crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+            window: crate::search::campaign::default_window(self.workers),
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: MetroidCampaignRun,

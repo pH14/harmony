@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v1";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v2";
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
@@ -53,8 +53,7 @@ pub struct CheckpointHeader {
     pub reason: String,
     pub workload_identity_sha256: String,
     pub campaign_seed: u64,
-    pub workers: u32,
-    pub reservations_per_worker: usize,
+    pub window: usize,
     pub archive_entry_limit: usize,
     pub memory_budget_mib: Option<usize>,
     pub policies: BTreeMap<String, String>,
@@ -324,8 +323,7 @@ mod tests {
             reason: "interval".to_owned(),
             workload_identity_sha256: String::new(),
             campaign_seed: 1,
-            workers: 1,
-            reservations_per_worker: 1,
+            window: 1,
             archive_entry_limit: 8,
             memory_budget_mib: None,
             policies: BTreeMap::new(),

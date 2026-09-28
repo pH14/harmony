@@ -161,7 +161,9 @@ where
         stop_rollout_on_objective: true,
         stop_campaign_on_objective: true,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-        reservations_per_worker: request.window,
+        window: request
+            .window
+            .saturating_mul(usize::try_from(request.workers)?),
         memory_budget_mib: Some(request.memory_mib),
         materialize_final_artifacts: full,
         run: run.clone(),
