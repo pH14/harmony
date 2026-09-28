@@ -21,9 +21,13 @@ impl Default for ServiceConfig {
 impl ServiceConfig {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        put(&mut out, &self.identity);
-        put(&mut out, &self.configuration);
+        self.encode_into(&mut out);
         out
+    }
+    #[inline]
+    fn encode_into(&self, out: &mut Vec<u8>) {
+        put(out, &self.identity);
+        put(out, &self.configuration);
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         let mut r = Reader(bytes);
@@ -137,11 +141,11 @@ impl InputSpec {
         let mut out = b"HENV".to_vec();
         out.extend(Self::BLOB_VERSION.to_le_bytes());
         out.extend(self.seed.to_le_bytes());
-        put(&mut out, &self.config.encode());
+        put_encoded(&mut out, |out| self.config.encode_into(out));
         out.extend((self.effects.len() as u32).to_le_bytes());
         for (at, effect) in &self.effects {
             out.extend(at.to_le_bytes());
-            put(&mut out, &effect.encode());
+            put_encoded(&mut out, |out| effect.encode_into(out));
         }
         out.extend((self.reseeds.len() as u32).to_le_bytes());
         for (at, seed) in &self.reseeds {
@@ -240,6 +244,15 @@ impl InputSpec {
         Ok(result)
     }
 }
+fn put_encoded(out: &mut Vec<u8>, encode: impl FnOnce(&mut Vec<u8>)) {
+    let length_at = out.len();
+    out.extend(0_u32.to_le_bytes());
+    let start = out.len();
+    encode(out);
+    let length = out.len() - start;
+    out[length_at..start].copy_from_slice(&(length as u32).to_le_bytes());
+}
+
 fn put(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend((bytes.len() as u32).to_le_bytes());
     out.extend(bytes);
@@ -298,6 +311,51 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod buffered_reference {
+        use crate as environment;
+        include!("../qualification/reference-input-spec.rs");
+
+        pub(super) fn encode(spec: &crate::input_spec::InputSpec) -> Vec<u8> {
+            spec.encode_buffered()
+        }
+    }
+
+    #[test]
+    fn nested_encodings_match_buffered_wire_for_every_effect_and_tape_shape() {
+        for bytes in [0, 1, 256, 4096] {
+            for payloads in [None, Some(vec![]), Some(vec![vec![], vec![1, 2, 3]])] {
+                let mut spec = InputSpec::seeded(0x1234_5678);
+                spec.set_config(ServiceConfig {
+                    identity: vec![0x47; bytes],
+                    configuration: vec![1, 2, 3],
+                });
+                spec.record_effect(
+                    3,
+                    Effect::WriteMemory {
+                        gpa: 0x1234,
+                        bytes: vec![5; bytes],
+                    },
+                );
+                spec.record_effect(
+                    5,
+                    Effect::XorMemory {
+                        gpa: 0x5678,
+                        bytes: vec![9; bytes],
+                    },
+                );
+                spec.record_effect(7, Effect::InjectInterrupt { vector: 32 });
+                spec.record_reseed(9, 0x9876);
+                spec.set_payloads(payloads);
+                spec.record_answer(11, 19, 3, Answer::Data(vec![4, 5]))
+                    .unwrap();
+                spec.record_answer(11, 19, 7, Answer::Nominal).unwrap();
+                let encoded = spec.encode();
+                assert_eq!(encoded, buffered_reference::encode(&spec));
+                assert_eq!(InputSpec::decode_snapshot(&encoded).unwrap(), spec);
+            }
+        }
+    }
+
     #[test]
     fn inputs_round_trip_and_reject_every_truncation() {
         let mut spec = InputSpec::seeded(41);

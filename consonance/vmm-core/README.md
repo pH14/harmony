@@ -245,6 +245,14 @@ of pending memory-write effects. Data is split into 256-byte entries. The
 pending effects are never executed in the timed region. Portable checks run
 in the existing snapshot and ARM host CI jobs without timing thresholds.
 
+Add `--inputs` to compare direct nested input encoding with the prior buffered
+encoder, leaving control-state encoding reuse enabled in both arms. The input
+reference uses public accessors and the standalone configuration/effect encoders
+to reproduce the old framing. Its bytes are also checked by environment unit
+tests over all effect variants and tape shapes. `--jemalloc` uses the Harmony
+CLI allocator; the default uses the host system allocator. Each run identifies
+the allocator and comparison. CI runs `--inputs --check` without timing limits.
+
 The SDK-restore qualification compares this path with a same-source VMM copy
 that clones the entire SDK snapshot and restores the replay environment twice.
 Both versions run in one release executable, identified by its printed SHA-256.
