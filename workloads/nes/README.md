@@ -109,6 +109,9 @@ cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings
 ```
 
+Library unit tests use jemalloc, matching the search executables, so
+thread-local allocation-counter checks exercise the production allocator.
+
 The [Nova](src/nova/README.md), [Mega Man 2](src/mm2/README.md), and
 [Metroid](src/metroid/README.md) READMEs document their input and observation maps. Campaign streams
 and checkpoints retain their versioned workload identities across crate moves.
