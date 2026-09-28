@@ -31,9 +31,10 @@ def graph(nodes: int, places: int, levels: int) -> dict:
 
 
 def scale(workers: int, memory_mib: int, cost_ns: int, snapshot_bytes: int, reservations: int = 2,
-          results: int = 1) -> dict:
+          results: int = 1, sleep_ns: int = 0) -> dict:
     return {"workers": workers, "window": workers * reservations, "results_per_worker": results,
             "memory_budget_mib": memory_mib, "archive_entries": 4_194_304, "action_cost_ns": cost_ns,
+            "action_sleep_ns": sleep_ns,
             "snapshot_bytes": snapshot_bytes}
 
 
@@ -167,29 +168,35 @@ def cores(args: argparse.Namespace) -> None:
     config = graph(4_194_304, 1024, 4)
     seed = secrets.randbits(64)
     print(f"seed {seed}, layout {config['parameters']['layout']}, "
-          f"cost {args.cost_ns:,} ns per transition, work {args.work:,} transitions"
+          f"cost {args.cost_ns:,} ns and sleep {args.sleep_ns:,} ns per transition, "
+          f"work {args.work:,} transitions"
           f"{'' if args.total_work else ' per worker'}, {args.reservations} reservations "
           f"and {args.results} results per worker")
     print(f"{'workers':>7}  {'executions/s':>12}  {'speedup':>7}  {'coordinator busy':>16}  "
-          f"{'transitions per try':>19}  {'worker ms per try':>17}")
+          f"{'transitions per try':>19}  {'worker ms per try':>17}  {'workers busy':>12}  "
+          f"{'admission idle':>14}")
     base = None
     for workers in args.workers_list:
-        rates, busy, transitions = [], [], []
+        rates, busy, transitions, working, waiting = [], [], [], [], []
         for _ in range(args.repeats):
             work = args.work if args.total_work else args.work * workers
-            settings = scale(workers, 16_384, args.cost_ns, 0, args.reservations, args.results)
+            settings = scale(workers, 16_384, args.cost_ns, 0, args.reservations, args.results,
+                             args.sleep_ns)
             run = launch(args.binary[0], config, settings, work, args.sample_seconds, seed)
             rate, share = search_interval(run)
             rates.append(rate)
             if share is not None:
                 busy.append(share)
             transitions.append(run["final"]["execution_work"] / run["final"]["executions"])
+            working.append(run["report"]["worker_busy_fraction"])
+            waiting.append(run["report"]["admission_order_idle_fraction"])
         rate = statistics.median(rates)
         base = base or rate
         per_try = statistics.median(transitions)
         print(f"{workers:>7}  {rate:>12,.0f}  {rate / base:>7.2f}  "
               f"{statistics.median(busy) if busy else float('nan'):>16.0%}  {per_try:>19.2f}  "
-              f"{args.cost_ns * per_try / 1e6:>17.2f}")
+              f"{(args.cost_ns + args.sleep_ns) * per_try / 1e6:>17.2f}  "
+              f"{statistics.median(working):>12.0%}  {statistics.median(waiting):>14.0%}")
 
 
 def memory(args: argparse.Namespace) -> None:
@@ -258,6 +265,7 @@ def main() -> int:
     core = modes.add_parser("cores", parents=[common], help="throughput against worker count")
     core.add_argument("--workers-list", type=worker_counts, default=[1, 2, 4, 8], help="worker counts")
     core.add_argument("--cost-ns", type=non_negative, default=0, help="thread CPU time per transition")
+    core.add_argument("--sleep-ns", type=non_negative, default=0, help="sleep per transition")
     core.add_argument("--work", type=positive, default=6_000_000, help="transitions per worker per run")
     core.add_argument("--total-work", action="store_true", help="give every worker count the same --work")
     core.add_argument("--reservations", type=positive, default=2, help="reservations per worker")

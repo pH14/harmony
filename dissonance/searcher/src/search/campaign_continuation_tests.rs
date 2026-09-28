@@ -65,9 +65,12 @@ struct TestTarget {
 
 impl TestTarget {
     fn apply(&mut self, action: &TestAction) {
-        std::thread::sleep(std::time::Duration::from_micros(
-            u64::from(action.input % 4) * 25,
-        ));
+        let micros = if action.input == 0 {
+            2_000
+        } else {
+            u64::from(action.input % 4) * 25
+        };
+        std::thread::sleep(std::time::Duration::from_micros(micros));
         self.value = self.value.wrapping_add(action.input);
         self.execution_work = self
             .execution_work
@@ -706,7 +709,7 @@ fn a_fixed_window_writes_the_same_stream_at_any_worker_count() {
         config.window = 16;
         config.stop_campaign_on_objective = false;
         let mut stream = Vec::new();
-        run_campaign_checkpointed_with_options(
+        let (report, _) = run_campaign_checkpointed_with_options(
             &TestWorkload,
             &config,
             &CampaignOrigin::Genesis,
@@ -715,6 +718,20 @@ fn a_fixed_window_writes_the_same_stream_at_any_worker_count() {
             CampaignExecutionOptions::default(),
         )
         .unwrap();
+        assert!(
+            report.duplicates_skipped > 0,
+            "{workers} workers skipped no duplicate"
+        );
+        assert!(
+            report.snapshot_evictions > 0,
+            "{workers} workers evicted no snapshot"
+        );
+        assert!(
+            std::str::from_utf8(&stream)
+                .unwrap()
+                .contains("\"path\":\"continuation\""),
+            "{workers} workers dispatched no continuation"
+        );
         stream
     });
     for (workers, stream) in [4, 16, 64].iter().zip(&streams[1..]) {
