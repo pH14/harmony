@@ -43,8 +43,8 @@ replay under it: `nes-progress` names it, and `metroid-film` defaults to it.
 `archive.rs` records the experimental adapter policy explicitly. The place is
 the area, the map cell, boss damage and the Zebetite hits still needed. The
 holder identity within a place is the 16-pixel position bucket, posture and
-door-transition state. Health and missile stock are same-slot preferences, and
-the two preferences order that pair against each other in opposite ways. The
+door-transition state. Health and missile stock are same-slot preferences: the
+first preference favors missiles and the second favors a balance of the two. The
 key's tank count subtracts the 75 missiles each boss kill awards, so a kill
 does not relabel every map cell the killer reaches as holding fifteen more
 tanks than the cells beside it; the kill still counts through the item term. The Brinstar statue room rewrites both boss bytes to `0x82` when
@@ -128,19 +128,24 @@ zero. Without the coordinate a state that has landed ten hits on
 Kraid shares a cell with one standing in the doorway, and no ordering can
 prefer the first.
 
-The key declares two preferences. Both lead with items then tanks; the first
-then ranks missiles before health and the second health before missiles. A
-location keeps the best state under each, so at most two, and one state holds
-both places when it leads on both. The two disagree only on a resource trade:
-ten missiles at twenty health takes the first, five missiles at two hundred
-health takes the second, and a route that needs the survivable state keeps it
-beside the stocked one. The order is recorded as `preference_policy`, apart
-from `key_policy`, so a search checkpoint resumes under a revised order and
-re-ranks each location's holders from their stored keys.
+The key declares two preferences. Both lead with items then tanks. The first
+then ranks missiles before health. The second ranks by balance, the smaller of
+the missile and energy fractions of capacity, then missiles, then health.
+Energy capacity is the health cap for the tank count. A state with no missiles
+or no missile capacity has balance zero, and two such states are ranked health
+first. A location keeps the best state under each, so at most two, and one
+state holds both places when it leads on both. The two disagree on a resource
+trade: twenty of twenty missiles at a tenth of full energy takes the first, ten
+of twenty missiles at half energy takes the second, and a route that needs both
+resources keeps the balanced state beside the stocked one. The order is
+recorded as `preference_policy`, apart from `key_policy`, so a search
+checkpoint resumes under a revised order and re-ranks each location's holders
+from their stored keys.
 
-The key also records missile capacity and energy tanks for the preferences. They
-stay out of the tier, the place, the holder identity and the key's own order,
-so two states that differ only in capacity compare equal everywhere else.
+The key records missile capacity and energy tanks for the balance preference.
+They stay out of the tier, the place, the holder identity and the key's own
+order, so two states that differ only in capacity compare equal everywhere
+else.
 
 The primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.

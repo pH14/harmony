@@ -219,8 +219,8 @@ const CARTRIDGE_RAM_SIZE: usize = 8192;
 const CARTRIDGE_FRAME_RANGE: std::ops::Range<usize> =
     ENERGY_TANKS..ENEMY_TYPE_BASE + (ENEMY_SLOTS - 1) * ENEMY_SLOT_STRIDE + 1;
 
-fn health_cap(energy_tanks: u8) -> u16 {
-    (u16::from(energy_tanks) + 1) * 1000 - 1
+pub(crate) fn health_cap(energy_tanks: u8) -> u32 {
+    (u32::from(energy_tanks) + 1) * 1000 - 1
 }
 
 fn to_bcd(value: u16) -> u8 {
@@ -688,10 +688,10 @@ impl MetroidTarget {
             || self.is_victory()
             || state.energy_tanks > MAX_ENERGY_TANKS
             || state.health == 0
-            || state.health > health_cap(state.energy_tanks)
+            || u32::from(state.health) > health_cap(state.energy_tanks)
             || state.missiles > state.missile_capacity
             || health == 0
-            || health > health_cap(state.energy_tanks)
+            || u32::from(health) > health_cap(state.energy_tanks)
             || missiles > state.missile_capacity
         {
             return Err("resource intervention exceeds the live state's earned capacities".into());
