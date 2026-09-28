@@ -747,7 +747,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 HashScope::Whole => {
                     let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
                     let mut suffix = vmm.state_blob_suffix()?;
-                    self.capture_control_state().append_hash(&mut suffix);
+                    self.capture_control_state()
+                        .encode_and_append_hash(&mut suffix);
                     let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                     Ok(Ok(Reply::Hash(hash_state_blob_parts(
                         vmm.guest_memory(),
@@ -920,7 +921,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_channel.as_ref().map(|channel| &channel.recorded),
         )?;
         drop(vcpu);
-        control.append_hash(&mut state_blob_suffix);
+        let control_state = control.encode_and_append_hash(&mut state_blob_suffix);
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
         let at = vm_state.vtime().snapshot_vns;
         let sdk_events = vmm.sdk_events().len() as u64;
@@ -960,7 +961,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 state_hash: None,
                 state_blob_suffix,
                 policy,
-                control_state: control.encode(),
+                control_state,
             },
         );
         Ok(Ok(Reply::Snapshot {

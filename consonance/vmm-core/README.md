@@ -217,6 +217,23 @@ HVF uses one VM at a time and compares canonical hashes; advancing hardware
 counters prevent raw sidecar comparison. CI runs portable checks without timing
 thresholds in Snapshot and Restore and both ARM Host Compatibility jobs.
 
+The control-state capture qualification compares reuse of serialized control
+history against serializing it again for storage, in one executable:
+
+```sh
+python3 consonance/vmm-core/qualification/qualify-control-capture.py --check
+python3 consonance/vmm-core/qualification/qualify-control-capture.py
+python3 consonance/vmm-core/qualification/qualify-control-capture.py --hvf --check
+python3 consonance/vmm-core/qualification/qualify-control-capture.py --hvf
+```
+
+It uses the same snapshot-and-drop timing and hash/sidecar checks as the SDK
+capture qualification, with 16 KiB zero RAM. Fixtures exercise an empty plan,
+4 KiB, 64 KiB, and 512 KiB of payloads, 64 KiB of recorded answers, and 64 KiB
+of pending memory-write effects. Data is split into 256-byte entries. The
+pending effects are never executed in the timed region. Portable checks run
+in the existing snapshot and ARM host CI jobs without timing thresholds.
+
 The SDK-restore qualification compares this path with a same-source VMM copy
 that clones the entire SDK snapshot and restores the replay environment twice.
 Both versions run in one release executable, identified by its printed SHA-256.
@@ -318,6 +335,12 @@ before publication. No execution or SDK mutation occurs before suffix encoding.
 Standalone hash reads capture their own SDK state; nothing is cached across
 requests. SDK capture errors still poison the server before a snapshot is
 published. The wire encoding and hashed bytes are unchanged.
+
+A control snapshot encodes its recorded inputs, pending effects/reseeds, failure
+state, and execution nonce once. It appends these encoded bytes to the canonical
+hash suffix and moves that same encoding into retained snapshot metadata. This
+avoids a second serialization of the history and plan; each request still
+captures fresh state and retains the same independently owned metadata.
 
 KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
