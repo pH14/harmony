@@ -17,8 +17,9 @@ use searcher::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
             CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
-            default_window, postcard_result_sha256, run_campaign_checkpointed_with_options,
+            Reporting, ResultBuffering, SnapshotCheckpoint, TargetExecution, ThreadPlacement,
+            WorkloadPolicies, default_window, postcard_result_sha256,
+            run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
@@ -183,7 +184,7 @@ impl FaultCampaignConfig {
             stop_rollout_on_objective: true,
             stop_campaign_on_objective: true,
             archive_entry_limit: self.archive_entry_limit,
-            window: default_window(self.workers),
+            window: 2 * default_window(self.workers),
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: FaultCampaignRun {
@@ -806,6 +807,7 @@ pub fn run_fault_campaign_checkpointed(
         progress,
         CampaignExecutionOptions {
             placement: config.placement.clone(),
+            result_buffering: ResultBuffering::TwoPerWorker,
             ..CampaignExecutionOptions::default()
         },
     )?;
