@@ -743,7 +743,11 @@ impl Live {
             return Ok(());
         }
         let dropped = self.chain.truncate(1);
-        self.drop_snapshots(dropped)
+        self.drop_snapshots(dropped)?;
+        if let (Some(shared), Some(bytes)) = (self.chain.shared(), self.session.store_bytes()) {
+            shared.index.report_store(self.holder, bytes);
+        }
+        Ok(())
     }
 
     fn push_link(
