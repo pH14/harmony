@@ -370,6 +370,11 @@ impl Session {
         )
     }
 
+    #[must_use]
+    pub fn telemetry_counters(&self) -> Vec<(String, u64)> {
+        self.client.transport().host_telemetry().counters()
+    }
+
     pub fn doorbell_exits(&self) -> u64 {
         self.client
             .transport()

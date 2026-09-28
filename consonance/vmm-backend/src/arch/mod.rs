@@ -24,4 +24,5 @@ pub trait Arch {
 pub trait ArchExit: Clone + fmt::Debug + PartialEq {
     fn reason(&self) -> ExitReason;
     fn stages_completion(&self) -> bool;
+    fn site(&self) -> (u64, bool);
 }

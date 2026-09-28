@@ -23,6 +23,14 @@ impl<A: Arch> Exit<A> {
             Exit::Arch(e) => e.stages_completion(),
         }
     }
+
+    pub fn site(&self) -> (u64, bool) {
+        match self {
+            Exit::Common(CommonExit::Mmio { gpa, write, .. }) => (gpa.0, write.is_some()),
+            Exit::Common(_) => (0, false),
+            Exit::Arch(e) => e.site(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,6 +117,12 @@ pub struct HypercallFrame {
 pub struct Capabilities<C> {
     pub name: &'static str,
     pub arch: C,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct StoreCompletions {
+    pub runs: u64,
+    pub nanos: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

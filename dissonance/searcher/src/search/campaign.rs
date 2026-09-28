@@ -42,6 +42,9 @@ use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParam
 pub const LONGEST_SPLICE_TAIL: usize = 128;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
+use crate::search::telemetry::{
+    CampaignTelemetry, IdleClock, IdleReason, TargetCounters, nanos_since, now,
+};
 
 pub type CampaignOutcome<G> = (
     CampaignModeReport<<G as CampaignTypes>::Action, <G as CampaignTypes>::ArchiveReport>,
@@ -376,6 +379,9 @@ pub trait TargetExecution: CampaignTypes {
         snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>>;
     fn execution_work(&self, target: &Self::Target) -> u64;
+    fn telemetry(&self, _target: &Self::Target) -> TargetCounters {
+        TargetCounters::new()
+    }
     fn action_cost_fn(&self) -> fn(&Self::Action) -> u64;
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
     fn apply_action(
@@ -842,6 +848,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub skips_per_worker: Vec<u64>,
     pub stream_sha256: String,
     pub archive: R,
+    #[serde(skip)]
+    pub telemetry: CampaignTelemetry,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -2116,7 +2124,6 @@ fn validate_duration_draw<G: Workload + ?Sized>(
 
 #[derive(Default, Deserialize, Serialize)]
 struct LiveCoordinatorProfile {
-    enabled: bool,
     receive_wait_ns: u128,
     admission_ns: u128,
     bookkeeping_ns: u128,
@@ -2143,9 +2150,6 @@ impl LiveCoordinatorProfile {
         spliced: bool,
         cost: fn(&G::Action) -> u64,
     ) {
-        if !self.enabled {
-            return;
-        }
         let total = |actions: &[G::Action]| actions.iter().map(cost).sum::<u64>();
         if !spec.replay.is_empty() {
             self.replay_jobs = self.replay_jobs.saturating_add(1);
@@ -2168,13 +2172,6 @@ impl LiveCoordinatorProfile {
     }
 }
 
-fn live_coordinator_profile(enabled: bool) -> LiveCoordinatorProfile {
-    LiveCoordinatorProfile {
-        enabled,
-        ..LiveCoordinatorProfile::default()
-    }
-}
-
 fn record_compaction_elapsed(
     profile: &mut LiveCoordinatorProfile,
     before: u64,
@@ -2186,13 +2183,12 @@ fn record_compaction_elapsed(
     }
 }
 
-#[allow(clippy::disallowed_methods)]
-fn profile_now(enabled: bool) -> Option<Instant> {
-    enabled.then(Instant::now)
+fn profile_now() -> Instant {
+    now()
 }
 
-fn profile_elapsed(started: Option<Instant>) -> u128 {
-    started.map_or(0, |started| started.elapsed().as_nanos())
+fn profile_elapsed(started: Instant) -> u128 {
+    started.elapsed().as_nanos()
 }
 
 impl CampaignCounters {
@@ -2324,6 +2320,7 @@ fn build_report<G: Workload>(
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
         archive,
+        telemetry: CampaignTelemetry::default(),
     };
     (report, checkpoint)
 }
@@ -2457,6 +2454,7 @@ struct PendingJob<G: Workload + ?Sized> {
 
 struct CompletedJob<G: Workload + ?Sized> {
     physical_worker: u32,
+    held_since: Option<std::time::Instant>,
     pending: PendingJob<G>,
     result: CampaignJobResult<G>,
     execution_work: u64,
@@ -2564,7 +2562,7 @@ pub struct CampaignProgressRecord<K> {
 fn write_live_progress<G: Workload>(
     core: &CoordinatorCore<G>,
     counters: &CampaignCounters,
-    coordinator_profile: &LiveCoordinatorProfile,
+    coordinator_profile: Option<&LiveCoordinatorProfile>,
     draw_state_memory_bytes: usize,
     telemetry_started: Instant,
     final_census: bool,
@@ -2585,10 +2583,7 @@ fn write_live_progress<G: Workload>(
         retained_diagnostics: final_census
             .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
             .flatten(),
-        coordinator: coordinator_profile
-            .enabled
-            .then(|| serde_json::to_value(coordinator_profile))
-            .transpose()?,
+        coordinator: coordinator_profile.map(serde_json::to_value).transpose()?,
         progress: Some(serde_json::to_value(G::aggregate_progress(&core.evidence))?),
         milestones: Some(serde_json::to_value(core.aggregate_milestones())?),
         objectives_reached: core.objectives_reached,
@@ -2795,6 +2790,8 @@ where
         config.memory_budget_mib,
     );
     let mut counters = CampaignCounters::new(config.workers);
+    let mut telemetry = CampaignTelemetry::default();
+    let bootstrap_started = now();
     let resume = match search_checkpoint.take() {
         Some(reader) => Some(restore_search_checkpoint(
             workload,
@@ -2818,6 +2815,7 @@ where
             None
         }
     };
+    telemetry.bootstrap_ns = nanos_since(bootstrap_started);
     if let (Some(path), Some(input)) = (&config.objective_witness_path, &core.objective_witness) {
         std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
     }
@@ -2836,17 +2834,14 @@ where
     let started = config.wall_budget.map(|_| telemetry_started);
 
     let mut reserved = 0_u64;
-    let profile_enabled = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
-    let mut coordinator_profile = live_coordinator_profile(profile_enabled);
+    let profile_printed = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
+    let mut coordinator_profile = LiveCoordinatorProfile::default();
     let mut resumed_admission = 0_usize;
     let mut resumed_in_flight = None;
     if let Some(resume) = resume {
         rands = resume.rands;
         reserved = resume.reserved;
-        coordinator_profile = LiveCoordinatorProfile {
-            enabled: profile_enabled,
-            ..resume.profile
-        };
+        coordinator_profile = resume.profile;
         resumed_admission = resume.next_admission;
         resumed_in_flight = Some(resume.in_flight);
     }
@@ -2866,7 +2861,9 @@ where
     let max_action_cost = workload.max_action_cost();
 
     let retention = config.retention;
-    with_worker_pool(
+    let mut admission = telemetry.admission.clone();
+    let mut idle_clock = IdleClock::new(workers);
+    let ((), worker_telemetry) = with_worker_pool(
         config.workers,
         |_| workload.new_target(),
         |target, spec: JobSpec<G>| {
@@ -2896,6 +2893,7 @@ where
                 })
                 .map_err(|error| error.to_string())
         },
+        |target| workload.telemetry(target),
         |pool| -> Result<(), Box<dyn Error>> {
             let select = |core: &mut CoordinatorCore<G>,
                           rands: &mut [RomuDuoJrRand],
@@ -3207,7 +3205,7 @@ where
             for _ in 0..prefill {
                 let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                 let worker = u32::try_from(worker_index)?;
-                let selection_started = profile_now(coordinator_profile.enabled);
+                let selection_started = profile_now();
                 let selected = select(
                     &mut core,
                     &mut rands,
@@ -3250,6 +3248,7 @@ where
                     .pop_front()
                     .ok_or("campaign prefill lost queued job")?;
                 pool.send(worker, spec)?;
+                idle_clock.busy(usize::try_from(worker)?);
                 physical_queued[usize::try_from(worker)?] += 1;
             }
 
@@ -3260,11 +3259,19 @@ where
                 } else if pending.is_empty() {
                     return Err("campaign reorder window ended with an admission gap".into());
                 } else {
-                    let receive_started = profile_now(coordinator_profile.enabled);
+                    let receive_started = profile_now();
                     let reply = pool.receive()?;
-                    coordinator_profile.receive_wait_ns = coordinator_profile
-                        .receive_wait_ns
-                        .saturating_add(profile_elapsed(receive_started));
+                    let waited = profile_elapsed(receive_started);
+                    coordinator_profile.receive_wait_ns =
+                        coordinator_profile.receive_wait_ns.saturating_add(waited);
+                    let waited = u64::try_from(waited).unwrap_or(u64::MAX);
+                    if completed.is_empty() {
+                        admission.receive_all_running_ns =
+                            admission.receive_all_running_ns.saturating_add(waited);
+                    } else {
+                        admission.receive_head_of_line_ns =
+                            admission.receive_head_of_line_ns.saturating_add(waited);
+                    }
                     Some(reply)
                 };
                 while let Some(reply) = ready_reply {
@@ -3281,6 +3288,17 @@ where
                         .checked_sub(1)
                         .ok_or("campaign worker replied without queued work")?;
                     let (reservation, result, execution_work, result_sha256) = outcome;
+                    let held = reservation != next_admission;
+                    if *queued == 0 {
+                        idle_clock.idle(
+                            physical_index,
+                            if held {
+                                IdleReason::AdmissionOrder
+                            } else {
+                                IdleReason::NoJob
+                            },
+                        );
+                    }
                     let pending_job = pending
                         .remove(&reservation)
                         .ok_or("campaign worker replied for an unknown reservation")?;
@@ -3289,6 +3307,7 @@ where
                             reservation,
                             CompletedJob {
                                 physical_worker,
+                                held_since: held.then(now),
                                 pending: pending_job,
                                 result,
                                 execution_work,
@@ -3313,6 +3332,12 @@ where
                     let execution_work = completed_job.execution_work;
                     let result_sha256 = completed_job.result_sha256;
                     let physical_worker = completed_job.physical_worker;
+                    if let Some(since) = completed_job.held_since {
+                        let held = nanos_since(since);
+                        admission.results_held = admission.results_held.saturating_add(1);
+                        admission.results_held_ns = admission.results_held_ns.saturating_add(held);
+                        admission.results_held_max_ns = admission.results_held_max_ns.max(held);
+                    }
                     let tracked_duration = pending_job
                         .duration_draw
                         .filter(|_| execution_work > 0)
@@ -3321,7 +3346,7 @@ where
                         .duration_draw
                         .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     let objectives_before = core.objectives_reached;
-                    let admission_started = profile_now(coordinator_profile.enabled);
+                    let admission_started = profile_now();
                     core.archive
                         .set_admission_wave(pending_job.continuation_wave);
                     let (sequence, decisions, duration_admission) = core.admit_job_tracking(
@@ -3354,7 +3379,7 @@ where
                         .saturating_add(profile_elapsed(admission_started));
                     coordinator_profile.admissions =
                         coordinator_profile.admissions.saturating_add(1);
-                    let bookkeeping_started = profile_now(coordinator_profile.enabled);
+                    let bookkeeping_started = profile_now();
                     let parent_index = core
                         .archive
                         .index_of_id(pending_job.parent_id)
@@ -3428,7 +3453,7 @@ where
                     }
                     core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
-                    let compaction_started = profile_now(coordinator_profile.enabled);
+                    let compaction_started = profile_now();
                     let compactions_before = core.archive.history_compactions();
                     core.archive.maintain_memory_budget()?;
                     core.archive.prepare_selection();
@@ -3441,7 +3466,7 @@ where
                     coordinator_profile.bookkeeping_ns = coordinator_profile
                         .bookkeeping_ns
                         .saturating_add(profile_elapsed(bookkeeping_started));
-                    let stream_started = profile_now(coordinator_profile.enabled);
+                    let stream_started = profile_now();
                     writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
                         continuation_energy: pending_job.continuation_energy,
                         sequence,
@@ -3482,13 +3507,13 @@ where
                         write_live_progress(
                             &core,
                             &counters,
-                            &coordinator_profile,
+                            profile_printed.then_some(&coordinator_profile),
                             draw_state_memory_bytes,
                             telemetry_started,
                             false,
                             sink,
                         )?;
-                        if coordinator_profile.enabled {
+                        if profile_printed {
                             eprintln!(
                                 "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
                                 coordinator_profile.receive_wait_ns,
@@ -3534,7 +3559,7 @@ where
                     next_admission = next_admission.saturating_add(1);
                     let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                     let worker = u32::try_from(worker_index)?;
-                    let selection_started = profile_now(coordinator_profile.enabled);
+                    let selection_started = profile_now();
                     let selected = select(
                         &mut core,
                         &mut rands,
@@ -3576,6 +3601,7 @@ where
                             .ok_or("campaign queued-job count changed while dispatching")?;
                         pool.send(worker, spec)?;
                         let physical_index = usize::try_from(worker)?;
+                        idle_clock.busy(physical_index);
                         physical_queued[physical_index] =
                             physical_queued[physical_index].saturating_add(1);
                     }
@@ -3614,6 +3640,7 @@ where
                         .ok_or("campaign queued-job count changed while dispatching")?;
                     pool.send(worker, spec)?;
                     let physical_index = usize::try_from(worker)?;
+                    idle_clock.busy(physical_index);
                     physical_queued[physical_index] =
                         physical_queued[physical_index].saturating_add(1);
                 }
@@ -3630,6 +3657,13 @@ where
             Ok(())
         },
     )?;
+    telemetry.search_ns = nanos_since(telemetry_started);
+    telemetry.admission = admission;
+    telemetry.workers = worker_telemetry;
+    idle_clock.finish(&mut telemetry.workers);
+    telemetry.sum_targets();
+    telemetry.coordinator = serde_json::to_value(&coordinator_profile)?;
+    let persistence_started = now();
 
     core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
@@ -3638,7 +3672,7 @@ where
         write_live_progress(
             &core,
             &counters,
-            &coordinator_profile,
+            profile_printed.then_some(&coordinator_profile),
             workload
                 .draw_state_memory_bytes(&draw_state)
                 .saturating_add(duration_policies.memory_bytes()),
@@ -3651,7 +3685,7 @@ where
     counters.draw_state_memory_bytes = workload
         .draw_state_memory_bytes(&draw_state)
         .saturating_add(duration_policies.memory_bytes());
-    Ok(build_report(
+    let (mut report, checkpoint) = build_report(
         workload,
         &header,
         origin_record,
@@ -3659,7 +3693,10 @@ where
         &counters,
         stream_sha256,
         config.materialize_final_artifacts,
-    ))
+    );
+    telemetry.persistence_ns = nanos_since(persistence_started);
+    report.telemetry = telemetry;
+    Ok((report, checkpoint))
 }
 
 fn bootstrap_campaign<G: Workload>(
@@ -4812,13 +4849,12 @@ mod tests {
         SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution, WorkloadPolicies,
         admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
         completed_results_within_bound, draws_continuation, draws_highest_preference,
-        execution_work_delta, finish_record, is_zero_usize, live_coordinator_profile,
-        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, profile_now,
-        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        record_mixture_outcome, replay_campaign_checkpointed, replay_splice,
-        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
-        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective,
+        execution_work_delta, finish_record, is_zero_usize, memory_is_within_reserve,
+        postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
+        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
+        replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
+        retained_archive_indexes, run_campaign_checkpointed, schedule_policy_identifier,
+        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -5014,6 +5050,12 @@ mod tests {
         }
         fn execution_work(&self, target: &Self::Target) -> u64 {
             target.execution_work
+        }
+        fn telemetry(&self, target: &Self::Target) -> crate::search::telemetry::TargetCounters {
+            crate::search::telemetry::TargetCounters::from([(
+                "work".to_owned(),
+                target.execution_work,
+            )])
         }
         fn apply_action(
             &self,
@@ -6013,17 +6055,12 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_profile_helpers_distinguish_disabled_and_elapsed() {
-        assert!(!live_coordinator_profile(false).enabled);
-        assert!(live_coordinator_profile(true).enabled);
-        assert!(profile_now(false).is_none());
-        assert!(profile_now(true).is_some());
-        assert_eq!(profile_elapsed(None), 0);
+    fn coordinator_profile_helpers_measure_elapsed_time() {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("one millisecond before now");
-        assert!(profile_elapsed(Some(started)) > 0);
+        assert!(profile_elapsed(started) > 0);
 
         let mut profile = LiveCoordinatorProfile::default();
         record_compaction_elapsed(&mut profile, 4, 4, 10);
@@ -6476,6 +6513,60 @@ mod tests {
                 .expect("replay without a preference"),
             live
         );
+    }
+
+    #[test]
+    fn the_report_carries_worker_telemetry_that_replay_equality_ignores() {
+        let config = CampaignConfig {
+            campaign_seed: 5,
+            workers: 3,
+            execution_budget: 60,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 32,
+            reservations_per_worker: 1,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("campaign");
+        let telemetry = &live.0.telemetry;
+        assert_eq!(telemetry.workers.len(), 3);
+        assert_eq!(
+            telemetry
+                .workers
+                .iter()
+                .map(|worker| worker.jobs)
+                .sum::<u64>(),
+            live.0.executions_completed
+        );
+        assert_eq!(
+            telemetry.target["work"],
+            live.0.execution_work - live.0.bootstrap_execution_work
+        );
+        assert!(telemetry.search_ns > 0);
+        assert!(telemetry.coordinator["admissions"].as_u64() == Some(live.0.executions_completed));
+        let replayed =
+            replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
+        assert!(replayed.0.telemetry.workers.is_empty());
+        assert_eq!(replayed, live);
     }
 
     #[test]

@@ -42,6 +42,12 @@ impl ArchExit for Arm64Exit {
             Arm64Exit::Sysreg { .. } => true,
         }
     }
+
+    fn site(&self) -> (u64, bool) {
+        match self {
+            Arm64Exit::Sysreg { sysreg, write } => (u64::from(*sysreg), write.is_some()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

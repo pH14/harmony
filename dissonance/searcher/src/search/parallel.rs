@@ -2,6 +2,10 @@
 
 use std::{collections::VecDeque, error::Error, fmt, sync::mpsc, thread};
 
+use crate::search::telemetry::{
+    TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
+};
+
 pub(crate) struct ResultSlots {
     outstanding: Vec<usize>,
     available: VecDeque<u32>,
@@ -115,8 +119,9 @@ pub(crate) fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError
     workers: u32,
     initialize: impl Fn(u32) -> Result<State, String> + Sync,
     execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,
+    finish: impl Fn(&State) -> TargetCounters + Sync,
     coordinate: impl FnOnce(&mut WorkerPool<Job, Output>) -> Result<ResultValue, CoordinatorError>,
-) -> Result<ResultValue, CoordinatorError>
+) -> Result<(ResultValue, Vec<WorkerTelemetry>), CoordinatorError>
 where
     Job: Send,
     Output: Send,
@@ -124,12 +129,17 @@ where
     thread::scope(|scope| {
         let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Output>>();
         let mut job_senders = Vec::with_capacity(workers as usize);
+        let mut handles = Vec::with_capacity(workers as usize);
         for worker in 0..workers {
             let (job_sender, job_receiver) = mpsc::channel::<Job>();
             let reply_sender = reply_sender.clone();
             let initialize = &initialize;
             let execute = &execute;
-            scope.spawn(move || {
+            let finish = &finish;
+            handles.push(scope.spawn(move || {
+                let schedstat_before = thread_schedstat();
+                let booted = now();
+                let mut telemetry = WorkerTelemetry::default();
                 let mut state = match initialize(worker) {
                     Ok(state) => state,
                     Err(error) => {
@@ -137,17 +147,34 @@ where
                             worker,
                             outcome: Err(error),
                         });
-                        return;
+                        return telemetry;
                     }
                 };
-                while let Ok(job) = job_receiver.recv() {
+                telemetry.boot_ns = nanos_since(booted);
+                loop {
+                    let waiting = now();
+                    let Ok(job) = job_receiver.recv() else {
+                        break;
+                    };
+                    telemetry.idle_ns = telemetry.idle_ns.saturating_add(nanos_since(waiting));
+                    let started = now();
                     let outcome = execute(&mut state, job);
+                    telemetry.busy_ns = telemetry.busy_ns.saturating_add(nanos_since(started));
+                    telemetry.jobs = telemetry.jobs.saturating_add(1);
                     let failed = outcome.is_err();
                     if reply_sender.send(WorkerReply { worker, outcome }).is_err() || failed {
                         break;
                     }
                 }
-            });
+                telemetry.target = finish(&state);
+                if let (Some((cpu_before, wait_before)), Some((cpu_after, wait_after))) =
+                    (schedstat_before, thread_schedstat())
+                {
+                    telemetry.cpu_ns = Some(cpu_after.saturating_sub(cpu_before));
+                    telemetry.cpu_wait_ns = Some(wait_after.saturating_sub(wait_before));
+                }
+                telemetry
+            }));
             job_senders.push(Some(job_sender));
         }
         drop(reply_sender);
@@ -155,7 +182,13 @@ where
             job_senders,
             reply_receiver,
         };
-        coordinate(&mut pool)
+        let result = coordinate(&mut pool);
+        drop(pool);
+        let telemetry = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect();
+        result.map(|value| (value, telemetry))
     })
 }
 
@@ -164,6 +197,7 @@ mod tests {
     use std::{cell::Cell, rc::Rc, sync::mpsc};
 
     use super::{ResultSlots, WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+    use crate::search::telemetry::TargetCounters;
 
     #[test]
     fn result_slots_bound_every_executor_until_admission() {
@@ -198,6 +232,7 @@ mod tests {
                 }
                 Ok::<_, String>(value)
             },
+            |_| TargetCounters::new(),
             move |pool| -> Result<(), Box<dyn std::error::Error>> {
                 let mut slots = ResultSlots::new(2, 2);
                 for job in [(Some(blocked), 0), (None, 1), (None, 2), (None, 3)] {
@@ -257,6 +292,7 @@ mod tests {
             1,
             |_| Ok::<_, String>(10_u64),
             |state, job: u64| Ok::<_, String>(*state + job),
+            |state| TargetCounters::from([("state".to_owned(), *state)]),
             |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
                 pool.send(0, 7)?;
                 let reply = pool.receive()?;
@@ -265,7 +301,11 @@ mod tests {
             },
         )
         .expect("coordinate one worker");
+        let (replies, telemetry) = replies;
         assert_eq!(replies, vec![(0, 17)]);
+        assert_eq!(telemetry.len(), 1);
+        assert_eq!(telemetry[0].jobs, 1);
+        assert_eq!(telemetry[0].target["state"], 10);
     }
 
     #[test]
@@ -277,12 +317,14 @@ mod tests {
                 state.set(state.get().saturating_add(increment));
                 Ok::<_, String>(state.get())
             },
+            |_| TargetCounters::new(),
             |pool| -> Result<u64, Box<dyn std::error::Error>> {
                 pool.send(0, 3)?;
                 Ok(pool.receive()?.outcome?)
             },
         )
-        .expect("coordinate worker-local state");
+        .expect("coordinate worker-local state")
+        .0;
         assert_eq!(value, 7);
     }
 
@@ -298,6 +340,7 @@ mod tests {
                 }
                 Ok::<_, String>(job.1)
             },
+            |_| TargetCounters::new(),
             |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
                 pool.send(0, (Some(release_receiver), 10))?;
                 pool.send(1, (None, 11))?;
@@ -313,7 +356,8 @@ mod tests {
                 ])
             },
         )
-        .expect("coordinate two workers");
+        .expect("coordinate two workers")
+        .0;
         assert_eq!(replies, vec![(1, 11), (1, 12), (0, 10)]);
     }
 }

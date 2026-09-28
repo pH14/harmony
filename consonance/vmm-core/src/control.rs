@@ -23,6 +23,7 @@ use crate::vendor::{InterruptReject, Vendor};
 
 use crate::control_state::{ControlState, ScheduleFailure};
 use crate::exec::ExecSession;
+use crate::host_telemetry::{Cost, HostTelemetry};
 use crate::portable_snapshot::{
     PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparsePortableSidecarRef,
     SparsePortableSnapshot, SparsePortableSnapshotReceipt, decode_sparse_sidecar,
@@ -164,6 +165,8 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     session_trace: Vec<SessionTraceSegment>,
     session_trace_start: SessionTraceStart,
     last_seal_dirty_gfns: Option<Vec<u64>>,
+    telemetry: HostTelemetry,
+    export_telemetry: std::cell::Cell<(Cost, u64)>,
 }
 
 struct SdkSnap {
@@ -273,6 +276,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             session_trace: Vec::new(),
             session_trace_start: SessionTraceStart::InitialBoot,
             last_seal_dirty_gfns: None,
+            telemetry: HostTelemetry::default(),
+            export_telemetry: std::cell::Cell::new((Cost::default(), 0)),
         }
     }
 
@@ -344,6 +349,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.last_restore_bytes_written
     }
 
+    pub fn host_telemetry(&self) -> HostTelemetry {
+        let mut telemetry = self.telemetry.clone();
+        if let Some(vmm) = &self.vmm {
+            telemetry.exits.merge(&vmm.exit_telemetry());
+        }
+        (telemetry.exports, telemetry.export_pages) = self.export_telemetry.get();
+        telemetry.restore_fallbacks = self.in_place_fallbacks;
+        telemetry
+    }
+
+    fn retire_vmm(&mut self) {
+        if let Some(vmm) = self.vmm.take() {
+            self.telemetry.exits.merge(&vmm.exit_telemetry());
+        }
+    }
+
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
         self.engine.set_max_chain_len(max_chain_len);
     }
@@ -372,6 +393,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     pub fn export_sparse_snapshot(
+        &self,
+        base: SnapId,
+        target: SnapId,
+    ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        let exported = self.export_sparse_snapshot_untimed(base, target)?;
+        let (mut cost, pages) = self.export_telemetry.get();
+        cost.add(started.elapsed().as_nanos());
+        self.export_telemetry
+            .set((cost, pages.saturating_add(exported.pages.len() as u64)));
+        Ok(exported)
+    }
+
+    fn export_sparse_snapshot_untimed(
         &self,
         base: SnapId,
         target: SnapId,
@@ -425,6 +461,23 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     pub fn import_sparse_snapshot_parts(
+        &mut self,
+        base: SnapId,
+        pages: &[(u64, Arc<[u8; 4096]>)],
+        sidecar: &[u8],
+    ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        let receipt = self.import_sparse_snapshot_parts_untimed(base, pages, sidecar)?;
+        self.telemetry.imports.add(started.elapsed().as_nanos());
+        self.telemetry.import_pages = self
+            .telemetry
+            .import_pages
+            .saturating_add(pages.len() as u64);
+        Ok(receipt)
+    }
+
+    fn import_sparse_snapshot_parts_untimed(
         &mut self,
         base: SnapId,
         pages: &[(u64, Arc<[u8; 4096]>)],
@@ -691,10 +744,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 self.hello_done = true;
                 Ok(Ok(Reply::Hello(server_caps())))
             }
-            Request::Snapshot => self.snapshot(),
+            Request::Snapshot => self.timed_snapshot(),
             Request::Drop(snap) => Ok(self.drop_snap(*snap)),
-            Request::Branch { snap, env } => self.restore(*snap, Some(env)),
-            Request::Replay(snap) => self.restore(*snap, None),
+            Request::Branch { snap, env } => self.timed_restore(*snap, Some(env)),
+            Request::Replay(snap) => self.timed_restore(*snap, None),
             Request::Run { until, resolve } => {
                 if let Some(resolution) = resolve {
                     let Some((at, question)) = self
@@ -736,7 +789,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         .ok_or(ServeError::Poisoned)?
                         .resolve_service_answer(response)
                     {
-                        self.vmm = None;
+                        self.retire_vmm();
                         return Err(error.into());
                     }
                     self.recorded = recorded;
@@ -898,6 +951,42 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .map(|id| (id, false, None))
     }
 
+    fn timed_snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        let reply = self.snapshot();
+        if matches!(reply, Ok(Ok(_))) {
+            self.telemetry.seals.add(started.elapsed().as_nanos());
+            let pages = self
+                .last_seal_dirty_gfns
+                .as_ref()
+                .map_or(self.engine.mem_pages(), |gfns| gfns.len() as u64);
+            self.telemetry.seal_pages = self.telemetry.seal_pages.saturating_add(pages);
+        }
+        reply
+    }
+
+    fn timed_restore(
+        &mut self,
+        snap: SnapId,
+        env: Option<&control_proto::Reproducer>,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        let fallbacks = self.in_place_fallbacks;
+        let reply = self.restore(snap, env);
+        if matches!(reply, Ok(Ok(_))) {
+            self.telemetry.restores.add(started.elapsed().as_nanos());
+            let pages = if self.in_place_fallbacks == fallbacks {
+                self.last_restore_bytes_written / 4096
+            } else {
+                self.engine.mem_pages()
+            };
+            self.telemetry.restore_pages = self.telemetry.restore_pages.saturating_add(pages);
+        }
+        reply
+    }
+
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
         self.last_seal_dirty_gfns = None;
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
@@ -911,7 +1000,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let sdk_channel = match vmm.sdk_snapshot() {
             Ok(state) => state,
             Err(error) => {
-                self.vmm = None;
+                self.retire_vmm();
                 return Err(ServeError::Service(error));
             }
         };
@@ -1169,14 +1258,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 mapping = match self.engine.materialize(store_id) {
                     Ok(mapping) => Some(mapping),
                     Err(_) => {
-                        self.vmm = None;
+                        self.retire_vmm();
                         let recovery = (self.factory)()?;
                         self.install_recovery_boot(recovery);
                         return Ok(Err(ControlError::RestoreFailed));
                     }
                 };
             }
-            self.vmm = None;
+            self.retire_vmm();
             self.current_image = None;
             self.last_restore_bytes_written = 0;
             let mapping = mapping.expect("fresh restore materialized the target image");

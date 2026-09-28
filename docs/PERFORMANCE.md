@@ -135,6 +135,30 @@ search to reach the ceiling.
 > coordinator spent less than 0.4 ms per job, workers still waited; this includes
 > time spent holding finished results until earlier results could be admitted.
 
+A search report's `telemetry` records the inputs to each factor: worker busy,
+idle, and scheduler wait time, host time by exit site and snapshot operation,
+and new against re-run work in both host and virtual time.
+
+> [!NOTE]
+> **Worked example: where one etcd worker's time goes.**
+>
+> One Cortex-A720 worker on a CIX CP8180 ran the etcd search at 1,735
+> executions per hour and was busy 98.5% of the time. Re-running evicted
+> prefixes took more of that time than new work did:
+>
+> | Part of busy time | Share |
+> |---|---|
+> | Running new actions | 38% |
+> | Re-running evicted prefixes | 46% |
+> | Sealing snapshots | 8% |
+> | Branching and restoring | 7% |
+>
+> Total virtual time run was 2.16 times the new virtual time. Inside those
+> runs, servicing exits took 18% of busy time, and 11% went to one register:
+> the fence the guest writes each time it unmasks interrupts. The virtual-time
+> tick took another 6%. Completing each MMIO store with a second `KVM_RUN`
+> took 16%, at 1.7 µs per store.
+
 ## Exits
 
 An exit transfers control from the guest to the host and back. At minimum,

@@ -329,6 +329,7 @@ where
     pub(crate) virtual_time_progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub(crate) virtual_time_trace: Option<LiveVirtualTimeTrace>,
     pub(crate) doorbell_exits: u64,
+    exit_telemetry: crate::host_telemetry::ExitTelemetry,
     pub(crate) deferred_virtual_time_checkpoints: bool,
     virtual_time_checkpoint_events: BTreeSet<u64>,
     pub(crate) completion_staged: bool,
@@ -396,6 +397,7 @@ where
             virtual_time_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             virtual_time_trace: None,
             doorbell_exits: 0,
+            exit_telemetry: crate::host_telemetry::ExitTelemetry::default(),
             deferred_virtual_time_checkpoints: false,
             virtual_time_checkpoint_events: BTreeSet::new(),
             completion_staged: false,
@@ -1068,13 +1070,31 @@ where
         }
         <B::A as Vendor>::service_pending_irqs(self)?;
         self.snapshot_ready = false;
+        #[allow(clippy::disallowed_methods)]
+        let entered = std::time::Instant::now();
         let mut exit = self.backend.run()?;
+        self.exit_telemetry
+            .guest_runs
+            .add(entered.elapsed().as_nanos());
         self.sdk_snapshot_reentry_required = false;
         let mut stop = Step::Continued;
         let mut checkpoint_due = false;
         loop {
+            let (site, write) = exit.site();
+            let site = crate::host_telemetry::ExitSite {
+                reason: exit.reason(),
+                site,
+                write,
+            };
+            #[allow(clippy::disallowed_methods)]
+            let serviced = std::time::Instant::now();
             let ExitProgress { step, continuation } =
                 self.service_exit(exit, &mut checkpoint_due)?;
+            self.exit_telemetry
+                .exits
+                .entry(site)
+                .or_default()
+                .add(serviced.elapsed().as_nanos());
             if step != Step::Continued {
                 stop = step;
             }
@@ -1384,6 +1404,12 @@ where
 
     pub fn doorbell_exits(&self) -> u64 {
         self.doorbell_exits
+    }
+
+    pub fn exit_telemetry(&self) -> crate::host_telemetry::ExitTelemetry {
+        let mut telemetry = self.exit_telemetry.clone();
+        telemetry.store_completions = self.backend.store_completions();
+        telemetry
     }
 
     pub fn terminal_reason(&self) -> Option<TerminalReason> {

@@ -4,6 +4,7 @@ pub mod control;
 mod control_state;
 mod engine_state;
 pub mod exec;
+pub mod host_telemetry;
 pub mod portable_snapshot;
 pub mod session_trace;
 pub mod snapshot;

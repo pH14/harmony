@@ -11,3 +11,4 @@ pub mod empirical_steps;
 pub mod parallel;
 pub mod rand;
 pub mod rollout;
+pub mod telemetry;
