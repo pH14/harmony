@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Compare shared and repeated snapshot captures in one executable."""
+"""Compare reused and repeated SDK captures in one executable."""
 
 import argparse
 import hashlib
@@ -19,38 +19,17 @@ def main():
     args = parser.parse_args()
     component = Path(__file__).resolve().parent.parent
     repo = component.parent.parent
-    with tempfile.TemporaryDirectory(prefix="harmony-capture-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="harmony-sdk-capture-") as scratch:
         root = Path(scratch)
         reference = root / "vmm-core-reference"
         shutil.copytree(component / "src", reference / "src")
         shutil.copytree(component / "contracts", reference / "contracts")
         path = reference / "src/control.rs"
         source = path.read_text()
-        shared = "        let (vm_state, vcpu) = match vmm.capture_vm_state() {"
-        suffix = """        let mut state_blob_suffix = vmm.state_blob_suffix_from_vcpu(
-            &vcpu,
-            sdk_channel.as_ref().map(|channel| &channel.recorded),
-        )?;
-        drop(vcpu);"""
-        if source.count(shared) != 1 or source.count(suffix) != 1:
-            raise SystemExit("Update the control for the changed capture implementation")
-        source = source.replace(shared, "        let vm_state = match vmm.save_vm_state() {")
-        source = source.replace(suffix, """        let mut state_blob_suffix = vmm.state_blob_suffix_with_sdk(
-            sdk_channel.as_ref().map(|channel| &channel.recorded),
-        )?;""")
-        path.write_text(source)
-        path = reference / "src/vmm.rs"
-        source = path.read_text()
-        start = source.index("    pub(crate) fn state_blob_suffix(&mut self)")
-        end = source.index("    pub(crate) fn state_blob_suffix_from_vcpu(", start)
-        wrapper = source[start:end]
-        if wrapper.count("self.state_blob_suffix_from_vcpu(&vcpu, None)") != 1:
-            raise SystemExit("Update the reference for the changed suffix capture")
-        repeated = wrapper.replace(
-            "state_blob_suffix(&mut self)",
-            "state_blob_suffix_with_sdk(&mut self, sdk: Option<&channel::RecordedState>)",
-        ).replace("self.state_blob_suffix_from_vcpu(&vcpu, None)", "self.state_blob_suffix_from_vcpu(&vcpu, sdk)")
-        source = source[:end] + repeated + source[end:]
+        capture = "sdk_channel.as_ref().map(|channel| &channel.recorded)"
+        if source.count(capture) != 1:
+            raise SystemExit("Update the reference for the changed SDK capture implementation")
+        source = source.replace(capture, "None")
         path.write_text(source)
         manifest = (component / "Cargo.toml").read_text().replace('name = "vmm-core"', 'name = "vmm-core-reference"', 1)
         manifest = re.sub(r'path = "([^\"]+)"', lambda m: 'path = ' + json.dumps(str((component / m[1]).resolve())), manifest)
@@ -64,7 +43,7 @@ license = "AGPL-3.0-or-later"
 [workspace.lints.clippy]
 all = {{ level = "deny", priority = -1 }}
 [package]
-name = "qualify-capture"
+name = "qualify-sdk-capture"
 version = "0.0.0"
 edition = "2024"
 [dependencies]
@@ -73,14 +52,16 @@ vmm-core-reference = {{ path = "vmm-core-reference" }}
 vmm-backend = {{ path = {json.dumps(str(component.parent / "vmm-backend"))}, features = ["mock"] }}
 vm-state = {{ path = {json.dumps(str(component.parent / "vm-state"))} }}
 control-proto = {{ path = {json.dumps(str(component.parent / "control-proto"))} }}
+environment = {{ path = {json.dumps(str(component.parent / "environment"))} }}
+vtime = {{ path = {json.dumps(str(component.parent / "vtime"))} }}
 ''')
         shutil.copyfile(repo / "Cargo.lock", root / "Cargo.lock")
         (root / "src").mkdir()
-        shutil.copyfile(component / "qualification/capture.rs", root / "src/main.rs")
-        target = repo / "target/capture-qualification"
+        shutil.copyfile(component / "qualification/sdk-capture.rs", root / "src/main.rs")
+        target = repo / "target/sdk-capture-qualification"
         subprocess.run(["cargo", "build", "--offline", "--release", "--manifest-path", str(root / "Cargo.toml"),
                         "--target-dir", str(target)], cwd=repo, check=True)
-        binary = target / "release/qualify-capture"
+        binary = target / "release/qualify-sdk-capture"
         command = [str(binary)]
         if args.hvf:
             runner = str(repo / "scripts/macos-hvf-runner.sh")

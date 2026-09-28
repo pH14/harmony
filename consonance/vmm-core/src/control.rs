@@ -915,7 +915,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Err(ServeError::Service(error));
             }
         };
-        let mut state_blob_suffix = vmm.state_blob_suffix_from_vcpu(&vcpu)?;
+        let mut state_blob_suffix = vmm.state_blob_suffix_from_vcpu(
+            &vcpu,
+            sdk_channel.as_ref().map(|channel| &channel.recorded),
+        )?;
         drop(vcpu);
         control.append_hash(&mut state_blob_suffix);
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
@@ -2545,6 +2548,116 @@ mod tests {
         assert_eq!(replay(&mut s, id), Ok(Reply::Unit));
         assert_eq!(calls.load(Ordering::Relaxed), 4);
         assert_eq!(hash(&mut s), restored_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "control snapshots use snapshot-store mmap")]
+    fn snapshot_reuses_sdk_capture_for_hash_and_captures_each_request() {
+        use crate::vmm::SdkStop;
+        use environment::channel::{
+            Answer, ChannelError, Question, RecordedEnv, ServiceHandler, ServiceResponse,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+
+        #[derive(Clone)]
+        struct CountedCapture {
+            value: u64,
+            calls: Arc<AtomicUsize>,
+            fail: Arc<AtomicBool>,
+        }
+        impl ServiceHandler for CountedCapture {
+            fn identity(&self) -> &[u8] {
+                b"counted-capture"
+            }
+            fn configuration(&self) -> &[u8] {
+                &[]
+            }
+            fn respond(&mut self, _: u64, _: &Question) -> Result<ServiceResponse, ChannelError> {
+                Ok(ServiceResponse::External)
+            }
+            fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                if self.fail.load(Ordering::Relaxed) {
+                    return Err(ChannelError::Malformed);
+                }
+                Ok(self.value.to_le_bytes().to_vec())
+            }
+            fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ChannelError> {
+                self.value =
+                    u64::from_le_bytes(bytes.try_into().map_err(|_| ChannelError::Malformed)?);
+                Ok(())
+            }
+            fn clone_box(&self) -> Box<dyn ServiceHandler> {
+                Box::new(self.clone())
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let mut s = server(vec![]);
+        hello(&mut s);
+        let config = ServiceConfig {
+            identity: b"counted-capture".to_vec(),
+            configuration: vec![],
+        };
+        s.recorded.set_config(config.clone());
+        let mut previous = None;
+        for value in [47_u64, 93] {
+            let handler = CountedCapture {
+                value,
+                calls: calls.clone(),
+                fail: fail.clone(),
+            };
+            let mut env = RecordedEnv::new(value, Box::new(handler) as Box<dyn ServiceHandler>);
+            env.set_payloads(Some(vec![vec![1, 2, value as u8], vec![4, 5]]))
+                .unwrap();
+            env.record_service_request(11, 19, 7, Answer::Data(vec![8, value as u8]));
+            s.vmm_mut().unwrap().enable_sdk(env, &config);
+            let mut sdk = s.vmm().unwrap().sdk_snapshot().unwrap().unwrap();
+            sdk.events = vec![(11, 27, vec![9, 8, 7])];
+            sdk.pending_snapshot = true;
+            sdk.pending_stop = Some(SdkStop::Assertion {
+                id: 27,
+                data: vec![6, value as u8],
+            });
+            sdk.coverage_thresholds.insert(3, 17);
+            s.vmm_mut().unwrap().sdk_restore(&sdk).unwrap();
+            calls.store(0, Ordering::Relaxed);
+            let id = snap(&mut s);
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            let stored = s
+                .export_portable_snapshot(id, std::io::sink())
+                .unwrap()
+                .state_hash;
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            assert_eq!(stored, hash(&mut s));
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            let live = s.vmm().unwrap().sdk_snapshot().unwrap().unwrap();
+            assert_eq!(s.sdk_snaps[&id.0].channel.recorded, live.recorded);
+            assert_eq!(s.sdk_snaps[&id.0].channel.events, live.events);
+            if let Some((old_id, old_hash)) = previous {
+                assert_ne!(stored, old_hash);
+                assert_eq!(
+                    s.export_portable_snapshot(old_id, std::io::sink())
+                        .unwrap()
+                        .state_hash,
+                    old_hash
+                );
+            }
+            previous = Some((id, stored));
+        }
+        let count = s.snapshot_store_stats().snapshots;
+        calls.store(0, Ordering::Relaxed);
+        fail.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            s.handle(&Request::Snapshot),
+            Err(ServeError::Service(ChannelError::Malformed))
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(s.vmm().is_none());
+        assert_eq!(s.snapshot_store_stats().snapshots, count);
     }
 
     fn stage_payload_request(server: &mut ControlServer<MockBackend>, bytes: u32) -> u32 {
