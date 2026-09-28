@@ -1107,7 +1107,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.last_seal_dirty_gfns = dirty_gfns;
         let tracked = window_consumed || vmm.reset_dirty_tracking();
         self.derive_parent = tracked.then_some(store_id);
-        self.current_image = tracked.then_some(store_id);
+        self.set_current_image(tracked.then_some(store_id));
 
         let id = self.next_snap;
         self.next_snap += 1;
@@ -1148,10 +1148,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.sdk_snaps.remove(&snap.0);
         self.tainted_snaps.remove(&snap.0);
         self.snapshot_meta.remove(&snap.0);
-        if self.current_image == Some(store_id) {
-            self.current_image = None;
-            self.derive_parent = None;
-        }
         let Ok(remaining_refs) = self.engine.release(store_id) else {
             return Err(ControlError::UnknownSnapshot(snap));
         };
@@ -1191,10 +1187,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(bytes)
     }
 
+    fn set_current_image(&mut self, image: Option<SnapshotId>) {
+        if image == self.current_image {
+            return;
+        }
+        let image = image.filter(|&id| self.engine.retain(id).is_ok());
+        if let Some(previous) = std::mem::replace(&mut self.current_image, image)
+            && matches!(self.engine.release(previous), Ok(0))
+        {
+            self.engine.gc();
+        }
+    }
+
     fn install_recovery_boot(&mut self, fresh: Vmm<B>) {
         self.vmm = Some(fresh);
         self.derive_parent = None;
-        self.current_image = None;
+        self.set_current_image(None);
         self.last_restore_bytes_written = 0;
         self.reset_schedule_to_fresh_vm();
         self.timeline_tainted = false;
@@ -1325,7 +1333,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         } else if in_place {
             self.in_place_fallbacks = self.in_place_fallbacks.saturating_add(1);
             self.last_restore_bytes_written = 0;
-            self.current_image = None;
+            self.set_current_image(None);
         }
 
         let use_remap = self.restore_mode != RestoreMode::Memcpy && self.remap_factory.is_some();
@@ -1345,7 +1353,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 };
             }
             self.retire_vmm();
-            self.current_image = None;
+            self.set_current_image(None);
             self.last_restore_bytes_written = 0;
             let mapping = mapping.expect("fresh restore materialized the target image");
             if use_remap {
@@ -1460,7 +1468,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             let tracked = vmm.reset_dirty_tracking();
             self.derive_parent = tracked.then_some(store_id);
-            self.current_image = tracked.then_some(store_id);
+            self.set_current_image(tracked.then_some(store_id));
         }
         Ok(Ok(Reply::Unit))
     }
@@ -3147,21 +3155,20 @@ mod tests {
         miri,
         ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
-    fn seal_falls_back_to_base_when_the_parent_was_dropped() {
+    fn a_seal_after_dropping_the_current_handle_derives_from_the_kept_image() {
         let mut s = server_tracked();
         hello(&mut s);
         let first = snap(&mut s);
+        let image = s.current_image;
+        assert!(image.is_some());
         assert_eq!(s.handle(&Request::Drop(first)).unwrap(), Ok(Reply::Unit));
-        assert_eq!(
-            s.current_image, None,
-            "dropping the tracked image clears it"
-        );
-        assert_eq!(
-            s.derive_parent, None,
-            "the dropped image cannot derive again"
-        );
+        assert_eq!(s.current_image, image);
+        assert_eq!(s.derive_parent, image);
         let second = snap(&mut s);
-        assert_eq!(chain_len(&s, second), 1, "dead parent ⇒ full scan");
+        assert_eq!(chain_len(&s, second), 2);
+        assert_eq!(s.handle(&Request::Drop(second)).unwrap(), Ok(Reply::Unit));
+        s.set_current_image(None);
+        assert_eq!(s.engine.store_stats().snapshots, 0);
     }
 
     #[test]
@@ -3330,7 +3337,7 @@ mod tests {
         miri,
         ignore = "snapshot materialization and page hashing use mmap-backed production paths"
     )]
-    fn in_place_restore_after_dropping_current_handle_restores_zero_pages() {
+    fn in_place_restore_after_dropping_current_handle_copies_only_changed_pages() {
         let mut s = server_tracked();
         hello(&mut s);
         let target = snap(&mut s);
@@ -3340,8 +3347,9 @@ mod tests {
             })
             .unwrap();
         let current = snap(&mut s);
+        let image = s.current_image;
         assert_eq!(s.handle(&Request::Drop(current)).unwrap(), Ok(Reply::Unit));
-        assert_eq!(s.current_image, None);
+        assert_eq!(s.current_image, image);
         s.vmm
             .as_mut()
             .unwrap()
@@ -3356,7 +3364,7 @@ mod tests {
         assert_eq!(s.handle(&Request::Replay(target)).unwrap(), Ok(Reply::Unit));
 
         assert_eq!(s.in_place_fallbacks(), 0);
-        assert_eq!(s.last_restore_bytes_written(), RAM as u64);
+        assert_eq!(s.last_restore_bytes_written(), 4096);
         assert_eq!(s.vmm.as_ref().unwrap().guest_memory()[3 * 4096], 0);
         assert_eq!(
             s.handle(&Request::Hash {
