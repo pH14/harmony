@@ -329,22 +329,27 @@ uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare bas
 `--world NAME`, repeatable, limits the comparison to the named worlds on fresh
 layouts.
 
-| World | Settings | Metroid behaviour | Legs |
+| World | Settings | Metroid behaviour | Measures |
 | --- | --- | --- | --- |
-| Farm loop | `inner` 20, 4 farms | Refills away from the next item draw the search back | To the item, out of the item region, out to the goal |
-| Whole-map re-walk | `inner` 4, 9 items | Each item sends a new tier back across the map | To the last item, last item to the goal |
-| Boss needing far stock | `inner` 20, 4 farms, `boss_stock` 24 | Kraid and Ridley need missiles farmed far from the boss | To the item, item to stocked arrival, stocked arrival to kill |
+| Farm loop | `inner` 20, 4 farms | Refills away from the next item draw the search back | To the item, out of the item region |
+| Whole-map re-walk | `inner` 4, 9 items | Each item sends a new tier back across the map | To the last item |
+| Boss needing far stock | `inner` 20, 4 farms, `boss_stock` 24 | Kraid and Ridley need missiles farmed far from the boss | To the item, to the stocked arrival |
 | Boss needing stock and health | `inner` 20, 4 farms, `boss_stock` 6, `boss_hits_back` | Arriving with enough missiles or enough energy but not both | As above |
 | Boss after a draining approach | `inner` 20, 4 farms with `farm_cap` 14, `boss_stock` 8, `boss_hits_back`, `approach_drain` | Tourian's delivered state low on both, with the best holders near the end split between the two | As above |
-| Off-path item | `inner` 6, `item_optional` | A new tier from an off-path pickup walks back over reached ground | Pickup to the goal |
-| Off-path item with farms | as above, 2 farms | The same with refills | Pickup to the goal |
-| Locked item | `inner` 4, `locked` | The new tier's lower-tier frontier is far from the pickup | To the key, key to the item, item to the goal |
+| Off-path item | `inner` 6, `item_optional` | A new tier from an off-path pickup walks back over reached ground | To the pickup |
+| Off-path item with farms | as above, 2 farms | The same with refills | To the pickup |
+| Locked item | `inner` 4, `locked` | The new tier's lower-tier frontier is far from the pickup | To the key, to the item |
 | Locked item with hidden timing | as above, `timing` 5 | Replayed inputs land about one time in five | As above |
-| Gauntlet | `inner` 20, 2 items, 2 farms, `farm_cap` 1, `gauntlet` | Tourian: the last item comes at the entry low on energy, and the refills are far away | To the last item, last item to full-health arrival, full-health arrival to the goal |
+| Gauntlet | `inner` 20, 2 items, 2 farms, `farm_cap` 1, `gauntlet` | Tourian: the last item comes at the entry low on energy, and the refills are far away | To the last item, to the full-health arrival |
 | Gauntlet with hidden timing | as above, `timing` 5 | The same with replayed inputs landing about one time in five | As above |
-| Boss by the door | `inner` 2, 4 farms with `farm_cap` 14, `boss_stock` 8, `boss_hits_back`, `approach_drain`, `boss_by_door`, `tail_slots`; 600,000 work | Tourian after the statues: the best holders near the end are drawn one or two times each, and none holds enough of both | To the item, item to stocked arrival, stocked arrival to kill |
+| Boss by the door | `inner` 2, 4 farms with `farm_cap` 14, `boss_stock` 8, `boss_hits_back`, `approach_drain`, `boss_by_door`, `tail_slots`; 600,000 work | Tourian after the statues: the best holders near the end are drawn one or two times each, and none holds enough of both | To the item, to the stocked arrival |
 
-Every world also reports work to the goal, counting a missed goal as its budget.
+Each measure is the work from the start of the campaign to a milestone. Every
+world also measures work to the goal, counting a missed goal as its budget, and
+goal misses. The panel also prints the legs between consecutive milestones as
+diagnostics. A leg between two milestones charges a candidate that reaches the
+first milestone sooner, so the verdict uses only the measures from the start. A
+slower diagnostic is a watch.
 A campaign stops at the goal or after 200,000 work, or 600,000 on the boss by
 the door, and a milestone after that counts as unreached. Comparison runs skip replay verification; the rule panel
 verifies every run. The off-path and locked worlds start with four times
@@ -352,13 +357,13 @@ verifies every run. The off-path and locked worlds start with four times
 A stocked arrival is the first arrival in the boss room holding the item and at
 least `boss_stock` stock, and at least `boss_stock` health when the boss hits
 back. A full-health arrival is the first arrival in the gauntlet's entry room
-holding both items and health at least the entry-to-goal room count. For each leg the panel prints the median over layouts of the
+holding both items and health at least the entry-to-goal room count. For each measure and diagnostic the panel prints the median over layouts of the
 candidate-to-baseline ratio of work plus one, a 99% bootstrap interval, and how
-many layouts reached the leg's end in each run; only layouts where both runs
-reached it enter the ratio, and a leg with fewer than three such layouts
-prints nan. The off-path pickup-to-goal leg covers only layouts
+many layouts reached the milestone in each run; only layouts where both runs
+reached it enter the ratio, and one with fewer than three such layouts
+prints nan. The off-path pickup measure covers only layouts
 where the pickup came before the goal, and a change in that count changes which
-layouts it compares. A leg is slower when the interval lies above 1.25,
+layouts it compares. A measure is slower when the interval lies above 1.25,
 faster when it lies below 0.8, inside the band when it lies within
 [0.8, 1.25], and undecided when it crosses 0.8 or 1.25. Goal misses are
 judged on the layouts where only one of the two runs missed the goal. The
@@ -366,15 +371,15 @@ candidate has more misses when its net extra misses reach 5% of layouts and an
 exact one-sided sign test on those layouts gives p < 0.01, and fewer misses in
 the mirror case. Misses are inside the band when the 99% bootstrap interval of
 the net extra-miss rate lies within ±5%, and undecided otherwise. A world with
-an undecided leg or undecided misses doubles its layouts until nothing is
+an undecided measure or undecided misses doubles its layouts until nothing is
 undecided or it reaches 256 layouts (1,024 for the off-path and locked worlds).
-A world is clearly bad when any leg is slower or the candidate has more
-misses. A leg still undecided at the limit with its upper bound above 1.25 makes
+A world is clearly bad when any measure is slower or the candidate has more
+misses. A measure still undecided at the limit with its upper bound above 1.25 makes
 the world undecided when its interval's lower bound is above 1.0, and is a
-watch leg otherwise. Misses still undecided at the limit make the world
+watch otherwise. Misses still undecided at the limit make the world
 undecided when the net extra misses reach 5% of layouts and an exact one-sided
 sign test gives p < 0.05, and are a watch otherwise. A watch passes and is named in the world's line so the
-matching Metroid leg gets measured. A candidate is
+matching Metroid leg gets measured in the game slices. A candidate is
 plausible when no world is clearly bad or undecided. The exit status is nonzero when a rule fails or a world is clearly
 bad or undecided. Two unchanged
 searchers with different runtime seeds, in 300 simulated comparisons per world,
