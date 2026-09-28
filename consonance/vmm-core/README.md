@@ -336,9 +336,12 @@ all XSAVE-presence and AMD NPT PAE behavior is resolved.
 `ControlServer::export_sparse_delta(setup, parent, target)` returns a
 snapshot's pages over its parent, with their hashes, the pages that returned to
 the setup snapshot's content, and the sparse sidecar. The pages borrow the
-store. `import_sparse_delta(setup, pages, sidecar)` derives a snapshot from
-the setup snapshot and a complete page list over it. Each page must match its
-hash, so a changed page is refused before a handle is minted.
+store. `import_sparse_delta(setup, near, pages, sidecar)` takes a complete
+page list over the setup snapshot and derives the imported snapshot from `near`,
+writing only the pages where the two differ. Once `near`'s chain reaches the
+maximum chain length, the import derives from `setup` instead, so repeated
+imports keep the same chain bound as seals. Each page must match its hash, so a
+changed page is refused before a handle is minted.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
