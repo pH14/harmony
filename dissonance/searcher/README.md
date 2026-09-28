@@ -453,6 +453,19 @@ and dispatched replay/suffix action costs. Those costs are declared path cost,
 not measured execution work. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
+The campaign report carries `telemetry`, the host measurements that explain
+where a run's time went. It records bootstrap, search, and persistence wall
+time; the coordinator phase durations; and the coordinator's receive time,
+split into time when every worker was running and time when finished results
+waited for an earlier result's admission. It also records how many results
+were held for admission order and for how long. Each worker record holds boot,
+busy, and idle time, with idle time split into waiting for admission order and
+waiting for a job. It also holds jobs run, Linux scheduler CPU and run-queue
+wait time, and the workload's own counters from `TargetExecution::telemetry`,
+which the report also sums across workers. Report equality and the report's
+serialized form leave telemetry out, so a replayed report stays byte-identical;
+a caller that wants it writes it separately.
+
 The last sidecar record of a run also carries `retained_diagnostics`, an
 optional workload census over the archive's cached active endpoints. Each
 endpoint is offered with the number of times the selector drew it, so a census

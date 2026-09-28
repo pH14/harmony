@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    cell::RefCell, collections::BTreeMap, error::Error, path::Path, sync::Arc, time::Duration,
+    cell::RefCell,
+    collections::BTreeMap,
+    error::Error,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use consonance_client::session::{
@@ -175,6 +180,51 @@ struct Cached {
     stamp: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunKind {
+    New,
+    Rebuild,
+    Replay,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Spent {
+    count: u64,
+    nanos: u64,
+}
+
+impl Spent {
+    fn since(&mut self, started: Instant) {
+        self.count = self.count.saturating_add(1);
+        self.nanos = self
+            .nanos
+            .saturating_add(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Runs {
+    host: Spent,
+    virtual_nanos: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LiveTelemetry {
+    boot: Spent,
+    new: Runs,
+    rebuild: Runs,
+    replay: Runs,
+    restores: Spent,
+    branches: Spent,
+    seals: Spent,
+    observations: Spent,
+    drops: Spent,
+    exact_hits: u64,
+    ancestor_hits: u64,
+    misses: u64,
+    evictions: u64,
+}
+
 struct Live {
     key: [u8; 32],
     session: Session,
@@ -184,10 +234,42 @@ struct Live {
     uses: u64,
     horizons_run: u64,
     abandoned: bool,
+    telemetry: LiveTelemetry,
 }
 
 thread_local! {
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
+    static RETIRED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+#[allow(clippy::disallowed_methods)]
+fn started() -> Instant {
+    Instant::now()
+}
+
+fn add_counters(into: &mut BTreeMap<String, u64>, counters: Vec<(String, u64)>) {
+    for (name, value) in counters {
+        let total = into.entry(name).or_default();
+        *total = total.saturating_add(value);
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let counters = self.counters(false);
+        let _ = RETIRED.try_with(|retired| add_counters(&mut retired.borrow_mut(), counters));
+    }
+}
+
+#[must_use]
+pub fn thread_telemetry() -> BTreeMap<String, u64> {
+    let mut counters = RETIRED.with(|retired| retired.borrow().clone());
+    LIVE.with(|slot| {
+        if let Some(live) = slot.borrow().as_ref() {
+            add_counters(&mut counters, live.counters(true));
+        }
+    });
+    counters
 }
 
 #[derive(Debug)]
@@ -399,13 +481,21 @@ impl FaultTarget {
     }
 
     pub fn apply(&mut self, action: FaultAction) {
+        self.apply_as(action, RunKind::New);
+    }
+
+    pub fn apply_replayed(&mut self, action: FaultAction) {
+        self.apply_as(action, RunKind::Replay);
+    }
+
+    fn apply_as(&mut self, action: FaultAction, kind: RunKind) {
         if self.failed || !self.observation.stop.is_continuable() {
             return;
         }
         self.action_observations.clear();
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
-            let observation = live.advance(&self.actions, action)?;
+            let observation = live.advance(&self.actions, action, kind)?;
             Ok((observation, live.horizons_run.saturating_sub(before)))
         });
         match result {
@@ -459,6 +549,17 @@ fn with_live<T>(
     })
 }
 
+fn stop_moment(stop: &StopReason) -> u64 {
+    match stop {
+        StopReason::Deadline { vtime }
+        | StopReason::Quiescent { vtime }
+        | StopReason::Crash { vtime, .. }
+        | StopReason::Decision { vtime, .. }
+        | StopReason::SnapshotPoint { vtime }
+        | StopReason::Assertion { vtime, .. } => vtime.0,
+    }
+}
+
 fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
     let message = format!("{what}: {error}");
     if matches!(
@@ -473,6 +574,7 @@ fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
 
 impl Live {
     fn boot(config: &Config) -> Result<Self, String> {
+        let boot_started = started();
         let mut session = Session::new_with_config_and_payloads(
             &config.kernel,
             &config.initramfs,
@@ -491,6 +593,8 @@ impl Live {
                 stamp: 0,
             },
         );
+        let mut telemetry = LiveTelemetry::default();
+        telemetry.boot.since(boot_started);
         Ok(Self {
             key: config.key,
             session,
@@ -503,7 +607,54 @@ impl Live {
             uses: 0,
             horizons_run: 0,
             abandoned: false,
+            telemetry,
         })
+    }
+
+    fn counters(&self, resident: bool) -> Vec<(String, u64)> {
+        let t = &self.telemetry;
+        let mut out = vec![
+            ("boot.count".to_owned(), t.boot.count),
+            ("boot.ns".to_owned(), t.boot.nanos),
+        ];
+        for (name, runs) in [("new", t.new), ("rebuild", t.rebuild), ("replay", t.replay)] {
+            out.push((format!("run.{name}.count"), runs.host.count));
+            out.push((format!("run.{name}.ns"), runs.host.nanos));
+            out.push((format!("run.{name}.virtual_ns"), runs.virtual_nanos));
+        }
+        for (name, spent) in [
+            ("restore", t.restores),
+            ("branch", t.branches),
+            ("seal", t.seals),
+            ("observe", t.observations),
+            ("drop", t.drops),
+        ] {
+            out.push((format!("session.{name}.count"), spent.count));
+            out.push((format!("session.{name}.ns"), spent.nanos));
+        }
+        out.extend([
+            ("cache.exact_hits".to_owned(), t.exact_hits),
+            ("cache.ancestor_hits".to_owned(), t.ancestor_hits),
+            ("cache.misses".to_owned(), t.misses),
+            ("cache.evictions".to_owned(), t.evictions),
+        ]);
+        if resident {
+            let bytes = self
+                .snapshots
+                .values()
+                .filter_map(|cached| self.session.snapshot_owned_pages(cached.snap))
+                .sum::<u64>()
+                .saturating_mul(4096);
+            out.push(("cache.entries".to_owned(), self.snapshots.len() as u64));
+            out.push(("cache.resident_bytes".to_owned(), bytes));
+        }
+        out.extend(
+            self.session
+                .telemetry_counters()
+                .into_iter()
+                .map(|(name, value)| (format!("vmm.{name}"), value)),
+        );
+        out
     }
 
     fn abandon(&mut self, what: &str, error: &(dyn Error + 'static)) -> String {
@@ -518,9 +669,13 @@ impl Live {
     }
 
     fn replay(&mut self, snapshot: SnapId) -> Result<(), String> {
-        self.session
+        let restore_started = started();
+        let result = self
+            .session
             .replay_snapshot(snapshot)
-            .map_err(|error| format!("replay: {error}"))
+            .map_err(|error| format!("replay: {error}"));
+        self.telemetry.restores.since(restore_started);
+        result
     }
 
     fn cached(&mut self, actions: &[FaultAction]) -> Option<Cached> {
@@ -556,9 +711,12 @@ impl Live {
                 break;
             };
             if let Some(victim) = self.snapshots.remove(&victim) {
+                let drop_started = started();
                 self.session
                     .drop_snapshot(victim.snap)
                     .map_err(|error| format!("drop snapshot: {error}"))?;
+                self.telemetry.drops.since(drop_started);
+                self.telemetry.evictions = self.telemetry.evictions.saturating_add(1);
             }
         }
         Ok(cached)
@@ -569,18 +727,25 @@ impl Live {
         actions: &[FaultAction],
     ) -> Result<Result<Cached, FaultObservations>, String> {
         if let Some(cached) = self.cached(actions) {
+            self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
             return Ok(Ok(cached));
         }
         let start = (0..actions.len())
             .rev()
             .find(|length| self.snapshots.contains_key(&actions[..*length]))
             .unwrap_or(0);
+        if start == 0 {
+            self.telemetry.misses = self.telemetry.misses.saturating_add(1);
+        } else {
+            self.telemetry.ancestor_hits = self.telemetry.ancestor_hits.saturating_add(1);
+        }
         let mut last = self
             .cached(&actions[..start])
             .ok_or("the fault setup snapshot is missing")?;
         for index in start..actions.len() {
             self.branch(last, &actions[..=index])?;
-            let (observation, sealed) = self.run_action(actions, index)?;
+            let (observation, sealed) =
+                self.run_action(actions, index, last.moment, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
@@ -593,10 +758,12 @@ impl Live {
         &mut self,
         prefix: &[FaultAction],
         action: FaultAction,
+        kind: RunKind,
     ) -> Result<FaultObservations, String> {
         let mut next = prefix.to_vec();
         next.push(action);
         if let Some(cached) = self.cached(&next) {
+            self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
             self.replay(cached.snap)?;
             return self.observe(FaultStop::Deadline);
         }
@@ -614,7 +781,7 @@ impl Live {
             }
         };
         self.branch(parent, &next)?;
-        let (observation, sealed) = self.run_action(&next, prefix.len())?;
+        let (observation, sealed) = self.run_action(&next, prefix.len(), parent.moment, kind)?;
         if let Some((snap, moment)) = sealed {
             self.remember(next, snap, moment)?;
         }
@@ -625,9 +792,13 @@ impl Live {
         let config = branch_config(self.windows, actions)
             .map_err(|error| format!("branch configuration: {error}"))?;
         let effects = self.staged_effects(actions, parent.moment)?;
-        self.session
+        let branch_started = started();
+        let result = self
+            .session
             .branch_with_service(parent.snap, config, Vec::new(), effects)
-            .map_err(|error| format!("branch: {error}"))
+            .map_err(|error| format!("branch: {error}"));
+        self.telemetry.branches.since(branch_started);
+        result
     }
 
     fn staged_effects(
@@ -654,13 +825,25 @@ impl Live {
         &mut self,
         actions: &[FaultAction],
         index: usize,
+        from: u64,
+        kind: RunKind,
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
         let (_, deadline) = self.windows.window(actions, index)?;
         self.horizons_run = self.horizons_run.saturating_add(1);
+        let run_started = started();
         let stop = match self.session.run_until(deadline) {
             Ok(stop) => stop,
             Err(error) => return Err(self.abandon("run", error.as_ref())),
         };
+        let runs = match kind {
+            RunKind::New => &mut self.telemetry.new,
+            RunKind::Rebuild => &mut self.telemetry.rebuild,
+            RunKind::Replay => &mut self.telemetry.replay,
+        };
+        runs.host.since(run_started);
+        runs.virtual_nanos = runs
+            .virtual_nanos
+            .saturating_add(stop_moment(&stop).saturating_sub(from));
         if let StopReason::Crash { vtime, info } = &stop {
             let tail = self.session.console_tail().unwrap_or_default();
             let start = tail.len().saturating_sub(CONSOLE_TAIL);
@@ -673,10 +856,12 @@ impl Live {
         }
         let stop = FaultStop::from_stop_reason(&stop);
         let snap = if stop.is_continuable() {
+            let seal_started = started();
             let (snapshot, at) = self
                 .session
                 .snapshot()
                 .map_err(|error| self.abandon("snapshot", error.as_ref()))?;
+            self.telemetry.seals.since(seal_started);
             Some((snapshot, at))
         } else {
             None
@@ -692,10 +877,13 @@ impl Live {
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {
+        let observe_started = started();
         let events = self
             .session
             .sdk_events()
-            .map_err(|error| format!("SDK events: {error}"))?;
+            .map_err(|error| format!("SDK events: {error}"));
+        self.telemetry.observations.since(observe_started);
+        let events = events?;
         let moment = events.last().map_or(0, |(moment, _, _)| *moment);
         let capture = decode_sdk_events(&events)?;
         capture.check_infrastructure_status()?;

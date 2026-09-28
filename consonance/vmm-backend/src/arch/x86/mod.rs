@@ -68,6 +68,15 @@ impl ArchExit for X86Exit {
             | X86Exit::Cpuid { .. } => true,
         }
     }
+
+    fn site(&self) -> (u64, bool) {
+        match self {
+            X86Exit::Io { port, write, .. } => (u64::from(*port), write.is_some()),
+            X86Exit::Rdmsr { index } => (u64::from(*index), false),
+            X86Exit::Wrmsr { index, .. } => (u64::from(*index), true),
+            X86Exit::Cpuid { leaf, .. } => (u64::from(*leaf), false),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]

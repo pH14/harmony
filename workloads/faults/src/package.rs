@@ -380,6 +380,7 @@ mod live {
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
             "watchdog_cutoffs": archive.watchdog_cutoffs,
             "execution_failures": campaign_report.campaign.execution_failures,
+            "telemetry": campaign_report.campaign.telemetry,
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),

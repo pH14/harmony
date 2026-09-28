@@ -199,7 +199,7 @@ LIB_PARTITIONS = {
             "vendor::x86::logical_identity_live_tests",
         ),
         "Execution Protocol": (
-            "control", "control_state", "session_trace",
+            "control", "control_state", "session_trace", "host_telemetry",
             "vendor::x86::dispatch", "vendor::arm64::dispatch",
         ),
     },
@@ -211,7 +211,9 @@ LIB_PARTITIONS = {
             "search::duration", "search::empirical_steps", "search::parallel",
         ),
         "Search Coordination": ("search::continuation", "search::rand"),
-        "Campaign Recording and Replay": ("search::campaign", "search::checkpoint"),
+        "Campaign Recording and Replay": (
+            "search::campaign", "search::checkpoint", "search::telemetry",
+        ),
     },
 }
 

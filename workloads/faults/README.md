@@ -69,6 +69,12 @@ with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. A bounded LRU keeps recent prefixes resident and rebuilds evicted
 ones from their longest cached ancestor.
+Each worker reports its time through the campaign `telemetry`: boot, new
+action runs, prefix rebuilds, and replayed actions, each in host and virtual
+time. It also reports session restore, branch, seal, observation, and drop
+time; the prefix cache's exact hits, ancestor hits, misses, evictions, entries,
+and resident bytes; and the VMM's exit, guest-run, and snapshot counters under
+`vmm.`. `campaign-summary.json` includes the whole telemetry record.
 The shared session watchdog follows deterministic virtual-time progress, so a
 slowly advancing instrumented guest can finish a long action while one stuck
 at a virtual moment still times out. Replay can apply explicit, bounded Wait

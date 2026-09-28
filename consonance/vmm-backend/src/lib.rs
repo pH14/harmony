@@ -52,7 +52,9 @@ pub use arch::x86::{
 pub use arch::{Arch, ArchExit};
 pub use backend::Backend;
 pub use error::{BackendError, Result};
-pub use exit::{Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame};
+pub use exit::{
+    Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame, StoreCompletions,
+};
 pub use types::{Gpa, MpState};
 
 #[cfg(feature = "mock")]

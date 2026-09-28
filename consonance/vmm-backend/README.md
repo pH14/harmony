@@ -49,7 +49,10 @@ device models, snapshot formats, and entropy live above this crate.
 ARM64 snapshot capture rejects a pending exit or staged completion before it
 reads the vCPU. Completed MMIO reads and eagerly completed MMIO writes remain
 capturable; placeholder ARM64 sysreg exits remain uncapturable while their
-completion is pending.
+completion is pending. The ARM64 KVM backend counts and times the `KVM_RUN`
+that completes each MMIO write and reports the totals through
+`Backend::store_completions`, since that entry is host cost the exit table
+cannot see.
 
 `Backend::read_irq_mask` optionally reads the CPU's architectural IRQ mask
 without capturing a complete snapshot. `Some(true)` means the mask is set;

@@ -25,6 +25,13 @@ operation. Timer deadlines are applied at exit boundaries. An idle guest can
 advance to the next deterministic deadline through the same clock; no host
 clock is consulted.
 
+The run loop also times each backend run and each exit it services, keyed by
+exit reason, address or port, and direction. `ControlServer::host_telemetry`
+adds snapshot seal, restore, export and import time and page counts, including
+those of VMs the server has already replaced. These are host wall-clock
+measurements for performance accounting; they never enter virtual time, state
+hashes, or snapshots.
+
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor

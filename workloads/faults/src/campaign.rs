@@ -18,6 +18,7 @@ use searcher::{
         empirical_steps::EmpiricalStepCheckpoint,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
+        telemetry::TargetCounters,
     },
     target::ExitKind,
 };
@@ -214,7 +215,7 @@ fn execute_job(
         if outcome(target).disposition.is_terminal() {
             break;
         }
-        target.apply(*action);
+        target.apply_replayed(*action);
     }
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -556,6 +557,10 @@ impl TargetExecution for FaultWorkload {
 
     fn execution_work(&self, target: &FaultTarget) -> u64 {
         target.execution_ticks()
+    }
+
+    fn telemetry(&self, _target: &FaultTarget) -> TargetCounters {
+        crate::consonance::thread_telemetry()
     }
 
     fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {

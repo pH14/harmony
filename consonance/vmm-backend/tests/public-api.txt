@@ -15,6 +15,7 @@ pub vmm_backend::arch::arm64::Arm64Exit::Sysreg::sysreg: u32
 pub vmm_backend::arch::arm64::Arm64Exit::Sysreg::write: core::option::Option<u64>
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::arm64::Arm64Exit
 pub fn vmm_backend::arch::arm64::Arm64Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::arm64::Arm64Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::arm64::Arm64Exit::stages_completion(&self) -> bool
 pub enum vmm_backend::arch::arm64::Arm64Injection
 pub vmm_backend::arch::arm64::Arm64Injection::Interrupt
@@ -146,6 +147,7 @@ pub vmm_backend::arch::x86::X86Exit::Wrmsr::index: u32
 pub vmm_backend::arch::x86::X86Exit::Wrmsr::value: u64
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::x86::X86Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub struct vmm_backend::arch::x86::CpuidEntry
 pub vmm_backend::arch::x86::CpuidEntry::eax: u32
@@ -305,12 +307,15 @@ pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub trait vmm_backend::arch::ArchExit: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq
 pub fn vmm_backend::arch::ArchExit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::ArchExit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::ArchExit::stages_completion(&self) -> bool
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::arm64::Arm64Exit
 pub fn vmm_backend::arch::arm64::Arm64Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::arm64::Arm64Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::arm64::Arm64Exit::stages_completion(&self) -> bool
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::x86::X86Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub mod vmm_backend::contract
 pub enum vmm_backend::contract::DeclineReason
@@ -365,6 +370,7 @@ pub vmm_backend::Arm64Exit::Sysreg::sysreg: u32
 pub vmm_backend::Arm64Exit::Sysreg::write: core::option::Option<u64>
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::arm64::Arm64Exit
 pub fn vmm_backend::arch::arm64::Arm64Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::arm64::Arm64Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::arm64::Arm64Exit::stages_completion(&self) -> bool
 pub enum vmm_backend::Arm64Injection
 pub vmm_backend::Arm64Injection::Interrupt
@@ -419,6 +425,7 @@ pub vmm_backend::Exit::Arch(<A as vmm_backend::arch::Arch>::Exit)
 pub vmm_backend::Exit::Common(vmm_backend::CommonExit)
 impl<A: vmm_backend::arch::Arch> vmm_backend::Exit<A>
 pub fn vmm_backend::Exit<A>::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::Exit<A>::site(&self) -> (u64, bool)
 pub fn vmm_backend::Exit<A>::stages_completion(&self) -> bool
 impl<A: vmm_backend::arch::Arch> core::convert::From<vmm_backend::CommonExit> for vmm_backend::Exit<A>
 pub fn vmm_backend::Exit<A>::from(vmm_backend::CommonExit) -> Self
@@ -460,6 +467,7 @@ pub vmm_backend::X86Exit::Wrmsr::index: u32
 pub vmm_backend::X86Exit::Wrmsr::value: u64
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::x86::X86Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub struct vmm_backend::Arm64
 impl vmm_backend::arch::Arch for vmm_backend::arch::arm64::Arm64
@@ -542,6 +550,7 @@ pub fn vmm_backend::Arm64KvmBackend<K>::run(&mut self) -> vmm_backend::Result<vm
 pub fn vmm_backend::Arm64KvmBackend<K>::save(&mut self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64KvmBackend<K>::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::Arm64KvmBackend<K>::take_accepted_interrupt(&mut self) -> core::option::Option<vmm_backend::arch::arm64::GicIntId>
 pub fn vmm_backend::Arm64KvmBackend<K>::validate_restore_state(&self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub struct vmm_backend::Arm64Policy
@@ -700,6 +709,7 @@ pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backen
 pub fn vmm_backend::KvmBackend::save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::KvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::KvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 pub fn vmm_backend::KvmBackend::validate_restore_state(&self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub struct vmm_backend::KvmRunView
@@ -757,6 +767,7 @@ pub fn vmm_backend::MockArm64Backend::run(&mut self) -> vmm_backend::Result<vmm_
 pub fn vmm_backend::MockArm64Backend::save(&mut self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::MockArm64Backend::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockArm64Backend::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::MockArm64Backend::take_accepted_interrupt(&mut self) -> core::option::Option<vmm_backend::arch::arm64::GicIntId>
 pub fn vmm_backend::MockArm64Backend::validate_restore_state(&self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 pub struct vmm_backend::MockBackend
@@ -807,6 +818,7 @@ pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backe
 pub fn vmm_backend::MockBackend::save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::MockBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::MockBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 pub fn vmm_backend::MockBackend::validate_restore_state(&self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 pub struct vmm_backend::MsrFilter
@@ -829,6 +841,9 @@ pub vmm_backend::Segment::s: u8
 pub vmm_backend::Segment::selector: u16
 pub vmm_backend::Segment::type_: u8
 pub vmm_backend::Segment::unusable: u8
+pub struct vmm_backend::StoreCompletions
+pub vmm_backend::StoreCompletions::nanos: u64
+pub vmm_backend::StoreCompletions::runs: u64
 pub struct vmm_backend::SysregTrapPolicy
 pub vmm_backend::SysregTrapPolicy::trapped: alloc::collections::btree::set::BTreeSet<u32>
 pub struct vmm_backend::VcpuEvents
@@ -947,12 +962,15 @@ pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub trait vmm_backend::ArchExit: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq
 pub fn vmm_backend::ArchExit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::ArchExit::site(&self) -> (u64, bool)
 pub fn vmm_backend::ArchExit::stages_completion(&self) -> bool
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::arm64::Arm64Exit
 pub fn vmm_backend::arch::arm64::Arm64Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::arm64::Arm64Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::arm64::Arm64Exit::stages_completion(&self) -> bool
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
+pub fn vmm_backend::arch::x86::X86Exit::site(&self) -> (u64, bool)
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub trait vmm_backend::Arm64Kvm
 pub fn vmm_backend::Arm64Kvm::asid_bits(&self) -> vmm_backend::arch::arm64::Arm64AsidBits
@@ -1020,6 +1038,7 @@ pub fn vmm_backend::Backend::run(&mut self) -> vmm_backend::Result<vmm_backend::
 pub fn vmm_backend::Backend::save(&mut self) -> vmm_backend::Result<<Self::A as vmm_backend::arch::Arch>::VcpuState>
 pub fn vmm_backend::Backend::set_pending_irq(&mut self, core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::set_policy(&mut self, &<Self::A as vmm_backend::arch::Arch>::Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::Backend::take_accepted_interrupt(&mut self) -> core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>
 pub fn vmm_backend::Backend::validate_restore_state(&self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 impl vmm_backend::Backend for vmm_backend::KvmBackend
@@ -1048,6 +1067,7 @@ pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backen
 pub fn vmm_backend::KvmBackend::save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::KvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::KvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 pub fn vmm_backend::KvmBackend::validate_restore_state(&self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 impl vmm_backend::Backend for vmm_backend::MockArm64Backend
@@ -1076,6 +1096,7 @@ pub fn vmm_backend::MockArm64Backend::run(&mut self) -> vmm_backend::Result<vmm_
 pub fn vmm_backend::MockArm64Backend::save(&mut self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::MockArm64Backend::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockArm64Backend::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::MockArm64Backend::take_accepted_interrupt(&mut self) -> core::option::Option<vmm_backend::arch::arm64::GicIntId>
 pub fn vmm_backend::MockArm64Backend::validate_restore_state(&self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 impl vmm_backend::Backend for vmm_backend::MockBackend
@@ -1104,6 +1125,7 @@ pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backe
 pub fn vmm_backend::MockBackend::save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::MockBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::MockBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 pub fn vmm_backend::MockBackend::validate_restore_state(&self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 impl<B: vmm_backend::Backend + ?core::marker::Sized> vmm_backend::Backend for alloc::boxed::Box<B>
@@ -1132,6 +1154,7 @@ pub fn alloc::boxed::Box<B>::run(&mut self) -> vmm_backend::Result<vmm_backend::
 pub fn alloc::boxed::Box<B>::save(&mut self) -> vmm_backend::Result<<Self::A as vmm_backend::arch::Arch>::VcpuState>
 pub fn alloc::boxed::Box<B>::set_pending_irq(&mut self, core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::set_policy(&mut self, &<Self::A as vmm_backend::arch::Arch>::Policy) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn alloc::boxed::Box<B>::take_accepted_interrupt(&mut self) -> core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>
 pub fn alloc::boxed::Box<B>::validate_restore_state(&self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 impl<K: vmm_backend::Arm64Kvm> vmm_backend::Backend for vmm_backend::Arm64KvmBackend<K>
@@ -1160,6 +1183,7 @@ pub fn vmm_backend::Arm64KvmBackend<K>::run(&mut self) -> vmm_backend::Result<vm
 pub fn vmm_backend::Arm64KvmBackend<K>::save(&mut self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64KvmBackend<K>::store_completions(&self) -> vmm_backend::StoreCompletions
 pub fn vmm_backend::Arm64KvmBackend<K>::take_accepted_interrupt(&mut self) -> core::option::Option<vmm_backend::arch::arm64::GicIntId>
 pub fn vmm_backend::Arm64KvmBackend<K>::validate_restore_state(&self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::canonicalize_xsave_with_restore_bv(&mut [u8]) -> core::option::Option<u64>

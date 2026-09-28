@@ -6,7 +6,7 @@ use crate::arch::arm64::{
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
+use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts, StoreCompletions};
 use crate::types::{Gpa, MpState};
 
 pub(crate) const KVM_EXIT_MMIO: u32 = 6;
@@ -857,6 +857,7 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     accepted_irq: Option<GicIntId>,
     reported_active_irq: Option<GicIntId>,
     counts: ExitCounts,
+    completions: StoreCompletions,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -876,6 +877,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             accepted_irq: None,
             reported_active_irq: None,
             counts: ExitCounts::default(),
+            completions: StoreCompletions::default(),
         }
     }
 
@@ -946,7 +948,13 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
                 if view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write {
+                    #[allow(clippy::disallowed_methods)]
+                    let started = std::time::Instant::now();
                     self.kvm.complete_mmio_exit()?;
+                    self.completions.runs = self.completions.runs.saturating_add(1);
+                    self.completions.nanos = self.completions.nanos.saturating_add(
+                        u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    );
                 }
                 self.counts.bump(exit.reason());
                 self.pending = pending;
@@ -1225,6 +1233,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn reset_exit_counts(&mut self) {
         self.counts = ExitCounts::default();
+    }
+
+    fn store_completions(&self) -> StoreCompletions {
+        self.completions
     }
 
     fn capabilities(&self) -> Capabilities<crate::arch::arm64::Arm64Caps> {

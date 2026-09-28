@@ -4,7 +4,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 use crate::arch::Arch;
 use crate::error::Result;
-use crate::exit::{Capabilities, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts, StoreCompletions};
 use crate::types::Gpa;
 
 pub trait Backend {
@@ -95,6 +95,10 @@ pub trait Backend {
     fn exit_counts(&self) -> ExitCounts;
 
     fn reset_exit_counts(&mut self);
+
+    fn store_completions(&self) -> StoreCompletions {
+        StoreCompletions::default()
+    }
 
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps>;
 
@@ -204,6 +208,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn reset_exit_counts(&mut self) {
         (**self).reset_exit_counts()
+    }
+
+    fn store_completions(&self) -> StoreCompletions {
+        (**self).store_completions()
     }
 
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps> {

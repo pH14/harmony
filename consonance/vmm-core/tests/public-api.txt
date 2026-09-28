@@ -16,6 +16,7 @@ impl<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>> vmm_core::cont
 pub fn vmm_core::control::ControlServer<B>::export_portable_snapshot<W: std::io::Write>(&self, control_proto::types::SnapId, W) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::export_sparse_snapshot(&self, control_proto::types::SnapId, control_proto::types::SnapId) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshot, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::handle(&mut self, &control_proto::types::Request) -> core::result::Result<core::result::Result<control_proto::types::Reply, control_proto::error::ControlError>, vmm_core::control::ServeError>
+pub fn vmm_core::control::ControlServer<B>::host_telemetry(&self) -> vmm_core::host_telemetry::HostTelemetry
 pub fn vmm_core::control::ControlServer<B>::import_portable_snapshot<R: std::io::Read>(&mut self, R) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::import_sparse_snapshot(&mut self, control_proto::types::SnapId, vmm_core::portable_snapshot::SparsePortableSnapshot) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::import_sparse_snapshot_parts(&mut self, control_proto::types::SnapId, &[(u64, alloc::sync::Arc<[u8; 4096]>)], &[u8]) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
@@ -65,6 +66,35 @@ pub fn vmm_core::exec::ExecSession::is_done(&self) -> bool
 pub fn vmm_core::exec::ExecSession::new(&str, u64) -> vmm_core::exec::ExecSession
 pub fn vmm_core::exec::ExecSession::truncated(&self) -> bool
 pub const vmm_core::exec::MAX_CAPTURE: usize
+pub mod vmm_core::host_telemetry
+pub struct vmm_core::host_telemetry::Cost
+pub vmm_core::host_telemetry::Cost::count: u64
+pub vmm_core::host_telemetry::Cost::nanos: u64
+impl vmm_core::host_telemetry::Cost
+pub fn vmm_core::host_telemetry::Cost::add(&mut self, u128)
+pub struct vmm_core::host_telemetry::ExitSite
+pub vmm_core::host_telemetry::ExitSite::reason: vmm_backend::exit::ExitReason
+pub vmm_core::host_telemetry::ExitSite::site: u64
+pub vmm_core::host_telemetry::ExitSite::write: bool
+pub struct vmm_core::host_telemetry::ExitTelemetry
+pub vmm_core::host_telemetry::ExitTelemetry::exits: alloc::collections::btree::map::BTreeMap<vmm_core::host_telemetry::ExitSite, vmm_core::host_telemetry::Cost>
+pub vmm_core::host_telemetry::ExitTelemetry::guest_runs: vmm_core::host_telemetry::Cost
+pub vmm_core::host_telemetry::ExitTelemetry::store_completions: vmm_backend::exit::StoreCompletions
+impl vmm_core::host_telemetry::ExitTelemetry
+pub fn vmm_core::host_telemetry::ExitTelemetry::merge(&mut self, &vmm_core::host_telemetry::ExitTelemetry)
+pub struct vmm_core::host_telemetry::HostTelemetry
+pub vmm_core::host_telemetry::HostTelemetry::exits: vmm_core::host_telemetry::ExitTelemetry
+pub vmm_core::host_telemetry::HostTelemetry::export_pages: u64
+pub vmm_core::host_telemetry::HostTelemetry::exports: vmm_core::host_telemetry::Cost
+pub vmm_core::host_telemetry::HostTelemetry::import_pages: u64
+pub vmm_core::host_telemetry::HostTelemetry::imports: vmm_core::host_telemetry::Cost
+pub vmm_core::host_telemetry::HostTelemetry::restore_fallbacks: u64
+pub vmm_core::host_telemetry::HostTelemetry::restore_pages: u64
+pub vmm_core::host_telemetry::HostTelemetry::restores: vmm_core::host_telemetry::Cost
+pub vmm_core::host_telemetry::HostTelemetry::seal_pages: u64
+pub vmm_core::host_telemetry::HostTelemetry::seals: vmm_core::host_telemetry::Cost
+impl vmm_core::host_telemetry::HostTelemetry
+pub fn vmm_core::host_telemetry::HostTelemetry::counters(&self) -> alloc::vec::Vec<(alloc::string::String, u64)>
 pub mod vmm_core::portable_snapshot
 pub enum vmm_core::portable_snapshot::PortableSnapshotError
 pub vmm_core::portable_snapshot::PortableSnapshotError::BadFlags
@@ -799,6 +829,7 @@ pub fn vmm_core::vmm::Vmm<B>::enable_pvclock(&mut self) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::enable_sdk(&mut self, environment::channel::RecordedEnv<alloc::boxed::Box<dyn environment::channel::ServiceHandler>>, &environment::input_spec::ServiceConfig) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::entropy_state(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
+pub fn vmm_core::vmm::Vmm<B>::exit_telemetry(&self) -> vmm_core::host_telemetry::ExitTelemetry
 pub fn vmm_core::vmm::Vmm<B>::guest_memory(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::has_active_event_injection(&mut self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_inflight_event_injection(&mut self) -> bool
