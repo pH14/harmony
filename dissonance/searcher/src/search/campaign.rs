@@ -90,6 +90,34 @@ pub struct CampaignExecutionOptions {
     pub work_budget: Option<u64>,
     pub result_buffering: ResultBuffering,
     pub checkpoints: Option<CheckpointPlan>,
+    pub placement: Option<ThreadPlacement>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlacedThread {
+    Coordinator,
+    Worker(u32),
+}
+
+type PlaceThread = dyn Fn(PlacedThread) -> Result<(), String> + Send + Sync;
+
+#[derive(Clone)]
+pub struct ThreadPlacement(Arc<PlaceThread>);
+
+impl ThreadPlacement {
+    pub fn new(place: impl Fn(PlacedThread) -> Result<(), String> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(place))
+    }
+
+    fn place(placement: Option<&Self>, thread: PlacedThread) -> Result<(), String> {
+        placement.map_or(Ok(()), |placement| (placement.0)(thread))
+    }
+}
+
+impl Debug for ThreadPlacement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ThreadPlacement")
+    }
 }
 
 pub const DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER: usize = 1;
@@ -2728,6 +2756,7 @@ where
     G::ArchiveReport: Serialize,
 {
     let work_budget = options.work_budget;
+    let placement = options.placement.as_ref();
     let result_limit = options.result_buffering.capacity();
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     if work_budget == Some(0) {
@@ -2865,7 +2894,10 @@ where
     let mut idle_clock = IdleClock::new(workers);
     let ((), worker_telemetry) = with_worker_pool(
         config.workers,
-        |_| workload.new_target(),
+        |worker| {
+            ThreadPlacement::place(placement, PlacedThread::Worker(worker))?;
+            workload.new_target()
+        },
         |target, spec: JobSpec<G>| {
             let reservation = spec.reservation;
             let work_before = workload.execution_work(target);
@@ -2895,6 +2927,7 @@ where
         },
         |target| workload.telemetry(target),
         |pool| -> Result<(), Box<dyn Error>> {
+            ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
             let select = |core: &mut CoordinatorCore<G>,
                           rands: &mut [RomuDuoJrRand],
                           draw_state: &mut DrawTables<G::Action>,
@@ -3247,7 +3280,7 @@ where
                 let spec = queued_specs
                     .pop_front()
                     .ok_or("campaign prefill lost queued job")?;
-                pool.send(worker, spec)?;
+                pool.dispatch(worker, spec)?;
                 idle_clock.busy(usize::try_from(worker)?);
                 physical_queued[usize::try_from(worker)?] += 1;
             }
@@ -3599,7 +3632,7 @@ where
                         let spec = queued_specs
                             .pop_front()
                             .ok_or("campaign queued-job count changed while dispatching")?;
-                        pool.send(worker, spec)?;
+                        pool.dispatch(worker, spec)?;
                         let physical_index = usize::try_from(worker)?;
                         idle_clock.busy(physical_index);
                         physical_queued[physical_index] =
@@ -3638,7 +3671,7 @@ where
                     let spec = queued_specs
                         .pop_front()
                         .ok_or("campaign queued-job count changed while dispatching")?;
-                    pool.send(worker, spec)?;
+                    pool.dispatch(worker, spec)?;
                     let physical_index = usize::try_from(worker)?;
                     idle_clock.busy(physical_index);
                     physical_queued[physical_index] =
@@ -4840,20 +4873,21 @@ mod continuation_tests;
 mod tests {
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
-        CampaignConfig, CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
-        CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-        CampaignTypes, ContinuationAccounting, CoordinatorCore,
-        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DrawTables, DurationAdmission,
-        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
-        LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand,
-        SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution, WorkloadPolicies,
-        admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
-        completed_results_within_bound, draws_continuation, draws_highest_preference,
-        execution_work_delta, finish_record, is_zero_usize, memory_is_within_reserve,
-        postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
-        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
-        replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
-        retained_archive_indexes, run_campaign_checkpointed, schedule_policy_identifier,
+        CampaignConfig, CampaignCounters, CampaignExecutionOptions, CampaignJobRecord,
+        CampaignJobResult, CampaignOrigin, CampaignOutcome, CampaignProgressRecord,
+        CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
+        ContinuationAccounting, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+        DrawTables, DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation,
+        InputPolicy, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
+        PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry,
+        TargetExecution, ThreadPlacement, WorkloadPolicies, admission_window_depth,
+        archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
+        draws_continuation, draws_highest_preference, execution_work_delta, finish_record,
+        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
+        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
+        record_mixture_outcome, replay_campaign_checkpointed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
+        run_campaign_checkpointed_with_options, schedule_policy_identifier,
         schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
@@ -6517,24 +6551,7 @@ mod tests {
 
     #[test]
     fn the_report_carries_worker_telemetry_that_replay_equality_ignores() {
-        let config = CampaignConfig {
-            campaign_seed: 5,
-            workers: 3,
-            execution_budget: 60,
-            host: "test".to_owned(),
-            wall_budget: None,
-            stop_rollout_on_objective: false,
-            stop_campaign_on_objective: false,
-            archive_entry_limit: 32,
-            reservations_per_worker: 1,
-            memory_budget_mib: None,
-            materialize_final_artifacts: true,
-            run: (),
-            suffix: SuffixShape::OneOrTwo,
-            mixture: DrawMixture::AlphabetOnly,
-            retention: RetentionPolicy::Unprobed,
-            objective_witness_path: None,
-        };
+        let config = three_worker_config();
         let workload = TestWorkload {
             bootstrap_objective: false,
         };
@@ -6567,6 +6584,103 @@ mod tests {
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert!(replayed.0.telemetry.workers.is_empty());
         assert_eq!(replayed, live);
+    }
+
+    fn run_placed(placement: ThreadPlacement) -> Result<CampaignOutcome<TestWorkload>, String> {
+        run_campaign_checkpointed_with_options(
+            &TestWorkload {
+                bootstrap_objective: false,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+            CampaignExecutionOptions {
+                placement: Some(placement),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn placement_runs_once_on_the_coordinator_and_each_worker_thread() {
+        let placed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&placed);
+        let placement = ThreadPlacement::new(move |thread| {
+            record
+                .lock()
+                .expect("placement record")
+                .push((thread, std::thread::current().id()));
+            Ok(())
+        });
+        let placed_run = run_placed(placement).expect("placed campaign");
+        let unplaced = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+        )
+        .expect("campaign");
+        assert_eq!(placed_run, unplaced);
+        let mut placed = placed.lock().expect("placement record").clone();
+        placed.sort_by_key(|(thread, _)| match thread {
+            PlacedThread::Coordinator => 0,
+            PlacedThread::Worker(worker) => worker + 1,
+        });
+        assert_eq!(
+            placed.iter().map(|(thread, _)| *thread).collect::<Vec<_>>(),
+            vec![
+                PlacedThread::Coordinator,
+                PlacedThread::Worker(0),
+                PlacedThread::Worker(1),
+                PlacedThread::Worker(2),
+            ]
+        );
+        let threads = placed
+            .iter()
+            .map(|(_, id)| format!("{id:?}"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(threads.len(), 4);
+    }
+
+    #[test]
+    fn a_placement_failure_fails_the_campaign() {
+        for refused in [PlacedThread::Coordinator, PlacedThread::Worker(1)] {
+            let placement = ThreadPlacement::new(move |thread| {
+                if thread == refused {
+                    Err(format!("{thread:?} refused"))
+                } else {
+                    Ok(())
+                }
+            });
+            let error = run_placed(placement).expect_err("refused placement");
+            assert!(error.contains("refused"), "{error}");
+        }
+    }
+
+    fn three_worker_config() -> CampaignConfig<TestWorkload> {
+        CampaignConfig {
+            campaign_seed: 5,
+            workers: 3,
+            execution_budget: 60,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 32,
+            reservations_per_worker: 1,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        }
     }
 
     #[test]

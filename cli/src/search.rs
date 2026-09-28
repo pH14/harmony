@@ -214,6 +214,10 @@ fn run_faults_consonance(
         all(target_os = "macos", target_arch = "aarch64")
     ))]
     {
+        let placement = match replay {
+            Some(_) => None,
+            None => Some(consonance_client::placement::CorePool::detect()?.plan(options.workers)?),
+        };
         let installed =
             crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
         let kernel = kernel
@@ -234,7 +238,12 @@ fn run_faults_consonance(
             Some(actions) => {
                 faults_workload::package::replay(&artifacts, actions, repeat, options)?
             }
-            None => faults_workload::package::search(&artifacts, &prepared.vocabulary, options)?,
+            None => faults_workload::package::search(
+                &artifacts,
+                &prepared.vocabulary,
+                options,
+                &placement.ok_or("search requires a worker placement")?,
+            )?,
         };
         println!(
             "bug_found   {}  executions {}  guest_ticks {}",

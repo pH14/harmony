@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod catalog;
+pub mod placement;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod watchdog;
