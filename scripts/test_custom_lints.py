@@ -139,6 +139,26 @@ class WorkflowFileTests(unittest.TestCase):
     def test_a_registered_workflow_passes(self):
         self.assertFalse(self.check(workflow_text()))
 
+    def test_nova_consumers_wait_for_same_run_guest_artifacts(self):
+        for workflow, consumer in (
+            (ci_contract.HARMONY_NES_CHECKS, "nova"),
+            (ci_contract.HARMONY_NES_BENCHMARKS, "whole-vm-search-campaign"),
+        ):
+            with self.subTest(workflow=workflow.path):
+                data = LINTS._parse_workflow(ROOT / workflow.path)
+                jobs = data["jobs"]
+                self.assertEqual(jobs[consumer]["needs"], "guest-image")
+                self.assertTrue(any(step.get("uses") == "./.github/actions/prepare-nes-guest"
+                                    for step in jobs["guest-image"]["steps"]))
+                downloads = [step["with"] for step in jobs[consumer]["steps"]
+                             if step.get("uses") == "actions/download-artifact@v4"]
+                self.assertEqual(len(downloads), 2)
+                self.assertEqual(downloads[0]["name"], "nes-guest-runtime")
+                self.assertIn("steps.guest-image.outputs.key", downloads[1]["name"])
+                self.assertTrue(all("run-id" not in download for download in downloads))
+                if consumer == "nova":
+                    self.assertEqual(jobs[consumer]["timeout-minutes"], 15)
+
     def test_the_repository_matches_its_registry(self):
         self.assertFalse(LINTS.check_workflow_rules(ROOT, list(ci_contract.registered_paths())))
 
@@ -447,6 +467,23 @@ class JobContractTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text(content)
             return [v.rule for v in LINTS.check_workflow_file(root, workflow.path, workflow)]
+
+    def test_only_the_registered_image_prerequisite_gets_a_build_budget(self):
+        workflow = ci_contract.HARMONY_NES_CHECKS
+        registered_job = next(job for job in workflow.jobs if job.name == "NES Guest Image")
+        job = {"timeout-minutes": 45, "steps": []}
+        for path, name, timeout in (
+            (workflow.path, "NES Guest Image", 45),
+            (workflow.path, "NES Guest Image", 46),
+            (workflow.path, "Nova", 45),
+            (".github/workflows/example.yml", "NES Guest Image", 45),
+        ):
+            with self.subTest(path=path, name=name, timeout=timeout):
+                candidate = registered_job._replace(name=name, scope="", timeout_minutes=timeout)
+                job["timeout-minutes"] = timeout
+                violations = LINTS.check_job_contract(path, "guest-image", job, candidate, True)
+                timeout_errors = [v for v in violations if v.rule == "ci-pr-job-timeout"]
+                self.assertEqual(bool(timeout_errors), (path, name, timeout) != (workflow.path, "NES Guest Image", 45))
 
     def test_bounded_jobs_declare_their_budget(self):
         self.assertFalse(self.check("    timeout-minutes: 15\n    steps: []"))

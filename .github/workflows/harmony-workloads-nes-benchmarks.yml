@@ -29,8 +29,16 @@ env:
   HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
 
 jobs:
+  guest-image:
+    name: NES Guest Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-nes-guest
   whole-vm-search-campaign:
     name: Nova — Replica ${{ matrix.replica }}
+    needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -62,56 +70,25 @@ jobs:
       - name: Reproduce pinned Nova and QuickNES
         run: |
           workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
-          HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
-            scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Compute platform and guest image source keys
-        id: platform-source
-        run: |
-          echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
-          echo "guest-image-key=$(python3 scripts/nes-guest-image-key.py)" >>"$GITHUB_OUTPUT"
-      - name: Restore the canonical platform runtime
-        id: platform-cache
-        uses: actions/cache/restore@v4
+          scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
+      - name: Download the prepared runtime
+        uses: actions/download-artifact@v4
         with:
+          name: nes-guest-runtime
           path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
-      - name: Build the canonical platform runtime
-        if: steps.platform-cache.outputs.cache-hit != 'true'
-        env:
-          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
-        run: |
-          make -C consonance/harmony-linux fetch
-          consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Compute the exact image name
+        id: guest-image
+        run: echo "key=$(python3 scripts/nes-guest-image-key.py)" >>"$GITHUB_OUTPUT"
+      - name: Download the prepared image
+        uses: actions/download-artifact@v4
+        with:
+          name: nes-guest-image-v1-${{ steps.guest-image.outputs.key }}
+          path: consonance/harmony-linux/build/nes.oci
       - name: Verify exact platform runtime
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
-            --artifacts consonance/harmony-linux/build/x86_64 \
-            --output nova-consonance-report/platform-provenance.json
+            --artifacts consonance/harmony-linux/build/x86_64 --output nova-consonance-report/platform-provenance.json
           python3 -c 'import json; assert json.load(open("nova-consonance-report/platform-provenance.json"))["scope"] == "exact-input"'
-      - name: Build the ROM-free generic NES OCI image
-        env:
-          HARMONY_QUICKNES_STATIC_LIB: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
-        run: |
-          make -C consonance/harmony-linux fetch
-          workloads/nes-guest/build-base-image.sh
-          test -s consonance/harmony-linux/build/nes.oci.sha256
-          test -s consonance/harmony-linux/build/nes.oci/index.json
-      - name: Publish the NES guest image for the bounded check
-        if: matrix.replica == 1
-        uses: actions/upload-artifact@v4
-        with:
-          name: nes-guest-image-v1-${{ steps.platform-source.outputs.guest-image-key }}
-          path: consonance/harmony-linux/build/nes.oci
-          if-no-files-found: error
-          retention-days: 30
-      - name: Cache the NES guest image for the bounded check
-        if: matrix.replica == 1
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: consonance/harmony-linux/build/nes.oci
-          key: nes-guest-image-v1-${{ steps.platform-source.outputs.guest-image-key }}
       - name: Build the Consonance-backed Dissonance campaign
         run: |
           cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \

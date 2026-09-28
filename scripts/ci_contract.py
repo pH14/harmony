@@ -56,6 +56,14 @@ SMALL_WORDS = (
 # from a pull request must declare.
 VARIANT_SEPARATOR = " — "
 PR_BOUNDED_MINUTES = 15
+PR_ARTIFACT_BUILD_BUDGETS = {
+    (f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml", "NES Guest Image"): 45,
+}
+
+
+def pull_request_budget(workflow_path: str, job_name: str) -> int:
+    return PR_ARTIFACT_BUILD_BUDGETS.get((workflow_path, job_name), PR_BOUNDED_MINUTES)
+
 
 # Trigger classes. `pr` jobs run on pull requests and on pushes to main and
 # carry the bounded budget. `full` jobs run only on a schedule or a manual
@@ -74,8 +82,8 @@ class Job(NamedTuple):
     name: str
     trigger: str
     timeout_minutes: int
-    # Why a `full` job lives inside a Checks workflow. Registered exceptions
-    # are the only way a Checks workflow mixes trigger classes.
+    # Why full work lives inside Checks, or why a separately registered
+    # artifact prerequisite needs a longer build budget.
     exception: str = ""
     # Cargo packages whose lint and unit tests this job owns.
     crates: tuple[str, ...] = ()
@@ -513,6 +521,10 @@ HARMONY_NES_CHECKS = Workflow(
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
+        Job("NES Guest Image", "pr", 45,
+            exception="Cold construction of exact runtime and NES image artifacts is "
+                      "a build prerequisite; Nova validation remains bounded to 15 minutes.",
+            scope="harmony_nes"),
         Job("Nova", "pr", 15, media=("workloads/nes/src/bin/nes-film.rs",),
             scope="harmony_nes"),
         Job("Backend Equivalence", "full", 75,
@@ -560,6 +572,7 @@ HARMONY_NES_BENCHMARKS = Workflow(
     owner="Harmony Workloads",
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
+        Job("NES Guest Image", "full", 45),
         Job("Nova — Replica <N>", "full", 120,
             media=("workloads/nes/src/bin/nes-film.rs",)),
         Job("Results", "full", 15),

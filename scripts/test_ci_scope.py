@@ -65,6 +65,12 @@ class ScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.active(path), set(SCENARIOS) | {"public_api"})
 
+    def test_guest_preparation_changes_select_the_nova_consumer(self):
+        for path in (".github/actions/prepare-nes-guest/action.yml",
+                     ".github/actions/nes-guest-image/action.yml"):
+            with self.subTest(path=path):
+                self.assertIn("harmony_nes", self.active(path))
+
     def test_the_shared_emulator_build_selects_every_source_built_game(self):
         self.assertEqual(self.active("scripts/build-quicknes-core.sh"),
                          {"dissonance_nes", "dissonance_stb", "harmony_nes"})

@@ -416,6 +416,10 @@ def _ci_policy() -> dict:
         "compositions": list(ci_contract.COMPOSITIONS),
         "variant_separator": ci_contract.VARIANT_SEPARATOR,
         "pull_request_minutes": ci_contract.PR_BOUNDED_MINUTES,
+        "artifact_build_budgets": [
+            {"workflow": path, "job": name, "minutes": minutes}
+            for (path, name), minutes in ci_contract.PR_ARTIFACT_BUILD_BUDGETS.items()
+        ],
         "trigger_classes": list(ci_contract.TRIGGER_CLASSES),
         "nes_compositions": ci_contract.NES_COMPOSITIONS,
         "full_search_commands": list(ci_contract.FULL_SEARCH_COMMANDS),

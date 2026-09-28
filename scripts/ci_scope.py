@@ -26,6 +26,8 @@ GLOBAL = (
     ".github/workflows/harmony-workloads-oci-checks.yml",
     ".github/workflows/consonance-checks.yml",
     ".github/actions/platform-runtime/**",
+    ".github/actions/nes-guest-image/**",
+    ".github/actions/prepare-nes-guest/**",
     "scripts/ci_scope.py", "scripts/test_ci_scope.py",
     "scripts/ci_contract.py", "scripts/test_ci_contract.py",
     ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
