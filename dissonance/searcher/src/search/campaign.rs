@@ -2967,6 +2967,7 @@ where
                     let selector = SelectorDraw {
                         path: SelectorPath::Continuation,
                         tier_rank: None,
+                        best_preference: None,
                     };
                     let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
                     let splice = Some(CampaignSpliceRecord::Tail {
@@ -5657,7 +5658,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"tier_cell_count_decay_v3","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_cell_count_decay_v4","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -6414,6 +6415,7 @@ mod tests {
         let _ = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
+            best_preference: None,
         };
     }
 
