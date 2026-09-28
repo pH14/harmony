@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use control_proto::{Reply, Reproducer, Request};
+use control_proto::{HashScope, Reply, Reproducer, Request};
 use environment::channel::{ChannelError, Question, ServiceHandler, ServiceResponse};
 use environment::input_spec::{InputSpec, ServiceConfig};
 use std::hint::black_box;
@@ -43,7 +43,7 @@ macro_rules! define_arm {
             ram_len: usize,
             pattern: &str,
             bytes: usize,
-        ) -> ([u8; 32], [u8; 32], Vec<u8>)
+        ) -> ([u8; 32], [u8; 32], Vec<u8>, [u8; 32])
         where
             B::A: $core::vendor::Vendor,
         {
@@ -86,6 +86,7 @@ macro_rules! define_arm {
                 assert_eq!(server.handle(&Request::Drop(initial)).unwrap().unwrap(), Reply::Unit);
             }
             let hash = server.vmm_mut().unwrap().state_hash().unwrap();
+            let Reply::Hash(whole_hash) = server.handle(&Request::Hash { scope: HashScope::Whole }).unwrap().unwrap() else { panic!("whole hash") };
             let Reply::Snapshot { id, at, sdk_events, tainted } = server.handle(&Request::Snapshot).unwrap().unwrap() else { panic!("snapshot") };
             let expected_receipt = (at, sdk_events, tainted);
             let snapshot_hash = server.export_portable_snapshot(id, std::io::sink()).unwrap().state_hash;
@@ -105,13 +106,13 @@ macro_rules! define_arm {
             assert_eq!(server.vmm_mut().unwrap().state_hash().unwrap(), hash);
             assert_eq!(server.snapshot_store_stats().snapshots, 0);
             println!("{{\"kind\":\"{label}_{pattern}_{bytes}\",\"arm\":\"{}\",\"sample\":{sample},\"iterations\":{iterations},\"ns\":{ns}}}", stringify!($name));
-            (hash, snapshot_hash, export.sidecar)
+            (hash, snapshot_hash, export.sidecar, whole_hash)
         }
     };
 }
 
-define_arm!(shared, vmm_core);
-define_arm!(repeated, vmm_core_reference);
+define_arm!(optimized, vmm_core);
+define_arm!(reference, vmm_core_reference);
 
 fn x86() -> MockBackend {
     let mut backend = MockBackend::new();
@@ -190,25 +191,25 @@ fn main() {
                         let evidence = match backend {
                             "x86" => {
                                 if old {
-                                    repeated(x86(), backend, sample, check, len, pattern, bytes)
+                                    reference(x86(), backend, sample, check, len, pattern, bytes)
                                 } else {
-                                    shared(x86(), backend, sample, check, len, pattern, bytes)
+                                    optimized(x86(), backend, sample, check, len, pattern, bytes)
                                 }
                             }
                             "arm64" => {
                                 if old {
-                                    repeated(arm64(), backend, sample, check, len, pattern, bytes)
+                                    reference(arm64(), backend, sample, check, len, pattern, bytes)
                                 } else {
-                                    shared(arm64(), backend, sample, check, len, pattern, bytes)
+                                    optimized(arm64(), backend, sample, check, len, pattern, bytes)
                                 }
                             }
                             _ => {
                                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                                 {
                                     if old {
-                                        repeated(hvf(), backend, sample, check, len, pattern, bytes)
+                                        reference(hvf(), backend, sample, check, len, pattern, bytes)
                                     } else {
-                                        shared(hvf(), backend, sample, check, len, pattern, bytes)
+                                        optimized(hvf(), backend, sample, check, len, pattern, bytes)
                                     }
                                 }
                                 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -217,9 +218,10 @@ fn main() {
                                 }
                             }
                         };
-                        if let Some((hash, snapshot_hash, sidecar)) = prior {
+                        if let Some((hash, snapshot_hash, sidecar, whole_hash)) = prior {
                             assert_eq!(evidence.0, hash);
                             assert_eq!(evidence.1, snapshot_hash);
+                            assert_eq!(evidence.3, whole_hash);
                             if !live {
                                 assert_eq!(evidence.2, sidecar);
                             }
@@ -231,6 +233,6 @@ fn main() {
         }
     }
     println!(
-        "Control encoding reuse preserves exported snapshot hashes, full VMM hashes, and complete mock sidecars"
+        "Control encoding preserves whole-control and exported snapshot hashes, full VMM hashes, and complete mock sidecars"
     );
 }

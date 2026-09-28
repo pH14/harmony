@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::borrow::Borrow;
+
 use control_proto::ControlError;
 use environment::input_spec::{InputSpec, ServiceConfig};
 
@@ -19,16 +21,16 @@ impl ScheduleFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ControlState {
-    pub recorded: InputSpec,
+pub(crate) struct ControlState<R = InputSpec> {
+    pub recorded: R,
     pub pending: InputSpec,
     pub poisoned: Option<ScheduleFailure>,
     pub exec_nonce: u64,
 }
 
-impl ControlState {
+impl<R: Borrow<InputSpec>> ControlState<R> {
     pub fn encode(&self) -> Vec<u8> {
-        let recorded = self.recorded.encode();
+        let recorded = self.recorded.borrow().encode();
         let pending = self.pending.encode();
         let mut out = b"HCSTATE1".to_vec();
         out.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
@@ -44,6 +46,16 @@ impl ControlState {
         out
     }
 
+    pub fn encode_and_append_hash(&self, suffix: &mut Vec<u8>) -> Vec<u8> {
+        let state = self.encode();
+        suffix.extend_from_slice(b"CPLN");
+        suffix.extend_from_slice(&(state.len() as u64).to_le_bytes());
+        suffix.extend_from_slice(&state);
+        state
+    }
+}
+
+impl ControlState {
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
         if bytes.is_empty() {
             return Ok(None);
@@ -115,14 +127,6 @@ impl ControlState {
         }
         Ok(state)
     }
-
-    pub fn encode_and_append_hash(&self, suffix: &mut Vec<u8>) -> Vec<u8> {
-        let state = self.encode();
-        suffix.extend_from_slice(b"CPLN");
-        suffix.extend_from_slice(&(state.len() as u64).to_le_bytes());
-        suffix.extend_from_slice(&state);
-        state
-    }
 }
 
 fn take<'a>(input: &mut &'a [u8], length: usize) -> Result<&'a [u8], &'static str> {
@@ -184,6 +188,38 @@ mod tests {
             );
         }
         spec
+    }
+
+    #[test]
+    fn borrowed_history_preserves_owned_wire_and_decodes_independently() {
+        for payloads in [None, Some(vec![]), Some(vec![vec![], vec![0x47; 65536]])] {
+            for poisoned in [None, state().poisoned] {
+                let mut owned = state();
+                owned.recorded.set_payloads(payloads.clone());
+                owned.recorded.record_reseed(2, 0x1234);
+                owned
+                    .recorded
+                    .record_answer(3, 19, 7, environment::channel::Answer::Data(vec![8; 4096]))
+                    .unwrap();
+                owned.poisoned = poisoned;
+                let borrowed = ControlState {
+                    recorded: &owned.recorded,
+                    pending: owned.pending.clone(),
+                    poisoned: owned.poisoned,
+                    exec_nonce: owned.exec_nonce,
+                };
+                let mut borrowed_suffix = b"prefix".to_vec();
+                let encoded = borrowed.encode_and_append_hash(&mut borrowed_suffix);
+                let mut owned_suffix = b"prefix".to_vec();
+                assert_eq!(encoded, owned.encode_and_append_hash(&mut owned_suffix));
+                assert_eq!(borrowed_suffix, owned_suffix);
+                let decoded = ControlState::decode(&encoded).unwrap().unwrap();
+                assert_eq!(decoded, owned);
+                owned.recorded.set_payloads(Some(vec![vec![9]]));
+                assert_ne!(decoded, owned);
+                assert_eq!(decoded.encode(), encoded);
+            }
+        }
     }
 
     #[test]

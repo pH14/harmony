@@ -253,6 +253,13 @@ tests over all effect variants and tape shapes. `--jemalloc` uses the Harmony
 CLI allocator; the default uses the host system allocator. Each run identifies
 the allocator and comparison. CI runs `--inputs --check` without timing limits.
 
+Add `--borrowed` instead of `--inputs` to compare borrowing the recorded history
+with cloning it for capture. Both arms keep the direct nested encoder and
+control-state serialization reuse. Whole-control hash requests, exported
+snapshot hashes, and VMM hashes must agree; mock runs also compare all sidecar
+bytes. The `reference` and `optimized` row labels always identify the two arms.
+CI runs `--borrowed --check` without timing limits.
+
 The SDK-restore qualification compares this path with a same-source VMM copy
 that clones the entire SDK snapshot and restores the replay environment twice.
 Both versions run in one release executable, identified by its printed SHA-256.
@@ -363,6 +370,10 @@ state, and execution nonce once. It appends these encoded bytes to the canonical
 hash suffix and moves that same encoding into retained snapshot metadata. This
 avoids a second serialization of the history and plan; each request still
 captures fresh state and retains the same independently owned metadata.
+Control capture borrows the recorded input history only until serialization
+finishes, avoiding a temporary deep copy of its payloads and answers. Pending
+plans are still assembled independently. Decoding always produces owned inputs,
+and retained snapshots never borrow the live controller.
 
 KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,

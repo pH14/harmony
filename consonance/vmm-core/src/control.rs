@@ -900,7 +900,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
         self.last_seal_dirty_gfns = None;
-        let control = self.capture_control_state();
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let (vm_state, vcpu) = match vmm.capture_vm_state() {
             Ok(s) => s,
@@ -921,7 +920,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_channel.as_ref().map(|channel| &channel.recorded),
         )?;
         drop(vcpu);
-        let control_state = control.encode_and_append_hash(&mut state_blob_suffix);
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
         let at = vm_state.vtime().snapshot_vns;
         let sdk_events = vmm.sdk_events().len() as u64;
@@ -931,8 +929,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace.schedule().len() as u64,
             )
         });
+        let control = self.capture_control_state();
+        let control_state = control.encode_and_append_hash(&mut state_blob_suffix);
         let policy = self.recorded.config().clone();
         let parent = self.derive_parent.take();
+        let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let (store_id, window_consumed, dirty_gfns) =
             Self::seal_into_store(&mut self.engine, vmm, parent, &blob)?;
         self.last_seal_dirty_gfns = dirty_gfns;
@@ -1296,7 +1297,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(Ok(Reply::Unit))
     }
 
-    fn capture_control_state(&self) -> ControlState {
+    fn capture_control_state(&self) -> ControlState<&EnvSpec> {
         let mut pending = EnvSpec::seeded(0);
         for (&at, effect) in &self.schedule {
             pending.record_effect(at, effect.clone());
@@ -1305,7 +1306,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             pending.record_reseed(at, seed);
         }
         ControlState {
-            recorded: self.recorded.clone(),
+            recorded: &self.recorded,
             pending,
             poisoned: self.schedule_poisoned,
             exec_nonce: self.exec_nonce,
