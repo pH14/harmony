@@ -475,14 +475,13 @@ matching Metroid leg gets measured in the game slices. A candidate is
 plausible when no world is clearly bad or undecided. The exit status is nonzero when a rule fails or a world is clearly
 bad or undecided. Two unchanged
 searchers with different runtime seeds, in 300 simulated comparisons per world,
-failed the farm loop, re-walk, off-path and locked worlds in none, the boss
-worlds in 0.3% (far stock) and 0.7% (stock and health), and the gauntlet
-worlds in 0.3% (no timing) and 2.3% (hidden timing), the boss after a draining
-approach in 2.3%, and the boss by the door in 3.7%. The simulated comparisons
+failed the farm loop, re-walk, off-path, locked and first two boss worlds in
+none, the gauntlet worlds in 0.3% (no timing) and 2.3% (hidden timing), the
+boss after a draining approach in 1.7%, and the boss by the door in 3.0%. The simulated comparisons
 for a world draw from one pool of 512 layouts (2,048 for the off-path and
 locked worlds; 343 layouts with three seeds each for the two newest boss
 worlds), so they share layouts and these rates are rough. At these rates an
-unchanged build fails at least one of the 12 worlds in about 9% of comparisons.
+unchanged build fails at least one of the 12 worlds in about 7% of comparisons.
 When a candidate fails exactly one world and the failing measure lies inside the
 1st to 99th percentile of the same measure in that world's unchanged
 comparisons, rerun that world alone with `--world` before dropping the
