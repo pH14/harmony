@@ -488,6 +488,13 @@ Genesis and snapshot-root bootstrap still require a current key and retained
 snapshot; a terminal target without a snapshot is reported as an execution
 error.
 
+`CampaignExecutionOptions::placement` is a `ThreadPlacement` hook the campaign
+calls once on the coordinator thread and once on each worker thread before
+that worker builds its target. A launcher uses it to pin threads to cores. A
+failed placement fails the campaign with its message. Placement changes only
+where threads run, so a placed campaign records the same stream as an unplaced
+one.
+
 `run_campaign_checkpointed_with_options` accepts an optional deterministic work
 budget without changing existing `CampaignConfig` callers. The stream and
 report record that budget only when present. Already reserved jobs drain

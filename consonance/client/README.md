@@ -86,6 +86,16 @@ presence metadata; exported artifacts retain those bytes and checksum them.
 The guest execution restrictions and import boundary are documented in the
 [core identity contract](../vmm-core/README.md#published-xsave-identity-check).
 
+`placement::CorePool` finds the host's fastest core type within the process's
+CPU affinity: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part
+number in `MIDR_EL1` on arm64, and `cpu_capacity` or the maximum frequency to
+rank the types. Its cores are ordered fastest first. `CorePool::plan` gives
+each worker its own core and the coordinator the slowest remaining one, and
+refuses more workers than the pool leaves room for. `pin_current_thread` binds
+the calling thread to one core on Linux. A worker's guest runs on the thread
+that owns its session, so pinning that thread keeps the guest on one core. On
+macOS the pool counts the performance cores and nothing is pinned.
+
 ```sh
 cargo test -p consonance-client
 cargo clippy -p consonance-client --all-features --all-targets -- -D warnings

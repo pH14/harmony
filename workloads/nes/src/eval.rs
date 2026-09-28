@@ -210,6 +210,7 @@ where
             work_budget: request.frames,
             result_buffering,
             checkpoints,
+            placement: None,
         },
     )?;
     stream.flush()?;

@@ -286,9 +286,10 @@ fn state_digest_hex(digest: &[u8; 32]) -> String {
 mod live {
     use std::{error::Error, io::BufWriter, time::Instant};
 
+    use consonance_client::placement::{Placement, pin_current_thread};
     use searcher::search::{
         archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
-        campaign::CampaignOrigin,
+        campaign::{CampaignOrigin, PlacedThread, ThreadPlacement},
         draw::{DrawMixture, SuffixShape},
     };
     use serde_json::json;
@@ -307,6 +308,18 @@ mod live {
 
     const MEMORY_BUDGET_MIB: usize = 512;
 
+    fn pinned(plan: Placement) -> ThreadPlacement {
+        ThreadPlacement::new(move |thread| {
+            let cpu = match thread {
+                PlacedThread::Coordinator => plan.coordinator,
+                PlacedThread::Worker(worker) => {
+                    plan.workers.get(worker as usize).copied().flatten()
+                }
+            };
+            cpu.map_or(Ok(()), pin_current_thread)
+        })
+    }
+
     fn config(options: &Options) -> FaultConfig {
         FaultConfig {
             knobs: options.knobs.clone(),
@@ -318,6 +331,7 @@ mod live {
         artifacts: &Artifacts,
         vocabulary: &FaultVocabulary,
         options: &Options,
+        placement: &Placement,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let config = config(options);
@@ -341,6 +355,7 @@ mod live {
             suffix: SuffixShape::OneToSix,
             mixture: DrawMixture::AlphabetOnly,
             objective_witness_path: Some(options.output.join("first-bug-input.json")),
+            placement: Some(pinned(placement.clone())),
         };
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();

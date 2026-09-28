@@ -805,6 +805,7 @@ pub fn run_scaled(
                 ResultBuffering::OnePerWorker
             },
             checkpoints: None,
+            placement: None,
         },
     )?;
     let elapsed = started.elapsed().as_secs_f64();

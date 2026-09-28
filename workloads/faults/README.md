@@ -116,7 +116,7 @@ the next one can boot a virtual machine in that process.
 ```
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
-    --seed 1 --workers 8 --executions 100000 \
+    --seed 1 --workers 4 --executions 100000 \
     --ram-mib 1024 --out run/
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \

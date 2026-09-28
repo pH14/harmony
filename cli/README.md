@@ -49,6 +49,13 @@ adds `prepared.json` and `checkpoint.json`, and faults adds
 `bug-N.json` per bug. An explicit backend selection is checked before
 execution.
 
+A faults search places one worker per core of the host's fastest core type and
+keeps one more core of that type for the coordinator. It refuses more workers
+than that pool allows, so on a host with eight fast cores it accepts at most
+seven. The pool is the part of the process's CPU affinity in that core type,
+so `taskset` narrows it. On macOS the pool is the performance cores and threads
+are left unpinned.
+
 ## OCI execution
 
 ```

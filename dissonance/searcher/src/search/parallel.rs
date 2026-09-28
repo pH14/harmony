@@ -91,6 +91,17 @@ impl<Job, Output> WorkerPool<Job, Output> {
             .map_err(|_| WorkerPoolError::WorkerExited)
     }
 
+    pub(crate) fn dispatch(&self, worker: u32, job: Job) -> Result<(), Box<dyn Error>> {
+        match self.send(worker, job) {
+            Err(WorkerPoolError::WorkerExited) => Err(self
+                .reply_receiver
+                .try_iter()
+                .find_map(|reply| (reply.worker == worker).then_some(reply.outcome.err())?)
+                .map_or_else(|| WorkerPoolError::WorkerExited.into(), Into::into)),
+            sent => sent.map_err(Into::into),
+        }
+    }
+
     pub(crate) fn close(&mut self, worker: u32) -> Result<(), WorkerPoolError> {
         let sender = self
             .job_senders

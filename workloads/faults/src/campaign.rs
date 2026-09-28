@@ -7,10 +7,11 @@ use searcher::{
         archive::RetentionPolicy,
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
-            CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-            Evaluation, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
-            WorkloadPolicies, postcard_result_sha256, run_campaign_checkpointed,
+            CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
+            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes,
+            DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, InputPolicy, Reporting,
+            SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
+            postcard_result_sha256, run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
@@ -145,6 +146,7 @@ pub struct FaultCampaignConfig {
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub objective_witness_path: Option<PathBuf>,
+    pub placement: Option<ThreadPlacement>,
 }
 
 impl FaultCampaignConfig {
@@ -767,8 +769,17 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    let (report, checkpoint) =
-        run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)?;
+    let (report, checkpoint) = run_campaign_checkpointed_with_options(
+        game,
+        &config.generic(),
+        origin,
+        stream,
+        progress,
+        CampaignExecutionOptions {
+            placement: config.placement.clone(),
+            ..CampaignExecutionOptions::default()
+        },
+    )?;
     Ok((FaultCampaignReport::new(report), checkpoint))
 }
 
