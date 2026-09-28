@@ -51,7 +51,7 @@ impl LocalState {
             WorldState::Trap(s) => Self::Trap(s),
             WorldState::Backtrack(s) => Self::Backtrack(s),
             WorldState::Map(s) => Self::Map(s),
-            WorldState::Chain(_) | WorldState::Graph(_) => {
+            WorldState::Chain(_) | WorldState::Graph(_) | WorldState::Crossing(_) => {
                 unreachable!("validated non-nested, non-graph stage")
             }
         }
@@ -93,8 +93,8 @@ impl Config {
             if matches!(stage.world, World::Chain(_)) {
                 return Err("nested chains are unsupported".into());
             }
-            if matches!(stage.world, World::Graph(_)) {
-                return Err("graph stages are unsupported".into());
+            if matches!(stage.world, World::Graph(_) | World::Crossing(_)) {
+                return Err("graph and crossing stages are unsupported".into());
             }
             if matches!(&stage.world, World::Map(w) if w.boss_stock > 0) {
                 return Err("map stages with a boss are unsupported".into());
