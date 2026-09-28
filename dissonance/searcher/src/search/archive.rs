@@ -148,17 +148,6 @@ const COUNT_DECAY_EXPONENT: u32 = 2;
 
 const COUNT_DECAY_SCALE: u64 = 1 << 32;
 
-fn release_pending<T: Ord>(pending: &mut BTreeMap<T, u64>, key: T) -> Result<(), Box<dyn Error>> {
-    let count = pending
-        .get_mut(&key)
-        .ok_or("admission released a selection that was never reserved")?;
-    *count -= 1;
-    if *count == 0 {
-        pending.remove(&key);
-    }
-    Ok(())
-}
-
 #[must_use]
 fn count_decay(draws: u64) -> u64 {
     let divisor = draws
@@ -455,8 +444,6 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub retained: u64,
     pub rejected: u64,
     selected: Vec<u64>,
-    pending_selections: BTreeMap<u64, u64>,
-    pending_cell_draws: BTreeMap<Cell<K>, u64>,
     productive: Vec<u64>,
     opened_cell: Vec<bool>,
     opened_slot: Vec<bool>,
@@ -922,8 +909,6 @@ where
             retained: 0,
             rejected: 0,
             selected: Vec::new(),
-            pending_selections: BTreeMap::new(),
-            pending_cell_draws: BTreeMap::new(),
             productive: Vec::new(),
             opened_cell: Vec::new(),
             opened_slot: Vec::new(),
@@ -2379,11 +2364,13 @@ where
             .get(&progress)
             .ok_or("tier draw chose an absent tier")?;
         let mut weights = Vec::with_capacity(places.len());
-        weights.extend(
-            places
-                .keys()
-                .map(|place| count_decay(self.cell_draws_with_pending((progress, *place)))),
-        );
+        weights.extend(places.keys().map(|place| {
+            count_decay(
+                self.cells
+                    .get(&(progress, *place))
+                    .map_or(0, |state| state.draws),
+            )
+        }));
         let index = draw_weighted(rand, weights.iter().copied())?;
         let place = if index < places.len() / 2 {
             places.keys().nth(index)
@@ -2407,12 +2394,7 @@ where
             .and_then(|places| places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
         let mut weights = Vec::with_capacity(members.ids.len());
-        weights.extend(
-            members
-                .ids
-                .iter()
-                .map(|id| count_decay(self.selections_with_pending(*id))),
-        );
+        weights.extend(members.ids.iter().map(|id| count_decay(self.selected[*id])));
         let index = draw_weighted(rand, weights.iter().copied())?;
         let id = if index < members.ids.len() / 2 {
             members.ids.iter().nth(index)
@@ -2740,59 +2722,6 @@ where
         *count = count.saturating_add(1);
     }
 
-    fn selections_with_pending(&self, id: usize) -> u64 {
-        let pending = self
-            .entries
-            .get(id)
-            .and_then(|entry| self.pending_selections.get(&entry.id))
-            .copied()
-            .unwrap_or(0);
-        self.selected[id].saturating_add(pending)
-    }
-
-    fn cell_draws_with_pending(&self, cell: Cell<K>) -> u64 {
-        self.cells
-            .get(&cell)
-            .map_or(0, |state| state.draws)
-            .saturating_add(self.pending_cell_draws.get(&cell).copied().unwrap_or(0))
-    }
-
-    pub fn reserve_selection(&mut self, id: usize) {
-        let entry = &self.entries[id];
-        let holder = self.pending_selections.entry(entry.id).or_default();
-        *holder = holder.saturating_add(1);
-        let cell = self
-            .pending_cell_draws
-            .entry(cell_of(entry.key))
-            .or_default();
-        *cell = cell.saturating_add(1);
-    }
-
-    pub fn release_selection(&mut self, id: usize) -> Result<(), Box<dyn Error>> {
-        let entry = &self.entries[id];
-        release_pending(&mut self.pending_selections, entry.id)?;
-        release_pending(&mut self.pending_cell_draws, cell_of(entry.key))
-    }
-
-    #[must_use]
-    pub fn pending_selections(&self) -> u64 {
-        self.pending_selections.values().sum()
-    }
-
-    #[must_use]
-    pub fn pending_selections_match(&self, parents: impl Iterator<Item = u64>) -> bool {
-        let mut holders = BTreeMap::<u64, u64>::new();
-        let mut cells = BTreeMap::<Cell<K>, u64>::new();
-        for parent in parents {
-            let Some(entry) = self.index_of_id(parent).map(|index| &self.entries[index]) else {
-                return false;
-            };
-            *holders.entry(parent).or_default() += 1;
-            *cells.entry(cell_of(entry.key)).or_default() += 1;
-        }
-        holders == self.pending_selections && cells == self.pending_cell_draws
-    }
-
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
         self.selected[id] = self.selected[id].saturating_add(1);
         self.referenced[id] = true;
@@ -3040,7 +2969,13 @@ where
         let candidates = places.keys().copied().collect::<Vec<_>>();
         let weights = candidates
             .iter()
-            .map(|place| count_decay(self.cell_draws_with_pending((progress, *place))))
+            .map(|place| {
+                count_decay(
+                    self.cells
+                        .get(&(progress, *place))
+                        .map_or(0, |state| state.draws),
+                )
+            })
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
         Ok(candidates[index])
@@ -3060,7 +2995,7 @@ where
         let ids = members.ids.iter().copied().collect::<Vec<_>>();
         let weights = ids
             .iter()
-            .map(|id| count_decay(self.selections_with_pending(*id)))
+            .map(|id| count_decay(self.selected[*id]))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, weights.iter().copied())?;
         Ok(ids[index])
@@ -5951,72 +5886,6 @@ mod tests {
         );
         assert_eq!(archive.selected[id], 1);
         assert_eq!(archive.cell_draws(key), 1);
-    }
-
-    #[test]
-    fn a_pending_selection_counts_in_the_draw_and_once_at_admission() {
-        let mut archive = archive_with_prunable_history();
-        let id = archive.active.iter().position(|active| *active).unwrap();
-        let key = archive.entries[id].key;
-        let draw = SelectorDraw {
-            path: SelectorPath::Tiers,
-            tier_rank: Some(0),
-        };
-        archive.reserve_selection(id);
-        archive.reserve_selection(id);
-        assert_eq!(archive.selections_with_pending(id), 2);
-        assert_eq!(archive.cell_draws_with_pending(super::cell_of(key)), 2);
-        assert_eq!(archive.selected[id], 0);
-        assert_eq!(archive.cell_draws(key), 0);
-        assert!(archive.pending_selections_match([archive.entries[id].id; 2].into_iter()));
-        assert!(!archive.pending_selections_match(std::iter::once(archive.entries[id].id)));
-        for admitted in 1..=2 {
-            archive.release_selection(id).unwrap();
-            archive.record_selection(id, &draw);
-            assert_eq!(archive.selected[id], admitted);
-            assert_eq!(archive.selections_with_pending(id), 2);
-            assert_eq!(archive.cell_draws_with_pending(super::cell_of(key)), 2);
-        }
-        assert_eq!(archive.pending_selections(), 0);
-        assert!(archive.release_selection(id).is_err());
-    }
-
-    #[test]
-    fn a_pending_holder_is_drawn_less_until_its_job_is_admitted() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
-        for identity in 0_u16..2 {
-            archive
-                .insert(
-                    None,
-                    u64::from(identity),
-                    ArchiveCandidate {
-                        suffix: vec![u8::try_from(identity).unwrap()],
-                        key: FlatKey([identity, 5, 0, 0]),
-                        milestones: (),
-                    },
-                    (),
-                )
-                .unwrap()
-                .unwrap();
-        }
-        let first_share = |archive: &mut Archive<u8, FlatKey, (), ()>| {
-            let mut rand = RomuDuoJrRand::with_seed(3);
-            (0..400)
-                .filter(|_| {
-                    archive.prepare_selection();
-                    archive.select_parent(&mut rand).unwrap().0 == 0
-                })
-                .count()
-        };
-        let even = first_share(&mut archive);
-        for _ in 0..8 {
-            archive.reserve_selection(0);
-        }
-        let pending = first_share(&mut archive);
-        assert!(
-            pending * 4 < even,
-            "{pending} of 400 with 8 pending, {even} without"
-        );
     }
 
     #[test]
