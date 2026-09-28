@@ -3153,7 +3153,6 @@ where
                     }
                     *reserved = reserved.saturating_add(1);
                     core.archive.pin_metadata(parent_id)?;
-                    core.archive.reserve_selection(parent_index);
                     let (snapshot, replay, snapshot_id) =
                         core.archive.pin_job_origin(parent_index)?;
                     let entry = &core.archive.entries[parent_index];
@@ -3395,7 +3394,6 @@ where
                     if isolated_continuation {
                         core.archive.record_isolated_continuation(parent_index);
                     } else {
-                        core.archive.release_selection(parent_index)?;
                         core.archive
                             .record_selection(parent_index, &pending_job.selector);
                     }
@@ -3656,9 +3654,6 @@ where
             if !queued_specs.is_empty() {
                 return Err("campaign reorder window ended with queued jobs".into());
             }
-            if core.archive.pending_selections() != 0 {
-                return Err("campaign ended with unreleased pending selections".into());
-            }
             pool.close();
             Ok(())
         },
@@ -3911,14 +3906,6 @@ fn restore_search_checkpoint<G: Workload>(
     if core.sequence != u64::try_from(header.next_admission)? || core.sequence != header.executions
     {
         return Err("search checkpoint admission count disagrees with its archive".into());
-    }
-    if !core.archive.pending_selections_match(
-        in_flight
-            .iter()
-            .filter(|job| job.pending.selector.path == SelectorPath::Tiers)
-            .map(|job| job.pending.parent_id),
-    ) {
-        return Err("search checkpoint pending selections disagree with its in-flight jobs".into());
     }
     Ok(SearchResume {
         rand,

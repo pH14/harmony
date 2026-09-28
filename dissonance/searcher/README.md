@@ -321,14 +321,6 @@ weighs `1 / (1 + selections)^2` over its own selection count. There is no unifor
 retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
 
-Both counts include pending selections: jobs reserved from the holder or cell
-and not yet admitted. A pending count is taken at reservation and released at
-admission, where the selection joins the admitted counts, so a wide window
-spreads its reservations as a one-job window would. Duplicate skips count at
-selection and continuation jobs keep their own counts, so neither takes a
-pending count. A checkpoint stores the pending counts, and a resume checks
-them against its in-flight jobs.
-
 A cell's draw count resets to zero when an arrival from another cell
 displaces a holder it strictly outranks under a preference, so a place
 reached again with more of what the preference counts draws like a place
