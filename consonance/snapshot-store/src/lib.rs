@@ -263,8 +263,16 @@ impl Store {
         Ok(())
     }
 
-    fn checked_page(&self, snap: SnapshotId, gfn: u64) -> Result<&[u8; PAGE_SIZE], StoreError> {
-        self.checked_page_ref(self.resolve(snap.0, gfn), gfn)
+    fn stored_page(&self, snap: SnapshotId, gfn: u64) -> Result<&[u8; PAGE_SIZE], StoreError> {
+        match self.resolve(snap.0, gfn) {
+            PageRef::Zero => Ok(&ZERO_PAGE),
+            PageRef::Data(id) => self
+                .pages
+                .get(id.get() - 1)
+                .and_then(Option::as_ref)
+                .and_then(|entry| entry.data.as_ref().try_into().ok())
+                .ok_or(StoreError::PageIntegrity { gfn }),
+        }
     }
 
     fn checked_page_ref(&self, pref: PageRef, gfn: u64) -> Result<&[u8; PAGE_SIZE], StoreError> {
@@ -346,14 +354,14 @@ impl Store {
 
         let Some(from) = from else {
             return (0..self.cfg.mem_pages)
-                .map(|gfn| Ok((gfn, self.checked_page(to, gfn)?)))
+                .map(|gfn| Ok((gfn, self.stored_page(to, gfn)?)))
                 .collect();
         };
 
         self.live_layer(from)?;
         let mut pages = Vec::new();
         for gfn in self.changed_gfns(from, to, dirty)? {
-            pages.push((gfn, self.checked_page(to, gfn)?));
+            pages.push((gfn, self.stored_page(to, gfn)?));
         }
         Ok(pages)
     }
@@ -588,6 +596,22 @@ impl Store {
             bytes_resident: (self.page_index.len() as u64).saturating_mul(PAGE_SIZE as u64)
                 + self.vm_state_bytes,
         }
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub fn remove_page_for_test(&mut self, snap: SnapshotId, gfn: u64) -> Result<(), StoreError> {
+        self.live_layer(snap)?;
+        let PageRef::Data(id) = self.resolve(snap.0, gfn) else {
+            return Err(StoreError::BuilderMisuse(
+                "cannot remove an implicit zero page",
+            ));
+        };
+        let entry = self
+            .pages
+            .get_mut(id.get() - 1)
+            .ok_or(StoreError::BuilderMisuse("page lies outside the store"))?;
+        *entry = None;
+        Ok(())
     }
 
     #[cfg(feature = "test-utils")]
@@ -1347,7 +1371,7 @@ mod tests {
         let PageRef::Data(id) = store.resolve(child.0, 2) else {
             panic!("stored page")
         };
-        store.pages[id.get() - 1].as_mut().unwrap().data[100] ^= 1;
+        store.pages[id.get() - 1] = None;
         assert!(matches!(
             store.restore_pages(Some(base), child, &[1]),
             Err(StoreError::PageIntegrity { gfn: 2 })
