@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::borrow::Borrow;
+
 use control_proto::ControlError;
 use environment::input_spec::{InputSpec, ServiceConfig};
 
@@ -19,16 +21,16 @@ impl ScheduleFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ControlState {
-    pub recorded: InputSpec,
+pub(crate) struct ControlState<R = InputSpec> {
+    pub recorded: R,
     pub pending: InputSpec,
     pub poisoned: Option<ScheduleFailure>,
     pub exec_nonce: u64,
 }
 
-impl ControlState {
+impl<R: Borrow<InputSpec>> ControlState<R> {
     pub fn encode(&self) -> Vec<u8> {
-        let recorded = self.recorded.encode();
+        let recorded = self.recorded.borrow().encode();
         let pending = self.pending.encode();
         let mut out = b"HCSTATE1".to_vec();
         out.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
@@ -44,6 +46,16 @@ impl ControlState {
         out
     }
 
+    pub fn encode_and_append_hash(&self, suffix: &mut Vec<u8>) -> Vec<u8> {
+        let state = self.encode();
+        suffix.extend_from_slice(b"CPLN");
+        suffix.extend_from_slice(&(state.len() as u64).to_le_bytes());
+        suffix.extend_from_slice(&state);
+        state
+    }
+}
+
+impl ControlState {
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
         if bytes.is_empty() {
             return Ok(None);
@@ -114,14 +126,6 @@ impl ControlState {
             return Err("recorded control policy differs from the snapshot policy");
         }
         Ok(state)
-    }
-
-    pub fn encode_and_append_hash(&self, suffix: &mut Vec<u8>) -> Vec<u8> {
-        let state = self.encode();
-        suffix.extend_from_slice(b"CPLN");
-        suffix.extend_from_slice(&(state.len() as u64).to_le_bytes());
-        suffix.extend_from_slice(&state);
-        state
     }
 }
 

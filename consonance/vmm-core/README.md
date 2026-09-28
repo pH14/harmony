@@ -224,8 +224,7 @@ the same fixtures, hash/sidecar checks, timing boundaries, and optional `--hvf`
 mode. Portable `--encoding --check` runs in the same CI jobs. The checked-in
 reference encoder also checks all pending-stop variants, pending-snapshot flags,
 and empty/populated coverage thresholds against direct encoding in unit tests.
-Add `--jemalloc` to either comparison to use the Harmony CLI's allocator; the
-default uses the host system allocator. Each run prints its allocator, comparison,
+Both comparisons use the host system allocator. Each run prints its allocator, comparison,
 and executable identity. The two arms always run inside the same executable.
 
 The control-state capture qualification compares reuse of serialized control
@@ -249,9 +248,16 @@ Add `--inputs` to compare direct nested input encoding with the prior buffered
 encoder, leaving control-state encoding reuse enabled in both arms. The input
 reference uses public accessors and the standalone configuration/effect encoders
 to reproduce the old framing. Its bytes are also checked by environment unit
-tests over all effect variants and tape shapes. `--jemalloc` uses the Harmony
-CLI allocator; the default uses the host system allocator. Each run identifies
+tests over all effect variants and tape shapes. The probe uses the host system
+allocator, matching the macOS CLI. Each run identifies
 the allocator and comparison. CI runs `--inputs --check` without timing limits.
+
+Add `--borrowed` instead of `--inputs` to compare borrowing the recorded history
+with cloning it for capture. Both arms keep the direct nested encoder and
+control-state serialization reuse. Whole-control hash requests, exported
+snapshot hashes, and VMM hashes must agree; mock runs also compare all sidecar
+bytes. The `reference` and `optimized` row labels always identify the two arms.
+CI runs `--borrowed --check` without timing limits.
 
 The SDK-restore qualification compares this path with a same-source VMM copy
 that clones the entire SDK snapshot and restores the replay environment twice.
@@ -363,6 +369,10 @@ state, and execution nonce once. It appends these encoded bytes to the canonical
 hash suffix and moves that same encoding into retained snapshot metadata. This
 avoids a second serialization of the history and plan; each request still
 captures fresh state and retains the same independently owned metadata.
+Control capture borrows the recorded input history only until serialization
+finishes, avoiding a temporary deep copy of its payloads and answers. Pending
+plans are still assembled independently. Decoding always produces owned inputs,
+and retained snapshots never borrow the live controller.
 
 KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
