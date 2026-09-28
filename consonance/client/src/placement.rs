@@ -20,10 +20,16 @@ impl CorePool {
         #[cfg(target_os = "linux")]
         {
             let allowed = allowed_cpus()?;
-            Ok(Self {
-                cpus: fastest_pool(&allowed, |path| std::fs::read_to_string(path).ok()),
-                pinned: true,
-            })
+            let mut cpus = fastest_pool(&allowed, |path| std::fs::read_to_string(path).ok());
+            if let Some(quota) =
+                crate::cgroup::here(|dir| crate::cgroup::cpu_cores(dir, &crate::cgroup::read))
+            {
+                cpus.truncate(usize::try_from(quota).unwrap_or(usize::MAX));
+            }
+            if cpus.is_empty() {
+                return Err("this process may use no CPU".to_owned());
+            }
+            Ok(Self { cpus, pinned: true })
         }
         #[cfg(target_os = "macos")]
         {
@@ -50,15 +56,14 @@ impl CorePool {
 
     #[must_use]
     pub fn max_workers(&self) -> usize {
-        self.cpus.len().saturating_sub(1)
+        self.cpus.len().saturating_sub(1).max(1)
     }
 
     pub fn plan(&self, workers: u32) -> Result<Placement, String> {
         let workers = workers as usize;
         if workers == 0 || workers > self.max_workers() {
             return Err(format!(
-                "{workers} workers need {} cores of the fastest core type, one per worker and one for the coordinator; this process may use {} ({:?}), so use at most {} workers",
-                workers + 1,
+                "{workers} workers do not fit {} cores of the fastest core type ({:?}), which leave room for {} workers and the coordinator",
                 self.cpus.len(),
                 self.cpus,
                 self.max_workers()
@@ -312,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_keeps_one_core_for_the_coordinator_and_refuses_more_workers() {
+    fn the_plan_keeps_one_core_for_the_coordinator_unless_only_one_is_allowed() {
         let pool = CorePool {
             cpus: vec![0, 1, 10, 11, 6, 7, 8, 9],
             pinned: true,
@@ -332,6 +337,13 @@ mod tests {
             vec![None; 4]
         );
         assert!(unpinned.plan(8).is_err());
+        let single = CorePool {
+            cpus: vec![3],
+            pinned: true,
+        };
+        assert_eq!(single.max_workers(), 1);
+        let plan = single.plan(1).expect("one worker shares the only core");
+        assert_eq!((plan.coordinator, plan.workers), (Some(3), vec![Some(3)]));
     }
 
     #[cfg(target_os = "linux")]

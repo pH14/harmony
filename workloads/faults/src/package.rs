@@ -11,19 +11,17 @@ pub const PACKAGE: &str = "faults";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options {
     pub seed: u64,
-    pub workers: u32,
     pub executions: u64,
     pub ram_mib: u32,
     pub knobs: Vec<String>,
     pub wall_minutes: Option<u64>,
-    pub snapshot_cache_mib: Option<u64>,
     pub output: PathBuf,
 }
 
 impl Options {
     pub fn validate(&self) -> Result<(), Box<dyn Error>> {
-        if self.workers == 0 || self.executions == 0 {
-            return Err("workers and executions must be positive".into());
+        if self.executions == 0 {
+            return Err("--executions must be positive".into());
         }
         if self.ram_mib == 0 {
             return Err("--ram-mib must be positive".into());
@@ -184,7 +182,13 @@ pub struct Report {
 
 impl Report {
     #[must_use]
-    pub fn new(mode: &str, artifacts: &Artifacts, identity: String, options: &Options) -> Self {
+    pub fn new(
+        mode: &str,
+        artifacts: &Artifacts,
+        identity: String,
+        options: &Options,
+        workers: u32,
+    ) -> Self {
         Self {
             package: PACKAGE.to_owned(),
             mode: mode.to_owned(),
@@ -192,7 +196,7 @@ impl Report {
             kernel_sha256: sha256_hex(&artifacts.kernel),
             identity,
             seed: options.seed,
-            workers: options.workers,
+            workers,
             horizon_ms: crate::target::DEFAULT_HORIZON_NANOS / 1_000_000,
             ram_mib: options.ram_mib,
             executions: 0,
@@ -288,8 +292,8 @@ mod live {
     use std::{error::Error, io::BufWriter, sync::Arc, time::Instant};
 
     use consonance_client::{
-        cache::{CacheIndex, LocalIndex, automatic_budget},
-        placement::{Placement, pin_current_thread},
+        cache::{CacheIndex, LocalIndex, plan_memory},
+        placement::{CorePool, Placement, pin_current_thread},
         session::WorkerLauncher,
     };
     use searcher::search::{
@@ -314,30 +318,31 @@ mod live {
     const MEMORY_BUDGET_MIB: usize = 512;
     const WORKER_OVERHEAD_MIB: u64 = 512;
 
-    fn snapshot_cache(options: &Options) -> Option<Arc<dyn CacheIndex>> {
-        let budget = match options.snapshot_cache_mib {
-            Some(0) => {
-                eprintln!("snapshot cache off: --snapshot-cache-mib is 0");
-                return None;
-            }
-            Some(mib) => usize::try_from(mib.saturating_mul(1 << 20)).unwrap_or(usize::MAX),
-            None => {
-                let worker_bytes = (u64::from(options.ram_mib) * 2 + WORKER_OVERHEAD_MIB) << 20;
-                match automatic_budget(options.workers as usize, worker_bytes) {
-                    Ok(budget) => budget,
-                    Err(reason) => {
-                        eprintln!("snapshot cache off: {reason}");
-                        return None;
-                    }
-                }
-            }
-        };
+    #[derive(Clone, Debug)]
+    pub struct Resources {
+        pub placement: Placement,
+        pub budget: usize,
+    }
+
+    pub fn resources(options: &Options) -> Result<Resources, String> {
+        let pool = CorePool::detect()?;
+        let guest = u64::from(options.ram_mib) << 20;
+        let memory = plan_memory(
+            pool.max_workers(),
+            guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
+            guest,
+        )?;
+        let workers = u32::try_from(memory.workers).map_err(|error| error.to_string())?;
+        let placement = pool.plan(workers)?;
         eprintln!(
-            "snapshot cache {} MiB shared by {} workers",
-            budget >> 20,
-            options.workers
+            "{workers} workers on {} cores, {} MiB for the snapshot cache and worker stores",
+            pool.cpus().len(),
+            memory.budget >> 20
         );
-        Some(Arc::new(LocalIndex::new(budget)))
+        Ok(Resources {
+            placement,
+            budget: memory.budget,
+        })
     }
 
     fn pinned(plan: Placement) -> ThreadPlacement {
@@ -363,22 +368,23 @@ mod live {
         artifacts: &Artifacts,
         vocabulary: &FaultVocabulary,
         options: &Options,
-        placement: &Placement,
+        resources: &Resources,
         session_worker: Option<WorkerLauncher>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
+        let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options);
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
-        let mut report = Report::new("search", artifacts, identity, options);
+        let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
-        let cache = snapshot_cache(options);
+        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::new(resources.budget));
         let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)
-            .with_snapshot_cache(cache.clone())
+            .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
         let campaign = FaultCampaignConfig {
             campaign_seed: options.seed,
             vocabulary: vocabulary.clone(),
-            workers: options.workers,
+            workers,
             execution_budget: options.executions,
             host: hostname(),
             wall_budget: options
@@ -391,7 +397,7 @@ mod live {
             suffix: SuffixShape::OneToSix,
             mixture: DrawMixture::AlphabetOnly,
             objective_witness_path: Some(options.output.join("first-bug-input.json")),
-            placement: Some(pinned(placement.clone())),
+            placement: Some(pinned(resources.placement.clone())),
         };
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
@@ -432,13 +438,11 @@ mod live {
             "watchdog_cutoffs": archive.watchdog_cutoffs,
             "execution_failures": campaign_report.campaign.execution_failures,
             "telemetry": campaign_report.campaign.telemetry,
-            "snapshot_cache": cache.as_ref().map(|cache| {
-                cache
-                    .stats()
-                    .counters()
-                    .into_iter()
-                    .collect::<std::collections::BTreeMap<_, _>>()
-            }),
+            "snapshot_cache": cache
+                .stats()
+                .counters()
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>(),
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),
@@ -503,7 +507,7 @@ mod live {
         }
         let config = config(options);
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
-        let mut report = Report::new("replay", artifacts, identity, options);
+        let mut report = Report::new("replay", artifacts, identity, options, 1);
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
@@ -586,7 +590,7 @@ mod live {
     ),
     not(miri)
 ))]
-pub use live::{replay, search};
+pub use live::{Resources, replay, resources, search};
 
 #[cfg(test)]
 mod tests {
@@ -595,12 +599,10 @@ mod tests {
     fn options() -> Options {
         Options {
             seed: 7,
-            workers: 2,
             executions: 10,
             ram_mib: 1024,
             knobs: Vec::new(),
             wall_minutes: None,
-            snapshot_cache_mib: None,
             output: PathBuf::from("unused"),
         }
     }
@@ -653,10 +655,6 @@ mod tests {
     #[test]
     fn zero_bounds_are_refused_before_a_guest_boots() {
         for broken in [
-            Options {
-                workers: 0,
-                ..options()
-            },
             Options {
                 executions: 0,
                 ..options()
@@ -836,8 +834,8 @@ mod tests {
             kernel: b"kernel".to_vec(),
             initramfs: b"initramfs".to_vec(),
         };
-        let report = Report::new("search", &artifacts, "identity".to_owned(), &options());
-        assert_eq!(report.package, PACKAGE);
+        let report = Report::new("search", &artifacts, "identity".to_owned(), &options(), 2);
+        assert_eq!((report.package.as_str(), report.workers), (PACKAGE, 2));
         assert_eq!(report.kernel_sha256, sha256_hex(b"kernel"));
         assert_eq!(report.image_sha256, sha256_hex(b"initramfs"));
         assert_eq!(report.first_bug_execution, None);
@@ -854,7 +852,7 @@ mod tests {
             kernel: Vec::new(),
             initramfs: Vec::new(),
         };
-        let report = Report::new("replay", &artifacts, String::new(), &options());
+        let report = Report::new("replay", &artifacts, String::new(), &options(), 1);
         report.write(directory.path()).expect("write");
         let text = std::fs::read_to_string(directory.path().join("report.json")).expect("read");
         assert_eq!(
@@ -885,7 +883,7 @@ mod tests {
             kernel: Vec::new(),
             initramfs: Vec::new(),
         };
-        let mut report = Report::new("replay", &artifacts, String::new(), &options());
+        let mut report = Report::new("replay", &artifacts, String::new(), &options(), 1);
         report.replays.push(summary);
 
         let expected = "14bcef459b6a75959b50367094bf7f482b55d534bdb794fd790f37ab70cc5c96";
@@ -913,7 +911,7 @@ mod tests {
             kernel: Vec::new(),
             initramfs: Vec::new(),
         };
-        let mut report = Report::new("replay", &artifacts, String::new(), &options());
+        let mut report = Report::new("replay", &artifacts, String::new(), &options(), 1);
         report.bugs.push(bug_summary(1, false));
         report
             .replays

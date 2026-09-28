@@ -77,11 +77,15 @@ A prefix that the chain does not hold is imported from the longest cached
 prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
 missing prefix is rebuilt from the chain's longest matching link.
-`--snapshot-cache-mib` sets the shared budget; 0 turns the cache off. Without
-it the budget is the free memory left after each worker's footprint (twice the
-guest RAM plus 512 MiB) and a 1 GiB reserve. The run prints the budget, or why
-the cache is off, and `campaign-summary.json` records the cache's counters
-under `snapshot_cache`.
+One memory budget covers the shared cache and every worker's local snapshot
+store. It is the free memory left after a 1 GiB reserve and each worker's guest
+RAM plus 512 MiB; the worker count drops until each worker also has room for a
+store as large as its guest RAM. Before each execution a worker reports its
+store's resident bytes to the cache, which evicts entries to keep the total in
+budget. When eviction cannot, the worker with the largest store drops its chain
+back to the setup snapshot. The run prints the worker count and budget, and
+`campaign-summary.json` records the cache's counters, including `store_bytes`
+and `shrinks`, under `snapshot_cache`.
 A fault search keeps four reservations per worker in its admission window and
 lets each worker hold four finished results, so a slow execution rarely leaves
 the other workers waiting on admission order.
@@ -133,7 +137,7 @@ the next one can boot a virtual machine in that process.
 ```
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
-    --seed 1 --workers 4 --executions 100000 \
+    --seed 1 --executions 100000 \
     --ram-mib 1024 --out run/
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \

@@ -12,7 +12,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-pub use budget::{RESERVE_BYTES, automatic_budget, headroom_bytes};
+pub use budget::{MemoryPlan, RESERVE_BYTES, headroom_bytes, plan_memory};
 pub use segments::{CommittedExtent, PageSegments, SEGMENT_BYTES, WritableExtent};
 
 pub const ANCHOR_DEPTH: u32 = 32;
@@ -70,6 +70,7 @@ pub enum CacheError {
 pub struct CacheStats {
     pub budget: usize,
     pub charged: usize,
+    pub stored: usize,
     pub segments: usize,
     pub entries: usize,
     pub anchors: usize,
@@ -80,6 +81,7 @@ pub struct CacheStats {
     pub duplicates: u64,
     pub refusals: u64,
     pub evictions: u64,
+    pub shrinks: u64,
 }
 
 impl CacheStats {
@@ -88,6 +90,7 @@ impl CacheStats {
         vec![
             ("budget_bytes", self.budget as u64),
             ("charged_bytes", self.charged as u64),
+            ("store_bytes", self.stored as u64),
             ("segments", self.segments as u64),
             ("entries", self.entries as u64),
             ("anchors", self.anchors as u64),
@@ -98,6 +101,7 @@ impl CacheStats {
             ("duplicates", self.duplicates),
             ("refusals", self.refusals),
             ("evictions", self.evictions),
+            ("shrinks", self.shrinks),
         ]
     }
 }
@@ -114,6 +118,8 @@ pub trait CacheIndex: Send + Sync + std::fmt::Debug {
     ) -> Result<Lease, CacheError>;
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError>;
     fn release(&self, lease: Lease);
+    fn report_store(&self, holder: u64, bytes: u64) -> bool;
+    fn forget_store(&self, holder: u64);
     fn stats(&self) -> CacheStats;
 }
 
@@ -136,6 +142,8 @@ struct State {
     entries: BTreeMap<u64, Entry>,
     keys: BTreeMap<Namespace, BTreeMap<Vec<u8>, u64>>,
     evictable: BTreeSet<(u64, u64)>,
+    stores: BTreeMap<u64, usize>,
+    stored: usize,
     next_id: u64,
     clock: u64,
     stats: CacheStats,
@@ -213,20 +221,36 @@ impl State {
     }
 
     fn make_room(&mut self, needed: usize) -> Result<(), CacheError> {
+        let room = self.budget.saturating_sub(self.stored);
         let refused = CacheError::Refused {
             needed,
-            budget: self.budget,
+            budget: room,
         };
-        if needed > self.budget {
+        if needed > room {
             return Err(refused);
         }
-        while self.segments.charged() + needed > self.budget {
+        while self.segments.charged() + needed > room {
             let Some(&(_, id)) = self.evictable.first() else {
                 return Err(refused);
             };
             self.evict(id);
         }
         Ok(())
+    }
+
+    fn over_budget(&self) -> bool {
+        self.segments.charged().saturating_add(self.stored) > self.budget
+    }
+
+    fn set_store(&mut self, holder: u64, bytes: Option<usize>) {
+        let old = match bytes {
+            Some(bytes) => self.stores.insert(holder, bytes),
+            None => self.stores.remove(&holder),
+        };
+        self.stored = self
+            .stored
+            .saturating_sub(old.unwrap_or(0))
+            .saturating_add(bytes.unwrap_or(0));
     }
 }
 
@@ -250,6 +274,8 @@ impl LocalIndex {
                 entries: BTreeMap::new(),
                 keys: BTreeMap::new(),
                 evictable: BTreeSet::new(),
+                stores: BTreeMap::new(),
+                stored: 0,
                 next_id: 0,
                 clock: 0,
                 stats: CacheStats::default(),
@@ -377,11 +403,37 @@ impl CacheIndex for LocalIndex {
         }
     }
 
+    fn report_store(&self, holder: u64, bytes: u64) -> bool {
+        let mut state = self.state();
+        state.set_store(holder, Some(usize::try_from(bytes).unwrap_or(usize::MAX)));
+        while state.over_budget() {
+            let Some(&(_, id)) = state.evictable.first() else {
+                break;
+            };
+            state.evict(id);
+        }
+        let largest = state
+            .stores
+            .iter()
+            .max_by_key(|&(&id, &bytes)| (bytes, std::cmp::Reverse(id)))
+            .map(|(&id, _)| id);
+        let shrink = state.over_budget() && largest == Some(holder);
+        if shrink {
+            state.stats.shrinks += 1;
+        }
+        shrink
+    }
+
+    fn forget_store(&self, holder: u64) {
+        self.state().set_store(holder, None);
+    }
+
     fn stats(&self) -> CacheStats {
         let state = self.state();
         CacheStats {
             budget: state.budget,
             charged: state.segments.charged(),
+            stored: state.stored,
             segments: state.segments.segments(),
             entries: state.entries.len(),
             anchors: state
@@ -583,6 +635,30 @@ mod tests {
         assert!(stats.charged <= stats.budget);
         index.release(c);
         index.release(d);
+    }
+
+    #[test]
+    fn worker_stores_share_the_budget_and_the_largest_store_shrinks() {
+        let per_entry = extent_len(1, 0, 1).unwrap();
+        let bytes = per_entry as u64;
+        let index = LocalIndex::with_segment_bytes(4 * per_entry, per_entry);
+        let space = ns("a");
+        let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let b = put(&index, space, b"b", None, &[(1, 1)], &[]).unwrap();
+        index.release(a);
+        assert!(!index.report_store(1, bytes));
+        assert!(!index.report_store(2, 2 * bytes));
+        assert_eq!(index.stats().evictions, 1);
+        assert!(put(&index, space, b"c", None, &[(2, 1)], &[]).is_err());
+        assert!(!index.report_store(1, bytes + 1));
+        assert!(index.report_store(2, 2 * bytes));
+        assert_eq!(index.stats().shrinks, 1);
+        index.release(b);
+        assert!(!index.report_store(2, 2 * bytes));
+        assert_eq!(index.stats().charged, 0);
+        index.forget_store(1);
+        index.forget_store(2);
+        assert_eq!(index.stats().stored, 0);
     }
 
     #[test]

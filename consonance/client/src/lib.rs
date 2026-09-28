@@ -2,6 +2,8 @@
 
 pub mod cache;
 pub mod catalog;
+#[cfg(any(target_os = "linux", test))]
+mod cgroup;
 pub mod placement;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

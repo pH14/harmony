@@ -7,38 +7,52 @@ pub fn headroom_bytes() -> Option<u64> {
     host_available()
 }
 
-pub fn automatic_budget(workers: usize, worker_bytes: u64) -> Result<usize, String> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryPlan {
+    pub workers: usize,
+    pub budget: usize,
+}
+
+pub fn plan_memory(
+    cores: usize,
+    guest_bytes: u64,
+    store_floor_bytes: u64,
+) -> Result<MemoryPlan, String> {
     let headroom = headroom_bytes().ok_or("free memory is unknown on this host")?;
-    let workers_bytes = worker_bytes.saturating_mul(workers as u64);
-    let budget = headroom
-        .saturating_sub(workers_bytes)
-        .saturating_sub(RESERVE_BYTES);
-    if budget == 0 {
+    fit(headroom, cores, guest_bytes, store_floor_bytes)
+}
+
+fn fit(
+    headroom: u64,
+    cores: usize,
+    guest_bytes: u64,
+    store_floor_bytes: u64,
+) -> Result<MemoryPlan, String> {
+    let usable = headroom.saturating_sub(RESERVE_BYTES);
+    let per_worker = guest_bytes.saturating_add(store_floor_bytes).max(1);
+    let workers = (cores as u64).min(usable / per_worker);
+    if workers == 0 {
         return Err(format!(
-            "{} MiB free, {workers} workers need {} MiB and {} MiB stays in reserve",
+            "{} MiB free, one worker needs {} MiB and {} MiB stays in reserve",
             headroom >> 20,
-            workers_bytes >> 20,
+            per_worker >> 20,
             RESERVE_BYTES >> 20
         ));
     }
-    usize::try_from(budget).map_err(|_| "the budget does not fit this host".to_owned())
+    let budget = usable.saturating_sub(workers.saturating_mul(guest_bytes));
+    Ok(MemoryPlan {
+        workers: usize::try_from(workers).map_err(|_| "the worker count does not fit this host")?,
+        budget: usize::try_from(budget).map_err(|_| "the budget does not fit this host")?,
+    })
 }
 
 #[cfg(target_os = "linux")]
 fn host_available() -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     let available = mem_available(&meminfo)?;
-    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok();
-    let limit = cgroup
-        .as_deref()
-        .and_then(cgroup_path)
-        .and_then(|path| cgroup_headroom(std::path::Path::new("/sys/fs/cgroup"), path, read));
+    let limit =
+        crate::cgroup::here(|dir| crate::cgroup::memory_headroom(dir, &crate::cgroup::read));
     Some(limit.map_or(available, |limit| limit.min(available)))
-}
-
-#[cfg(target_os = "linux")]
-fn read(path: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -48,37 +62,6 @@ fn mem_available(meminfo: &str) -> Option<u64> {
         .find(|line| line.starts_with("MemAvailable:"))?;
     let kib: u64 = line.split_ascii_whitespace().nth(1)?.parse().ok()?;
     kib.checked_mul(1024)
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn cgroup_path(cgroup: &str) -> Option<&str> {
-    cgroup
-        .lines()
-        .find_map(|line| line.strip_prefix("0::"))
-        .map(|path| path.trim_start_matches('/'))
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn cgroup_headroom(
-    root: &std::path::Path,
-    path: &str,
-    read: impl Fn(&std::path::Path) -> Option<String>,
-) -> Option<u64> {
-    let mut headroom: Option<u64> = None;
-    let mut dir = root.join(path);
-    loop {
-        let limit = read(&dir.join("memory.max")).and_then(|text| text.trim().parse::<u64>().ok());
-        let usage =
-            read(&dir.join("memory.current")).and_then(|text| text.trim().parse::<u64>().ok());
-        if let (Some(limit), Some(usage)) = (limit, usage) {
-            let here = limit.saturating_sub(usage);
-            headroom = Some(headroom.map_or(here, |headroom| headroom.min(here)));
-        }
-        if dir == root || !dir.pop() || !dir.starts_with(root) {
-            break;
-        }
-    }
-    headroom
 }
 
 #[cfg(target_os = "macos")]
@@ -125,7 +108,6 @@ fn host_available() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::BTreeMap, path::PathBuf};
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
@@ -135,38 +117,29 @@ mod tests {
     }
 
     #[test]
-    fn meminfo_and_cgroup_lines_parse() {
+    fn meminfo_lines_parse() {
         let meminfo = "MemTotal:  100 kB\nMemAvailable:   2048 kB\n";
         assert_eq!(mem_available(meminfo), Some(2 << 20));
         assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
-        assert_eq!(
-            cgroup_path("0::/system.slice/run-1.scope\n"),
-            Some("system.slice/run-1.scope")
-        );
-        assert_eq!(cgroup_path("1:cpu:/x\n"), None);
     }
 
     #[test]
-    fn the_tightest_cgroup_on_the_path_bounds_headroom() {
-        let root = PathBuf::from("/cg");
-        let files = BTreeMap::from([
-            (root.join("a/memory.max"), "1000\n"),
-            (root.join("a/memory.current"), "400\n"),
-            (root.join("a/b/memory.max"), "max\n"),
-            (root.join("a/b/memory.current"), "300\n"),
-            (root.join("a/b/c/memory.max"), "900\n"),
-            (root.join("a/b/c/memory.current"), "100\n"),
-        ]);
-        let read = |path: &std::path::Path| files.get(path).map(|text| (*text).to_owned());
-        assert_eq!(cgroup_headroom(&root, "a/b/c", read), Some(600));
-        assert_eq!(cgroup_headroom(&root, "z", read), None);
+    fn workers_fit_guests_and_store_floors_and_the_budget_takes_the_rest() {
+        const GIB: u64 = 1 << 30;
+        let plan = fit(12 * GIB, 8, 2 * GIB, GIB).expect("plan");
+        assert_eq!(plan.workers, 3);
+        assert_eq!(plan.budget as u64, 11 * GIB - 3 * 2 * GIB);
+        let plan = fit(40 * GIB, 7, 2 * GIB, GIB).expect("plan");
+        assert_eq!(plan.workers, 7);
+        assert_eq!(plan.budget as u64, 39 * GIB - 7 * 2 * GIB);
+        assert!(fit(3 * GIB, 8, 2 * GIB, GIB).is_err());
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "reads the host's memory files")]
-    fn a_budget_needs_room_after_workers_and_the_reserve() {
+    fn a_plan_needs_room_for_one_worker_after_the_reserve() {
         if let Some(headroom) = headroom_bytes() {
-            assert!(automatic_budget(1, headroom).is_err());
+            assert!(plan_memory(1, headroom, 0).is_err());
         }
     }
 }
