@@ -217,6 +217,17 @@ HVF uses one VM at a time and compares canonical hashes; advancing hardware
 counters prevent raw sidecar comparison. CI runs portable checks without timing
 thresholds in Snapshot and Restore and both ARM Host Compatibility jobs.
 
+The SDK capture driver also accepts `--encoding` to compare direct encoding into
+the canonical hash suffix with the original intermediate-buffer encoder. Both
+arms reuse the SDK capture; the only difference is buffer construction. It uses
+the same fixtures, hash/sidecar checks, timing boundaries, and optional `--hvf`
+mode. Portable `--encoding --check` runs in the same CI jobs. The checked-in
+reference encoder also checks all pending-stop variants, pending-snapshot flags,
+and empty/populated coverage thresholds against direct encoding in unit tests.
+Add `--jemalloc` to either comparison to use the Harmony CLI's allocator; the
+default uses the host system allocator. Each run prints its allocator, comparison,
+and executable identity. The two arms always run inside the same executable.
+
 The control-state capture qualification compares reuse of serialized control
 history against serializing it again for storage, in one executable:
 
@@ -334,7 +345,10 @@ pending payloads are captured once per request, after snapshot admission and
 before publication. No execution or SDK mutation occurs before suffix encoding.
 Standalone hash reads capture their own SDK state; nothing is cached across
 requests. SDK capture errors still poison the server before a snapshot is
-published. The wire encoding and hashed bytes are unchanged.
+published. The wire encoding and hashed bytes are unchanged. The SDK record is
+encoded directly into the hash suffix; its two nested length fields are filled
+from the resulting byte ranges. This avoids temporary record and chunk buffers
+while preserving the same framing and independently owned retained SDK state.
 
 A control snapshot encodes its recorded inputs, pending effects/reseeds, failure
 state, and execution nonce once. It appends these encoded bytes to the canonical

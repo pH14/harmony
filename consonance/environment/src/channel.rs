@@ -368,31 +368,35 @@ impl RecordedState {
 
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        put_u32(&mut out, SNAPSHOT_MAGIC);
-        put_u16(&mut out, SNAPSHOT_VERSION);
-        put_u64(&mut out, self.stream_state);
-        put_u64(&mut out, self.moment);
-        put_len(&mut out, self.overrides.len());
+        self.encode_into(&mut out);
+        out
+    }
+
+    pub fn encode_into(&self, out: &mut Vec<u8>) {
+        put_u32(out, SNAPSHOT_MAGIC);
+        put_u16(out, SNAPSHOT_VERSION);
+        put_u64(out, self.stream_state);
+        put_u64(out, self.moment);
+        put_len(out, self.overrides.len());
         for (key, answer) in &self.overrides {
-            put_u64(&mut out, key.moment);
-            put_u16(&mut out, key.service);
-            put_u64(&mut out, key.request_id);
-            put_answer(&mut out, answer);
+            put_u64(out, key.moment);
+            put_u16(out, key.service);
+            put_u64(out, key.request_id);
+            put_answer(out, answer);
         }
         match &self.payloads {
             None => out.push(0),
             Some(entries) => {
                 out.push(1);
-                put_len(&mut out, entries.len());
+                put_len(out, entries.len());
                 for entry in entries {
-                    put_bytes(&mut out, entry);
+                    put_bytes(out, entry);
                 }
             }
         }
-        put_bytes(&mut out, &self.handler.identity);
-        put_bytes(&mut out, &self.handler.configuration);
-        put_bytes(&mut out, &self.handler.state);
-        out
+        put_bytes(out, &self.handler.identity);
+        put_bytes(out, &self.handler.configuration);
+        put_bytes(out, &self.handler.state);
     }
 
     #[must_use]
@@ -1304,6 +1308,28 @@ mod tests {
             restored.decide(&question),
             Ok(ServiceResponse::Answered(Answer::Data(vec![5])))
         );
+    }
+
+    #[test]
+    fn recorded_encoding_appends_without_changing_existing_bytes() {
+        let mut env = RecordedEnv::new(31, ForwardingHandler { seed: 7, state: 9 });
+        env.record_service_request(4, 8, 12, Answer::Data(vec![5, 6]));
+        env.record_service_request(7, 8, 13, Answer::Nominal);
+        for payloads in [None, Some(vec![]), Some(vec![vec![], vec![1, 2, 3]])] {
+            env.set_payloads(payloads).unwrap();
+            let state = env.snapshot_state().unwrap();
+            let encoded = state.encode();
+            let mut out = b"existing-prefix".to_vec();
+            let start = out.len();
+            state.encode_into(&mut out);
+            assert_eq!(&out[..start], b"existing-prefix");
+            assert_eq!(&out[start..], encoded.as_slice());
+            assert_eq!(RecordedState::decode(&out[start..]).unwrap(), state);
+            let end = out.len();
+            state.encode_into(&mut out);
+            assert_eq!(&out[end..], encoded.as_slice());
+            assert_eq!(&out[start..end], encoded.as_slice());
+        }
     }
 
     #[test]
