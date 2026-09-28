@@ -3,6 +3,8 @@
 """The registry describes CI that exists, owns every check, and stays consistent."""
 
 import json
+import importlib.util
+import tempfile
 import re
 import unittest
 from pathlib import Path
@@ -17,6 +19,24 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
+    def test_guest_image_identity_covers_protocol_and_toolchain(self):
+        spec = importlib.util.spec_from_file_location("nes_guest_key", ROOT / "scripts/nes-guest-image-key.py")
+        key = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(key)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in key.INPUTS:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("baseline")
+            baseline = key.guest_digest(root)
+            for name in ("workloads/nes-protocol", "rust-toolchain.toml"):
+                with self.subTest(input=name):
+                    path = root / name
+                    path.write_text("changed")
+                    self.assertNotEqual(key.guest_digest(root), baseline)
+                    path.write_text("baseline")
+
     def test_paths_and_names_are_unique_and_present(self):
         paths = [workflow.path for workflow in ci_contract.WORKFLOWS]
         names = [workflow.name for workflow in ci_contract.WORKFLOWS]

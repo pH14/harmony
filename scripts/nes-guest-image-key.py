@@ -20,7 +20,8 @@ SPEC = importlib.util.spec_from_file_location(
 RUNTIME = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNTIME)
 
-INPUTS = ("workloads/nes-guest", "scripts/build-quicknes-core.sh")
+INPUTS = ("workloads/nes-guest", "workloads/nes-protocol", "rust-toolchain.toml",
+          "scripts/build-quicknes-core.sh")
 
 
 def guest_digest(repo):

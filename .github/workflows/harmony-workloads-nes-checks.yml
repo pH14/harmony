@@ -62,10 +62,15 @@ jobs:
   nova:
     name: Nova
     needs: guest-image
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_guest)
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.rebuild_guest))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Require successful guest preparation
+        if: needs.guest-image.result != 'success'
+        run: |
+          echo '::error::NES guest preparation failed; Nova validation cannot run.'
+          exit 1
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -109,8 +114,8 @@ jobs:
         if: steps.scope.outputs.enabled == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: nes-guest-image-v1-${{ steps.guest-image.outputs.key }}
-          path: consonance/harmony-linux/build/nes.oci
+          name: nes-guest-image-v2-${{ steps.guest-image.outputs.key }}
+          path: consonance/harmony-linux/build
       - name: Verify prepared runtime provenance
         if: steps.scope.outputs.enabled == 'true'
         run: |

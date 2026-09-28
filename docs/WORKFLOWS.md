@@ -76,7 +76,14 @@ Nova waits for that job and downloads its artifacts from the same workflow run;
 a cache miss is construction work, not a validation failure. All four benchmark
 replicas consume the same prepared image. Runtime provenance is checked before
 publication and after download; image artifact names retain the exact source
-key. No manual benchmark dispatch or failed-check retry is required to populate
+key. The versioned image bundle carries the OCI layout, its digest, build provenance,
+and the exact static QuickNES archive used by the producer. Both artifacts are
+retained for 30 days. Runtime builds made for NES use a separate cache namespace
+from Guest Runtime Qualification; they never populate its qualified cache.
+Nova reports failure if preparation fails, preserving the required check even
+when no validation can run. Image identity includes the guest protocol and Rust
+toolchain, and cross-run image reuse excludes artifacts from fork repositories.
+No manual benchmark dispatch or failed-check retry is required to populate
 an image for a pull request. A manual Checks run with `rebuild_guest=true`
 exercises cold construction followed by bounded Nova validation instead of the
 full backend-equivalence job.

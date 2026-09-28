@@ -7,7 +7,11 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tempfile
+import subprocess
+import hashlib
+import os
 import unittest
+import yaml
 from unittest import mock
 import json
 import copy
@@ -158,6 +162,56 @@ class WorkflowFileTests(unittest.TestCase):
                 self.assertTrue(all("run-id" not in download for download in downloads))
                 if consumer == "nova":
                     self.assertEqual(jobs[consumer]["timeout-minutes"], 15)
+                    self.assertIn("always()", jobs[consumer]["if"])
+                    guard = jobs[consumer]["steps"][0]
+                    self.assertEqual(guard["if"], "needs.guest-image.result != 'success'")
+                    self.assertIn("exit 1", guard["run"])
+
+    def test_image_cache_requires_the_complete_evidence_bundle(self):
+        action = yaml.safe_load((ROOT / ".github/actions/nes-guest-image/action.yml").read_text())
+        check = next(step["run"] for step in action["runs"]["steps"] if step.get("id") == "check")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / "consonance/harmony-linux/build"
+            files = {
+                "nes.oci/index.json": b"index",
+                "nes.oci/blobs/sha256/manifest": b"manifest",
+                "nes.oci.sha256": (hashlib.sha256(b"manifest").hexdigest() + "  nes.oci/blobs/sha256/manifest\n").encode(),
+                "nes-build-provenance/build.txt": b"build evidence",
+                "nes-build-provenance/SHA256SUMS": (hashlib.sha256(b"build evidence").hexdigest() + "  build.txt\n").encode(),
+                "nes-quicknes.a": b"static archive",
+            }
+            for name, content in files.items():
+                path = build / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            output = root / "output"
+            def run_check():
+                output.write_text("")
+                subprocess.run(["bash", "-euo", "pipefail", "-c", check], cwd=root,
+                               env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                               check=True, capture_output=True, text=True)
+                return output.read_text().strip()
+            self.assertEqual(run_check(), "hit=true")
+            for name in ("nes.oci.sha256", "nes-build-provenance/SHA256SUMS", "nes-quicknes.a"):
+                with self.subTest(missing=name):
+                    (build / name).unlink()
+                    self.assertEqual(run_check(), "hit=false")
+                    (build / name).write_bytes(files[name])
+            (build / "nes.oci/blobs/sha256/manifest").write_bytes(b"corrupt")
+            with self.assertRaises(subprocess.CalledProcessError):
+                run_check()
+
+    def test_nes_runtime_cache_cannot_populate_the_qualified_cache(self):
+        action = yaml.safe_load((ROOT / ".github/actions/prepare-nes-guest/action.yml").read_text())
+        saves = [step["with"] for step in action["runs"]["steps"]
+                 if step.get("uses") == "actions/cache/save@v4"]
+        self.assertTrue(any(item["key"].startswith("nes-platform-v1-") for item in saves))
+        self.assertFalse(any(item["key"].startswith("consonance-platform-") for item in saves))
+        image = next(step["with"] for step in action["runs"]["steps"]
+                     if step.get("uses") == "actions/upload-artifact@v4" and "image-v2" in step["with"]["name"])
+        for path in ("nes.oci", "nes.oci.sha256", "nes-build-provenance", "nes-quicknes.a"):
+            self.assertIn("consonance/harmony-linux/build/" + path, image["path"].splitlines())
 
     def test_the_repository_matches_its_registry(self):
         self.assertFalse(LINTS.check_workflow_rules(ROOT, list(ci_contract.registered_paths())))

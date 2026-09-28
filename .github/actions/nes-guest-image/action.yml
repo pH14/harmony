@@ -20,30 +20,40 @@ runs:
     - id: cache
       uses: actions/cache/restore@v4
       with:
-        path: consonance/harmony-linux/build/nes.oci
-        key: nes-guest-image-v1-${{ steps.key.outputs.value }}
+        path: |
+          consonance/harmony-linux/build/nes.oci
+          consonance/harmony-linux/build/nes.oci.sha256
+          consonance/harmony-linux/build/nes-build-provenance
+          consonance/harmony-linux/build/nes-quicknes.a
+        key: nes-guest-image-v2-${{ steps.key.outputs.value }}
     - id: handoff
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        ARTIFACT: nes-guest-image-v1-${{ steps.key.outputs.value }}
+        ARTIFACT: nes-guest-image-v2-${{ steps.key.outputs.value }}
+        REPOSITORY_ID: ${{ github.repository_id }}
       run: |
         run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
           -f name="$ARTIFACT" -F per_page=100 \
-          --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+          --jq ".artifacts | map(select(.expired == false and .workflow_run.head_repository_id == $REPOSITORY_ID)) | sort_by(.created_at) | last | .workflow_run.id // empty")
         echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
     - if: steps.handoff.outputs.run_id != ''
       uses: actions/download-artifact@v4
       with:
         github-token: ${{ github.token }}
         run-id: ${{ steps.handoff.outputs.run_id }}
-        name: nes-guest-image-v1-${{ steps.key.outputs.value }}
-        path: consonance/harmony-linux/build/nes.oci
+        name: nes-guest-image-v2-${{ steps.key.outputs.value }}
+        path: consonance/harmony-linux/build
     - id: check
       shell: bash
       run: |
-        if [[ -s consonance/harmony-linux/build/nes.oci/index.json ]]; then
+        if [[ -s consonance/harmony-linux/build/nes.oci/index.json &&
+              -s consonance/harmony-linux/build/nes.oci.sha256 &&
+              -s consonance/harmony-linux/build/nes-build-provenance/SHA256SUMS &&
+              -s consonance/harmony-linux/build/nes-quicknes.a ]]; then
+          (cd consonance/harmony-linux/build && sha256sum --check nes.oci.sha256)
+          (cd consonance/harmony-linux/build/nes-build-provenance && sha256sum --check SHA256SUMS)
           echo "hit=true" >>"$GITHUB_OUTPUT"
         else
           echo "hit=false" >>"$GITHUB_OUTPUT"
