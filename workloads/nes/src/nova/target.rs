@@ -1235,6 +1235,10 @@ mod tests {
                 reference.apply(&ButtonChord::new(1, 1));
                 let mut snapshot = actual.snapshot().unwrap();
                 assert_eq!(Some(snapshot.clone()), reference.snapshot());
+                actual.apply(&ButtonChord::new(2, 1));
+                reference.apply(&ButtonChord::new(2, 1));
+                assert_ne!(snapshot.wram.as_slice(), actual.current_wram.as_slice());
+                assert_eq!(actual.current_wram, reference.current_wram);
                 snapshot.wram.resize(length, 7);
                 actual.machine.fail_next_drop = fail_drop;
                 reference.machine.fail_next_drop = fail_drop;
