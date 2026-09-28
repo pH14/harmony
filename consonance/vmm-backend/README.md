@@ -16,6 +16,16 @@ an ISA-specific exit enum.
 - `Arm64KvmBackend` and `HvfBackend` implement the arm64 KVM and macOS
   Hypervisor.framework paths where their platform APIs are available.
 
+`Backend::drain_dirty_pages` returns the guest pages written since the last
+drain, so snapshots copy and restores reload only those pages. The KVM backends
+read the kernel's dirty log. `HvfBackend` maps guest RAM without write
+permission. A guest write then exits as a data abort inside RAM, and the
+backend records its 16 KiB page, grants write access with `hv_vm_protect`, and
+reruns the store without surfacing an exit. A drain removes write access again
+and reports each recorded page as four 4 KiB guest pages. Hypervisor.framework
+reports these aborts with a translation fault status, so the backend treats any
+lower-EL abort inside mapped RAM as a tracked write.
+
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
 PIO reads and MSR callbacks eagerly with an immediate-exit entry. A PIO write

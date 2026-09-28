@@ -575,5 +575,106 @@ fn irq_mask_read_rejects_pending_completion() {
     assert_eq!(guest.next_store(), 0x5a);
 }
 
+fn load_address(rd: u32, gpa: u64) -> [u32; 2] {
+    [
+        movz(rd, (gpa >> 16) as u32 & 0xffff, 16),
+        movk(rd, gpa as u32 & 0xffff, 0),
+    ]
+}
+
+fn changed_pages(before: &[u8], after: &[u8]) -> Vec<u64> {
+    before
+        .chunks(4096)
+        .zip(after.chunks(4096))
+        .enumerate()
+        .filter(|(_, (old, new))| old != new)
+        .map(|(index, _)| RAM_GPA / 4096 + index as u64)
+        .collect()
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn guest_ram_writes_drain_as_dirty_pages_once_per_interval() {
+    let stored = RAM_GPA + 0x2_4000;
+    let neighbor = RAM_GPA + 0x2_5000;
+    let paired = RAM_GPA + 0x2_8000;
+    let straddling = RAM_GPA + 0x2_bffc;
+    let stp = |rt: u32, rt2: u32, rn: u32| 0xa900_0000 | (rt2 << 10) | (rn << 5) | rt;
+    let mut program = Vec::new();
+    for (rd, gpa) in [(2, stored), (5, neighbor), (3, paired), (4, straddling)] {
+        program.extend(load_address(rd, gpa));
+    }
+    program.extend([
+        movz(9, (MMIO_GPA >> 16) as u32, 16),
+        movz(1, 0x1234, 0),
+        movz(6, 1, 0),
+        str_x(1, 2),
+        str_x(1, 5),
+        stp(1, 1, 3),
+        str_x(1, 4),
+        str_x(1, 9),
+        add(1, 1, 6),
+        branch_back(6),
+    ]);
+    let mut guest = Guest::new(&program);
+    let written: Vec<u64> = (stored / 4096..(straddling + 8).div_ceil(16 * 1024) * 4).collect();
+    assert_eq!(written.len(), 12, "three 16 KiB blocks");
+    guest.restart();
+    assert_eq!(guest.backend.drain_dirty_pages().unwrap(), []);
+    let mut reference = guest.mem.as_mut_slice().to_vec();
+    for round in 0..3u64 {
+        assert_eq!(guest.next_store(), 0x1234 + round);
+        let drained = guest.backend.drain_dirty_pages().unwrap();
+        assert_eq!(drained, written, "round {round}");
+        let current = guest.mem.as_mut_slice().to_vec();
+        let changed = changed_pages(&reference, &current);
+        assert!(!changed.is_empty());
+        assert!(
+            changed.iter().all(|gfn| drained.contains(gfn)),
+            "round {round}: {changed:x?} changed outside {drained:x?}"
+        );
+        reference = current;
+        assert_eq!(guest.backend.drain_dirty_pages().unwrap(), []);
+    }
+    let ram = guest.mem.as_mut_slice();
+    for gpa in [stored, neighbor, paired, paired + 8, straddling] {
+        let at = (gpa - RAM_GPA) as usize;
+        assert_eq!(ram[at..at + 8], (0x1234u64 + 2).to_le_bytes());
+    }
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn an_exclusive_store_loop_gives_the_same_stores_fresh_and_after_a_restore() {
+    let counter = RAM_GPA + 0x3_0000;
+    let ldxr = |rt: u32, rn: u32| 0xc85f_7c00 | (rn << 5) | rt;
+    let stxr = |rs: u32, rt: u32, rn: u32| 0xc800_7c00 | (rs << 16) | (rn << 5) | rt;
+    let cbnz_w = |rt: u32, back: i32| 0x3500_0000 | (((-back) as u32 & 0x7_ffff) << 5) | rt;
+    let mut program = load_address(2, counter).to_vec();
+    program.extend([
+        movz(9, (MMIO_GPA >> 16) as u32, 16),
+        movz(6, 1, 0),
+        ldxr(0, 2),
+        add(0, 0, 6),
+        stxr(7, 0, 2),
+        cbnz_w(7, 3),
+        str_x(0, 9),
+        branch_back(5),
+    ]);
+    let mut guest = Guest::new(&program);
+    guest.restart();
+    assert_eq!(guest.next_store(), 1);
+    let after_first = guest.save();
+    guest.backend.drain_dirty_pages().unwrap();
+    let fresh = guest.stores(3);
+    assert_eq!(fresh, [2, 3, 4]);
+
+    let at = (counter - RAM_GPA) as usize;
+    guest.mem.as_mut_slice()[at..at + 8].copy_from_slice(&1u64.to_le_bytes());
+    guest.restore(&after_first);
+    guest.backend.drain_dirty_pages().unwrap();
+    assert_eq!(guest.stores(3), fresh);
+}
+
 #[path = "hvf_smoke/irq_poll.rs"]
 mod irq_poll;
