@@ -460,19 +460,20 @@ undecided or it reaches 256 layouts (1,024 for the off-path and locked worlds).
 A world is clearly bad when any leg is slower or the candidate has more
 misses. A leg still undecided at the limit with its upper bound above 1.25 makes
 the world undecided when its interval's lower bound is above 1.0, and is a
-watch leg otherwise. Misses still undecided at the limit are a
-watch when the net extra misses are under 5% of layouts, and make the world
-undecided otherwise. A watch passes and is named in the world's line so the
+watch leg otherwise. Misses still undecided at the limit make the world
+undecided when the net extra misses reach 5% of layouts and an exact one-sided
+sign test gives p < 0.05, and are a watch otherwise. A watch passes and is named in the world's line so the
 matching Metroid leg gets measured. A candidate is
 plausible when no world is clearly bad or undecided. The exit status is nonzero when a rule fails or a world is clearly
 bad or undecided. Two unchanged
 searchers with different runtime seeds, in 300 simulated comparisons per world,
 failed the farm loop, re-walk, off-path and locked worlds in none, the boss
 worlds in 0.3% (far stock) and 0.7% (stock and health), and the gauntlet
-worlds in 0.3% (no timing) and 2.3% (hidden timing, all from goal misses). The
-simulated comparisons for a world draw from one pool of 512 layouts (2,048 for
-the off-path and locked worlds), so they share layouts and these rates are
-rough. Each world also counts the layouts whose event streams are identical on
+worlds in 0.3% (no timing) and 2.3% (hidden timing), the boss after a draining
+approach in 2.3%, and the boss by the door in 3.7%. The simulated comparisons
+for a world draw from one pool of 512 layouts (2,048 for the off-path and
+locked worlds; 343 layouts with three seeds each for the two newest boss
+worlds), so they share layouts and these rates are rough. Each world also counts the layouts whose event streams are identical on
 both executables, which happens where the change never acts. A comparison that
 takes every world to its limit takes about 20 minutes with `--jobs 10`.
 
