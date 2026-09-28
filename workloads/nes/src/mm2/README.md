@@ -232,3 +232,33 @@ The probe's optional `--screenshot` writes the final captured frame as a PPM
 image without launching a video encoder. Capture buffers are drained after
 each action. This permits single-core visual inspection alongside a bounded
 search. An empty input has no new frame and cannot produce a screenshot.
+
+## Interpreting handoff comparisons
+
+Name each comparison by its entry and exit milestones, since Robot Masters can
+be visited in different orders. Compare a fresh archive rooted at an unchanged
+stocked-entry tape with a whole-search checkpoint at the delivered entry. Keep
+health and extra-life tradeoffs as separate roots. Report tries after the
+checkpoint, emulator frames, and each arm's median, range and censored count;
+matching seed numbers do not pair two different searches.
+
+Inspect the frontier and target tapes as well as the final witness. The witness
+can move to another stage, and the first-discovery tape can end in death after
+crossing the milestone during its final action. A living stock record establishes
+that a usable arrival was found by the run's end; it does not assign that arrival
+the first-discovery timestamp. Probe both records before using either as a root.
+A zero-action frontier is the supplied root and has no new frames to film.
+
+For Robot Masters, `NAME_defeated` records the acquired weapon bit. The generic
+`first_clear` evidence can record the earlier defeated boss phase, before the
+award, and survives checkpoint resumes. Match its tape's stage, room and boss
+phase to the target before using it as a kill observation. An inherited clear
+from another boss supplies no target-boss kill time. Keep kill, award and ending
+results separate.
+
+Archive draw maps describe retained cumulative cell-selection history. A resume
+includes history from before its checkpoint; menus and transitions can reuse
+room labels. Use films and decoded endpoints to identify playable attempts,
+and use a checkpoint-start counter snapshot when measuring slice-only draws.
+Neither a final census nor the absence of a named target at the budget proves
+that a longer search could not pass.
