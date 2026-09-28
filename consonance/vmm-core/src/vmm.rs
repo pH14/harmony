@@ -1248,7 +1248,7 @@ where
         }
         <B::A as Vendor>::hash_device_chunks(&vcpu, &self.devices, &mut out);
         if let Some(sdk) = &self.sdk {
-            put_chunk(&mut out, b"SDK\0", &encode_sdk_channel(sdk, sdk_recorded)?);
+            append_sdk_channel(&mut out, sdk, sdk_recorded)?;
         }
         if let Some(pv) = &self.pvclock {
             let mut bytes = 1_u64.to_le_bytes().to_vec();
@@ -2584,17 +2584,28 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     v
 }
 
-fn encode_sdk_channel(
+fn append_sdk_channel(
+    v: &mut Vec<u8>,
     sdk: &SdkChannel,
     recorded: Option<&channel::RecordedState>,
-) -> Result<Vec<u8>, channel::ChannelError> {
-    let mut v = Vec::new();
+) -> Result<(), channel::ChannelError> {
+    let captured;
     let recorded = match recorded {
-        Some(state) => state.encode(),
-        None => sdk.env.snapshot_state()?.encode(),
+        Some(state) => state,
+        None => {
+            captured = sdk.env.snapshot_state()?;
+            &captured
+        }
     };
-    v.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
-    v.extend_from_slice(&recorded);
+    v.extend_from_slice(b"SDK\0");
+    let chunk_length = v.len();
+    v.extend_from_slice(&0_u64.to_le_bytes());
+    let chunk_start = v.len();
+    v.extend_from_slice(&0_u64.to_le_bytes());
+    let recorded_start = v.len();
+    recorded.encode_into(v);
+    let recorded_len = v.len() - recorded_start;
+    v[chunk_start..recorded_start].copy_from_slice(&(recorded_len as u64).to_le_bytes());
     match &sdk.pending_stop {
         None => v.push(0),
         Some(SdkStop::Assertion { id, data }) => {
@@ -2628,7 +2639,9 @@ fn encode_sdk_channel(
             v.extend_from_slice(&threshold.to_le_bytes());
         }
     }
-    Ok(v)
+    let chunk_len = v.len() - chunk_start;
+    v[chunk_length..chunk_start].copy_from_slice(&(chunk_len as u64).to_le_bytes());
+    Ok(())
 }
 
 fn service_answer_bytes(answer: &channel::Answer) -> Option<Vec<u8>> {
@@ -2661,6 +2674,67 @@ mod tests {
     use crate::vendor::x86::records as snapshot;
 
     const TEST_RAM: usize = if cfg!(miri) { 0x1_0000 } else { 0x2_0000 };
+
+    mod buffered_sdk_encoding {
+        use super::{SdkChannel, SdkStop, channel};
+        include!("../qualification/reference-sdk-encoding.rs");
+
+        pub(super) fn encode(sdk: &SdkChannel) -> Vec<u8> {
+            encode_sdk_channel(sdk, None).unwrap()
+        }
+    }
+
+    #[test]
+    fn direct_sdk_encoding_preserves_framing_and_all_stop_variants() {
+        let mut env = channel::RecordedEnv::new(
+            31,
+            Box::new(SeededService { seed: 7, calls: 11 }) as Box<dyn channel::ServiceHandler>,
+        );
+        env.set_payloads(Some(vec![vec![], vec![1, 2, 3]])).unwrap();
+        env.record_service_request(4, 8, 12, channel::Answer::Data(vec![5, 6]));
+        env.record_service_request(7, 8, 13, channel::Answer::Nominal);
+        let mut sdk = SdkChannel {
+            env,
+            events: vec![(9, 27, vec![8, 7])],
+            coverage_thresholds: BTreeMap::new(),
+            coverage: vec![],
+            pending_stop: None,
+            pending_snapshot: false,
+        };
+        let recorded = sdk.env.snapshot_state().unwrap();
+        for stop in [
+            None,
+            Some(SdkStop::Assertion {
+                id: 27,
+                data: vec![8, 9],
+            }),
+            Some(SdkStop::Quiescent),
+            Some(SdkStop::Decision {
+                moment: 37,
+                seq: 12,
+                question: channel::Question::with_request_id(91, 19, vec![1, 3, 5]).unwrap(),
+            }),
+        ] {
+            sdk.pending_stop = stop;
+            for pending_snapshot in [false, true] {
+                sdk.pending_snapshot = pending_snapshot;
+                for coverage in [BTreeMap::new(), BTreeMap::from([(3, 17), (9, 71)])] {
+                    sdk.coverage_thresholds = coverage;
+                    let mut expected = b"existing-prefix".to_vec();
+                    put_chunk(
+                        &mut expected,
+                        b"SDK\0",
+                        &buffered_sdk_encoding::encode(&sdk),
+                    );
+                    for captured in [None, Some(&recorded)] {
+                        let mut actual = b"existing-prefix".to_vec();
+                        append_sdk_channel(&mut actual, &sdk, captured).unwrap();
+                        assert_eq!(actual, expected);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn msr_dir_renders_direction_and_exit_reason() {

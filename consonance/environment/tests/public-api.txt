@@ -87,6 +87,7 @@ pub fn environment::channel::RecordedState::answers(&self) -> impl core::iter::t
 pub fn environment::channel::RecordedState::capture<H: environment::channel::ServiceHandler>(&environment::channel::RecordedEnv<H>) -> core::result::Result<Self, environment::channel::ChannelError>
 pub fn environment::channel::RecordedState::decode(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
 pub fn environment::channel::RecordedState::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::channel::RecordedState::encode_into(&self, &mut alloc::vec::Vec<u8>)
 pub fn environment::channel::RecordedState::remaining_payloads(&self) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
 pub fn environment::channel::RecordedState::restore_into<H: environment::channel::ServiceHandler + core::clone::Clone>(&self, &mut environment::channel::RecordedEnv<H>) -> core::result::Result<(), environment::channel::ChannelError>
 pub const environment::channel::MAX_CHANNEL_BYTES: usize

@@ -12,6 +12,11 @@ valid answer; an external request preserves the handler state. Capturing and
 restoring handler state is fallible, so failed capture cannot produce a usable
 snapshot or state hash.
 
+`RecordedState::encode_into` appends the same canonical snapshot encoding as
+`encode` to an existing byte vector, preserving any prefix. Framing owners can
+write nested records directly into their destination instead of allocating and
+copying an intermediate buffer. Neither method changes the captured state.
+
 `ServiceHandler::respond` receives the virtual moment the question surfaced at
 alongside the question, so a handler whose answer depends on the guest's
 position in virtual time reads it from the environment rather than keeping a
