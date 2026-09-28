@@ -255,8 +255,9 @@ This introduces three limits to parallelism:
   time T per worker, the search saturates at T divided by t workers. The
   shorter an execution, the fewer workers one coordinator can feed.
 - **Admission order.** A result waits until every result before it in the
-  order is admitted. A slow execution delays the results behind it, and a
-  worker waits once it holds as many finished results as it can buffer.
+  order is admitted. A slow execution delays the results behind it. Jobs
+  count against one bound from dispatch until admission, and an idle worker
+  waits once that bound is full.
 - **Critical path.** Because a selection can depend on an earlier admitted
   result, some jobs must run in sequence. The longest such chain limits
   speedup to total work divided by the work along that chain, regardless of
@@ -271,6 +272,17 @@ This introduces three limits to parallelism:
 > room: on an Intel 285HX, coordination took 0.2 to 0.4 ms per job while worker
 > executions took 0.5 to 2 s. At those timings, coordinator occupancy alone
 > would allow over a thousand workers.
+
+> [!NOTE]
+> **Worked example: the admission bound.**
+>
+> A tiny-worlds search whose transitions sleep 5 ms has executions of one to a
+> few transitions. With the bound at one job per worker, 8 workers were busy
+> 77% of the time and 64 workers 63%; the rest was spent waiting on admission
+> order. With two jobs per worker, workers were busy 99-100% of the time at 8
+> to 64 workers, and 64 workers ran 8.3 times as many executions per second as
+> 8. With 65 µs executions, one coordinator capped the same search near 33,000
+> executions per second at any worker count.
 
 ## Memory
 
@@ -305,9 +317,10 @@ write: the write itself, a read and write to capture the page, and another
 read and write to restore it.
 
 When measuring scaling, pin workers to one core type so differences in core
-speed do not distort the comparison. With a fixed admission window the search selects the
-same parents at every worker count, so the runs differ only in parallelism. Boot time and final persistence can also dominate short
-campaigns spread across many workers.
+speed do not distort the comparison. With a fixed admission window the search
+selects the same parents at every worker count, so the runs differ only in
+parallelism. Boot time and final persistence can also dominate short campaigns
+spread across many workers.
 
 > [!NOTE]
 > **Worked example: etcd scaling.**

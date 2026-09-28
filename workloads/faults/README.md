@@ -82,6 +82,9 @@ it the budget is the free memory left after each worker's footprint (twice the
 guest RAM plus 512 MiB) and a 1 GiB reserve. The run prints the budget, or why
 the cache is off, and `campaign-summary.json` records the cache's counters
 under `snapshot_cache`.
+A fault search keeps two reservations per worker in its admission window and
+lets each worker hold two finished results, so a slow execution rarely leaves
+the other workers waiting on admission order.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
