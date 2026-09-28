@@ -540,6 +540,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
             |engine, near_id, vm_state| {
+                let near_id = if engine
+                    .stats(near_id)
+                    .is_ok_and(|s| s.chain_len < engine.max_chain_len())
+                {
+                    near_id
+                } else {
+                    setup_id
+                };
                 let rows: Vec<_> = pages.iter().map(|&(gfn, hash, _)| (gfn, hash)).collect();
                 let rebase = engine.rebase(setup_id, near_id, &rows)?;
                 let mut merged: Vec<(u64, &[u8; 32], &[u8; 4096])> = rebase
@@ -4609,7 +4617,14 @@ mod tests {
             "page 3 already matches near; page 0 returns to its setup content"
         );
 
-        for id in [imported.id, rebased.id] {
+        destination.set_max_chain_len(2);
+        assert_eq!(destination.snapshot_chain_len(imported.id), Some(2));
+        let capped = destination
+            .import_sparse_delta(destination_setup, imported.id, &resolved, &sidecar)
+            .unwrap();
+        assert_eq!(destination.snapshot_chain_len(capped.id), Some(2));
+
+        for id in [imported.id, rebased.id, capped.id] {
             assert_eq!(
                 destination.handle(&Request::Replay(id)).unwrap(),
                 Ok(Reply::Unit)
