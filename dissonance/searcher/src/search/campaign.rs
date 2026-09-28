@@ -40,7 +40,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::{ResultSlots, with_worker_pool};
+use crate::search::parallel::{ResultBound, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, IdleClock, IdleReason, TargetCounters, nanos_since, now,
@@ -2463,16 +2463,11 @@ struct PendingJob<G: Workload + ?Sized> {
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
-    physical_worker: u32,
     held_since: Option<std::time::Instant>,
     pending: PendingJob<G>,
     result: CampaignJobResult<G>,
     execution_work: u64,
     result_sha256: String,
-}
-
-fn completed_results_within_bound(completed: usize, workers: usize, per_worker: usize) -> bool {
-    completed <= workers.saturating_mul(per_worker)
 }
 
 fn replay_splice<G: CampaignTypes>(
@@ -3238,19 +3233,16 @@ where
                 }
                 queued_specs.push_back(spec);
             }
-            let mut physical_queued = vec![0_usize; workers];
-            let mut result_slots = ResultSlots::new(config.workers, result_limit);
-            while !queued_specs.is_empty() {
-                let Some(worker) = result_slots.reserve() else {
-                    break;
-                };
+            let mut running = 0_usize;
+            let mut result_bound = ResultBound::new(workers.saturating_mul(result_limit));
+            while !queued_specs.is_empty() && result_bound.reserve() {
                 let spec = queued_specs
                     .pop_front()
                     .ok_or("campaign prefill lost queued job")?;
-                pool.dispatch(worker, spec)?;
-                idle_clock.busy(usize::try_from(worker)?);
-                physical_queued[usize::try_from(worker)?] += 1;
+                pool.dispatch(spec)?;
+                running += 1;
             }
+            idle_clock.update(running, IdleReason::NoJob);
 
             let mut next_admission = resumed_admission;
             while !pending.is_empty() || !completed.is_empty() {
@@ -3280,25 +3272,24 @@ where
                     let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
                         format!("campaign worker {physical_worker} failed: {error}").into()
                     })?;
-                    let physical_index = usize::try_from(physical_worker)?;
-                    let queued = physical_queued
-                        .get_mut(physical_index)
-                        .ok_or("campaign worker replied with an unknown physical identifier")?;
-                    *queued = queued
+                    if physical_worker >= config.workers {
+                        return Err(
+                            "campaign worker replied with an unknown physical identifier".into(),
+                        );
+                    }
+                    running = running
                         .checked_sub(1)
                         .ok_or("campaign worker replied without queued work")?;
                     let (reservation, result, execution_work, result_sha256) = outcome;
                     let held = reservation != next_admission;
-                    if *queued == 0 {
-                        idle_clock.idle(
-                            physical_index,
-                            if held {
-                                IdleReason::AdmissionOrder
-                            } else {
-                                IdleReason::NoJob
-                            },
-                        );
-                    }
+                    idle_clock.update(
+                        running,
+                        if held {
+                            IdleReason::AdmissionOrder
+                        } else {
+                            IdleReason::NoJob
+                        },
+                    );
                     let pending_job = pending
                         .remove(&reservation)
                         .ok_or("campaign worker replied for an unknown reservation")?;
@@ -3306,7 +3297,6 @@ where
                         .insert(
                             reservation,
                             CompletedJob {
-                                physical_worker,
                                 held_since: held.then(now),
                                 pending: pending_job,
                                 result,
@@ -3318,7 +3308,7 @@ where
                     {
                         return Err("campaign worker completed one reservation twice".into());
                     }
-                    if !completed_results_within_bound(completed.len(), workers, result_limit) {
+                    if completed.len() > result_bound.limit() {
                         return Err("campaign exceeded its bounded result-bearing jobs".into());
                     }
                     ready_reply = pool.try_receive()?;
@@ -3330,7 +3320,6 @@ where
                     let result = completed_job.result;
                     let execution_work = completed_job.execution_work;
                     let result_sha256 = completed_job.result_sha256;
-                    let physical_worker = completed_job.physical_worker;
                     if let Some(since) = completed_job.held_since {
                         let held = nanos_since(since);
                         admission.results_held = admission.results_held.saturating_add(1);
@@ -3497,7 +3486,7 @@ where
                     if objectives_before == 0 && core.objectives_reached > 0 {
                         counters.note_first_objective(sequence);
                     }
-                    result_slots.admit(physical_worker)?;
+                    result_bound.admit()?;
                     if let Some(sink) = progress.as_deref_mut()
                         && progress_checkpoint_due(sequence)
                     {
@@ -3541,7 +3530,7 @@ where
                                 core.archive.history_compactions(),
                                 core.archive.historical_entries_dropped(),
                                 core.archive.input_reconstructions(),
-                                result_slots.available(),
+                                result_bound.available(),
                                 queued_specs.len(),
                                 completed.len(),
                                 counters.job_execution_work,
@@ -3586,19 +3575,21 @@ where
                         queued_specs.push_back(spec);
                     }
 
-                    while !queued_specs.is_empty() {
-                        let Some(worker) = result_slots.reserve() else {
-                            break;
-                        };
+                    while !queued_specs.is_empty() && result_bound.reserve() {
                         let spec = queued_specs
                             .pop_front()
                             .ok_or("campaign queued-job count changed while dispatching")?;
-                        pool.dispatch(worker, spec)?;
-                        let physical_index = usize::try_from(worker)?;
-                        idle_clock.busy(physical_index);
-                        physical_queued[physical_index] =
-                            physical_queued[physical_index].saturating_add(1);
+                        pool.dispatch(spec)?;
+                        running += 1;
                     }
+                    idle_clock.update(
+                        running,
+                        if completed.is_empty() {
+                            IdleReason::NoJob
+                        } else {
+                            IdleReason::AdmissionOrder
+                        },
+                    );
                     if let Some(checkpoints) = checkpoints.as_mut()
                         && let Some(reason) = checkpoints.due(
                             core.sequence,
@@ -3625,19 +3616,21 @@ where
                         )?;
                     }
                 }
-                while !queued_specs.is_empty() {
-                    let Some(worker) = result_slots.reserve() else {
-                        break;
-                    };
+                while !queued_specs.is_empty() && result_bound.reserve() {
                     let spec = queued_specs
                         .pop_front()
                         .ok_or("campaign queued-job count changed while dispatching")?;
-                    pool.dispatch(worker, spec)?;
-                    let physical_index = usize::try_from(worker)?;
-                    idle_clock.busy(physical_index);
-                    physical_queued[physical_index] =
-                        physical_queued[physical_index].saturating_add(1);
+                    pool.dispatch(spec)?;
+                    running += 1;
                 }
+                idle_clock.update(
+                    running,
+                    if completed.is_empty() {
+                        IdleReason::NoJob
+                    } else {
+                        IdleReason::AdmissionOrder
+                    },
+                );
             }
             if !completed.is_empty() {
                 return Err("campaign reorder window ended with an admission gap".into());
@@ -3648,16 +3641,14 @@ where
             if core.archive.pending_selections() != 0 {
                 return Err("campaign ended with unreleased pending selections".into());
             }
-            for worker in 0..config.workers {
-                pool.close(worker)?;
-            }
+            pool.close();
             Ok(())
         },
     )?;
     telemetry.search_ns = nanos_since(telemetry_started);
     telemetry.admission = admission;
     telemetry.workers = worker_telemetry;
-    idle_clock.finish(&mut telemetry.workers);
+    idle_clock.finish(&mut telemetry.admission);
     telemetry.sum_targets();
     telemetry.coordinator = serde_json::to_value(&coordinator_profile)?;
     let persistence_started = now();
@@ -4824,13 +4815,12 @@ mod tests {
         EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
         LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, PlacedThread, Reporting, RomuDuoJrRand,
         SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution, ThreadPlacement,
-        WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
-        completed_results_within_bound, default_window, draws_continuation,
-        draws_highest_preference, execution_work_delta, finish_record, is_zero_usize,
-        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
-        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
-        replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
-        retained_archive_indexes, run_campaign_checkpointed,
+        WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve, default_window,
+        draws_continuation, draws_highest_preference, execution_work_delta, finish_record,
+        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
+        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
+        record_mixture_outcome, replay_campaign_checkpointed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
         run_campaign_checkpointed_with_options, schedule_policy_identifier,
         schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
@@ -6174,16 +6164,6 @@ mod tests {
             schedule_policy_window("deterministic_window_16_v4"),
             Some(16)
         );
-    }
-
-    #[test]
-    fn unadmitted_result_jobs_obey_the_explicit_physical_bound() {
-        for limit in [1, 2] {
-            assert!(completed_results_within_bound(0, 0, limit));
-            assert!(completed_results_within_bound(4 * limit, 4, limit));
-            assert!(!completed_results_within_bound(4 * limit + 1, 4, limit));
-            assert!(!completed_results_within_bound(1, 0, limit));
-        }
     }
 
     #[test]

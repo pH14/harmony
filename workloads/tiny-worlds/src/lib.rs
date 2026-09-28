@@ -242,6 +242,7 @@ pub struct Scale {
     pub memory_budget_mib: usize,
     pub archive_entries: usize,
     pub action_cost_ns: u64,
+    pub action_sleep_ns: u64,
     pub snapshot_bytes: usize,
 }
 impl Default for Scale {
@@ -253,6 +254,7 @@ impl Default for Scale {
             memory_budget_mib: 32,
             archive_entries: 4096,
             action_cost_ns: 0,
+            action_sleep_ns: 0,
             snapshot_bytes: 0,
         }
     }
@@ -277,6 +279,9 @@ impl Scale {
             return Err(format!(
                 "scale archive entries must be 1..={MAX_ARCHIVE_ENTRIES}"
             ));
+        }
+        if self.action_sleep_ns > 10_000_000 {
+            return Err("scale action sleep must be at most 10 ms".into());
         }
         if self.action_cost_ns > 10_000_000 {
             return Err("scale action cost must be at most 10 ms".into());
@@ -311,6 +316,13 @@ impl<const CAPACITY_TWO: bool> Workload<CAPACITY_TWO> {
     }
 
     fn spend_action_cost(&self) {
+        if let Some(sleep) = self
+            .scale
+            .map(|scale| scale.action_sleep_ns)
+            .filter(|&sleep| sleep > 0)
+        {
+            std::thread::sleep(std::time::Duration::from_nanos(sleep));
+        }
         let Some(cost) = self
             .scale
             .map(|scale| scale.action_cost_ns)
@@ -821,6 +833,8 @@ pub fn run_scaled(
     )?;
     let elapsed = started.elapsed().as_secs_f64();
     let report = live.0;
+    let worker_time = (report.telemetry.search_ns as f64) * f64::from(scale.workers);
+    let busy_ns: u64 = report.telemetry.workers.iter().map(|w| w.busy_ns).sum();
     Ok(serde_json::json!({
         "seed": seed,
         "broken": workload.broken,
@@ -835,6 +849,9 @@ pub fn run_scaled(
         "resident_memory_bytes": report.resident_memory_bytes,
         "live_entries": report.live_entries,
         "selector": report.archive.selector,
+        "worker_busy_fraction": busy_ns as f64 / worker_time,
+        "admission_order_idle_fraction":
+            report.telemetry.admission.idle_admission_order_ns as f64 / worker_time,
     }))
 }
 
@@ -1681,6 +1698,10 @@ mod tests {
             },
             Scale {
                 action_cost_ns: 10_000_001,
+                ..Scale::default()
+            },
+            Scale {
+                action_sleep_ns: 10_000_001,
                 ..Scale::default()
             },
             Scale {

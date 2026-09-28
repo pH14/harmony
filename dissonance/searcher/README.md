@@ -45,14 +45,17 @@ publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
 and keeps the table versions a serial replay still needs. Workloads identify
 their input policies and reject unknown or retired identifiers during replay.
 
-Physical executors default to at most one running or completed-but-unadmitted
-job each. `run_campaign_checkpointed_with_options` can explicitly allow two
-through `ResultBuffering::TwoPerWorker`. Credits return only at ordered
-admission, so a fast worker cannot accumulate unbounded completed snapshots.
-This overlaps already-reserved work; it does not change the logical window,
-selection order, snapshot pins, or deterministic campaign bytes. The default
-remains appropriate for large whole-VM results. Additional worker-result
-memory is outside the archive's logical budget and must be measured in host RSS.
+Workers pull jobs from one shared queue, so an idle worker takes the next
+queued job while another worker is still busy. One bound limits the jobs that
+are queued, running or finished but not yet admitted: workers times
+`ResultBuffering::capacity()`, one per worker by default and two with
+`ResultBuffering::TwoPerWorker`. A job takes its place in the bound before it is
+dispatched and releases it at ordered admission, so completed snapshots cannot
+pile up behind a slow job. The logical window,
+selection order, snapshot pins and campaign bytes are the same at any bound. Memory held by finished
+results is outside the archive's logical budget and must be measured in host
+RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
+when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
 Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 

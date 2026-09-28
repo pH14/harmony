@@ -16,8 +16,6 @@ pub struct WorkerTelemetry {
     pub cpu_ns: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_wait_ns: Option<u64>,
-    pub idle_admission_order_ns: u64,
-    pub idle_no_job_ns: u64,
     pub target: TargetCounters,
 }
 
@@ -28,6 +26,8 @@ pub struct AdmissionWaits {
     pub results_held: u64,
     pub results_held_ns: u64,
     pub results_held_max_ns: u64,
+    pub idle_admission_order_ns: u64,
+    pub idle_no_job_ns: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -85,48 +85,43 @@ pub(crate) enum IdleReason {
 }
 
 pub(crate) struct IdleClock {
-    since: Vec<Option<(Instant, IdleReason)>>,
-    admission_order_ns: Vec<u64>,
-    no_job_ns: Vec<u64>,
+    workers: usize,
+    busy: usize,
+    reason: IdleReason,
+    since: Instant,
+    admission_order_ns: u64,
+    no_job_ns: u64,
 }
 
 impl IdleClock {
     pub(crate) fn new(workers: usize) -> Self {
-        let started = now();
         Self {
-            since: vec![Some((started, IdleReason::NoJob)); workers],
-            admission_order_ns: vec![0; workers],
-            no_job_ns: vec![0; workers],
+            workers,
+            busy: 0,
+            reason: IdleReason::NoJob,
+            since: now(),
+            admission_order_ns: 0,
+            no_job_ns: 0,
         }
     }
 
-    pub(crate) fn idle(&mut self, worker: usize, reason: IdleReason) {
-        if let Some(slot) = self.since.get_mut(worker) {
-            *slot = Some((now(), reason));
-        }
-    }
-
-    pub(crate) fn busy(&mut self, worker: usize) {
-        let Some((since, reason)) = self.since.get_mut(worker).and_then(Option::take) else {
-            return;
+    pub(crate) fn update(&mut self, outstanding: usize, reason: IdleReason) {
+        let idle = u64::try_from(self.workers.saturating_sub(self.busy)).unwrap_or(u64::MAX);
+        let charged = nanos_since(self.since).saturating_mul(idle);
+        let total = match self.reason {
+            IdleReason::AdmissionOrder => &mut self.admission_order_ns,
+            IdleReason::NoJob => &mut self.no_job_ns,
         };
-        let elapsed = nanos_since(since);
-        let total = match reason {
-            IdleReason::AdmissionOrder => &mut self.admission_order_ns[worker],
-            IdleReason::NoJob => &mut self.no_job_ns[worker],
-        };
-        *total = total.saturating_add(elapsed);
+        *total = total.saturating_add(charged);
+        self.since = now();
+        self.busy = outstanding.min(self.workers);
+        self.reason = reason;
     }
 
-    pub(crate) fn finish(mut self, workers: &mut [WorkerTelemetry]) {
-        for worker in 0..self.since.len() {
-            self.busy(worker);
-        }
-        for (index, worker) in workers.iter_mut().enumerate() {
-            worker.idle_admission_order_ns =
-                self.admission_order_ns.get(index).copied().unwrap_or(0);
-            worker.idle_no_job_ns = self.no_job_ns.get(index).copied().unwrap_or(0);
-        }
+    pub(crate) fn finish(mut self, waits: &mut AdmissionWaits) {
+        self.update(0, IdleReason::NoJob);
+        waits.idle_admission_order_ns = self.admission_order_ns;
+        waits.idle_no_job_ns = self.no_job_ns;
     }
 }
 
@@ -157,17 +152,15 @@ mod tests {
     }
 
     #[test]
-    fn idle_time_is_charged_to_the_reason_recorded_when_the_worker_went_idle() {
-        let mut clock = IdleClock::new(2);
-        clock.busy(0);
-        clock.busy(1);
-        clock.idle(0, IdleReason::AdmissionOrder);
+    fn idle_worker_time_is_charged_to_the_reason_recorded_when_workers_went_idle() {
+        let mut clock = IdleClock::new(3);
+        clock.update(3, IdleReason::NoJob);
+        clock.update(1, IdleReason::AdmissionOrder);
         std::thread::sleep(std::time::Duration::from_millis(2));
-        clock.busy(0);
-        clock.busy(0);
-        let mut workers = vec![WorkerTelemetry::default(); 2];
-        clock.finish(&mut workers);
-        assert!(workers[0].idle_admission_order_ns >= 2_000_000);
-        assert_eq!(workers[1].idle_admission_order_ns, 0);
+        clock.update(3, IdleReason::NoJob);
+        let mut waits = AdmissionWaits::default();
+        clock.finish(&mut waits);
+        assert!(waits.idle_admission_order_ns >= 4_000_000);
+        assert!(waits.idle_no_job_ns < waits.idle_admission_order_ns);
     }
 }

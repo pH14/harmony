@@ -1,50 +1,52 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::VecDeque, error::Error, fmt, sync::mpsc, thread};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, Mutex, mpsc},
+    thread,
+};
 
 use crate::search::telemetry::{
     TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
-pub(crate) struct ResultSlots {
-    outstanding: Vec<usize>,
-    available: VecDeque<u32>,
+pub(crate) struct ResultBound {
     limit: usize,
+    outstanding: usize,
 }
 
-impl ResultSlots {
-    pub(crate) fn new(workers: u32, limit: usize) -> Self {
-        assert!(workers > 0, "result slots require at least one worker");
-        assert!((1..=2).contains(&limit));
+impl ResultBound {
+    pub(crate) fn new(limit: usize) -> Self {
+        assert!(limit > 0, "a result bound holds at least one job");
         Self {
-            outstanding: vec![0; workers as usize],
-            available: (0..limit).flat_map(|_| 0..workers).collect(),
             limit,
+            outstanding: 0,
         }
     }
 
-    pub(crate) fn reserve(&mut self) -> Option<u32> {
-        let worker = self.available.pop_front()?;
-        let count = &mut self.outstanding[worker as usize];
-        assert!(*count < self.limit);
-        *count += 1;
-        Some(worker)
+    pub(crate) fn reserve(&mut self) -> bool {
+        let reserved = self.outstanding < self.limit;
+        if reserved {
+            self.outstanding += 1;
+        }
+        reserved
     }
 
-    pub(crate) fn admit(&mut self, worker: u32) -> Result<(), &'static str> {
-        let count = self
+    pub(crate) fn admit(&mut self) -> Result<(), &'static str> {
+        self.outstanding = self
             .outstanding
-            .get_mut(worker as usize)
-            .ok_or("admitted result has an unknown physical worker")?;
-        *count = count
             .checked_sub(1)
-            .ok_or("admitted result has no reserved result slot")?;
-        self.available.push_back(worker);
+            .ok_or("admitted result has no reserved result capacity")?;
         Ok(())
     }
 
     pub(crate) fn available(&self) -> usize {
-        self.available.len()
+        self.limit - self.outstanding
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
     }
 }
 
@@ -56,18 +58,16 @@ pub(crate) struct WorkerReply<Output> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkerPoolError {
-    UnknownWorker,
-    WorkerClosed,
-    WorkerExited,
+    QueueClosed,
+    WorkersExited,
     RepliesClosed,
 }
 
 impl fmt::Display for WorkerPoolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::UnknownWorker => "campaign worker identifier is outside the pool",
-            Self::WorkerClosed => "campaign worker channel is already closed",
-            Self::WorkerExited => "campaign worker exited before accepting its next job",
+            Self::QueueClosed => "campaign job queue is already closed",
+            Self::WorkersExited => "every campaign worker exited before taking the next job",
             Self::RepliesClosed => "every campaign worker exited while a reply was expected",
         })
     }
@@ -76,39 +76,32 @@ impl fmt::Display for WorkerPoolError {
 impl Error for WorkerPoolError {}
 
 pub(crate) struct WorkerPool<Job, Output> {
-    job_senders: Vec<Option<mpsc::Sender<Job>>>,
+    jobs: Option<mpsc::Sender<Job>>,
     reply_receiver: mpsc::Receiver<WorkerReply<Output>>,
 }
 
 impl<Job, Output> WorkerPool<Job, Output> {
-    pub(crate) fn send(&self, worker: u32, job: Job) -> Result<(), WorkerPoolError> {
-        self.job_senders
-            .get(usize::try_from(worker).map_err(|_| WorkerPoolError::UnknownWorker)?)
-            .ok_or(WorkerPoolError::UnknownWorker)?
+    pub(crate) fn send(&self, job: Job) -> Result<(), WorkerPoolError> {
+        self.jobs
             .as_ref()
-            .ok_or(WorkerPoolError::WorkerClosed)?
+            .ok_or(WorkerPoolError::QueueClosed)?
             .send(job)
-            .map_err(|_| WorkerPoolError::WorkerExited)
+            .map_err(|_| WorkerPoolError::WorkersExited)
     }
 
-    pub(crate) fn dispatch(&self, worker: u32, job: Job) -> Result<(), Box<dyn Error>> {
-        match self.send(worker, job) {
-            Err(WorkerPoolError::WorkerExited) => Err(self
+    pub(crate) fn dispatch(&self, job: Job) -> Result<(), Box<dyn Error>> {
+        match self.send(job) {
+            Err(WorkerPoolError::WorkersExited) => Err(self
                 .reply_receiver
                 .try_iter()
-                .find_map(|reply| (reply.worker == worker).then_some(reply.outcome.err())?)
-                .map_or_else(|| WorkerPoolError::WorkerExited.into(), Into::into)),
+                .find_map(|reply| reply.outcome.err())
+                .map_or_else(|| WorkerPoolError::WorkersExited.into(), Into::into)),
             sent => sent.map_err(Into::into),
         }
     }
 
-    pub(crate) fn close(&mut self, worker: u32) -> Result<(), WorkerPoolError> {
-        let sender = self
-            .job_senders
-            .get_mut(usize::try_from(worker).map_err(|_| WorkerPoolError::UnknownWorker)?)
-            .ok_or(WorkerPoolError::UnknownWorker)?;
-        *sender = None;
-        Ok(())
+    pub(crate) fn close(&mut self) {
+        self.jobs = None;
     }
 
     pub(crate) fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
@@ -139,11 +132,12 @@ where
 {
     thread::scope(|scope| {
         let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Output>>();
-        let mut job_senders = Vec::with_capacity(workers as usize);
+        let (job_sender, job_receiver) = mpsc::channel::<Job>();
+        let job_receiver = Arc::new(Mutex::new(job_receiver));
         let mut handles = Vec::with_capacity(workers as usize);
         for worker in 0..workers {
-            let (job_sender, job_receiver) = mpsc::channel::<Job>();
             let reply_sender = reply_sender.clone();
+            let job_receiver = Arc::clone(&job_receiver);
             let initialize = &initialize;
             let execute = &execute;
             let finish = &finish;
@@ -164,7 +158,11 @@ where
                 telemetry.boot_ns = nanos_since(booted);
                 loop {
                     let waiting = now();
-                    let Ok(job) = job_receiver.recv() else {
+                    let next = match job_receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => break,
+                    };
+                    let Ok(job) = next else {
                         break;
                     };
                     telemetry.idle_ns = telemetry.idle_ns.saturating_add(nanos_since(waiting));
@@ -186,11 +184,11 @@ where
                 }
                 telemetry
             }));
-            job_senders.push(Some(job_sender));
         }
         drop(reply_sender);
+        drop(job_receiver);
         let mut pool = WorkerPool {
-            job_senders,
+            jobs: Some(job_sender),
             reply_receiver,
         };
         let result = coordinate(&mut pool);
@@ -207,35 +205,30 @@ where
 mod tests {
     use std::{cell::Cell, rc::Rc, sync::mpsc};
 
-    use super::{ResultSlots, WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+    use super::{ResultBound, WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
     use crate::search::telemetry::TargetCounters;
 
     #[test]
-    fn result_slots_bound_every_executor_until_admission() {
-        for limit in [1, 2] {
-            let mut slots = ResultSlots::new(2, limit);
-            for _ in 0..limit {
-                assert_eq!(slots.reserve(), Some(0));
-                assert_eq!(slots.reserve(), Some(1));
-            }
-            assert_eq!(slots.reserve(), None);
-            slots.admit(1).unwrap();
-            assert_eq!(slots.reserve(), Some(1));
-            assert_eq!(slots.reserve(), None);
-            assert!(slots.admit(2).is_err());
-            for _ in 0..limit {
-                slots.admit(0).unwrap();
-            }
-            assert!(slots.admit(0).is_err());
-            assert_eq!(slots.available(), limit);
+    fn the_result_bound_counts_every_job_from_dispatch_to_admission() {
+        let mut bound = ResultBound::new(3);
+        assert!((0..3).all(|_| bound.reserve()));
+        assert!(!bound.reserve());
+        assert_eq!(bound.available(), 0);
+        bound.admit().unwrap();
+        assert_eq!(bound.available(), 1);
+        assert!(bound.reserve());
+        for _ in 0..3 {
+            bound.admit().unwrap();
         }
+        assert!(bound.admit().is_err());
+        assert_eq!((bound.available(), bound.limit()), (3, 3));
     }
 
     #[test]
-    fn a_second_reserved_job_runs_while_an_earlier_worker_is_blocked() {
+    fn idle_workers_take_queued_jobs_while_one_worker_is_blocked() {
         let (release, blocked) = mpsc::channel();
-        with_worker_pool(
-            2,
+        let replies = with_worker_pool(
+            3,
             |_| Ok::<_, String>(()),
             |_, (release, value): (Option<mpsc::Receiver<()>>, u8)| {
                 if let Some(release) = release {
@@ -244,34 +237,31 @@ mod tests {
                 Ok::<_, String>(value)
             },
             |_| TargetCounters::new(),
-            move |pool| -> Result<(), Box<dyn std::error::Error>> {
-                let mut slots = ResultSlots::new(2, 2);
-                for job in [(Some(blocked), 0), (None, 1), (None, 2), (None, 3)] {
-                    pool.send(slots.reserve().expect("bounded prefill"), job)?;
+            move |pool| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+                pool.send((Some(blocked), 0))?;
+                for value in 1..=6 {
+                    pool.send((None, value))?;
                 }
-                for value in [1, 3] {
-                    let reply = pool.receive()?;
-                    assert_eq!(reply.worker, 1);
-                    assert_eq!(reply.outcome?, value);
-                    assert_eq!(slots.reserve(), None);
-                }
+                let mut values = (0..6)
+                    .map(|_| Ok(pool.receive()?.outcome?))
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                values.sort_unstable();
                 release.send(())?;
-                for value in [0, 2] {
-                    let reply = pool.receive()?;
-                    assert_eq!(reply.worker, 0);
-                    assert_eq!(reply.outcome?, value);
-                }
-                Ok(())
+                values.push(pool.receive()?.outcome?);
+                pool.close();
+                Ok(values)
             },
         )
-        .expect("bounded physical overlap");
+        .expect("queued jobs run around a blocked worker");
+        assert_eq!(replies.0, vec![1, 2, 3, 4, 5, 6, 0]);
+        assert_eq!(replies.1.iter().map(|worker| worker.jobs).sum::<u64>(), 7);
     }
 
     #[test]
     fn try_receive_distinguishes_ready_empty_and_disconnected() {
         let (sender, receiver) = mpsc::channel();
         let pool = WorkerPool::<(), u64> {
-            job_senders: Vec::new(),
+            jobs: None,
             reply_receiver: receiver,
         };
         assert!(
@@ -295,6 +285,7 @@ mod tests {
             pool.try_receive(),
             Err(WorkerPoolError::RepliesClosed)
         ));
+        assert_eq!(pool.send(()), Err(WorkerPoolError::QueueClosed));
     }
 
     #[test]
@@ -305,9 +296,9 @@ mod tests {
             |state, job: u64| Ok::<_, String>(*state + job),
             |state| TargetCounters::from([("state".to_owned(), *state)]),
             |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
-                pool.send(0, 7)?;
+                pool.send(7)?;
                 let reply = pool.receive()?;
-                pool.close(0)?;
+                pool.close();
                 Ok(vec![(reply.worker, reply.outcome?)])
             },
         )
@@ -330,7 +321,7 @@ mod tests {
             },
             |_| TargetCounters::new(),
             |pool| -> Result<u64, Box<dyn std::error::Error>> {
-                pool.send(0, 3)?;
+                pool.send(3)?;
                 Ok(pool.receive()?.outcome?)
             },
         )
@@ -340,35 +331,27 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_worker_can_be_reissued_while_another_is_busy() {
-        let (release_sender, release_receiver) = mpsc::channel();
-        let replies = with_worker_pool(
+    fn a_dispatch_after_every_worker_failed_reports_the_worker_error() {
+        let error = with_worker_pool(
             2,
-            |_| Ok::<_, String>(()),
-            |_, job: (Option<mpsc::Receiver<()>>, u64)| {
-                if let Some(release) = job.0 {
-                    release.recv().map_err(|error| error.to_string())?;
+            |_| Err::<(), _>("boot failed".to_owned()),
+            |(), job: u64| Ok::<_, String>(job),
+            |()| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                while pool.dispatch(1).is_ok() {
+                    std::thread::yield_now();
                 }
-                Ok::<_, String>(job.1)
-            },
-            |_| TargetCounters::new(),
-            |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
-                pool.send(0, (Some(release_receiver), 10))?;
-                pool.send(1, (None, 11))?;
-                let first = pool.receive()?;
-                pool.send(first.worker, (None, 12))?;
-                let second = pool.receive()?;
-                release_sender.send(())?;
-                let third = pool.receive()?;
-                Ok(vec![
-                    (first.worker, first.outcome?),
-                    (second.worker, second.outcome?),
-                    (third.worker, third.outcome?),
-                ])
+                pool.dispatch(1)
             },
         )
-        .expect("coordinate two workers")
-        .0;
-        assert_eq!(replies, vec![(1, 11), (1, 12), (0, 10)]);
+        .unwrap_err();
+        assert!(
+            [
+                "boot failed",
+                "every campaign worker exited before taking the next job"
+            ]
+            .contains(&error.to_string().as_str()),
+            "{error}"
+        );
     }
 }
