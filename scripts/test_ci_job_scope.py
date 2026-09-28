@@ -69,6 +69,14 @@ class InlineSelectionTests(unittest.TestCase):
             missing = run(["git", "rev-list", "--objects", "--all", "--missing=print"], cwd=clone, text=True)
             self.assertIn("?" + legacy_blob, missing.splitlines())
 
+    def test_manual_nova_qualification_selects_the_tracked_source_tree(self):
+        with mock.patch.object(SCOPE.subprocess, "check_output", return_value="Cargo.toml\0") as run:
+            paths = SCOPE.changed_paths("harmony_nes", "workflow_dispatch", "", "")
+            run.assert_called_once_with(["git", "ls-files", "-z"], text=True)
+            self.assertTrue(SCOPE.selection("harmony_nes", "", paths)["enabled"])
+        with self.assertRaises(ValueError):
+            SCOPE.changed_paths("miri", "workflow_dispatch", "", "")
+
     def test_matches_existing_selectors(self):
         samples = [[], ["docs/WORKFLOWS.md"], ["Cargo.lock"],
                    ["workloads/nes/src/stb/target.rs"], ["cli/src/main.rs"],
