@@ -16,6 +16,7 @@ const OUTER_ODDS: u64 = 4;
 const OUTER_HIT: u8 = 1;
 const FARM_ODDS: u64 = 8;
 const DRAIN_ODDS: u64 = 2;
+const LATE_DRAIN_ODDS: u64 = 3;
 const TAIL_ACTIONS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -52,6 +53,8 @@ pub struct Config {
     pub boss_by_door: bool,
     #[serde(default)]
     pub tail_slots: bool,
+    #[serde(default)]
+    pub late_item: bool,
 }
 
 fn one() -> u8 {
@@ -159,6 +162,12 @@ impl Config {
         }
         if self.boss_by_door && self.boss_stock == 0 {
             return Err("a boss by the door needs a boss stock".into());
+        }
+        if self.late_item && (!self.boss_hits_back || self.approach_drain || self.boss_by_door) {
+            return Err(
+                "a late map item needs a boss that hits back and no other drain or goal placement"
+                    .into(),
+            );
         }
         if self.tail_slots && !self.gauntlet && !self.approach_drain {
             return Err("tail slots need a gauntlet or a draining approach".into());
@@ -341,6 +350,13 @@ impl Config {
                     .filter(|&c| !inner[usize::from(c)] && Some(c) != key)
                     .max_by_key(|&c| (from_door[usize::from(c)], std::cmp::Reverse(c)))
                     .expect("an outer room besides the key")
+            } else if self.late_item {
+                (0..self.cells())
+                    .filter(|&c| {
+                        inner[usize::from(c)] && c != entry && doors[usize::from(c)] != 0b1111
+                    })
+                    .max_by_key(|&c| (from_entry[usize::from(c)], std::cmp::Reverse(c)))
+                    .expect("an inner room with a wall")
             } else if self.boss_by_door {
                 (0..self.cells())
                     .filter(|&c| !inner[usize::from(c)] && doors[usize::from(c)] != 0b1111)
@@ -349,7 +365,22 @@ impl Config {
             } else {
                 farthest(&from_door, false)
             };
-            (Some(farthest(&from_entry, true)), goal, Vec::new())
+            let item = if self.late_item {
+                (0..self.cells())
+                    .filter(|&c| {
+                        inner[usize::from(c)]
+                            && from_entry[usize::from(c)] + 1 == from_entry[usize::from(goal)]
+                            && (0..4).any(|d| {
+                                doors[usize::from(c)] & (1 << d) != 0
+                                    && self.neighbour(c, d) == Some(goal)
+                            })
+                    })
+                    .min()
+                    .expect("the goal has an inner room before it")
+            } else {
+                farthest(&from_entry, true)
+            };
+            (Some(item), goal, Vec::new())
         } else {
             let mut outer = doors.clone();
             outer[usize::from(door_cell)] &= !(1 << door_direction);
@@ -494,7 +525,9 @@ impl Config {
     }
 
     fn health_cap(&self, layout: &Layout) -> u8 {
-        if self.boss_hits_back {
+        if self.late_item {
+            self.boss_stock + 2 + layout.door_to_item.unwrap_or(0)
+        } else if self.boss_hits_back {
             self.boss_stock
                 + 2
                 + if self.approach_drain {
@@ -537,9 +570,9 @@ impl Config {
             && s.hits + s.stock <= self.cap()
             && (!self.boss_hits_back || s.hits + s.health <= self.health_cap(layout))
             && s.tail < 1 << (2 * TAIL_ACTIONS)
-            && (self.gauntlet || self.approach_drain || (s.tail == 0 && !s.dead))
+            && (self.gauntlet || self.approach_drain || self.late_item || (s.tail == 0 && !s.dead))
             && (!s.dead || s.health == 0)
-            && (self.boss_stock == 0 || s.item || s.stock == 0)
+            && (self.boss_stock == 0 || s.item || s.stock == 0 || self.late_item)
             && (s.item || Some(s.cell) != layout.item)
             && (!self.locked
                 || s.found == 1
@@ -576,7 +609,7 @@ impl Config {
                 }
             } else if farm % 2 == 0 {
                 next.health = (next.health + 1).min(self.health_cap(layout));
-            } else if self.boss_stock == 0 || next.item {
+            } else if self.boss_stock == 0 || next.item || self.late_item {
                 next.stock = (next.stock + 1).min(self.cap());
                 next.health = next.health.saturating_sub(u8::from(self.boss_hits_back));
             }
@@ -602,13 +635,23 @@ impl Config {
 
     fn enter(&self, layout: &Layout, s: State, cell: u8, hits: bool) -> State {
         if hits
-            && self.approach_drain
-            && s.item
+            && ((self.approach_drain && s.item) || self.late_item)
             && cell != layout.goal
             && !layout.farms.contains(&cell)
         {
-            let wound = self.roll(cell, s.tail ^ 0x40).is_multiple_of(DRAIN_ODDS);
-            let spend = self.roll(cell, s.tail ^ 0x20).is_multiple_of(DRAIN_ODDS);
+            let (wound, spend) = if self.late_item && layout.inner[usize::from(cell)] {
+                (true, true)
+            } else {
+                let odds = if self.late_item {
+                    LATE_DRAIN_ODDS
+                } else {
+                    DRAIN_ODDS
+                };
+                (
+                    self.roll(cell, s.tail ^ 0x40).is_multiple_of(odds),
+                    self.roll(cell, s.tail ^ 0x20).is_multiple_of(odds),
+                )
+            };
             if wound && s.health == 0 {
                 return State { dead: true, ..s };
             }
@@ -666,7 +709,7 @@ impl Config {
             return s;
         }
         let action = (action + s.phase) % 4;
-        let tail = if self.gauntlet || self.approach_drain {
+        let tail = if self.gauntlet || self.approach_drain || self.late_item {
             ((s.tail << 2) | action) & ((1 << (2 * TAIL_ACTIONS)) - 1)
         } else {
             0
@@ -782,7 +825,13 @@ impl Config {
             |s, a| {
                 let next = self.step_with(s, a, false);
                 State {
-                    health: if self.boss_hits_back { next.health } else { 0 },
+                    health: if self.late_item {
+                        next.health.min(self.boss_stock + self.farms)
+                    } else if self.boss_hits_back {
+                        next.health
+                    } else {
+                        0
+                    },
                     tail: 0,
                     stock: next.stock.min(self.boss_stock),
                     phase: 0,
@@ -818,6 +867,7 @@ mod tests {
             approach_drain: false,
             boss_by_door: false,
             tail_slots: false,
+            late_item: false,
         }
     }
 
@@ -1364,6 +1414,66 @@ mod tests {
             s = fire(&w, &l, s);
         }
         assert!(s.goal && w.goal(s));
+    }
+
+    #[test]
+    fn a_late_item_sits_before_the_boss_behind_a_fixed_approach_cost() {
+        let w = Config {
+            width: 8,
+            height: 8,
+            inner: 20,
+            farms: 4,
+            farm_cap: 63,
+            boss_stock: 8,
+            boss_hits_back: true,
+            late_item: true,
+            ..config(crate::test_seed())
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        let item = l.item.unwrap();
+        assert!(l.inner[usize::from(item)] && l.inner[usize::from(l.goal)]);
+        assert!(
+            (0..4).any(|d| l.doors[usize::from(item)] & (1 << d) != 0
+                && w.neighbour(item, d) == Some(l.goal))
+        );
+        assert_eq!(w.health_cap(&l), 10 + l.door_to_item.unwrap());
+        let farmed = w.arrive(&l, w.initial(), l.farms[1]);
+        assert_eq!((farmed.item, farmed.stock), (false, 1));
+        let full = State {
+            cell: l.door_cell,
+            stock: 30,
+            health: w.health_cap(&l),
+            ..w.initial()
+        };
+        let inside = w.enter(&l, full, l.entry, true);
+        assert_eq!((inside.stock, inside.health), (29, w.health_cap(&l) - 1));
+        let empty = State { health: 0, ..full };
+        assert!(w.enter(&l, empty, l.entry, true).dead);
+        let picked = w.enter(
+            &l,
+            State {
+                cell: l.goal,
+                ..full
+            },
+            item,
+            true,
+        );
+        assert!(picked.item && w.tier(picked) == 1);
+        assert_eq!(
+            w.enter(
+                &l,
+                State {
+                    cell: item,
+                    item: true,
+                    ..full
+                },
+                l.goal,
+                true
+            )
+            .health,
+            full.health
+        );
     }
 
     #[test]
