@@ -260,6 +260,17 @@ whether that work was worth choosing.
 > Seven workers then ran 7,127 executions per hour, against 4,437 with the cache
 > off and 4,579 with it limited to 512 MiB.
 
+> [!NOTE]
+> **Worked example: repeated work in SQLite.**
+>
+> A SQLite fault search on seven Cortex-A720 workers spent 63% of worker time
+> repeating evicted prefixes when each worker retained its own prefixes. It
+> took 2.15 seconds per execution over 480 executions. With the shared cache,
+> all 2,076 lookups were exact hits and no work was repeated. The search took
+> 0.52 seconds per execution. Each execution ran 29% more guest work because
+> the larger admission window changes which executions run. Per unit of guest
+> work, the search ran 5.4 times faster.
+
 ## Serial work
 
 A deterministic parallel search orders its selection and admission decisions
