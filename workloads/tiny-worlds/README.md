@@ -17,7 +17,7 @@ cargo build --release --locked --manifest-path workloads/tiny-worlds/Cargo.toml
 
 The executable reads one JSON request from standard input, capped at 16 KiB.
 Required fields are `config`, `seed`, `work_budget`, `broken`, `verify`, and
-`keep`; `scale` is optional.
+`keep`; `scale` and `workers` are optional.
 `config` contains `family` and `parameters`; nested objects reject unknown fields.
 Supply a seed at runtime and retain it with the output when reproducing a run.
 Keep generated requests and reports outside the repository.
@@ -44,8 +44,9 @@ PY
 preferences: charge first and health first. `capacity_two` keeps two holders
 per slot under the charge-first preference alone.
 
-`work_budget` accepts 1–2,000,000 transitions. A campaign uses one worker, one
-reservation, an archive capacity of 4,096, and a 32 MiB logical memory budget,
+`work_budget` accepts 1–2,000,000 transitions. A campaign uses `workers`
+workers (1–64, default one) and an admission window of the same size, an
+archive capacity of 4,096, and a 32 MiB logical memory budget,
 and stops at its first objective. The event stream has a checked 1 GiB
 allocation limit. Execution work counts
 restored-parent replay and suffix actions; restoring a snapshot preserves the
@@ -323,6 +324,9 @@ on `--binary` or the fresh build, with the same layouts and runtime seeds on bot
 ```sh
 uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare baseline
 ```
+
+`--workers N` runs every request with `N` workers and an admission window of
+`N`, to check a change at the window sizes a multi-worker search uses.
 
 | World | Settings | Game behaviour | Legs |
 | --- | --- | --- | --- |

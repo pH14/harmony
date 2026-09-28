@@ -293,8 +293,12 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
     return 1 if failed else 0
 
 
+WORKERS = 1
+
+
 def execute(binary: Path, job: dict) -> dict:
-    process = subprocess.run([str(binary)], input=json.dumps(job["request"]),
+    request = job["request"] if WORKERS == 1 else {**job["request"], "workers": WORKERS}
+    process = subprocess.run([str(binary)], input=json.dumps(request),
                              capture_output=True, text=True, check=False)
     if process.returncode:
         raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
@@ -415,7 +419,13 @@ def main() -> int:
                         help="also run the game-mechanism worlds on this baseline executable and on --binary")
     parser.add_argument("--world-scale", type=int, default=16,
                         help="starting layouts per comparison world; light map worlds run four times as many")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="search workers per run; the admission window equals the worker count")
     args = parser.parse_args()
+    if not 1 <= args.workers <= 64:
+        parser.error("--workers must be 1..64")
+    global WORKERS
+    WORKERS = args.workers
     if args.seeds < 3:
         parser.error("--seeds must be at least 3")
     if args.world_scale < 3:

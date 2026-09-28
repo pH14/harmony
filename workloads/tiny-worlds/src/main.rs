@@ -15,6 +15,8 @@ struct Request {
     keep: Keep,
     #[serde(default)]
     scale: Option<Scale>,
+    #[serde(default)]
+    workers: Option<u32>,
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let mut input = String::new();
@@ -33,6 +35,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("world objective is unreachable".into());
     }
     if request.scale.is_some() {
+        if request.workers.is_some() {
+            return Err("scaled runs set workers in scale".into());
+        }
         if request.verify || request.keep != Keep::Portfolio {
             return Err("scaled runs need verify false and keep portfolio".into());
         }
@@ -50,7 +55,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             request.keep,
             request.seed,
             request.work_budget,
-            request.verify
+            request.verify,
+            request.workers.unwrap_or(1)
         )?
     );
     Ok(())
