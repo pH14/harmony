@@ -202,6 +202,21 @@ memory to find changed pages adds to that cost.
 > copying all 262,144 pages of a 1 GiB guest: 2.8 µs per page to restore and
 > 1.0 µs per page to capture, including hashing. These copies consumed 96% of
 > the worker's time, limiting it to 0.20 executions per second.
+>
+> With dirty-page tracking and kept restore images, the same search copies only
+> changed pages. One M1 Max worker then ran 3.1 executions per second and four
+> ran 12.5, with restores at 6% and snapshot capture at 26% of busy time.
+
+> [!NOTE]
+> **Worked example: restores in etcd.**
+>
+> A restore copies only the pages that differ between the VM's current image
+> and the parent while the store still holds the current image. When a search
+> released the image the VM sat on, 234 of 240 etcd executions restored all
+> 262,144 pages of a 1 GiB guest, and restores took 53% of seven Cortex-A720
+> workers' busy time. Keeping a store reference on the current image cut
+> restored pages to about 3,700 per restore and the share to 12%. Reading
+> restore pages without rechecking their BLAKE3 hashes cut it to 5%.
 
 ## Re-execution
 
@@ -339,6 +354,28 @@ spread across many workers.
 > and CIX chips, respectively. Re-execution, worker waiting, and contention all
 > increased with worker count, while coordinator time stayed below 0.4 ms per
 > job.
+
+> [!NOTE]
+> **Worked example: etcd on seven Cortex-A720 workers.**
+>
+> With a shared snapshot cache, kept restore images, and four reservations and
+> four finished results per worker, seven Cortex-A720 workers ran 240 etcd
+> executions at 27,739 per hour and 960 at 28,118 per hour. One worker ran
+> 6,038 per hour. Two host limits keep seven workers below seven times one:
+>
+> | Setup | Guest time per exit |
+> |---|---|
+> | One search alone on a 2.6 GHz core | 13.2 µs |
+> | One search alone on a 2.2 GHz core | 15.7 µs |
+> | Four one-worker searches at once | 16.0 to 18.5 µs |
+> | One four-worker search on the same cores | 16.9 µs |
+>
+> The chip's Cortex-A720 cores run at 2.2 to 2.6 GHz, and one worker gets the
+> fastest. Separate guests slow each other by about 20% through shared caches
+> and memory; a four-worker search is no slower than four separate searches.
+> Each worker also boots its guest for about 5 s. Booting workers while the
+> coordinator runs its own bootstrap guest cut a 240-execution search from 36.4
+> to 31.1 s.
 
 Weak scaling increases the campaign size along with the worker count. This
 still runs into coordinator capacity as jobs per second increase, and memory
