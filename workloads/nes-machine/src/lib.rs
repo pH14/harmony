@@ -47,7 +47,7 @@ impl PartialEq for SharedState {
 impl Eq for SharedState {}
 
 impl SharedState {
-    pub(crate) fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
+    pub(crate) fn from_bytes(bytes: &[u8], base: Option<&Self>) -> Self {
         let mut chunks = Vec::with_capacity(bytes.len().div_ceil(SHARED_STATE_CHUNK_SIZE));
         for (index, source) in bytes.chunks(SHARED_STATE_CHUNK_SIZE).enumerate() {
             let mut chunk = [0_u8; SHARED_STATE_CHUNK_SIZE];
@@ -97,7 +97,7 @@ impl<'de> serde::Deserialize<'de> for SharedState {
     where
         D: serde::Deserializer<'de>,
     {
-        Vec::<u8>::deserialize(deserializer).map(|bytes| Self::from_bytes(bytes, None))
+        Vec::<u8>::deserialize(deserializer).map(|bytes| Self::from_bytes(&bytes, None))
     }
 }
 

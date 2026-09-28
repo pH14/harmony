@@ -705,9 +705,13 @@ impl QuickNesMachine {
     }
 
     pub fn import_snapshot(&mut self, bytes: &[u8]) -> SnapId {
+        self.import_owned_snapshot(bytes.to_vec())
+    }
+
+    fn import_owned_snapshot(&mut self, bytes: Vec<u8>) -> SnapId {
         let id = self.next_snap;
         self.next_snap = self.next_snap.wrapping_add(1);
-        self.snapshots.insert(id, bytes.to_vec());
+        self.snapshots.insert(id, bytes);
         SnapId(id)
     }
 
@@ -1042,13 +1046,12 @@ impl Machine for QuickNesMachine {
         let bytes = self
             .snapshots
             .get(&snap.0)
-            .ok_or(MachineError::UnknownSnapshot)?
-            .clone();
+            .ok_or(MachineError::UnknownSnapshot)?;
         Ok(SharedState::from_bytes(bytes, base))
     }
 
     fn import(&mut self, portable: &Self::Portable) -> Result<SnapId, MachineError> {
-        Ok(self.import_snapshot(&portable.materialize()))
+        Ok(self.import_owned_snapshot(portable.materialize()))
     }
 
     fn portable_memory_charge(portable: &Self::Portable) -> usize {
@@ -1607,6 +1610,98 @@ mod tests {
         nes_to_libretro, option_value, reset_capture_state, validate_sha256, video_callback,
     };
     use crate::{Machine, Moment, StopConditions, StopReason, nes};
+
+    #[test]
+    fn portable_transfer_preserves_bytes_handles_and_chunk_sharing() {
+        for length in [0, 1, 511, 512, 513, 4096, 65_536] {
+            let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+            let bytes: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            let original = machine.import_snapshot(&bytes);
+            let base = machine.export(original, None).unwrap();
+            assert_eq!(base.materialize(), bytes);
+            let unchanged = machine.export(original, Some(&base)).unwrap();
+            for (left, right) in base.inner.chunks.iter().zip(&unchanged.inner.chunks) {
+                assert!(std::sync::Arc::ptr_eq(left, right));
+            }
+            let imported = machine.import(&base).unwrap();
+            assert_eq!(imported.0, original.0.wrapping_add(1));
+            assert_eq!(machine.snapshots[&imported.0].capacity(), bytes.len());
+            assert_eq!(machine.take_snapshot(imported).unwrap(), bytes);
+            assert_eq!(machine.take_snapshot(original).unwrap(), bytes);
+            assert!(machine.export(original, None).is_err());
+            assert_eq!(base.materialize(), bytes);
+        }
+        let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+        machine.next_snap = u64::MAX;
+        let portable = crate::SharedState::from_bytes(&[1, 2, 3], None);
+        assert_eq!(machine.import(&portable).unwrap().0, u64::MAX);
+        assert_eq!(machine.import(&portable).unwrap().0, 0);
+        assert_eq!(machine.next_snap, 1);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn portable_transfer_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        if std::env::var_os("DISSONANCE_BENCHMARK_PORTABLE_TRANSFER").is_none() {
+            return;
+        }
+        for length in [0, 512, 4096, 65_536, 262_144] {
+            let bytes: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+            let original = machine.import_snapshot(&bytes);
+            let portable = machine.export(original, None).unwrap();
+            for operation in ["import", "export", "export-shared"] {
+                let mut ratios = Vec::new();
+                for round in 0..60 {
+                    let mut elapsed = [0_u128; 2];
+                    let order = if round % 2 == 0 {
+                        [0, 1, 1, 0]
+                    } else {
+                        [1, 0, 0, 1]
+                    };
+                    for arm in order {
+                        let start = Instant::now();
+                        for _ in 0..128 {
+                            if operation == "import" {
+                                let id = if arm == 0 {
+                                    machine.import_snapshot(&black_box(&portable).materialize())
+                                } else {
+                                    machine.import(black_box(&portable)).unwrap()
+                                };
+                                black_box(machine.take_snapshot(id).unwrap());
+                            } else {
+                                let base = (operation == "export-shared").then_some(&portable);
+                                let state = if arm == 0 {
+                                    let bytes = machine
+                                        .snapshots
+                                        .get(&black_box(original).0)
+                                        .unwrap()
+                                        .clone();
+                                    crate::SharedState::from_bytes(&bytes, black_box(base))
+                                } else {
+                                    machine
+                                        .export(black_box(original), black_box(base))
+                                        .unwrap()
+                                };
+                                black_box(state);
+                            }
+                        }
+                        elapsed[arm] += start.elapsed().as_nanos();
+                    }
+                    ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
+                }
+                ratios.sort_by(f64::total_cmp);
+                eprintln!(
+                    "portable_transfer operation={operation} bytes={length} candidate/reference={:.3}",
+                    ratios[ratios.len() / 2]
+                );
+            }
+        }
+    }
 
     #[test]
     fn controller_bits_follow_the_libretro_joypad_layout() {

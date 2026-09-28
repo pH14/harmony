@@ -31,6 +31,15 @@ serialized-state length, and canonicalized core state. Restore rejects a
 different core build, state size, or non-canonical state. The adapter keeps
 snapshots in an ordered handle table and resets staged input when restoring.
 
+Portable export builds shared chunks directly from the retained snapshot bytes,
+without cloning the full snapshot first. Import moves the exactly sized
+materialized buffer into the handle table rather than copying it again. Each
+nonempty transfer eliminates one snapshot-sized temporary allocation and copy;
+retained bytes, chunk sharing, validation, and handle ordering are unchanged.
+The opt-in `DISSONANCE_BENCHMARK_PORTABLE_TRANSFER=1` unit benchmark compares
+both paths with their former copying implementations on synthetic snapshots.
+Its transfer timings do not measure whole-search throughput.
+
 The libretro FFI is Unix-specific. The pure machine types and test loopback
 allow the boundary and its bounds checks to run without a shared object.
 
