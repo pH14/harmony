@@ -129,6 +129,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    #[cfg_attr(miri, ignore = "reads the host's memory files")]
     fn this_host_reports_its_free_memory() {
         assert!(headroom_bytes().is_some_and(|bytes| bytes > 0));
     }
