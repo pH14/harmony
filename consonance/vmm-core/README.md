@@ -197,6 +197,26 @@ between captures. Portable checks run in Snapshot and Restore and both ARM
 Host Compatibility CI jobs without timing thresholds. Hosted macOS runners
 cannot run the live HVF qualification because nested HVF is unavailable.
 
+The SDK-capture qualification compares request-local SDK capture reuse against
+capturing the environment again for the hash suffix, in one executable:
+
+```sh
+python3 consonance/vmm-core/qualification/qualify-sdk-capture.py --check
+python3 consonance/vmm-core/qualification/qualify-sdk-capture.py
+python3 consonance/vmm-core/qualification/qualify-sdk-capture.py --hvf --check
+python3 consonance/vmm-core/qualification/qualify-sdk-capture.py --hvf
+```
+
+It compares standalone and exported hashes and complete mock sidecars. Fixtures
+cover the default nominal SDK, empty custom handlers, handler states of 4 KiB, 64 KiB, and 1 MiB,
+and 256 recorded answers plus 256 pending payloads of 256 bytes each. The
+16 KiB guest RAM stays zero-filled. The measured operation is snapshot-and-drop;
+setup, VM creation, export, and independent hash reads are outside the timing.
+Nine alternating pairs report host snapshot cost, not guest throughput. Live
+HVF uses one VM at a time and compares canonical hashes; advancing hardware
+counters prevent raw sidecar comparison. CI runs portable checks without timing
+thresholds in Snapshot and Restore and both ARM Host Compatibility jobs.
+
 The SDK-restore qualification compares this path with a same-source VMM copy
 that clones the entire SDK snapshot and restores the replay environment twice.
 Both versions run in one release executable, identified by its printed SHA-256.
@@ -290,6 +310,14 @@ is discarded after the request; it is not cached for later snapshots. Stored
 ARM timer counters and canonical counter normalization retain their distinct
 representations. Standalone snapshot and hash reads retain their own capture
 and readiness checks.
+
+The same control snapshot also reuses its SDK environment capture when encoding
+the canonical hash suffix. The saved handler state, recorded answers, and
+pending payloads are captured once per request, after snapshot admission and
+before publication. No execution or SDK mutation occurs before suffix encoding.
+Standalone hash reads capture their own SDK state; nothing is cached across
+requests. SDK capture errors still poison the server before a snapshot is
+published. The wire encoding and hashed bytes are unchanged.
 
 KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,

@@ -1219,12 +1219,13 @@ where
             Some(state) => state.clone(),
             None => self.backend.save()?,
         };
-        self.state_blob_suffix_from_vcpu(&vcpu)
+        self.state_blob_suffix_from_vcpu(&vcpu, None)
     }
 
     pub(crate) fn state_blob_suffix_from_vcpu(
         &self,
         vcpu: &VcpuOf<B>,
+        sdk_recorded: Option<&channel::RecordedState>,
     ) -> Result<Vec<u8>, VmmError> {
         let mut out = Vec::new();
         let vcpu = <B::A as Vendor>::logical_identity_vcpu(vcpu)?;
@@ -1247,7 +1248,7 @@ where
         }
         <B::A as Vendor>::hash_device_chunks(&vcpu, &self.devices, &mut out);
         if let Some(sdk) = &self.sdk {
-            put_chunk(&mut out, b"SDK\0", &encode_sdk_channel(sdk)?);
+            put_chunk(&mut out, b"SDK\0", &encode_sdk_channel(sdk, sdk_recorded)?);
         }
         if let Some(pv) = &self.pvclock {
             let mut bytes = 1_u64.to_le_bytes().to_vec();
@@ -2583,9 +2584,15 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     v
 }
 
-fn encode_sdk_channel(sdk: &SdkChannel) -> Result<Vec<u8>, channel::ChannelError> {
+fn encode_sdk_channel(
+    sdk: &SdkChannel,
+    recorded: Option<&channel::RecordedState>,
+) -> Result<Vec<u8>, channel::ChannelError> {
     let mut v = Vec::new();
-    let recorded = sdk.env.snapshot_state()?.encode();
+    let recorded = match recorded {
+        Some(state) => state.encode(),
+        None => sdk.env.snapshot_state()?.encode(),
+    };
     v.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
     v.extend_from_slice(&recorded);
     match &sdk.pending_stop {
