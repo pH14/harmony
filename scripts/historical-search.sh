@@ -10,11 +10,11 @@ set -euo pipefail
 
 : "${CASE_ID:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${RAM_MIB:?}"
-: "${SEED:?}" "${WORKERS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
+: "${SEED:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 knobs=${KNOBS-}
 
-for name in RAM_MIB SEED WORKERS EXECUTIONS WALL_MINUTES; do
+for name in RAM_MIB SEED EXECUTIONS WALL_MINUTES; do
     value=${!name}
     [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
         echo "historical-search: infra-failure (${name} must be positive)" >&2
@@ -46,7 +46,6 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     --kernel "${kernel}" \
     --base-initramfs "${base_initramfs}" \
     --seed "${SEED}" \
-    --workers "${WORKERS}" \
     --executions "${EXECUTIONS}" \
     --ram-mib "${RAM_MIB}" \
     --knobs "${knobs}" \
@@ -68,6 +67,15 @@ if [[ ! -s "${report}" ]]; then
     } >>"${summary}"
     exit 1
 fi
+
+workers=$(jq -r 'if (.workers | type) == "number" then .workers else 0 end' "${report}") || {
+    echo "historical-search: infra-failure (invalid worker count in ${report})" >&2
+    exit 1
+}
+[[ "${workers}" =~ ^[0-9]+$ ]] || {
+    echo "historical-search: infra-failure (worker count is not an integer)" >&2
+    exit 1
+}
 
 watchdog_cutoffs=0
 execution_failures=0
@@ -153,7 +161,7 @@ jq -n \
     --arg oracle "${outcome}" --arg execution_status "${execution_status}" \
     --argjson cli_exit_status "${status}" --argjson watchdog_cutoffs "${watchdog_cutoffs}" \
     --argjson execution_failures "${execution_failures}" \
-    --argjson seed "${SEED}" --argjson workers "${WORKERS}" \
+    --argjson seed "${SEED}" --argjson workers "${workers}" \
     --argjson executions_budget "${EXECUTIONS}" \
     --argjson ram_mib "${RAM_MIB}" \
     --argjson wall_minutes "${WALL_MINUTES}" --arg knobs "${knobs}" \

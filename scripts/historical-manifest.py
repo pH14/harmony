@@ -64,8 +64,9 @@ def validate(path: Path, case: dict) -> dict:
         require(case, path, "oracle", key)
     for key in ("ram_mib",):
         require(case, path, "run", key)
-    for key in ("workers", "wall_minutes"):
-        require(case, path, "search", key)
+    require(case, path, "search", "wall_minutes")
+    if "workers" in case["search"]:
+        raise SystemExit(f"{path}: search.workers comes from the runner's cores and memory")
     # A seed is an input to a sampling procedure, so the run supplies one and
     # records it. Committing one invites an expectation the next code change
     # breaks.
@@ -73,7 +74,7 @@ def validate(path: Path, case: dict) -> dict:
         raise SystemExit(f"{path}: search.seed is supplied by the run, not the case")
     for group, keys in (
         ("run", ("ram_mib",)),
-        ("search", ("workers", "wall_minutes")),
+        ("search", ("wall_minutes",)),
     ):
         for key in keys:
             value = case[group][key]
@@ -155,7 +156,6 @@ def validate(path: Path, case: dict) -> dict:
         "oracle_assertion": case["oracle"]["assertion"],
         "oracle_evidence": case["oracle"]["evidence"],
         "ram_mib": case["run"]["ram_mib"],
-        "workers": case["search"]["workers"],
         "wall_minutes": case["search"]["wall_minutes"],
         "job_timeout_minutes": job_timeout_minutes,
         "executions": executions,

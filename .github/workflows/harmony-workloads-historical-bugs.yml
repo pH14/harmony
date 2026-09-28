@@ -224,7 +224,6 @@ jobs:
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
           RAM_MIB: ${{ matrix.ram_mib }}
           SEED: ${{ github.run_id }}
-          WORKERS: ${{ matrix.workers }}
           EXECUTIONS: ${{ inputs.executions || matrix.executions }}
           WALL_MINUTES: ${{ matrix.wall_minutes }}
           KNOBS: ${{ matrix.knobs }}
