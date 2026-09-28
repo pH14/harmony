@@ -856,6 +856,51 @@ impl<M: Machine> Target for StbTarget<M> {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
+        let restored_wram: &[u8; WRAM_SIZE] = snapshot
+            .wram
+            .as_slice()
+            .try_into()
+            .map_err(|_| "STB snapshot work RAM has an invalid length")?;
+        if decode_state(restored_wram)?.ai_level != self.genesis_observation.decoded.ai_level {
+            return Err("STB snapshot belongs to a different AI workload".into());
+        }
+        let imported = self
+            .machine
+            .import(&snapshot.emulator_state)
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = self.machine.replay(imported) {
+            self.failed = true;
+            let _ = self.machine.drop_snapshot(imported);
+            return Err(error.to_string().into());
+        }
+        if self.current != self.genesis
+            && let Err(error) = self.machine.drop_snapshot(self.current)
+        {
+            self.failed = true;
+            let _ = self.machine.drop_snapshot(imported);
+            return Err(error.to_string().into());
+        }
+        self.current = imported;
+        self.snapshot_base = Some(snapshot.emulator_state.clone());
+        self.current_wram = *restored_wram;
+        self.observation = snapshot.observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+        self.last_valid_gameplay = snapshot
+            .last_valid_gameplay
+            .or(self.observation.decoded.gameplay);
+        self.player_a_ko_count = snapshot.player_a_ko_count;
+        self.player_b_ko_count = snapshot.player_b_ko_count;
+        self.failed = snapshot.failed;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl<M: Machine> StbTarget<M> {
+    fn restore_reference(
+        &mut self,
+        snapshot: &StbSnapshot<M::Portable>,
+    ) -> Result<(), Box<dyn Error>> {
         let restored_wram: [u8; WRAM_SIZE] = snapshot
             .wram
             .clone()
@@ -1256,6 +1301,106 @@ mod tests {
     fn decode_portable(state: &machine::SharedState) -> FakeState {
         let bytes: Vec<u8> = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn borrowed_wram_restore_eliminates_the_temporary_allocation() {
+        let mut actual = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        let mut reference = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        let snapshot = actual.snapshot().unwrap();
+        assert_eq!(Some(snapshot.clone()), reference.snapshot());
+        let allocated = tikv_jemalloc_ctl::thread::allocatedp::read().unwrap();
+        let before = allocated.get();
+        reference
+            .restore_reference(std::hint::black_box(&snapshot))
+            .unwrap();
+        let baseline = allocated.get() - before;
+        let before = allocated.get();
+        actual.restore(std::hint::black_box(&snapshot)).unwrap();
+        let candidate = allocated.get() - before;
+        assert_eq!(
+            baseline - candidate,
+            WRAM_SIZE as u64,
+            "baseline={baseline} candidate={candidate}"
+        );
+        assert_eq!(actual.snapshot(), reference.snapshot());
+    }
+
+    #[test]
+    fn borrowed_wram_restore_matches_reference() {
+        for length in [0, WRAM_SIZE - 1, WRAM_SIZE, WRAM_SIZE + 1, WRAM_SIZE * 4] {
+            for fail_drop in [false, true] {
+                let mut actual =
+                    StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+                let mut reference =
+                    StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+                actual.apply(&ButtonChord::new(1, 1));
+                reference.apply(&ButtonChord::new(1, 1));
+                let mut snapshot = actual.snapshot().unwrap();
+                assert_eq!(Some(snapshot.clone()), reference.snapshot());
+                snapshot.wram.resize(length, 7);
+                actual.machine.fail_drop = fail_drop;
+                reference.machine.fail_drop = fail_drop;
+                assert_eq!(
+                    actual.restore(&snapshot).map_err(|error| error.to_string()),
+                    reference
+                        .restore_reference(&snapshot)
+                        .map_err(|error| error.to_string())
+                );
+                assert_eq!(actual.current_wram, reference.current_wram);
+                assert_eq!(actual.observe(), reference.observe());
+                assert_eq!(actual.fingerprint(), reference.fingerprint());
+                assert_eq!(actual.exit_kind(), reference.exit_kind());
+                assert_eq!(actual.machine.snapshots, reference.machine.snapshots);
+                assert_eq!(actual.snapshot(), reference.snapshot());
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn borrowed_wram_restore_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        if std::env::var_os("DISSONANCE_BENCHMARK_WRAM_RESTORE").is_none() {
+            return;
+        }
+        let mut source = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        let original = source.snapshot().unwrap();
+        for length in [WRAM_SIZE, WRAM_SIZE + 1] {
+            let mut snapshot = original.clone();
+            snapshot.wram.resize(length, 7);
+            let mut ratios = Vec::new();
+            for round in 0..80 {
+                let mut elapsed = [0_u128; 2];
+                for new in if round % 2 == 0 {
+                    [false, true, true, false]
+                } else {
+                    [true, false, false, true]
+                } {
+                    let mut target =
+                        StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+                    let started = Instant::now();
+                    for _ in 0..128 {
+                        let result = if new {
+                            target.restore(black_box(&snapshot))
+                        } else {
+                            target.restore_reference(black_box(&snapshot))
+                        };
+                        black_box(result).ok();
+                    }
+                    elapsed[usize::from(new)] += started.elapsed().as_nanos();
+                }
+                ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
+            }
+            ratios.sort_by(f64::total_cmp);
+            eprintln!(
+                "stb mock restore length={length} new/old={:.3}",
+                ratios[ratios.len() / 2]
+            );
+        }
     }
 
     #[test]
