@@ -138,6 +138,10 @@ beside the stocked one. The order is recorded as `preference_policy`, apart
 from `key_policy`, so a search checkpoint resumes under a revised order and
 re-ranks each location's holders from their stored keys.
 
+The key also records missile capacity and energy tanks for the preferences. They
+stay out of the tier, the place, the holder identity and the key's own order,
+so two states that differ only in capacity compare equal everywhere else.
+
 The primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.
 The `milestones.tanks` field combines missile capacity divided by five
