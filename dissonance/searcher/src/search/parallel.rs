@@ -129,6 +129,7 @@ pub(crate) fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError
 where
     Job: Send,
     Output: Send,
+    CoordinatorError: From<String>,
 {
     thread::scope(|scope| {
         let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Output>>();
@@ -150,9 +151,9 @@ where
                     Err(error) => {
                         let _ = reply_sender.send(WorkerReply {
                             worker,
-                            outcome: Err(error),
+                            outcome: Err(error.clone()),
                         });
-                        return telemetry;
+                        return Err(error);
                     }
                 };
                 telemetry.boot_ns = nanos_since(booted);
@@ -182,7 +183,7 @@ where
                     telemetry.cpu_ns = Some(cpu_after.saturating_sub(cpu_before));
                     telemetry.cpu_wait_ns = Some(wait_after.saturating_sub(wait_before));
                 }
-                telemetry
+                Ok(telemetry)
             }));
         }
         drop(reply_sender);
@@ -193,11 +194,23 @@ where
         };
         let result = coordinate(&mut pool);
         drop(pool);
-        let telemetry = handles
-            .into_iter()
-            .map(|handle| handle.join().unwrap_or_default())
-            .collect();
-        result.map(|value| (value, telemetry))
+        let mut telemetry = Vec::with_capacity(handles.len());
+        let mut startup_error = None;
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(worker)) => telemetry.push(worker),
+                Ok(Err(error)) => {
+                    startup_error.get_or_insert(error);
+                    telemetry.push(WorkerTelemetry::default());
+                }
+                Err(_) => telemetry.push(WorkerTelemetry::default()),
+            }
+        }
+        let value = result?;
+        match startup_error {
+            Some(error) => Err(error.into()),
+            None => Ok((value, telemetry)),
+        }
     })
 }
 
@@ -353,5 +366,31 @@ mod tests {
             .contains(&error.to_string().as_str()),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_worker_that_fails_to_start_after_the_last_admission_fails_the_pool() {
+        let (started, wait_for_start) = mpsc::channel();
+        let wait_for_start = std::sync::Mutex::new(wait_for_start);
+        let error = with_worker_pool(
+            2,
+            |worker| {
+                if worker == 1 {
+                    wait_for_start.lock().unwrap().recv().unwrap();
+                    return Err("late boot failed".to_owned());
+                }
+                Ok(())
+            },
+            |(), job: u64| Ok::<_, String>(job),
+            |()| TargetCounters::new(),
+            |pool| -> Result<u64, Box<dyn std::error::Error>> {
+                pool.send(5)?;
+                let value = pool.receive()?.outcome?;
+                started.send(()).unwrap();
+                Ok(value)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "late boot failed");
     }
 }
