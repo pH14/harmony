@@ -184,7 +184,7 @@ impl FaultCampaignConfig {
             stop_rollout_on_objective: true,
             stop_campaign_on_objective: true,
             archive_entry_limit: self.archive_entry_limit,
-            window: 2 * default_window(self.workers),
+            window: 4 * default_window(self.workers),
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: FaultCampaignRun {
@@ -807,7 +807,7 @@ pub fn run_fault_campaign_checkpointed(
         progress,
         CampaignExecutionOptions {
             placement: config.placement.clone(),
-            result_buffering: ResultBuffering::TwoPerWorker,
+            result_buffering: ResultBuffering::FourPerWorker,
             ..CampaignExecutionOptions::default()
         },
     )?;
