@@ -323,6 +323,13 @@ separately, so capacity planning needs to account for peak resident memory.
 > The etcd search with eight workers and 1 GiB of guest RAM each started at
 > 8.4 GB resident and reached 29 GB after 2,400 executions. At that footprint,
 > a 62 GB host has room for about sixteen workers.
+>
+> With one shared cache sized from free memory, seven workers ran etcd for
+> four hours beside another process holding 16 GiB. The cache filled its 17.8
+> GiB budget in the first twenty minutes and stayed there. Worker memory held
+> at 12.8 GiB. The search's total, counted by its cgroup because the cache
+> lives in memfd files that process RSS omits, peaked at 31.5 GiB over 44,254
+> executions. The host never had less than 5.6 GiB free.
 
 ## Scaling
 
