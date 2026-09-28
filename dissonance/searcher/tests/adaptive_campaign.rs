@@ -536,12 +536,14 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
     assert_eq!(live.0.window, 4);
     assert!(live.0.executions_completed >= 8);
     assert_eq!(live.0.telemetry.workers.len(), 2);
-    assert!(
+    assert_eq!(
         live.0
             .telemetry
             .workers
             .iter()
-            .all(|worker| worker.jobs > 0)
+            .map(|worker| worker.jobs)
+            .sum::<u64>(),
+        live.0.executions_completed
     );
     let jobs = duration_job_values(&stream);
     assert!(jobs.len() >= 4, "expected several adaptive jobs");

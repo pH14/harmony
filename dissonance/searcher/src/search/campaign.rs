@@ -7,7 +7,7 @@ use std::{
     io::Write,
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
@@ -2799,65 +2799,16 @@ where
     );
     let mut counters = CampaignCounters::new();
     let mut telemetry = CampaignTelemetry::default();
-    let bootstrap_started = now();
-    let resume = match search_checkpoint.take() {
-        Some(reader) => Some(restore_search_checkpoint(
-            workload,
-            config,
-            reader,
-            &mut core,
-            &mut draw_state,
-            &mut duration_policies,
-            &mut counters,
-        )?),
-        None => {
-            bootstrap_campaign(
-                workload,
-                config,
-                origin,
-                &mut core,
-                &draw_state,
-                &duration_policies,
-                &mut counters,
-            )?;
-            None
-        }
-    };
-    telemetry.bootstrap_ns = nanos_since(bootstrap_started);
-    if let (Some(path), Some(input)) = (&config.objective_witness_path, &core.objective_witness) {
-        std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
-    }
-
     let workers = config.workers as usize;
     let mut rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
 
     #[allow(clippy::disallowed_methods)]
-    let telemetry_started = std::time::Instant::now();
-    let started = config.wall_budget.map(|_| telemetry_started);
-
+    let mut telemetry_started = std::time::Instant::now();
     let mut reserved = 0_u64;
     let profile_printed = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
     let mut coordinator_profile = LiveCoordinatorProfile::default();
-    let mut resumed_admission = 0_usize;
-    let mut resumed_in_flight = None;
-    if let Some(resume) = resume {
-        rand = resume.rand;
-        reserved = resume.reserved;
-        coordinator_profile = resume.profile;
-        resumed_admission = resume.next_admission;
-        resumed_in_flight = Some(resume.in_flight);
-    }
-    let mut checkpoints = options
-        .checkpoints
-        .clone()
-        .map(|plan| {
-            CheckpointWriter::create(
-                plan,
-                G::checkpoint_marks(&core.evidence),
-                core.archive.top_progress(),
-            )
-        })
-        .transpose()?;
+    let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
+    let first_worker_start = Mutex::new(first_worker_start);
     let mut spec_records = BTreeMap::<usize, JobSpecRecord<G>>::new();
     let action_cost = workload.action_cost_fn();
     let max_action_cost = workload.max_action_cost();
@@ -2868,6 +2819,13 @@ where
     let ((), worker_telemetry) = with_worker_pool(
         config.workers,
         |worker| {
+            if worker == 0 {
+                first_worker_start
+                    .lock()
+                    .map_err(|_| "the first worker's start signal lock was poisoned".to_owned())?
+                    .recv()
+                    .map_err(|_| "the campaign stopped before its bootstrap finished".to_owned())?;
+            }
             ThreadPlacement::place(placement, PlacedThread::Worker(worker))?;
             workload.new_target()
         },
@@ -2901,6 +2859,64 @@ where
         |target| workload.telemetry(target),
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
+            let bootstrap_started = now();
+            let resume = match search_checkpoint.take() {
+                Some(reader) => Some(restore_search_checkpoint(
+                    workload,
+                    config,
+                    reader,
+                    &mut core,
+                    &mut draw_state,
+                    &mut duration_policies,
+                    &mut counters,
+                )?),
+                None => {
+                    bootstrap_campaign(
+                        workload,
+                        config,
+                        origin,
+                        &mut core,
+                        &draw_state,
+                        &duration_policies,
+                        &mut counters,
+                    )?;
+                    None
+                }
+            };
+            telemetry.bootstrap_ns = nanos_since(bootstrap_started);
+            if let (Some(path), Some(input)) =
+                (&config.objective_witness_path, &core.objective_witness)
+            {
+                std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
+            }
+
+            bootstrapped.send(())?;
+            drop(bootstrapped);
+            #[allow(clippy::disallowed_methods)]
+            let search_started = std::time::Instant::now();
+            telemetry_started = search_started;
+            let started = config.wall_budget.map(|_| telemetry_started);
+            let mut resumed_admission = 0_usize;
+            let mut resumed_in_flight = None;
+            if let Some(resume) = resume {
+                rand = resume.rand;
+                reserved = resume.reserved;
+                coordinator_profile = resume.profile;
+                resumed_admission = resume.next_admission;
+                resumed_in_flight = Some(resume.in_flight);
+            }
+            let mut checkpoints = options
+                .checkpoints
+                .clone()
+                .map(|plan| {
+                    CheckpointWriter::create(
+                        plan,
+                        G::checkpoint_marks(&core.evidence),
+                        core.archive.top_progress(),
+                    )
+                })
+                .transpose()?;
+            idle_clock = IdleClock::new(workers);
             let select = |core: &mut CoordinatorCore<G>,
                           rand: &mut RomuDuoJrRand,
                           draw_state: &mut DrawTables<G::Action>,
@@ -4808,6 +4824,8 @@ mod continuation_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
         CampaignConfig, CampaignCounters, CampaignExecutionOptions, CampaignJobRecord,
@@ -4885,9 +4903,27 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct LiveTargets {
+        refuse: bool,
+        live: std::sync::atomic::AtomicUsize,
+        most: std::sync::atomic::AtomicUsize,
+    }
+
+    #[derive(Default)]
     struct TestTarget {
         value: u8,
         execution_work: u64,
+        _counted: Option<TargetCount>,
+    }
+
+    struct TargetCount(Arc<LiveTargets>);
+
+    impl Drop for TargetCount {
+        fn drop(&mut self) {
+            self.0
+                .live
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     impl TestTarget {
@@ -4911,6 +4947,7 @@ mod tests {
 
     struct TestWorkload {
         bootstrap_objective: bool,
+        targets: Option<Arc<LiveTargets>>,
     }
     impl CampaignTypes for TestWorkload {
         type Target = TestTarget;
@@ -5005,7 +5042,23 @@ mod tests {
 
     impl TargetExecution for TestWorkload {
         fn new_target(&self) -> Result<Self::Target, String> {
-            Ok(TestTarget::default())
+            let Some(targets) = &self.targets else {
+                return Ok(TestTarget::default());
+            };
+            if targets.refuse {
+                return Err("the test target refused to start".to_owned());
+            }
+            let live = targets
+                .live
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            targets
+                .most
+                .fetch_max(live, std::sync::atomic::Ordering::SeqCst);
+            Ok(TestTarget {
+                _counted: Some(TargetCount(Arc::clone(targets))),
+                ..TestTarget::default()
+            })
         }
         fn reset(&self, target: &mut Self::Target) {
             target.value = 0;
@@ -5225,6 +5278,7 @@ mod tests {
     fn test_core() -> (TestWorkload, (), CoordinatorCore<TestWorkload>, TestTarget) {
         let workload = TestWorkload {
             bootstrap_objective: false,
+            targets: None,
         };
         let run = ();
         let mut core = CoordinatorCore::new(&workload, &run, 1_024, None);
@@ -5533,6 +5587,7 @@ mod tests {
     fn bootstrap_records_an_objective_at_the_empty_input() {
         let workload = TestWorkload {
             bootstrap_objective: true,
+            targets: None,
         };
         let run = ();
         let mut core = CoordinatorCore::new(&workload, &run, 1_024, None);
@@ -5572,6 +5627,7 @@ mod tests {
             };
             let workload = TestWorkload {
                 bootstrap_objective: true,
+                targets: None,
             };
             let mut stream = Vec::new();
             let live = run_campaign_checkpointed(
@@ -5919,6 +5975,7 @@ mod tests {
     fn whole_tree_import_rebuilds_inputs_and_reroots_sparse_parents() {
         let workload = TestWorkload {
             bootstrap_objective: false,
+            targets: None,
         };
         let run = ();
         let mut target = TestTarget::default();
@@ -6258,7 +6315,8 @@ mod tests {
         assert!(
             replay_campaign_checkpointed::<TestWorkload>(
                 &TestWorkload {
-                    bootstrap_objective: false
+                    bootstrap_objective: false,
+                    targets: None,
                 },
                 serde_json::to_string(&missing)
                     .expect("header re-encodes")
@@ -6275,7 +6333,8 @@ mod tests {
         assert!(
             replay_campaign_checkpointed::<TestWorkload>(
                 &TestWorkload {
-                    bootstrap_objective: false
+                    bootstrap_objective: false,
+                    targets: None,
                 },
                 serde_json::to_string(&unknown)
                     .expect("header re-encodes")
@@ -6418,6 +6477,7 @@ mod tests {
         };
         let workload = TestWorkload {
             bootstrap_objective: false,
+            targets: None,
         };
         let mut stream = Vec::new();
         let mut progress = Vec::new();
@@ -6449,6 +6509,7 @@ mod tests {
         let config = three_worker_config();
         let workload = TestWorkload {
             bootstrap_objective: false,
+            targets: None,
         };
         let mut stream = Vec::new();
         let live = run_campaign_checkpointed(
@@ -6485,6 +6546,7 @@ mod tests {
         run_campaign_checkpointed_with_options(
             &TestWorkload {
                 bootstrap_objective: false,
+                targets: None,
             },
             &three_worker_config(),
             &CampaignOrigin::Genesis,
@@ -6496,6 +6558,48 @@ mod tests {
             },
         )
         .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn a_campaign_never_holds_more_targets_than_workers() {
+        let targets = Arc::new(LiveTargets::default());
+        run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::clone(&targets)),
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+        )
+        .expect("campaign");
+        assert_eq!(targets.most.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_failed_bootstrap_returns_its_error_with_workers_waiting() {
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::new(LiveTargets {
+                    refuse: true,
+                    ..LiveTargets::default()
+                })),
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+        )
+        .expect_err("a refused bootstrap target fails the campaign");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to build the bootstrap target"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -6513,6 +6617,7 @@ mod tests {
         let unplaced = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
+                targets: None,
             },
             &three_worker_config(),
             &CampaignOrigin::Genesis,

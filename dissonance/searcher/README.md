@@ -45,6 +45,11 @@ publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
 and keeps the table versions a serial replay still needs. Workloads identify
 their input policies and reject unknown or retired identifiers during replay.
 
+The worker pool starts before the bootstrap. The coordinator bootstraps while
+every worker but the first builds its target, and the first worker builds its
+target after the bootstrap target is dropped, so a campaign never holds more
+targets than workers. The first worker's boot time includes that wait.
+
 Workers pull jobs from one shared queue, so an idle worker takes the next
 queued job while another worker is still busy. One bound limits the jobs that
 are queued, running or finished but not yet admitted: workers times
