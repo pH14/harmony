@@ -250,6 +250,7 @@ feed the slot preferences and neither changes the tier.
 | `boss_hits_back` | Needs `boss_stock` 1–8. Each hit also spends one health and needs health left, each stock farm entry spends one health, and health stops at `boss_stock` plus 2, or with `approach_drain` at `boss_stock` plus 2 plus a third of the rooms from the farthest farm to the goal. The goal needs `boss_stock` stock and `boss_stock` health on one arrival. | Arriving at a boss with enough missiles or enough energy but not both: the preference that keeps the most stock keeps a holder low on health. |
 | `boss_by_door` | Needs `boss_stock`. The goal is the outer room nearest the inner region's door that has a wall to fire at, so with a small `inner` the item sits a few rooms from the boss and the farms are far. | Ridley's statue next to Tourian: the tier rises beside the end, and the stock must come from across the map. |
 | `tail_slots` | Needs `gauntlet` or `approach_drain`. The archive keeps separate holders at each place by the last three actions. | Metroid's positions within a room: many holders share a room, so the best holders near the end get few draws. |
+| `late_item` | Needs `boss_hits_back`, without `approach_drain` or `boss_by_door`. The goal is the inner room farthest from the entry that has a wall to fire at, and the item is the inner room before it, so the tier rises beside the boss. Stock farms fill without the item. Every arrival in an inner room other than the goal costs one health and one stock, and an arrival at 0 health kills the run. Arrivals in outer rooms other than the farms lose one health on a third of the arrivals and one stock on another third, each a fixed function of the room and the last three actions. Health stops at `boss_stock` plus 2 plus the rooms from the door to the item, so a holder that reaches the item low cannot walk back out to the farms. | Ridley's statue beside Tourian: one drained state raises the statue and founds the top tier, every holder in that tier descends from it, and the stocked lower-tier holders get few draws once it opens. |
 | `approach_drain` | Needs `boss_hits_back`. While holding the item, every arrival outside the farms and the goal room loses one health on half the arrivals and one stock on another half, each a fixed function of the room and the last three actions; a health loss at 0 health kills the run. | Tourian after a long walk from the refills: the most-missiles holder near the end has little energy and the most-energy holder has no missiles, and no holder keeps enough of both. |
 | `item_optional` | The inner region is the shallowest side branch whose size is within two rooms of `inner`, or the branch closest in size when none is, and the item is its room farthest from the entry. The goal is the outer room farthest from the start that is not on the way to that branch. The goal counts without the item, which still raises the tier. | Varia and other pickups off the main path: the new tier walks back over ground the lower tier already reached. |
 | `locked` | The inner region is chosen as for `item_optional`. Its door opens only while holding a key in the outer room farthest from the start other than the door room; the goal is the outer room farthest from the door other than the key room and needs the item. The key raises the tier to 1 and the item to 2. | Varia in Brinstar after the lower tier reached the Tourian shaft: the lower tier's frontier is far from the pickup, and the new tier must walk back across the map. |
@@ -304,7 +305,7 @@ family's and passive clock's reachability hold by construction.
 | Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
 | Backtrack | `barriers` 1–4; `segment` 1–8; `(barriers + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
-| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `tail_slots` needs `gauntlet` or `approach_drain`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
+| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `tail_slots` needs `gauntlet` or `approach_drain`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 
@@ -431,6 +432,7 @@ layouts.
 | Gauntlet | `inner` 20, 2 items, 2 farms, `farm_cap` 1, `gauntlet` | Tourian: the last item comes at the entry low on energy, and the refills are far away | To the last item, to the full-health arrival |
 | Gauntlet with hidden timing | as above, `timing` 5 | The same with replayed inputs landing about one time in five | As above |
 | Boss by the door | `inner` 2, 4 farms with `farm_cap` 14, `boss_stock` 8, `boss_hits_back`, `approach_drain`, `boss_by_door`, `tail_slots`; 600,000 work | Tourian after the statues: the best holders near the end are drawn one or two times each, and none holds enough of both | To the item, to the stocked arrival |
+| Boss beside a late item | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 8, `boss_hits_back`, `late_item`; 600,000 work | The 9-item tier founded by one drained state at Ridley's statue, while stocked 8-item holders lose their draws | As above |
 
 The passive-clock worlds use `one_to_six` and `energy_splice:6`. The rare crossing worlds use `one_to_six_within_3_max_action_cost_full_hold`, `energy_splice:6`, and scaled low-memory reports; the other worlds retain their default settings. Clocks count `clock_ticks`, whereas crossing work counts actions. The rare crossing entry legs count executions. Compare arms within a world, not absolute work across families. Older binaries without these families or options cannot run them: use a baseline built with the same world implementation and the unchanged engine, and record that source explicitly.
 
@@ -477,18 +479,19 @@ bad or undecided. Two unchanged
 searchers with different runtime seeds, in 300 simulated comparisons per world,
 failed the farm loop, re-walk, off-path, locked and first two boss worlds in
 none, the gauntlet worlds in 0.3% (no timing) and 2.3% (hidden timing), the
-boss after a draining approach in 1.7%, and the boss by the door in 3.0%. The simulated comparisons
+boss after a draining approach in 1.7%, the boss by the door in 3.0%, and the
+boss beside a late item in 2.3%. The simulated comparisons
 for a world draw from one pool of 512 layouts (2,048 for the off-path and
-locked worlds; 343 layouts with three seeds each for the two newest boss
+locked worlds; 343 layouts with three seeds each for the three newest boss
 worlds), so they share layouts and these rates are rough. At these rates an
-unchanged build fails at least one of the 12 worlds in about 7% of comparisons.
+unchanged build fails at least one of the 13 worlds in about 9% of comparisons.
 When a candidate fails exactly one world and the failing measure lies inside the
 1st to 99th percentile of the same measure in that world's unchanged
 comparisons, rerun that world alone with `--world` before dropping the
 candidate, and judge it by the rerun. A fail outside that range, or fails on two
 or more worlds, stand. Each world also counts the layouts whose event streams are identical on
 both executables, which happens where the change never acts. A comparison that
-takes every world to its limit takes about 20 minutes with `--jobs 10`.
+takes every world to its limit takes about 25 minutes with `--jobs 10`.
 
 The map world is the calibrated world for the return trip. In recorded
 Metroid campaigns, climbing out of Kraid's hideout after the kill takes
