@@ -39,7 +39,7 @@ def main():
         if source.count(borrowed) != 1 or source.count("struct SdkSnap {") != 1:
             raise SystemExit("Update the reference for the changed restore implementation")
         source = source.replace(borrowed, cloned)
-        hook = "    fn capture_control_state(&self) -> ControlState {"
+        hook = "    fn reset_schedule_to_fresh_vm(&mut self) {"
         if source.count(hook) != 1:
             raise SystemExit("Update the reference for the changed policy setter")
         source = source.replace(hook, """    fn set_recorded_policy(&mut self, policy: ServiceConfig) {

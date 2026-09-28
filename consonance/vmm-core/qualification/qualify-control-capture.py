@@ -18,7 +18,6 @@ def main():
     parser.add_argument("--hvf", action="store_true")
     parser.add_argument("--borrowed", action="store_true", help="Compare borrowed recorded inputs with a cloned history")
     parser.add_argument("--inputs", action="store_true", help="Compare direct nested input encoding with temporary buffers")
-    parser.add_argument("--jemalloc", action="store_true", help="Use the Harmony CLI allocator")
     args = parser.parse_args()
     if args.inputs and args.borrowed:
         parser.error("choose one comparison")
@@ -62,7 +61,6 @@ def main():
         manifest = (component / "Cargo.toml").read_text().replace('name = "vmm-core"', 'name = "vmm-core-reference"', 1)
         manifest = re.sub(r'path = "([^\"]+)"', lambda m: 'path = ' + json.dumps(str((component / m[1]).resolve())), manifest)
         (reference / "Cargo.toml").write_text(manifest)
-        allocator_dependency = 'tikv-jemallocator = "=0.7.0"' if args.jemalloc else ''
         (root / "Cargo.toml").write_text(f'''[workspace]
 resolver = "2"
 members = ["vmm-core-reference"]
@@ -83,19 +81,14 @@ vm-state = {{ path = {json.dumps(str(component.parent / "vm-state"))} }}
 control-proto = {{ path = {json.dumps(str(component.parent / "control-proto"))} }}
 environment = {{ path = {json.dumps(str(component.parent / "environment"))} }}
 vtime = {{ path = {json.dumps(str(component.parent / "vtime"))} }}
-{allocator_dependency}
 ''')
         shutil.copyfile(repo / "Cargo.lock", root / "Cargo.lock")
         (root / "src").mkdir()
         driver = (component / "qualification/control-capture.rs").read_text()
-        if args.jemalloc:
-            driver = '#[global_allocator]\nstatic ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;\n' + driver
         (root / "src/main.rs").write_text(driver)
         target = repo / ("target/input-encoding-qualification" if args.inputs else "target/control-capture-qualification")
         if args.borrowed:
             target = target.with_name("borrowed-control-qualification")
-        if args.jemalloc:
-            target = target.with_name(target.name + "-jemalloc")
         subprocess.run(["cargo", "build", "--offline", "--release", "--manifest-path", str(root / "Cargo.toml"),
                         "--target-dir", str(target)], cwd=repo, check=True)
         binary = target / "release/qualify-control-capture"
@@ -105,7 +98,7 @@ vtime = {{ path = {json.dumps(str(component.parent / "vtime"))} }}
             subprocess.run([runner, str(binary), "--identity-only"], cwd=repo, check=True)
             command = [runner, *command, "--hvf"]
         print(json.dumps({"binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-                          "allocator": "jemalloc" if args.jemalloc else "system",
+                          "allocator": "system",
                           "comparison": "borrowed" if args.borrowed else "inputs" if args.inputs else "control"}), flush=True)
         subprocess.run([*command, *(["--check"] if args.check else [])], cwd=repo, check=True)
 

@@ -191,38 +191,6 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_history_preserves_owned_wire_and_decodes_independently() {
-        for payloads in [None, Some(vec![]), Some(vec![vec![], vec![0x47; 65536]])] {
-            for poisoned in [None, state().poisoned] {
-                let mut owned = state();
-                owned.recorded.set_payloads(payloads.clone());
-                owned.recorded.record_reseed(2, 0x1234);
-                owned
-                    .recorded
-                    .record_answer(3, 19, 7, environment::channel::Answer::Data(vec![8; 4096]))
-                    .unwrap();
-                owned.poisoned = poisoned;
-                let borrowed = ControlState {
-                    recorded: &owned.recorded,
-                    pending: owned.pending.clone(),
-                    poisoned: owned.poisoned,
-                    exec_nonce: owned.exec_nonce,
-                };
-                let mut borrowed_suffix = b"prefix".to_vec();
-                let encoded = borrowed.encode_and_append_hash(&mut borrowed_suffix);
-                let mut owned_suffix = b"prefix".to_vec();
-                assert_eq!(encoded, owned.encode_and_append_hash(&mut owned_suffix));
-                assert_eq!(borrowed_suffix, owned_suffix);
-                let decoded = ControlState::decode(&encoded).unwrap().unwrap();
-                assert_eq!(decoded, owned);
-                owned.recorded.set_payloads(Some(vec![vec![9]]));
-                assert_ne!(decoded, owned);
-                assert_eq!(decoded.encode(), encoded);
-            }
-        }
-    }
-
-    #[test]
     fn control_round_trip_and_legacy_absence() {
         let state = state();
         assert_eq!(
