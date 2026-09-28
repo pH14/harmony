@@ -14,10 +14,12 @@ pub vmm_core::control::ServeError::Vmm(vmm_core::vmm::VmmError)
 pub struct vmm_core::control::ControlServer<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>>
 impl<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>> vmm_core::control::ControlServer<B>
 pub fn vmm_core::control::ControlServer<B>::export_portable_snapshot<W: std::io::Write>(&self, control_proto::types::SnapId, W) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
+pub fn vmm_core::control::ControlServer<B>::export_sparse_delta(&self, control_proto::types::SnapId, core::option::Option<control_proto::types::SnapId>, control_proto::types::SnapId) -> core::result::Result<vmm_core::portable_snapshot::SparseDelta<'_>, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::export_sparse_snapshot(&self, control_proto::types::SnapId, control_proto::types::SnapId) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshot, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::handle(&mut self, &control_proto::types::Request) -> core::result::Result<core::result::Result<control_proto::types::Reply, control_proto::error::ControlError>, vmm_core::control::ServeError>
 pub fn vmm_core::control::ControlServer<B>::host_telemetry(&self) -> vmm_core::host_telemetry::HostTelemetry
 pub fn vmm_core::control::ControlServer<B>::import_portable_snapshot<R: std::io::Read>(&mut self, R) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
+pub fn vmm_core::control::ControlServer<B>::import_sparse_delta(&mut self, control_proto::types::SnapId, control_proto::types::SnapId, &[(u64, &[u8; 32], &[u8; 4096])], &[u8]) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::import_sparse_snapshot(&mut self, control_proto::types::SnapId, vmm_core::portable_snapshot::SparsePortableSnapshot) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::import_sparse_snapshot_parts(&mut self, control_proto::types::SnapId, &[(u64, alloc::sync::Arc<[u8; 4096]>)], &[u8]) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::in_place_fallbacks(&self) -> u64
@@ -116,6 +118,10 @@ pub vmm_core::portable_snapshot::PortableExecutionComparison::left_trace_events:
 pub vmm_core::portable_snapshot::PortableExecutionComparison::left_trace_schedules: u64
 pub vmm_core::portable_snapshot::PortableExecutionComparison::right_trace_events: u64
 pub vmm_core::portable_snapshot::PortableExecutionComparison::right_trace_schedules: u64
+pub struct vmm_core::portable_snapshot::SparseDelta<'a>
+pub vmm_core::portable_snapshot::SparseDelta::pages: alloc::vec::Vec<(u64, &'a [u8; 32], &'a [u8; 4096])>
+pub vmm_core::portable_snapshot::SparseDelta::reverted: alloc::vec::Vec<u64>
+pub vmm_core::portable_snapshot::SparseDelta::sidecar: alloc::vec::Vec<u8>
 pub struct vmm_core::portable_snapshot::SparsePortableSnapshot
 pub vmm_core::portable_snapshot::SparsePortableSnapshot::pages: alloc::vec::Vec<(u64, alloc::sync::Arc<[u8; 4096]>)>
 pub vmm_core::portable_snapshot::SparsePortableSnapshot::sidecar: alloc::vec::Vec<u8>
@@ -221,14 +227,17 @@ pub fn vmm_core::snapshot::SnapshotEngine::materialize(&self, snapshot_store::Sn
 pub fn vmm_core::snapshot::SnapshotEngine::max_chain_len(&self) -> u32
 pub fn vmm_core::snapshot::SnapshotEngine::mem_pages(&self) -> u64
 pub fn vmm_core::snapshot::SnapshotEngine::new(usize) -> vmm_core::snapshot::SnapshotEngine
+pub fn vmm_core::snapshot::SnapshotEngine::page_delta(&self, snapshot_store::SnapshotId, core::option::Option<snapshot_store::SnapshotId>, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::PageDelta<'_>, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::pages_equal(&self, snapshot_store::SnapshotId, u64, snapshot_store::SnapshotId, u64) -> core::result::Result<bool, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::read_page(&self, snapshot_store::SnapshotId, u64) -> core::result::Result<[u8; 4096], vmm_core::snapshot::SnapshotError>
+pub fn vmm_core::snapshot::SnapshotEngine::rebase(&self, snapshot_store::SnapshotId, snapshot_store::SnapshotId, &[(u64, &snapshot_store::PageHash)]) -> core::result::Result<snapshot_store::Rebase, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::release(&mut self, snapshot_store::SnapshotId) -> core::result::Result<u64, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::retain(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::set_max_chain_len(&mut self, u32)
 pub fn vmm_core::snapshot::SnapshotEngine::snapshot_base(&mut self, &[u8], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::snapshot_derive(&mut self, snapshot_store::SnapshotId, &[u8], core::option::Option<&[u64]>, &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::snapshot_flatten(&mut self, snapshot_store::SnapshotId, &[u8], &[u64], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
+pub fn vmm_core::snapshot::SnapshotEngine::snapshot_hashed_derive(&mut self, snapshot_store::SnapshotId, &[(u64, &snapshot_store::PageHash, &[u8; 4096])], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::snapshot_sparse_derive(&mut self, snapshot_store::SnapshotId, &[(u64, [u8; 4096])], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::stats(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::SnapStats, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::store(&self) -> &snapshot_store::Store

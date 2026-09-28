@@ -12,6 +12,8 @@ use environment::{
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
 
+use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
+use crate::cache::{ANCHOR_DEPTH, CacheIndex, Lease, Namespace};
 use crate::watchdog::Watchdog;
 
 #[cfg(target_arch = "aarch64")]
@@ -228,6 +230,53 @@ impl Session {
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         self.snapshot_times.insert(receipt.id, receipt.at.0);
         Ok(receipt.id)
+    }
+
+    pub fn publish_snapshot(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+    ) -> Result<Lease, Box<dyn Error>> {
+        let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
+        let delta = self
+            .client
+            .transport()
+            .export_sparse_delta(self.setup, parent.map(|(snap, _)| snap), target)
+            .map_err(|error| SessionError::Portable(error.to_string()))?;
+        let len = extent_len(delta.pages.len(), delta.reverted.len(), delta.sidecar.len())
+            .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
+        let mut extent = index.extent(len)?;
+        write_extent(
+            extent.bytes_mut(),
+            &delta.pages,
+            &delta.reverted,
+            &delta.sidecar,
+        )?;
+        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent)?)
+    }
+
+    pub fn import_cached(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+        near: SnapId,
+    ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let chain = index.chain(lease)?;
+        let deltas = chain
+            .iter()
+            .map(|extent| read_extent(extent.bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let resolved = resolve(&deltas)?;
+        let receipt = self
+            .client
+            .transport_mut()
+            .import_sparse_delta(self.setup, near, &resolved.pages, resolved.sidecar)
+            .map_err(|error| SessionError::Portable(error.to_string()))?;
+        self.snapshot_times.insert(receipt.id, receipt.at.0);
+        Ok((receipt.id, receipt.at.0))
     }
 
     pub fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {

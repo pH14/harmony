@@ -330,6 +330,13 @@ independently of builds, and failed checks retain diagnostics. Broader repetitio
 remain scheduled/manual. These checks are regression evidence, not a claim that
 all XSAVE-presence and AMD NPT PAE behavior is resolved.
 
+`ControlServer::export_sparse_delta(setup, parent, target)` returns a
+snapshot's pages over its parent, with their hashes, the pages that returned to
+the setup snapshot's content, and the sparse sidecar. The pages borrow the
+store. `import_sparse_delta(setup, pages, sidecar)` derives a snapshot from
+the setup snapshot and a complete page list over it. Each page must match its
+hash, so a changed page is refused before a handle is minted.
+
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
 device records, and clock wiring are rejected before changing the destination

@@ -86,6 +86,41 @@ presence metadata; exported artifacts retain those bytes and checksum them.
 The guest execution restrictions and import boundary are documented in the
 [core identity contract](../vmm-core/README.md#published-xsave-identity-check).
 
+`cache` holds one snapshot cache for all workers of a search. A namespace
+separates sessions with different images, configuration, setup state, or
+service. Within a namespace an entry's key is the byte encoding of its action
+prefix, with fixed-width actions, so a cached prefix of an input is a byte
+prefix of its key. `CacheIndex` is the interface workers use:
+
+| Call | Result |
+|---|---|
+| `lookup(namespace, key)` | a lease on the longest cached prefix |
+| `extent(len)` | a writable region, after evicting entries to fit the budget |
+| `publish(namespace, key, parent, extent)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
+| `chain(lease)` | the entry's extents, anchor first |
+| `release(lease)` | the entry can be evicted again |
+
+`LocalIndex` is a mutex over the table for workers that are threads of one
+process. Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
+`shm_open` on macOS. Committed extents are never written again. An extent holds
+the pages a snapshot changed over its parent with their BLAKE3 hashes, the pages
+that returned to the setup content, and the sparse sidecar, with a SHA-256
+checksum over everything except the page data. Every 32 entries along a chain
+the next entry stores its full page list over setup and becomes an anchor, so
+an import reads at most 32 extents. Eviction takes the least recently used
+entry that has no lease and no children. The budget counts every allocated
+extent, including evicted extents in segments that still hold live ones; a
+segment is freed when its last extent dies. When nothing can be evicted the
+index refuses the extent and the worker keeps its snapshot local.
+
+`Session::publish_snapshot` exports a delta straight into an extent and
+publishes it. `Session::import_cached` resolves a chain into one page list over
+setup and imports it; the store checks each page against its hash.
+`cache::automatic_budget` takes the free memory (the lower of `MemAvailable`
+and each enclosing cgroup's limit minus usage on Linux; free, file-backed and
+purgeable pages on macOS), subtracts each worker's footprint and a 1 GiB reserve, and
+fails when nothing is left.
+
 `placement::CorePool` finds the host's fastest core type within the process's
 CPU affinity: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part
 number in `MIDR_EL1` on arm64, and `cpu_capacity` or the maximum frequency to

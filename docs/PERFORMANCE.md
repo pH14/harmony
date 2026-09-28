@@ -236,9 +236,14 @@ whether that work was worth choosing.
 > [!NOTE]
 > **Worked example: repeated work in etcd.**
 >
-> The etcd search retains 96 prefixes per worker without sharing them between
-> workers. Measured in virtual time, total guest work is 2.4 times new work with
-> one worker, 4.1 times with eight, and 4.9 times with sixteen.
+> When each etcd worker retained 96 prefixes of its own, total guest work was
+> 2.4 times new work with one worker, 4.1 times with eight, and 4.9 times with
+> sixteen, measured in virtual time. With one snapshot cache shared by all
+> workers and sized from free memory, the factor fell to 1.00 at one, four and
+> seven Cortex-A720 workers over 240 executions: at seven workers the cache
+> answered 1,043 of 1,050 lookups while holding 10 GB of a 31.5 GB budget.
+> Seven workers then ran 7,127 executions per hour, against 4,437 with the cache
+> off and 4,579 with it limited to 512 MiB.
 
 ## Serial work
 

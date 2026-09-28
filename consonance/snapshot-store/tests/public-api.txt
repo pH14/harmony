@@ -21,6 +21,7 @@ pub fn snapshot_store::BaseBuilder<'_>::write_page(&mut self, u64, &[u8]) -> cor
 pub struct snapshot_store::DeltaBuilder<'a>
 impl snapshot_store::DeltaBuilder<'_>
 pub fn snapshot_store::DeltaBuilder<'_>::seal(self, alloc::vec::Vec<u8>) -> snapshot_store::SnapshotId
+pub fn snapshot_store::DeltaBuilder<'_>::write_hashed_page(&mut self, u64, &[u8], &snapshot_store::PageHash) -> core::result::Result<(), snapshot_store::StoreError>
 pub fn snapshot_store::DeltaBuilder<'_>::write_page(&mut self, u64, &[u8]) -> core::result::Result<(), snapshot_store::StoreError>
 pub struct snapshot_store::Mapping
 impl snapshot_store::Mapping
@@ -29,6 +30,12 @@ pub fn snapshot_store::Mapping::as_mut_slice(&mut self) -> &mut [u8]
 pub fn snapshot_store::Mapping::as_slice(&self) -> &[u8]
 pub fn snapshot_store::Mapping::is_empty(&self) -> bool
 pub fn snapshot_store::Mapping::len(&self) -> usize
+pub struct snapshot_store::PageDelta<'a>
+pub snapshot_store::PageDelta::changed: alloc::vec::Vec<(u64, &'a snapshot_store::PageHash, &'a [u8; 4096])>
+pub snapshot_store::PageDelta::reverted: alloc::vec::Vec<u64>
+pub struct snapshot_store::Rebase
+pub snapshot_store::Rebase::keep: alloc::vec::Vec<usize>
+pub snapshot_store::Rebase::origin: alloc::vec::Vec<(u64, snapshot_store::PageHash, alloc::boxed::Box<[u8; 4096]>)>
 pub struct snapshot_store::SnapStats
 pub snapshot_store::SnapStats::chain_len: u32
 pub snapshot_store::SnapStats::logical_pages: u64
@@ -45,8 +52,10 @@ pub fn snapshot_store::Store::flatten_base(&mut self, snapshot_store::SnapshotId
 pub fn snapshot_store::Store::gc(&mut self) -> u64
 pub fn snapshot_store::Store::materialize(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::Mapping, snapshot_store::StoreError>
 pub fn snapshot_store::Store::new(snapshot_store::StoreConfig) -> snapshot_store::Store
+pub fn snapshot_store::Store::page_delta(&self, snapshot_store::SnapshotId, core::option::Option<snapshot_store::SnapshotId>, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::PageDelta<'_>, snapshot_store::StoreError>
 pub fn snapshot_store::Store::page_ref_eq(&self, snapshot_store::SnapshotId, u64, snapshot_store::SnapshotId, u64) -> core::result::Result<bool, snapshot_store::StoreError>
 pub fn snapshot_store::Store::read_page(&self, snapshot_store::SnapshotId, u64, &mut [u8]) -> core::result::Result<(), snapshot_store::StoreError>
+pub fn snapshot_store::Store::rebase(&self, snapshot_store::SnapshotId, snapshot_store::SnapshotId, &[(u64, &snapshot_store::PageHash)]) -> core::result::Result<snapshot_store::Rebase, snapshot_store::StoreError>
 pub fn snapshot_store::Store::release(&mut self, snapshot_store::SnapshotId) -> core::result::Result<u64, snapshot_store::StoreError>
 pub fn snapshot_store::Store::restore_pages(&self, core::option::Option<snapshot_store::SnapshotId>, snapshot_store::SnapshotId, &[u64]) -> core::result::Result<alloc::vec::Vec<(u64, &[u8; 4096])>, snapshot_store::StoreError>
 pub fn snapshot_store::Store::retain(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), snapshot_store::StoreError>
@@ -61,3 +70,4 @@ pub snapshot_store::StoreStats::logical_pages_total: u64
 pub snapshot_store::StoreStats::snapshots: u64
 pub snapshot_store::StoreStats::stored_unique_pages: u64
 pub const snapshot_store::PAGE_SIZE: usize
+pub type snapshot_store::PageHash = [u8; 32]

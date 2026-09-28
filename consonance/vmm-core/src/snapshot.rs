@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use snapshot_store::{Mapping, PAGE_SIZE, SnapStats, SnapshotId, Store, StoreConfig, StoreStats};
+use snapshot_store::{
+    Mapping, PAGE_SIZE, PageDelta, PageHash, Rebase, SnapStats, SnapshotId, Store, StoreConfig,
+    StoreStats,
+};
 use vm_state::SnapshotRecords;
 
 #[derive(Debug, thiserror::Error)]
@@ -138,8 +141,49 @@ impl SnapshotEngine {
         pages: &[(u64, [u8; PAGE_SIZE])],
         vm_state: &[u8],
     ) -> Result<SnapshotId, SnapshotError> {
+        self.check_sparse_order(pages.iter().map(|&(gfn, _)| gfn))?;
+        let mut builder = self.store.derive(parent)?;
+        for &(gfn, page) in pages {
+            builder.write_page(gfn, &page)?;
+        }
+        Ok(builder.seal(vm_state.to_vec()))
+    }
+
+    pub fn snapshot_hashed_derive(
+        &mut self,
+        parent: SnapshotId,
+        pages: &[(u64, &PageHash, &[u8; PAGE_SIZE])],
+        vm_state: &[u8],
+    ) -> Result<SnapshotId, SnapshotError> {
+        self.check_sparse_order(pages.iter().map(|&(gfn, _, _)| gfn))?;
+        let mut builder = self.store.derive(parent)?;
+        for &(gfn, hash, page) in pages {
+            builder.write_hashed_page(gfn, page, hash)?;
+        }
+        Ok(builder.seal(vm_state.to_vec()))
+    }
+
+    pub fn page_delta(
+        &self,
+        base: SnapshotId,
+        parent: Option<SnapshotId>,
+        target: SnapshotId,
+    ) -> Result<PageDelta<'_>, SnapshotError> {
+        Ok(self.store.page_delta(base, parent, target)?)
+    }
+
+    pub fn rebase(
+        &self,
+        origin: SnapshotId,
+        near: SnapshotId,
+        target: &[(u64, &PageHash)],
+    ) -> Result<Rebase, SnapshotError> {
+        Ok(self.store.rebase(origin, near, target)?)
+    }
+
+    fn check_sparse_order(&self, gfns: impl Iterator<Item = u64>) -> Result<(), SnapshotError> {
         let mut previous = None;
-        for &(gfn, _) in pages {
+        for gfn in gfns {
             if gfn >= self.mem_pages {
                 return Err(SnapshotError::SparsePageOutOfRange {
                     gfn,
@@ -162,12 +206,7 @@ impl SnapshotEngine {
             }
             previous = Some(gfn);
         }
-
-        let mut builder = self.store.derive(parent)?;
-        for &(gfn, page) in pages {
-            builder.write_page(gfn, &page)?;
-        }
-        Ok(builder.seal(vm_state.to_vec()))
+        Ok(())
     }
 
     pub fn materialize(&self, snap: SnapshotId) -> Result<Mapping, SnapshotError> {

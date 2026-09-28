@@ -1,0 +1,591 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+mod budget;
+pub mod extent;
+pub mod segments;
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Bound,
+    sync::{Arc, Mutex, MutexGuard, Weak},
+};
+
+use sha2::{Digest, Sha256};
+
+pub use budget::{RESERVE_BYTES, automatic_budget, headroom_bytes};
+pub use segments::{CommittedExtent, PageSegments, SEGMENT_BYTES, WritableExtent};
+
+pub const ANCHOR_DEPTH: u32 = 32;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Namespace([u8; 32]);
+
+impl Namespace {
+    #[must_use]
+    pub fn new(parts: &[&[u8]]) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(b"consonance-snapshot-cache-namespace-v1");
+        for part in parts {
+            digest.update((part.len() as u64).to_le_bytes());
+            digest.update(part);
+        }
+        Self(digest.finalize().into())
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Lease {
+    entry: u64,
+    key_len: usize,
+    depth: u32,
+}
+
+impl Lease {
+    #[must_use]
+    pub fn key_len(&self) -> usize {
+        self.key_len
+    }
+
+    #[must_use]
+    pub fn depth(&self) -> u32 {
+        self.depth
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CacheError {
+    #[error("the snapshot cache budget of {budget} bytes cannot hold {needed} more bytes")]
+    Refused { needed: usize, budget: usize },
+    #[error("the snapshot cache holds no entry for lease {0}")]
+    UnknownLease(u64),
+    #[error("a snapshot cache parent belongs to another namespace")]
+    NamespaceMismatch,
+    #[error("malformed snapshot cache extent: {0}")]
+    Malformed(&'static str),
+    #[error("snapshot cache segment: {0}")]
+    Segment(#[from] std::io::Error),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CacheStats {
+    pub budget: usize,
+    pub charged: usize,
+    pub segments: usize,
+    pub entries: usize,
+    pub anchors: usize,
+    pub leased: usize,
+    pub lookups: u64,
+    pub hits: u64,
+    pub publishes: u64,
+    pub duplicates: u64,
+    pub refusals: u64,
+    pub evictions: u64,
+}
+
+impl CacheStats {
+    #[must_use]
+    pub fn counters(&self) -> Vec<(&'static str, u64)> {
+        vec![
+            ("budget_bytes", self.budget as u64),
+            ("charged_bytes", self.charged as u64),
+            ("segments", self.segments as u64),
+            ("entries", self.entries as u64),
+            ("anchors", self.anchors as u64),
+            ("leased", self.leased as u64),
+            ("lookups", self.lookups),
+            ("hits", self.hits),
+            ("publishes", self.publishes),
+            ("duplicates", self.duplicates),
+            ("refusals", self.refusals),
+            ("evictions", self.evictions),
+        ]
+    }
+}
+
+pub trait CacheIndex: Send + Sync + std::fmt::Debug {
+    fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Lease>;
+    fn extent(&self, len: usize) -> Result<WritableExtent, CacheError>;
+    fn publish(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<&Lease>,
+        extent: WritableExtent,
+    ) -> Result<Lease, CacheError>;
+    fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError>;
+    fn release(&self, lease: Lease);
+    fn stats(&self) -> CacheStats;
+}
+
+#[derive(Debug)]
+struct Entry {
+    namespace: Namespace,
+    key: Vec<u8>,
+    parent: Option<u64>,
+    depth: u32,
+    extent: CommittedExtent,
+    leases: u32,
+    children: u32,
+    stamp: u64,
+}
+
+#[derive(Debug)]
+struct State {
+    budget: usize,
+    segments: PageSegments,
+    entries: BTreeMap<u64, Entry>,
+    keys: BTreeMap<Namespace, BTreeMap<Vec<u8>, u64>>,
+    evictable: BTreeSet<(u64, u64)>,
+    next_id: u64,
+    clock: u64,
+    stats: CacheStats,
+}
+
+impl State {
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    fn longest_prefix(&self, namespace: Namespace, key: &[u8]) -> Option<u64> {
+        let keys = self.keys.get(&namespace)?;
+        let mut probe = key;
+        loop {
+            let (found, id) = keys
+                .range::<[u8], _>((Bound::Unbounded, Bound::Included(probe)))
+                .next_back()?;
+            if probe.starts_with(found) {
+                return Some(*id);
+            }
+            let common = found
+                .iter()
+                .zip(probe)
+                .take_while(|(left, right)| left == right)
+                .count();
+            probe = &probe[..common];
+        }
+    }
+
+    fn lease(&mut self, id: u64) -> Result<Lease, CacheError> {
+        let stamp = self.tick();
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or(CacheError::UnknownLease(id))?;
+        self.evictable.remove(&(entry.stamp, id));
+        entry.stamp = stamp;
+        entry.leases += 1;
+        Ok(Lease {
+            entry: id,
+            key_len: entry.key.len(),
+            depth: entry.depth,
+        })
+    }
+
+    fn settle(&mut self, id: u64) {
+        if let Some(entry) = self.entries.get(&id)
+            && entry.leases == 0
+            && entry.children == 0
+        {
+            self.evictable.insert((entry.stamp, id));
+        }
+    }
+
+    fn evict(&mut self, id: u64) {
+        let Some(entry) = self.entries.remove(&id) else {
+            return;
+        };
+        self.evictable.remove(&(entry.stamp, id));
+        if let Some(keys) = self.keys.get_mut(&entry.namespace) {
+            keys.remove(&entry.key);
+            if keys.is_empty() {
+                self.keys.remove(&entry.namespace);
+            }
+        }
+        if let Some(parent) = entry.parent
+            && let Some(parent_entry) = self.entries.get_mut(&parent)
+        {
+            parent_entry.children -= 1;
+            self.settle(parent);
+        }
+        self.segments.free(entry.extent.segment_id());
+        self.stats.evictions += 1;
+    }
+
+    fn make_room(&mut self, needed: usize) -> Result<(), CacheError> {
+        let refused = CacheError::Refused {
+            needed,
+            budget: self.budget,
+        };
+        if needed > self.budget {
+            return Err(refused);
+        }
+        while self.segments.charged() + needed > self.budget {
+            let Some(&(_, id)) = self.evictable.first() else {
+                return Err(refused);
+            };
+            self.evict(id);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalIndex {
+    state: Arc<Mutex<State>>,
+}
+
+impl LocalIndex {
+    #[must_use]
+    pub fn new(budget: usize) -> Self {
+        Self::with_segment_bytes(budget, SEGMENT_BYTES)
+    }
+
+    #[must_use]
+    pub fn with_segment_bytes(budget: usize, segment_bytes: usize) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(State {
+                budget,
+                segments: PageSegments::new(segment_bytes),
+                entries: BTreeMap::new(),
+                keys: BTreeMap::new(),
+                evictable: BTreeSet::new(),
+                next_id: 0,
+                clock: 0,
+                stats: CacheStats::default(),
+            })),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn abandon(state: Weak<Mutex<State>>) -> segments::Abandon {
+        Box::new(move |segment_id| {
+            if let Some(state) = state.upgrade() {
+                state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .segments
+                    .free(segment_id);
+            }
+        })
+    }
+}
+
+impl CacheIndex for LocalIndex {
+    fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Lease> {
+        let mut state = self.state();
+        state.stats.lookups += 1;
+        let id = state.longest_prefix(namespace, key)?;
+        state.stats.hits += 1;
+        state.lease(id).ok()
+    }
+
+    fn extent(&self, len: usize) -> Result<WritableExtent, CacheError> {
+        let mut state = self.state();
+        let needed =
+            segments::rounded(len.max(1)).ok_or(CacheError::Malformed("extent size overflow"))?;
+        if let Err(error) = state.make_room(needed) {
+            state.stats.refusals += 1;
+            return Err(error);
+        }
+        let mut extent = state.segments.allocate(needed)?;
+        extent.set_abandon(Self::abandon(Arc::downgrade(&self.state)));
+        Ok(extent)
+    }
+
+    fn publish(
+        &self,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<&Lease>,
+        extent: WritableExtent,
+    ) -> Result<Lease, CacheError> {
+        let mut state = self.state();
+        let committed = extent.commit();
+        if let Some(&id) = state.keys.get(&namespace).and_then(|keys| keys.get(key)) {
+            state.segments.free(committed.segment_id());
+            state.stats.duplicates += 1;
+            return state.lease(id);
+        }
+        let depth = match parent {
+            Some(lease) => {
+                let Some(parent) = state.entries.get_mut(&lease.entry) else {
+                    state.segments.free(committed.segment_id());
+                    return Err(CacheError::UnknownLease(lease.entry));
+                };
+                if parent.namespace != namespace {
+                    state.segments.free(committed.segment_id());
+                    return Err(CacheError::NamespaceMismatch);
+                }
+                parent.children += 1;
+                parent.depth + 1
+            }
+            None => 0,
+        };
+        let id = state.next_id;
+        state.next_id += 1;
+        let stamp = state.tick();
+        state.entries.insert(
+            id,
+            Entry {
+                namespace,
+                key: key.to_vec(),
+                parent: parent.map(|lease| lease.entry),
+                depth,
+                extent: committed,
+                leases: 1,
+                children: 0,
+                stamp,
+            },
+        );
+        state
+            .keys
+            .entry(namespace)
+            .or_default()
+            .insert(key.to_vec(), id);
+        state.stats.publishes += 1;
+        Ok(Lease {
+            entry: id,
+            key_len: key.len(),
+            depth,
+        })
+    }
+
+    fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError> {
+        let state = self.state();
+        let mut chain = Vec::new();
+        let mut cursor = Some(lease.entry);
+        while let Some(id) = cursor {
+            let entry = state.entries.get(&id).ok_or(CacheError::UnknownLease(id))?;
+            chain.push(entry.extent.clone());
+            cursor = entry.parent;
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+
+    fn release(&self, lease: Lease) {
+        let mut state = self.state();
+        if let Some(entry) = state.entries.get_mut(&lease.entry) {
+            entry.leases -= 1;
+            state.settle(lease.entry);
+        }
+    }
+
+    fn stats(&self) -> CacheStats {
+        let state = self.state();
+        CacheStats {
+            budget: state.budget,
+            charged: state.segments.charged(),
+            segments: state.segments.segments(),
+            entries: state.entries.len(),
+            anchors: state
+                .entries
+                .values()
+                .filter(|entry| entry.parent.is_none())
+                .count(),
+            leased: state
+                .entries
+                .values()
+                .filter(|entry| entry.leases > 0)
+                .count(),
+            ..state.stats
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extent::{HashedPage, extent_len, read_extent, resolve, write_extent};
+    use super::segments::PAGE;
+    use super::*;
+
+    fn ns(name: &str) -> Namespace {
+        Namespace::new(&[name.as_bytes()])
+    }
+
+    fn put(
+        index: &LocalIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<&Lease>,
+        pages: &[(u64, u8)],
+        reverted: &[u64],
+    ) -> Result<Lease, CacheError> {
+        let owned: Vec<_> = pages
+            .iter()
+            .map(|&(gfn, fill)| (gfn, [fill; 32], [fill; PAGE]))
+            .collect();
+        let rows: Vec<HashedPage<'_>> = owned
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let len = extent_len(rows.len(), reverted.len(), key.len()).unwrap();
+        let mut extent = index.extent(len)?;
+        write_extent(extent.bytes_mut(), &rows, reverted, key)?;
+        index.publish(namespace, key, parent, extent)
+    }
+
+    fn resolved(index: &LocalIndex, lease: &Lease) -> (Vec<(u64, u8)>, Vec<u8>) {
+        let chain = index.chain(lease).unwrap();
+        let deltas: Vec<_> = chain
+            .iter()
+            .map(|extent| read_extent(extent.bytes()).unwrap())
+            .collect();
+        let resolved = resolve(&deltas).unwrap();
+        (
+            resolved
+                .pages
+                .iter()
+                .map(|&(gfn, _, data)| (gfn, data[0]))
+                .collect(),
+            resolved.sidecar.to_vec(),
+        )
+    }
+
+    #[test]
+    fn lookup_returns_the_longest_cached_prefix() {
+        let index = LocalIndex::new(1 << 20);
+        let space = ns("a");
+        let root = put(&index, space, b"ab", None, &[(0, 1)], &[]).unwrap();
+        let child = put(&index, space, b"abcd", Some(&root), &[(1, 2)], &[]).unwrap();
+        put(&index, space, b"abce", Some(&root), &[(1, 3)], &[]).unwrap();
+        for (probe, expected) in [
+            (&b"abcdzz"[..], Some(4)),
+            (b"abcd", Some(4)),
+            (b"abcf", Some(2)),
+            (b"abc", Some(2)),
+            (b"aa", None),
+            (b"", None),
+        ] {
+            let found = index.lookup(space, probe);
+            assert_eq!(found.as_ref().map(Lease::key_len), expected, "{probe:?}");
+            if let Some(lease) = found {
+                index.release(lease);
+            }
+        }
+        assert!(index.lookup(ns("b"), b"abcd").is_none());
+        assert_eq!(child.depth(), 1);
+        assert_eq!(
+            resolved(&index, &child),
+            (vec![(0, 1), (1, 2)], b"abcd".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_duplicate_key_keeps_the_first_entry_and_frees_the_second_extent() {
+        let index = LocalIndex::with_segment_bytes(1 << 20, 4 * PAGE);
+        let space = ns("a");
+        let first = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
+        let charged = index.stats().charged;
+        let second = put(&index, space, b"k", None, &[(0, 2)], &[]).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(resolved(&index, &second).0, vec![(0, 1)]);
+        let stats = index.stats();
+        assert_eq!((stats.entries, stats.duplicates), (1, 1));
+        assert!(stats.charged >= charged);
+    }
+
+    #[test]
+    fn eviction_takes_the_least_recent_unleased_leaf_and_refuses_when_all_are_held() {
+        let per_entry = extent_len(1, 0, 1).unwrap();
+        let index = LocalIndex::with_segment_bytes(3 * per_entry, per_entry);
+        let space = ns("a");
+        let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let b = put(&index, space, b"b", Some(&a), &[(1, 1)], &[]).unwrap();
+        let c = put(&index, space, b"c", None, &[(2, 1)], &[]).unwrap();
+        assert!(matches!(
+            put(&index, space, b"d", None, &[(3, 1)], &[]),
+            Err(CacheError::Refused { .. })
+        ));
+        index.release(a);
+        assert!(
+            put(&index, space, b"d", None, &[(3, 1)], &[]).is_err(),
+            "a parent with a live child stays"
+        );
+        index.release(b);
+        index.release(c);
+        let d = put(&index, space, b"d", None, &[(3, 1)], &[]).unwrap();
+        assert!(
+            index.lookup(space, b"b").is_none(),
+            "the oldest leaf went first"
+        );
+        let a = index.lookup(space, b"a").unwrap();
+        assert_eq!(a.key_len(), 1);
+        let stats = index.stats();
+        assert_eq!((stats.evictions, stats.refusals), (1, 2));
+        assert!(stats.charged <= stats.budget);
+        index.release(a);
+        index.release(d);
+    }
+
+    #[test]
+    fn deep_chains_resolve_from_their_anchor_and_siblings_share_parents() {
+        let index = LocalIndex::new(64 << 20);
+        let space = ns("a");
+        let mut key = vec![0u8];
+        let mut lease = put(&index, space, &key, None, &[(0, 1), (1, 1)], &[]).unwrap();
+        let mut leases = Vec::new();
+        for step in 1..40u8 {
+            key.push(step);
+            let (parent, pages) = if lease.depth() + 1 >= ANCHOR_DEPTH {
+                (None, vec![(0, step), (1, 1)])
+            } else {
+                (Some(&lease), vec![(0, step)])
+            };
+            let next = put(&index, space, &key, parent, &pages, &[]).unwrap();
+            leases.push(std::mem::replace(&mut lease, next));
+        }
+        assert_eq!(lease.depth(), 39 - ANCHOR_DEPTH);
+        assert_eq!(
+            index.chain(&lease).unwrap().len(),
+            usize::try_from(lease.depth()).unwrap() + 1
+        );
+        assert_eq!(resolved(&index, &lease).0, vec![(0, 39), (1, 1)]);
+        let base = &leases[3];
+        let left = put(&index, space, b"L", Some(base), &[(2, 7)], &[1]).unwrap();
+        let right = put(&index, space, b"R", Some(base), &[(2, 8)], &[]).unwrap();
+        assert_eq!(resolved(&index, &left).0, vec![(0, 3), (2, 7)]);
+        assert_eq!(resolved(&index, &right).0, vec![(0, 3), (1, 1), (2, 8)]);
+    }
+
+    #[test]
+    fn an_abandoned_extent_returns_its_segment() {
+        let index = LocalIndex::with_segment_bytes(1 << 20, PAGE);
+        let first = index.extent(PAGE).unwrap();
+        let second = index.extent(PAGE).unwrap();
+        assert_eq!(index.stats().segments, 2);
+        drop(first);
+        assert_eq!(index.stats().segments, 1);
+        drop(second);
+        assert_eq!(index.stats().charged, PAGE, "the open segment stays");
+    }
+
+    #[test]
+    fn workers_on_threads_share_entries() {
+        let index = LocalIndex::new(16 << 20);
+        let space = ns("a");
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let index = &index;
+                scope.spawn(move || {
+                    for step in 0..8u8 {
+                        let key = [step];
+                        let lease = put(index, space, &key, None, &[(0, step)], &[]).unwrap();
+                        assert_eq!(resolved(index, &lease).0, vec![(0, step)]);
+                        index.release(lease);
+                    }
+                });
+            }
+        });
+        let stats = index.stats();
+        assert_eq!(stats.entries, 8);
+        assert_eq!(stats.publishes + stats.duplicates, 32);
+        assert_eq!(stats.leased, 0);
+    }
+}

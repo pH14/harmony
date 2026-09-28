@@ -16,6 +16,7 @@ pub struct Options {
     pub ram_mib: u32,
     pub knobs: Vec<String>,
     pub wall_minutes: Option<u64>,
+    pub snapshot_cache_mib: Option<u64>,
     pub output: PathBuf,
 }
 
@@ -284,9 +285,12 @@ fn state_digest_hex(digest: &[u8; 32]) -> String {
     not(miri)
 ))]
 mod live {
-    use std::{error::Error, io::BufWriter, time::Instant};
+    use std::{error::Error, io::BufWriter, sync::Arc, time::Instant};
 
-    use consonance_client::placement::{Placement, pin_current_thread};
+    use consonance_client::{
+        cache::{CacheIndex, LocalIndex, automatic_budget},
+        placement::{Placement, pin_current_thread},
+    };
     use searcher::search::{
         archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{CampaignOrigin, PlacedThread, ThreadPlacement},
@@ -307,6 +311,33 @@ mod live {
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
+    const WORKER_OVERHEAD_MIB: u64 = 512;
+
+    fn snapshot_cache(options: &Options) -> Option<Arc<dyn CacheIndex>> {
+        let budget = match options.snapshot_cache_mib {
+            Some(0) => {
+                eprintln!("snapshot cache off: --snapshot-cache-mib is 0");
+                return None;
+            }
+            Some(mib) => usize::try_from(mib.saturating_mul(1 << 20)).unwrap_or(usize::MAX),
+            None => {
+                let worker_bytes = (u64::from(options.ram_mib) * 2 + WORKER_OVERHEAD_MIB) << 20;
+                match automatic_budget(options.workers as usize, worker_bytes) {
+                    Ok(budget) => budget,
+                    Err(reason) => {
+                        eprintln!("snapshot cache off: {reason}");
+                        return None;
+                    }
+                }
+            }
+        };
+        eprintln!(
+            "snapshot cache {} MiB shared by {} workers",
+            budget >> 20,
+            options.workers
+        );
+        Some(Arc::new(LocalIndex::new(budget)))
+    }
 
     fn pinned(plan: Placement) -> ThreadPlacement {
         ThreadPlacement::new(move |thread| {
@@ -338,7 +369,9 @@ mod live {
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options);
         std::fs::create_dir_all(&options.output)?;
-        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config);
+        let cache = snapshot_cache(options);
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)
+            .with_snapshot_cache(cache.clone());
         let campaign = FaultCampaignConfig {
             campaign_seed: options.seed,
             vocabulary: vocabulary.clone(),
@@ -396,6 +429,13 @@ mod live {
             "watchdog_cutoffs": archive.watchdog_cutoffs,
             "execution_failures": campaign_report.campaign.execution_failures,
             "telemetry": campaign_report.campaign.telemetry,
+            "snapshot_cache": cache.as_ref().map(|cache| {
+                cache
+                    .stats()
+                    .counters()
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            }),
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),
@@ -557,6 +597,7 @@ mod tests {
             ram_mib: 1024,
             knobs: Vec::new(),
             wall_minutes: None,
+            snapshot_cache_mib: None,
             output: PathBuf::from("unused"),
         }
     }

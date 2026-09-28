@@ -57,7 +57,7 @@ pub struct StoreStats {
     pub bytes_resident: u64,
 }
 
-type PageHash = [u8; 32];
+pub type PageHash = [u8; 32];
 
 #[derive(Default)]
 struct PageHashHasher(u64);
@@ -351,7 +351,97 @@ impl Store {
         };
 
         self.live_layer(from)?;
+        let mut pages = Vec::new();
+        for gfn in self.changed_gfns(from, to, dirty)? {
+            pages.push((gfn, self.checked_page(to, gfn)?));
+        }
+        Ok(pages)
+    }
 
+    pub fn page_delta(
+        &self,
+        base: SnapshotId,
+        parent: Option<SnapshotId>,
+        target: SnapshotId,
+    ) -> Result<PageDelta<'_>, StoreError> {
+        self.live_layer(base)?;
+        self.live_layer(target)?;
+        let from = parent.unwrap_or(base);
+        self.live_layer(from)?;
+        let mut delta = PageDelta::default();
+        for gfn in self.changed_gfns(from, target, &[])? {
+            let page = self.resolve(target.0, gfn);
+            if page == self.resolve(from.0, gfn) {
+                continue;
+            }
+            if parent.is_some() && page == self.resolve(base.0, gfn) {
+                delta.reverted.push(gfn);
+                continue;
+            }
+            let (hash, data) = self.page_entry(page, gfn)?;
+            delta.changed.push((gfn, hash, data));
+        }
+        Ok(delta)
+    }
+
+    pub fn rebase(
+        &self,
+        origin: SnapshotId,
+        near: SnapshotId,
+        target: &[(u64, &PageHash)],
+    ) -> Result<Rebase, StoreError> {
+        self.live_layer(origin)?;
+        self.live_layer(near)?;
+        let mut rebase = Rebase::default();
+        for (index, &(gfn, hash)) in target.iter().enumerate() {
+            let (near_hash, _) = self.page_entry(self.resolve(near.0, gfn), gfn)?;
+            if near_hash != hash {
+                rebase.keep.push(index);
+            }
+        }
+        for gfn in self.changed_gfns(origin, near, &[])? {
+            if target.binary_search_by_key(&gfn, |row| row.0).is_ok() {
+                continue;
+            }
+            let page = self.resolve(origin.0, gfn);
+            if page == self.resolve(near.0, gfn) {
+                continue;
+            }
+            let (hash, data) = self.page_entry(page, gfn)?;
+            rebase.origin.push((gfn, *hash, Box::new(*data)));
+        }
+        Ok(rebase)
+    }
+
+    fn page_entry(
+        &self,
+        page: PageRef,
+        gfn: u64,
+    ) -> Result<(&PageHash, &[u8; PAGE_SIZE]), StoreError> {
+        match page {
+            PageRef::Zero => Ok((&self.zero_hash, &ZERO_PAGE)),
+            PageRef::Data(id) => {
+                let entry = self
+                    .pages
+                    .get(id.get() - 1)
+                    .and_then(Option::as_ref)
+                    .ok_or(StoreError::PageIntegrity { gfn })?;
+                let data = entry
+                    .data
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| StoreError::PageIntegrity { gfn })?;
+                Ok((&entry.hash, data))
+            }
+        }
+    }
+
+    fn changed_gfns(
+        &self,
+        from: SnapshotId,
+        to: SnapshotId,
+        dirty: &[u64],
+    ) -> Result<BTreeSet<u64>, StoreError> {
         let mut left = Some(from.0);
         let mut right = Some(to.0);
         let mut changed_gfns: BTreeSet<_> = dirty.iter().copied().collect();
@@ -370,12 +460,7 @@ impl Store {
                 right = layer.parent;
             }
         }
-
-        let mut pages = Vec::with_capacity(changed_gfns.len());
-        for gfn in changed_gfns {
-            pages.push((gfn, self.checked_page(to, gfn)?));
-        }
-        Ok(pages)
+        Ok(changed_gfns)
     }
 
     pub fn vm_state(&self, snap: SnapshotId) -> Result<&[u8], StoreError> {
@@ -682,6 +767,39 @@ impl BuilderCore<'_> {
         Ok(())
     }
 
+    fn write_hashed_page(
+        &mut self,
+        gfn: u64,
+        data: &[u8],
+        expected: &PageHash,
+    ) -> Result<(), StoreError> {
+        if data.len() != PAGE_SIZE {
+            return Err(StoreError::BadPageLength { len: data.len() });
+        }
+        if gfn >= self.store.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn,
+                mem_pages: self.store.cfg.mem_pages,
+            });
+        }
+        let pref = if data == &ZERO_PAGE[..] {
+            if expected != &self.store.zero_hash {
+                return Err(StoreError::PageIntegrity { gfn });
+            }
+            PageRef::Zero
+        } else {
+            let hash = *blake3::hash(data).as_bytes();
+            if &hash != expected {
+                return Err(StoreError::PageIntegrity { gfn });
+            }
+            PageRef::Data(self.store.intern_page(hash, data))
+        };
+        if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
+            self.store.release_page_ref(old);
+        }
+        Ok(())
+    }
+
     fn write_page_against(
         &mut self,
         gfn: u64,
@@ -772,6 +890,18 @@ impl Drop for BuilderCore<'_> {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct Rebase {
+    pub keep: Vec<usize>,
+    pub origin: Vec<(u64, PageHash, Box<[u8; PAGE_SIZE]>)>,
+}
+
+#[derive(Debug, Default)]
+pub struct PageDelta<'a> {
+    pub changed: Vec<(u64, &'a PageHash, &'a [u8; PAGE_SIZE])>,
+    pub reverted: Vec<u64>,
+}
+
 pub struct BaseBuilder<'a> {
     core: BuilderCore<'a>,
 }
@@ -793,6 +923,15 @@ pub struct DeltaBuilder<'a> {
 impl DeltaBuilder<'_> {
     pub fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
         self.core.write_page(gfn, data)
+    }
+
+    pub fn write_hashed_page(
+        &mut self,
+        gfn: u64,
+        data: &[u8],
+        hash: &PageHash,
+    ) -> Result<(), StoreError> {
+        self.core.write_hashed_page(gfn, data, hash)
     }
 
     pub fn seal(self, vm_state: Vec<u8>) -> SnapshotId {
@@ -875,6 +1014,137 @@ mod tests {
         }
         assert!(map.is_empty());
         assert_eq!(BuildPageHashHasher::default().hash_one(a), fold(&a));
+    }
+
+    fn snap_with(store: &mut Store, parent: SnapshotId, pages: &[(u64, u8)]) -> SnapshotId {
+        let mut builder = store.derive(parent).unwrap();
+        for &(gfn, fill) in pages {
+            builder.write_page(gfn, &[fill; PAGE_SIZE]).unwrap();
+        }
+        builder.seal(Vec::new())
+    }
+
+    fn delta_summary(delta: &PageDelta<'_>) -> (Vec<(u64, u8)>, Vec<u64>) {
+        let changed = delta
+            .changed
+            .iter()
+            .map(|&(gfn, hash, data)| {
+                assert_eq!(blake3::hash(data).as_bytes(), hash);
+                (gfn, data[0])
+            })
+            .collect();
+        (changed, delta.reverted.clone())
+    }
+
+    #[test]
+    fn page_delta_splits_changed_and_reverted_pages() {
+        let mut store = Store::new(cfg(8));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[2; PAGE_SIZE]).unwrap();
+        let setup = builder.seal(Vec::new());
+        let parent = snap_with(&mut store, setup, &[(0, 5), (2, 6), (3, 7)]);
+        let target = snap_with(
+            &mut store,
+            parent,
+            &[(0, 1), (1, 9), (2, 6), (3, 0), (4, 8)],
+        );
+
+        let delta = store.page_delta(setup, Some(parent), target).unwrap();
+        assert_eq!(delta_summary(&delta), (vec![(1, 9), (4, 8)], vec![0, 3]));
+
+        let anchor = store.page_delta(setup, None, target).unwrap();
+        assert_eq!(
+            delta_summary(&anchor),
+            (vec![(1, 9), (2, 6), (4, 8)], Vec::new())
+        );
+
+        let sibling = snap_with(&mut store, setup, &[(1, 3)]);
+        let across = store.page_delta(setup, Some(sibling), target).unwrap();
+        assert_eq!(
+            delta_summary(&across),
+            (vec![(1, 9), (2, 6), (4, 8)], Vec::new())
+        );
+        assert!(
+            store
+                .page_delta(setup, Some(target), target)
+                .unwrap()
+                .changed
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_rebase_keeps_only_pages_that_differ_from_the_near_snapshot() {
+        let mut store = Store::new(cfg(8));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[2; PAGE_SIZE]).unwrap();
+        let setup = builder.seal(Vec::new());
+        let near = snap_with(&mut store, setup, &[(0, 5), (2, 6), (3, 7)]);
+        let hash = |fill: u8| *blake3::hash(&[fill; PAGE_SIZE]).as_bytes();
+        let target_hashes = [(0, hash(5)), (1, hash(9)), (4, hash(8))];
+        let rows: Vec<_> = target_hashes.iter().map(|(gfn, h)| (*gfn, h)).collect();
+
+        let rebase = store.rebase(setup, near, &rows).unwrap();
+        assert_eq!(rebase.keep, vec![1, 2]);
+        let origin: Vec<_> = rebase
+            .origin
+            .iter()
+            .map(|(gfn, hash, data)| {
+                assert_eq!(hash, blake3::hash(&data[..]).as_bytes());
+                (*gfn, data[0])
+            })
+            .collect();
+        assert_eq!(origin, vec![(2, 0), (3, 0)]);
+
+        let mut rebuilt = store.derive(near).unwrap();
+        for &index in &rebase.keep {
+            let (gfn, fill) = [(0, 5u8), (1, 9), (4, 8)][index];
+            rebuilt.write_page(gfn, &[fill; PAGE_SIZE]).unwrap();
+        }
+        for (gfn, hash, data) in &rebase.origin {
+            rebuilt.write_hashed_page(*gfn, &data[..], hash).unwrap();
+        }
+        let rebuilt = rebuilt.seal(Vec::new());
+        let direct = snap_with(&mut store, setup, &[(0, 5), (1, 9), (4, 8)]);
+        let mut left = [0u8; PAGE_SIZE];
+        let mut right = [0u8; PAGE_SIZE];
+        for gfn in 0..8 {
+            store.read_page(rebuilt, gfn, &mut left).unwrap();
+            store.read_page(direct, gfn, &mut right).unwrap();
+            assert_eq!(left, right, "page {gfn}");
+        }
+    }
+
+    #[test]
+    fn hashed_writes_reject_a_page_that_does_not_match_its_hash() {
+        let mut store = Store::new(cfg(4));
+        let setup = store.begin_base().seal(Vec::new());
+        let page = [4u8; PAGE_SIZE];
+        let hash = *blake3::hash(&page).as_bytes();
+        let zero_hash = *blake3::hash(&[0u8; PAGE_SIZE]).as_bytes();
+        let mut builder = store.derive(setup).unwrap();
+        builder.write_hashed_page(1, &page, &hash).unwrap();
+        builder
+            .write_hashed_page(2, &[0; PAGE_SIZE], &zero_hash)
+            .unwrap();
+        let mut planted = page;
+        planted[17] ^= 1;
+        assert!(matches!(
+            builder.write_hashed_page(3, &planted, &hash),
+            Err(StoreError::PageIntegrity { gfn: 3 })
+        ));
+        assert!(matches!(
+            builder.write_hashed_page(3, &[0; PAGE_SIZE], &hash),
+            Err(StoreError::PageIntegrity { gfn: 3 })
+        ));
+        let child = builder.seal(Vec::new());
+        let mut out = [0u8; PAGE_SIZE];
+        store.read_page(child, 1, &mut out).unwrap();
+        assert_eq!(out, page);
+        store.read_page(child, 3, &mut out).unwrap();
+        assert_eq!(out, [0; PAGE_SIZE]);
     }
 
     #[test]

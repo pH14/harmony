@@ -48,6 +48,13 @@ pub struct SparsePortableSnapshot {
     pub sidecar: Vec<u8>,
 }
 
+#[derive(Debug)]
+pub struct SparseDelta<'a> {
+    pub pages: Vec<(u64, &'a [u8; 32], &'a [u8; PAGE_SIZE])>,
+    pub reverted: Vec<u64>,
+    pub sidecar: Vec<u8>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SparsePortableSnapshotReceipt {
     pub id: control_proto::SnapId,
