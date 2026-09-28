@@ -405,6 +405,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     | (0x018, 4, Some(_))
                     | (0x020, 4, Some(1))
                     | (0x024, 4, Some(1))
+                    | (0x028, 4, Some(1))
             );
             if !exact {
                 return Err(VmmError::ContractViolation(format!(
@@ -457,6 +458,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 }
                 (0x020, Some(1)) => Ok(Step::Continued),
                 (0x024, Some(1)) => Ok(Step::Continued),
+                (0x028, Some(1)) => self.on_idle(),
                 _ => Err(VmmError::ContractViolation(
                     "arm64 pvclock exact-shape validation disagreed with dispatch".to_string(),
                 )),
@@ -657,6 +659,14 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         self.devices.clockevent.line_asserted = true;
         self.devices.clockevent.assertions = self.devices.clockevent.assertions.saturating_add(1);
         Ok(())
+    }
+
+    pub(crate) fn sync_arm_irq_pending(&mut self) -> Result<(), VmmError> {
+        let due = match (self.devices.clockevent.deadline, self.vtime.as_ref()) {
+            (Some(deadline), Some(vt)) => vt.guest_clock() >= deadline,
+            _ => false,
+        };
+        self.pvclock_set_irq_pending(due)
     }
 
     pub fn wire_gic(&mut self, gic: gicv3::Gicv3) -> &mut Self {

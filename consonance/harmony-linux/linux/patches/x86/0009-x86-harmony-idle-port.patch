@@ -1,0 +1,60 @@
+x86: idle with one exit per wakeup
+
+Patch 0004 rings the execution tick on every idle-poll iteration, so an idle
+vCPU reaches the next timer deadline only after about a hundred exits per
+10 ms period. Under the Harmony clock configuration, the poll loop instead
+writes a dword of 1 to port 0x0CA4. Userspace treats the write like HLT: it
+delivers a pending interrupt, or advances virtual time to the earlier of the
+next deliverable deadline and the next host event, so each wakeup costs one
+exit. The loop still re-checks need_resched after every write.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/include/asm/harmony_pvclock.h
++++ b/arch/x86/include/asm/harmony_pvclock.h
+@@ -77,6 +77,7 @@ static __always_inline unsigned long harmony_pin_flags(unsigned long flags)
+  * check is the plain __ro_after_init bool and outl is inline asm.
+  */
+ #define HARMONY_VIRTUAL_TIME_TICK_PORT 0x0CA3
++#define HARMONY_IDLE_PORT 0x0CA4
+ 
+ #ifdef CONFIG_HARMONY_PVCLOCK
+ static __always_inline void harmony_virtual_time_tick(void)
+@@ -84,10 +85,24 @@ static __always_inline void harmony_virtual_time_tick(void)
+ 	if (harmony_pvclock_flags_pinned)
+ 		outl(1, HARMONY_VIRTUAL_TIME_TICK_PORT);
+ }
++
++/*
++ * One idle exit lets userspace advance virtual time to the next deadline or
++ * host event instead of charging an execution tick for every idle-poll pass.
++ */
++static __always_inline void harmony_virtual_time_idle(void)
++{
++	if (harmony_pvclock_flags_pinned)
++		outl(1, HARMONY_IDLE_PORT);
++}
+ #else
+ static __always_inline void harmony_virtual_time_tick(void)
+ {
+ }
++
++static __always_inline void harmony_virtual_time_idle(void)
++{
++}
+ #endif
+ 
+ #endif /* _ASM_X86_HARMONY_PVCLOCK_H */
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -69,7 +69,7 @@ static noinline int __cpuidle cpu_idle_poll(void)
+ 	while (!tif_need_resched() &&
+ 	       (cpu_idle_force_poll || tick_check_broadcast_expired()))
+ #ifdef CONFIG_HARMONY_PVCLOCK
+-		harmony_virtual_time_tick();
++		harmony_virtual_time_idle();
+ #else
+ 		cpu_relax();
+ #endif

@@ -1718,6 +1718,29 @@ where
         Ok(())
     }
 
+    pub(crate) fn pvclock_set_irq_pending(&mut self, pending: bool) -> Result<(), VmmError> {
+        let Some(gpa) = self
+            .pvclock
+            .as_ref()
+            .filter(|pv| pv.armed)
+            .and_then(|pv| pv.gpa)
+        else {
+            return Ok(());
+        };
+        let off = self.ram_offset_of(gpa);
+        let ram = self.ram.as_mut_bytes();
+        let Some(page) = off.and_then(|o| ram.get_mut(o..o + vtime::pvclock::PVCLOCK_PAGE_LEN))
+        else {
+            return Err(VmmError::ContractViolation(format!(
+                "pvclock page {gpa:#x} no longer inside guest RAM"
+            )));
+        };
+        if vtime::pvclock::set_irq_pending(page, pending) {
+            self.mark_host_dirty(gpa, vtime::pvclock::PVCLOCK_PAGE_LEN as u64);
+        }
+        Ok(())
+    }
+
     fn pvclock_refresh(&mut self) -> Result<(), VmmError> {
         let Some(pv) = self.pvclock.as_ref() else {
             return Ok(());
@@ -2694,8 +2717,8 @@ mod tests {
 
     use crate::vendor::x86::devices::REPORT_PORT;
     use crate::vendor::x86::dispatch::{
-        APIC_MMIO_BASE, COM1_IRQ_VECTOR, DOORBELL_PORT, IA32_TSC_ADJUST, MsrDir, RFLAGS_IF,
-        VIRTUAL_TIME_TICK_PORT, contract_vclock_config, lookup_cpuid,
+        APIC_MMIO_BASE, COM1_IRQ_VECTOR, DOORBELL_PORT, IA32_TSC_ADJUST, IDLE_PORT, MsrDir,
+        RFLAGS_IF, VIRTUAL_TIME_TICK_PORT, contract_vclock_config, lookup_cpuid,
     };
     use crate::vendor::x86::records as snapshot;
 
@@ -4809,6 +4832,44 @@ mod tests {
             crate::vendor::x86::contract::virtual_time_timing().execution_tick_vns
         );
         assert!(vmm.backend.completions().is_empty());
+    }
+
+    #[test]
+    fn idle_port_idles_like_hlt_after_the_paravirtual_budget() {
+        let mut hlt = vtime_vmm(vec![Exit::Common(CommonExit::Idle)], 1);
+        let mut port = vtime_vmm(
+            vec![Exit::Arch(X86Exit::Io {
+                port: IDLE_PORT,
+                size: 4,
+                write: Some(1),
+            })],
+            1,
+        );
+        let before = port.effective_vns().unwrap();
+        assert_eq!(port.step().unwrap(), hlt.step().unwrap());
+        assert_eq!(
+            port.effective_vns().unwrap() - before,
+            crate::vendor::x86::contract::virtual_time_timing().paravirtual_device_mmio_vns
+                + (hlt.effective_vns().unwrap() - before)
+        );
+    }
+
+    #[test]
+    fn idle_port_rejects_non_protocol_accesses() {
+        for (size, write) in [(1u8, Some(1u32)), (4, Some(0)), (4, Some(2)), (4, None)] {
+            let mut vmm = Vmm::new(
+                configured_mock(vec![Exit::Arch(X86Exit::Io {
+                    port: IDLE_PORT,
+                    size,
+                    write,
+                })]),
+                GuestRam::new(0x1000).unwrap(),
+            );
+            assert!(
+                matches!(vmm.step(), Err(VmmError::ContractViolation(_))),
+                "idle access size {size} write {write:?} must fail closed"
+            );
+        }
     }
 
     #[test]

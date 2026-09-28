@@ -1,0 +1,50 @@
+arm64: fence an IRQ unmask only when a deadline waits for it
+
+Patch 0010 exits after every local IRQ enable and restore so that a clockevent
+deadline deferred under PSTATE.I is asserted at an exact instruction. Most
+unmasks have no deferred deadline, and those exits only cost time. Userspace
+now sets the page's irq_pending word at the exit where it defers a due
+deadline and clears it once the deadline is delivered or disarmed. The page
+changes only at exits, so the guest's read after the unmask sees the same
+value on every run, and the fence exits at the same instruction the
+unconditional fence did whenever a deadline is waiting. Until the page is
+validated, every unmask still exits.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/clocksource/harmony_arm_pvclock.c
++++ b/drivers/clocksource/harmony_arm_pvclock.c
+@@ -51,6 +51,7 @@ struct harmony_arm_pvclock_page {
+ 	__le64 guest_clock_hz;
+ 	__le32 flags;
+ 	__le32 vcpu_index;
++	__le32 irq_pending;
+ } __packed;
+ 
+ /* Set once registration has validated the page; guards reads before its
+@@ -215,14 +216,20 @@ void harmony_arm_virtual_time_tick(void)
+ }
+ 
+ /*
+- * Expose the exact instruction boundary after Linux unmasks IRQs without
+- * assigning an execution-density tick. Userspace gives this ordinary exit
+- * only the paravirtual-exit quantum.
++ * Expose the exact instruction boundary after Linux unmasks IRQs, but only
++ * while userspace holds a due deadline for it: it sets irq_pending at the exit
++ * where it defers the deadline under PSTATE.I and clears it after delivery.
++ * The page only changes at exits, so the check is exact. Before the page is
++ * validated every unmask exits. Userspace gives this exit only the
++ * paravirtual-exit quantum.
+  */
+ void harmony_arm_irq_unmask_fence(void)
+ {
+ 	if (!harmony_registers)
+ 		return;
++	if (READ_ONCE(harmony_pvclock_ready) &&
++	    !le32_to_cpu(READ_ONCE(harmony_page()->irq_pending)))
++		return;
+ 	writel(1, harmony_registers + HARMONY_IRQ_UNMASK_FENCE);
+ }
+ 

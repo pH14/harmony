@@ -18,7 +18,9 @@ deadline beyond the representable range drops the periodic timer.
 
 `IdlePlanner` returns the deterministic gap from the current clock to the next
 deadline. `pvclock` defines the 4 KiB guest page, its seqlock stamping protocol,
-and canonical reads for the guest-visible clock projection.
+and canonical reads for the guest-visible clock projection. The page's
+`irq_pending` word tells the guest whether a due timer interrupt waits for it to
+unmask interrupts, so the guest exits at an unmask only when one does.
 
 The crate is used by `vmm-core`, which assigns per-exit deltas and joins timer
 delivery to the backend event loop.
