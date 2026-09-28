@@ -40,6 +40,15 @@ The opt-in `DISSONANCE_BENCHMARK_PORTABLE_TRANSFER=1` unit benchmark compares
 both paths with their former copying implementations on synthetic snapshots.
 Its transfer timings do not measure whole-search throughput.
 
+Portable serialization visits the shared chunks directly, trimming padding in
+the last chunk and retaining the same byte-sequence format as a materialized
+buffer. It avoids a snapshot-sized temporary allocation during JSON reports
+and checkpoint encoding. The opt-in
+`DISSONANCE_BENCHMARK_CHUNK_SERIALIZATION=1` unit benchmark compares JSON and
+Postcard serialization against the materialized implementation, including
+output-buffer allocation and disposal. These are encoding measurements, not
+whole-search throughput measurements.
+
 The libretro FFI is Unix-specific. The pure machine types and test loopback
 allow the boundary and its bounds checks to run without a shared object.
 

@@ -88,7 +88,17 @@ impl Serialize for SharedState {
     where
         S: serde::Serializer,
     {
-        self.materialize().serialize(serializer)
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(self.inner.len))?;
+        let mut remaining = self.inner.len;
+        for chunk in &self.inner.chunks {
+            let len = remaining.min(SHARED_STATE_CHUNK_SIZE);
+            for byte in &chunk[..len] {
+                sequence.serialize_element(byte)?;
+            }
+            remaining -= len;
+        }
+        sequence.end()
     }
 }
 
@@ -269,4 +279,99 @@ pub trait Machine {
 
     #[must_use]
     fn frames(&self) -> &[[u8; 2048]];
+}
+
+#[cfg(test)]
+mod shared_state_serialization_tests {
+    use super::*;
+
+    struct Materialized<'a>(&'a SharedState);
+
+    impl Serialize for Materialized<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0.materialize().serialize(serializer)
+        }
+    }
+
+    #[test]
+    fn chunked_serialization_matches_materialized_bytes() {
+        for len in [0, 1, 511, 512, 513, 1023, 1024, 1025, 65_536] {
+            if cfg!(miri) && len > 1025 {
+                continue;
+            }
+            let bytes: Vec<_> = (0..len).map(|i| (i % 256) as u8).collect();
+            let state = SharedState::from_bytes(&bytes, None);
+            assert_eq!(
+                serde_json::to_vec(&state).unwrap(),
+                serde_json::to_vec(&Materialized(&state)).unwrap()
+            );
+            assert_eq!(
+                postcard::to_allocvec(&state).unwrap(),
+                postcard::to_allocvec(&Materialized(&state)).unwrap()
+            );
+            let json: SharedState =
+                serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+            let compact: SharedState =
+                postcard::from_bytes(&postcard::to_allocvec(&state).unwrap()).unwrap();
+            assert_eq!(json, state);
+            assert_eq!(compact, state);
+            for capacity in [0, 1, 2, 10] {
+                let mut actual = vec![0xff; capacity];
+                let mut reference = actual.clone();
+                let actual_result =
+                    postcard::to_slice(&state, &mut actual).map(|bytes| bytes.len());
+                let reference_result = postcard::to_slice(&Materialized(&state), &mut reference)
+                    .map(|bytes| bytes.len());
+                assert_eq!(actual_result, reference_result);
+                assert_eq!(actual, reference);
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Wall time is used only by the opt-in benchmark"
+    )]
+    fn chunked_serialization_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        if std::env::var_os("DISSONANCE_BENCHMARK_CHUNK_SERIALIZATION").is_none() {
+            return;
+        }
+        for len in [0, 1, 511, 512, 513, 4096, 65_536, 262_144] {
+            let bytes: Vec<_> = (0..len).map(|i| (i % 256) as u8).collect();
+            let state = SharedState::from_bytes(&bytes, None);
+            for json in [false, true] {
+                let mut ratios = Vec::new();
+                for round in 0..60 {
+                    let mut elapsed = [0_u128; 2];
+                    let order = if round % 2 == 0 {
+                        [0, 1, 1, 0]
+                    } else {
+                        [1, 0, 0, 1]
+                    };
+                    for arm in order {
+                        let start = Instant::now();
+                        for _ in 0..32 {
+                            let state = black_box(&state);
+                            let encoded = match (arm, json) {
+                                (0, false) => postcard::to_allocvec(&Materialized(state)).unwrap(),
+                                (0, true) => serde_json::to_vec(&Materialized(state)).unwrap(),
+                                (_, false) => postcard::to_allocvec(state).unwrap(),
+                                (_, true) => serde_json::to_vec(state).unwrap(),
+                            };
+                            black_box(encoded);
+                        }
+                        elapsed[arm] += start.elapsed().as_nanos();
+                    }
+                    ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
+                }
+                ratios.sort_by(f64::total_cmp);
+                eprintln!(
+                    "chunk_serialize json={json} bytes={len} candidate/reference={:.3}",
+                    ratios[ratios.len() / 2]
+                );
+            }
+        }
+    }
 }
