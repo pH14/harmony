@@ -145,10 +145,12 @@ def world_requests(world: str, count: int) -> list[dict]:
 def legs(report: dict) -> dict:
     evidence = report["evidence"]
 
-    def within(work):
-        return work if work is not None and work <= WORLD_BUDGET else None
+    goal = report["first_objective_work"]
+    goal = goal if goal is not None and goal <= WORLD_BUDGET else None
 
-    goal = within(report["first_objective_work"])
+    def within(work):
+        return work if work is not None and work <= (WORLD_BUDGET if goal is None else goal) else None
+
     if report["config"]["family"] == "crossing":
         entry = within(evidence["crossing_first_entry_work"])
         return {"to the goal": WORLD_BUDGET if goal is None else goal,
