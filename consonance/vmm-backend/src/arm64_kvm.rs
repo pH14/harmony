@@ -858,6 +858,7 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     reported_active_irq: Option<GicIntId>,
     counts: ExitCounts,
     completions: StoreCompletions,
+    mmio_owed: bool,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -878,6 +879,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             reported_active_irq: None,
             counts: ExitCounts::default(),
             completions: StoreCompletions::default(),
+            mmio_owed: false,
         }
     }
 
@@ -941,21 +943,30 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         Ok(())
     }
 
+    fn settle_mmio(&mut self) -> Result<()> {
+        if !self.mmio_owed {
+            return Ok(());
+        }
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        self.kvm.complete_mmio_exit()?;
+        self.mmio_owed = false;
+        self.completions.runs = self.completions.runs.saturating_add(1);
+        self.completions.nanos = self
+            .completions
+            .nanos
+            .saturating_add(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        Ok(())
+    }
+
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
             self.apply_pending_irq()?;
             let view = self.kvm.run()?;
+            self.mmio_owed = false;
             self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
-                if view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write {
-                    #[allow(clippy::disallowed_methods)]
-                    let started = std::time::Instant::now();
-                    self.kvm.complete_mmio_exit()?;
-                    self.completions.runs = self.completions.runs.saturating_add(1);
-                    self.completions.nanos = self.completions.nanos.saturating_add(
-                        u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                    );
-                }
+                self.mmio_owed = view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write;
                 self.counts.bump(exit.reason());
                 self.pending = pending;
                 return Ok(exit);
@@ -1154,7 +1165,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         match self.pending {
             Pending::MmioLoad { len } => {
                 self.kvm.write_mmio_data(le_data(value, len))?;
-                self.kvm.complete_mmio_exit()?;
+                self.mmio_owed = true;
                 self.pending = Pending::None;
                 Ok(())
             }
@@ -1208,6 +1219,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
+        self.settle_mmio()?;
         save_vcpu(&self.kvm)
     }
 
@@ -1219,6 +1231,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
+        self.settle_mmio()?;
         restore_vcpu(&mut self.kvm, state)?;
         self.pending_irq = None;
         self.applied_irq = None;
@@ -2332,23 +2345,17 @@ mod tests {
             "an MMIO read is completed only after complete_read supplies data"
         );
         b.complete_read(0x90).unwrap();
+        assert_eq!(b.kvm().calls.last(), Some(&"write_mmio_data"));
+        let exit = b.run().unwrap();
+        assert_eq!(exit, CommonExit::Shutdown.into());
+        assert_eq!(b.kvm().last_mmio_data, Some(le_data(0x90, 4)));
         assert!(
             b.kvm()
                 .calls
                 .windows(2)
-                .any(|calls| calls == ["write_mmio_data", "complete_mmio_exit"])
+                .any(|calls| calls == ["write_mmio_data", "run"])
         );
-        let exit = b.run().unwrap();
-        assert_eq!(exit, CommonExit::Shutdown.into());
-        assert_eq!(b.kvm().last_mmio_data, Some(le_data(0x90, 4)));
-        assert_eq!(
-            b.kvm()
-                .calls
-                .iter()
-                .filter(|&&call| call == "complete_mmio_exit")
-                .count(),
-            1
-        );
+        assert_eq!(completions(&b), 0, "the next run completes the load");
     }
 
     #[test]
@@ -2455,6 +2462,68 @@ mod tests {
         ));
     }
 
+    fn completions(b: &Arm64KvmBackend<FakeKvm>) -> usize {
+        b.kvm()
+            .calls
+            .iter()
+            .filter(|&&call| call == "complete_mmio_exit")
+            .count()
+    }
+
+    #[test]
+    fn an_mmio_write_completes_in_the_next_run_or_before_state_is_read() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'?'), 1));
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_SYSTEM_EVENT,
+            system_event_type: KVM_SYSTEM_EVENT_SHUTDOWN,
+            ..Default::default()
+        });
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        b.run().unwrap();
+        b.run().unwrap();
+        assert_eq!(
+            completions(&b),
+            0,
+            "the second run completed the first store"
+        );
+        let state = b.save().unwrap();
+        assert_eq!(completions(&b), 1);
+        b.save().unwrap();
+        b.restore(&state).unwrap();
+        assert_eq!(completions(&b), 1, "one completion per store");
+        assert_eq!(b.store_completions().runs, 1);
+        assert_eq!(b.run().unwrap(), CommonExit::Shutdown.into());
+        assert_eq!(completions(&b), 1);
+    }
+
+    #[test]
+    fn a_restore_completes_an_owed_store_before_writing_state() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        let state = b.save().unwrap();
+
+        b.run().unwrap();
+        b.restore(&state).unwrap();
+        let calls = &b.kvm().calls;
+        let completed = calls
+            .iter()
+            .position(|&call| call == "complete_mmio_exit")
+            .unwrap();
+        let restored = calls
+            .iter()
+            .rposition(|&call| call == "set_one_reg")
+            .unwrap();
+        assert!(completed < restored);
+    }
+
     #[test]
     fn only_mmio_writes_are_completed_during_exit_decode() {
         let mut fake = FakeKvm::new();
@@ -2472,22 +2541,11 @@ mod tests {
             b.run().unwrap(),
             Exit::Common(CommonExit::Mmio { write: Some(_), .. })
         ));
-        assert_eq!(
-            b.kvm()
-                .calls
-                .iter()
-                .filter(|&&call| call == "complete_mmio_exit")
-                .count(),
-            1
-        );
         assert_eq!(b.run().unwrap(), CommonExit::Shutdown.into());
+        b.save().unwrap();
         assert_eq!(
-            b.kvm()
-                .calls
-                .iter()
-                .filter(|&&call| call == "complete_mmio_exit")
-                .count(),
-            1,
+            completions(&b),
+            0,
             "non-MMIO exits must not complete a stale MMIO transaction"
         );
     }
