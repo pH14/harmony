@@ -8,7 +8,7 @@ pub const SEGMENT_BYTES: usize = 64 << 20;
 struct Segment {
     base: NonNull<u8>,
     len: usize,
-    _backing: Backing,
+    backing: Backing,
 }
 
 // SAFETY: a Segment owns its mapping; every byte range in it is handed to exactly one
@@ -48,7 +48,7 @@ impl Segment {
         Ok(Self {
             base,
             len,
-            _backing: fd,
+            backing: fd,
         })
     }
 
@@ -62,7 +62,7 @@ impl Segment {
         Ok(Self {
             base,
             len,
-            _backing: layout,
+            backing: layout,
         })
     }
 
@@ -88,7 +88,7 @@ impl Drop for Segment {
     fn drop(&mut self) {
         // SAFETY: base was allocated in new with this layout, and no extent outlives the Arc
         // that owns this Segment.
-        unsafe { std::alloc::dealloc(self.base.as_ptr(), self._backing) };
+        unsafe { std::alloc::dealloc(self.base.as_ptr(), self.backing) };
     }
 }
 
@@ -137,6 +137,26 @@ fn shared_file(len: usize) -> io::Result<std::os::fd::OwnedFd> {
 }
 
 pub type Abandon = Box<dyn FnOnce(u64) + Send>;
+
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SharedRange<'a> {
+    pub fd: std::os::fd::BorrowedFd<'a>,
+    pub offset: usize,
+    pub len: usize,
+}
+
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
+impl Segment {
+    fn shared(&self, offset: usize, len: usize) -> SharedRange<'_> {
+        use std::os::fd::AsFd;
+        SharedRange {
+            fd: self.backing.as_fd(),
+            offset,
+            len,
+        }
+    }
+}
 
 pub struct WritableExtent {
     segment: Arc<Segment>,
@@ -188,6 +208,11 @@ impl WritableExtent {
     pub(crate) fn set_abandon(&mut self, abandon: Abandon) {
         self.abandon = Some(abandon);
     }
+
+    #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
+    pub(crate) fn shared_range(&self) -> SharedRange<'_> {
+        self.segment.shared(self.offset, self.len)
+    }
 }
 
 impl Drop for WritableExtent {
@@ -228,6 +253,11 @@ impl CommittedExtent {
 
     pub(crate) fn segment_id(&self) -> u64 {
         self.segment_id
+    }
+
+    #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
+    pub(crate) fn shared_range(&self) -> SharedRange<'_> {
+        self.segment.shared(self.offset, self.len)
     }
 
     #[cfg(test)]

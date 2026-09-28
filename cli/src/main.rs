@@ -23,6 +23,8 @@ enum Command {
     },
     #[command(subcommand)]
     Oci(OciCommand),
+    #[command(hide = true)]
+    SessionWorker,
 }
 
 #[derive(Subcommand)]
@@ -41,6 +43,10 @@ fn main() -> ExitCode {
         }
         Command::Preflight { json } => preflight::run(json),
         Command::Oci(OciCommand::Run(args)) => oci::run(args),
+        Command::SessionWorker => {
+            nes_workload::allocator::use_one_malloc_arena();
+            search::serve_session_worker()
+        }
     };
     match result {
         Ok(code) => code,

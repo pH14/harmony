@@ -290,6 +290,7 @@ mod live {
     use consonance_client::{
         cache::{CacheIndex, LocalIndex, automatic_budget},
         placement::{Placement, pin_current_thread},
+        session::WorkerLauncher,
     };
     use searcher::search::{
         archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
@@ -363,6 +364,7 @@ mod live {
         vocabulary: &FaultVocabulary,
         options: &Options,
         placement: &Placement,
+        session_worker: Option<WorkerLauncher>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let config = config(options);
@@ -371,7 +373,8 @@ mod live {
         std::fs::create_dir_all(&options.output)?;
         let cache = snapshot_cache(options);
         let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)
-            .with_snapshot_cache(cache.clone());
+            .with_snapshot_cache(cache.clone())
+            .with_session_worker(session_worker);
         let campaign = FaultCampaignConfig {
             campaign_seed: options.seed,
             vocabulary: vocabulary.clone(),

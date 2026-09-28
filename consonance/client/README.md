@@ -100,8 +100,8 @@ prefix of its key. `CacheIndex` is the interface workers use:
 | `chain(lease)` | the entry's extents, anchor first |
 | `release(lease)` | the entry can be evicted again |
 
-`LocalIndex` is a mutex over the table for workers that are threads of one
-process. Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
+`LocalIndex` is a mutex over the table, held by the process that runs the
+search. Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
 `shm_open` on macOS. Committed extents are never written again. An extent holds
 the pages a snapshot changed over its parent with their BLAKE3 hashes, the pages
 that returned to the setup content, and the sparse sidecar, with a SHA-256
@@ -118,8 +118,26 @@ publishes it. `Session::import_cached` resolves a chain into one page list over
 setup and imports it; the store checks each page against its hash.
 `cache::automatic_budget` takes the free memory (the lower of `MemAvailable`
 and each enclosing cgroup's limit minus usage on Linux; free, file-backed and
-purgeable pages on macOS), subtracts each worker's footprint and a 1 GiB reserve, and
-fails when nothing is left.
+purgeable pages on macOS), subtracts each worker's footprint and a 1 GiB
+reserve, and fails when nothing is left.
+
+`WorkerSession` runs a `Session` in a child process, because Hypervisor.framework
+allows one VM per process. `WorkerLauncher` starts the child with one end of a
+Unix socket pair, named by `HARMONY_SESSION_WORKER_FD`, and the child serves it
+with `serve_inherited`. The child re-executes the same binary, so it carries the
+same HVF entitlement and inherits the calling thread's CPU affinity. Each call is
+one length-prefixed request and reply. Guest hangs, abandoned sessions and other
+errors come back as the matching `SessionError`; a closed socket or a dead child
+marks the session abandoned. The index and every lease stay in the parent. A
+publish asks the child for the delta size, allocates the extent, and sends the
+segment's descriptor so the child writes the delta into the shared mapping; the
+parent publishes only after the child answers. An import sends one descriptor per
+extent in the chain, and the child maps each range read-only for that call.
+A child that dies mid-call therefore leaves no entry half-written and no lease
+held; its unpublished extent is freed like any abandoned extent. Dropping a
+`WorkerSession` closes the socket and reaps the child. `SearchSession` is the set
+of calls a search worker makes, implemented by both `Session` and
+`WorkerSession`.
 
 `placement::CorePool` finds the host's fastest core type within the process's
 CPU affinity: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part

@@ -60,8 +60,11 @@ until its hold can finish, allowing another fault to overlap the held thread.
 
 ## Execution
 
-[`consonance`](src/consonance.rs) drives one `consonance_client::session::Session`
-per evaluator thread. Each portable action prefix maps to a real whole-VM
+[`consonance`](src/consonance.rs) drives one session per evaluator thread. A
+search started by the `harmony` CLI runs each session in a child process
+(`WorkerSession`, started as the hidden `harmony session-worker` command), so
+macOS runs one VM per worker process; library callers without a launcher run
+`Session` in the thread. Each portable action prefix maps to a real whole-VM
 snapshot: the session branches its parent under the prefix's window list and
 the host-plane effect its last action stages, runs to the action's horizon
 deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
