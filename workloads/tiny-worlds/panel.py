@@ -179,7 +179,7 @@ def world_requests(world: str, count: int) -> list[dict]:
     return rows
 
 
-def legs(report: dict) -> dict:
+def legs(report: dict) -> tuple[dict, dict]:
     if report["config"]["family"] == "crossing" and report.get("scale") is not None:
         budget = report["work_budget"]
         goal = report["first_objective_work"]
@@ -189,9 +189,8 @@ def legs(report: dict) -> dict:
         entry = (report["crossing"]["first_entry_execution"]
                  if entry_work is not None and entry_work <= horizon else None)
         end = report["first_objective_execution"] if goal is not None else None
-        return {"to the goal (actions)": horizon,
-                "to crossing entry (tries)": entry,
-                "crossing entry to goal (tries)": None if entry is None or end is None else end - entry}
+        return ({"to the goal (actions)": horizon, "to crossing entry (tries)": entry},
+                {"crossing entry to goal (tries)": None if entry is None or end is None else end - entry})
     evidence = report["evidence"]
     budget = report["work_budget"]
 
@@ -208,45 +207,45 @@ def legs(report: dict) -> dict:
                 "crossing entry to goal": None if entry is None or goal is None else goal - entry}
     if report["config"]["family"] == "passive_clock":
         entry = within(evidence["passive_clock"]["first_event_work"][1])
-        return {"to the goal": budget if goal is None else goal,
-                "to wait entry": entry,
-                "wait entry to goal": None if entry is None or goal is None else goal - entry}
+        return ({"to the goal": budget if goal is None else goal, "to wait entry": entry},
+                {"wait entry to goal": None if entry is None or goal is None else goal - entry})
     first = [within(w) for w in evidence["map_first"]]
     tiers = [within(w) for w in evidence["map_first_tier"]]
 
     def gap(start, end):
         return None if start is None or end is None else end - start
 
-    measured = {"to the goal": budget if goal is None else goal}
     parameters = report["config"]["parameters"]
+    stocked = within(evidence.get("map_first_stocked"))
     if parameters.get("gauntlet"):
-        full = within(evidence["map_first_stocked"])
-        measured["to the last item"] = tiers[-1]
-        measured["last item to full-health arrival"] = gap(tiers[-1], full)
-        measured["full-health arrival to the goal"] = gap(full, goal)
+        milestones = {"to the last item": tiers[-1], "to the full-health arrival": stocked}
+        diagnostics = {"last item to full-health arrival": gap(tiers[-1], stocked),
+                       "full-health arrival to the goal": gap(stocked, goal)}
     elif parameters.get("boss_stock"):
-        measured["to the item"] = tiers[1]
-        measured["item to stocked arrival"] = gap(tiers[1], within(evidence["map_first_stocked"]))
-        measured["stocked arrival to kill"] = gap(within(evidence["map_first_stocked"]), goal)
+        milestones = {"to the item": tiers[1], "to the stocked arrival": stocked}
+        diagnostics = {"item to stocked arrival": gap(tiers[1], stocked),
+                       "stocked arrival to kill": gap(stocked, goal)}
     elif parameters.get("locked"):
-        measured["to the key"] = tiers[1]
-        measured["key to the item"] = gap(tiers[1], tiers[2])
-        measured["item to the goal"] = gap(tiers[2], goal)
+        milestones = {"to the key": tiers[1], "to the item": tiers[2]}
+        diagnostics = {"key to the item": gap(tiers[1], tiers[2]), "item to the goal": gap(tiers[2], goal)}
     elif parameters.get("items", 1) > 1:
-        measured["to the last item"] = tiers[-1]
-        measured["last item to the goal"] = gap(tiers[-1], goal)
+        milestones = {"to the last item": tiers[-1]}
+        diagnostics = {"last item to the goal": gap(tiers[-1], goal)}
     elif parameters.get("item_optional"):
-        measured["pickup to the goal"] = gap(tiers[1], goal)
+        milestones = {"to the pickup": tiers[1]}
+        diagnostics = {"pickup to the goal": gap(tiers[1], goal)}
     else:
-        measured["to the item"] = tiers[1]
-        measured["out of the item region"] = gap(first[1], first[2])
-        measured["out to the goal"] = gap(first[2], goal)
-    return measured
+        milestones = {"to the item": tiers[1], "out of the item region": first[2]}
+        diagnostics = {"through the item region": gap(first[1], first[2]),
+                       "out to the goal": gap(first[2], goal)}
+    milestones["to the goal"] = budget if goal is None else goal
+    return milestones, diagnostics
 
 
-def paired(base: list[dict], candidate: list[dict]) -> list[tuple[str, str, float, float, float]]:
+def paired(base: list[dict], candidate: list[dict], kind: int) -> list[tuple[str, str, float, float, float]]:
     rand = random.Random(0)
-    base_legs, candidate_legs = list(map(legs, base)), list(map(legs, candidate))
+    base_legs = [legs(r)[kind] for r in base]
+    candidate_legs = [legs(r)[kind] for r in candidate]
     rows = []
     for leg in base_legs[0]:
         reached = (f"reached {sum(c[leg] is not None for c in candidate_legs)}"
@@ -309,7 +308,7 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int, worlds: list
                         b.append(x)
                         c.append(y)
                 done[world] = target[world]
-                results[world] = paired(b, c)
+                results[world] = paired(b, c, 0)
                 if (target[world] < MAX_WORLD_SCALE
                         and (missed_goals(b, c)[0] == "undecided"
                              or any(verdict(low, high) == "undecided" for _, _, _, low, high in results[world]))):
@@ -338,14 +337,19 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int, worlds: list
             status = "plausible"
         if status != "plausible":
             failed.append(world)
+        diagnostics = paired(b, c, 1)
+        diagnosed = [verdict(low, high) for _, _, _, low, high in diagnostics]
         watched = [leg for (leg, *_), v in zip(results[world], verdicts) if v == "watch"]
+        watched += [leg for (leg, *_), v in zip(diagnostics, diagnosed) if v == "slower"]
         if misses == "watch":
             watched.append("goal misses")
         print(f"{world}: {status}; {len(b)} layouts; goal missed {missed[1]}/{len(c)} vs {missed[0]}/{len(b)} "
               f"(missed by one only: {arm_only} vs {base_only}, {misses}); "
               f"identical runs {identical}/{len(b)}" + (f"; watch {', '.join(watched)}" if watched else ""))
         for (leg, reached, ratio, low, high), v in zip(results[world], verdicts):
-            print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}")
+            print(f"    {leg:32} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}")
+        for (leg, reached, ratio, low, high), v in zip(diagnostics, diagnosed):
+            print(f"    {leg:32} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}, diagnostic")
     runs_total = sum(2 * len(b) for b, _ in runs.values())
     print(f"{runs_total} world runs; clearly bad or undecided on {len(failed)} of {len(worlds)} worlds")
     return 1 if failed else 0
