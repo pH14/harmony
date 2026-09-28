@@ -366,9 +366,10 @@ impl PageSegments {
             return;
         };
         used.extents = used.extents.saturating_sub(1);
-        if self.open != Some(segment_id) {
-            self.retire_if_empty(segment_id);
+        if used.extents == 0 && self.open == Some(segment_id) {
+            self.open = None;
         }
+        self.retire_if_empty(segment_id);
     }
 
     fn retire_if_empty(&mut self, segment_id: u64) {
