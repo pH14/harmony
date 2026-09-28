@@ -99,6 +99,8 @@ prefix of its key. `CacheIndex` is the interface workers use:
 | `publish(namespace, key, parent, extent)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
 | `chain(lease)` | the entry's extents, anchor first |
 | `release(lease)` | the entry can be evicted again |
+| `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
+| `forget_store(holder)` | removes a finished worker's store from the budget |
 
 `LocalIndex` is a mutex over the table, held by the process that runs the
 search. Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
@@ -110,16 +112,20 @@ the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents. Eviction takes the least recently used
 entry that has no lease and no children. The budget counts every allocated
 extent, including evicted extents in segments that still hold live ones; a
-segment is freed when its last extent dies. When nothing can be evicted the
-index refuses the extent and the worker keeps its snapshot local.
+segment is freed when its last extent dies. The budget also counts the bytes
+each worker's local snapshot store reports, so the cache gets what the stores
+leave. When nothing can be evicted the index refuses the extent and the worker
+keeps its snapshot local. A report that leaves the total over budget after
+eviction asks the worker with the largest store to shrink.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
 setup and imports it; the store checks each page against its hash.
-`cache::automatic_budget` takes the free memory (the lower of `MemAvailable`
+`cache::plan_memory` takes the free memory (the lower of `MemAvailable`
 and each enclosing cgroup's limit minus usage on Linux; free, file-backed and
-purgeable pages on macOS), subtracts each worker's footprint and a 1 GiB
-reserve, and fails when nothing is left.
+purgeable pages on macOS) less a 1 GiB reserve, fits as many workers as the
+cores allow with room for each guest and a minimum store, and gives the rest,
+after the guests, to the budget. It fails when one worker does not fit.
 
 `WorkerSession` runs a `Session` in a child process, because Hypervisor.framework
 allows one VM per process. `WorkerLauncher` starts the child with one end of a
@@ -140,11 +146,12 @@ of calls a search worker makes, implemented by both `Session` and
 `WorkerSession`.
 
 `placement::CorePool` finds the host's fastest core type within the process's
-CPU affinity: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part
+CPU affinity, cut to the whole cores of the tightest cgroup `cpu.max` quota: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part
 number in `MIDR_EL1` on arm64, and `cpu_capacity` or the maximum frequency to
 rank the types. Its cores are ordered fastest first. `CorePool::plan` gives
 each worker its own core and the coordinator the slowest remaining one, and
-refuses more workers than the pool leaves room for. `pin_current_thread` binds
+refuses more workers than the pool leaves room for. A pool of one core holds
+one worker and the coordinator together. `pin_current_thread` binds
 the calling thread to one core on Linux. A worker's guest runs on the thread
 that owns its session, so pinning that thread keeps the guest on one core. On
 macOS the pool counts the performance cores and nothing is pinned.

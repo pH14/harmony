@@ -94,8 +94,6 @@ mod search_cli_tests {
                 "vmlinux",
                 "--seed",
                 "1",
-                "--workers",
-                "8",
                 "--executions",
                 "1000",
                 "--ram-mib",
@@ -142,5 +140,19 @@ mod search_cli_tests {
             ])
             .is_err()
         );
+        for removed in ["--workers", "--snapshot-cache-mib"] {
+            assert!(
+                Cli::try_parse_from([
+                    "harmony",
+                    "search",
+                    "--package",
+                    "faults",
+                    removed,
+                    "4",
+                    "foo.oci"
+                ])
+                .is_err()
+            );
+        }
     }
 }

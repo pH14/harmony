@@ -41,24 +41,25 @@ command-line words, and `--wall-minutes` bounds a search in host time. `--replay
 runs a recorded action list, such as a search's own `bug-1.json`, instead of
 searching. Both modes write `report.json`.
 
-`--seed`, `--workers`, and `--executions` bound the campaign's logical
-work. `--out` selects a fresh output directory. Every package writes
+`--seed` and `--executions` bound the campaign's logical work. `--out` selects a fresh output directory. Every package writes
 `stream.jsonl` and `report.json`, retaining campaign choices and results; NES
 adds `prepared.json` and `checkpoint.json`, and faults adds
 `campaign-summary.json`, `progress.jsonl`, `first-bug-input.json`, and one
 `bug-N.json` per bug. An explicit backend selection is checked before
 execution.
 
-A faults search places one worker per core of the host's fastest core type and
-keeps one more core of that type for the coordinator. It refuses more workers
-than that pool allows, so on a host with eight fast cores it accepts at most
-seven. The pool is the part of the process's CPU affinity in that core type,
-so `taskset` narrows it. On macOS the pool is the performance cores and threads
-are left unpinned. Each worker's VM runs in its own child process, the same
-`harmony` binary started with the hidden `session-worker` command, so it
-carries the binary's HVF entitlement. `--snapshot-cache-mib` sets the memory the workers share for
-prefix snapshots; 0 turns the shared cache off, and without the flag the search
-sizes it from free memory.
+A search takes its worker count and memory from the limits the process runs
+under. The core pool is the fastest core type within the process's CPU
+affinity, cut to the whole cores of its cgroup's `cpu.max` quota; an NES search
+runs one worker per pool core but one. A faults search also keeps one core for
+the coordinator and pins each worker to its own core, then lowers the worker
+count until every guest and its setup snapshot fit the free memory (the
+cgroup's `memory.max` minus usage, or `MemAvailable` outside a limit) with a
+1 GiB reserve. `taskset`, `systemd-run -p AllowedCPUs=` or `-p CPUQuota=`, and
+`-p MemoryMax=` therefore set the size of a run. On macOS the pool is the
+performance cores and threads are left unpinned. Each worker's VM runs in its
+own child process, the same `harmony` binary started with the hidden
+`session-worker` command, so it carries the binary's HVF entitlement.
 
 ## OCI execution
 

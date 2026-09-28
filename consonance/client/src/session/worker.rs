@@ -46,6 +46,7 @@ const REPLAY: u8 = 11;
 const BRANCH: u8 = 12;
 const RUN_UNTIL: u8 = 13;
 const SDK_EVENTS: u8 = 14;
+const STORE_BYTES: u8 = 15;
 
 const OK: u8 = 0;
 const FAILED: u8 = 1;
@@ -59,6 +60,7 @@ pub trait SearchSession: std::fmt::Debug {
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>>;
     fn telemetry_counters(&self) -> Vec<(String, u64)>;
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64>;
+    fn store_bytes(&self) -> Option<u64>;
     fn publish_snapshot(
         &self,
         index: &dyn CacheIndex,
@@ -121,6 +123,10 @@ impl SearchSession for Session {
 
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
         Session::snapshot_owned_pages(self, snapshot)
+    }
+
+    fn store_bytes(&self) -> Option<u64> {
+        Some(Session::store_bytes(self))
     }
 
     fn publish_snapshot(
@@ -752,6 +758,14 @@ impl SearchSession for WorkerSession {
         pages
     }
 
+    fn store_bytes(&self) -> Option<u64> {
+        let reply = self.call(&Out::op(STORE_BYTES), &[]).ok()?;
+        let mut input = In(&reply);
+        let bytes = input.u64().ok()?;
+        input.finish().ok()?;
+        Some(bytes)
+    }
+
     fn publish_snapshot(
         &self,
         index: &dyn CacheIndex,
@@ -951,6 +965,10 @@ impl Served {
                 input.finish()?;
                 out.option(session.snapshot_owned_pages(snap));
             }
+            STORE_BYTES => {
+                input.finish()?;
+                out.u64(session.store_bytes().unwrap_or(0));
+            }
             EXPORT => {
                 let parent = input.option()?.map(SnapId);
                 let target = SnapId(input.u64()?);
@@ -1145,6 +1163,10 @@ mod tests {
             self.states.contains_key(&snapshot.0).then_some(1)
         }
 
+        fn store_bytes(&self) -> Option<u64> {
+            Some(self.states.len() as u64 * 4096)
+        }
+
         fn publish_snapshot(
             &self,
             _: &dyn CacheIndex,
@@ -1325,6 +1347,8 @@ mod tests {
         assert_eq!(session.telemetry_counters(), vec![("runs".to_owned(), 1)]);
         assert_eq!(session.snapshot_owned_pages(snap), Some(1));
         assert_eq!(session.snapshot_owned_pages(SnapId(9)), None);
+        let held = session.store_bytes().expect("store bytes");
+        assert!(held > 0);
         assert_eq!(session.console_tail().unwrap(), b"tail");
         session
             .branch_with_service(SnapId(1), ServiceConfig::default(), Vec::new(), Vec::new())
@@ -1354,6 +1378,7 @@ mod tests {
             vec![("runs".to_owned(), 1)],
             "the last counters outlive the worker"
         );
+        assert_eq!(session.store_bytes(), None);
         drop(session);
         server.join().unwrap();
     }

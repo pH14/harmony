@@ -5,7 +5,10 @@ use std::{
     collections::BTreeMap,
     error::Error,
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -230,6 +233,7 @@ struct LiveTelemetry {
 
 struct Live {
     key: [u8; 32],
+    holder: u64,
     session: Box<dyn SearchSession>,
     setup: SnapId,
     windows: ActionWindows,
@@ -238,6 +242,8 @@ struct Live {
     abandoned: bool,
     telemetry: LiveTelemetry,
 }
+
+static HOLDERS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
@@ -258,6 +264,9 @@ fn add_counters(into: &mut BTreeMap<String, u64>, counters: Vec<(String, u64)>) 
 
 impl Drop for Live {
     fn drop(&mut self) {
+        if let Some(shared) = self.chain.shared() {
+            shared.index.forget_store(self.holder);
+        }
         let counters = self.counters(false);
         let _ = RETIRED.try_with(|retired| add_counters(&mut retired.borrow_mut(), counters));
     }
@@ -398,6 +407,7 @@ impl FaultTarget {
 
     pub fn reset(&mut self) {
         let result = with_live(&self.config, |live| {
+            live.fit_store()?;
             let setup = live.setup;
             live.replay(setup)?;
             live.observe(FaultStop::Deadline)
@@ -420,6 +430,7 @@ impl FaultTarget {
 
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
         let rebuilt = with_live(&self.config, |live| {
+            live.fit_store()?;
             match live.ensure_prefix(&snapshot.actions)? {
                 Ok(cached) => {
                     live.replay(cached.snap)?;
@@ -617,6 +628,7 @@ impl Live {
         telemetry.boot.since(boot_started);
         Ok(Self {
             key: config.key,
+            holder: HOLDERS.fetch_add(1, Ordering::Relaxed),
             session,
             setup,
             windows: ActionWindows {
@@ -718,6 +730,20 @@ impl Live {
             self.telemetry.evictions = self.telemetry.evictions.saturating_add(1);
         }
         Ok(())
+    }
+
+    fn fit_store(&mut self) -> Result<(), String> {
+        let Some(shared) = self.chain.shared() else {
+            return Ok(());
+        };
+        let Some(bytes) = self.session.store_bytes() else {
+            return Ok(());
+        };
+        if !shared.index.report_store(self.holder, bytes) {
+            return Ok(());
+        }
+        let dropped = self.chain.truncate(1);
+        self.drop_snapshots(dropped)
     }
 
     fn push_link(

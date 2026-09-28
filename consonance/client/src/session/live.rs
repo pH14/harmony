@@ -439,6 +439,14 @@ impl Session {
             .map(|stats| stats.owned_pages)
     }
 
+    #[must_use]
+    pub fn store_bytes(&self) -> u64 {
+        self.client
+            .transport()
+            .snapshot_store_stats()
+            .bytes_resident
+    }
+
     pub fn last_seal_dirty_gfns(&self) -> Option<Vec<u64>> {
         self.client
             .transport()

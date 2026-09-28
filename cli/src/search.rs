@@ -22,8 +22,6 @@ pub struct Args {
     backend: Option<Backend>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
-    #[arg(long, default_value_t = 1)]
-    workers: u32,
     #[arg(long, default_value_t = 1000)]
     executions: u64,
     #[arg(long, default_value = "harmony-search")]
@@ -42,8 +40,6 @@ pub struct Args {
     knobs: Option<String>,
     #[arg(long)]
     wall_minutes: Option<u64>,
-    #[arg(long)]
-    snapshot_cache_mib: Option<u64>,
     #[arg(long)]
     replay: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
@@ -65,27 +61,26 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
             | crate::host::Hypervisor::Unsupported(reason) => return Err(reason.into()),
         }
     }
-    let options = SearchOptions {
-        seed: args.seed,
-        workers: args.workers,
-        executions: args.executions,
-        output: args.out.clone(),
-    };
+    let output = args.out.clone();
     match (args.package, backend) {
         (Package::Nes, Backend::Native) => {
+            let options = nes_options(&args)?;
             let core = args
                 .core
                 .or_else(|| std::env::var_os("HARMONY_QUICKNES_CORE").map(PathBuf::from))
                 .ok_or("native NES search requires --core or HARMONY_QUICKNES_CORE")?;
-            search_native(&std::fs::read(args.input)?, &core, &options)?;
+            search_native(&std::fs::read(&args.input)?, &core, &options)?;
         }
-        (Package::Nes, Backend::Consonance) => run_nes_consonance(
-            &args.input,
-            args.kernel,
-            args.base_initramfs,
-            args.image,
-            &options,
-        )?,
+        (Package::Nes, Backend::Consonance) => {
+            let options = nes_options(&args)?;
+            run_nes_consonance(
+                &args.input,
+                args.kernel,
+                args.base_initramfs,
+                args.image,
+                &options,
+            )?;
+        }
         (Package::Faults, Backend::Native) => {
             return Err("the faults package requires --backend consonance".into());
         }
@@ -105,7 +100,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
             )?;
         }
     }
-    println!("artifacts   {}", options.output.display());
+    println!("artifacts   {}", output.display());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -129,10 +124,18 @@ fn read_replay(
     Ok(Some(recorded.actions))
 }
 
+fn nes_options(args: &Args) -> Result<SearchOptions, Box<dyn Error>> {
+    Ok(SearchOptions {
+        seed: args.seed,
+        workers: u32::try_from(consonance_client::placement::CorePool::detect()?.max_workers())?,
+        executions: args.executions,
+        output: args.out.clone(),
+    })
+}
+
 fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error>> {
     Ok(faults_workload::Options {
         seed: args.seed,
-        workers: args.workers,
         executions: args.executions,
         ram_mib: args.ram_mib,
         knobs: args
@@ -143,7 +146,6 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
             .map(str::to_owned)
             .collect(),
         wall_minutes: args.wall_minutes,
-        snapshot_cache_mib: args.snapshot_cache_mib,
         output: args.out.clone(),
     })
 }
@@ -246,9 +248,9 @@ fn run_faults_consonance(
         all(target_os = "macos", target_arch = "aarch64")
     ))]
     {
-        let placement = match replay {
+        let resources = match replay {
             Some(_) => None,
-            None => Some(consonance_client::placement::CorePool::detect()?.plan(options.workers)?),
+            None => Some(faults_workload::package::resources(options)?),
         };
         let installed =
             crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
@@ -274,7 +276,7 @@ fn run_faults_consonance(
                 &artifacts,
                 &prepared.vocabulary,
                 options,
-                &placement.ok_or("search requires a worker placement")?,
+                &resources.ok_or("search requires worker resources")?,
                 Some(consonance_client::session::WorkerLauncher::current_exe(
                     vec![SESSION_WORKER.into()],
                 )?),
@@ -318,7 +320,6 @@ mod tests {
             package,
             backend: Some(backend),
             seed: 1,
-            workers: 1,
             executions: 1,
             out: PathBuf::from("missing-output"),
             core: None,
@@ -328,7 +329,6 @@ mod tests {
             ram_mib: 1024,
             knobs: None,
             wall_minutes: None,
-            snapshot_cache_mib: None,
             replay: None,
             repeat: 1,
         }
