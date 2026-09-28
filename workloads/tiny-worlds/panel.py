@@ -52,8 +52,10 @@ WORLDS = {
                                      "timing": 5}, 1),
     "boss by the door": ({"inner": 2, "farms": 4, "farm_cap": 14, "boss_stock": 8, "boss_hits_back": True,
                           "approach_drain": True, "boss_by_door": True, "tail_slots": True}, 1),
+    "boss beside a late item": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 8, "boss_hits_back": True,
+                                 "late_item": True}, 1),
 }
-BUDGETS = {"boss by the door": 600_000}
+BUDGETS = {"boss by the door": 600_000, "boss beside a late item": 600_000}
 
 
 def pattern(length: int) -> int:
