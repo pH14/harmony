@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_tier_items_boss_engaged_mother_brain_defeat_item_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_tier_items_boss_engaged_mother_brain_defeat_item_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
 pub const PREFERENCE_IDENTIFIER: &str =
     "items_tanks_missiles_health_then_items_tanks_health_missiles";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
@@ -30,7 +30,7 @@ const BOSS_DAMAGE_BUCKET: u16 = 4;
 pub type MetroidArchive =
     Archive<ButtonChord, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct MetroidArchiveKey {
     pub items: u8,
     pub tanks: u8,
@@ -47,6 +47,58 @@ pub struct MetroidArchiveKey {
     pub columns: u8,
     pub health: u16,
     pub missiles: u8,
+    pub missile_capacity: u8,
+    pub energy_tanks: u8,
+}
+
+type OrderedKey = (
+    (u8, u8, u8, u16, u16, u8),
+    (u8, u8, u8, u8, u8, u8),
+    (u8, u16, u8),
+);
+
+impl MetroidArchiveKey {
+    fn ordered(self) -> OrderedKey {
+        (
+            (
+                self.items,
+                self.tanks,
+                self.boss_damage,
+                self.boss_health,
+                self.boss_health_seen,
+                self.area,
+            ),
+            (
+                self.map_x,
+                self.map_y,
+                self.x,
+                self.y,
+                self.posture,
+                self.door,
+            ),
+            (self.columns, self.health, self.missiles),
+        )
+    }
+}
+
+impl PartialEq for MetroidArchiveKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.ordered() == other.ordered()
+    }
+}
+
+impl Eq for MetroidArchiveKey {}
+
+impl PartialOrd for MetroidArchiveKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MetroidArchiveKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.ordered().cmp(&other.ordered())
+    }
 }
 
 impl ArchiveKey for MetroidArchiveKey {
@@ -168,6 +220,8 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         columns: state.zebetite_hits_left,
         health,
         missiles,
+        missile_capacity: state.missile_capacity,
+        energy_tanks: state.energy_tanks,
     }
 }
 
@@ -810,12 +864,38 @@ mod tests {
             columns: 4,
             health: 299,
             missiles: 25,
+            missile_capacity: 105,
+            energy_tanks: 2,
         };
         let json: MetroidArchiveKey =
             serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert_eq!(json, key);
+        assert_eq!((json.missile_capacity, json.energy_tanks), (105, 2));
         let postcard: MetroidArchiveKey =
             postcard::from_bytes(&postcard::to_allocvec(&key).unwrap()).unwrap();
         assert_eq!(postcard, key);
+        assert_eq!((postcard.missile_capacity, postcard.energy_tanks), (105, 2));
+    }
+
+    #[test]
+    fn capacities_leave_the_tier_place_identity_order_and_preferences_unchanged() {
+        let mut stocked = state(100, 300, 0);
+        stocked.missile_capacity = 35;
+        stocked.energy_tanks = 2;
+        let key = archive_key(stocked);
+        assert_eq!((key.missile_capacity, key.energy_tanks), (35, 2));
+        let bare = MetroidArchiveKey {
+            missile_capacity: 0,
+            energy_tanks: 0,
+            ..key
+        };
+        assert_eq!(key, bare);
+        assert_eq!(key.cmp(&bare), Ordering::Equal);
+        assert_eq!(key.progress(), bare.progress());
+        assert_eq!(key.place(), bare.place());
+        assert_eq!(key.identity(), bare.identity());
+        for preference in 0..MetroidArchiveKey::preferences() {
+            assert_eq!(key.preference_cmp(preference, bare), Ordering::Equal);
+        }
     }
 }
