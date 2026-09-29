@@ -749,8 +749,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         e.crossing_first_entry_work.get_or_insert(0);
                     }
                     if before.position < w.cells && after.position >= w.cells {
-                        e.crossing_first_entry_work
-                            .get_or_insert(observation.execution_work);
+                        e.crossing_first_entry_work.get_or_insert(reached_work);
                     }
                     if !w.goal(before) {
                         e.crossing_actions += u64::from(before.position >= w.cells);
