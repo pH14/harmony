@@ -96,7 +96,7 @@ prefix of its key. `CacheIndex` is the interface workers use:
 |---|---|
 | `lookup(namespace, key)` | a lease on the longest cached prefix |
 | `extent(len)` | a writable region, after evicting entries to fit the budget |
-| `publish(namespace, key, parent, extent)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
+| `publish(namespace, key, parent, extent, cost)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
 | `chain(lease)` | the entry's extents, anchor first |
 | `release(lease)` | the entry can be evicted again |
 | `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
@@ -109,10 +109,24 @@ the pages a snapshot changed over its parent with their BLAKE3 hashes, the pages
 that returned to the setup content, and the sparse sidecar, with a SHA-256
 checksum over everything except the page data. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
-an import reads at most 32 extents. Eviction takes the least recently used
-entry that has no lease and no children. The budget counts every allocated
-extent, including evicted extents in segments that still hold live ones; a
-segment is freed when its last extent dies. The budget also counts the bytes
+an import reads at most 32 extents.
+
+Eviction takes, among entries with no lease and no children, the one with the
+lowest priority, using GreedyDual-Size (Cao and Irani, 1997). An entry's cost
+is the work needed to rebuild it from its parent; the faults workload passes
+the guest time of the action that produced it. When an entry is published or
+leased its priority becomes a floor plus its cost per extent byte, and each
+eviction raises the floor to the evicted priority. A cheap, large entry goes
+before a costly, small one, and an entry nobody leases falls behind as the
+floor rises. A search that re-runs evicted prefixes spends most of its extra
+time on the costly ones, so this rule keeps them.
+
+On Linux a freed extent's pages are released by punching a hole in the
+segment's memfd, and the budget stops counting the extent at once. Elsewhere
+the budget counts every allocated extent, including freed extents in segments
+that still hold live ones. A segment is unmapped when its last extent dies.
+Each live segment holds one descriptor, so a faults search raises its soft
+open-file limit to the hard limit on Linux. The budget also counts the bytes
 each worker's local snapshot store reports, so the cache gets what the stores
 leave. When nothing can be evicted the index refuses the extent and the worker
 keeps its snapshot local. A report that leaves the total over budget after

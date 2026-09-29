@@ -115,6 +115,7 @@ pub trait CacheIndex: Send + Sync + std::fmt::Debug {
         key: &[u8],
         parent: Option<&Lease>,
         extent: WritableExtent,
+        cost: u64,
     ) -> Result<Lease, CacheError>;
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError>;
     fn release(&self, lease: Lease);
@@ -130,9 +131,16 @@ struct Entry {
     parent: Option<u64>,
     depth: u32,
     extent: CommittedExtent,
+    cost: u64,
     leases: u32,
     children: u32,
-    stamp: u64,
+    priority: u128,
+}
+
+impl Entry {
+    fn worth(&self) -> u128 {
+        (u128::from(self.cost) << 32) / self.extent.span().2.max(1) as u128
+    }
 }
 
 #[derive(Debug)]
@@ -141,20 +149,15 @@ struct State {
     segments: PageSegments,
     entries: BTreeMap<u64, Entry>,
     keys: BTreeMap<Namespace, BTreeMap<Vec<u8>, u64>>,
-    evictable: BTreeSet<(u64, u64)>,
+    evictable: BTreeSet<(u128, u64)>,
     stores: BTreeMap<u64, usize>,
     stored: usize,
     next_id: u64,
-    clock: u64,
+    floor: u128,
     stats: CacheStats,
 }
 
 impl State {
-    fn tick(&mut self) -> u64 {
-        self.clock += 1;
-        self.clock
-    }
-
     fn longest_prefix(&self, namespace: Namespace, key: &[u8]) -> Option<u64> {
         let keys = self.keys.get(&namespace)?;
         let mut probe = key;
@@ -175,13 +178,13 @@ impl State {
     }
 
     fn lease(&mut self, id: u64) -> Result<Lease, CacheError> {
-        let stamp = self.tick();
+        let floor = self.floor;
         let entry = self
             .entries
             .get_mut(&id)
             .ok_or(CacheError::UnknownLease(id))?;
-        self.evictable.remove(&(entry.stamp, id));
-        entry.stamp = stamp;
+        self.evictable.remove(&(entry.priority, id));
+        entry.priority = floor.saturating_add(entry.worth());
         entry.leases += 1;
         Ok(Lease {
             entry: id,
@@ -195,7 +198,7 @@ impl State {
             && entry.leases == 0
             && entry.children == 0
         {
-            self.evictable.insert((entry.stamp, id));
+            self.evictable.insert((entry.priority, id));
         }
     }
 
@@ -203,7 +206,8 @@ impl State {
         let Some(entry) = self.entries.remove(&id) else {
             return;
         };
-        self.evictable.remove(&(entry.stamp, id));
+        self.evictable.remove(&(entry.priority, id));
+        self.floor = self.floor.max(entry.priority);
         if let Some(keys) = self.keys.get_mut(&entry.namespace) {
             keys.remove(&entry.key);
             if keys.is_empty() {
@@ -216,8 +220,13 @@ impl State {
             parent_entry.children -= 1;
             self.settle(parent);
         }
-        self.segments.free(entry.extent.segment_id());
+        self.free(&entry.extent);
         self.stats.evictions += 1;
+    }
+
+    fn free(&mut self, extent: &CommittedExtent) {
+        let (segment_id, offset, len) = extent.span();
+        self.segments.free(segment_id, offset, len);
     }
 
     fn make_room(&mut self, needed: usize) -> Result<(), CacheError> {
@@ -277,7 +286,7 @@ impl LocalIndex {
                 stores: BTreeMap::new(),
                 stored: 0,
                 next_id: 0,
-                clock: 0,
+                floor: 0,
                 stats: CacheStats::default(),
             })),
         }
@@ -290,13 +299,13 @@ impl LocalIndex {
     }
 
     fn abandon(state: Weak<Mutex<State>>) -> segments::Abandon {
-        Box::new(move |segment_id| {
+        Box::new(move |segment_id, offset, len| {
             if let Some(state) = state.upgrade() {
                 state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .segments
-                    .free(segment_id);
+                    .free(segment_id, offset, len);
             }
         })
     }
@@ -330,22 +339,23 @@ impl CacheIndex for LocalIndex {
         key: &[u8],
         parent: Option<&Lease>,
         extent: WritableExtent,
+        cost: u64,
     ) -> Result<Lease, CacheError> {
         let mut state = self.state();
         let committed = extent.commit();
         if let Some(&id) = state.keys.get(&namespace).and_then(|keys| keys.get(key)) {
-            state.segments.free(committed.segment_id());
+            state.free(&committed);
             state.stats.duplicates += 1;
             return state.lease(id);
         }
         let depth = match parent {
             Some(lease) => {
                 let Some(parent) = state.entries.get_mut(&lease.entry) else {
-                    state.segments.free(committed.segment_id());
+                    state.free(&committed);
                     return Err(CacheError::UnknownLease(lease.entry));
                 };
                 if parent.namespace != namespace {
-                    state.segments.free(committed.segment_id());
+                    state.free(&committed);
                     return Err(CacheError::NamespaceMismatch);
                 }
                 parent.children += 1;
@@ -355,20 +365,19 @@ impl CacheIndex for LocalIndex {
         };
         let id = state.next_id;
         state.next_id += 1;
-        let stamp = state.tick();
-        state.entries.insert(
-            id,
-            Entry {
-                namespace,
-                key: key.to_vec(),
-                parent: parent.map(|lease| lease.entry),
-                depth,
-                extent: committed,
-                leases: 1,
-                children: 0,
-                stamp,
-            },
-        );
+        let mut entry = Entry {
+            namespace,
+            key: key.to_vec(),
+            parent: parent.map(|lease| lease.entry),
+            depth,
+            extent: committed,
+            cost,
+            leases: 1,
+            children: 0,
+            priority: 0,
+        };
+        entry.priority = state.floor.saturating_add(entry.worth());
+        state.entries.insert(id, entry);
         state
             .keys
             .entry(namespace)
@@ -480,7 +489,22 @@ mod tests {
         let len = extent_len(rows.len(), reverted.len(), key.len()).unwrap();
         let mut extent = index.extent(len)?;
         write_extent(extent.bytes_mut(), &rows, reverted, key)?;
-        index.publish(namespace, key, parent, extent)
+        index.publish(namespace, key, parent, extent, 1)
+    }
+
+    fn put_costing(index: &LocalIndex, key: &[u8], cost: u64) {
+        let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap()).unwrap();
+        write_extent(extent.bytes_mut(), &[], &[], key).unwrap();
+        let lease = index.publish(ns("a"), key, None, extent, cost).unwrap();
+        index.release(lease);
+    }
+
+    fn held(index: &LocalIndex, key: &[u8]) -> bool {
+        index
+            .state()
+            .keys
+            .get(&ns("a"))
+            .is_some_and(|keys| keys.contains_key(key))
     }
 
     fn resolved(index: &LocalIndex, lease: &Lease) -> (Vec<(u64, u8)>, Vec<u8>) {
@@ -544,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn eviction_takes_the_least_recent_unleased_leaf_and_refuses_when_all_are_held() {
+    fn eviction_takes_an_unleased_leaf_and_refuses_when_all_are_held() {
         let per_entry = extent_len(1, 0, 1).unwrap();
         let index = LocalIndex::with_segment_bytes(3 * per_entry, per_entry);
         let space = ns("a");
@@ -565,7 +589,7 @@ mod tests {
         let d = put(&index, space, b"d", None, &[(3, 1)], &[]).unwrap();
         assert!(
             index.lookup(space, b"b").is_none(),
-            "the oldest leaf went first"
+            "of two equal leaves the earlier one goes first"
         );
         let a = index.lookup(space, b"a").unwrap();
         assert_eq!(a.key_len(), 1);
@@ -574,6 +598,27 @@ mod tests {
         assert!(stats.charged <= stats.budget);
         index.release(a);
         index.release(d);
+    }
+
+    #[test]
+    fn eviction_takes_the_least_cost_per_byte_and_ages_what_stays() {
+        let per_entry = extent_len(0, 0, 1).unwrap();
+        let index = LocalIndex::with_segment_bytes(2 * per_entry, per_entry);
+        put_costing(&index, b"x", 10);
+        put_costing(&index, b"y", 1);
+        put_costing(&index, b"z", 1);
+        assert!(held(&index, b"x"), "the costlier leaf stays");
+        assert!(!held(&index, b"y"), "the cheaper leaf goes first");
+        let mut outlived = 0;
+        for step in 0..32u8 {
+            put_costing(&index, &[step], 1);
+            if !held(&index, b"x") {
+                break;
+            }
+            outlived += 1;
+        }
+        assert!(!held(&index, b"x"), "an unused costly leaf ages out");
+        assert!((2..31).contains(&outlived), "{outlived}");
     }
 
     #[test]

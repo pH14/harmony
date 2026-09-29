@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, io, ptr::NonNull, sync::Arc};
 
 pub const PAGE: usize = 4096;
 pub const SEGMENT_BYTES: usize = 64 << 20;
+pub const RELEASES_EXTENTS: bool = cfg!(all(target_os = "linux", not(miri)));
 
 struct Segment {
     base: NonNull<u8>,
@@ -66,6 +67,30 @@ impl Segment {
         })
     }
 
+    #[cfg(all(target_os = "linux", not(miri)))]
+    fn release(&self, offset: usize, len: usize) -> bool {
+        use std::os::fd::AsRawFd;
+        let (Ok(offset), Ok(len)) = (libc::off_t::try_from(offset), libc::off_t::try_from(len))
+        else {
+            return false;
+        };
+        // SAFETY: fallocate only changes the file behind a descriptor this segment owns; the
+        // range belongs to a freed extent, which no reader or writer holds.
+        unsafe {
+            libc::fallocate(
+                self.backing.as_raw_fd(),
+                libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                offset,
+                len,
+            ) == 0
+        }
+    }
+
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    fn release(&self, _: usize, _: usize) -> bool {
+        false
+    }
+
     fn range(&self, offset: usize, len: usize) -> *mut u8 {
         assert!(
             offset.checked_add(len).is_some_and(|end| end <= self.len),
@@ -91,6 +116,26 @@ impl Drop for Segment {
         unsafe { std::alloc::dealloc(self.base.as_ptr(), self.backing) };
     }
 }
+
+#[cfg(all(target_os = "linux", not(miri)))]
+pub fn raise_descriptor_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit and setrlimit read and write one plain struct owned by this frame.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) == 0
+            && limit.rlim_cur < limit.rlim_max
+        {
+            limit.rlim_cur = limit.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit);
+        }
+    }
+}
+
+#[cfg(not(all(target_os = "linux", not(miri))))]
+pub fn raise_descriptor_limit() {}
 
 #[cfg(all(target_os = "linux", not(miri)))]
 fn shared_file(len: usize) -> io::Result<std::os::fd::OwnedFd> {
@@ -136,7 +181,7 @@ fn shared_file(len: usize) -> io::Result<std::os::fd::OwnedFd> {
     Ok(fd)
 }
 
-pub type Abandon = Box<dyn FnOnce(u64) + Send>;
+pub type Abandon = Box<dyn FnOnce(u64, usize, usize) + Send>;
 
 #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
 #[derive(Clone, Copy, Debug)]
@@ -218,7 +263,7 @@ impl WritableExtent {
 impl Drop for WritableExtent {
     fn drop(&mut self) {
         if let Some(abandon) = self.abandon.take() {
-            abandon(self.segment_id);
+            abandon(self.segment_id, self.offset, self.len);
         }
     }
 }
@@ -251,8 +296,8 @@ impl CommittedExtent {
         unsafe { std::slice::from_raw_parts(start, self.len) }
     }
 
-    pub(crate) fn segment_id(&self) -> u64 {
-        self.segment_id
+    pub(crate) fn span(&self) -> (u64, usize, usize) {
+        (self.segment_id, self.offset, self.len)
     }
 
     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
@@ -269,6 +314,7 @@ impl CommittedExtent {
 struct SegmentUse {
     segment: Arc<Segment>,
     used: usize,
+    released: usize,
     extents: usize,
 }
 
@@ -340,6 +386,7 @@ impl PageSegments {
                     SegmentUse {
                         segment,
                         used: 0,
+                        released: 0,
                         extents: 0,
                     },
                 );
@@ -361,11 +408,15 @@ impl PageSegments {
         })
     }
 
-    pub fn free(&mut self, segment_id: u64) {
+    pub fn free(&mut self, segment_id: u64, offset: usize, len: usize) {
         let Some(used) = self.segments.get_mut(&segment_id) else {
             return;
         };
         used.extents = used.extents.saturating_sub(1);
+        if used.extents > 0 && used.segment.release(offset, len) {
+            used.released += len;
+            self.charged -= len;
+        }
         if used.extents == 0 && self.open == Some(segment_id) {
             self.open = None;
         }
@@ -379,7 +430,7 @@ impl PageSegments {
             .is_some_and(|used| used.extents == 0)
             && let Some(used) = self.segments.remove(&segment_id)
         {
-            self.charged -= used.used;
+            self.charged -= used.used - used.released;
         }
     }
 }
@@ -402,25 +453,39 @@ mod tests {
         assert!(a.bytes().iter().all(|&byte| byte == 1));
         assert!(b.bytes().iter().all(|&byte| byte == 2));
         assert_eq!((a.offset(), b.offset()), (0, PAGE));
-        assert_eq!(a.segment_id(), b.segment_id());
+        assert_eq!(a.span().0, b.span().0);
+    }
+
+    fn free(segments: &mut PageSegments, extent: &CommittedExtent) {
+        let (segment_id, offset, len) = extent.span();
+        segments.free(segment_id, offset, len);
     }
 
     #[test]
     fn a_segment_is_released_when_its_last_extent_dies_after_it_closes() {
+        let dead = if RELEASES_EXTENTS { 0 } else { PAGE };
         let mut segments = PageSegments::new(2 * PAGE);
-        let a = segments.allocate(PAGE).unwrap().commit();
+        let mut a = segments.allocate(PAGE).unwrap();
+        a.bytes_mut().fill(1);
+        let a = a.commit();
         let b = segments.allocate(PAGE).unwrap().commit();
-        segments.free(a.segment_id());
-        assert_eq!(segments.charged(), 2 * PAGE, "the open segment stays");
+        free(&mut segments, &a);
+        assert_eq!(segments.charged(), PAGE + dead, "the open segment stays");
         let c = segments.allocate(PAGE).unwrap().commit();
-        assert_ne!(c.segment_id(), b.segment_id());
+        assert_ne!(c.span().0, b.span().0);
         assert_eq!(segments.segments(), 2);
         assert_eq!(
             segments.charged(),
-            3 * PAGE,
-            "a dead extent in a live segment is charged"
+            2 * PAGE + dead,
+            "a dead extent is charged until its pages are released"
         );
-        segments.free(b.segment_id());
+        if RELEASES_EXTENTS {
+            assert!(
+                a.bytes().iter().all(|&byte| byte == 0),
+                "a released extent reads as zeros"
+            );
+        }
+        free(&mut segments, &b);
         assert_eq!(segments.segments(), 1);
         assert_eq!(segments.charged(), PAGE);
         assert!(
@@ -443,9 +508,11 @@ mod tests {
         let mut segments = PageSegments::new(2 * PAGE);
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut extent = segments.allocate(PAGE).unwrap();
-        extent.set_abandon(Box::new(move |id| sender.send(id).unwrap()));
+        extent.set_abandon(Box::new(move |id, offset, len| {
+            sender.send((id, offset, len)).unwrap();
+        }));
         let id = extent.segment_id;
         drop(extent);
-        assert_eq!(receiver.try_recv().unwrap(), id);
+        assert_eq!(receiver.try_recv().unwrap(), (id, 0, PAGE));
     }
 }

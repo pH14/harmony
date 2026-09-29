@@ -68,6 +68,7 @@ pub trait SearchSession: std::fmt::Debug {
         key: &[u8],
         parent: Option<(SnapId, &Lease)>,
         target: SnapId,
+        cost: u64,
     ) -> Result<Lease, Box<dyn Error>>;
     fn import_cached(
         &mut self,
@@ -136,8 +137,9 @@ impl SearchSession for Session {
         key: &[u8],
         parent: Option<(SnapId, &Lease)>,
         target: SnapId,
+        cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        Session::publish_snapshot(self, index, namespace, key, parent, target)
+        Session::publish_snapshot(self, index, namespace, key, parent, target, cost)
     }
 
     fn import_cached(
@@ -773,6 +775,7 @@ impl SearchSession for WorkerSession {
         key: &[u8],
         parent: Option<(SnapId, &Lease)>,
         target: SnapId,
+        cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let reply = self.call(
@@ -788,7 +791,7 @@ impl SearchSession for WorkerSession {
         let SharedRange { fd, offset, len } = extent.shared_range();
         let reply = self.call(Out::op(WRITE_EXTENT).len(offset).len(len), &[fd])?;
         In(&reply).finish()?;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent)?)
+        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
     }
 
     fn import_cached(
@@ -1174,6 +1177,7 @@ mod tests {
             _: &[u8],
             _: Option<(SnapId, &Lease)>,
             _: SnapId,
+            _: u64,
         ) -> Result<Lease, Box<dyn Error>> {
             Err("a served session publishes through its coordinator".into())
         }
@@ -1391,7 +1395,7 @@ mod tests {
         first.run_until(40).unwrap();
         let (snap, _) = first.snapshot().unwrap();
         let lease = first
-            .publish_snapshot(&index, namespace(), b"key", None, snap)
+            .publish_snapshot(&index, namespace(), b"key", None, snap, 1)
             .unwrap();
         let (imported, _) = second.import_cached(&index, &lease, SnapId(1)).unwrap();
         assert_eq!(second.state_hash().unwrap(), first.state_hash().unwrap());
@@ -1424,7 +1428,7 @@ mod tests {
         let index = LocalIndex::new(1 << 20);
         let (snap, _) = session.snapshot().unwrap();
         let error = session
-            .publish_snapshot(&index, namespace(), b"key", None, snap)
+            .publish_snapshot(&index, namespace(), b"key", None, snap, 1)
             .unwrap_err();
         assert!(error.to_string().contains("session worker"), "{error}");
         server.join().unwrap();
@@ -1435,7 +1439,7 @@ mod tests {
         let (mut next, next_server) = threaded(3);
         let (snap, _) = next.snapshot().unwrap();
         let lease = next
-            .publish_snapshot(&index, namespace(), b"key", None, snap)
+            .publish_snapshot(&index, namespace(), b"key", None, snap, 1)
             .unwrap();
         assert_eq!(index.stats().entries, 1);
         index.release(lease);
@@ -1451,7 +1455,7 @@ mod tests {
         owner.run_until(40).unwrap();
         let (snap, _) = owner.snapshot().unwrap();
         let owned = owner
-            .publish_snapshot(index.as_ref(), namespace(), b"key", None, snap)
+            .publish_snapshot(index.as_ref(), namespace(), b"key", None, snap, 1)
             .unwrap();
         let read = index.lookup(namespace(), b"key").unwrap();
         reader
@@ -1477,7 +1481,7 @@ mod tests {
         kill(&unpublished);
         assert!(
             unpublished
-                .publish_snapshot(index.as_ref(), namespace(), b"other", None, snap)
+                .publish_snapshot(index.as_ref(), namespace(), b"other", None, snap, 1)
                 .is_err()
         );
         drop(unpublished);

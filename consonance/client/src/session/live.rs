@@ -239,6 +239,7 @@ impl Session {
         key: &[u8],
         parent: Option<(SnapId, &Lease)>,
         target: SnapId,
+        cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let extent = self.write_delta(
@@ -247,7 +248,7 @@ impl Session {
             |len| Ok(index.extent(len)?),
             WritableExtent::bytes_mut,
         )?;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent)?)
+        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
     }
 
     pub(super) fn write_delta<T>(
