@@ -80,7 +80,7 @@ missing prefix is rebuilt from the chain's longest matching link.
 One memory budget covers the shared cache and every worker's local snapshot
 store. It is the free memory left after a 1 GiB reserve and each worker's guest
 RAM plus 512 MiB; the worker count drops until each worker also has room for a
-store as large as its guest RAM. Before each execution a worker reports its
+store as large as its guest RAM. On macOS a search runs at most four workers. Before each execution a worker reports its
 store's resident bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its chain
 back to the setup snapshot. The run prints the worker count and budget, and

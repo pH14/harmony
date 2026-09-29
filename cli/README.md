@@ -57,7 +57,9 @@ count until every guest and its setup snapshot fit the free memory (the
 cgroup's `memory.max` minus usage, or `MemAvailable` outside a limit) with a
 1 GiB reserve. `taskset`, `systemd-run -p AllowedCPUs=` or `-p CPUQuota=`, and
 `-p MemoryMax=` therefore set the size of a run. On macOS the pool is the
-performance cores and threads are left unpinned. Each worker's VM runs in its
+performance cores, threads are left unpinned, and a faults search runs at most
+four workers, because more concurrent Hypervisor.framework VMs have crashed
+macOS hosts. Each worker's VM runs in its
 own child process, the same `harmony` binary started with the hidden
 `session-worker` command, so it carries the binary's HVF entitlement.
 
