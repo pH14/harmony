@@ -319,8 +319,6 @@ mod live {
     const WORKER_OVERHEAD_MIB: u64 = 512;
     #[cfg(target_os = "macos")]
     const VM_WORKER_LIMIT: usize = 4;
-    #[cfg(not(target_os = "macos"))]
-    const VM_WORKER_LIMIT: usize = usize::MAX;
 
     #[derive(Clone, Debug)]
     pub struct Resources {
@@ -330,9 +328,12 @@ mod live {
 
     pub fn resources(options: &Options) -> Result<Resources, String> {
         let pool = CorePool::detect()?;
+        let cores = pool.max_workers();
+        #[cfg(target_os = "macos")]
+        let cores = cores.min(VM_WORKER_LIMIT);
         let guest = u64::from(options.ram_mib) << 20;
         let memory = plan_memory(
-            pool.max_workers().min(VM_WORKER_LIMIT),
+            cores,
             guest.saturating_add(WORKER_OVERHEAD_MIB << 20),
             guest,
         )?;
