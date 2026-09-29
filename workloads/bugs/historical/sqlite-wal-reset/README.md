@@ -1,7 +1,6 @@
-# SQLite 3.51.2 — WAL reset loses committed writes
+# SQLite 3.51.2 — WAL reset corrupts the database
 
-**Status: searching.** The case runs the fork's own harness unmodified; it has
-no in-tree record of a find yet.
+The case runs the fork's own harness unmodified.
 
 ## Sources
 
@@ -39,9 +38,13 @@ search sees 25 assertions:
 
 ## Oracle
 
-Any Always violation is a finding. The manifest names the loss assertion,
-`no-lost-committed-writes`, which each writer checks by comparing its row
-count and maximum sequence with its own committed sequence. The
+Any Always violation is a finding. The manifest names
+`integrity-check-clean: PRAGMA quick_check returns ok`. A checkpoint that
+resumes after another writer reset the WAL copies stale frames into the
+database file, and the damaged pages fail the checks each writer's sweep runs:
+`PRAGMA quick_check` on three of four sweeps and `PRAGMA integrity_check` on
+the rest. The rows a writer committed can still be present, so
+`no-lost-committed-writes` can hold after the corruption. The
 `workload: process started` Reachable is the evidence that a writer ran.
 
 ## Running
