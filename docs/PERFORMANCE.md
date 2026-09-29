@@ -3,9 +3,7 @@
 How fast could a search run on a given chip, and where does the time go when
 it falls short? We estimate that ceiling from the native CPU time of the
 workload, then account for the gap using measurements of host overhead,
-repeated work, and worker utilization. The worked examples are measurements
-from specific hardware and implementations; they illustrate the model and
-will change as the system evolves.
+repeated work, and worker utilization.
 
 ## The model
 
@@ -112,52 +110,10 @@ search to reach the ceiling.
 > E-core achieved 0.56 of the P-core's execution rate, while the Cortex-A520
 > achieved 0.17 of the Cortex-A720's rate.
 
-> [!NOTE]
-> **Worked example: etcd on every core of one type.**
->
-> Adding workers improved throughput, but the gains fell well short of linear
-> scaling. On the Intel 285HX, eight P-core workers reached 5.6 executions per
-> second, a 2.6x speedup over one worker. Sixteen E-core workers reached 4.2 per
-> second, a 3.5x speedup. On the CIX CP8180, eight Cortex-A720 workers reached
-> 1.3 per second, a 3.2x speedup.
->
-> | Factor | 8 P-cores | 16 E-cores | 8 Cortex-A720 |
-> |---|---|---|---|
-> | Host overhead | 2.9x | 3.3x | 4.2x |
-> | Re-execution | 4.1x | 4.9x | 3.5x |
-> | Worker waiting | 1.5x | 1.9x | 1.6x |
-> | Contention | 1.4x | 1.4x | 1.3x |
-> | Gap to the cores' ceiling | 24x | 44x | 29x |
->
-> Re-execution increased because workers keep separate sets of retained states
-> and repeat prefixes already run by other workers. Restores also became more
-> expensive per page, suggesting contention for memory bandwidth. Although the
-> coordinator spent less than 0.4 ms per job, workers still waited; this includes
-> time spent holding finished results until earlier results could be admitted.
-
 A search report's `telemetry` records the inputs to each factor: worker busy,
 idle, and scheduler wait time, host time by exit site and snapshot operation,
-and new against re-run work in both host and virtual time.
-
-> [!NOTE]
-> **Worked example: where one etcd worker's time goes.**
->
-> One Cortex-A720 worker on a CIX CP8180 ran the etcd search at 1,735
-> executions per hour and was busy 98.5% of the time. Re-running evicted
-> prefixes took more of that time than new work did:
->
-> | Part of busy time | Share |
-> |---|---|
-> | Running new actions | 38% |
-> | Re-running evicted prefixes | 46% |
-> | Sealing snapshots | 8% |
-> | Branching and restoring | 7% |
->
-> Total virtual time run was 2.16 times the new virtual time. Inside those
-> runs, servicing exits took 18% of busy time, and 11% went to one register:
-> the fence the guest writes each time it unmasks interrupts. The virtual-time
-> tick took another 6%. Completing each MMIO store with a second `KVM_RUN`
-> took 16%, at 1.7 µs per store.
+and new against re-run work in both host and virtual time. Estimate guest time
+as worker busy time multiplied by the fraction of cycles spent in the guest.
 
 ## Exits
 
@@ -170,17 +126,9 @@ advance the virtual clock, add to this minimum.
 The cost depends on how often the guest exits relative to the work it does
 between exits. Multiply the exit count by the cost per exit, then divide by
 guest time to get the overhead. At 2.5 µs per exit, exiting every 25 µs of
-guest work adds 10%; exiting every 2.5 µs doubles the total time.
-
-> [!NOTE]
-> **Worked example: etcd exit costs.**
->
-> The etcd search on one Intel 285HX P-core made 75,000 exits per execution
-> during 148 ms of guest time, or roughly one exit every 2 µs. Most were ticks
-> used to advance the virtual clock. At about 2.5 µs per exit, the host spent
-> 1.3 times as long handling exits as the guest spent running. On a CIX CP8180
-> (Cortex-A720), the same search made 262,000 exits per execution at about
-> 5.8 µs each, costing roughly three times the guest time.
+guest work adds 10%; exiting every 2.5 µs doubles the total time. In a Linux
+guest, most exits are ticks that advance the virtual clock, and a register the
+guest writes each time it unmasks interrupts can cost more than any device.
 
 ## Pages
 
@@ -191,32 +139,11 @@ those states are in the tree, the more pages generally need to be copied.
 
 As with exits, page overhead is the number of copies per execution multiplied
 by the cost of each copy, divided by guest time. Hashing pages or scanning
-memory to find changed pages adds to that cost.
-
-> [!NOTE]
-> **Worked example: snapshot copies on macOS.**
->
-> The macOS backend illustrates how expensive this can become without a record
-> of changed pages. With Hypervisor.framework, each restore and snapshot copies
-> all of guest RAM. In the etcd search on an M1 Max (Firestorm), that meant
-> copying all 262,144 pages of a 1 GiB guest: 2.8 µs per page to restore and
-> 1.0 µs per page to capture, including hashing. These copies consumed 96% of
-> the worker's time, limiting it to 0.20 executions per second.
->
-> With dirty-page tracking and kept restore images, the same search copies only
-> changed pages. One M1 Max worker then ran 3.1 executions per second and four
-> ran 12.5, with restores at 6% and snapshot capture at 26% of busy time.
-
-> [!NOTE]
-> **Worked example: restores in etcd.**
->
-> A restore copies only the pages that differ between the VM's current image
-> and the parent while the store still holds the current image. When a search
-> released the image the VM sat on, 234 of 240 etcd executions restored all
-> 262,144 pages of a 1 GiB guest, and restores took 53% of seven Cortex-A720
-> workers' busy time. Keeping a store reference on the current image cut
-> restored pages to about 3,700 per restore and the share to 12%. Reading
-> restore pages without rechecking their BLAKE3 hashes cut it to 5%.
+memory to find changed pages adds to that cost. A backend without a record of
+changed pages copies all of guest RAM on every restore and snapshot, which
+for a 1 GiB guest is 262,144 pages. A restore copies the fewest pages when the
+store still holds the image the VM is on, so the store keeps that image while
+the VM uses it.
 
 ## Re-execution
 
@@ -243,33 +170,15 @@ states to retain between selections to minimize repeated work. If every
 selected state fits, that cost is zero. A live search cannot know future
 selections, so it can only match or exceed this offline cost.
 
+Workers that retain states separately re-run prefixes that other workers
+already ran, so re-execution grows with the worker count. One snapshot cache
+shared by all workers removes that repeat when the selected states fit in its
+budget.
+
 Retention decisions affect what gets executed and must therefore use only
 deterministic inputs. Also, “new work” here means work that has not already
 been run, even if it discovers nothing useful. Search benchmarks evaluate
 whether that work was worth choosing.
-
-> [!NOTE]
-> **Worked example: repeated work in etcd.**
->
-> When each etcd worker retained 96 prefixes of its own, total guest work was
-> 2.4 times new work with one worker, 4.1 times with eight, and 4.9 times with
-> sixteen, measured in virtual time. With one snapshot cache shared by all
-> workers and sized from free memory, the factor fell to 1.00 at one, four and
-> seven Cortex-A720 workers over 240 executions: at seven workers the cache
-> answered 1,043 of 1,050 lookups while holding 10 GB of a 31.5 GB budget.
-> Seven workers then ran 7,127 executions per hour, against 4,437 with the cache
-> off and 4,579 with it limited to 512 MiB.
-
-> [!NOTE]
-> **Worked example: repeated work in SQLite.**
->
-> A SQLite fault search on seven Cortex-A720 workers spent 63% of worker time
-> repeating evicted prefixes when each worker retained its own prefixes. It
-> took 2.15 seconds per execution over 480 executions. With the shared cache,
-> all 2,076 lookups were exact hits and no work was repeated. The search took
-> 0.52 seconds per execution. Each execution ran 29% more guest work because
-> the larger admission window changes which executions run. Per unit of guest
-> work, the search ran 5.4 times faster.
 
 ## Serial work
 
@@ -289,26 +198,10 @@ This introduces three limits to parallelism:
   speedup to total work divided by the work along that chain, regardless of
   how many workers are available.
 
-> [!NOTE]
-> **Worked example: coordinator capacity.**
->
-> For Pokémon Blue, an execution takes 1,326 frames, or 134 ms on an M1 Max
-> (Firestorm). To keep twenty-four workers busy at that rate, the coordinator
-> would need to process each job in under 6 ms. The etcd search leaves much more
-> room: on an Intel 285HX, coordination took 0.2 to 0.4 ms per job while worker
-> executions took 0.5 to 2 s. At those timings, coordinator occupancy alone
-> would allow over a thousand workers.
-
-> [!NOTE]
-> **Worked example: the admission bound.**
->
-> A tiny-worlds search whose transitions sleep 5 ms has executions of one to a
-> few transitions. With the bound at one job per worker, 8 workers were busy
-> 77% of the time and 64 workers 63%; the rest was spent waiting on admission
-> order. With two jobs per worker, workers were busy 99-100% of the time at 8
-> to 64 workers, and 64 workers ran 8.3 times as many executions per second as
-> 8. With 65 µs executions, one coordinator capped the same search near 33,000
-> executions per second at any worker count.
+Short executions leave the coordinator little time per job: with 134 ms
+executions, keeping 24 workers busy needs coordinator time under 6 ms per job.
+When execution times vary, allowing several reserved jobs and finished results
+per worker keeps workers busy while earlier results wait for admission.
 
 ## Memory
 
@@ -317,26 +210,11 @@ states. Each worker holds its guest's resident pages plus any snapshots it
 retains. When workers do not share snapshots, each pays that storage cost
 separately, so capacity planning needs to account for peak resident memory.
 
-> [!NOTE]
-> **Worked example: etcd memory use.**
->
-> The etcd search with eight workers and 1 GiB of guest RAM each started at
-> 8.4 GB resident and reached 29 GB after 2,400 executions. At that footprint,
-> a 62 GB host has room for about sixteen workers.
->
-> With one shared cache sized from free memory, seven workers ran etcd for
-> four hours beside another process holding 16 GiB. The cache filled its 17.8
-> GiB budget in the first twenty minutes and stayed there. Worker memory held
-> at 12.8 GiB. The search's total, counted by its cgroup because the cache
-> lives in memfd files that process RSS omits, peaked at 31.5 GiB over 44,254
-> executions. The host never had less than 5.6 GiB free.
->
-> Under a 20 GiB cgroup memory limit, the same search chose seven workers and
-> an 8.7 GiB budget for the cache and the workers' snapshot stores. Two seeds
-> ran 5,404 and 6,302 executions before each found the bug. Memory held at
-> 17 to 18 GiB after the first twenty minutes and peaked at 18.5 GiB, with no
-> OOM kills. The cache evicted 80,964 and 100,656 entries, and workers dropped
-> their chains 3 and 7 times when eviction alone could not fit the budget.
+A search sizes itself from the memory its cgroup allows, or the host's free
+memory outside a cgroup ([`harmony search`](../cli/README.md)). Each worker
+needs room for its guest. The remainder is one budget shared by the snapshot
+cache and every worker's snapshot store. The shared cache lives in memfd files
+that process RSS omits, so measure a search's memory from its cgroup.
 
 ## Scaling
 
@@ -359,34 +237,19 @@ read and write to restore it.
 When measuring scaling, pin workers to one core type so differences in core
 speed do not distort the comparison. With a fixed admission window the search
 selects the same parents at every worker count, so the runs differ only in
-parallelism. Boot time and final persistence can also dominate short campaigns
-spread across many workers.
-
-> [!NOTE]
-> **Worked example: etcd scaling.**
->
-> For the etcd search, a sweep on each core type produced these execution rates
-> per second:
->
-> | Workers | Intel 285HX P-cores | CIX CP8180 Cortex-A720 |
-> |---|---|---|
-> | 1 | 2.14 | 0.40 |
-> | 2 | 2.75 | 0.74 |
-> | 4 | 4.23 | 1.00 |
-> | 8 | 5.61 | 1.30 |
->
-> Eight workers achieved 2.6x and 3.2x the throughput of one worker on the Intel
-> and CIX chips, respectively. Re-execution, worker waiting, and contention all
-> increased with worker count, while coordinator time stayed below 0.4 ms per
-> job.
+parallelism. Cores of one type can run at different clock speeds, and a
+one-worker run gets the fastest, so compare against one-worker runs on each
+core the full run uses. Boot time and final persistence can also dominate
+short campaigns spread across many workers.
 
 > [!NOTE]
 > **Worked example: etcd on seven Cortex-A720 workers.**
 >
-> With a shared snapshot cache, kept restore images, and four reservations and
-> four finished results per worker, seven Cortex-A720 workers ran 240 etcd
-> executions at 27,739 per hour and 960 at 28,118 per hour. One worker ran
-> 6,038 per hour. Two host limits keep seven workers below seven times one:
+> On a CIX CP8180, seven Cortex-A720 workers run the etcd search at about
+> 27,700 executions per hour, and one worker runs about 6,000. The shared
+> snapshot cache holds every selected state, so re-execution is 1.00, and
+> restores take 5% of busy time. Seven workers run 4.6 times one. Most of the
+> remaining gap comes from the chip:
 >
 > | Setup | Guest time per exit |
 > |---|---|
@@ -398,9 +261,6 @@ spread across many workers.
 > The chip's Cortex-A720 cores run at 2.2 to 2.6 GHz, and one worker gets the
 > fastest. Separate guests slow each other by about 20% through shared caches
 > and memory; a four-worker search is no slower than four separate searches.
-> Each worker also boots its guest for about 5 s. Booting workers while the
-> coordinator runs its own bootstrap guest cut a 240-execution search from 36.4
-> to 31.1 s.
 
 Weak scaling increases the campaign size along with the worker count. This
 still runs into coordinator capacity as jobs per second increase, and memory
