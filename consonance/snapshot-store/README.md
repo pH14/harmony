@@ -100,4 +100,4 @@ the page-aligned memory contract expected by backend memory mapping.
 The store uses ordered layer/page metadata wherever iteration is observable;
 content-addressed page lookup is private and lookup-only. Builder drops release
 any buffered page references. Oracle, stateful, integrity, copy-on-write,
-performance-shape, and public-API tests cover the storage semantics.
+and performance-shape tests cover the storage semantics.

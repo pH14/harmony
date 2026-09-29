@@ -42,7 +42,7 @@ failed restores leave the dispatcher unchanged.
 non-zero state for snapshots. The network service carries environment answer
 bytes opaquely; this crate does not depend on the environment catalog.
 
-Golden, protocol, stateful, and public-API tests cover frame canonicalization,
+Golden, protocol, and stateful tests cover frame canonicalization,
 service routing, state restoration, and client-side bounds. The crate is
 portable and contains no hypervisor-specific device code.
 

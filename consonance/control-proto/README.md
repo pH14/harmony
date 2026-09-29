@@ -52,6 +52,6 @@ the execution and save a different endpoint.
 - `error.rs` separates wire failures from backend/control failures.
 - `codec.rs` implements little-endian framing and the bounds-checked reader.
 
-Golden-byte, round-trip, streaming, negotiation, malformed-input, loopback, and
-public-API tests exercise the codec. The crate has no hypervisor or socket
+Golden-byte, round-trip, streaming, negotiation, malformed-input, and
+loopback tests exercise the codec. The crate has no hypervisor or socket
 dependency and is usable as a portable host-side protocol library.

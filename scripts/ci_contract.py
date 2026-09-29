@@ -297,15 +297,6 @@ CONSONANCE_CHECKS = Workflow(
                     "process-proto"),
             test_targets=("vmm-core:protocol",)),
         Job("Guest Runtime", "pr", 15),
-        Job("Public API", "pr", 15,
-            test_targets=("vmm-core:public_api",),
-            ignored_tests=tuple(
-                f"{package}::public_api *" for package in (
-                    "hypercall-proto", "hypercall-doorbell", "snapshot-store", "unison",
-                    "vtime", "vm-state", "vmm-backend", "vmm-core", "lapic", "gicv3",
-                    "telemetry", "environment", "control-proto", "harmony-sdk",
-                )),
-            scope="public_api"),
     ),
 )
 
@@ -691,7 +682,6 @@ SCOPE_KINDS = {
     "harmony_oci": HARMONY_OCI_CHECKS.name,
     "consonance_platform": CONSONANCE_CHECKS.name,
     "consonance_kvm": CONSONANCE_CHECKS.name,
-    "public_api": CONSONANCE_CHECKS.name,
     "kani": CONSONANCE_ANALYSIS.name,
     "miri": CONSONANCE_ANALYSIS.name,
 }

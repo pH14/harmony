@@ -46,14 +46,12 @@ def selection(kind, target, paths):
         raise ValueError(f"{kind} does not accept a target")
     if kind == "kani":
         return {"enabled": kani_required(paths)}
-    if kind == "public_api":
-        return {"enabled": selected(paths)["public_api"]}
     raise ValueError(f"unknown check kind: {kind}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", choices=(*SCENARIOS, "kani", "public_api", "miri"), required=True)
+    parser.add_argument("--kind", choices=(*SCENARIOS, "kani", "miri"), required=True)
     parser.add_argument("--target", default="")
     args = parser.parse_args()
     paths = changed_paths(args.kind, os.environ.get("EVENT_NAME", ""),

@@ -20,7 +20,7 @@ class ScopeTests(unittest.TestCase):
                       for workflow in ci_contract.WORKFLOWS
                       for job in workflow.jobs
                       if job.scope}
-        self.assertEqual(set(SCENARIOS) | {"public_api", "kani", "miri"}, registered)
+        self.assertEqual(set(SCENARIOS) | {"kani", "miri"}, registered)
 
     def test_a_searcher_change_runs_both_nes_compositions_and_nothing_else(self):
         self.assertEqual(self.active("dissonance/searcher/src/search/archive.rs"),
@@ -44,11 +44,11 @@ class ScopeTests(unittest.TestCase):
 
     def test_backend_changes_select_both_execution_scenarios(self):
         self.assertEqual(self.active("consonance/vmm-backend/src/kvm.rs"),
-                         {"consonance_platform", "consonance_kvm", "harmony_nes", "public_api"})
+                         {"consonance_platform", "consonance_kvm", "harmony_nes"})
 
     def test_the_shared_process_protocol_selects_its_consumers(self):
         self.assertEqual(self.active("consonance/process-proto/src/events.rs"),
-                         {"consonance_platform", "harmony_nes", "harmony_oci", "public_api"})
+                         {"consonance_platform", "harmony_nes", "harmony_oci"})
 
     def test_the_nes_guest_runs_through_both_compositions(self):
         self.assertEqual(self.active("workloads/nes-guest/src/agent.rs"),
@@ -63,7 +63,7 @@ class ScopeTests(unittest.TestCase):
                      "scripts/ci_contract.py", ".github/actions/platform-runtime/action.yml",
                      ".github/workflows/consonance-checks.yml"):
             with self.subTest(path=path):
-                self.assertEqual(self.active(path), set(SCENARIOS) | {"public_api"})
+                self.assertEqual(self.active(path), set(SCENARIOS))
 
     def test_guest_preparation_changes_select_the_nova_consumer(self):
         for path in (".github/actions/prepare-nes-guest/action.yml",

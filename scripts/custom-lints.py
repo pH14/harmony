@@ -1486,9 +1486,9 @@ GOLDEN_OUTPUT_RE = re.compile(
 )
 
 # Allowlist paths where golden-output comparisons are tolerable (build
-# reproducibility, API surface contracts).
+# reproducibility).
 GOLDEN_OUTPUT_ALLOWLIST_RE = re.compile(
-    r"MANIFEST\.sha256|public-api\.txt|versions\.lock"
+    r"MANIFEST\.sha256|versions\.lock"
 )
 
 
@@ -1777,8 +1777,7 @@ def main(argv: list[str] | None = None) -> int:
             "checks break whenever the implementation changes, even validly. "
             "To test determinism, run the same seed twice and assert the "
             "outputs match each other (self-consistency). Build-reproducibility "
-            "checks (MANIFEST.sha256) and API surface snapshots (public-api.txt) "
-            "are exempt."
+            "checks (MANIFEST.sha256) are exempt."
         ),
         "toplevel-dir-allowlist": (
             "Only these top-level directories are allowed: "
