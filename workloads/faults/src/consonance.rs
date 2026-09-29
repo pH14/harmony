@@ -761,7 +761,12 @@ impl Live {
         Ok(point)
     }
 
-    fn publish(&mut self, actions: &[FaultAction], snap: SnapId) -> Result<Option<Lease>, String> {
+    fn publish(
+        &mut self,
+        actions: &[FaultAction],
+        snap: SnapId,
+        cost: u64,
+    ) -> Result<Option<Lease>, String> {
         let Some(shared) = self.chain.shared() else {
             return Ok(None);
         };
@@ -772,6 +777,7 @@ impl Live {
             &actions_key(actions),
             self.chain.parent_for(actions.len()),
             snap,
+            cost,
         );
         self.telemetry.publishes.since(publish_started);
         match published {
@@ -794,8 +800,9 @@ impl Live {
         actions: &[FaultAction],
         snap: SnapId,
         moment: u64,
+        from: u64,
     ) -> Result<Point, String> {
-        let lease = self.publish(actions, snap)?;
+        let lease = self.publish(actions, snap, moment.saturating_sub(from))?;
         self.push_link(actions, Point { snap, moment }, lease)
     }
 
@@ -853,7 +860,7 @@ impl Live {
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
-            last = self.seal_link(&actions[..=index], snap, moment)?;
+            last = self.seal_link(&actions[..=index], snap, moment, last.moment)?;
         }
         Ok(Ok(last))
     }
@@ -889,7 +896,7 @@ impl Live {
         self.branch(parent, &next)?;
         let (observation, sealed) = self.run_action(&next, prefix.len(), parent.moment, kind)?;
         if let Some((snap, moment)) = sealed {
-            self.seal_link(&next, snap, moment)?;
+            self.seal_link(&next, snap, moment, parent.moment)?;
         }
         Ok(observation)
     }

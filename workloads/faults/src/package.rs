@@ -292,7 +292,7 @@ mod live {
     use std::{error::Error, io::BufWriter, sync::Arc, time::Instant};
 
     use consonance_client::{
-        cache::{CacheIndex, LocalIndex, plan_memory},
+        cache::{CacheIndex, LocalIndex, plan_memory, segments},
         placement::{CorePool, Placement, pin_current_thread},
         session::WorkerLauncher,
     };
@@ -382,6 +382,7 @@ mod live {
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
+        segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::new(resources.budget));
         let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)
             .with_snapshot_cache(Some(Arc::clone(&cache)))

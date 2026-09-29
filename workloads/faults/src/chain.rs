@@ -230,6 +230,7 @@ mod tests {
                 &actions_key(actions),
                 parent,
                 extent,
+                1,
             )
             .unwrap()
     }
