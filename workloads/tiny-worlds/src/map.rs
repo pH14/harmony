@@ -19,6 +19,7 @@ const DRAIN_ODDS: u64 = 2;
 const LATE_DRAIN_ODDS: u64 = 3;
 const TAIL_ACTIONS: u8 = 3;
 const ENTRY_GOAL_DEPTH: u8 = 4;
+const TANK_HEALTH: u8 = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +59,8 @@ pub struct Config {
     pub late_item: bool,
     #[serde(default)]
     pub item_at_entry: bool,
+    #[serde(default)]
+    pub tanks: u8,
 }
 
 fn one() -> u8 {
@@ -79,6 +82,8 @@ pub struct State {
     pub phase: u8,
     pub tail: u8,
     pub dead: bool,
+    #[serde(default)]
+    pub tanks: u8,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -98,6 +103,7 @@ pub struct Layout {
     pub farm_to_goal: u8,
     pub items: Vec<u8>,
     pub key: Option<u8>,
+    pub tanks: Vec<u8>,
 }
 
 thread_local! {
@@ -198,6 +204,12 @@ impl Config {
         }
         if self.locked && layout.key.is_none() {
             return Err("a locked map needs an outer room for the key".into());
+        }
+        if self.tanks > 8 || (self.tanks > 0 && !self.boss_hits_back) {
+            return Err("map tanks must be at most 8 and need a boss that hits back".into());
+        }
+        if layout.tanks.len() < usize::from(self.tanks) {
+            return Err("the map has too few outer rooms for its tanks".into());
         }
         Ok(())
     }
@@ -456,6 +468,26 @@ impl Config {
             .map(|&farm| from_goal[usize::from(farm)])
             .max()
             .unwrap_or(0);
+        let from_start = self.distances(&doors, 0);
+        let mut tanks: Vec<u8> = (1..self.cells())
+            .filter(|&c| {
+                !inner[usize::from(c)]
+                    && c != door_cell
+                    && c != goal
+                    && Some(c) != key
+                    && !farms.contains(&c)
+                    && !items.contains(&c)
+            })
+            .collect();
+        tanks.sort_by_key(|&c| {
+            (
+                std::cmp::Reverse(
+                    u16::from(from_start[usize::from(c)]) + u16::from(from_door[usize::from(c)]),
+                ),
+                c,
+            )
+        });
+        tanks.truncate(usize::from(self.tanks));
         Layout {
             start_to_door: from_door[0],
             door_to_item: item.map(|item| from_entry[usize::from(item)] + 1),
@@ -476,6 +508,7 @@ impl Config {
             farm_to_goal,
             items,
             key,
+            tanks,
         }
     }
 
@@ -508,6 +541,7 @@ impl Config {
             phase: 0,
             tail: 0,
             dead: false,
+            tanks: 0,
         }
     }
 
@@ -559,6 +593,11 @@ impl Config {
         }
     }
 
+    fn health_limit(&self, layout: &Layout, s: State) -> u8 {
+        self.health_cap(layout)
+            + TANK_HEALTH * u8::try_from(s.tanks.count_ones()).expect("tank count fits")
+    }
+
     fn state_fits(&self, layout: &Layout, s: State) -> bool {
         if s.cell >= self.cells() || s.arm > 4 || s.phase >= self.timing.max(1) {
             return false;
@@ -583,9 +622,10 @@ impl Config {
             && items_fit
             && s.hits <= self.boss_stock
             && (s.hits == 0 || (s.item && s.arm == 0 && s.cell == layout.goal))
-            && s.health <= self.health_cap(layout)
+            && s.health <= self.health_limit(layout, s)
+            && u32::from(s.tanks) < 1 << layout.tanks.len()
             && s.hits + s.stock <= self.cap()
-            && (!self.boss_hits_back || s.hits + s.health <= self.health_cap(layout))
+            && (!self.boss_hits_back || s.hits + s.health <= self.health_limit(layout, s))
             && s.tail < 1 << (2 * TAIL_ACTIONS)
             && (self.gauntlet || self.approach_drain || self.late_item || (s.tail == 0 && !s.dead))
             && (!s.dead || s.health == 0)
@@ -619,13 +659,19 @@ impl Config {
         if next_item(layout, next.found) == Some(cell) {
             next.found |= 1 << next.found.count_ones();
         }
+        if let Some(tank) = layout.tanks.iter().position(|&room| room == cell)
+            && next.tanks & (1 << tank) == 0
+        {
+            next.tanks |= 1 << tank;
+            next.health = self.health_limit(layout, next);
+        }
         if let Some(farm) = layout.farms.iter().position(|&room| room == cell) {
             if self.gauntlet {
                 if self.roll(cell, s.tail ^ 0x80).is_multiple_of(FARM_ODDS) {
-                    next.health = (next.health + 1).min(self.health_cap(layout));
+                    next.health = (next.health + 1).min(self.health_limit(layout, next));
                 }
             } else if farm % 2 == 0 {
-                next.health = (next.health + 1).min(self.health_cap(layout));
+                next.health = (next.health + 1).min(self.health_limit(layout, next));
             } else if self.boss_stock == 0 || next.item || self.late_item {
                 next.stock = (next.stock + 1).min(self.cap());
                 next.health = next.health.saturating_sub(u8::from(self.boss_hits_back));
@@ -836,6 +882,7 @@ impl Config {
 
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
+        let cap = self.health_cap(&self.layout());
         crate::reachable(
             self.initial(),
             |s| self.goal(s),
@@ -843,14 +890,15 @@ impl Config {
                 let next = self.step_with(s, a, false);
                 State {
                     health: if self.late_item {
-                        next.health.min(self.boss_stock + self.farms)
+                        next.health.min(self.boss_stock + self.farms).min(cap)
                     } else if self.boss_hits_back {
-                        next.health
+                        next.health.min(cap)
                     } else {
                         0
                     },
                     tail: 0,
                     stock: next.stock.min(self.boss_stock),
+                    tanks: 0,
                     phase: 0,
                     ..next
                 }
@@ -886,6 +934,7 @@ mod tests {
             tail_slots: false,
             late_item: false,
             item_at_entry: false,
+            tanks: 0,
         }
     }
 
@@ -1550,6 +1599,66 @@ mod tests {
             ..w
         };
         assert!(without_late_item.validate().is_err());
+    }
+
+    #[test]
+    fn tank_rooms_raise_the_health_limit_once_each_off_the_route() {
+        let w = Config {
+            width: 8,
+            height: 8,
+            inner: 20,
+            farms: 4,
+            farm_cap: 63,
+            boss_stock: 8,
+            boss_hits_back: true,
+            late_item: true,
+            item_at_entry: true,
+            tail_slots: true,
+            tanks: 4,
+            ..config(crate::test_seed())
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        assert_eq!(l.tanks.len(), 4);
+        let from_start = w.distances(&l.doors, 0);
+        let from_door = w.distances(&l.doors, l.door_cell);
+        let detour = |c: u8| from_start[usize::from(c)] + from_door[usize::from(c)];
+        let shortest = l.tanks.iter().map(|&c| detour(c)).min().unwrap();
+        for &tank in &l.tanks {
+            assert!(!l.inner[usize::from(tank)] && !l.farms.contains(&tank));
+            assert!(tank != 0 && tank != l.door_cell && tank != l.goal);
+        }
+        assert!(
+            (1..w.cells())
+                .filter(|&c| !l.inner[usize::from(c)]
+                    && !l.farms.contains(&c)
+                    && !l.tanks.contains(&c))
+                .filter(|&c| c != l.door_cell && c != l.goal)
+                .all(|c| detour(c) <= shortest)
+        );
+        let cap = w.health_cap(&l);
+        let first = w.arrive(&l, w.initial(), l.tanks[0]);
+        assert_eq!((first.tanks, first.health), (1, cap + TANK_HEALTH));
+        assert!(w.state_is_bounded(first));
+        let again = w.arrive(&l, State { health: 1, ..first }, l.tanks[0]);
+        assert_eq!((again.tanks, again.health), (1, 1));
+        let second = w.arrive(&l, first, l.tanks[1]);
+        assert_eq!((second.tanks, second.health), (3, cap + 2 * TANK_HEALTH));
+        assert!(!w.state_is_bounded(State {
+            health: cap + 1,
+            ..w.initial()
+        }));
+        assert!(
+            Config {
+                boss_hits_back: false,
+                late_item: false,
+                item_at_entry: false,
+                ..w
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(Config { tanks: 9, ..w }.validate().is_err());
     }
 
     #[test]
