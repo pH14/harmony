@@ -330,6 +330,13 @@ separately, so capacity planning needs to account for peak resident memory.
 > at 12.8 GiB. The search's total, counted by its cgroup because the cache
 > lives in memfd files that process RSS omits, peaked at 31.5 GiB over 44,254
 > executions. The host never had less than 5.6 GiB free.
+>
+> Under a 20 GiB cgroup memory limit, the same search chose seven workers and
+> an 8.7 GiB budget for the cache and the workers' snapshot stores. Two seeds
+> ran 5,404 and 6,302 executions before each found the bug. Memory held at
+> 17 to 18 GiB after the first twenty minutes and peaked at 18.5 GiB, with no
+> OOM kills. The cache evicted 80,964 and 100,656 entries, and workers dropped
+> their chains 3 and 7 times when eviction alone could not fit the budget.
 
 ## Scaling
 
