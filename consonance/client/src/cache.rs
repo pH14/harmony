@@ -220,13 +220,8 @@ impl State {
             parent_entry.children -= 1;
             self.settle(parent);
         }
-        self.free(&entry.extent);
+        self.segments.free_committed(entry.extent);
         self.stats.evictions += 1;
-    }
-
-    fn free(&mut self, extent: &CommittedExtent) {
-        let (segment_id, offset, len) = extent.span();
-        self.segments.free(segment_id, offset, len);
     }
 
     fn make_room(&mut self, needed: usize) -> Result<(), CacheError> {
@@ -238,7 +233,7 @@ impl State {
         if needed > room {
             return Err(refused);
         }
-        while self.segments.charged() + needed > room {
+        while self.segments.charged() + needed > room || self.segments.full(needed) {
             let Some(&(_, id)) = self.evictable.first() else {
                 return Err(refused);
             };
@@ -276,10 +271,18 @@ impl LocalIndex {
 
     #[must_use]
     pub fn with_segment_bytes(budget: usize, segment_bytes: usize) -> Self {
+        Self::with_segments(
+            budget,
+            PageSegments::new(segment_bytes, segments::descriptor_room()),
+        )
+    }
+
+    #[must_use]
+    pub fn with_segments(budget: usize, segments: PageSegments) -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
                 budget,
-                segments: PageSegments::new(segment_bytes),
+                segments,
                 entries: BTreeMap::new(),
                 keys: BTreeMap::new(),
                 evictable: BTreeSet::new(),
@@ -344,18 +347,18 @@ impl CacheIndex for LocalIndex {
         let mut state = self.state();
         let committed = extent.commit();
         if let Some(&id) = state.keys.get(&namespace).and_then(|keys| keys.get(key)) {
-            state.free(&committed);
+            state.segments.free_committed(committed);
             state.stats.duplicates += 1;
             return state.lease(id);
         }
         let depth = match parent {
             Some(lease) => {
                 let Some(parent) = state.entries.get_mut(&lease.entry) else {
-                    state.free(&committed);
+                    state.segments.free_committed(committed);
                     return Err(CacheError::UnknownLease(lease.entry));
                 };
                 if parent.namespace != namespace {
-                    state.free(&committed);
+                    state.segments.free_committed(committed);
                     return Err(CacheError::NamespaceMismatch);
                 }
                 parent.children += 1;
@@ -619,6 +622,29 @@ mod tests {
         }
         assert!(!held(&index, b"x"), "an unused costly leaf ages out");
         assert!((2..31).contains(&outlived), "{outlived}");
+    }
+
+    #[test]
+    fn a_new_segment_past_the_limit_waits_for_eviction_to_retire_one() {
+        let index = LocalIndex::with_segments(1 << 20, PageSegments::new(2 * PAGE, 1));
+        let hold = |key: &[u8]| {
+            let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap())?;
+            write_extent(extent.bytes_mut(), &[], &[], key).unwrap();
+            index.publish(ns("a"), key, None, extent, 1)
+        };
+        let x = hold(b"x").unwrap();
+        let y = hold(b"y").unwrap();
+        assert!(matches!(hold(b"z"), Err(CacheError::Refused { .. })));
+        index.release(y);
+        assert!(
+            hold(b"z").is_err(),
+            "a leased extent keeps the only segment alive"
+        );
+        index.release(x);
+        let z = hold(b"z").unwrap();
+        let stats = index.stats();
+        assert_eq!((stats.segments, stats.evictions, stats.refusals), (1, 2, 2));
+        index.release(z);
     }
 
     #[test]

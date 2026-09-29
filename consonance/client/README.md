@@ -122,11 +122,15 @@ floor rises. A search that re-runs evicted prefixes spends most of its extra
 time on the costly ones, so this rule keeps them.
 
 On Linux a freed extent's pages are released by punching a hole in the
-segment's memfd, and the budget stops counting the extent at once. Elsewhere
-the budget counts every allocated extent, including freed extents in segments
-that still hold live ones. A segment is unmapped when its last extent dies.
-Each live segment holds one descriptor, so a faults search raises its soft
-open-file limit to the hard limit on Linux. The budget also counts the bytes
+segment's memfd, and the budget stops counting the extent at once. An extent
+that a caller still holds from `chain` keeps its pages, and the budget counts
+it until its segment dies. Elsewhere the budget counts every allocated extent,
+including freed extents in segments that still hold live ones. A segment is
+unmapped when its last extent dies. Each live segment holds one descriptor, so
+a faults search raises its soft open-file limit to the hard limit on Linux, and
+the index keeps its live segments within half of the soft limit. An extent that
+needs a new segment at that limit evicts entries until a segment dies, or is
+refused. The budget also counts the bytes
 each worker's local snapshot store reports, so the cache gets what the stores
 leave. When nothing can be evicted the index refuses the extent and the worker
 keeps its snapshot local. A report that leaves the total over budget after
