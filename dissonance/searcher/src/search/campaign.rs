@@ -1270,7 +1270,9 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
 
 fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
     match (draw.path, draw.tier_rank) {
-        (SelectorPath::Tiers, None) => Err("tier draw is missing its rank".into()),
+        (SelectorPath::Tiers | SelectorPath::Recent, None) => {
+            Err("tier draw is missing its rank".into())
+        }
         (SelectorPath::Continuation, Some(_)) => {
             Err("continuation draw carries a tier rank".into())
         }
@@ -5667,7 +5669,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"tier_cell_count_decay_v4","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_cell_recent_count_decay_v2","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 

@@ -136,7 +136,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v4";
+pub const SELECTOR_IDENTIFIER: &str = "tier_cell_recent_count_decay_v2";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -197,6 +197,7 @@ fn draw_weighted(
 pub enum SelectorPath {
     Continuation,
     Tiers,
+    Recent,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -229,6 +230,8 @@ pub struct ContinuationAccounting {
 pub struct SelectorAccounting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_selections: Option<u64>,
     pub cell_selections: u64,
     pub productive_selections: u64,
     pub cell_resets: u64,
@@ -2340,16 +2343,58 @@ where
             return Err("archive has no expandable entry".into());
         }
         let (progress, rank) = self.draw_tier(rand)?;
-        let place = self.draw_cell(rand, progress)?;
+        let recent = self.draw_recent_cell(rand, progress)?;
+        let place = match recent {
+            Some(place) => place,
+            None => self.draw_cell(rand, progress)?,
+        };
         let (id, best_preference) = self.draw_holder(rand, progress, place)?;
         Ok((
             id,
             SelectorDraw {
-                path: SelectorPath::Tiers,
+                path: if recent.is_some() {
+                    SelectorPath::Recent
+                } else {
+                    SelectorPath::Tiers
+                },
                 tier_rank: Some(rank),
                 best_preference,
             },
         ))
+    }
+
+    fn draw_recent_cell(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        progress: K::Progress,
+    ) -> Result<Option<K::Place>, Box<dyn Error>> {
+        if rand.below(NonZeroUsize::new(2).unwrap()) != 0 {
+            return Ok(None);
+        }
+        let places: BTreeSet<_> = self
+            .active_ids
+            .ids
+            .iter()
+            .rev()
+            .take(256)
+            .filter_map(|id| {
+                let key = self.entries[*id].key;
+                let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
+                (key.progress() == progress && draws < 32).then_some(key.place())
+            })
+            .collect();
+        if places.is_empty() {
+            return Ok(None);
+        }
+        let weights = places.iter().map(|place| {
+            count_decay(
+                self.cells
+                    .get(&(progress, *place))
+                    .map_or(0, |cell| cell.draws),
+            )
+        });
+        let index = draw_weighted(rand, weights)?;
+        Ok(places.into_iter().nth(index))
     }
 
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
@@ -2794,7 +2839,11 @@ where
                     .get_or_insert(0);
                 *count = count.saturating_add(1);
             }
-            SelectorPath::Tiers => {
+            SelectorPath::Tiers | SelectorPath::Recent => {
+                if draw.path == SelectorPath::Recent {
+                    let count = self.selector_accounting.recent_selections.get_or_insert(0);
+                    *count = count.saturating_add(1);
+                }
                 self.selector_accounting.cell_selections =
                     self.selector_accounting.cell_selections.saturating_add(1);
             }
@@ -3010,12 +3059,20 @@ where
             return Err("archive has no expandable entry".into());
         }
         let (progress, rank) = self.draw_tier(rand)?;
-        let place = self.draw_cell_reference(rand, progress)?;
+        let recent = self.draw_recent_cell(rand, progress)?;
+        let place = match recent {
+            Some(place) => place,
+            None => self.draw_cell_reference(rand, progress)?,
+        };
         let (id, best_preference) = self.draw_holder_reference(rand, progress, place)?;
         Ok((
             id,
             SelectorDraw {
-                path: SelectorPath::Tiers,
+                path: if recent.is_some() {
+                    SelectorPath::Recent
+                } else {
+                    SelectorPath::Tiers
+                },
                 tier_rank: Some(rank),
                 best_preference,
             },
@@ -4872,6 +4929,95 @@ mod tests {
             .expect("insert resource entry")
     }
     #[test]
+    fn recent_cells_are_bounded_and_old_cells_remain_selectable() {
+        let mut archive = Archive::<u16, ResourceKey, (), ()>::new(|_| 1);
+        for place in 0..300 {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![place],
+                        key: ResourceKey {
+                            place: [place, 0, 0],
+                            amount: 5,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let mut rand = RomuDuoJrRand::with_seed(731);
+        let mut recent = 0;
+        let mut old = 0;
+        for _ in 0..4096 {
+            let (id, draw) = archive.select_parent(&mut rand).unwrap();
+            if draw.path == SelectorPath::Recent {
+                assert!(id >= 44);
+                assert!(archive.cell_draws(archive.entries[id].key) < 32);
+                recent += 1;
+            }
+            old += usize::from(id < 44);
+            archive.record_selection(id, &draw);
+        }
+        assert!(recent > 1000);
+        assert!(old > 100);
+        assert_eq!(archive.selector_report().recent_selections, Some(recent));
+        for state in archive.cells.values_mut() {
+            state.draws = 32;
+        }
+        for _ in 0..128 {
+            let (_, draw) = archive.select_parent(&mut rand).unwrap();
+            assert_eq!(draw.path, SelectorPath::Tiers);
+        }
+    }
+
+    #[test]
+    fn recent_selection_reconstructs_from_serialized_archive_state() {
+        let mut archive = Archive::<u16, ResourceKey, (), ()>::new(|_| 1);
+        for place in 0..300 {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![place],
+                        key: ResourceKey {
+                            place: [place, 0, 0],
+                            amount: 5,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let mut rand = RomuDuoJrRand::with_seed(732);
+        for _ in 0..100 {
+            let (id, draw) = archive.select_parent(&mut rand).unwrap();
+            archive.record_selection(id, &draw);
+        }
+        let bytes = postcard::to_stdvec(&archive).unwrap();
+        let mut restored: Archive<u16, ResourceKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+        let mut restored_rand = rand;
+        for _ in 0..256 {
+            let a = archive.select_parent(&mut rand).unwrap();
+            let b = restored.select_parent(&mut restored_rand).unwrap();
+            assert_eq!(a, b);
+            archive.record_selection(a.0, &a.1);
+            restored.record_selection(b.0, &b.1);
+        }
+        assert_eq!(archive.selector_counters(), restored.selector_counters());
+        assert_eq!(
+            postcard::to_stdvec(&rand).unwrap(),
+            postcard::to_stdvec(&restored_rand).unwrap()
+        );
+    }
+
+    #[test]
     fn a_richer_arrival_from_another_cell_resets_its_cells_draw_count() {
         let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
         archive.rebuild_selector_index();
@@ -5061,6 +5207,32 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn recent_draws_preserve_best_holder_preference_and_accounting() {
+        let mut recent_best = [0_u64; 2];
+        for seed in 0..64 {
+            let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+            let first = insert_portfolio(&mut archive, 1, 10, 20).expect("first-resource holder");
+            let second = insert_portfolio(&mut archive, 2, 5, 200).expect("second-resource holder");
+            let mut expected = [0_u64; 2];
+            let mut rand = RomuDuoJrRand::with_seed(0xbe57_1000 + seed);
+            for _ in 0..32 {
+                let (id, draw) = archive.select_parent(&mut rand).expect("draw a parent");
+                if let Some(preference) = draw.best_preference {
+                    let preference = usize::from(preference);
+                    assert_eq!(id, [first, second][preference]);
+                    expected[preference] += 1;
+                    if draw.path == SelectorPath::Recent {
+                        recent_best[preference] += 1;
+                    }
+                }
+                archive.record_selection(id, &draw);
+            }
+            assert_eq!(archive.selector_report().best_holder_draws, expected);
+        }
+        assert!(recent_best.iter().all(|count| *count > 0));
+    }
+
     #[test]
     fn taking_one_preference_from_a_surviving_holder_queues_its_exits() {
         let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
