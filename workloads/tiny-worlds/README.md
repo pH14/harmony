@@ -46,7 +46,7 @@ per slot under the charge-first preference alone.
 
 `work_budget` accepts 1–2,000,000 transitions. A campaign uses `workers`
 workers (1–64, default one) and an admission window of the same size, an
-archive capacity of 4,096, and a 32 MiB logical memory budget,
+archive capacity of 4,096, and a 16 GiB logical memory budget,
 and stops at its first objective. The event stream has a checked 1 GiB
 allocation limit. Execution work counts
 restored-parent replay and suffix actions; restoring a snapshot preserves the
@@ -459,6 +459,8 @@ crossing and a much slower identical crossing under flat-tier competition.
 This is a simplified local retry model: the exit cannot return to the remote
 pool, whereas a game can eventually revisit earlier areas. Tiny work counts
 actions, so a forecast of game execution counts still needs a scorecard.
+
+The recorded crossing rejection rates below used the former 32 MiB default. Requalify them under the current budget before using them as current rates.
 
 For the crossing comparison worlds, 300 simulated comparisons of unchanged
 searchers with independent runtime seeds rejected 3.7% of populated-pool
