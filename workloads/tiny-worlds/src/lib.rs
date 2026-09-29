@@ -252,7 +252,7 @@ impl Default for Scale {
             workers: 1,
             window: 1,
             results_per_worker: 1,
-            memory_budget_mib: 32,
+            memory_budget_mib: 16_384,
             archive_entries: 4096,
             action_cost_ns: 0,
             action_sleep_ns: 0,
