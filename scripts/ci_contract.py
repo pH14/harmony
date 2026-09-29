@@ -393,7 +393,7 @@ CONSONANCE_RUNTIME = Workflow(
     path=f"{WORKFLOW_DIR}/consonance-runtime-qualification.yml",
     name="Checks / Consonance / Guest Runtime Qualification",
     owner="Consonance",
-    triggers=("schedule", "workflow_dispatch"),
+    triggers=("push", "schedule", "workflow_dispatch"),
     jobs=(
         Job("Exact Runtime Artifacts", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
     ),

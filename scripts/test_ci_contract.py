@@ -37,6 +37,17 @@ class StructureTests(unittest.TestCase):
                     self.assertNotEqual(key.guest_digest(root), baseline)
                     path.write_text("baseline")
 
+    def test_runtime_qualification_runs_when_main_changes_its_source_key(self):
+        spec = importlib.util.spec_from_file_location(
+            "runtime_artifacts", ROOT / "consonance/harmony-linux/scripts/runtime-artifacts.py")
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        text = (ROOT / ci_contract.CONSONANCE_RUNTIME.path).read_text()
+        block = re.search(r"^  push:\n    branches: \[main\]\n    paths:\n((?:      - .+\n)+)", text, re.M)
+        self.assertIsNotNone(block)
+        paths = {line.strip()[2:].removesuffix("/**") for line in block.group(1).splitlines()}
+        self.assertEqual(paths, set(runtime.INPUTS))
+
     def test_paths_and_names_are_unique_and_present(self):
         paths = [workflow.path for workflow in ci_contract.WORKFLOWS]
         names = [workflow.name for workflow in ci_contract.WORKFLOWS]

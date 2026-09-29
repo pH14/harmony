@@ -35,7 +35,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance` | `consonance-checks.yml` | pull_request, push |
 | `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
-| `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | schedule, workflow_dispatch |
+| `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
 | `Checks / Dissonance` | `dissonance-checks.yml` | pull_request, push |
 | `Checks / Dissonance / Analysis` | `dissonance-analysis.yml` | schedule, workflow_dispatch |
