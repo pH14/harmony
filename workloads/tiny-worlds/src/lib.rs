@@ -963,6 +963,8 @@ fn campaign<const CAPACITY_TWO: bool>(
         route_length,
     )?;
     let mut work = 0;
+    let mut executions = 0;
+    let mut first_objective_execution = None;
     let mut jobs_after_budget = 0_usize;
     let mut first_objective_work = None;
     let mut continuation_work = 0;
@@ -991,15 +993,14 @@ fn campaign<const CAPACITY_TWO: bool>(
                 .or_default() += 1;
         }
         if let CampaignStreamRecord::Job(job) = &record {
+            executions += 1;
             let job_work = job.execution_work;
             if work >= budget {
                 jobs_after_budget += 1;
             }
             work += job_work;
             if let Some(&(tier, place)) = parents.get(&job.sequence) {
-                if matches!(workload.config, World::Map(_)) {
-                    timeline.push([work - job_work, u64::from(tier), u64::from(place)]);
-                }
+                timeline.push([work - job_work, u64::from(tier), u64::from(place)]);
                 *parent_draws
                     .entry((
                         first_objective_work.is_none(),
@@ -1025,6 +1026,7 @@ fn campaign<const CAPACITY_TWO: bool>(
                 .contains(&CampaignAdmissionDecision::Objective)
             {
                 first_objective_work.get_or_insert(work);
+                first_objective_execution.get_or_insert(job.sequence);
             }
         }
     }
@@ -1046,10 +1048,11 @@ fn campaign<const CAPACITY_TWO: bool>(
     if jobs_after_budget >= config.window {
         return Err("a job was reserved after the work budget was spent".into());
     }
-    if work != report.execution_work {
-        return Err("independent work accounting mismatch".into());
+    if work != report.execution_work || executions != report.executions_completed {
+        return Err("independent execution or work accounting mismatch".into());
     }
     if first_objective_work != report.work_to_first_objective
+        || first_objective_execution != report.executions_to_first_objective
         || first_objective_work.is_some() != report.objective_witness.is_some()
     {
         return Err("independent first-objective scoring mismatch".into());
@@ -1078,6 +1081,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     }
     Ok(serde_json::json!({"seed":seed,"broken":workload.broken,
         "config":workload.config,"work_budget":budget,"work":work,"work_overshoot":work.saturating_sub(budget),
+        "executions":executions,"first_objective_execution":first_objective_execution,
         "chain_parent_selections":report.archive.evidence.chain_parent_selections,
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
         "chain_selected_charge":report.archive.evidence.chain_selected_charge,

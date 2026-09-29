@@ -207,6 +207,16 @@ transitions into a location; resource refill counts require a stock increase.
 Delayed-progress histograms include distraction observations in their zero bin.
 Exported archive entries include ancestry; `live_entries` reports active holders.
 Continuation job counts and work come from the campaign stream.
+Ordinary reports also count `executions`, one restore plus one executed suffix,
+and give `first_objective_execution` beside `first_objective_work`. Both are
+independently read from the stream and checked against the campaign counters;
+skipped selector draws are not executions. `parent_timeline` covers every
+ordinary world and aligns with `evidence.job_parents` in admission order. Its
+job start work locates an action-work discovery in a search execution: use the
+last job whose start work is strictly less than the discovery's work. A
+milestone present at genesis has execution zero. This keeps a discovery on a
+job's last action in that job instead of the next one. These fields let
+forecasts compare search attempts without treating action work as attempts.
 `parent_draws` counts jobs by (before objective, selector path, tier rank,
 parent tier, parent place). `skipped_draws` counts draws whose parent and
 suffix were already executed; they produce no job.
