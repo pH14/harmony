@@ -434,6 +434,7 @@ layouts.
 | Gauntlet with hidden timing | as above, `timing` 5 | The same with replayed inputs landing about one time in five | As above |
 | Boss by the door | `inner` 2, 4 farms with `farm_cap` 14, `boss_stock` 8, `boss_hits_back`, `approach_drain`, `boss_by_door`, `tail_slots`; 600,000 work | Tourian after the statues: the best holders near the end are drawn one or two times each, and none holds enough of both | To the item, to the stocked arrival |
 | Boss beside a late item | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 8, `boss_hits_back`, `late_item`; 600,000 work | The 9-item tier founded by one drained state at Ridley's statue, while stocked 8-item holders lose their draws | As above |
+| Boss past an item at the entry | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 8, `boss_hits_back`, `late_item`, `item_at_entry`, `tail_slots`; 600,000 work | Tourian: drained states raise the statue, and a kill needs stock carried past rooms that drain it | As above |
 
 The passive-clock worlds use `one_to_six` and `energy_splice:6`. The rare crossing worlds use `one_to_six_within_3_max_action_cost_full_hold`, `energy_splice:6`, and scaled low-memory reports; the other worlds retain their default settings. Clocks count `clock_ticks`, whereas crossing work counts actions. The rare crossing entry legs count executions. Compare arms within a world, not absolute work across families. Older binaries without these families or options cannot run them: use a baseline built with the same world implementation and the unchanged engine, and record that source explicitly.
 
@@ -480,12 +481,12 @@ bad or undecided. Two unchanged
 searchers with different runtime seeds, in 300 simulated comparisons per world,
 failed the farm loop, re-walk, off-path, locked and first two boss worlds in
 none, the gauntlet worlds in 0.3% (no timing) and 2.3% (hidden timing), the
-boss after a draining approach in 1.7%, the boss by the door in 3.0%, and the
-boss beside a late item in 2.3%. The simulated comparisons
+boss after a draining approach in 1.7%, the boss by the door in 3.0%, the
+boss beside a late item in 2.3%, and the boss past an item at the entry in 0.3%. The simulated comparisons
 for a world draw from one pool of 512 layouts (2,048 for the off-path and
-locked worlds; 343 layouts with three seeds each for the three newest boss
+locked worlds; 343 layouts with three seeds each for the four newest boss
 worlds), so they share layouts and these rates are rough. At these rates an
-unchanged build fails at least one of the 13 worlds in about 9% of comparisons.
+unchanged build fails at least one of the 14 worlds in about 9% of comparisons.
 When a candidate fails exactly one world and the failing measure lies inside the
 1st to 99th percentile of the same measure in that world's unchanged
 comparisons, rerun that world alone with `--world` before dropping the
