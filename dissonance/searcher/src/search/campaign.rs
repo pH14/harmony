@@ -74,7 +74,7 @@ pub enum ResultBuffering {
     #[default]
     OnePerWorker,
     TwoPerWorker,
-    FourPerWorker,
+    SixteenPerWorker,
 }
 
 impl ResultBuffering {
@@ -82,7 +82,7 @@ impl ResultBuffering {
         match self {
             Self::OnePerWorker => 1,
             Self::TwoPerWorker => 2,
-            Self::FourPerWorker => 4,
+            Self::SixteenPerWorker => 16,
         }
     }
 }

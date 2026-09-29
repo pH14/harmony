@@ -88,9 +88,10 @@ budget. When eviction cannot, the worker with the largest store drops its chain
 back to the setup snapshot. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`.
-A fault search keeps four reservations per worker in its admission window and
-lets each worker hold four finished results, so a slow execution rarely leaves
-the other workers waiting on admission order.
+A fault search keeps sixteen reservations per worker in its admission window
+and lets each worker hold sixteen finished results. Each action draws its own
+duration, so one execution can run a hundred times longer than the median, and
+the other workers keep running the jobs behind it until it is admitted.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
