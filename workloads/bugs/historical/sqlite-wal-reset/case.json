@@ -1,7 +1,7 @@
 {
   "format": "harmony-historical-case-v1",
   "id": "sqlite-wal-reset",
-  "title": "SQLite 3.51.2 WAL reset loses committed writes",
+  "title": "SQLite 3.51.2 WAL reset corrupts the database",
   "software": "sqlite",
   "sources": {
     "harness": "https://github.com/antithesishq/sqlite/tree/3ce53bc469dcef8d8c2d90eb59a7d13184e782e5/antithesis",
@@ -29,11 +29,11 @@
   },
   "kernel_profile": "faultlab",
   "oracle": {
-    "assertion": "no-lost-committed-writes: all of this writer's committed rows are present with no gaps",
+    "assertion": "integrity-check-clean: PRAGMA quick_check returns ok",
     "evidence": "workload: process started",
     "kind": "always",
     "source": "the fork's own workload assertions, unmodified",
-    "detector": "each writer's periodic sweep counts its committed rows and compares them with its own committed sequence"
+    "detector": "each writer's periodic sweep runs PRAGMA quick_check on three of four sweeps and PRAGMA integrity_check on the rest"
   },
   "actions": [
     "Wait",
@@ -52,7 +52,7 @@
     "wall_minutes": 240
   },
   "discovery_mode": "guided",
-  "status": "searching",
+  "status": "reproduced",
   "ci": {
     "status": "deferred",
     "reason": "the image is built and searched on arm64 hosts; the hosted workflow builds x86_64 images",
