@@ -66,8 +66,8 @@ def pull_request_budget(workflow_path: str, job_name: str) -> int:
 
 
 # Trigger classes. `pr` jobs run on pull requests and on pushes to main and
-# carry the bounded budget. `full` jobs run only on a schedule or a manual
-# dispatch and declare their own ceiling.
+# carry the bounded budget. `full` jobs run on a schedule, a manual dispatch,
+# or a path-filtered push to main, and declare their own ceiling.
 TRIGGER_CLASSES = ("pr", "full")
 
 # The concurrency group key of every workflow a push reaches. Each push gets a

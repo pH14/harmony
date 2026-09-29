@@ -103,8 +103,8 @@ Every job declares a trigger class.
   of the exact runtime and ROM-free image. Its Nova validation consumer retains
   the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` explicitly registers this
   prerequisite; it does not permit full searches on pull requests.
-- **`full`** jobs run on a schedule or a manual dispatch and declare their own
-  ceiling.
+- **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
+  to main, and declare their own ceiling.
 
 A job a pull request reaches never starts a full capability search, whatever
 budget it declares. `ci_contract.FULL_SEARCH_COMMANDS` lists the commands that
