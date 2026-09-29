@@ -176,7 +176,35 @@ mod tests {
                 scale: None,
             };
             let report = crate::run(&world, crate::test_seed(), 5_000, true).unwrap();
+            if rooted {
+                assert_eq!(report["success"], true);
+            }
             let evidence = &report["evidence"];
+            let timeline: Vec<[u64; 3]> =
+                serde_json::from_value(report["parent_timeline"].clone()).unwrap();
+            let parents: Vec<(u64, u16, u16)> =
+                serde_json::from_value(evidence["job_parents"].clone()).unwrap();
+            assert_eq!(
+                timeline.len() as u64,
+                report["executions"].as_u64().unwrap()
+            );
+            assert_eq!(timeline.len(), parents.len());
+            for ((sequence, tier, place), row) in parents.iter().zip(&timeline) {
+                assert_eq!((u64::from(*tier), u64::from(*place)), (row[1], row[2]));
+                assert!(*sequence > 0);
+            }
+            for window in timeline.windows(2) {
+                assert!(window[0][0] <= window[1][0]);
+            }
+            if let Some(end) = report["first_objective_work"].as_u64() {
+                let index = timeline.iter().rposition(|row| row[0] < end).unwrap();
+                assert_eq!(
+                    report["first_objective_execution"].as_u64(),
+                    Some(parents[index].0)
+                );
+            } else {
+                assert!(report["first_objective_execution"].is_null());
+            }
             assert_eq!(
                 evidence["crossing_actions"].as_u64().unwrap()
                     + evidence["crossing_pool_actions"].as_u64().unwrap(),
