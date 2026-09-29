@@ -2,6 +2,18 @@
 name: Checks / Consonance / Guest Runtime Qualification
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - consonance/harmony-linux/**
+      - consonance/hypercall-proto/**
+      - consonance/hypercall-doorbell/**
+      - consonance/execution-proto/**
+      - consonance/process-proto/**
   schedule:
     - cron: "11 5 * * *"
   workflow_dispatch:
@@ -23,7 +35,6 @@ env:
 jobs:
   runtime-artifacts:
     name: Exact Runtime Artifacts
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
