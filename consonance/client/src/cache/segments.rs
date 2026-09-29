@@ -1,15 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, io, ptr::NonNull, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io,
+    ptr::NonNull,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 pub const PAGE: usize = 4096;
 pub const SEGMENT_BYTES: usize = 64 << 20;
 pub const RELEASES_EXTENTS: bool = cfg!(all(target_os = "linux", not(miri)));
 
+struct Mapped(Arc<AtomicUsize>);
+
+impl Mapped {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for Mapped {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 struct Segment {
     base: NonNull<u8>,
     len: usize,
     backing: Backing,
+    _mapped: Mapped,
 }
 
 // SAFETY: a Segment owns its mapping; every byte range in it is handed to exactly one
@@ -27,7 +51,7 @@ type Backing = std::alloc::Layout;
 
 impl Segment {
     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
-    fn new(len: usize) -> io::Result<Self> {
+    fn new(len: usize, mapped: Mapped) -> io::Result<Self> {
         use std::os::fd::AsRawFd;
         let fd = shared_file(len)?;
         // SAFETY: fd is a live file of exactly len bytes; a fresh shared mapping aliases no Rust
@@ -50,11 +74,12 @@ impl Segment {
             base,
             len,
             backing: fd,
+            _mapped: mapped,
         })
     }
 
     #[cfg(any(miri, not(any(target_os = "linux", target_os = "macos"))))]
-    fn new(len: usize) -> io::Result<Self> {
+    fn new(len: usize, mapped: Mapped) -> io::Result<Self> {
         let layout = std::alloc::Layout::from_size_align(len.max(PAGE), PAGE)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         // SAFETY: layout has a nonzero size.
@@ -64,6 +89,7 @@ impl Segment {
             base,
             len,
             backing: layout,
+            _mapped: mapped,
         })
     }
 
@@ -345,6 +371,7 @@ struct SegmentUse {
 pub struct PageSegments {
     segment_bytes: usize,
     limit: usize,
+    mapped: Arc<AtomicUsize>,
     open: Option<u64>,
     segments: BTreeMap<u64, SegmentUse>,
     next_id: u64,
@@ -375,6 +402,7 @@ impl PageSegments {
         Self {
             segment_bytes: segment_bytes.max(PAGE),
             limit: limit.max(1),
+            mapped: Arc::new(AtomicUsize::new(0)),
             open: None,
             segments: BTreeMap::new(),
             next_id: 0,
@@ -402,7 +430,7 @@ impl PageSegments {
 
     #[must_use]
     pub fn full(&self, len: usize) -> bool {
-        self.segments.len() >= self.limit && self.fits(len).is_none()
+        self.mapped.load(Ordering::Relaxed) >= self.limit && self.fits(len).is_none()
     }
 
     pub fn allocate(&mut self, len: usize) -> io::Result<WritableExtent> {
@@ -414,7 +442,10 @@ impl PageSegments {
                 if let Some(previous) = self.open.take() {
                     self.retire_if_empty(previous);
                 }
-                let segment = Arc::new(Segment::new(self.segment_bytes.max(len))?);
+                let segment = Arc::new(Segment::new(
+                    self.segment_bytes.max(len),
+                    Mapped::new(&self.mapped),
+                )?);
                 let id = self.next_id;
                 self.next_id += 1;
                 self.segments.insert(
@@ -545,12 +576,19 @@ mod tests {
     }
 
     #[test]
-    fn a_segment_limit_marks_an_extent_that_needs_a_new_segment() {
+    fn a_segment_limit_counts_every_mapped_segment() {
         let mut segments = PageSegments::new(2 * PAGE, 1);
-        let _a = segments.allocate(PAGE).unwrap();
+        let a = segments.allocate(PAGE).unwrap().commit();
         assert!(!segments.full(PAGE));
-        let _b = segments.allocate(PAGE).unwrap();
+        let b = segments.allocate(PAGE).unwrap().commit();
         assert!(segments.full(PAGE));
+        let reader = a.clone();
+        segments.free_committed(a);
+        segments.free_committed(b);
+        assert_eq!(segments.segments(), 0);
+        assert!(segments.full(PAGE), "a reader keeps its segment mapped");
+        drop(reader);
+        assert!(!segments.full(PAGE));
     }
 
     #[test]

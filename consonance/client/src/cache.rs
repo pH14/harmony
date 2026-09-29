@@ -495,10 +495,14 @@ mod tests {
         index.publish(namespace, key, parent, extent, 1)
     }
 
-    fn put_costing(index: &LocalIndex, key: &[u8], cost: u64) {
-        let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap()).unwrap();
+    fn put_empty(index: &LocalIndex, key: &[u8], cost: u64) -> Result<Lease, CacheError> {
+        let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap())?;
         write_extent(extent.bytes_mut(), &[], &[], key).unwrap();
-        let lease = index.publish(ns("a"), key, None, extent, cost).unwrap();
+        index.publish(ns("a"), key, None, extent, cost)
+    }
+
+    fn put_costing(index: &LocalIndex, key: &[u8], cost: u64) {
+        let lease = put_empty(index, key, cost).unwrap();
         index.release(lease);
     }
 
@@ -627,11 +631,7 @@ mod tests {
     #[test]
     fn a_new_segment_past_the_limit_waits_for_eviction_to_retire_one() {
         let index = LocalIndex::with_segments(1 << 20, PageSegments::new(2 * PAGE, 1));
-        let hold = |key: &[u8]| {
-            let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap())?;
-            write_extent(extent.bytes_mut(), &[], &[], key).unwrap();
-            index.publish(ns("a"), key, None, extent, 1)
-        };
+        let hold = |key: &[u8]| put_empty(&index, key, 1);
         let x = hold(b"x").unwrap();
         let y = hold(b"y").unwrap();
         assert!(matches!(hold(b"z"), Err(CacheError::Refused { .. })));
@@ -645,6 +645,22 @@ mod tests {
         let stats = index.stats();
         assert_eq!((stats.segments, stats.evictions, stats.refusals), (1, 2, 2));
         index.release(z);
+    }
+
+    #[test]
+    fn a_segment_that_a_chain_copy_holds_counts_against_the_limit() {
+        let index = LocalIndex::with_segments(1 << 20, PageSegments::new(PAGE, 1));
+        let x = put_empty(&index, b"x", 1).unwrap();
+        let copy = index.chain(&x).unwrap();
+        index.release(x);
+        assert!(matches!(
+            put_empty(&index, b"y", 1),
+            Err(CacheError::Refused { .. })
+        ));
+        assert_eq!(index.stats().segments, 0);
+        drop(copy);
+        let y = put_empty(&index, b"y", 1).unwrap();
+        index.release(y);
     }
 
     #[test]

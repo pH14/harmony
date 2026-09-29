@@ -128,9 +128,9 @@ it until its segment dies. Elsewhere the budget counts every allocated extent,
 including freed extents in segments that still hold live ones. A segment is
 unmapped when its last extent dies. Each live segment holds one descriptor, so
 a faults search raises its soft open-file limit to the hard limit on Linux, and
-the index keeps its live segments within half of the soft limit. An extent that
-needs a new segment at that limit evicts entries until a segment dies, or is
-refused. The budget also counts the bytes
+the index keeps its mapped segments, including those that only a caller's
+`chain` copy still holds, within half of the soft limit. An extent that needs a
+new segment at that limit evicts entries until a segment dies, or is refused. The budget also counts the bytes
 each worker's local snapshot store reports, so the cache gets what the stores
 leave. When nothing can be evicted the index refuses the extent and the worker
 keeps its snapshot local. A report that leaves the total over budget after
