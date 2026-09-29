@@ -18,6 +18,7 @@ const FARM_ODDS: u64 = 8;
 const DRAIN_ODDS: u64 = 2;
 const LATE_DRAIN_ODDS: u64 = 3;
 const TAIL_ACTIONS: u8 = 3;
+const ENTRY_GOAL_DEPTH: u8 = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +56,8 @@ pub struct Config {
     pub tail_slots: bool,
     #[serde(default)]
     pub late_item: bool,
+    #[serde(default)]
+    pub item_at_entry: bool,
 }
 
 fn one() -> u8 {
@@ -169,8 +172,11 @@ impl Config {
                     .into(),
             );
         }
-        if self.tail_slots && !self.gauntlet && !self.approach_drain {
-            return Err("tail slots need a gauntlet or a draining approach".into());
+        if self.item_at_entry && !self.late_item {
+            return Err("an item at the entry needs a late map item".into());
+        }
+        if self.tail_slots && !self.gauntlet && !self.approach_drain && !self.late_item {
+            return Err("tail slots need a gauntlet, a draining approach or a late item".into());
         }
         if self.boss_stock > 0
             && (self.items > 1 || self.farms < 2 || self.boss_stock > self.farm_cap)
@@ -350,6 +356,13 @@ impl Config {
                     .filter(|&c| !inner[usize::from(c)] && Some(c) != key)
                     .max_by_key(|&c| (from_door[usize::from(c)], std::cmp::Reverse(c)))
                     .expect("an outer room besides the key")
+            } else if self.late_item && self.item_at_entry {
+                (0..self.cells())
+                    .filter(|&c| {
+                        inner[usize::from(c)] && c != entry && doors[usize::from(c)] != 0b1111
+                    })
+                    .min_by_key(|&c| (from_entry[usize::from(c)].abs_diff(ENTRY_GOAL_DEPTH), c))
+                    .expect("an inner room with a wall")
             } else if self.late_item {
                 (0..self.cells())
                     .filter(|&c| {
@@ -365,7 +378,9 @@ impl Config {
             } else {
                 farthest(&from_door, false)
             };
-            let item = if self.late_item {
+            let item = if self.late_item && self.item_at_entry {
+                entry
+            } else if self.late_item {
                 (0..self.cells())
                     .filter(|&c| {
                         inner[usize::from(c)]
@@ -525,7 +540,9 @@ impl Config {
     }
 
     fn health_cap(&self, layout: &Layout) -> u8 {
-        if self.late_item {
+        if self.late_item && self.item_at_entry {
+            self.boss_stock + 2 + layout.door_to_goal
+        } else if self.late_item {
             self.boss_stock + 2 + layout.door_to_item.unwrap_or(0)
         } else if self.boss_hits_back {
             self.boss_stock
@@ -648,7 +665,7 @@ impl Config {
                     DRAIN_ODDS
                 };
                 (
-                    self.roll(cell, s.tail ^ 0x40).is_multiple_of(odds),
+                    !self.item_at_entry && self.roll(cell, s.tail ^ 0x40).is_multiple_of(odds),
                     self.roll(cell, s.tail ^ 0x20).is_multiple_of(odds),
                 )
             };
@@ -868,6 +885,7 @@ mod tests {
             boss_by_door: false,
             tail_slots: false,
             late_item: false,
+            item_at_entry: false,
         }
     }
 
@@ -1474,6 +1492,64 @@ mod tests {
             .health,
             full.health
         );
+    }
+
+    #[test]
+    fn an_item_at_the_entry_opens_a_costly_corridor_to_the_boss() {
+        let w = Config {
+            width: 8,
+            height: 8,
+            inner: 20,
+            farms: 4,
+            farm_cap: 63,
+            boss_stock: 8,
+            boss_hits_back: true,
+            late_item: true,
+            item_at_entry: true,
+            tail_slots: true,
+            ..config(crate::test_seed())
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        assert_eq!(l.item, Some(l.entry));
+        assert!(l.inner[usize::from(l.goal)] && l.goal != l.entry);
+        assert_eq!(w.health_cap(&l), 10 + l.door_to_goal);
+        assert_eq!(
+            w.key(
+                State {
+                    tail: 5,
+                    ..w.initial()
+                },
+                false
+            )
+            .context,
+            5
+        );
+        let full = State {
+            cell: l.door_cell,
+            stock: 30,
+            health: w.health_cap(&l),
+            ..w.initial()
+        };
+        let inside = w.enter(&l, full, l.entry, true);
+        assert!(inside.item && w.tier(inside) == 1);
+        assert_eq!((inside.stock, inside.health), (29, w.health_cap(&l) - 1));
+        let drained = State { health: 0, ..full };
+        let outer: Vec<u8> = (0..w.cells())
+            .filter(|&c| !l.inner[usize::from(c)] && !l.farms.contains(&c) && c != l.goal)
+            .collect();
+        let crossings: Vec<State> = outer
+            .iter()
+            .flat_map(|&c| (0..64).map(move |tail| (c, tail)))
+            .map(|(c, tail)| w.enter(&l, State { tail, ..drained }, c, true))
+            .collect();
+        assert!(crossings.iter().all(|s| !s.dead && s.health == 0));
+        assert!(crossings.iter().any(|s| s.stock == 29));
+        let without_late_item = Config {
+            late_item: false,
+            ..w
+        };
+        assert!(without_late_item.validate().is_err());
     }
 
     #[test]
