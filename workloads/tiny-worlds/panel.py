@@ -333,7 +333,7 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         return sum(not r["success"] or r["first_objective_work"] > 1000 for r in by[arm])
 
     def tier_draws(r):
-        return [d for d in r["parent_draws"] if d[0] and d[1] == "tiers"]
+        return [d for d in r["parent_draws"] if d[0] and d[1] in ("tiers", "recent")]
 
     def map_ratios(arm):
         return_trip, next_gap = [], []
@@ -368,7 +368,7 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         for r in by[arm]:
             top += sum(d[5] for d in tier_draws(r) if d[3] == 1)
             lower += sum(d[5] for d in tier_draws(r) if d[3] == 0 and d[2] == 1)
-            lower += sum(d[3] for d in r["skipped_draws"] if d[0] and d[1] == "tiers" and d[2] == 1)
+            lower += sum(d[3] for d in r["skipped_draws"] if d[0] and d[1] in ("tiers", "recent") and d[2] == 1)
         return top / max(1, top + lower)
 
     n = len(by["credit/engaged"])

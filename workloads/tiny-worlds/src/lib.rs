@@ -71,6 +71,7 @@ fn path_name(path: SelectorPath) -> &'static str {
     match path {
         SelectorPath::Continuation => "continuation",
         SelectorPath::Tiers => "tiers",
+        SelectorPath::Recent => "recent",
     }
 }
 

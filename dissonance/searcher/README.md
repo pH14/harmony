@@ -310,7 +310,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_cell_count_decay_v4`, and the stream header names
+One selector exists, `tier_cell_recent_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
@@ -329,8 +329,14 @@ entry, and a holder best under several preferences takes each of their parts.
 This keeps a cell's best-stocked states drawn often when the cell holds many
 holders, so searches that leave the cell start from them. The other draws weigh each holder
 `1 / (1 + selections)^2` over its own selection count, and a key without
-preferences draws every holder that way. There is no uniform path, no sampling window and no
-retirement: a cell that stops producing keeps drawing at a share that only
+preferences draws every holder that way. Half of tier draws first try a recent-arrival window: the newest 256
+selectable entries, deduplicated by cell, limited to the drawn tier and cells
+with fewer than 32 draws since their last productive reset. These cells use
+the same count weights and holder selection. An empty window falls back to
+the full tier; the other half always uses the full tier. The window derives
+from the existing ordered active index and saved counts, so it adds no
+checkpoint state. `recent_selections` records draws through this path. There
+is no retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
 
 A cell's draw count resets to zero when an arrival from another cell
