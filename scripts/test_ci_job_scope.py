@@ -65,7 +65,6 @@ class InlineSelectionTests(unittest.TestCase):
             self.assertTrue(SCOPE.selection("dissonance_stb", "", paths)["enabled"])
             for kind in ("dissonance_nes", "harmony_nes", "consonance_platform", "consonance_kvm"):
                 self.assertTrue(SCOPE.selection(kind, "", paths)["enabled"])
-            self.assertTrue(SCOPE.selection("public_api", "", paths)["enabled"])
             missing = run(["git", "rev-list", "--objects", "--all", "--missing=print"], cwd=clone, text=True)
             self.assertIn("?" + legacy_blob, missing.splitlines())
 
@@ -90,7 +89,6 @@ class InlineSelectionTests(unittest.TestCase):
                 for name in SCENARIOS:
                     self.assertEqual(SCOPE.selection(name, "", paths), {"enabled": selected(paths)[name]})
                 self.assertEqual(SCOPE.selection("kani", "", paths), {"enabled": kani_required(paths)})
-                self.assertEqual(SCOPE.selection("public_api", "", paths), {"enabled": selected(paths)["public_api"]})
                 old_targets = {target["name"]: target for target in selected_targets(paths)}
                 for target in TARGETS:
                     result = SCOPE.selection("miri", target["name"], paths)
@@ -107,11 +105,11 @@ class InlineSelectionTests(unittest.TestCase):
         self.assertTrue(SCOPE.selection("dissonance_stb", "", actual)["enabled"])
 
     def test_diff_modes_match_previous_routing_jobs(self):
-        for kind in ("dissonance_nes", "kani", "public_api", "miri"):
+        for kind in ("dissonance_nes", "kani", "miri"):
             with mock.patch.object(SCOPE.subprocess, "check_output", return_value="file\0") as run:
                 self.assertEqual(SCOPE.changed_paths(kind, "pull_request", "base", ""), ["file"])
                 run.assert_called_once_with(["git", "diff", "--no-renames", "--name-only", "-z", "base...HEAD"], text=True)
-        for kind in ("dissonance_nes", "kani", "public_api"):
+        for kind in ("dissonance_nes", "kani"):
             with mock.patch.object(SCOPE.subprocess, "check_output", return_value="") as run:
                 SCOPE.changed_paths(kind, "push", "", "before")
                 suffix = ["before...HEAD"] if kind in SCENARIOS else ["before", "HEAD"]

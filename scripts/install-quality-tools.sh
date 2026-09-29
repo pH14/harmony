@@ -21,13 +21,11 @@ fi
 #   cargo-llvm-cov   source-based coverage          (quality-b)
 #   cargo-mutants@27.1.0 mutation testing          (quality-c; pinned for CI parity)
 #   cargo-deny       advisories/licenses/bans/sources (checks)
-#   cargo-public-api public-API snapshots           (quality-d)
 tools=(
     cargo-nextest
     cargo-llvm-cov
     cargo-mutants@27.1.0
     cargo-deny
-    cargo-public-api
 )
 
 for tool in "${tools[@]}"; do
@@ -40,7 +38,6 @@ cargo nextest --version
 cargo llvm-cov --version
 cargo mutants --version
 cargo deny --version
-cargo public-api --version
 
 # Wire up the local fast-feedback git hooks (.githooks/pre-push: fmt, clippy,
 # nextest) via core.hooksPath. Convenience only —

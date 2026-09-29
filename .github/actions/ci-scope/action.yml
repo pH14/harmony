@@ -2,7 +2,7 @@ name: Select work inside a CI job
 description: Use the complete local diff and report unselected checks as not applicable.
 inputs:
   kind:
-    description: A registered change-selection kind from scripts/ci_scope.py, or kani, public_api or miri
+    description: A registered change-selection kind from scripts/ci_scope.py, or kani or miri
     required: true
   target:
     description: Registered Miri target

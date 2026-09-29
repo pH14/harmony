@@ -35,7 +35,7 @@ GLOBAL = (
 
 
 def selected(paths):
-    result = dict.fromkeys((*SCENARIOS, "public_api"), False)
+    result = dict.fromkeys(SCENARIOS, False)
     for path in paths:
         path = path.strip()
         if not path or path.endswith(".md"):
@@ -60,7 +60,7 @@ def selected(paths):
         if path.startswith("cli/"):
             result["harmony_oci"] = result["consonance_platform"] = True
         if path.startswith("consonance/"):
-            result["consonance_platform"] = result["public_api"] = result["harmony_nes"] = True
+            result["consonance_platform"] = result["harmony_nes"] = True
         if path.startswith(("consonance/vmm-backend/", "consonance/vmm-core/", "consonance/vm-state/", "consonance/vtime/")):
             result["consonance_kvm"] = True
         if path.startswith(("consonance/execution-proto/", "consonance/process-proto/", "consonance/oci/", "consonance/client/")):
