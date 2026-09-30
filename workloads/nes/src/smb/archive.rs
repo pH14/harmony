@@ -288,20 +288,51 @@ pub const NES_PRESSABLE_BUTTON_MASKS: [u8; 36] = [
 pub const SHORT_HOLD_FRAMES: (u8, u8) = (2, 12);
 pub const LONG_HOLD_FRAMES: (u8, u8) = (96, 120);
 
+const DIRECTION_MASKS: [u8; 9] = [0x00, 0x80, 0x40, 0x10, 0x20, 0x90, 0xa0, 0x50, 0x60];
+
+const DIRECTION_BITS: u8 = 0xf0;
+
+const A_BUTTON: u8 = 0x01;
+
+const B_BUTTON: u8 = 0x02;
+
 pub(crate) fn sample_chord_from_masks(
     rand: &mut RomuDuoJrRand,
     masks: &[u8],
 ) -> Result<ButtonChord, Box<dyn Error>> {
     let buttons =
         masks[rand.below(NonZeroUsize::new(masks.len()).ok_or("empty SMB button vocabulary")?)];
+    Ok(ButtonChord::new(buttons, sample_stratified_hold(rand)?))
+}
+
+pub(crate) fn sample_stratified_hold(rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
     let (low, high) = if rand.below(NonZeroUsize::new(2).ok_or("invalid stratum odds")?) == 0 {
         SHORT_HOLD_FRAMES
     } else {
         LONG_HOLD_FRAMES
     };
     let span = NonZeroUsize::new(usize::from(high - low) + 1).ok_or("invalid hold span")?;
-    let hold_frames = u8::try_from(usize::from(low) + rand.below(span))?;
-    Ok(ButtonChord::new(buttons, hold_frames))
+    Ok(u8::try_from(usize::from(low) + rand.below(span))?)
+}
+
+pub(crate) fn change_one_control(
+    rand: &mut RomuDuoJrRand,
+    previous: u8,
+) -> Result<u8, Box<dyn Error>> {
+    let odds = |n: usize| NonZeroUsize::new(n).ok_or("invalid control odds");
+    match rand.below(odds(4)?) {
+        0 => {
+            let direction = previous & DIRECTION_BITS;
+            let others: Vec<u8> = DIRECTION_MASKS
+                .into_iter()
+                .filter(|&mask| mask != direction)
+                .collect();
+            Ok((previous & !DIRECTION_BITS) | others[rand.below(odds(others.len())?)])
+        }
+        1 => Ok(previous ^ A_BUTTON),
+        2 => Ok(previous ^ B_BUTTON),
+        _ => Ok(previous),
+    }
 }
 
 pub(crate) fn merge_action_milestones<M, P>(
@@ -370,9 +401,42 @@ pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16
 
 #[cfg(test)]
 mod tests {
-    use super::{SmbArchiveKey, SmbRoomIdentity, archive_key, stamp_arrival_room};
+    use super::{
+        DIRECTION_MASKS, NES_PRESSABLE_BUTTON_MASKS, SmbArchiveKey, SmbRoomIdentity, archive_key,
+        change_one_control, stamp_arrival_room,
+    };
     use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
+    use crate::search::rand::RomuDuoJrRand;
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
+
+    #[test]
+    fn a_control_change_moves_one_control_within_the_pressable_set() {
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_c401);
+        let mut kinds = [0_u32; 4];
+        for &previous in &NES_PRESSABLE_BUTTON_MASKS {
+            for _ in 0..400 {
+                let next = change_one_control(&mut rand, previous).expect("change");
+                assert!(NES_PRESSABLE_BUTTON_MASKS.contains(&next));
+                let direction_changed = next & 0xf0 != previous & 0xf0;
+                let buttons_changed = (next ^ previous) & 0x03;
+                let kind = match (direction_changed, buttons_changed) {
+                    (true, 0) => 0,
+                    (false, 0x01) => 1,
+                    (false, 0x02) => 2,
+                    (false, 0) => 3,
+                    other => panic!("{previous:#04x} -> {next:#04x} changed {other:?}"),
+                };
+                kinds[kind] += 1;
+            }
+        }
+        for count in kinds {
+            assert!(
+                (3_300..=3_900).contains(&count),
+                "control changes {kinds:?}"
+            );
+        }
+        assert_eq!(DIRECTION_MASKS.len(), 9);
+    }
 
     #[test]
     fn progress_watermark_uses_action_interiors() {

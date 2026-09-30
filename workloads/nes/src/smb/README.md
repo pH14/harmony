@@ -2,6 +2,22 @@
 
 # Super Mario Bros. workload
 
+## Actions
+
+An action is a controller chord held for 2–12 or 96–120 frames. A new chord
+changes one control of the chord before it. The controls are the D-pad, with
+nine positions, and the A and B buttons. The draw picks the D-pad, A, B or
+no change with equal odds. A D-pad change moves to one of the other eight
+positions, and an A or B change toggles that button. Holding B to run while
+the jump button changes is the common SMB move, and a draw of whole new chords
+rarely keeps it. The first chord of a new game has nothing before it and is
+drawn from the controller vocabulary.
+
+A job runs one to six chords and stops at the chord that brings it to 360
+frames, so it can last up to 479 frames. After the flag,
+the game plays for about 170 frames with an unchanged key before the next level
+starts. A job of one chord, at most 120 frames, never gets past that stretch.
+
 ## Archive key
 
 The progress tier is the world, the level and the level's progress in bands of
