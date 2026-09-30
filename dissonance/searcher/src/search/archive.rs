@@ -4975,6 +4975,86 @@ mod tests {
     }
 
     #[test]
+    fn recent_cells_deduplicate_holders_and_filter_the_drawn_tier() {
+        let mut single = TestArchive::new(|_| 1);
+        let mut repeated = TestArchive::new(|_| 1);
+        for archive in [&mut single, &mut repeated] {
+            for progress in [1, 2] {
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![progress as u8],
+                            key: TestKey {
+                                major: 1,
+                                progress,
+                                ..TestKey::default()
+                            },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+        }
+        for key in [
+            TestKey {
+                major: 1,
+                progress: 1,
+                state_fingerprint: 1,
+                ..TestKey::default()
+            },
+            TestKey {
+                major: 1,
+                progress: 1,
+                state_fingerprint: 2,
+                ..TestKey::default()
+            },
+            TestKey {
+                major: 2,
+                progress: 3,
+                ..TestKey::default()
+            },
+        ] {
+            repeated
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![3, key.major, key.state_fingerprint],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        single.rebuild_selector_index();
+        repeated.rebuild_selector_index();
+        assert_eq!(single.active_ids.ids.len(), 2);
+        assert_eq!(repeated.active_ids.ids.len(), 5);
+        let mut single_rand = RomuDuoJrRand::with_seed(733);
+        let mut repeated_rand = single_rand;
+        let mut recent = 0;
+        for _ in 0..4096 {
+            let expected = single.draw_recent_cell(&mut single_rand, (1, 0)).unwrap();
+            let actual = repeated
+                .draw_recent_cell(&mut repeated_rand, (1, 0))
+                .unwrap();
+            assert_eq!(actual, expected);
+            recent += usize::from(actual.is_some());
+        }
+        assert!(recent > 1000);
+        assert_eq!(
+            postcard::to_stdvec(&single_rand).unwrap(),
+            postcard::to_stdvec(&repeated_rand).unwrap()
+        );
+    }
+
+    #[test]
     fn recent_selection_reconstructs_from_serialized_archive_state() {
         let mut archive = Archive::<u16, ResourceKey, (), ()>::new(|_| 1);
         for place in 0..300 {
