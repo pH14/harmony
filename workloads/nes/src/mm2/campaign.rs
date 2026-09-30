@@ -564,6 +564,7 @@ impl InputPolicy for Mm2Game {
     fn sample_alphabet(
         &self,
         _run: &Mm2CampaignRun,
+        _previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         sample_chord(rand)

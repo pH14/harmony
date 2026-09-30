@@ -240,6 +240,7 @@ pub trait InputPolicy: CampaignTypes {
     fn sample_alphabet(
         &self,
         run: &Self::Run,
+        previous: Option<&Self::Action>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>>;
 
@@ -263,6 +264,7 @@ pub trait InputPolicy: CampaignTypes {
         let _ = (run, parent, remaining_work);
         None
     }
+    #[allow(clippy::too_many_arguments)]
     fn expand_suffix_duration(
         &self,
         run: &Self::Run,
@@ -270,6 +272,7 @@ pub trait InputPolicy: CampaignTypes {
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
+        previous: Option<&Self::Action>,
         draw: DurationDraw<Self::Key>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         self.expand_duration_recorded_or_live(
@@ -279,6 +282,7 @@ pub trait InputPolicy: CampaignTypes {
             mixture,
             None,
             mutation_seed,
+            previous,
             draw,
             false,
         )
@@ -292,6 +296,7 @@ pub trait InputPolicy: CampaignTypes {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
+        previous: Option<&Self::Action>,
         draw: Option<DurationDraw<Self::Key>>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         match draw {
@@ -302,10 +307,19 @@ pub trait InputPolicy: CampaignTypes {
                 mixture,
                 before,
                 mutation_seed,
+                previous,
                 draw,
                 true,
             ),
-            None => self.expand_suffix_recorded(run, state, shape, mixture, before, mutation_seed),
+            None => self.expand_suffix_recorded(
+                run,
+                state,
+                shape,
+                mixture,
+                before,
+                mutation_seed,
+                previous,
+            ),
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -317,11 +331,21 @@ pub trait InputPolicy: CampaignTypes {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
+        previous: Option<&Self::Action>,
         draw: DurationDraw<Self::Key>,
         replay: bool,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         let _ = draw;
-        self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, replay)
+        self.expand_recorded_or_live(
+            run,
+            state,
+            shape,
+            mixture,
+            before,
+            mutation_seed,
+            previous,
+            replay,
+        )
     }
     fn duration_of_action(&self, run: &Self::Run, action: &Self::Action) -> Option<NonZeroU64> {
         let _ = (run, action);
@@ -343,9 +367,20 @@ pub trait InputPolicy: CampaignTypes {
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
+        previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        self.expand_recorded_or_live(run, state, shape, mixture, None, mutation_seed, false)
+        self.expand_recorded_or_live(
+            run,
+            state,
+            shape,
+            mixture,
+            None,
+            mutation_seed,
+            previous,
+            false,
+        )
     }
+    #[allow(clippy::too_many_arguments)]
     fn expand_suffix_recorded(
         &self,
         run: &Self::Run,
@@ -354,8 +389,18 @@ pub trait InputPolicy: CampaignTypes {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
+        previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, true)
+        self.expand_recorded_or_live(
+            run,
+            state,
+            shape,
+            mixture,
+            before,
+            mutation_seed,
+            previous,
+            true,
+        )
     }
     #[allow(clippy::too_many_arguments)]
     fn expand_recorded_or_live(
@@ -366,6 +411,7 @@ pub trait InputPolicy: CampaignTypes {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
+        previous: Option<&Self::Action>,
         replay: bool,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         state.draw(before, replay, |view| {
@@ -374,8 +420,9 @@ pub trait InputPolicy: CampaignTypes {
                 mixture.mixture,
                 mixture.weight,
                 mutation_seed,
+                previous,
                 |rand| biased_step(view, rand),
-                |rand| self.sample_alphabet(run, rand),
+                |previous, rand| self.sample_alphabet(run, previous, rand),
             )
         })
     }
@@ -3096,6 +3143,7 @@ where
                     };
                     let duration_remaining_work = duration_draw.and(remaining_work);
                     let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
+                    let previous = core.archive.last_action(parent_index);
                     let mut suffix = match (spliced, duration_draw) {
                         (Some(tail), _) => tail,
                         (None, Some(draw)) => workload.expand_suffix_duration(
@@ -3108,6 +3156,7 @@ where
                                 splice_weight,
                             },
                             mutation_seed,
+                            previous,
                             draw,
                         )?,
                         (None, None) => workload.expand_suffix(
@@ -3120,6 +3169,7 @@ where
                                 splice_weight,
                             },
                             mutation_seed,
+                            previous,
                         )?,
                     };
                     config
@@ -4446,6 +4496,7 @@ where
                         },
                         draw_checkpoint_before.as_ref(),
                         skip.mutation_seed,
+                        core.archive.last_action(parent_index),
                         draw,
                     )?,
                 };
@@ -4590,6 +4641,7 @@ where
                         },
                         draw_checkpoint_before.as_ref(),
                         job.mutation_seed,
+                        core.archive.last_action(parent_index),
                         draw,
                     )?,
                 };
@@ -5008,6 +5060,7 @@ mod tests {
         fn sample_alphabet(
             &self,
             _run: &Self::Run,
+            _previous: Option<&Self::Action>,
             rand: &mut RomuDuoJrRand,
         ) -> Result<Self::Action, Box<dyn Error>> {
             Ok(TestAction::new(rand.next_u64() as u8, 1))
@@ -5019,6 +5072,7 @@ mod tests {
             _shape: SuffixShape,
             _mixture: MixtureDraw,
             mutation_seed: u64,
+            _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
             Ok(vec![TestAction::new(mutation_seed as u8, 1)])
         }
@@ -5030,8 +5084,9 @@ mod tests {
             mixture: MixtureDraw,
             _before: Option<&EmpiricalStepCheckpoint>,
             mutation_seed: u64,
+            previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-            self.expand_suffix(run, state, shape, mixture, mutation_seed)
+            self.expand_suffix(run, state, shape, mixture, mutation_seed, previous)
         }
 
         fn max_action_cost(&self) -> u64 {

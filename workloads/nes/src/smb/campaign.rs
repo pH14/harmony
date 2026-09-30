@@ -591,6 +591,7 @@ where
     fn sample_alphabet(
         &self,
         run: &SmbCampaignRun,
+        _previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         crate::smb::archive::sample_chord_from_masks(rand, run.vocabulary.masks())
@@ -1216,6 +1217,7 @@ mod tests {
                     splice_weight: 0,
                 },
                 0x5eed_ca02,
+                None,
             )
             .expect("draw a suffix");
         first.apply(&ButtonChord::new(0x02, 30));

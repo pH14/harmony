@@ -791,6 +791,7 @@ impl InputPolicy for MetroidGame {
     fn sample_alphabet(
         &self,
         _run: &MetroidCampaignRun,
+        _previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         sample_chord(rand)

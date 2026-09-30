@@ -418,6 +418,7 @@ impl InputPolicy for FaultWorkload {
     fn sample_alphabet(
         &self,
         run: &FaultCampaignRun,
+        _previous: Option<&FaultAction>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<FaultAction, Box<dyn Error>> {
         sample_action(rand, &run.vocabulary, 0, std::num::NonZeroU16::MIN, None)
@@ -457,6 +458,7 @@ impl InputPolicy for FaultWorkload {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
+        previous: Option<&FaultAction>,
         draw: Option<DurationDraw<FaultArchiveKey>>,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         self.expand_duration_recorded_or_live(
@@ -466,6 +468,7 @@ impl InputPolicy for FaultWorkload {
             mixture,
             before,
             mutation_seed,
+            previous,
             draw.ok_or("fault campaign is missing its duration choice")?,
             true,
         )
@@ -480,6 +483,7 @@ impl InputPolicy for FaultWorkload {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
+        _previous: Option<&FaultAction>,
         draw: DurationDraw<FaultArchiveKey>,
         replay: bool,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
@@ -576,11 +580,12 @@ fn held_suffix(
                 mixture.mixture,
                 mixture.weight,
                 mutation_seed,
+                None,
                 |rand| {
                     Ok(biased_step(view, rand)?
                         .filter(|action| event_is_ready(action, event_ready)))
                 },
-                |rand| sample_action(rand, &run.vocabulary, event_ready, ticks, Some(view)),
+                |_, rand| sample_action(rand, &run.vocabulary, event_ready, ticks, Some(view)),
             )
         })?;
     for action in &mut suffix {
@@ -1050,7 +1055,15 @@ mod tests {
         let mut event_parks = 0;
         for seed in 0..128 {
             let suffix = game
-                .expand_suffix_duration(&run, &tables, SuffixShape::OneOrTwo, mixture, seed, draw)
+                .expand_suffix_duration(
+                    &run,
+                    &tables,
+                    SuffixShape::OneOrTwo,
+                    mixture,
+                    seed,
+                    None,
+                    draw,
+                )
                 .unwrap();
             let replay = game
                 .expand_suffix_recorded_duration(
@@ -1060,6 +1073,7 @@ mod tests {
                     mixture,
                     Some(&checkpoint),
                     seed,
+                    None,
                     Some(draw),
                 )
                 .unwrap();
@@ -1091,6 +1105,7 @@ mod tests {
                 mixture,
                 Some(&checkpoint),
                 1,
+                None,
                 None
             )
             .is_err()
@@ -1106,6 +1121,7 @@ mod tests {
                 SuffixShape::OneOrTwo,
                 mixture,
                 1,
+                None,
                 out_of_range
             )
             .is_err()

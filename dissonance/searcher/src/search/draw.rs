@@ -208,12 +208,13 @@ pub fn draw_suffix<A, B, U>(
     mixture: DrawMixture,
     mixture_weight: u8,
     mutation_seed: u64,
+    previous: Option<&A>,
     mut biased: B,
     mut alphabet: U,
 ) -> Result<Vec<A>, Box<dyn Error>>
 where
     B: FnMut(&mut RomuDuoJrRand) -> Result<Option<A>, Box<dyn Error>>,
-    U: FnMut(&mut RomuDuoJrRand) -> Result<A, Box<dyn Error>>,
+    U: FnMut(Option<&A>, &mut RomuDuoJrRand) -> Result<A, Box<dyn Error>>,
 {
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
     let energy_biased = match mixture {
@@ -248,7 +249,8 @@ where
             suffix.push(action);
             continue;
         }
-        suffix.push(alphabet(&mut rand)?);
+        let action = alphabet(suffix.last().or(previous), &mut rand)?;
+        suffix.push(action);
     }
     Ok(suffix)
 }
@@ -281,11 +283,16 @@ mod tests {
 
     #[test]
     fn the_shape_identifier_round_trips_and_rejects_unknown_names() {
-        let shape = SuffixShape::OneOrTwo;
-        assert_eq!(
-            suffix_shape_from_identifier(suffix_shape_identifier(shape)).expect("round trip"),
-            shape
-        );
+        for shape in [
+            SuffixShape::OneOrTwo,
+            SuffixShape::OneToSix,
+            SuffixShape::OneToSixBounded,
+        ] {
+            assert_eq!(
+                suffix_shape_from_identifier(suffix_shape_identifier(shape)).expect("round trip"),
+                shape
+            );
+        }
         assert!(suffix_shape_from_identifier("two_or_three").is_err());
     }
 
@@ -317,8 +324,9 @@ mod tests {
                 DrawMixture::AlphabetOnly,
                 128,
                 seed,
+                None,
                 |_| Ok(None::<u64>),
-                |rand| {
+                |_, rand| {
                     alphabet_calls += 1;
                     Ok(rand.next_u64())
                 },
@@ -329,8 +337,9 @@ mod tests {
                 DrawMixture::BiasedHalf,
                 128,
                 seed,
+                None,
                 |_| Ok(None::<u64>),
-                |rand| Ok(rand.next_u64()),
+                |_, rand| Ok(rand.next_u64()),
             )
             .expect("biased-half suffix over an empty table");
             assert_eq!(plain.len(), alphabet_calls as usize);
@@ -347,8 +356,9 @@ mod tests {
                     DrawMixture::AlphabetOnly,
                     128,
                     *seed,
+                    None,
                     |_| Ok(None::<u64>),
-                    |rand| Ok(rand.next_u64()),
+                    |_, rand| Ok(rand.next_u64()),
                 )
                 .expect("suffix")
                 .len()
@@ -356,6 +366,29 @@ mod tests {
             })
             .count();
         assert!((900..1_150).contains(&long), "two-action suffixes: {long}");
+    }
+
+    #[test]
+    fn each_alphabet_draw_sees_the_action_before_it() {
+        for seed in 0..256_u64 {
+            let mut seen = Vec::new();
+            let suffix = draw_suffix(
+                SuffixShape::OneToSix,
+                DrawMixture::AlphabetOnly,
+                128,
+                seed,
+                Some(&7_u64),
+                |_| Ok(None::<u64>),
+                |previous, rand| {
+                    seen.push(previous.copied());
+                    Ok(rand.next_u64())
+                },
+            )
+            .expect("suffix");
+            let mut expected = vec![Some(7)];
+            expected.extend(suffix[..suffix.len() - 1].iter().copied().map(Some));
+            assert_eq!(seen, expected);
+        }
     }
 
     #[test]
@@ -368,8 +401,9 @@ mod tests {
                         DrawMixture::Energy { scale: 6 },
                         weight,
                         *seed,
+                        None,
                         |_| Ok(Some(1_u64)),
-                        |_| Ok(0_u64),
+                        |_, _| Ok(0_u64),
                     )
                     .expect("energy suffix");
                     let from_table = suffix.iter().all(|action| *action == 1);

@@ -1518,6 +1518,11 @@ where
         node
     }
 
+    pub(crate) fn last_action(&self, id: usize) -> Option<&A> {
+        let node = self.entries.get(id)?.input_node;
+        self.input_index.nodes.get(node)?.as_ref()?.action.as_ref()
+    }
+
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
