@@ -68,6 +68,10 @@ pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot
 
 pub const DURATION_IDENTIFIER: &str = "stratified";
 
+pub const CHORD_DRAW_FIELD: &str = "chord_draw";
+
+pub const CHANGE_ONE_CONTROL_IDENTIFIER: &str = "change_one_control_v1";
+
 pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 pub const KEY_POLICY_FIELD: &str = "key_policy";
 pub const DURATION_POLICY_FIELD: &str = "duration_policy";
@@ -542,6 +546,7 @@ where
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER.to_owned()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
         ]
         .into_iter()
@@ -563,6 +568,7 @@ where
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
         ];
         for (field, compiled) in pinned {
             if recorded(field)? != compiled {
@@ -591,10 +597,16 @@ where
     fn sample_alphabet(
         &self,
         run: &SmbCampaignRun,
-        _previous: Option<&ButtonChord>,
+        previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::smb::archive::sample_chord_from_masks(rand, run.vocabulary.masks())
+        match previous {
+            Some(previous) => Ok(ButtonChord::new(
+                crate::smb::archive::change_one_control(rand, previous.buttons)?,
+                crate::smb::archive::sample_stratified_hold(rand)?,
+            )),
+            None => crate::smb::archive::sample_chord_from_masks(rand, run.vocabulary.masks()),
+        }
     }
 
     fn max_action_cost(&self) -> u64 {
@@ -1562,6 +1574,11 @@ mod tests {
         assert!(
             replay_smb_campaign(&rom, without_progress.as_bytes(), None).is_err(),
             "a recording without the current progress policy is refused"
+        );
+        let fresh_chords = recorded.replacen("change_one_control_v1", "fresh", 1);
+        assert!(
+            replay_smb_campaign(&rom, fresh_chords.as_bytes(), None).is_err(),
+            "a recording with another chord draw is refused"
         );
     }
 
