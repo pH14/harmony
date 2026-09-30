@@ -343,6 +343,28 @@ actions per stage, and executed work grouped by parent stage and charge.
 Pre-objective counters include the objective job and are checked against work to
 the first objective, or total work for an unfinished campaign.
 
+## Held-button world
+
+`held-world` compares controller chord draws on a side-scrolling course of
+ground and pits. It reads one JSON request with `course` (`ground_px` 16–1,024
+and one to 32 `pits_px`, each 1–120 pixels), `seed`, `work_budget` in frames
+(up to 400 million, or 20 million with `verify`), `workers`, `suffix`,
+`mixture`, and the optional `chords` and `verify`.
+
+B raises the top speed from walking to running. Holding A lengthens a jump, and
+a new jump needs a new press. A running jump clears pits that a walking jump
+falls into, and a fall returns the runner to the start of its section. The
+progress tier is the 128-pixel band. The place is the 16-pixel column, the
+height and the 1,024-frame time bucket, and fewer frames spent is the
+preference.
+
+`chords` is `change_one_control`, the SMB draw and the default, or `fresh`,
+which draws whole new chords as the control. Holds are 2–12 or 96–120 frames,
+as in SMB. On 24 pits (16–112 pixels three times, 128-pixel ground), four
+workers and eight seeds, change-one-control reaches the goal at a median of
+0.34 million frames with 1,087 live entries. Fresh chords take 0.91 million
+frames with 1,862 live entries.
+
 ## Upgrade route
 
 The route world requires scouting a blocked endpoint before `attack` returns to
