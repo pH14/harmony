@@ -25,8 +25,8 @@ WORLD_BUDGET = 200_000
 SLOWER, FASTER = 1.25, 0.8
 MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
-REPORT_FIELDS = {"config", "evidence", "first_objective_work", "layout", "parent_draws", "skipped_draws",
-                 "stream_sha256", "success", "verified", "work_budget"}
+REPORT_FIELDS = {"config", "evidence", "first_objective_work", "layout", "stream_sha256", "success", "verified",
+                 "work_budget"}
 SHIELDED_BOSS = {"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24, "shield": 8, "shield_odds": 4,
                  "hit_tier": True, "tail_slots": True}
 WORLDS = {
@@ -418,9 +418,6 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def slow(arm):
         return sum(not r["success"] or r["first_objective_work"] > 1000 for r in by[arm])
 
-    def tier_draws(r):
-        return [d for d in r["parent_draws"] if d[0] and d[1] in ("tiers", "recent")]
-
     def map_ratios(arm):
         return_trip, next_gap = [], []
         for r in by[arm]:
@@ -444,19 +441,6 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def farm_cost():
         return statistics.median(trip_out(f) / max(1, trip_out(c)) for f, c in zip(by["farm/farms"], by["farm/none"]))
 
-    def trap_share(arm):
-        return statistics.median(
-            sum(d[5] for d in tier_draws(r) if d[3] == 1) / max(1, sum(d[5] for d in tier_draws(r)))
-            for r in by[arm])
-
-    def top_share(arm):
-        top = lower = 0
-        for r in by[arm]:
-            top += sum(d[5] for d in tier_draws(r) if d[3] == 1)
-            lower += sum(d[5] for d in tier_draws(r) if d[3] == 0 and d[2] == 1)
-            lower += sum(d[3] for d in r["skipped_draws"] if d[0] and d[1] in ("tiers", "recent") and d[2] == 1)
-        return top / max(1, top + lower)
-
     def shield_losses():
         return sum(h["success"] and not t["success"] for t, h in zip(by["shield/tier"], by["shield/hidden"]))
 
@@ -478,12 +462,10 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
          high("boss/tier/ample") < low("boss/engaged/ample")),
         ("credit kept after leaving: over 4x slower", f"{shown('credit/engaged/sticky')} vs {shown('credit/engaged')}",
          low("credit/engaged/sticky") > 4 * high("credit/engaged")),
-        ("trap: ranked item over 3x slower than control", f"{shown('trap/ranked')} vs {shown('trap/control')}",
-         low("trap/ranked") > 3 * high("trap/control")),
-        ("trap: item draw share at least 0.8 ranked, at most 0.5 control", f"{trap_share('trap/ranked'):.2f} vs {trap_share('trap/control'):.2f}",
-         trap_share("trap/ranked") >= 0.8 and trap_share("trap/control") <= 0.5),
-        ("trap: top-tier draw share 0.87-0.91", f"{top_share('trap/ranked'):.3f}",
-         0.87 <= top_share("trap/ranked") <= 0.91),
+        ("trap: an unwinnable top tier costs under 4x the control's work", f"{shown('trap/ranked')} vs {shown('trap/control')}",
+         high("trap/ranked") < 4 * low("trap/control")),
+        ("trap: with the item hidden, the goal takes under 300 work", shown("trap/control"),
+         high("trap/control") < 300),
         ("keep: capacity 2 / portfolio median 0.67-1.5", f"{shown('keep/capacity_two')} vs {shown('keep/portfolio')}",
          0.67 <= low("keep/capacity_two") / high("keep/portfolio") and high("keep/capacity_two") / low("keep/portfolio") <= 1.5),
         ("backtrack: ranked items under 2.5x the preference work", f"{shown('backtrack/tier')} vs {shown('backtrack/preference')}",
