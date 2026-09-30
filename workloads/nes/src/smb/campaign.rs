@@ -1682,7 +1682,11 @@ mod tests {
         }
         for line in text.lines().skip(1) {
             assert!(line.contains("\"selector\""));
-            assert!(line.contains("\"tiers\"") || line.contains("\"continuation\""));
+            assert!(
+                line.contains("\"tiers\"")
+                    || line.contains("\"continuation\"")
+                    || line.contains("\"recent\"")
+            );
         }
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay recorded campaign");
         assert_eq!(live, replayed);
@@ -1690,6 +1694,7 @@ mod tests {
         let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
         assert_eq!(live_bytes, replay_bytes);
         let accounting = live.archive.selector;
+        assert!(accounting.recent_selections.unwrap_or(0) > 0);
         assert_eq!(
             accounting
                 .cell_selections
