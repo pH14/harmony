@@ -488,11 +488,11 @@ searchers with different runtime seeds, in 300 simulated comparisons per world,
 failed the farm loop, re-walk, off-path, locked and first two boss worlds in
 none, the gauntlet worlds in 0.3% (no timing) and 2.3% (hidden timing), the
 boss after a draining approach in 1.7%, the boss by the door in 3.0%, the
-boss beside a late item in 2.3%, and the boss past an item at the entry in 0.3%. The simulated comparisons
+boss beside a late item in 2.3%, the boss past an item at the entry in 0.3%, and the boss behind a shield with damage as a tier in 5.0%. The shield world's fails all come from the goal-miss rule, since two seeds on the same layout disagree on the kill in 24% of pairs; its measures fail in none. The simulated comparisons
 for a world draw from one pool of 512 layouts (2,048 for the off-path and
-locked worlds; 343 layouts with three seeds each for the four newest boss
+locked worlds; 343 layouts with three seeds each for the five newest boss
 worlds), so they share layouts and these rates are rough. At these rates an
-unchanged build fails at least one of the 14 worlds in about 9% of comparisons.
+unchanged build fails at least one of the 15 worlds in about 14% of comparisons.
 When a candidate fails exactly one world and the failing measure lies inside the
 1st to 99th percentile of the same measure in that world's unchanged
 comparisons, rerun that world alone with `--world` before dropping the
