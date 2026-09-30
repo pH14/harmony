@@ -207,9 +207,8 @@ def legs(report: dict) -> tuple[dict, dict]:
 
     if report["config"]["family"] == "crossing":
         entry = within(evidence["crossing_first_entry_work"])
-        return {"to the goal": budget if goal is None else goal,
-                "to crossing entry": entry,
-                "crossing entry to goal": None if entry is None or goal is None else goal - entry}
+        return ({"to the goal": budget if goal is None else goal, "to crossing entry": entry},
+                {"crossing entry to goal": None if entry is None or goal is None else goal - entry})
     if report["config"]["family"] == "passive_clock":
         entry = within(evidence["passive_clock"]["first_event_work"][1])
         return ({"to the goal": budget if goal is None else goal, "to wait entry": entry},
@@ -376,7 +375,7 @@ def execute(binary: Path, job: dict) -> dict:
         raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
     report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
     report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
-                          if key.startswith("map_")}
+                          if key.startswith(("map_", "crossing_"))}
     report["arm"] = job["arm"]
     return report
 
