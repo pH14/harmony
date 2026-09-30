@@ -8,6 +8,7 @@ pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
 pub mod graph;
+pub mod held;
 pub mod map;
 pub mod maze;
 pub mod passive_clock;
