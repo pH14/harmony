@@ -460,7 +460,12 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
         }
         Ok(())
     }
-    fn sample_alphabet(&self, _: &(), rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
+    fn sample_alphabet(
+        &self,
+        _: &(),
+        _: Option<&u8>,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<u8, Box<dyn Error>> {
         if let World::PassiveClock(w) = &self.config {
             return Ok(w.sample(rand));
         }

@@ -507,6 +507,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
     fn sample_alphabet(
         &self,
         _run: &NovaCampaignRun,
+        _previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         sample_chord(rand)

@@ -153,7 +153,9 @@ through a function bounded only by `TargetExecution`.
 `InputPolicy` requires three things of a workload: the action cost ceiling,
 the policy identifiers a recording must match, and
 `sample_alphabet`, which draws one action from the workload's vocabulary. The
-searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
+draw receives the action just before it: the previous action of the suffix, or
+the parent's last action for the first one, so a workload can draw a change to
+what the input already holds. The searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
 drawn from the retained-input table, `finish_stream_record` folds the record's
 retained suffixes back into it and receives the campaign evidence after the
 record's admission, so a workload can pass feedback to

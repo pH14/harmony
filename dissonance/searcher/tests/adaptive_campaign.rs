@@ -149,6 +149,7 @@ impl InputPolicy for TimingWorkload {
     fn sample_alphabet(
         &self,
         _run: &Self::Run,
+        _previous: Option<&Self::Action>,
         _rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>> {
         Ok(TimedAction {
@@ -179,6 +180,7 @@ impl InputPolicy for TimingWorkload {
         _shape: SuffixShape,
         _mixture: MixtureDraw,
         _mutation_seed: u64,
+        _previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         Ok(vec![TimedAction {
             context: 0,
@@ -194,8 +196,9 @@ impl InputPolicy for TimingWorkload {
         mixture: MixtureDraw,
         _before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
+        previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+        self.expand_suffix(run, state, shape, mixture, mutation_seed, previous)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -207,6 +210,7 @@ impl InputPolicy for TimingWorkload {
         _mixture: MixtureDraw,
         _before: Option<&EmpiricalStepCheckpoint>,
         draw_seed: u64,
+        _previous: Option<&Self::Action>,
         draw: DurationDraw<Self::Key>,
         _replay: bool,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
