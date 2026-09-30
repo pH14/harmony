@@ -239,6 +239,8 @@ pub struct Evidence {
     pub map_first: Vec<Option<u64>>,
     pub map_first_tier: Vec<Option<u64>>,
     pub map_first_stocked: Option<u64>,
+    pub map_first_hit_stock: Option<u8>,
+    pub map_max_hits: u8,
     pub admitted_job_work: u64,
     pub job_start_work: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,11 +820,16 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         && after.item
                         && after.arm == 0
                         && after.cell == layout.goal
-                        && after.stock >= w.boss_stock
+                        && after.stock + after.shield >= w.boss_stock + w.shield
+                        && after.hits == 0
                         && (!w.boss_hits_back || after.health >= w.boss_stock)
                     {
                         e.map_first_stocked.get_or_insert(reached_work);
                     }
+                    if after.hits > 0 && before.hits == 0 {
+                        e.map_first_hit_stock.get_or_insert(after.stock);
+                    }
+                    e.map_max_hits = e.map_max_hits.max(after.hits);
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
                 (World::Crossing(w), State::Crossing(before), State::Crossing(after)) => {

@@ -27,6 +27,8 @@ MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
 REPORT_FIELDS = {"config", "evidence", "first_objective_work", "layout", "parent_draws", "skipped_draws",
                  "stream_sha256", "success", "verified", "work_budget"}
+SHIELDED_BOSS = {"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24, "shield": 8, "shield_odds": 4,
+                 "hit_tier": True, "tail_slots": True}
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
@@ -57,8 +59,10 @@ WORLDS = {
     "boss past an item at the entry": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 8,
                                         "boss_hits_back": True, "late_item": True, "item_at_entry": True,
                                         "tail_slots": True}, 1),
+    "boss behind a shield with damage as a tier": (SHIELDED_BOSS, 1),
 }
-BUDGETS = {"boss by the door": 600_000, "boss beside a late item": 600_000, "boss past an item at the entry": 600_000}
+BUDGETS = {"boss by the door": 600_000, "boss beside a late item": 600_000, "boss past an item at the entry": 600_000,
+           "boss behind a shield with damage as a tier": 600_000}
 
 
 def pattern(length: int) -> int:
@@ -136,6 +140,13 @@ def requests(seeds: int) -> list[dict]:
                                                 "loops": 7, "corridor": 2, "shaft": 3, "inner": 20}}
         for arm, broken in (("ranked", False), ("control", True)):
             rows.append(request(f"map/{arm}", grid, seed, broken))
+        for _ in range(2):
+            shielded = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64),
+                                                        "loops": 7, "corridor": 2, "shaft": 3, **SHIELDED_BOSS}}
+            hidden = {**shielded, "parameters": {**shielded["parameters"], "hit_tier": False}}
+            shield_seed = secrets.randbits(64)
+            rows.append(request("shield/tier", shielded, shield_seed, budget=600_000))
+            rows.append(request("shield/hidden", hidden, shield_seed, budget=600_000))
         layout = secrets.randbits(64)
         for arm, farms in (("farms", 4), ("none", 0)):
             rows.append(request(f"farm/{arm}", {"family": "map", "parameters": {
@@ -225,6 +236,10 @@ def legs(report: dict) -> tuple[dict, dict]:
         milestones = {"to the last item": tiers[-1], "to the full-health arrival": stocked}
         diagnostics = {"last item to full-health arrival": gap(tiers[-1], stocked),
                        "full-health arrival to the goal": gap(stocked, goal)}
+    elif parameters.get("hit_tier"):
+        milestones = {"to the item": tiers[1], "to the stocked arrival": stocked, "to the first hit": tiers[2]}
+        diagnostics = {"item to stocked arrival": gap(tiers[1], stocked),
+                       "first hit to kill": gap(tiers[2], goal)}
     elif parameters.get("boss_stock"):
         milestones = {"to the item": tiers[1], "to the stocked arrival": stocked}
         diagnostics = {"item to stocked arrival": gap(tiers[1], stocked),
@@ -442,6 +457,12 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
             lower += sum(d[3] for d in r["skipped_draws"] if d[0] and d[1] in ("tiers", "recent") and d[2] == 1)
         return top / max(1, top + lower)
 
+    def shield_losses():
+        return sum(h["success"] and not t["success"] for t, h in zip(by["shield/tier"], by["shield/hidden"]))
+
+    def shield_gains():
+        return sum(t["success"] and not h["success"] for t, h in zip(by["shield/tier"], by["shield/hidden"]))
+
     n = len(by["credit/engaged"])
     m = len(by["boss/tier/tight"])
     third = n // 3
@@ -480,6 +501,8 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
          map_ratios("map/ranked")[1] > 1),
         ("map: hidden item mostly unsolved", f"{solved('map/control')}/{n}", solved("map/control") <= third),
         ("farm loop: farms off the route slow the trip out under 10x", f"{farm_cost():.2f}", farm_cost() < 10),
+        ("shield: damage as a tier loses more kills than it gains against hidden damage",
+         f"{shield_losses()} vs {shield_gains()}", shield_losses() > shield_gains()),
     ]
 
 
