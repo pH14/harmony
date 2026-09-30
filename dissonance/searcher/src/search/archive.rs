@@ -136,7 +136,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_cell_recent_count_decay_v2";
+pub const SELECTOR_IDENTIFIER: &str = "tier_pace_yield_cell_recent_count_decay_v1";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -241,8 +241,28 @@ pub struct SelectorAccounting {
     pub best_holder_draws: Vec<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub draws_by_cell: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tier_runs: BTreeMap<String, TierRuns>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TierRuns {
+    pub current: u64,
+    pub longest: u64,
+    #[serde(default)]
+    pub draws: u64,
+    #[serde(default)]
+    pub yields: u64,
+    #[serde(default)]
+    pub wins: u64,
+    #[serde(default)]
+    pub next_tier: String,
+    #[serde(default)]
+    pub next_draws: u64,
+    #[serde(default)]
+    pub next_yields: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -2239,6 +2259,27 @@ where
         self.activate_membership(id);
         let carried_in =
             parent_id.is_some_and(|parent| cell_of(self.entries[parent].key) != cell_of(key));
+        let carried_win = replacement_preferences != 0 && carried_in;
+        if new_cell || carried_win {
+            let next = self
+                .tiers
+                .range(..key.progress())
+                .next_back()
+                .map(|(progress, _)| (format!("{progress:?}"), self.tier_runs(*progress)));
+            let runs = self.tier_runs_mut(key.progress());
+            runs.yields = runs.yields.saturating_add(1);
+            if new_cell {
+                runs.longest = runs.longest.max(runs.current);
+                runs.current = 0;
+                runs.wins = 0;
+                let (tier, next_runs) = next.unwrap_or_default();
+                runs.next_tier = tier;
+                runs.next_draws = next_runs.draws;
+                runs.next_yields = next_runs.yields;
+            } else {
+                runs.wins = runs.wins.saturating_add(1);
+            }
+        }
         if replacement_preferences != 0 && carried_in {
             self.reset_cell_draws(cell_of(key));
         }
@@ -2397,10 +2438,65 @@ where
         Ok(places.into_iter().nth(index))
     }
 
+    fn tier_runs(&self, progress: K::Progress) -> TierRuns {
+        self.selector_accounting
+            .tier_runs
+            .get(&format!("{progress:?}"))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn tier_runs_mut(&mut self, progress: K::Progress) -> &mut TierRuns {
+        self.selector_accounting
+            .tier_runs
+            .entry(format!("{progress:?}"))
+            .or_default()
+    }
+
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
         let shift = checked_tier_rank_shift(K::tier_rank_shift())?;
-        let weights = (0..self.tiers.len())
-            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift));
+        let tiers = self.tiers.len();
+        let halvings = self
+            .tiers
+            .iter()
+            .next_back()
+            .map_or(0, |(progress, places)| {
+                let runs = self.tier_runs(*progress);
+                let cells = u64::try_from(places.len().max(1)).unwrap_or(u64::MAX);
+                let pace = runs.longest.max(cells);
+                let (next_draws, next_yields) =
+                    self.tiers.iter().rev().nth(1).map_or((0, 0), |(next, _)| {
+                        let counts = self.tier_runs(*next);
+                        if format!("{next:?}") == runs.next_tier {
+                            (
+                                counts.draws.saturating_sub(runs.next_draws),
+                                counts.yields.saturating_sub(runs.next_yields),
+                            )
+                        } else {
+                            (counts.draws, counts.yields)
+                        }
+                    });
+                let next_yields_more = u128::from(next_yields.saturating_add(1))
+                    * u128::from(runs.current.saturating_add(1))
+                    > u128::from(runs.wins.saturating_add(1))
+                        * u128::from(next_draws.saturating_add(1));
+                if next_yields_more {
+                    (runs.current.saturating_sub(1) / pace)
+                        .max(1)
+                        .ilog2()
+                        .min(shift)
+                } else {
+                    0
+                }
+            });
+        let weights = (0..tiers).map(|rank| {
+            let weight = tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift);
+            if rank == 0 && tiers > 1 {
+                weight >> halvings
+            } else {
+                weight
+            }
+        });
         let index = draw_weighted(rand, weights)?;
         let progress = self
             .tiers
@@ -2828,6 +2924,9 @@ where
         self.selected[id] = self.selected[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
+        let runs = self.tier_runs_mut(key.progress());
+        runs.current = runs.current.saturating_add(1);
+        runs.draws = runs.draws.saturating_add(1);
         let state = self.cells.entry(cell_of(key)).or_default();
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
@@ -4034,6 +4133,7 @@ mod tests {
         .expect("current selector accounting parses");
         assert_eq!(current.cell_selections, 2);
         assert_eq!(current.tier_draws_by_rank, vec![5, 6]);
+        assert!(current.tier_runs.is_empty());
         assert!(
             serde_json::from_str::<SelectorAccounting>(
                 r#"{"tie_class_selections":2,"productive_selections":3,"cell_resets":4}"#,
@@ -7656,6 +7756,7 @@ mod tests {
         for (index, (major, minor, progress)) in keys.iter().enumerate() {
             let mut key = probe_key(*major, *minor, *progress, 0);
             key.state_fingerprint = u8::try_from(index).expect("fingerprint byte");
+            archive.prepare_selection();
             archive
                 .insert(
                     None,
@@ -7685,9 +7786,10 @@ mod tests {
     #[test]
     fn the_deepest_progress_tier_takes_most_draws_and_lower_tiers_still_draw() {
         let mut archive = tier_archive(&[(1, 1, 0), (1, 2, 0), (2, 1, 0)]);
-        let counts = draw_counts(&mut archive, 0x7ea1_0001, 4096);
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0001, 4096);
         assert!(counts[2] > counts[1] && counts[1] > counts[0]);
         assert!(counts[0] > 0);
+        draw_counts(&mut archive, 0x7ea1_0001, 4096);
         let report = archive.selector_report();
         assert_eq!(report.tier_draws_by_rank.len(), 3);
         assert_eq!(report.tier_draws_by_rank.iter().sum::<u64>(), 4096);
@@ -7696,8 +7798,193 @@ mod tests {
     #[test]
     fn the_progress_order_beats_the_key_order_when_choosing_the_top_tier() {
         let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
-        let counts = draw_counts(&mut archive, 0x7ea1_0002, 1024);
-        assert!(counts[0] > counts[1]);
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0002, 1024);
+        assert!(counts[0] > counts[1] * 4);
+    }
+
+    fn unrecorded_draw_counts(archive: &mut TestArchive, seed: u64, draws: usize) -> Vec<u64> {
+        let mut rand = RomuDuoJrRand::with_seed(seed);
+        let mut counts = vec![0_u64; archive.selected.len()];
+        for _ in 0..draws {
+            let (id, _) = archive.select_parent(&mut rand).expect("a tier draw");
+            counts[id] += 1;
+        }
+        counts
+    }
+
+    #[test]
+    fn a_top_tier_that_opens_no_cell_falls_to_the_next_tiers_weight() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..64 {
+            archive.record_selection(0, &draw);
+        }
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0005, 4096);
+        assert!(
+            counts[0] * 4 < counts[1] * 5 && counts[1] * 4 < counts[0] * 5,
+            "{counts:?}"
+        );
+    }
+
+    #[test]
+    fn a_top_tier_that_wins_as_often_as_the_next_tier_yields_keeps_its_weight() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for id in [0, 1] {
+            for _ in 0..64 {
+                archive.record_selection(id, &draw);
+            }
+        }
+        archive.tier_runs_mut((2, 1)).wins = 64;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0009, 4096);
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+    }
+
+    fn roughly_equal(left: u64, right: u64) -> bool {
+        left * 4 < right * 5 && right * 4 < left * 5
+    }
+
+    #[test]
+    fn a_top_tier_without_a_snapshot_compares_against_the_next_tiers_whole_counts() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let top = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..64 {
+            archive.record_selection(0, &top);
+        }
+        let runs = archive.tier_runs_mut((2, 1));
+        runs.wins = 32;
+        runs.next_tier = String::new();
+        runs.next_draws = 0;
+        runs.next_yields = 0;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000a, 4096);
+        assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+        let next = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(1),
+            best_preference: None,
+        };
+        for _ in 0..64 {
+            archive.record_selection(1, &next);
+        }
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000a, 4096);
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+    }
+
+    #[test]
+    fn a_tier_that_appears_below_the_top_replaces_the_snapshot_tier() {
+        let mut archive = tier_archive(&[(1, 9, 0), (3, 1, 0), (2, 1, 0)]);
+        assert_eq!(
+            archive.tier_runs((3, 1)).next_tier,
+            format!("{:?}", (1_u8, 9_u8))
+        );
+        let top = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..64 {
+            archive.record_selection(1, &top);
+        }
+        archive.tier_runs_mut((3, 1)).wins = 32;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
+        assert!(roughly_equal(counts[1], counts[2]), "{counts:?}");
+        let middle = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(1),
+            best_preference: None,
+        };
+        for _ in 0..64 {
+            archive.record_selection(2, &middle);
+        }
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
+        assert!(counts[1] > counts[2] * 5, "{counts:?}");
+    }
+
+    #[test]
+    fn tier_runs_survive_a_checkpoint() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..64 {
+            archive.record_selection(0, &draw);
+        }
+        let runs = archive.selector_counters().tier_runs;
+        assert_eq!(runs.values().map(|runs| runs.current).max(), Some(64));
+        let mut restored: TestArchive =
+            postcard::from_bytes(&postcard::to_stdvec(&archive).expect("encode archive"))
+                .expect("decode archive");
+        restored
+            .restore_runtime(|_| 1, None, Vec::new())
+            .expect("restore archive");
+        assert_eq!(restored.selector_counters().tier_runs, runs);
+        assert_eq!(
+            unrecorded_draw_counts(&mut restored, 0x7ea1_0008, 4096),
+            unrecorded_draw_counts(&mut archive, 0x7ea1_0008, 4096)
+        );
+    }
+
+    #[test]
+    fn a_top_tier_keeps_its_weight_until_its_draws_pass_twice_its_longest_run() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..40 {
+            archive.record_selection(0, &draw);
+        }
+        let mut key = probe_key(2, 1, 5, 0);
+        key.state_fingerprint = 2;
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![2],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert tier entry")
+            .expect("retain tier entry");
+        for _ in 0..80 {
+            archive.record_selection(0, &draw);
+        }
+        let full = top_tier_draws(&mut archive, 0x7ea1_0006, 4096);
+        assert!(full[0] > full[1] * 5, "{full:?}");
+        archive.record_selection(0, &draw);
+        let halved = top_tier_draws(&mut archive, 0x7ea1_0007, 4096);
+        assert!(
+            halved[0] > halved[1] * 2 && halved[0] < halved[1] * 6,
+            "{halved:?}"
+        );
+    }
+
+    fn top_tier_draws(archive: &mut TestArchive, seed: u64, draws: usize) -> [u64; 2] {
+        let mut rand = RomuDuoJrRand::with_seed(seed);
+        let mut counts = [0_u64; 2];
+        for _ in 0..draws {
+            let (id, _) = archive.select_parent(&mut rand).expect("a tier draw");
+            counts[usize::from(id == 1)] += 1;
+        }
+        counts
     }
 
     #[test]

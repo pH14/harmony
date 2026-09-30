@@ -310,12 +310,29 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_cell_recent_count_decay_v2`, and the stream header names
+One selector exists, `tier_pace_yield_cell_recent_count_decay_v1`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
 `tier_rank_shift` is three unless the workload says otherwise, so the leading
-tier takes most of the draws, and no tier holding an entry takes zero. A
+tier takes most of the draws, and no tier holding an entry takes zero. The
+leading tier gives up weight while it finds nothing new. Each tier counts its
+draws since a new cell last appeared in it and keeps the longest such run; its
+pace is that longest run or its cell count, whichever is larger. When the
+current count passes twice the pace, the leading tier's weight halves, and it
+halves again each time the count doubles, down to the weight of the rank
+below. The halvings apply only while the rank below yields more per draw than
+the leading tier since the leading tier's last new cell. A tier's yields are
+its new cells and its carried-in wins, admissions that take a slot's
+preference from a parent in another cell. The leading tier counts only its
+carried-in wins there, since a new cell ends the run. With `Td` and `Ty` the
+leading tier's draws and wins in the run, and `Nd` and `Ny` the draws and
+yields of the rank below over the same span, the halvings apply while
+`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`. When the rank below is a
+different tier from the one recorded when the run began, or no tier was
+recorded, `Nd` and `Ny` are that tier's total draws and yields. A leading tier
+that yields at least as much per draw as the rank below keeps its full weight. A new cell in
+the tier restores the full weight. A
 workload whose progress order has many close steps, such as fine progress
 bands, supplies a shift of one so each rank takes half of the one ahead. The
 largest accepted shift is seven, because a larger one overflows the leading
@@ -349,8 +366,11 @@ also resets when a selection from the cell opens a cell that held nothing, so
 the cells at the edge of explored ground keep drawing while they keep opening
 new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
-`cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference and
-the draws each cell received, and
+`cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
+`tier_runs` keyed by each tier's progress value with its current and longest
+run, its total draws and yields, its carried-in wins in the current run, and
+the rank below's name, draws and yields when the run began, and the draws each
+cell received, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear only on every 100,000th execution's
 line and the final line. Counting portfolio holders compares every pair of
@@ -549,7 +569,10 @@ checkpoint listed.
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
 list it by entry id and offset. Each `.ckpt` file holds its header, that index,
-and the postcard body; `checkpoints.jsonl` records write time and sizes.
+and the postcard body; `checkpoints.jsonl` records write time and sizes. The
+archive stores its `SelectorAccounting` as JSON inside that body, so a counter
+added there, such as `tier_runs`, reads as empty from a checkpoint written
+before the counter existed.
 `CampaignOrigin::SearchCheckpoint` resumes one. The admission
 window, limits, workload identity and the workload policies that give stored
 inputs and keys their meaning must match. The suffix, mixture and retention
