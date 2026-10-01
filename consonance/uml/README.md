@@ -18,6 +18,9 @@
   per-launch work directory for
   `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR` and
   `GLIBC_TUNABLES`. With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
+  It refuses extra kernel arguments that would replace these settings or
+  attach host files, disks, consoles or network devices, because a
+  `Recording` cannot carry those host resources.
 - `Bridge` serves the guest's `/dev/harmony` requests on a `SOCK_SEQPACKET`
   pair from a thread of its own. It answers entropy from the seed, records
   each event with its virtual time, and fails the run if virtual time goes
