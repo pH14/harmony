@@ -210,7 +210,7 @@ impl Config {
         if self.farms > 8 || (self.farms > 0 && !(1..=63).contains(&self.farm_cap)) {
             return Err("map farms must be at most 8 with a cap of 1..=63".into());
         }
-        let layout = self.layout();
+        let layout = self.try_layout()?;
         if self.items > 1 && layout.items.len() < usize::from(self.items) {
             return Err("the map's outer region has too few rooms for its items".into());
         }
@@ -284,17 +284,21 @@ impl Config {
     }
 
     pub fn layout(&self) -> Rc<Layout> {
+        self.try_layout().expect("a validated map has a layout")
+    }
+
+    fn try_layout(&self) -> Result<Rc<Layout>, String> {
         LAYOUT.with_borrow_mut(|cached| match cached {
-            Some((config, layout)) if config == self => Rc::clone(layout),
+            Some((config, layout)) if config == self => Ok(Rc::clone(layout)),
             _ => {
-                let layout = Rc::new(self.build());
+                let layout = Rc::new(self.build()?);
                 *cached = Some((*self, Rc::clone(&layout)));
-                layout
+                Ok(layout)
             }
         })
     }
 
-    fn build(&self) -> Layout {
+    fn build(&self) -> Result<Layout, String> {
         let cells = usize::from(self.cells());
         let mut rand = RomuDuoJrRand::with_seed(self.layout);
         let mut doors = vec![0_u8; cells];
@@ -405,14 +409,14 @@ impl Config {
                         inner[usize::from(c)] && c != entry && doors[usize::from(c)] != 0b1111
                     })
                     .min_by_key(|&c| (from_entry[usize::from(c)].abs_diff(ENTRY_GOAL_DEPTH), c))
-                    .expect("an inner room with a wall")
+                    .ok_or("a late map item needs an inner room with a wall besides the entry")?
             } else if self.late_item {
                 (0..self.cells())
                     .filter(|&c| {
                         inner[usize::from(c)] && c != entry && doors[usize::from(c)] != 0b1111
                     })
                     .max_by_key(|&c| (from_entry[usize::from(c)], std::cmp::Reverse(c)))
-                    .expect("an inner room with a wall")
+                    .ok_or("a late map item needs an inner room with a wall besides the entry")?
             } else if self.boss_by_door {
                 (0..self.cells())
                     .filter(|&c| !inner[usize::from(c)] && doors[usize::from(c)] != 0b1111)
@@ -434,7 +438,7 @@ impl Config {
                             })
                     })
                     .min()
-                    .expect("the goal has an inner room before it")
+                    .ok_or("a late map item needs an inner room before the goal")?
             } else {
                 farthest(&from_entry, true)
             };
@@ -519,7 +523,7 @@ impl Config {
             )
         });
         tanks.truncate(usize::from(self.tanks));
-        Layout {
+        Ok(Layout {
             start_to_door: from_door[0],
             door_to_item: item.map(|item| from_entry[usize::from(item)] + 1),
             door_to_goal: if self.items == 1 {
@@ -540,7 +544,7 @@ impl Config {
             items,
             key,
             tanks,
-        }
+        })
     }
 
     fn key_room(&self, doors: &[u8], inner: &[bool], door_cell: u8) -> Option<u8> {
@@ -1076,7 +1080,7 @@ mod tests {
             }
             assert_eq!(crossings, 2);
             assert!(l.door_to_item.unwrap() > 0 && l.door_to_goal > 0);
-            assert_eq!(w.build(), *l);
+            assert_eq!(w.build().unwrap(), *l);
             assert!(w.reachable().unwrap());
         }
     }
@@ -1557,6 +1561,33 @@ mod tests {
             s = fire(&w, &l, s);
         }
         assert!(s.goal && w.goal(s));
+    }
+
+    #[test]
+    fn a_late_item_without_an_inner_room_besides_the_entry_is_rejected() {
+        let w = Config {
+            width: 4,
+            height: 4,
+            loops: 0,
+            corridor: 1,
+            shaft: 1,
+            inner: 2,
+            farms: 2,
+            farm_cap: 8,
+            boss_stock: 1,
+            boss_hits_back: true,
+            late_item: true,
+            ..config(44)
+        };
+        assert!(w.validate().is_err());
+        assert!(
+            Config {
+                item_at_entry: true,
+                ..w
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
