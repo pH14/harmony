@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Probe / UML CPU traps
+
+on:
+  push:
+    branches: [probe/uml-cpu-traps]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.runner }} ${{ matrix.sample }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-22.04, ubuntu-24.04-arm]
+        sample: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host
+        run: |
+          uname -a
+          lscpu | head -20
+          id
+      - name: Build
+        run: gcc -O1 -Wall -o probe probe.c
+      - name: Native
+        run: ./probe | tee native.json
+      - name: Docker
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL \
+            --security-opt no-new-privileges --network none \
+            -v "$PWD:/p:ro" ubuntu:24.04 /p/probe | tee docker.json
+      - name: Summary
+        run: |
+          {
+            echo "### $(uname -r)"
+            echo '```'
+            cat native.json docker.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
