@@ -57,9 +57,7 @@ struct SnapshotObservation {
     frame_count: u64,
     decoded: SmbMechanicalState,
     milestones: SmbMilestones,
-    changed_indices: Vec<u16>,
     dead: bool,
-    log_line: String,
 }
 
 impl SnapshotObservation {
@@ -68,9 +66,7 @@ impl SnapshotObservation {
             frame_count: observation.frame_count,
             decoded: observation.decoded,
             milestones: observation.milestones,
-            changed_indices: observation.changed_indices.clone(),
             dead: observation.dead,
-            log_line: observation.log_line.clone(),
         }
     }
 
@@ -80,9 +76,9 @@ impl SnapshotObservation {
             wram,
             decoded: self.decoded,
             milestones: self.milestones,
-            changed_indices: self.changed_indices.clone(),
+            changed_indices: Vec::new(),
             dead: self.dead,
-            log_line: self.log_line.clone(),
+            log_line: format!("frame={} changed=[]", self.frame_count),
         }
     }
 }
@@ -104,15 +100,7 @@ impl<P> SmbSnapshot<P> {
     where
         P: SnapshotState,
     {
-        size_of::<Self>()
-            .saturating_add(self.emulator_state.memory_charge())
-            .saturating_add(
-                self.observation
-                    .changed_indices
-                    .len()
-                    .saturating_mul(size_of::<u16>()),
-            )
-            .saturating_add(self.observation.log_line.len())
+        size_of::<Self>().saturating_add(self.emulator_state.memory_charge())
     }
 }
 
@@ -836,6 +824,16 @@ mod tests {
         let second_work = target.execution_work();
         assert!(second_work > first_work);
         target.restore(&saved).expect("restore after second action");
+        let restored = target.observe();
+        assert!(restored.changed_indices.is_empty());
+        assert_eq!(
+            restored.log_line,
+            format!("frame={} changed=[]", restored.frame_count)
+        );
+        assert_eq!(
+            saved.resident_memory_charge(),
+            size_of::<super::SmbSnapshot>() + saved.emulator_state_bytes_len()
+        );
         assert_eq!(target.execution_work(), second_work);
         target.reset();
         assert_eq!(target.execution_work(), second_work);

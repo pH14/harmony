@@ -61,3 +61,9 @@ the nearest keyframe, and those replayed frames count against the frame budget,
 so a small budget searches faster with compressed snapshots. Compression takes
 about 8 µs and decompression about 5 µs, against about 105 µs for one emulated
 frame.
+
+A snapshot also keeps the last frame's count, decoded state, milestones and
+death flag. It leaves out the list of changed RAM addresses and the log line,
+which no consumer reads after a restore; a restored target reports no changed
+addresses, as a freshly booted one does. That cuts the stored size of a
+compressed snapshot from about 2.9 KB to about 1.8 KB.
