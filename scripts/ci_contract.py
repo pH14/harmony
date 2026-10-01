@@ -613,6 +613,7 @@ CONSONANCE_UML = Workflow(
                       "toolchain exceed the pull request check budget."),
         Job("UML Qualification — <Target>", "pr", 15),
         Job("UML Replay — <Target>", "pr", 15),
+        Job("UML Restore — <Target>", "pr", 15),
     ),
 )
 

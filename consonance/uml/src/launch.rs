@@ -144,11 +144,16 @@ impl Guest {
         Self::start(command, work, launch)
     }
 
-    pub fn start(
+    pub fn start(command: Command, work: TempDir, launch: &Launch) -> Result<Self, LaunchError> {
+        Self::start_bridged(command, work, launch, true).map(|(guest, _)| guest)
+    }
+
+    pub(crate) fn start_bridged(
         mut command: Command,
         work: TempDir,
         launch: &Launch,
-    ) -> Result<Self, LaunchError> {
+        serve: bool,
+    ) -> Result<(Self, Option<OwnedFd>), LaunchError> {
         let (mut reader, writer) = io::pipe()?;
         command.stdout(writer.try_clone()?).stderr(writer);
         set_parent_death_signal(&mut command);
@@ -164,16 +169,15 @@ impl Guest {
         drop(command);
         let pid = i32::try_from(child.id()).map_err(io::Error::other)?;
         let bridge_state = Arc::new(AtomicU8::new(bridge::RUNNING));
-        let bridge = match (host_end, launch.bridge) {
-            (Some(host), Some(config)) => {
+        let (bridge, held) = match (host_end, launch.bridge) {
+            (Some(host), Some(config)) if serve => {
                 let state = Arc::clone(&bridge_state);
-                Some(
-                    std::thread::Builder::new()
-                        .name(format!("uml-bridge-{pid}"))
-                        .spawn(move || bridge::serve(host, config, state))?,
-                )
+                let thread = std::thread::Builder::new()
+                    .name(format!("uml-bridge-{pid}"))
+                    .spawn(move || bridge::serve(host, config, state))?;
+                (Some(thread), None)
             }
-            _ => None,
+            (host, _) => (None, host),
         };
         let console = Arc::new(Mutex::new(ConsoleTail::new(launch.console_tail_bytes)));
         let over_limit = Arc::new(AtomicBool::new(false));
@@ -201,7 +205,7 @@ impl Guest {
                     }
                 })?
         };
-        Ok(Self {
+        let guest = Self {
             child,
             pid,
             work: Some(work),
@@ -213,11 +217,19 @@ impl Guest {
             started: now(),
             wall_limit: launch.wall_limit,
             finished: false,
-        })
+        };
+        Ok((guest, held))
     }
 
     pub fn pid(&self) -> i32 {
         self.pid
+    }
+
+    pub fn console_tail(&self) -> Vec<u8> {
+        self.console
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .bytes()
     }
 
     pub fn console_contains(&self, needle: &str) -> bool {
@@ -253,22 +265,32 @@ impl Guest {
                 bridge::FAILED => break ExitReason::BridgeFailure,
                 _ => {}
             }
-            if let Some(status) = self.child.try_wait()? {
-                break exit_reason(status);
-            }
-            if self.started.elapsed() >= self.wall_limit {
-                break ExitReason::WallLimit;
+            if let Some(reason) = self.stopped()? {
+                break reason;
             }
             std::thread::sleep(POLL);
         };
         self.finish(reason)
     }
 
+    pub(crate) fn stopped(&mut self) -> io::Result<Option<ExitReason>> {
+        if self.over_limit.load(Ordering::Acquire) {
+            return Ok(Some(ExitReason::ConsoleLimit));
+        }
+        if let Some(status) = self.child.try_wait()? {
+            return Ok(Some(exit_reason(status)));
+        }
+        if self.started.elapsed() >= self.wall_limit {
+            return Ok(Some(ExitReason::WallLimit));
+        }
+        Ok(None)
+    }
+
     pub fn kill(mut self) -> io::Result<Exit> {
         self.finish(ExitReason::Killed)
     }
 
-    fn finish(&mut self, reason: ExitReason) -> io::Result<Exit> {
+    pub(crate) fn finish(&mut self, reason: ExitReason) -> io::Result<Exit> {
         self.finished = true;
         let wall = self.started.elapsed();
         kill_group(self.pid);

@@ -52,6 +52,44 @@ sequence of guest events.
   whole heap randomization range and stays out of the guest's page
   allocator, so the guest sees the same memory either way.
 
+## Checkpoints
+
+The host takes a checkpoint while the guest kernel waits for a `/dev/harmony`
+answer. Instead of the answer, the host sends a control message with a file
+descriptor for the image. The kernel writes the image from the host's initial
+thread with every host signal blocked and acknowledges it with the image size.
+Nothing is flushed or drained and virtual time does not move. The guest then
+waits for the answer again.
+
+An image holds:
+
+- captured: the UML process's private memory other than its code and the host
+  stack (the binary's data, read-only data and BSS, the heap, anonymous
+  mappings and the C library's thread data), the data extents of the guest
+  physical memory file, the host mappings of that file outside the main
+  physical memory range (vmalloc space, which holds the kernel stacks), the
+  vDSO address and the thread pointer;
+- checked, not copied: the executable mappings, the binary's end, the
+  physical memory range, a single host thread, and the open host descriptors
+  by number, type and access mode, excluding stub sockets.
+
+A restore checks the image before it changes anything and refuses an image
+that does not match. It then kills the stub processes, removes the epoll
+registrations, copies the image back, moves the vDSO to its captured address,
+and resumes at the capture point. There the kernel rebuilds what lives outside
+the image: a new stub process and socket for each guest address space, with
+every present page marked for remapping, and the epoll registrations with
+`O_ASYNC` ownership for the current process. The host stack, the initial jump
+buffer, the environment pointer and the descriptors stay those of the running
+process. The kernel acknowledges the restore and waits for the answer that was
+pending at the capture.
+
+With `harmony_restore` on the command line, the kernel asks the host for an
+image at the end of boot and restores it into the fresh process. The fresh
+process must use the same profile, memory size and host CPU. The host keeps
+its own part of the checkpoint: the entropy state, the recorded events, the
+latest virtual time and the pending answer.
+
 ## Building
 
 ```sh
@@ -108,7 +146,7 @@ does not survive an in-place restore.
 
 ## Qualification
 
-`harmony-uml-qualify --suite launch|replay --profile DIR` runs as an
+`harmony-uml-qualify --suite launch|replay|checkpoint --profile DIR` runs as an
 ordinary user. It refuses to run as root or with effective capabilities and
 installs a SECCOMP filter on itself that denies ptrace and every KVM ioctl.
 The `launch` suite runs:
@@ -132,6 +170,16 @@ cleanly with the same event hash. It then saves a recording at five cuts
 which must stop at the cut with the same hash. Finally it checks that a
 different seed changes the `values` events and that a recording made on
 another CPU is refused.
+
+The `checkpoint` suite runs each fixture once to get the cold event hash,
+then runs six diamonds (`--diamonds`), half of them with the `personality`
+call denied. Each diamond captures at a quarter and at half of the events,
+runs to three quarters, restores the first image in place, runs again to
+half, restores the second image, and runs to the end. Each image is then
+restored into a fresh process, with and without address randomization. Every
+run must end with the cold hash. Two planted omissions must fail: an image
+captured without host memory, and a restore that keeps the host's bridge
+state. The report gives capture and restore times and image sizes.
 
 The event hash is SHA-256 over each event's virtual time, ID, length and
 data.

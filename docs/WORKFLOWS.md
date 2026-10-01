@@ -66,7 +66,10 @@ every guest, and fails when the host is root or has effective capabilities.
 `UML Replay — <Target>` runs the replay suite on the same targets: 100 replays
 of each fixture under host load, CPU pinning, process stops and host address
 randomization must produce one event hash, and recordings must replay to each cut from a fresh process.
-Reports remain workflow artifacts.
+`UML Restore — <Target>` runs the checkpoint suite on the same targets:
+in-place and fresh-process restores of each fixture must reach the cold event
+hash, and an image without host memory or a restore without the bridge state
+must diverge. Reports remain workflow artifacts.
 
 `Checks / Consonance / UML Probe` keeps the arm64 feasibility probe until the
 arm64 profile joins `Checks / Consonance / UML`. It builds the arm64 UML RFC at

@@ -11,7 +11,7 @@ use hypercall_proto::{
 };
 use sha2::{Digest, Sha256};
 
-const STAMP_LEN: usize = 8;
+pub(crate) const STAMP_LEN: usize = 8;
 
 #[cfg(target_os = "linux")]
 const SOCKET_TYPE: libc::c_int = libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC;
@@ -87,7 +87,7 @@ pub(crate) fn socket_pair() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
-fn receive(socket: &OwnedFd, buffer: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn receive(socket: &OwnedFd, buffer: &mut [u8]) -> io::Result<usize> {
     loop {
         // SAFETY: `buffer` is live and writable for `buffer.len()` bytes;
         let received = unsafe {
@@ -108,7 +108,7 @@ fn receive(socket: &OwnedFd, buffer: &mut [u8]) -> io::Result<usize> {
     }
 }
 
-fn send(socket: &OwnedFd, frame: &[u8]) -> io::Result<()> {
+pub(crate) fn send(socket: &OwnedFd, frame: &[u8]) -> io::Result<()> {
     loop {
         // SAFETY: `frame` is live and readable for `frame.len()` bytes.
         let sent = unsafe {
@@ -133,12 +133,41 @@ fn send(socket: &OwnedFd, frame: &[u8]) -> io::Result<()> {
     }
 }
 
-struct Services {
+#[derive(Clone, Debug)]
+pub(crate) struct Services {
     entropy: SeededEntropy,
-    events: Vec<Event>,
+    pub(crate) events: Vec<Event>,
+    pub(crate) latest: u64,
 }
 
 impl Services {
+    pub(crate) fn new(seed: u64) -> Self {
+        Self {
+            entropy: SeededEntropy::new(seed),
+            events: Vec::new(),
+            latest: 0,
+        }
+    }
+
+    pub(crate) fn exchange(
+        &mut self,
+        request: &[u8],
+        response: &mut [u8],
+    ) -> Result<usize, String> {
+        let Some((stamp, frame)) = request.split_first_chunk::<STAMP_LEN>() else {
+            return Err(format!("request of {} bytes", request.len()));
+        };
+        let moment = u64::from_le_bytes(*stamp);
+        if moment < self.latest {
+            return Err(format!(
+                "virtual time went from {} to {moment} ns",
+                self.latest
+            ));
+        }
+        self.latest = moment;
+        Ok(self.answer(moment, frame, response))
+    }
+
     fn answer(&mut self, moment: u64, request: &[u8], response: &mut [u8]) -> usize {
         let Ok((header, payload)) = decode(request) else {
             return encode_error(ServiceId::Event as u16, 1, 0, Status::BadRequest, response);
@@ -191,13 +220,9 @@ impl Services {
 }
 
 pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> BridgeLog {
-    let mut services = Services {
-        entropy: SeededEntropy::new(bridge.seed),
-        events: Vec::new(),
-    };
+    let mut services = Services::new(bridge.seed);
     let mut request = vec![0_u8; STAMP_LEN + MAX_FRAME];
     let mut response = vec![0_u8; MAX_FRAME];
-    let mut latest = 0;
     let failure = loop {
         let length = match receive(&socket, &mut request) {
             Ok(0) => {
@@ -208,14 +233,11 @@ pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> Br
             Ok(length) => break Some(format!("request of {length} bytes")),
             Err(error) => break Some(format!("receive failed: {error}")),
         };
-        let (stamp, frame) = request[..length].split_at(STAMP_LEN);
-        let moment = u64::from_le_bytes(stamp.try_into().unwrap_or_default());
-        if moment < latest {
-            break Some(format!("virtual time went from {latest} to {moment} ns"));
-        }
-        latest = moment;
         let recorded = services.events.len();
-        let answer = services.answer(moment, frame, &mut response);
+        let answer = match services.exchange(&request[..length], &mut response) {
+            Ok(answer) => answer,
+            Err(failure) => break Some(failure),
+        };
         if services.events.len() > recorded && bridge.cut == Some(services.events.len()) {
             state.store(CUT, Ordering::Release);
             break None;

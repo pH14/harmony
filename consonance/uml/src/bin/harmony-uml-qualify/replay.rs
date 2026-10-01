@@ -15,8 +15,8 @@ use uml::{
 use crate::filter;
 use crate::linux::{Options, check, clean, contains, launch, summary};
 
-const FIXTURES: [&str; 3] = ["values", "schedule", "timers"];
-const SEED: u64 = 0x5eed_0001;
+pub const FIXTURES: [&str; 3] = ["values", "schedule", "timers"];
+pub const SEED: u64 = 0x5eed_0001;
 const BUSY_THREADS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,13 +51,13 @@ pub fn checks(
     Ok(checks)
 }
 
-fn seeded(options: &Options, fixture: &str, seed: u64) -> Launch {
+pub fn seeded(options: &Options, fixture: &str, seed: u64) -> Launch {
     let mut launch = launch(options, fixture);
     launch.bridge = Some(Bridge::new(seed));
     launch
 }
 
-fn completed(exit: &Exit) -> bool {
+pub fn completed(exit: &Exit) -> bool {
     exit.reason == ExitReason::Exited(0)
         && contains(exit, "HARMONY_UML DONE")
         && clean(exit)
@@ -249,7 +249,7 @@ fn refusal(profile: &VerifiedProfile, host: &HostIdentity) -> Value {
     )
 }
 
-fn first_difference(reference: &[Event], events: &[Event]) -> Option<Value> {
+pub fn first_difference(reference: &[Event], events: &[Event]) -> Option<Value> {
     let index = reference
         .iter()
         .zip(events)
