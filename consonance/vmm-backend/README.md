@@ -16,6 +16,13 @@ an ISA-specific exit enum.
 - `Arm64KvmBackend` and `HvfBackend` implement the arm64 KVM and macOS
   Hypervisor.framework paths where their platform APIs are available.
 
+Before the first policy is installed, `KvmBackend::initialize_vmx` checks
+`KVM_CAP_NESTED_STATE` and KVM's supported VMX CPUID bit, installs the requested
+CPUID model, reads the requested VMX capability MSRs, and sets
+IA32_FEATURE_CONTROL. The VMM's named nested-host policy owns their guest
+dispositions and contract identity. Partial MSR reads or writes fail. This
+initialization does not yet add nested state to snapshot capture or restore.
+
 `Backend::drain_dirty_pages` returns the guest pages written since the last
 drain, so snapshots copy and restores reload only those pages. The KVM backends
 read the kernel's dirty log. `HvfBackend` maps guest RAM without write

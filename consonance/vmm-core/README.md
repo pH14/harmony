@@ -111,11 +111,17 @@ board devices, policy, and records. The arm64 vendor is also used to exercise
 the additive architecture seam on portable mocks and QEMU.
 
 Boot does not require a particular host CPU model, stepping, or microcode.
-Each architecture supplies one guest machine policy; the backend supplies the
+Each architecture supplies a guest machine policy; the backend supplies the
 required virtualization capabilities. The x86 runtime boots controlled Linux on stock KVM; instruction interception
 patches, Multiboot payloads, and the legacy acceptance runner have been retired.
 The x86 policy and snapshot compatibility
 rules are documented in [contracts/x86](contracts/x86/README.md).
+
+`boot_linux_nested_host_virtual_time` composes the separate experimental x86
+nested-host contract with production `KvmBackend`. It requires host nested VMX,
+records KVM's capability MSRs in the snapshot contract identity, and boots the
+matching KVM-enabled kernel. It is a boot qualification entrypoint; live inner
+VM snapshot continuation has not yet been qualified.
 
 ## Checks
 
