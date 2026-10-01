@@ -294,6 +294,11 @@ where
 {
     use vmm_core::vmm::Step;
 
+    let input = environment::input_spec::InputSpec::seeded(spec.seed);
+    let env = input
+        .materialize(&environment::input_spec::nominal_factory())
+        .map_err(|error| RunError::Vmm(error.to_string()))?;
+    vmm.enable_sdk(env, input.config());
     let mut steps: u64 = 0;
     let mut filter = StreamFilter::new(spec.stream);
     let mut stdout = std::io::stdout();

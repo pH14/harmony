@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub mod admission;
 pub mod archive;
 pub mod assertion;
 pub mod bundle;
@@ -37,4 +38,4 @@ pub mod consonance;
 
 pub use bundle::FaultVocabulary;
 pub use package::{Artifacts, Options, RecordedActions, Report, parse_recorded_input};
-pub use target::FaultAction;
+pub use target::{FaultAction, FaultOperation};

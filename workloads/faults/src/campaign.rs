@@ -46,7 +46,7 @@ use crate::{
     assertion::Assertions,
     bundle::FaultVocabulary,
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
-    target::{FaultAction, FaultObservations, FaultSnapshot},
+    target::{FaultAction, FaultObservations, FaultOperation, FaultSnapshot},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
@@ -63,7 +63,7 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
-const ACTION_FORMAT: &str = "fault-action-duration-v3";
+const ACTION_FORMAT: &str = "fault-action-duration-coverage-v4";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -564,8 +564,8 @@ fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
 }
 
 fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
-    match action {
-        FaultAction::EventKill { node, .. } | FaultAction::EventPark { node, .. } => 1_u64
+    match &action.operation {
+        FaultOperation::EventKill { node, .. } | FaultOperation::EventPark { node, .. } => 1_u64
             .checked_shl(u32::from(*node))
             .is_some_and(|bit| event_ready & bit != 0),
         _ => true,
@@ -789,7 +789,7 @@ impl Evaluation for FaultWorkload {
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
-        if let FaultAction::EventPark { edges, .. } = action.action
+        if let FaultOperation::EventPark { edges, .. } = action.action.operation
             && action
                 .observations
                 .iter()
@@ -956,7 +956,7 @@ mod tests {
     fn park_evidence_counts_parks_the_guest_ran_and_each_landing_and_read_once() {
         let game = game();
         let mut evidence = FaultCampaignEvidence::default();
-        let park = FaultAction::EventPark {
+        let park = FaultOperation::EventPark {
             node: 0,
             edges: 5,
             hold_us: 10_000,
@@ -964,7 +964,7 @@ mod tests {
             target: None,
         };
         let result = |observations| FaultCampaignActionResult {
-            action: park,
+            action: park.into(),
             observations,
             milestones: FaultMilestones::default(),
             outcome: Outcome {
@@ -1093,13 +1093,13 @@ mod tests {
                 .unwrap();
             assert_eq!(suffix, replay);
             for action in suffix {
-                match action {
-                    FaultAction::Wait(ticks) => {
+                match action.operation {
+                    FaultOperation::Wait(ticks) => {
                         assert_eq!(ticks.get(), 256);
                         assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));
                         waits += 1;
                     }
-                    FaultAction::EventPark { hold_us, ticks, .. } => {
+                    FaultOperation::EventPark { hold_us, ticks, .. } => {
                         assert_eq!(ticks.get(), 256);
                         assert!((10_000..=2_560_000).contains(&hold_us));
                         assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));

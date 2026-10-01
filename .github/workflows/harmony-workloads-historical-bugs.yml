@@ -166,12 +166,13 @@ jobs:
           version=$(jq -er '.workload.version' "${case_json}")
           mapfile -t build_args < <(jq -r \
             '.image.build_args // {} | to_entries[] | "\(.key)=\(.value)"' "${case_json}")
-          args=()
+          runtime=$(bash workloads/languages/build-runtime.sh)
+          args=(--build-arg "HARMONY_RUNTIME_IMAGE=$runtime")
           for build_arg in "${build_args[@]}"; do
             args+=(--build-arg "${build_arg}")
           done
           tag="harmony-${IMAGE_PREFIX}:${version}"
-          docker build --pull "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
+          docker build "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
           docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
           test -s "oci-images/${IMAGE_PREFIX}-${version}.oci"
       - name: Record workload image checksums

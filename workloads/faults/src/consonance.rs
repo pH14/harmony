@@ -36,7 +36,7 @@ use crate::target::{
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-v1";
+pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v2";
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
@@ -136,22 +136,67 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v5";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v6";
 
-#[derive(Clone, Debug)]
-struct StandingHandler {
+type CoverageWindow = (u64, u64, std::num::NonZeroU16);
+const COVERAGE_WINDOW_BYTES: usize = 18;
+
+fn encode_configuration(standing: &[u8], coverage: &[CoverageWindow]) -> Result<Vec<u8>, String> {
+    let length = u32::try_from(standing.len()).map_err(|_| "standing windows too large")?;
+    let mut bytes = Vec::with_capacity(4 + standing.len() + coverage.len() * COVERAGE_WINDOW_BYTES);
+    bytes.extend_from_slice(&length.to_le_bytes());
+    bytes.extend_from_slice(standing);
+    for (start, end, quantum) in coverage {
+        bytes.extend_from_slice(&start.to_le_bytes());
+        bytes.extend_from_slice(&end.to_le_bytes());
+        bytes.extend_from_slice(&quantum.get().to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+fn decode_configuration(bytes: &[u8]) -> Option<(&[u8], Vec<CoverageWindow>)> {
+    let (length, rest) = bytes.split_first_chunk::<4>()?;
+    let length = usize::try_from(u32::from_le_bytes(*length)).ok()?;
+    let (standing, rest) = rest.split_at_checked(length)?;
+    if !rest.len().is_multiple_of(COVERAGE_WINDOW_BYTES) {
+        return None;
+    }
+    let mut coverage = Vec::with_capacity(rest.len() / COVERAGE_WINDOW_BYTES);
+    let mut previous_end = None;
+    for row in rest.chunks_exact(COVERAGE_WINDOW_BYTES) {
+        let start = u64::from_le_bytes(row[..8].try_into().ok()?);
+        let end = u64::from_le_bytes(row[8..16].try_into().ok()?);
+        let quantum = std::num::NonZeroU16::new(u16::from_le_bytes(row[16..].try_into().ok()?))?;
+        if start >= end || previous_end.is_some_and(|previous| previous != start) {
+            return None;
+        }
+        previous_end = Some(end);
+        coverage.push((start, end, quantum));
+    }
+    Some((standing, coverage))
+}
+
+#[derive(Debug)]
+struct StandingPlan {
     configuration: Vec<u8>,
     windows: Vec<StandingWindow>,
+    coverage: Vec<CoverageWindow>,
 }
+
+#[derive(Clone, Debug)]
+struct StandingHandler(Arc<StandingPlan>);
 
 impl StandingHandler {
     fn from_configuration(configuration: &[u8]) -> Result<Self, ChannelError> {
+        let (standing, coverage) =
+            decode_configuration(configuration).ok_or(ChannelError::Malformed)?;
         let windows =
-            fault_policy::decode_windows(configuration).map_err(|_| ChannelError::Malformed)?;
-        Ok(Self {
+            fault_policy::decode_windows(standing).map_err(|_| ChannelError::Malformed)?;
+        Ok(Self(Arc::new(StandingPlan {
             configuration: configuration.to_vec(),
             windows,
-        })
+            coverage,
+        })))
     }
 }
 
@@ -161,7 +206,7 @@ impl ServiceHandler for StandingHandler {
     }
 
     fn configuration(&self) -> &[u8] {
-        &self.configuration
+        &self.0.configuration
     }
 
     fn respond(
@@ -169,12 +214,30 @@ impl ServiceHandler for StandingHandler {
         moment: Moment,
         question: &Question,
     ) -> Result<ServiceResponse, ChannelError> {
+        if question.service() == environment::channel::SERVICE_COVERAGE_QUANTUM {
+            if question.payload().len() != 8 {
+                return Err(ChannelError::Malformed);
+            }
+            let quantum = self
+                .0
+                .coverage
+                .iter()
+                .find(|(start, end, _)| *start <= moment && moment < *end)
+                .map_or(
+                    environment::channel::DEFAULT_COVERAGE_QUANTUM,
+                    |(_, _, quantum)| u64::from(quantum.get()),
+                );
+            return Ok(ServiceResponse::Answered(ChannelAnswer::data(
+                quantum.to_le_bytes().to_vec(),
+            )?));
+        }
         if question.service() != STANDING_NAMESPACE {
             return Err(ChannelError::Handler(
                 "the fault package answers only the standing namespace".to_owned(),
             ));
         }
         let live: Vec<StandingWindow> = self
+            .0
             .windows
             .iter()
             .filter(|window| window.contains(moment))
@@ -223,7 +286,17 @@ fn branch_config(
 ) -> Result<ServiceConfig, Box<dyn Error>> {
     Ok(ServiceConfig {
         identity: SERVICE_IDENTITY.to_vec(),
-        configuration: encode_windows(&standing_windows(windows, actions)?)?,
+        configuration: encode_configuration(
+            &encode_windows(&standing_windows(windows, actions)?)?,
+            &actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| {
+                    let (start, end) = windows.window(actions, index)?;
+                    Ok((start, end, action.coverage_quantum))
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        )?,
     })
 }
 
@@ -1173,6 +1246,7 @@ pub fn from_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::FaultOperation;
 
     fn unbooted_target() -> FaultTarget {
         FaultTarget {
@@ -1205,7 +1279,7 @@ mod tests {
     fn reconstruction_cutoff_discards_stale_evidence_and_allows_a_later_restore() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: vec![FaultAction::Wait(std::num::NonZeroU16::new(32768).unwrap())],
+            actions: vec![FaultOperation::Wait(std::num::NonZeroU16::new(32768).unwrap()).into()],
             observation: FaultObservations {
                 ticks: 123,
                 ..FaultObservations::default()
@@ -1222,7 +1296,7 @@ mod tests {
         assert!(target.snapshot().is_none());
         assert!(target.actions.is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
-        target.apply(FaultAction::Kill(0, std::num::NonZeroU16::new(50).unwrap()));
+        target.apply(FaultOperation::Kill(0, std::num::NonZeroU16::new(50).unwrap()).into());
         assert_eq!(target.execution_ticks(), 17);
         assert_eq!(target.last_action_observations().len(), 1);
         assert!(target.last_action_observations()[0].watchdog_cutoff);
@@ -1282,13 +1356,58 @@ mod tests {
     }
 
     #[test]
+    fn coverage_windows_select_the_recorded_action_quantum_and_reject_gaps() {
+        let actions = [
+            FaultAction::new(
+                FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()),
+                std::num::NonZeroU16::new(64).unwrap(),
+            ),
+            FaultAction::new(
+                FaultOperation::Wait(std::num::NonZeroU16::new(3).unwrap()),
+                std::num::NonZeroU16::new(8).unwrap(),
+            ),
+        ];
+        let windows = ActionWindows { root_seal: 1_000 };
+        let configuration = branch_config(windows, &actions).unwrap();
+        let mut handler =
+            StandingHandler::from_configuration(&configuration.configuration).unwrap();
+        let question = Question::with_request_id(
+            7,
+            environment::channel::SERVICE_COVERAGE_QUANTUM,
+            1_u64.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        for (moment, expected) in [
+            (999, environment::channel::DEFAULT_COVERAGE_QUANTUM),
+            (1_000, 64),
+            (20_001_000, 8),
+            (50_001_000, environment::channel::DEFAULT_COVERAGE_QUANTUM),
+        ] {
+            assert_eq!(
+                handler.respond(moment, &question).unwrap(),
+                ServiceResponse::Answered(ChannelAnswer::Data(expected.to_le_bytes().to_vec()))
+            );
+        }
+        let (standing, mut gap) = decode_configuration(&configuration.configuration).unwrap();
+        gap[1].0 += 1;
+        let gap = encode_configuration(standing, &gap).unwrap();
+        assert!(StandingHandler::from_configuration(&gap).is_err());
+        let truncated = &configuration.configuration[..configuration.configuration.len() - 1];
+        assert!(StandingHandler::from_configuration(truncated).is_err());
+    }
+
+    #[test]
     fn the_factory_serves_the_nominal_service_the_setup_point_was_sealed_under() {
         let factory = service_factory();
         let handler = factory(&ServiceConfig::default()).expect("nominal service");
         assert_eq!(handler.identity(), ServiceConfig::default().identity);
         let own = factory(&ServiceConfig {
             identity: SERVICE_IDENTITY.to_vec(),
-            configuration: encode_windows(&[]).expect("an empty standing list encodes"),
+            configuration: encode_configuration(
+                &encode_windows(&[]).expect("an empty standing list encodes"),
+                &[],
+            )
+            .unwrap(),
         })
         .expect("an empty standing list");
         assert_eq!(own.identity(), SERVICE_IDENTITY);

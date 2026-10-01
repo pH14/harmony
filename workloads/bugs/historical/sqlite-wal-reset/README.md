@@ -57,3 +57,20 @@ docker buildx build --platform linux/arm64 \
   -f workloads/bugs/historical/sqlite-wal-reset/image/Dockerfile \
   --output type=oci,dest=sqlite-3.51.2.oci .
 ```
+
+## Shared instrumentation runtime
+
+The image copies libvoidstar and the fault runtime from the shared runtime
+build. Build it first and pass its tag to the case's Docker build:
+
+```sh
+runtime=$(bash workloads/languages/build-runtime.sh)
+docker build --build-arg "HARMONY_RUNTIME_IMAGE=$runtime" ...
+```
+
+The historical-image workflow passes this argument itself. Run
+`harmony preflight --image IMAGE` on a newly built image before searching it.
+
+The image uses the pinned Bookworm base that the language images use, so it
+shares their reviewed entropy sites. Trixie's coreutils pulls in OpenSSL, which
+adds RDRAND sites that would need their own review.

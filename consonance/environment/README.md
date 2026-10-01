@@ -51,3 +51,9 @@ package. Its dependency graph contains no workload package.
 cargo test -p environment
 cargo clippy -p environment --all-features --all-targets -- -D warnings
 ```
+
+The coverage-quantum service (ID 4) takes a thread ID as the request ID and
+the current threshold as eight little-endian bytes. It answers with a positive
+eight-byte quantum: the number of coverage callbacks before that thread's next
+exchange. The nominal answer is 1024. A workload handler answers from its own
+recorded configuration, so quantum answers add nothing to the recorded state.

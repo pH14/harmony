@@ -20,6 +20,8 @@ enum Command {
     Preflight {
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        image: Option<String>,
     },
     #[command(subcommand)]
     Oci(OciCommand),
@@ -41,7 +43,7 @@ fn main() -> ExitCode {
             nes_workload::allocator::use_one_malloc_arena();
             search::run(args)
         }
-        Command::Preflight { json } => preflight::run(json),
+        Command::Preflight { json, image } => preflight::run(json, image.as_deref()),
         Command::Oci(OciCommand::Run(args)) => oci::run(args),
         Command::SessionWorker => {
             nes_workload::allocator::use_one_malloc_arena();

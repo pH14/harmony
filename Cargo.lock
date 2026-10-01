@@ -322,6 +322,8 @@ dependencies = [
  "control-proto",
  "environment",
  "fault-policy",
+ "iced-x86",
+ "object",
  "oci-support",
  "process-proto",
  "searcher",
@@ -399,6 +401,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "consonance-client",
+ "environment",
  "faults-workload",
  "nes-workload",
  "oci-support",
@@ -433,6 +436,15 @@ dependencies = [
  "proptest",
  "proptest-state-machine",
  "thiserror",
+]
+
+[[package]]
+name = "iced-x86"
+version = "1.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c447cff8c7f384a7d4f741cfcff32f75f3ad02b406432e8d6c878d56b1edf6b"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -476,6 +488,12 @@ dependencies = [
  "serde",
  "thiserror",
 ]
+
+[[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
@@ -551,6 +569,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

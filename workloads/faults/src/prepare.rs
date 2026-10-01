@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, path::Path};
+use std::error::Error;
 
 use crate::bundle::FaultVocabulary;
 use oci_support::bundle::LaunchRequest;
 use oci_support::image::StagedImage;
-use sha2::{Digest, Sha256};
 
 pub const BUNDLE_PATH: &str = "etc/harmony/bundle";
 pub const SUPERVISOR_BUNDLE: &str = "/etc/harmony/bundle";
@@ -27,81 +26,21 @@ fn prepare_staged(staged: &StagedImage, base: &[u8]) -> Result<Prepared, Box<dyn
         return Err("fault search requires a guest base image".into());
     }
     let root = staged.rootfs.canonicalize()?;
+    let admission = crate::admission::inspect_root(&root)?;
+    admission.require_admission()?;
     let document = root.join(BUNDLE_PATH).canonicalize()?;
     if !document.starts_with(&root) {
         return Err("the bundle must reside inside the staged image".into());
     }
     let bundle = String::from_utf8(std::fs::read(document)?)?;
     let vocabulary =
-        FaultVocabulary::parse(&bundle)?.with_instrumented_events(has_instrumented_events(&root));
+        FaultVocabulary::parse(&bundle)?.with_instrumented_events(admission.instrumented_events());
     let request = LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE);
     let execution = oci_support::bundle::prepare(staged, &request)?;
     Ok(Prepared {
         vocabulary,
         bundle,
         initramfs: execution.initramfs(base),
-    })
-}
-
-fn rooted_file(root: &Path, relative: &str) -> Option<std::path::PathBuf> {
-    let path = root.join(relative).canonicalize().ok()?;
-    (path.starts_with(root) && path.is_file()).then_some(path)
-}
-
-fn has_instrumented_events(root: &Path) -> bool {
-    if rooted_file(root, "usr/lib/libvoidstar.so").is_none()
-        || !valid_instrumented_event_attestation(root)
-    {
-        return false;
-    }
-    let Ok(symbols) = root.join("symbols").canonicalize() else {
-        return false;
-    };
-    if !symbols.starts_with(root) {
-        return false;
-    }
-    let Ok(entries) = std::fs::read_dir(symbols) else {
-        return false;
-    };
-    entries.filter_map(Result::ok).any(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.ends_with(".sym.tsv"))
-            && entry
-                .path()
-                .canonicalize()
-                .is_ok_and(|path| path.starts_with(root))
-            && entry
-                .metadata()
-                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
-    })
-}
-
-fn valid_instrumented_event_attestation(root: &Path) -> bool {
-    let Some(attestation) = rooted_file(root, "symbols/harmony-instrumented-events") else {
-        return false;
-    };
-    let Ok(text) = std::fs::read_to_string(attestation) else {
-        return false;
-    };
-    text.lines().any(|line| {
-        let Some((expected, image_path)) = line.split_once(char::is_whitespace) else {
-            return false;
-        };
-        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return false;
-        }
-        let image_path = image_path.trim().trim_start_matches('/');
-        let Ok(executable) = root.join(image_path).canonicalize() else {
-            return false;
-        };
-        if !executable.starts_with(root) {
-            return false;
-        }
-        std::fs::read(executable).is_ok_and(|bytes| {
-            format!("{:x}", Sha256::digest(bytes)) == expected.to_ascii_lowercase()
-        })
     })
 }
 
@@ -202,10 +141,11 @@ ready /usr/bin/servicectl endpoint health
         )
         .unwrap();
         assert!(
-            !prepare_staged(&staged, b"base")
+            prepare_staged(&staged, b"base")
+                .err()
                 .unwrap()
-                .vocabulary
-                .instrumented_events()
+                .to_string()
+                .contains("digest mismatch")
         );
     }
 
