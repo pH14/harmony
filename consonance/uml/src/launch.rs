@@ -63,6 +63,8 @@ pub struct Exit {
 pub enum LaunchError {
     #[error("{0} cannot appear on a User-mode Linux command line")]
     Path(PathBuf),
+    #[error("kernel argument {0} sets a host resource that the launcher owns")]
+    Reserved(String),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -96,6 +98,13 @@ impl Launch {
     }
 
     pub fn command(&self, profile: &VerifiedProfile, work: &Path) -> Result<Command, LaunchError> {
+        if let Some(argument) = self
+            .kernel_arguments
+            .iter()
+            .find(|argument| reserved(argument))
+        {
+            return Err(LaunchError::Reserved(argument.clone()));
+        }
         let initramfs = self.initramfs.clone().unwrap_or_else(|| profile.rootfs());
         let mut command = Command::new(profile.executable());
         command
@@ -132,6 +141,35 @@ impl Launch {
             .prefix("harmony-uml-")
             .tempdir_in(&self.work_parent)
     }
+}
+
+const RESERVED: [&str; 12] = [
+    "mem",
+    "initrd",
+    "seccomp",
+    "umid",
+    "noreboot",
+    "uml_dir",
+    "harmony_fd",
+    "harmony_seed",
+    "hostfs",
+    "iomem",
+    "mconsole",
+    "xterm",
+];
+
+const RESERVED_NUMBERED: [&str; 4] = ["con", "ssl", "eth", "vec"];
+
+fn reserved(argument: &str) -> bool {
+    let name = argument.split_once('=').map_or(argument, |(name, _)| name);
+    RESERVED.contains(&name)
+        || name.starts_with("time-travel")
+        || name.starts_with("ubd")
+        || name.starts_with("virtio_uml")
+        || RESERVED_NUMBERED.iter().any(|prefix| {
+            name.strip_prefix(prefix)
+                .is_some_and(|rest| rest.bytes().all(|byte| byte.is_ascii_digit()))
+        })
 }
 
 fn prefixed(prefix: &str, path: &Path) -> Result<OsString, LaunchError> {
@@ -468,6 +506,37 @@ mod tests {
             prefixed("initrd=", Path::new("/a b")),
             Err(LaunchError::Path(_))
         ));
+    }
+
+    #[test]
+    fn launcher_owned_kernel_arguments_are_reserved() {
+        for argument in [
+            "initrd=/tmp/other.cpio",
+            "mem=4096M",
+            "uml_dir=/tmp",
+            "time-travel=off",
+            "con=fd:0",
+            "con1=pts",
+            "ssl0=null",
+            "ubd0=/tmp/disk",
+            "ubdbrc=/tmp/disk",
+            "eth0=tuntap",
+            "hostfs=/",
+            "harmony_seed=1",
+            "noreboot",
+        ] {
+            assert!(reserved(argument), "{argument}");
+        }
+        for argument in [
+            "harmony_fixture=values",
+            "rdinit=/init",
+            "console=ttyS0",
+            "quiet",
+            "memblock=debug",
+            "faults.knob=1",
+        ] {
+            assert!(!reserved(argument), "{argument}");
+        }
     }
 
     #[cfg(target_os = "linux")]
