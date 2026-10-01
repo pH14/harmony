@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use environment::channel::{NominalHandler, RecordedEnv, ServiceHandler};
+use environment::sdk::{self, EventClass, ServiceOutcome};
+#[cfg(target_os = "linux")]
+use environment::{
+    channel::RecordedState,
+    input_spec::{ServiceConfig, ServiceFactory},
+};
 use hypercall_proto::{
-    HEADER_LEN, MAX_FRAME, SeededEntropy, Service, ServiceId, Status, decode, encode_error,
-    encode_response,
+    MAX_FRAME, MAX_PAYLOAD, SeededEntropy, Service, ServiceId, Status, decode, encode_error,
+    encode_response, observation,
 };
 use sha2::{Digest, Sha256};
 
 pub(crate) const STAMP_LEN: usize = 8;
+#[cfg(target_os = "linux")]
+const SERVICES_MAGIC: &[u8; 8] = b"HUMLSVC1";
 
 #[cfg(target_os = "linux")]
 const SOCKET_TYPE: libc::c_int = libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC;
@@ -133,9 +143,25 @@ pub(crate) fn send(socket: &OwnedFd, frame: &[u8]) -> io::Result<()> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Signal {
+    Violation { id: u32, data: Vec<u8> },
+    SnapshotPoint,
+    Exhausted,
+}
+
+#[derive(Debug)]
+pub(crate) struct Reply {
+    pub length: usize,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub signal: Option<Signal>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Services {
     entropy: SeededEntropy,
+    env: RecordedEnv<Box<dyn ServiceHandler>>,
+    coverage: BTreeMap<u32, u64>,
     pub(crate) events: Vec<Event>,
     pub(crate) latest: u64,
 }
@@ -144,16 +170,32 @@ impl Services {
     pub(crate) fn new(seed: u64) -> Self {
         Self {
             entropy: SeededEntropy::new(seed),
+            env: RecordedEnv::new(seed, Box::new(NominalHandler)),
+            coverage: BTreeMap::new(),
             events: Vec::new(),
             latest: 0,
         }
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn branch(
+        &mut self,
+        seed: u64,
+        handler: Box<dyn ServiceHandler>,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        let mut env = RecordedEnv::new(seed, handler);
+        env.set_payloads(Some(payloads))
+            .map_err(|error| format!("payload tape: {error}"))?;
+        self.env = env;
+        Ok(())
     }
 
     pub(crate) fn exchange(
         &mut self,
         request: &[u8],
         response: &mut [u8],
-    ) -> Result<usize, String> {
+    ) -> Result<Reply, String> {
         let Some((stamp, frame)) = request.split_first_chunk::<STAMP_LEN>() else {
             return Err(format!("request of {} bytes", request.len()));
         };
@@ -165,57 +207,253 @@ impl Services {
             ));
         }
         self.latest = moment;
-        Ok(self.answer(moment, frame, response))
+        self.answer(moment, frame, response)
     }
 
-    fn answer(&mut self, moment: u64, request: &[u8], response: &mut [u8]) -> usize {
-        let Ok((header, payload)) = decode(request) else {
-            return encode_error(ServiceId::Event as u16, 1, 0, Status::BadRequest, response);
+    fn answer(
+        &mut self,
+        moment: u64,
+        request: &[u8],
+        response: &mut [u8],
+    ) -> Result<Reply, String> {
+        let reply = |length| Reply {
+            length,
+            signal: None,
         };
-        if !header.is_request() {
-            return encode_error(
-                header.service,
-                header.opcode,
-                header.seq,
+        let Ok((header, payload)) = decode(request) else {
+            return Ok(reply(encode_error(
+                ServiceId::Event as u16,
+                1,
+                0,
                 Status::BadRequest,
                 response,
-            );
+            )));
+        };
+        let refuse = |status, response: &mut [u8]| {
+            encode_error(header.service, header.opcode, header.seq, status, response)
+        };
+        if !header.is_request() {
+            return Ok(reply(refuse(Status::BadRequest, response)));
         }
-        if header.service == ServiceId::Entropy as u16 {
-            let mut body = [0_u8; MAX_FRAME - HEADER_LEN];
-            let (status, length) = self.entropy.handle(header.opcode, payload, &mut body);
-            return encode_response(
-                ServiceId::Entropy,
-                header.opcode,
-                header.seq,
-                status,
-                &body[..length],
-                response,
-            )
-            .unwrap_or(0);
-        }
-        if header.service == ServiceId::Event as u16 {
-            let status = match (header.opcode, payload) {
-                (1, [a, b, c, d, data @ ..]) => {
-                    self.events.push(Event {
-                        moment,
-                        id: u32::from_le_bytes([*a, *b, *c, *d]),
-                        data: data.to_vec(),
-                    });
-                    Status::Ok
+        let respond = |service, status, body: &[u8], response: &mut [u8]| {
+            encode_response(service, header.opcode, header.seq, status, body, response).unwrap_or(0)
+        };
+        match (header.service, header.opcode) {
+            (service, opcode) if service == ServiceId::Entropy as u16 => {
+                let mut body = [0_u8; MAX_PAYLOAD];
+                let (status, length) = self.entropy.handle(opcode, payload, &mut body);
+                Ok(reply(respond(
+                    ServiceId::Entropy,
+                    status,
+                    &body[..length],
+                    response,
+                )))
+            }
+            (service, 1) if service == ServiceId::Event as u16 => {
+                Ok(self.event(moment, payload, response, refuse))
+            }
+            (service, 3) if service == ServiceId::Sdk as u16 => {
+                match sdk::decide_service(&mut self.env, moment, payload) {
+                    Ok(ServiceOutcome::Answered(body)) => {
+                        Ok(reply(respond(ServiceId::Sdk, Status::Ok, &body, response)))
+                    }
+                    Ok(ServiceOutcome::External(question)) => Err(format!(
+                        "service {} asked for a host decision, which User-mode Linux cannot pause for",
+                        question.service()
+                    )),
+                    Err(status) => Ok(reply(refuse(status, response))),
                 }
-                (1, _) => Status::BadRequest,
-                _ => Status::UnknownOpcode,
-            };
-            return encode_error(header.service, header.opcode, header.seq, status, response);
+            }
+            (service, 2) if service == ServiceId::Sdk as u16 => {
+                let decided =
+                    sdk::coverage_request(payload).and_then(|(thread, observed, ready)| {
+                        sdk::decide_coverage(
+                            &mut self.env,
+                            &mut self.coverage,
+                            moment,
+                            thread,
+                            observed,
+                            ready,
+                        )
+                    });
+                Ok(reply(match decided {
+                    Ok(coverage) => {
+                        respond(ServiceId::Sdk, Status::Ok, &coverage.encode(), response)
+                    }
+                    Err(status) => respond(ServiceId::Sdk, status, &[], response),
+                }))
+            }
+            (service, 1)
+                if service == ServiceId::Payload as u16 && self.env.payload_configured() =>
+            {
+                Ok(match sdk::pull_payload(&mut self.env, payload) {
+                    Ok(Some(entry)) => {
+                        reply(respond(ServiceId::Payload, Status::Ok, &entry, response))
+                    }
+                    Ok(None) => Reply {
+                        length: respond(ServiceId::Payload, Status::OutOfRange, &[], response),
+                        signal: Some(Signal::Exhausted),
+                    },
+                    Err(status) => reply(respond(ServiceId::Payload, status, &[], response)),
+                })
+            }
+            (service, _)
+                if service == ServiceId::Event as u16
+                    || service == ServiceId::Sdk as u16
+                    || (service == ServiceId::Payload as u16 && self.env.payload_configured()) =>
+            {
+                Ok(reply(refuse(Status::UnknownOpcode, response)))
+            }
+            _ => Ok(reply(refuse(Status::UnknownService, response))),
         }
-        encode_error(
-            header.service,
-            header.opcode,
-            header.seq,
-            Status::UnknownService,
-            response,
-        )
+    }
+
+    fn event(
+        &mut self,
+        moment: u64,
+        payload: &[u8],
+        response: &mut [u8],
+        refuse: impl Fn(Status, &mut [u8]) -> usize,
+    ) -> Reply {
+        let reply = |length, signal| Reply { length, signal };
+        let Some((id, data)) = payload.split_first_chunk::<4>() else {
+            return reply(refuse(Status::BadRequest, response), None);
+        };
+        let id = u32::from_le_bytes(*id);
+        if id == observation::EVENT_ID
+            && !observation::Descriptor::decode(data).is_ok_and(|region| region.len == 0)
+        {
+            return reply(refuse(Status::BadRequest, response), None);
+        }
+        let signal = match sdk::classify_event(id, data) {
+            EventClass::Malformed => return reply(refuse(Status::BadRequest, response), None),
+            EventClass::Violation { id, data } => Some(Signal::Violation { id, data }),
+            EventClass::SnapshotPoint => Some(Signal::SnapshotPoint),
+            EventClass::Recorded => None,
+        };
+        self.events.push(Event {
+            moment,
+            id,
+            data: data.to_vec(),
+        });
+        reply(refuse(Status::Ok, response), signal)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Services {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, String> {
+        let recorded = self
+            .env
+            .snapshot_state()
+            .map_err(|error| format!("service state: {error}"))?
+            .encode();
+        let mut out = SERVICES_MAGIC.to_vec();
+        out.extend(self.latest.to_le_bytes());
+        put_bytes(&mut out, &self.entropy.save_state());
+        put_bytes(&mut out, &recorded);
+        out.extend(len32(self.coverage.len()).to_le_bytes());
+        for (thread, threshold) in &self.coverage {
+            out.extend(thread.to_le_bytes());
+            out.extend(threshold.to_le_bytes());
+        }
+        out.extend(len32(self.events.len()).to_le_bytes());
+        for event in &self.events {
+            out.extend(event.moment.to_le_bytes());
+            out.extend(event.id.to_le_bytes());
+            put_bytes(&mut out, &event.data);
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn decode(bytes: &[u8], factory: &ServiceFactory) -> Result<Self, String> {
+        let mut reader = Reader(bytes);
+        if reader.take(SERVICES_MAGIC.len())? != SERVICES_MAGIC {
+            return Err("not a bridge state".to_owned());
+        }
+        let latest = reader.u64()?;
+        let mut entropy = SeededEntropy::new(0);
+        entropy
+            .restore_state(reader.bytes()?)
+            .map_err(|error| format!("entropy state: {error:?}"))?;
+        let recorded = RecordedState::decode(reader.bytes()?)
+            .map_err(|error| format!("service state: {error}"))?;
+        let config = ServiceConfig {
+            identity: recorded.handler().identity().to_vec(),
+            configuration: recorded.handler().configuration().to_vec(),
+        };
+        let handler = factory(&config).map_err(|error| format!("service handler: {error}"))?;
+        let mut env = RecordedEnv::new(0, handler);
+        recorded
+            .restore_into(&mut env)
+            .map_err(|error| format!("service state: {error}"))?;
+        let mut coverage = BTreeMap::new();
+        for _ in 0..reader.u32()? {
+            let thread = reader.u32()?;
+            coverage.insert(thread, reader.u64()?);
+        }
+        let count = reader.u32()?;
+        let mut events = Vec::new();
+        for _ in 0..count {
+            events.push(Event {
+                moment: reader.u64()?,
+                id: reader.u32()?,
+                data: reader.bytes()?.to_vec(),
+            });
+        }
+        if !reader.0.is_empty() {
+            return Err("trailing bytes after the bridge state".to_owned());
+        }
+        Ok(Self {
+            entropy,
+            env,
+            coverage,
+            events,
+            latest,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn len32(length: usize) -> u32 {
+    u32::try_from(length).unwrap_or(u32::MAX)
+}
+
+#[cfg(target_os = "linux")]
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend(len32(bytes.len()).to_le_bytes());
+    out.extend(bytes);
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
+
+#[cfg(target_os = "linux")]
+impl<'a> Reader<'a> {
+    pub(crate) fn take(&mut self, length: usize) -> Result<&'a [u8], String> {
+        if length > self.0.len() {
+            return Err("truncated bridge state".to_owned());
+        }
+        let (head, tail) = self.0.split_at(length);
+        self.0 = tail;
+        Ok(head)
+    }
+
+    fn u32(&mut self) -> Result<u32, String> {
+        let mut bytes = [0_u8; 4];
+        bytes.copy_from_slice(self.take(4)?);
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    pub(crate) fn u64(&mut self) -> Result<u64, String> {
+        let mut bytes = [0_u8; 8];
+        bytes.copy_from_slice(self.take(8)?);
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn bytes(&mut self) -> Result<&'a [u8], String> {
+        let length = self.u32()? as usize;
+        self.take(length)
     }
 }
 
@@ -235,7 +473,7 @@ pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> Br
         };
         let recorded = services.events.len();
         let answer = match services.exchange(&request[..length], &mut response) {
-            Ok(answer) => answer,
+            Ok(answer) => answer.length,
             Err(failure) => break Some(failure),
         };
         if services.events.len() > recorded && bridge.cut == Some(services.events.len()) {
@@ -295,6 +533,11 @@ mod tests {
         let reply = exchange(&guest, 20, ServiceId::Event, b"\x00\x00\x00\x00{}");
         assert_eq!(decode(&reply).unwrap().0.status, Status::Ok as u16);
         let reply = exchange(&guest, 20, ServiceId::Sdk, b"");
+        assert_eq!(
+            decode(&reply).unwrap().0.status,
+            Status::UnknownOpcode as u16
+        );
+        let reply = exchange(&guest, 20, ServiceId::Payload, &8_u32.to_le_bytes());
         assert_eq!(
             decode(&reply).unwrap().0.status,
             Status::UnknownService as u16

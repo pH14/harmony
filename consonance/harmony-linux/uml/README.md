@@ -31,9 +31,10 @@ sequence of guest events.
 - `/dev/harmony` reaches the host through a socket that the launcher passes
   as `harmony_fd=3`. Each request carries the virtual time it was made at, and
   the guest waits for the answer, so the host can never deliver anything at a
-  host-chosen point. The host answers entropy requests from the run seed and
-  records each guest event with its virtual time. Any other service is
-  refused.
+  host-chosen point. The host answers entropy requests from the run seed,
+  records each guest event with its virtual time, and answers the SDK's
+  standing-service questions, coverage requests and payload pulls with the
+  code the KVM backend uses. Any other service is refused.
 - `harmony_seed=` carries a 32-byte boot seed derived from the run seed. It
   seeds the kernel random pool, so `getrandom`, `AT_RANDOM`, address-space
   layout and `/proc/sys/kernel/random/boot_id` follow the seed. UML no longer
@@ -67,8 +68,8 @@ An image holds:
   stack (the binary's data, read-only data and BSS, the heap, anonymous
   mappings and the C library's thread data), the data extents of the guest
   physical memory file, the host mappings of that file outside the main
-  physical memory range (vmalloc space, which holds the kernel stacks), the
-  vDSO address and the thread pointer;
+  physical memory range (vmalloc space), the vDSO address and the thread
+  pointer;
 - checked, not copied: the executable mappings, the binary's end, the
   physical memory range, a single host thread, and the open host descriptors
   by number, type and access mode, excluding stub sockets.
@@ -116,7 +117,14 @@ merged last, and asserts the symbols the profile depends on.
 - `config` keeps one CPU, periodic 100 Hz ticks, and time-travel support. It
   removes host-backed devices: hostfs, the host random device, the management
   console, block and network drivers, the RTC, and every console channel
-  except file descriptors and null.
+  except file descriptors and null. It enables what the OCI runtime and the
+  supervisor use: PID, IPC, UTS, network and mount namespaces, cgroup v2 with
+  the pids, devices, CPU and freezer controllers, BPF device filters without
+  the JIT, Unix and IP sockets, POSIX timers, sysctl, and
+  `/proc/<pid>/task/<tid>/children`. Kernel stacks come from the direct map
+  (`VMAP_STACK` off): UML backs each vmalloc area with a host mapping of its
+  own, a guest with many threads would exceed the 512 mappings an image
+  holds, and capture would fail with `E2BIG`.
 - `initramfs.cpio.gz` holds `fixture-init.c` built against the pinned musl.
   The `harmony_fixture=` boot parameter selects a mode: `boot` forks 16
   children, checks their exit codes and powers off; `hang` spins without system

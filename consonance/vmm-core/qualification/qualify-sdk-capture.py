@@ -33,7 +33,7 @@ def main():
                 raise SystemExit("Update the reference for the changed SDK encoding")
             source = source.replace(direct, 'put_chunk(&mut out, b"SDK\\0", &encode_sdk_channel(sdk, sdk_recorded)?);')
             start = source.index("fn append_sdk_channel(")
-            end = source.index("\nfn service_answer_bytes", start)
+            end = source.index("\n#[cfg(test)]\nmod tests", start)
             original = (component / "qualification/reference-sdk-encoding.rs").read_text()
             source = source[:start] + original + source[end:]
             path.write_text(source)

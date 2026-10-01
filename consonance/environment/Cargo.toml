@@ -6,6 +6,7 @@ license.workspace = true
 description = "Deterministic supplies, opaque service channels, and input reproducers"
 
 [dependencies]
+hypercall-proto = { path = "../hypercall-proto", version = "=0.1.0" }
 thiserror = "2"
 
 [lints]

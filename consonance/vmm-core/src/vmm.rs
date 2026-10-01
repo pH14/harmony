@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use hypercall_proto::{
-    MAX_PAYLOAD, SDK_COVERAGE_QUANTUM, SDK_COVERAGE_REQUEST_LEN, SDK_COVERAGE_RESPONSE_LEN,
-    SeededEntropy, Service, ServiceId, Status, decode, encode_error, encode_response,
+    MAX_PAYLOAD, SeededEntropy, Service, ServiceId, Status, decode, encode_error, encode_response,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +14,11 @@ use crate::snapshot::SnapshotError;
 use crate::vendor::Vendor;
 use crate::virtual_time::LiveVirtualTimeTrace;
 
-use environment::{channel, input_spec::ServiceConfig};
+use environment::{
+    channel,
+    input_spec::ServiceConfig,
+    sdk::{self, EventClass, ServiceOutcome},
+};
 
 pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
 
@@ -32,12 +35,6 @@ const RESP_GPA: usize = 0x0000_F000;
 const HC_PAGE: usize = 4096;
 const DOORBELL_MAP_GPA: usize = 0x0000_C000;
 const DOORBELL_MAP_LEN: usize = 4 * HC_PAGE;
-
-const SDK_NS_SHIFT: u32 = 24;
-const SDK_LOCAL_MASK: u32 = (1 << SDK_NS_SHIFT) - 1;
-const SDK_NS_ASSERT: u8 = 1;
-const SDK_NS_LIFECYCLE: u8 = 4;
-const SDK_DISP_VIOLATION: u8 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SdkStop {
@@ -1836,7 +1833,7 @@ where
                 "no service request is pending".into(),
             ));
         };
-        let payload = service_answer_bytes(&answer).ok_or_else(|| {
+        let payload = sdk::answer_bytes(&answer).ok_or_else(|| {
             VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
         })?;
         let mut response = [0; HC_PAGE];
@@ -2019,52 +2016,18 @@ where
                 );
                 return (n, None);
             }
-            if payload.len() != 4 {
-                let n = encode_response(
-                    ServiceId::Payload,
-                    1,
-                    header.seq,
-                    Status::BadRequest,
-                    &[],
-                    resp,
-                )
-                .unwrap_or(0);
-                return (n, None);
-            }
-            let bytes = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            if bytes == 0 || bytes as usize > MAX_PAYLOAD {
-                let n = encode_response(
-                    ServiceId::Payload,
-                    1,
-                    header.seq,
-                    Status::BadRequest,
-                    &[],
-                    resp,
-                )
-                .unwrap_or(0);
-                return (n, None);
-            }
-            let pulled = self
+            let sdk = self
                 .sdk
                 .as_mut()
-                .expect("payload availability requires SDK")
-                .env
-                .pull_payload(bytes as usize);
-            return match pulled {
-                Ok(Some(entry)) => {
-                    let n = encode_response(
-                        ServiceId::Payload,
-                        1,
-                        header.seq,
-                        Status::Ok,
-                        &entry,
-                        resp,
-                    )
-                    .unwrap_or(0);
-                    (n, None)
-                }
-                Ok(None) => {
-                    let n = encode_response(
+                .expect("payload availability requires SDK");
+            return match sdk::pull_payload(&mut sdk.env, payload) {
+                Ok(Some(entry)) => (
+                    encode_response(ServiceId::Payload, 1, header.seq, Status::Ok, &entry, resp)
+                        .unwrap_or(0),
+                    None,
+                ),
+                Ok(None) => (
+                    encode_response(
                         ServiceId::Payload,
                         1,
                         header.seq,
@@ -2072,21 +2035,14 @@ where
                         &[],
                         resp,
                     )
-                    .unwrap_or(0);
-                    (n, Some(SdkStop::Quiescent))
-                }
-                Err(_) => {
-                    let n = encode_response(
-                        ServiceId::Payload,
-                        1,
-                        header.seq,
-                        Status::BadRequest,
-                        &[],
-                        resp,
-                    )
-                    .unwrap_or(0);
-                    (n, None)
-                }
+                    .unwrap_or(0),
+                    Some(SdkStop::Quiescent),
+                ),
+                Err(status) => (
+                    encode_response(ServiceId::Payload, 1, header.seq, status, &[], resp)
+                        .unwrap_or(0),
+                    None,
+                ),
             };
         }
         if header.service == ServiceId::Event as u16 && header.opcode == 1 {
@@ -2180,83 +2136,25 @@ where
                     None,
                 );
             };
-            if payload.len() < 10 {
-                return (
-                    encode_error(
-                        header.service,
-                        header.opcode,
-                        header.seq,
-                        Status::BadRequest,
-                        resp,
-                    ),
+            return match sdk::decide_service(&mut sdk.env, moment, payload) {
+                Ok(ServiceOutcome::Answered(bytes)) => (
+                    encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &bytes, resp)
+                        .unwrap_or(0),
                     None,
-                );
-            }
-            let service = u16::from_le_bytes([payload[0], payload[1]]);
-            if service <= channel::SERVICE_SCHEDULER {
-                return (
-                    encode_error(
-                        header.service,
-                        header.opcode,
-                        header.seq,
-                        Status::BadRequest,
-                        resp,
-                    ),
+                ),
+                Ok(ServiceOutcome::External(question)) => (
+                    0,
+                    Some(SdkStop::Decision {
+                        moment,
+                        seq: header.seq,
+                        question,
+                    }),
+                ),
+                Err(status) => (
+                    encode_error(header.service, header.opcode, header.seq, status, resp),
                     None,
-                );
-            }
-            let request_id =
-                u64::from_le_bytes(payload[2..10].try_into().expect("validated request prefix"));
-            let question =
-                channel::Question::with_request_id(request_id, service, payload[10..].to_vec())
-                    .expect("one doorbell frame fits channel bounds");
-            let mut candidate = sdk.env.clone();
-            candidate.set_moment(moment);
-            match candidate.decide(&question) {
-                Ok(channel::ServiceResponse::Answered(answer)) => {
-                    let Some(bytes) = service_answer_bytes(&answer) else {
-                        return (
-                            encode_error(
-                                header.service,
-                                header.opcode,
-                                header.seq,
-                                Status::Internal,
-                                resp,
-                            ),
-                            None,
-                        );
-                    };
-                    sdk.env = candidate;
-                    return (
-                        encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &bytes, resp)
-                            .unwrap_or(0),
-                        None,
-                    );
-                }
-                Ok(channel::ServiceResponse::External) => {
-                    sdk.env = candidate;
-                    return (
-                        0,
-                        Some(SdkStop::Decision {
-                            moment,
-                            seq: header.seq,
-                            question,
-                        }),
-                    );
-                }
-                Err(_) => {
-                    return (
-                        encode_error(
-                            header.service,
-                            header.opcode,
-                            header.seq,
-                            Status::Internal,
-                            resp,
-                        ),
-                        None,
-                    );
-                }
-            }
+                ),
+            };
         }
         if header.service == ServiceId::Sdk as u16 && header.opcode == 2 {
             if self.sdk.is_none() {
@@ -2271,32 +2169,25 @@ where
                 .unwrap_or(0);
                 return (n, None);
             }
-            if payload.len() != SDK_COVERAGE_REQUEST_LEN {
-                let n =
-                    encode_response(ServiceId::Sdk, 2, header.seq, Status::BadRequest, &[], resp)
+            let (thread, observed, ready) = match sdk::coverage_request(payload) {
+                Ok(request) => request,
+                Err(status) => {
+                    let n = encode_response(ServiceId::Sdk, 2, header.seq, status, &[], resp)
                         .unwrap_or(0);
-                return (n, None);
-            }
-            let thread = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            let observed = u64::from_le_bytes([
-                payload[4],
-                payload[5],
-                payload[6],
-                payload[7],
-                payload[8],
-                payload[9],
-                payload[10],
-                payload[11],
-            ]);
-            let ready = u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]);
+                    return (n, None);
+                }
+            };
             match self.decide_coverage(moment, thread, observed, ready) {
-                Ok((next, selected)) => {
-                    let mut answer = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
-                    answer[0..8].copy_from_slice(&next.to_le_bytes());
-                    answer[8..12].copy_from_slice(&selected.to_le_bytes());
-                    let n =
-                        encode_response(ServiceId::Sdk, 2, header.seq, Status::Ok, &answer, resp)
-                            .unwrap_or(0);
+                Ok(coverage) => {
+                    let n = encode_response(
+                        ServiceId::Sdk,
+                        2,
+                        header.seq,
+                        Status::Ok,
+                        &coverage.encode(),
+                        resp,
+                    )
+                    .unwrap_or(0);
                     return (n, None);
                 }
                 Err(status) => {
@@ -2358,39 +2249,13 @@ where
     }
 
     fn classify_sdk_event(id: u32, data: &[u8]) -> SdkEventAction {
-        let ns = (id >> SDK_NS_SHIFT) as u8;
-        let local = id & SDK_LOCAL_MASK;
-        match ns {
-            SDK_NS_ASSERT if data.first() == Some(&SDK_DISP_VIOLATION) => {
-                let Some(len_bytes) = data.get(1..3) else {
-                    return SdkEventAction::Malformed;
-                };
-                let dl = u16::from_le_bytes([len_bytes[0], len_bytes[1]]) as usize;
-                match data.get(3..) {
-                    Some(detail) if detail.len() == dl => {
-                        SdkEventAction::Stop(SdkStop::Assertion {
-                            id: local,
-                            data: detail.to_vec(),
-                        })
-                    }
-                    _ => SdkEventAction::Malformed,
-                }
+        match sdk::classify_event(id, data) {
+            EventClass::Violation { id, data } => {
+                SdkEventAction::Stop(SdkStop::Assertion { id, data })
             }
-            SDK_NS_LIFECYCLE if local == 0 => {
-                if data.is_empty() {
-                    SdkEventAction::DeferSnapshot
-                } else {
-                    SdkEventAction::Malformed
-                }
-            }
-            SDK_NS_LIFECYCLE if local == 1 => {
-                if data.len() == 8 {
-                    SdkEventAction::DeferSnapshot
-                } else {
-                    SdkEventAction::Malformed
-                }
-            }
-            _ => SdkEventAction::Capture,
+            EventClass::SnapshotPoint => SdkEventAction::DeferSnapshot,
+            EventClass::Recorded => SdkEventAction::Capture,
+            EventClass::Malformed => SdkEventAction::Malformed,
         }
     }
 
@@ -2412,45 +2277,21 @@ where
         thread: u32,
         observed: u64,
         ready: u32,
-    ) -> Result<(u64, u32), Status> {
-        let Some(sdk) = self.sdk.as_ref() else {
+    ) -> Result<sdk::Coverage, Status> {
+        let Some(sdk) = self.sdk.as_mut() else {
             return Err(Status::UnknownService);
         };
-        let expected = sdk
-            .coverage_thresholds
-            .get(&thread)
-            .copied()
-            .unwrap_or(SDK_COVERAGE_QUANTUM);
-        if ready == 0 || observed != expected {
-            return Err(Status::BadRequest);
-        }
-        let next = observed
-            .checked_add(SDK_COVERAGE_QUANTUM)
-            .ok_or(Status::OutOfRange)?;
-        let mut env = sdk.env.clone();
-        env.set_moment(moment);
-        let question = channel::Question::with_request_id(
-            u64::from(thread),
-            channel::SERVICE_SCHEDULER,
-            ready.to_le_bytes().to_vec(),
-        )
-        .map_err(|_| Status::BadRequest)?;
-        let channel::ServiceResponse::Answered(channel::Answer::Data(bytes)) =
-            env.decide(&question).map_err(|_| Status::Internal)?
-        else {
-            return Err(Status::Internal);
-        };
-        let selected_bytes: [u8; 4] = bytes.as_slice().try_into().map_err(|_| Status::Internal)?;
-        let selected = u32::from_le_bytes(selected_bytes);
-        if selected >= ready {
-            return Err(Status::Internal);
-        }
-        let sdk = self.sdk.as_mut().expect("checked above");
-        sdk.env = env;
-        sdk.coverage_thresholds.insert(thread, next);
+        let coverage = sdk::decide_coverage(
+            &mut sdk.env,
+            &mut sdk.coverage_thresholds,
+            moment,
+            thread,
+            observed,
+            ready,
+        )?;
         sdk.coverage
-            .push((moment, thread, observed, ready, selected));
-        Ok((next, selected))
+            .push((moment, thread, observed, ready, coverage.selected));
+        Ok(coverage)
     }
 
     pub(crate) fn now_vns(&self) -> Result<u64, VmmError> {
@@ -2690,19 +2531,6 @@ fn append_sdk_channel(
     Ok(())
 }
 
-fn service_answer_bytes(answer: &channel::Answer) -> Option<Vec<u8>> {
-    match answer {
-        channel::Answer::Nominal => Some(vec![0]),
-        channel::Answer::Data(bytes) if bytes.len() < hypercall_proto::MAX_PAYLOAD => {
-            let mut out = Vec::with_capacity(1 + bytes.len());
-            out.push(1);
-            out.extend(bytes);
-            Some(out)
-        }
-        channel::Answer::Data(_) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -2710,6 +2538,7 @@ mod tests {
 
     use super::*;
     use crate::virtual_time::NormalizedEventClass;
+    use hypercall_proto::{SDK_COVERAGE_QUANTUM, SDK_COVERAGE_REQUEST_LEN};
     use vmm_backend::{ExitReason, Gpa, VcpuState, X86, X86Caps, X86Exit, X86Policy};
 
     use crate::vendor::x86::devices::REPORT_PORT;
@@ -3302,23 +3131,6 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_event_classifier_distinguishes_frame_complete_from_neighbors() {
-        let id = |local| (u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT) | local;
-        assert_eq!(
-            Vmm::<MockBackend>::classify_sdk_event(id(1), &[0; 8]),
-            SdkEventAction::DeferSnapshot
-        );
-        assert_eq!(
-            Vmm::<MockBackend>::classify_sdk_event(id(2), &[0; 8]),
-            SdkEventAction::Capture
-        );
-        assert_eq!(
-            Vmm::<MockBackend>::classify_sdk_event(id(1), &[]),
-            SdkEventAction::Malformed
-        );
-    }
-
-    #[test]
     fn doorbell_offer_predicate_is_exact_for_an_unconfigured_composition() {
         let mut vmm = Vmm::new(
             configured_mock(Vec::new()),
@@ -3592,12 +3404,12 @@ mod tests {
         let hash_after_first = base.state_hash().unwrap();
         assert_eq!(base.decide_coverage(5, 1, 3, 2), Err(Status::BadRequest));
         assert_eq!(base.state_hash().unwrap(), hash_after_first);
-        let continuation = base.decide_coverage(5, 1, first.0, 2).unwrap();
+        let continuation = base.decide_coverage(5, 1, first.next, 2).unwrap();
         let mut replay = build();
         replay.sdk_restore(&snap).unwrap();
         assert_eq!(replay.state_hash().unwrap(), hash_after_first);
         assert_eq!(
-            replay.decide_coverage(5, 1, first.0, 2).unwrap(),
+            replay.decide_coverage(5, 1, first.next, 2).unwrap(),
             continuation
         );
     }
@@ -3620,20 +3432,6 @@ mod tests {
         assert_eq!(vmm.decide_coverage(41, 7, 1, 2), Err(Status::Internal));
         assert_eq!(vmm.state_hash().unwrap(), before);
         assert!(vmm.sdk_coverage().is_empty());
-    }
-
-    #[test]
-    fn generic_service_response_reserves_one_byte_for_its_tag() {
-        let capacity = hypercall_proto::MAX_PAYLOAD;
-        let bytes = vec![0x5a; capacity - 1];
-        let frame = service_answer_bytes(&channel::Answer::Data(bytes.clone())).unwrap();
-        assert_eq!(frame.len(), capacity);
-        assert_eq!(frame[0], 1);
-        assert_eq!(&frame[1..], bytes);
-        assert_eq!(
-            service_answer_bytes(&channel::Answer::Data(vec![0; capacity])),
-            None
-        );
     }
 
     #[test]
@@ -3828,49 +3626,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_sdk_event_payload_matrix() {
-        type C = SdkEventAction;
-        let assert_id = (u32::from(SDK_NS_ASSERT) << SDK_NS_SHIFT) | 20;
-        let setup_id = u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT;
-        let frame_id = setup_id | 1;
-        let state_id = (2u32 << SDK_NS_SHIFT) | 3;
-        let classify = Vmm::<MockBackend>::classify_sdk_event;
-
-        assert_eq!(
-            classify(assert_id, &[1, 0, 0]),
-            C::Stop(SdkStop::Assertion {
-                id: 20,
-                data: vec![]
-            })
-        );
-        assert_eq!(
-            classify(assert_id, &[1, 2, 0, 0xAB, 0xCD]),
-            C::Stop(SdkStop::Assertion {
-                id: 20,
-                data: vec![0xAB, 0xCD]
-            })
-        );
-        assert_eq!(classify(assert_id, &[1, 2, 0]), C::Malformed);
-        assert_eq!(classify(assert_id, &[1, 0, 0, 0x99]), C::Malformed);
-        assert_eq!(classify(assert_id, &[1]), C::Malformed);
-        assert_eq!(classify(assert_id, &[1, 0]), C::Malformed);
-        assert_eq!(classify(assert_id, &[0, 0, 0]), C::Capture);
-        assert_eq!(classify(assert_id, &[9, 0, 0]), C::Capture);
-
-        assert_eq!(classify(setup_id, &[]), C::DeferSnapshot);
-        assert_eq!(classify(setup_id, &[0xAB]), C::Malformed);
-        assert_eq!(classify(setup_id, &[0; 4]), C::Malformed);
-
-        assert_eq!(classify(frame_id, &17_u64.to_le_bytes()), C::DeferSnapshot);
-        assert_eq!(classify(frame_id, &[]), C::Malformed);
-        assert_eq!(classify(frame_id, &[0; 7]), C::Malformed);
-        assert_eq!(classify(frame_id, &[0; 9]), C::Malformed);
-
-        assert_eq!(classify(state_id, &[0, 1, 2, 3]), C::Capture);
-        assert_eq!(classify((9u32 << SDK_NS_SHIFT) | 7, &[1, 2, 3]), C::Capture);
-    }
-
-    #[test]
     fn observation_registration_is_ram_bounded_and_survives_sdk_restore() {
         use hypercall_proto::observation::{Descriptor, EVENT_ID};
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
@@ -3934,8 +3689,8 @@ mod tests {
             v.enable_sdk(nominal_env(1), &ServiceConfig::default());
             v
         };
-        let assert_id = (u32::from(SDK_NS_ASSERT) << SDK_NS_SHIFT) | 20;
-        let setup_id = u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT;
+        let assert_id = (u32::from(sdk::NAMESPACE_ASSERT) << sdk::NAMESPACE_SHIFT) | 20;
+        let setup_id = u32::from(sdk::NAMESPACE_LIFECYCLE) << sdk::NAMESPACE_SHIFT;
         let frame_id = setup_id | 1;
 
         let mut v = mk();
