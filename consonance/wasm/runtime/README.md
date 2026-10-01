@@ -42,3 +42,9 @@ operands. Every frame belongs to the admitted instance and the first frame is
 the declared root. The outer admission contract excludes reference registers,
 multiple instances and multi-result functions; artifact decoding enforces the
 profile's stack and resource bounds before the unsafe reconstruction call.
+
+`debug-positions.patch` attaches bounded translation-origin spans to instruction
+words, preserves them during nearby insertion and merging, and exposes them by
+compiled-function identity. It does not change execution or fuel costs. Eager
+translation is required for complete positions; synthetic numerical functions
+remain explicitly distinguishable from original source functions.

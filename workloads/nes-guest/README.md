@@ -84,3 +84,8 @@ record determines the actual linkage. Nova's two A–E jobs upload this director
 and the exact ROM-free OCI layout only on failure, for separate admission
 review. These diagnostics neither approve changed bytes nor retain a ROM or
 snapshot RAM.
+
+The ordinary NES payload agent and core/channel interfaces live in `nes-agent`.
+This Linux guest and the WebAssembly guest share that allocation-only action loop,
+publication catalog, and `nes-protocol` billboard writer and decoder. Linux device
+transport and emulator loading remain in this package.

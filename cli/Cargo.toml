@@ -9,8 +9,14 @@ description = "The `harmony` product CLI: host preflight and deterministic OCI w
 name = "harmony"
 path = "src/main.rs"
 
+[features]
+default = ["hardware"]
+hardware = ["nes-workload/consonance", "dep:faults-workload", "faults-workload/consonance", "dep:vmm-core", "dep:vmm-backend"]
+wasm = ["nes-workload/wasm", "dep:nes-wasm"]
+
 [dependencies]
-nes-workload = { version = "=0.1.0", path = "../workloads/nes", features = ["consonance"] }
+nes-wasm = { path = "../workloads/nes-wasm", version = "=0.1.0", optional = true }
+nes-workload = { version = "=0.1.0", path = "../workloads/nes" }
 # CLI dispatch (whitelist: clap is bins-only; this crate is a binary).
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
@@ -19,9 +25,9 @@ serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 oci-support = { path = "../consonance/oci", version = "=0.1.0" }
-faults-workload = { version = "=0.1.0", path = "../workloads/faults", features = ["consonance"] }
-vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
-vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
+faults-workload = { version = "=0.1.0", path = "../workloads/faults", optional = true }
+vmm-core = { path = "../consonance/vmm-core", version = "0.1.0", optional = true }
+vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0", optional = true }
 consonance-client = { path = "../consonance/client", version = "=0.1.0" }
 
 [lints]

@@ -12,3 +12,4 @@ pub use runtime::{Invocation, Scalar};
 pub use session::WasmSession;
 
 pub(crate) mod artifact;
+pub mod source_map;

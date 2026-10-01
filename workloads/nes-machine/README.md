@@ -106,3 +106,9 @@ The `consonance` feature compiles the portable adapter on Linux and macOS,
 including Intel macOS, without hardware dependencies. `ConsonanceMachine::from_session`
 accepts a session with stopped observations and workload composition capabilities.
 `hardware` adds the VM constructor; `nes-workload/consonance` selects that feature.
+
+Portable sessions run to SDK lifecycle events without hardware clock budgets.
+The hardware constructor retains its existing relative run budget.
+`from_restored_session` accepts an already initialized publication at a restored
+action boundary. `execution_hash` exposes the underlying session's complete
+state digest for same-artifact replay checks.

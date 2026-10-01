@@ -23,6 +23,7 @@ fn main() {
         "numerical.patch",
         "import-completion.patch",
         "validation.patch",
+        "debug-positions.patch",
         "wasmi-0.46.0.crate",
         "../qualification/prepare-wasmi.py",
         "../qualification/wasmi-snapshot.patch",

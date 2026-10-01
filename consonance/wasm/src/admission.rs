@@ -66,6 +66,8 @@ pub struct AdmittedModule {
     pub(crate) profile: Profile,
     pub(crate) imports: Vec<(String, String)>,
     pub(crate) entries: std::collections::BTreeSet<String>,
+    pub(crate) source_maps: Vec<crate::source_map::FunctionMap>,
+    pub(crate) source_code_section_start: u64,
 }
 fn scalar(ty: ValType) -> bool {
     matches!(
@@ -288,12 +290,35 @@ impl AdmittedModule {
             functions,
             globals,
             tables,
+            imported_functions: imports.len() as u32,
+            source_maps: Vec::new(),
         };
         let mut module = wasm_encoder::Module::new();
         transform
             .parse_core_module(&mut module, Parser::new(0), source)
             .map_err(|e| reject(e.to_string()))?;
         let bytes = module.finish();
+        let mut source_code_section_start = 0;
+        for section in Parser::new(0).parse_all(source) {
+            if let Payload::CodeSectionStart { range, .. } =
+                section.map_err(|e| reject(e.to_string()))?
+            {
+                source_code_section_start = range.start as u64;
+            }
+        }
+        let mut index = 0;
+        for section in Parser::new(0).parse_all(&bytes) {
+            if let Payload::CodeSectionEntry(body) = section.map_err(|e| reject(e.to_string()))? {
+                if let Some(mapping) = transform.source_maps.get_mut(index) {
+                    mapping.admitted = [body.range().start as u64, body.range().end as u64];
+                    for op in &mut mapping.operators {
+                        op.admitted[0] += mapping.admitted[0];
+                        op.admitted[1] += mapping.admitted[0];
+                    }
+                }
+                index += 1;
+            }
+        }
         wasmparser::Validator::new_with_features(features)
             .validate_all(&bytes)
             .map_err(|e| reject(e.to_string()))?;
@@ -321,6 +346,10 @@ impl AdmittedModule {
             "../runtime/validation.patch"
         )));
         identity.update(Sha256::digest(include_bytes!("artifact.rs")));
+        identity.update(Sha256::digest(include_bytes!("source_map.rs")));
+        identity.update(Sha256::digest(include_bytes!(
+            "../runtime/debug-positions.patch"
+        )));
         for source in [
             include_bytes!("../../environment/src/channel.rs").as_slice(),
             include_bytes!("../../environment/src/sdk.rs").as_slice(),
@@ -342,6 +371,8 @@ impl AdmittedModule {
             profile,
             imports,
             entries,
+            source_maps: transform.source_maps,
+            source_code_section_start,
         })
     }
     pub fn bytes(&self) -> &[u8] {
@@ -387,6 +418,8 @@ struct Transform {
     functions: u32,
     globals: u32,
     tables: u32,
+    imported_functions: u32,
+    source_maps: Vec<crate::source_map::FunctionMap>,
 }
 impl Reencode for Transform {
     type Error = std::convert::Infallible;
@@ -450,8 +483,16 @@ impl Reencode for Transform {
         body: wasmparser::FunctionBody<'_>,
     ) -> std::result::Result<(), reencode::Error<Self::Error>> {
         let mut function = self.new_function_with_parsed_locals(&body)?;
+        let mut mapping = crate::source_map::FunctionMap {
+            function: self.imported_functions + self.source_maps.len() as u32,
+            source: [body.range().start as u64, body.range().end as u64],
+            admitted: [0; 2],
+            operators: Vec::new(),
+        };
         let mut reader = body.get_operators_reader()?;
         while !reader.eof() {
+            let source_start = reader.original_position() as u64;
+            let admitted_start = function.byte_len() as u64;
             let op = reader.read()?;
             let after32 = matches!(
                 op,
@@ -496,7 +537,12 @@ impl Reencode for Transform {
             if after64 {
                 function.instruction(&Instruction::Call(self.functions + 1));
             }
+            mapping.operators.push(crate::source_map::OperatorMap {
+                source: [source_start, reader.original_position() as u64],
+                admitted: [admitted_start, function.byte_len() as u64],
+            });
         }
+        self.source_maps.push(mapping);
         code.function(&function);
         Ok(())
     }

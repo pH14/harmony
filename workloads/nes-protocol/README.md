@@ -12,3 +12,6 @@ execution backend.
 ```sh
 cargo test --manifest-path workloads/nes-protocol/Cargo.toml
 ```
+
+The protocol is `no_std` with allocation for decoded observations. The same
+billboard codec is used in Linux guests, the WebAssembly guest, and host adapters.

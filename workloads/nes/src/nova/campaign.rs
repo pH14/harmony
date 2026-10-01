@@ -41,12 +41,24 @@ use crate::{
 };
 
 #[cfg(all(
+    not(miri),
+    any(
+        feature = "wasm",
+        all(
+            feature = "consonance",
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
+))]
+use machine::consonance::ConsonanceMachine;
+#[cfg(all(
     feature = "consonance",
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-use machine::consonance::{ConsonanceMachine, identity as consonance_identity};
+use machine::consonance::identity as consonance_identity;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "nova-quicknes-campaign-stream-v1";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nova-quicknes-snapshot-checkpoint-v1";
@@ -98,34 +110,66 @@ impl NovaMachineKind for QuickNesMachine {
 }
 
 #[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+    not(miri),
+    any(
+        feature = "wasm",
+        all(
+            feature = "consonance",
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
 ))]
-pub struct ConsonanceConfiguration {
-    kernel: Vec<u8>,
-    initramfs: Vec<u8>,
+pub enum ConsonanceConfiguration {
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ))]
+    Hardware { kernel: Vec<u8>, initramfs: Vec<u8> },
+    #[cfg(feature = "wasm")]
+    Wasm {
+        package: std::sync::Arc<nes_wasm::Package>,
+        seed: u64,
+    },
 }
 
 #[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+    not(miri),
+    any(
+        feature = "wasm",
+        all(
+            feature = "consonance",
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
 ))]
 impl NovaMachineKind for ConsonanceMachine {
     type Configuration = ConsonanceConfiguration;
     fn new_nova_target(game: &NovaGame<Self>) -> Result<NovaTarget<Self>, String> {
-        ConsonanceMachine::new(&game.runtime.kernel, &game.runtime.initramfs)
-            .and_then(|machine| {
-                if machine.starts_at_power_on() {
-                    NovaTarget::from_power_on(machine)
-                } else {
-                    NovaTarget::from_machine(machine)
-                }
-            })
-            .map_err(|error| error.to_string())
+        let machine = match &game.runtime {
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
+                not(miri)
+            ))]
+            ConsonanceConfiguration::Hardware { kernel, initramfs } => {
+                ConsonanceMachine::new(kernel, initramfs).map_err(|error| error.to_string())?
+            }
+            #[cfg(feature = "wasm")]
+            ConsonanceConfiguration::Wasm { package, seed } => package
+                .machine(&game.rom, *seed)
+                .map_err(|error| error.to_string())?,
+        };
+        if machine.starts_at_power_on() {
+            NovaTarget::from_power_on(machine)
+        } else {
+            NovaTarget::from_machine(machine)
+        }
+        .map_err(|error| error.to_string())
     }
 }
 
@@ -183,11 +227,34 @@ impl NovaGame<ConsonanceMachine> {
                 "{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3",
                 consonance_identity(kernel, initramfs),
             ),
-            runtime: ConsonanceConfiguration {
+            runtime: ConsonanceConfiguration::Hardware {
                 kernel: kernel.to_vec(),
                 initramfs: initramfs.to_vec(),
             },
         }
+    }
+}
+
+#[cfg(all(feature = "wasm", not(miri)))]
+impl NovaGame<ConsonanceMachine> {
+    pub fn new_wasm(
+        rom: &[u8],
+        package: nes_wasm::Package,
+        seed: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            rom: rom.to_vec(),
+            level: NovaLevel::default(),
+            whole_game: false,
+            identity: format!(
+                "{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3",
+                package.identity(rom)?
+            ),
+            runtime: ConsonanceConfiguration::Wasm {
+                package: std::sync::Arc::new(package),
+                seed,
+            },
+        })
     }
 }
 

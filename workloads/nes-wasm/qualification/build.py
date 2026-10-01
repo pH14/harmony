@@ -13,6 +13,12 @@ QUICKNES = "26bb785c9deddb66a17717b21bb4e328f03ade32"
 def command(args, **kwargs):
     subprocess.run([str(x) for x in args], check=True, **kwargs)
 
+def build_core(sdk, quicknes):
+    command(["make", "-C", quicknes, "clean"])
+    flags = f'-O2 -g -fno-exceptions -fno-rtti -fno-use-cxa-atexit -DGIT_VERSION=\\"{QUICKNES}\\"'
+    command(["make", "-C", quicknes, "-j4", "platform=unix", "STATIC_LINKING=1", "TARGET=libquicknes_wasm.a",
+             f"CC={sdk / 'bin/clang'}", f"CXX={sdk / 'bin/clang++'}", f"AR={sdk / 'bin/llvm-ar'}", f"CXXFLAGS={flags}"])
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdk", required=True, type=Path)
@@ -35,10 +41,7 @@ def main():
     if rust_version != "rustc 1.97.0 (2d8144b78 2026-07-07)":
         raise SystemExit("Rust 1.97.0 required")
     start = time.perf_counter()
-    command(["make", "-C", args.quicknes, "clean"])
-    flags = f'-O2 -g -fno-exceptions -fno-rtti -fno-use-cxa-atexit -DGIT_VERSION=\\"{QUICKNES}\\"'
-    command(["make", "-C", args.quicknes, "-j4", "platform=unix", "STATIC_LINKING=1", "TARGET=libquicknes_wasm.a",
-             f"CC={sdk / 'bin/clang'}", f"CXX={sdk / 'bin/clang++'}", f"AR={sdk / 'bin/llvm-ar'}", f"CXXFLAGS={flags}"])
+    build_core(sdk, args.quicknes)
     command(["rustc", "--edition=2024", "--target=wasm32-wasip1", "--crate-type=staticlib", "-C", "panic=abort",
              "-C", "opt-level=2", "-g", source / "guest/chord.rs", "-o", output / "chord.a"])
     command([sdk / "bin/clang", "-O2", "-g", "-I", args.quicknes / "libretro/libretro-common/include", "-c", source / "guest/play-agent.c", "-o", output / "agent.o"])

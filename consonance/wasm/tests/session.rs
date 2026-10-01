@@ -525,3 +525,72 @@ fn measure_capture_restore_across_memory_sizes_and_history_lengths() {
         }
     }
 }
+
+#[test]
+fn debug_maps_cover_transformed_operators_and_compiled_positions() {
+    let source = wat::parse_str("(module (memory 1 1) (func (export \"play\") (param f32) (result f64) local.get 0 f32.sqrt f64.promote_f32))").unwrap();
+    let profile = Profile {
+        memory_pages: 1,
+        ..Profile::default()
+    };
+    let admitted = AdmittedModule::new(&source, profile).unwrap();
+    let session = WasmSession::new(
+        admitted.clone(),
+        InputSpec::seeded(1),
+        Invocation {
+            name: "play".into(),
+            arguments: vec![consonance_wasm::Scalar::F32(0x3f800000)],
+        },
+        nominal_factory(),
+    )
+    .unwrap();
+    let first = session.debug_map();
+    let second = WasmSession::new(
+        admitted,
+        InputSpec::seeded(2),
+        Invocation {
+            name: "play".into(),
+            arguments: vec![consonance_wasm::Scalar::F32(0)],
+        },
+        nominal_factory(),
+    )
+    .unwrap()
+    .debug_map();
+    assert_eq!(first, second);
+    assert_eq!(first.functions.len(), 1);
+    assert_eq!(first.compiled.len(), 3);
+    let mapping = &first.functions[0];
+    assert!(
+        mapping
+            .operators
+            .iter()
+            .any(|op| op.admitted[1] - op.admitted[0] > op.source[1] - op.source[0])
+    );
+    let original = first
+        .compiled
+        .iter()
+        .find(|compiled| compiled.function == mapping.function)
+        .unwrap();
+    assert!(
+        original
+            .locations
+            .iter()
+            .all(|location| location.source.is_some())
+    );
+    for location in &original.locations {
+        let source = location.source.unwrap();
+        assert!(
+            mapping.source[0] <= source[0]
+                && source[0] <= source[1]
+                && source[1] <= mapping.source[1]
+        );
+    }
+    assert!(
+        first
+            .compiled
+            .iter()
+            .filter(|compiled| compiled.function != mapping.function)
+            .flat_map(|compiled| &compiled.locations)
+            .all(|location| location.source.is_none())
+    );
+}

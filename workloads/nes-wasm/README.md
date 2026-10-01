@@ -1,12 +1,45 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# WebAssembly execution feasibility
+# Portable NES workload
 
-This directory contains the workload experiments for the Consonance WASM
-plan. It is excluded from the product workspace. There is no user-selectable
-WASM backend yet. Subsequent milestones must implement admission, a portable
-session boundary, SDK services, shared snapshot storage, workload composition,
-and host qualification before enabling it.
+The production package composes the pinned emulator with the shared `nes-agent`
+action loop, `nes-protocol` codecs, guest SDK transport and `WasmSession`. It uses
+one fixed 16 MiB memory. ROM length and bounded chunks arrive through declared
+payloads; initialization runs exactly once before the setup lifecycle event.
+Observation registration publishes the ordinary power-on billboard. Every action
+publishes intermediate RAM frames and stops at the shared frame-complete event.
+The backend remains unavailable in default product builds until final host and
+performance qualification passes.
+
+`build.py` writes the exact `play-agent.wasm`, `manifest.json` and `debug-map.json`.
+The manifest binds the module, mappings, pinned compiler/core versions and guest
+sources. Original DWARF stays in the module. Mappings connect original WASM bytes,
+admitted numerical transforms and compiled interpreter positions; synthetic code
+is marked explicitly. The package loader checks both artifact and execution
+identities. No ROM, emulator binary or ROM-containing snapshot is checked in.
+
+```sh
+python3 workloads/nes-wasm/build.py \
+  --sdk "$WASI_SDK" --quicknes "$QUICKNES_SOURCE" --output "$PACKAGE"
+cargo +1.97.0 run --release --manifest-path workloads/nes-wasm/Cargo.toml \
+  --bin qualify -- compare "$PACKAGE" "$NOVA_ROM" "$RESULT" "$NATIVE_CORE"
+cargo +1.97.0 run --release --manifest-path workloads/nes-wasm/Cargo.toml \
+  --bin qualify -- restore "$PACKAGE" "$CHECKPOINT" "$RESULT" none
+```
+
+The standalone runner uses the ordinary machine adapter, compares every observed
+frame and save-RAM endpoint with native execution, exports action checkpoints,
+checks fresh reconstruction, and tests identical and different sibling inputs.
+The restore mode starts a fresh process directly from the artifact. Native game
+agreement is a functional check; complete same-artifact hashes prove replay.
+Miri exercises guest allocation and owned/bounded FFI buffers against a Rust
+shim; the real emulator executes within the interpreter's checked linear memory.
+
+## Historical feasibility experiment
+
+`qualification/` preserves the first milestone's experiment and frozen budgets.
+Its source and digests are historical; later milestones use the production
+package and validated shared snapshot/cache implementation.
 
 The selected continuation approach is **Wasmi 0.46.0 with the pinned snapshot
 extension**. The Asyncify/Wasmtime implementation remains a comparison fixture,

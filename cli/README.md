@@ -96,3 +96,11 @@ hidden. The pinned Linux kernel must trust bootloader randomness (its default);
 The OCI CI check reads `/dev/urandom` and checks byte-identical serial logs and
 digests for repeated seeds, distinct output for different seeds, and cancellation
 of a guest loop that performs no I/O.
+
+A qualification build with `--no-default-features --features wasm` includes
+`search --package nes --backend wasm --wasm-package PATH`. The package contains
+`play-agent.wasm`, `manifest.json`, and the digest-bound `debug-map.json`; the ROM
+is the search input. This build has no hardware VMM dependency or hypervisor
+probe. The default `hardware` feature preserves OCI execution, preflight and
+worker commands. WASM remains outside the default product build until final
+qualification passes.

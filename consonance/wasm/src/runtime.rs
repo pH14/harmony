@@ -102,6 +102,65 @@ fn pending(
     Err(wasmi::Error::new("pending deterministic request"))
 }
 impl Runtime {
+    pub(crate) fn debug_map(&self) -> crate::source_map::DebugMap {
+        use crate::source_map::{CompiledFunction, CompiledLocation, DebugMap};
+        use sha2::{Digest, Sha256};
+        let mut compiled = Vec::new();
+        let count = self
+            .admitted
+            .source_maps
+            .last()
+            .map_or(0, |map| map.function + 1)
+            + 2;
+        for function in 0..count {
+            let Some(func) = self
+                .instance
+                .get_func(&self.store, &format!("__harmony_func_{function}"))
+            else {
+                continue;
+            };
+            let Some((compiled_function, positions)) = func.harmony_source_positions(&self.store)
+            else {
+                continue;
+            };
+            let mapping = self
+                .admitted
+                .source_maps
+                .iter()
+                .find(|map| map.function == function);
+            let locations = positions
+                .into_iter()
+                .enumerate()
+                .map(|(instruction, admitted)| {
+                    let source = mapping.and_then(|map| {
+                        Some([
+                            map.source_position(admitted[0])?,
+                            map.source_position(admitted[1])?,
+                        ])
+                    });
+                    CompiledLocation {
+                        instruction: instruction as u64,
+                        admitted,
+                        source,
+                    }
+                })
+                .collect();
+            compiled.push(CompiledFunction {
+                function,
+                compiled_function,
+                locations,
+            });
+        }
+        DebugMap {
+            version: 1,
+            source_digest: self.admitted.source_digest(),
+            admitted_digest: Sha256::digest(self.admitted.bytes()).into(),
+            execution_digest: self.admitted.execution_digest(),
+            source_code_section_start: self.admitted.source_code_section_start,
+            functions: self.admitted.source_maps.clone(),
+            compiled,
+        }
+    }
     pub(crate) fn new(
         admitted: Arc<AdmittedModule>,
         host: Host,

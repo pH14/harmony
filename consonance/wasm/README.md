@@ -34,8 +34,9 @@ memory export. It canonicalizes NaN-producing arithmetic and canonicalizes
 signalling NaN operands before floating-point widening/narrowing. NaN constants use full-width interpreter registers; compressed f64 NaN
 constants are disabled in the runtime translator. Constants,
 bitwise reinterpretation, signed zero, infinities and subnormals retain their
-specified bits. Original custom sections remain available; transformed code
-requires an offset map before debugger positions can refer to original source.
+specified bits. Original custom sections remain available. The packaged debug map connects
+compiled instruction positions to admitted operators and original code offsets;
+source DWARF retains its original code-section coordinate system.
 
 Identity includes source and emitted module digests, input bytes, the limit
 profile, runtime archive and patch, compiler identity, transform and accounting
@@ -179,3 +180,21 @@ that payload count.
 per case pass the original 15 ms capture/comparison and 100 ms fresh restore
 budgets on the measured host. Representative workload cycles and all supported
 host transfers still require the final qualification milestone.
+
+## Debug positions
+
+Admission retains an exact operator map from emitted instruction ranges to
+original WASM ranges, including inserted numerical helpers. The runtime records
+emission and direct-edit origins for every compiled instruction word and exposes
+those positions by stable compiled-function ID. Entry fuel instructions map to
+function entry, merged instructions can have an origin span, and generated helper
+functions have no original source location. These are translation origins, rather
+than a claim that optimized instructions correspond to one exact source line.
+
+`WasmSession::debug_map` joins both maps and binds them to source, admitted and
+execution digests. The `debug-map` packaging tool verifies complete coverage for
+every original function. Offsets are absolute WASM byte positions; subtract
+`source_code_section_start` before looking up the original module's DWARF code
+addresses, as specified by the [WebAssembly debugging conventions](https://github.com/WebAssembly/tool-conventions/blob/main/Debugging.md).
+The original DWARF custom sections remain in the packaged source module. Debug
+metadata is immutable engine data, never portable execution state.

@@ -43,6 +43,7 @@ path = "src/main.rs"
 # Explicit `version` alongside `path` for `cargo deny`'s wildcard ban, mirroring
 # the other guest crates.
 [dependencies]
+nes-agent = { path = "../nes-agent", version = "=0.1.0" }
 nes-protocol = { path = "../nes-protocol", version = "=0.1.0" }
 # The guest SDK: `state_set`/`state_max`/`assert_reachable`/`entropy_fill` over
 # the hypercall Event service (read-only surface — composed, never modified).

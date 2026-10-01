@@ -19,6 +19,8 @@ exclude = [
   "workloads/nes-machine",
   "workloads/nes-protocol",
   "workloads/nes-guest",
+  "workloads/nes-agent",
+  "workloads/nes-wasm",
   "workloads/fault-policy",
   "workloads/faults",
 ]

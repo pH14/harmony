@@ -53,6 +53,9 @@ impl std::fmt::Debug for WasmSession {
     }
 }
 impl WasmSession {
+    pub fn debug_map(&self) -> crate::source_map::DebugMap {
+        self.runtime.debug_map()
+    }
     pub fn new(
         module: AdmittedModule,
         input: InputSpec,

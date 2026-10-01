@@ -33,10 +33,11 @@ use crate::{
 
 #[cfg(feature = "hardware")]
 const RAM: usize = 128 * 1024 * 1024;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(any(feature = "hardware", test), target_arch = "x86_64"))]
 const BOOT_BUDGET: u64 = 2_000_000_000;
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(any(feature = "hardware", test), target_arch = "aarch64"))]
 const BOOT_BUDGET: u64 = 20_000_000_000;
+#[cfg(any(feature = "hardware", test))]
 const RUN_BUDGET: u64 = BOOT_BUDGET;
 #[cfg(feature = "hardware")]
 const SEED: u64 = 0x4e4f_5641_5f53_4541;
@@ -305,6 +306,7 @@ pub struct ConsonanceMachine {
     ring: Vec<[u8; nes::WRAM_SIZE]>,
     lifetime_frames: u64,
     last_vtime: u64,
+    run_budget: Option<u64>,
     snapshot_vtimes: BTreeMap<SnapId, u64>,
     observation_valid: bool,
     profile: ConsonanceProfile,
@@ -344,10 +346,22 @@ impl ConsonanceMachine {
         let session =
             Session::new_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
                 .map_err(|error| MachineError::Backend(error.to_string()))?;
-        Self::from_session(Box::new(session))
+        Self::from_session_with_budget(Box::new(session), Some(RUN_BUDGET), false)
     }
 
-    pub fn from_session(mut session: Box<dyn SearchSession>) -> Result<Self, MachineError> {
+    pub fn from_session(session: Box<dyn SearchSession>) -> Result<Self, MachineError> {
+        Self::from_session_with_budget(session, None, false)
+    }
+
+    pub fn from_restored_session(session: Box<dyn SearchSession>) -> Result<Self, MachineError> {
+        Self::from_session_with_budget(session, None, true)
+    }
+
+    fn from_session_with_budget(
+        mut session: Box<dyn SearchSession>,
+        run_budget: Option<u64>,
+        restored: bool,
+    ) -> Result<Self, MachineError> {
         if !session.capabilities().stopped_observations
             || !session.capabilities().workload_composition
         {
@@ -398,7 +412,7 @@ impl ConsonanceMachine {
             &mut profile,
             false,
         )?;
-        if !observed.work_frames.is_empty() {
+        if !restored && !observed.work_frames.is_empty() {
             return Err(MachineError::Backend(
                 "setup billboard unexpectedly contains action frames".to_owned(),
             ));
@@ -421,9 +435,10 @@ impl ConsonanceMachine {
             billboard_len,
             endpoint_work_ram: observed.endpoint_work_ram,
             save_ram: observed.save_ram,
-            ring: Vec::new(),
+            ring: observed.work_frames,
             lifetime_frames: 0,
             last_vtime: setup_vtime,
+            run_budget,
             snapshot_vtimes: BTreeMap::from([(setup, setup_vtime)]),
             observation_valid: true,
             profile,
@@ -432,6 +447,12 @@ impl ConsonanceMachine {
 
     pub fn starts_at_power_on(&self) -> bool {
         self.power_on_publication
+    }
+
+    pub fn execution_hash(&mut self) -> Result<[u8; 32], MachineError> {
+        self.session
+            .state_hash()
+            .map_err(|error| MachineError::Backend(error.to_string()))
     }
 }
 
@@ -527,7 +548,10 @@ impl Machine for ConsonanceMachine {
         validate_supported_stop_conditions(until)?;
         self.ring.clear();
         self.observation_valid = false;
-        let deadline = run_deadline(self.last_vtime, RUN_BUDGET)?;
+        let deadline = self
+            .run_budget
+            .map(|budget| run_deadline(self.last_vtime, budget))
+            .transpose()?;
         let before_faults = self.profile.enabled.then(host_minor_faults).flatten();
         let before_dirty = self.profile.dirty_totals();
         let before_doorbells = self.session.doorbell_exits();
@@ -539,7 +563,7 @@ impl Machine for ConsonanceMachine {
             |session| {
                 session.run(
                     ControlStopConditions {
-                        deadline: Some(control_proto::Moment(deadline)),
+                        deadline: deadline.map(control_proto::Moment),
                         on: ControlStopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
                     },
                     None,
