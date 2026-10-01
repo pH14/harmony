@@ -38,7 +38,6 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
 | `Checks / Consonance / UML` | `consonance-uml.yml` | pull_request, push, workflow_dispatch |
-| `Checks / Consonance / UML Probe` | `consonance-uml-probe.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Dissonance` | `dissonance-checks.yml` | pull_request, push |
 | `Checks / Dissonance / Analysis` | `dissonance-analysis.yml` | schedule, workflow_dispatch |
 | `Checks / Harmony` | `harmony-checks.yml` | pull_request, push |
@@ -56,10 +55,12 @@ what owns it, and the linter rejects them.
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
 
-`Checks / Consonance / UML` owns the User-mode Linux profile. `UML Launcher`
-lints and tests the `uml` crate. `UML Artifacts — <Architecture>` builds the
-profile twice from the locked Nix toolchain and fails unless every artifact is
-byte-identical; two cold builds have a registered 45-minute exception.
+`Checks / Consonance / UML` owns the User-mode Linux profiles for x86-64 and
+arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
+<Architecture>` builds the profile twice from the locked Nix toolchain and
+fails unless every artifact is byte-identical; two cold builds have a
+registered 45-minute exception. The arm64 profile builds from the pinned RFC
+port, and every check below runs on an x86-64 and an arm64 runner.
 `UML Qualification — <Target>` runs `harmony-uml-qualify` as the runner's
 ordinary UID, natively and under Docker's default seccomp profile with every
 capability dropped. The qualifier denies ptrace and KVM ioctls to itself and
@@ -71,16 +72,6 @@ randomization must produce one event hash, and recordings must replay to each cu
 in-place and fresh-process restores of each fixture must reach the cold event
 hash, and an image without host memory or a restore without the bridge state
 must diverge. Reports remain workflow artifacts.
-
-`Checks / Consonance / UML Probe` keeps the arm64 feasibility probe until the
-arm64 profile joins `Checks / Consonance / UML`. It builds the arm64 UML RFC at
-commit `8897487c52233cd00cf2850008ca068892f1ae91` (7.2-rc4) with the locked
-Nix compiler, 4 KiB pages, and a frame-pointer-free stub, and measures seccomp
-plus infinite-CPU time-travel execution on an ordinary Linux UID and under
-Docker's default seccomp profile. It records its host-header compatibility
-fix alongside the source pin; the unmodified RFC collides with the locked
-glibc headers. Cold artifact construction has a registered 45-minute
-exception; each execution job stays within 15 minutes.
 
 ## Dissonance Workloads and Harmony Workloads
 

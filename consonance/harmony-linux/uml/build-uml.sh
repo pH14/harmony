@@ -16,8 +16,19 @@ UML_DIR=$GUEST_DIR/uml
     exit 1
 }
 arch=$(uname -m)
+fragments=("$UML_DIR/config-fragment")
 case "$arch" in
-    x86_64) ;;
+    x86_64)
+        subarch=x86_64
+        source_version=$KERNEL_VERSION source_url=$KERNEL_URL source_sha256=$KERNEL_SHA256
+        series=um fetch_target=fetch
+        ;;
+    aarch64)
+        subarch=arm64
+        source_version=$UML_ARM64_VERSION source_url=$UML_ARM64_URL source_sha256=$UML_ARM64_SHA256
+        series=um-arm64 fetch_target=fetch-uml-arm64
+        fragments+=("$UML_DIR/config-fragment-arm64")
+        ;;
     *)
         echo "FAIL: no User-mode Linux profile for $arch" >&2
         exit 1
@@ -26,35 +37,37 @@ esac
 require_tools cc make flex bison bc xz gzip readelf python3
 
 uml_root=$BUILD_ROOT/um-$arch
-uml_src=$uml_root/linux-$KERNEL_VERSION
+uml_src=$uml_root/linux-$source_version
 uml_obj=$uml_root/build
 uml_out=$ART_DIR/uml/$arch
 
-tarball=$DL_DIR/$(basename "$KERNEL_URL")
+tarball=$DL_DIR/$(basename "$source_url")
 [ -f "$tarball" ] || {
-    echo "FAIL: $tarball missing; run 'make -C consonance/harmony-linux fetch' first" >&2
+    echo "FAIL: $tarball missing; run 'make -C consonance/harmony-linux $fetch_target' first" >&2
     exit 1
 }
-[ "$(sha256_of "$tarball")" = "$KERNEL_SHA256" ] || {
+[ "$(sha256_of "$tarball")" = "$source_sha256" ] || {
     echo "FAIL: $tarball sha256 mismatch" >&2
     exit 1
 }
 if [ ! -d "$uml_src" ]; then
-    mkdir -p "$uml_root"
-    tar -xf "$tarball" -C "$uml_root"
+    rm -rf "$uml_src.extract"
+    mkdir -p "$uml_src.extract"
+    tar -xf "$tarball" -C "$uml_src.extract" --strip-components=1
+    mv "$uml_src.extract" "$uml_src"
 fi
 bash "$LINUX_DIR/apply-patch-series.sh" "$uml_src" \
-    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/um"
+    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/$series"
 
 kmake() {
-    make -C "$uml_src" O="$uml_obj" ARCH=um SUBARCH="$arch" LOCALVERSION= "$@"
+    make -C "$uml_src" O="$uml_obj" ARCH=um SUBARCH="$subarch" LOCALVERSION= "$@"
 }
 
-echo "== uml: defconfig + overlay (linux-$KERNEL_VERSION, $arch)"
+echo "== uml: defconfig + overlay (linux-$source_version, $arch)"
 mkdir -p "$uml_obj"
 kmake defconfig
 (cd "$uml_src" && ./scripts/kconfig/merge_config.sh -m -O "$uml_obj" \
-    "$uml_obj/.config" "$UML_DIR/config-fragment")
+    "$uml_obj/.config" "${fragments[@]}")
 kmake olddefconfig
 
 assert_y() {
@@ -78,6 +91,7 @@ assert_y STATIC_LINK UML_TIME_TRAVEL_SUPPORT HZ_PERIODIC BLK_DEV_INITRD \
     SECCOMP_FILTER NULL_CHAN HARMONY_DEVICE NAMESPACES UTS_NS IPC_NS PID_NS NET_NS NET \
     UNIX INET CGROUPS CGROUP_SCHED CGROUP_PIDS CGROUP_DEVICE CGROUP_FREEZER CGROUP_BPF \
     BPF_SYSCALL UNIX98_PTYS
+[ "$arch" != aarch64 ] || assert_y PAGE_SIZE_4KB
 assert_off SMP MODULES VMAP_STACK BPF_JIT NO_HZ_COMMON HIGH_RES_TIMERS LOCALVERSION_AUTO HOSTFS \
     UML_RANDOM HW_RANDOM MCONSOLE BLK_DEV_UBD UML_NET_VECTOR MAY_HAVE_RUNTIME_DEPS \
     PORT_CHAN PTY_CHAN TTY_CHAN XTERM_CHAN UML_RTC VIRTIO_UML UML_PCI
@@ -100,10 +114,16 @@ if grep -Eq ' INTERP |\(NEEDED\)' <<<"$linux_headers"; then
 fi
 
 echo "== uml: fixture initramfs"
-build_x86_musl
-"$X86_MUSL_PREFIX/bin/musl-gcc" -O2 -static -Wall -Wextra -Werror \
+if [ "$arch" = aarch64 ]; then
+    build_arm64_musl
+    musl_gcc=$ARM64_MUSL_PREFIX/bin/musl-gcc
+else
+    build_x86_musl
+    musl_gcc=$X86_MUSL_PREFIX/bin/musl-gcc
+fi
+"$musl_gcc" -O2 -static -Wall -Wextra -Werror \
     -o "$uml_root/fixture-init" "$UML_DIR/fixture-init.c"
-"$X86_MUSL_PREFIX/bin/musl-gcc" -O2 -static -nostdlib -ffreestanding -fno-builtin \
+"$musl_gcc" -O2 -static -nostdlib -ffreestanding -fno-builtin \
     -fno-stack-protector -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
     -o "$uml_root/fixture-registers" "$UML_DIR/fixture-registers.c"
 cc -O2 -o "$uml_root/gen_init_cpio" "$uml_src/usr/gen_init_cpio.c"
@@ -123,5 +143,5 @@ install -m 0755 "$uml_obj/linux" "$uml_out/linux"
 install -m 0644 "$uml_obj/.config" "$uml_out/config"
 mv "$uml_out/initramfs.cpio.gz.tmp" "$uml_out/initramfs.cpio.gz"
 python3 "$UML_DIR/write-profile.py" --output "$uml_out" --architecture "$arch" \
-    --kernel-version "$KERNEL_VERSION" --patch-series "$uml_src/.harmony-patch-series"
+    --kernel-version "$source_version" --patch-series "$uml_src/.harmony-patch-series"
 echo "ok: $uml_out"

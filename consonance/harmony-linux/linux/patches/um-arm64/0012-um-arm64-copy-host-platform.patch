@@ -1,0 +1,50 @@
+Keep a copy of the host platform name in User-mode Linux
+
+User-mode Linux reads the host's AT_PLATFORM string at boot and keeps a
+pointer to it. The string lives on the initial host stack, and arm64 hands it
+to every guest program as AT_PLATFORM. A checkpoint restored in a fresh
+process keeps the kernel's memory but gets a new host stack, so the pointer
+then names other bytes, or unmapped memory when the host randomizes the
+stack. The string is now copied into the kernel's own memory at boot.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/elf_aux.c
++++ b/arch/um/os-Linux/elf_aux.c
+@@ -10,6 +10,7 @@
+  */
+ #include <elf.h>
+ #include <stddef.h>
++#include <string.h>
+ #include <init.h>
+ #include <elf_user.h>
+ #include <mem_user.h>
+@@ -28,6 +29,12 @@ typedef Elf32_auxv_t elf_auxv_t;
+ 
+ /* These are initialized very early in boot and never changed */
+ char * elf_aux_platform;
++/*
++ * A copy of the host's AT_PLATFORM string, which lives on the initial host
++ * stack. A checkpoint restored in a fresh process keeps this kernel's memory
++ * but not that stack.
++ */
++static char elf_aux_platform_copy[64];
+ long elf_aux_hwcap;
+ /*
+  * AT_HWCAP2 matters on arm64, where the feature space outgrew a single word
+@@ -82,8 +89,10 @@ __init void scan_elf_aux( char **envp)
+                                  * a_un, so we have to use a_val, which is
+                                  * all that's left.
+                                  */
+-				elf_aux_platform =
+-					(char *) (long) auxv->a_un.a_val;
++				strncpy(elf_aux_platform_copy,
++					(char *) (long) auxv->a_un.a_val,
++					sizeof(elf_aux_platform_copy) - 1);
++				elf_aux_platform = elf_aux_platform_copy;
+ 				break;
+ 		}
+ 	}

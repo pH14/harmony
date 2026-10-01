@@ -211,8 +211,13 @@ static uint64_t counter(void)
 
 	__asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
 	return ((uint64_t)high << 32) | low;
+#elif defined(__aarch64__)
+	uint64_t value;
+
+	__asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(value));
+	return value;
 #else
-	return 0;
+#error "no counter read for this architecture"
 #endif
 }
 
@@ -230,8 +235,6 @@ static void emit_clocks(const char *label)
 		{ "thread", CLOCK_THREAD_CPUTIME_ID },
 	};
 	struct timeval wall;
-	unsigned long long first;
-	unsigned long long second;
 
 	for (size_t index = 0; index < sizeof(clocks) / sizeof(clocks[0]); index++) {
 		struct timespec now;
@@ -247,10 +250,6 @@ static void emit_clocks(const char *label)
 	emitf("{\"uml\":\"gettimeofday\",\"at\":\"%s\",\"us\":%lld,\"time\":%lld}",
 	      label, (long long)wall.tv_sec * 1000000LL + wall.tv_usec,
 	      (long long)time(NULL));
-	first = counter();
-	second = counter();
-	emitf("{\"uml\":\"counter\",\"at\":\"%s\",\"first\":%llu,\"second\":%llu}",
-	      label, first, second);
 }
 
 static void open_harmony(void)
@@ -276,6 +275,27 @@ static void wait_child(pid_t child, const char *name)
 	if (waitpid(child, &status, 0) != child)
 		fail("waitpid");
 	emitf("{\"uml\":\"exit\",\"child\":\"%s\",\"status\":%d}", name, status);
+}
+
+static void counters(void)
+{
+#if defined(__aarch64__)
+	uint64_t frequency;
+
+	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+	emitf("{\"uml\":\"counter_frequency\",\"value\":%llu}",
+	      (unsigned long long)frequency);
+#endif
+	for (int round = 0; round < 4; round++) {
+		unsigned long long first = counter();
+		unsigned long long second;
+
+		getppid();
+		second = counter();
+		emitf("{\"uml\":\"counter\",\"round\":%d,\"first\":%llu,\"second\":%llu}",
+		      round, first, second);
+	}
+	finish("counter");
 }
 
 static void values(void)
@@ -331,6 +351,7 @@ static void values(void)
 
 static void worker(int index, int pipe_in, int pipe_out)
 {
+	struct timespec now;
 	char token;
 
 	for (int round = 0; round < 40; round++) {
@@ -342,8 +363,10 @@ static void worker(int index, int pipe_in, int pipe_out)
 			if (write(pipe_out, "x", 1) != 1 || read(pipe_in, &token, 1) != 1)
 				fail("pipe");
 		}
-		emitf("{\"uml\":\"worker\",\"index\":%d,\"round\":%d,\"counter\":%llu}",
-		      index, round, (unsigned long long)counter());
+		if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+			fail("clock_gettime");
+		emitf("{\"uml\":\"worker\",\"index\":%d,\"round\":%d,\"ns\":%lld}",
+		      index, round, (long long)now.tv_sec * 1000000000LL + now.tv_nsec);
 	}
 	_exit(index);
 }
@@ -473,6 +496,8 @@ int main(void)
 		schedule();
 	else if (strcmp(mode, "timers") == 0)
 		timers();
+	else if (strcmp(mode, "counter") == 0)
+		counters();
 	fail("unknown-mode");
 	return 1;
 }

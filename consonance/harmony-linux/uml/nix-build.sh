@@ -21,8 +21,14 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 mkdir -p "$work/repo" "$work/downloads" "$work/artifacts" "$work/build"
 cp -a "$HARMONY_NIX_SOURCE/." "$work/repo/"
 chmod -R u+w "$work/repo"
-install -m 0644 "$HARMONY_NIX_LINUX_SOURCE" "$work/downloads/linux-6.18.35.tar.xz"
-install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" "$work/downloads/musl-1.2.6.tar.gz"
+# shellcheck source=../linux/versions.lock disable=SC1091
+. "$work/repo/consonance/harmony-linux/linux/versions.lock"
+case "$(uname -m)" in
+    aarch64) source_url=$UML_ARM64_URL ;;
+    *) source_url=$KERNEL_URL ;;
+esac
+install -m 0644 "$HARMONY_NIX_LINUX_SOURCE" "$work/downloads/$(basename "$source_url")"
+install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" "$work/downloads/$(basename "$MUSL_URL")"
 
 export SOURCE_DATE_EPOCH=0
 export TZ=UTC

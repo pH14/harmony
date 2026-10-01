@@ -1,0 +1,23 @@
+Build the arm64 User-mode Linux host code against current glibc headers
+
+The kernel's compiler attributes define __alloc_size__ as a macro. Host-side
+User-mode Linux files include that definition before glibc's sys/types.h,
+whose own __alloc_size__ attribute then expands to the kernel macro and
+fails to compile. The shared user header drops the kernel macro before it
+includes the host headers.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/include/shared/user.h
++++ b/arch/um/include/shared/user.h
+@@ -21,6 +21,7 @@
+ #include <linux/types.h>
+ #else
+ #include <stddef.h>
++#undef __alloc_size__
+ #include <sys/types.h>
+ #endif
+ 

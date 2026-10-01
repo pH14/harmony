@@ -2,10 +2,15 @@
 
 # User-mode Linux profile
 
-This directory builds the User-mode Linux (UML) profile: the pinned Linux
-6.18.35 kernel compiled with `ARCH=um` as an ordinary host executable, a fixture
-initramfs, and `profile.json`, which names the SHA-256 of every artifact. The
-`uml` crate in `consonance/uml` verifies the profile and launches it.
+This directory builds the User-mode Linux (UML) profile: a pinned Linux kernel
+compiled with `ARCH=um` as an ordinary host executable, a fixture initramfs,
+and `profile.json`, which names the SHA-256 of every artifact. The `uml` crate
+in `consonance/uml` verifies the profile and launches it.
+
+The x86-64 profile builds Linux 6.18.35. Linux has no arm64 UML port in a
+release, so the arm64 profile builds the RFC port at
+`zalexdev/linux-um-arm64` commit `8897487c52233cd00cf2850008ca068892f1ae91`
+(7.2-rc4), pinned by hash in `linux/versions.lock`.
 
 UML runs without KVM, root, or ptrace. The guest kernel is a host process; each
 guest address space is a host stub process that the kernel drives through a
@@ -39,11 +44,15 @@ sequence of guest events.
   seeds the kernel random pool, so `getrandom`, `AT_RANDOM`, address-space
   layout and `/proc/sys/kernel/random/boot_id` follow the seed. UML no longer
   reads host entropy.
-- On x86, each stub process sets `PR_SET_TSC` to fault on `rdtsc` and
-  `rdtscp`. The kernel emulates both from virtual time.
+- Each stub process sets `PR_SET_TSC`, so guest counter reads fault. The
+  kernel emulates them from virtual time: `rdtsc` and `rdtscp` on x86, and
+  `cntvct_el0` and `cntvctss_el0` on arm64, each returning nanoseconds.
+  `cntfrq_el0` returns 1 GHz. The arm64 vDSO has no clock functions, so C
+  library clock calls are system calls and follow virtual time.
 - `/proc/cpuinfo` no longer shows the host `uname` line. The CPU flags and
   model still come from the host and `cpuid` runs natively, so the recording
-  names both.
+  names both. A guest program that executes `rdrand` or `rdseed` gets host
+  randomness; workloads must not use them.
 - Host stops and continues of stub processes no longer raise guest
   interrupts. A stub that dies without the kernel killing it panics the
   guest.
@@ -76,7 +85,9 @@ An image holds:
 
 A restore checks the image before it changes anything and refuses an image
 that does not match. It then kills the stub processes, removes the epoll
-registrations, copies the image back, moves the vDSO to its captured address,
+registrations, copies the image back (writable ranges keep their protection,
+because the arm64 binary is one read-write-execute segment that holds the
+running code), moves the vDSO to its captured address,
 and resumes at the capture point. There the kernel rebuilds what lives outside
 the image: a new stub process and socket for each guest address space, with
 every present page marked for remapping, and the epoll registrations with
@@ -97,17 +108,20 @@ latest virtual time and the pending answer.
 nix run .#uml-images -- --output "$PWD/uml-output"
 ```
 
-The flake supplies gcc 13 and static glibc, the pinned kernel and musl sources,
-and a copy of the repository. `nix-build.sh` runs `build-uml.sh` in a fresh
+The flake supplies gcc 13 and static glibc, the pinned kernel source for the
+host architecture, musl, and a copy of the repository. `nix-build.sh` runs `build-uml.sh` in a fresh
 temporary directory and copies four files to the output: `linux`, `config`,
 `initramfs.cpio.gz`, and `profile.json`. Two builds from the same commit are
 byte-identical; CI checks this on every pull request.
 
 `build-uml.sh` also runs outside Nix on a Linux host with a C toolchain and the
-static C library, after `make -C consonance/harmony-linux fetch`. It extracts a
-source tree of its own under `GUEST_BUILD_ROOT`, applies `linux/patches/common`
-and then `linux/patches/um`, configures `defconfig` with `config-fragment`
-merged last, and asserts the symbols the profile depends on.
+static C library, after `make -C consonance/harmony-linux fetch` on x86-64 or
+`make -C consonance/harmony-linux fetch-uml-arm64` on arm64. It builds for the
+host architecture. It extracts a source tree of its own under
+`GUEST_BUILD_ROOT`, applies `linux/patches/common` and then
+`linux/patches/um` or `linux/patches/um-arm64`, configures `defconfig` with
+`config-fragment` merged last (and `config-fragment-arm64` after it on arm64),
+and asserts the symbols the profile depends on.
 
 ## Profile contents
 
@@ -133,16 +147,38 @@ merged last, and asserts the symbols the profile depends on.
   Three modes write their observations to `/dev/harmony` as events: `values`
   reports clocks, counters, random values, addresses, IDs, the auxiliary
   vector and the `/proc` files a program reads at startup, then runs
-  `fixture-registers.c` to report the startup registers and FPU state;
+  `fixture-registers.c` to report the startup registers and the
+  floating-point and vector state;
   `schedule` runs four workers that yield and exchange pipe messages;
-  `timers` uses sleeps, interval timers, `timerfd`, `poll` and `select`.
+  `timers` uses sleeps, interval timers, `timerfd`, `poll` and `select`;
+  `counter` reads the CPU counter (`rdtsc` or `cntvct_el0`) around system
+  calls, and on arm64 the counter frequency.
 - `linux/patches/um/` holds the UML series: SECCOMP userspace as the only
   mode, virtual time and its costs, the host bridge, the boot seed, counter
-  emulation, host child signals, and the fixed memory layout.
+  emulation, host child signals, the fixed memory layout and checkpoints.
+  `linux/patches/um-arm64/` ports the same series to the arm64 RFC. Its
+  counter emulation also answers the frequency register, and the stub waits
+  for the kernel without the RFC's counter-bounded spin, because its own
+  counter reads fault. It adds two build fixes for the RFC: the host headers
+  compile against current glibc, and the stub has no frame pointer, so
+  `rt_sigreturn` finds the signal frame where the host kernel wrote it. It
+  also starts every guest program with zeroed vector registers, FPSR and FPCR,
+  as arm64 Linux does; UML otherwise copies them from a stub process whose
+  values depend on host address randomization. It copies the host's
+  `AT_PLATFORM` string at boot, because arm64 gives it to every guest program
+  and the original lives on the host stack, which a restore in a fresh process
+  replaces. It kills and reaps a destroyed address space's stub before
+  releasing its socket and pages, as the x86 port does; the RFC released them
+  when the host's SIGCHLD arrived, so page frees and open descriptors followed
+  host timing.
+- `config-fragment-arm64` selects 4 KiB pages.
 
 ## Host requirements
 
-The profile runs on Linux hosts of the profile's architecture. Guest
+The profile runs on Linux hosts of the profile's architecture. arm64 hosts
+must run Linux 6.12 or later, the first release where `PR_SET_TSC` traps
+counter reads, and must use 4 KiB pages: a guest page is a host mapping, and
+the arm64 profile uses 4 KiB pages. Guest
 instructions run natively, so a recording is valid only on the CPU that made
 it. `HostIdentity` records the CPU model and feature flags, and replay refuses
 a recording from a different CPU. Guests must be trusted: the UML
@@ -175,9 +211,9 @@ group stopped and continued every few milliseconds, and the guest denied the
 `personality` call that turns off address randomization. Every run must end
 cleanly with the same event hash. It then saves a recording at five cuts
 (`--cuts`) through each run, reloads it, and replays it in a fresh process,
-which must stop at the cut with the same hash. Finally it checks that a
-different seed changes the `values` events and that a recording made on
-another CPU is refused.
+which must stop at the cut with the same hash. The `counter` fixture gets the
+same replays. Finally it checks that a different seed changes the `values`
+events and that a recording made on another CPU is refused.
 
 The `checkpoint` suite runs each fixture once to get the cold event hash,
 then runs six diamonds (`--diamonds`), half of them with the `personality`

@@ -1,0 +1,27 @@
+Start arm64 User-mode Linux programs with zeroed FP and vector state
+
+User-mode Linux gives every new program the floating-point registers of the
+stub process it sampled at boot. On arm64 the stub's vector registers hold
+values from its own startup code, and those depend on where the host placed
+the stub, so a new guest program could see host address bits. arm64 Linux
+starts every program with zeroed vector registers and zero FPSR and FPCR, and
+the sampled state is now zeroed the same way.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/start_up.c
++++ b/arch/um/os-Linux/start_up.c
+@@ -301,6 +301,10 @@ static bool __init init_seccomp(void)
+ 		exec_fp_regs = malloc(host_fp_size);
+ 		memcpy(exec_regs, regs->gp, sizeof(exec_regs));
+ 		memcpy(exec_fp_regs, regs->fp, host_fp_size);
++#ifdef __aarch64__
++		/* arm64 Linux starts every program with zeroed FP and vector state */
++		memset(exec_fp_regs, 0, host_fp_size);
++#endif
+ 
+ 		munmap(seccomp_test_stub_data, sizeof(*seccomp_test_stub_data));
+ 
