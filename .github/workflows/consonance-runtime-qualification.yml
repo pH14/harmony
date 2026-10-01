@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Qualification / Nested Search RAM Audit
+name: Qualification / Final Nested Head Evidence
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: d291c28dd5af177af36dce11ea8fb5c3a20ede8a
       - name: Check Intel nested VMX
         run: |
           set -euo pipefail
@@ -42,12 +44,7 @@ jobs:
           gh run download 36892879857 --name nested-host-inputs-36892879857 --dir nested-inputs
           gh run download 36892879857 --name nested-host-36892879857 --dir recorded
       - uses: Swatinem/rust-cache@v2
-      - name: Direct inner restore sequence
-        run: |
-          set -euo pipefail
-          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver --test live direct_restore_stutters -- --ignored --exact --nocapture 2>&1 | tee replay-evidence/direct.log
-      - name: Cold SDK failure witness
+      - name: Repeated and cold outer restore matrix
         env:
           NESTED_HOST_KERNEL: ${{ github.workspace }}/nested-inputs/bzImage-nested-host
           NESTED_OCI_INITRAMFS: ${{ github.workspace }}/nested-inputs/initramfs-oci.cpio.gz
@@ -55,23 +52,34 @@ jobs:
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver --test sdk_operations cold_operation_witness -- --ignored --exact --nocapture 2>&1 | tee replay-evidence/cold-witness.log
-      - name: Search and replay with RAM and result audits
-        env:
-          HARMONY_NESTED_RAM_AUDIT: "1"
+          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver --test nested_restore outer_nested_state_snapshot_matrix -- --ignored --exact --nocapture 2>&1 | tee replay-evidence/nested-restore.log
+          set +e
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver --features omit-nested-state --test nested_restore outer_nested_state_snapshot_matrix -- --ignored --exact --nocapture >replay-evidence/nested-restore-omission.log 2>&1
+          result=$?
+          set -e
+          test "$result" -ne 0
+          test "$result" -ne 124
+          test "$result" -ne 137
+          grep -Fq 'NESTED_MATRIX uninterrupted=pass' replay-evidence/nested-restore-omission.log
+          grep -Fq 'NESTED_MATRIX capture_only=pass' replay-evidence/nested-restore-omission.log
+          grep -Fq 'NESTED_MATRIX restore_attempt=1' replay-evidence/nested-restore-omission.log
+          ! grep -Fq 'NESTED_MATRIX restore=1 pass' replay-evidence/nested-restore-omission.log
+      - name: Standard search and full recorded replay
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           cargo build --locked --release -p harmony-cli
           common=(search nested-inputs/nested-driver.oci --package nested --kernel nested-inputs/bzImage-nested-host --base-initramfs nested-inputs/initramfs-oci.cpio.gz --ram-mib 512 --seed 42)
           set +e
-          HARMONY_NESTED_RESULT_AUDIT=replay-evidence/search-audit timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" --executions 100 --wall-minutes 5 --out replay-evidence/search 2>&1 | tee replay-evidence/search.log
-          result=${PIPESTATUS[0]}
-          printf '%s\n' "$result" >replay-evidence/search-exit-code.txt
-          HARMONY_NESTED_RESULT_AUDIT=replay-evidence/replay-audit timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" --replay replay-evidence/search/stream.jsonl --out replay-evidence/replay 2>&1 | tee replay-evidence/replay.log
-          result=${PIPESTATUS[0]}
-          printf '%s\n' "$result" >replay-evidence/replay-exit-code.txt
+          timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" --executions 100 --wall-minutes 5 --out replay-evidence/search 2>&1 | tee replay-evidence/search.log
+          search_result=${PIPESTATUS[0]}
+          printf '%s\n' "$search_result" >replay-evidence/search-exit-code.txt
+          timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" --replay replay-evidence/search/stream.jsonl --out replay-evidence/replay 2>&1 | tee replay-evidence/replay.log
+          replay_result=${PIPESTATUS[0]}
+          printf '%s\n' "$replay_result" >replay-evidence/replay-exit-code.txt
           set -e
+          test "$search_result" -eq 0
+          test "$replay_result" -eq 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
