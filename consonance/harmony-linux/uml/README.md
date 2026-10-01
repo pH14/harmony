@@ -103,8 +103,8 @@ that does not match. It then reports the pages written since the last
 command, and the host writes back each page that differs from the target
 checkpoint. After `CONTINUE` the kernel kills the stub processes, removes the
 epoll registrations, copies the image back (writable ranges keep their
-protection, because the arm64 binary is one read-write-execute segment that
-holds the running code), moves the vDSO to its captured address,
+protection, because the arm64 binary's writable segment is also executable),
+moves the vDSO to its captured address,
 and resumes at the capture point. There the kernel rebuilds what lives outside
 the image: a new stub process and socket for each guest address space, with
 every present page marked for remapping, and the epoll registrations with
@@ -190,7 +190,9 @@ and asserts the symbols the profile depends on.
   replaces. It kills and reaps a destroyed address space's stub before
   releasing its socket and pages, as the x86 port does; the RFC released them
   when the host's SIGCHLD arrived, so page frees and open descriptors followed
-  host timing.
+  host timing. Its linker script puts the code in a read and execute segment of its own,
+  as x86 does; the RFC linked the whole binary as one writable segment, so
+  every checkpoint copied the code.
 - `config-fragment-arm64` selects 4 KiB pages.
 
 ## Host requirements

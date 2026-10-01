@@ -55,6 +55,9 @@ With no parent the delta is every page that differs from the base. The hashes
 come from the content index, so an export hashes nothing.
 `DeltaBuilder::write_hashed_page` hashes the page once, rejects it when the
 hash differs from the one supplied, and interns it under that hash.
+`DeltaBuilder::write_changed_page` compares the page with the parent's stored
+copy and records it only when the bytes differ, so a caller that rewrites a
+mostly unchanged region does not hash the unchanged pages.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their

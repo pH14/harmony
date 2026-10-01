@@ -1,0 +1,87 @@
+Give the arm64 User-mode Linux code its own read and execute segment
+
+The arm64 User-mode Linux port links the whole binary as one read, write and
+execute segment. A Harmony checkpoint copies every writable host mapping of
+the binary, so every capture copied and every restore rewrote the 4.5 MiB of
+code along with the data. The code is now its own read and execute segment,
+page aligned, and the data that follows it keeps a segment of its own, as on
+x86.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/kernel/uml.lds.S
++++ b/arch/um/kernel/uml.lds.S
+@@ -15,24 +15,20 @@ VERSION {
+ }
+ 
+ /*
+- * One loadable segment for the whole binary.
++ * Two loadable segments: the code, read and execute only, and everything after
++ * it, read, write and execute. A Harmony checkpoint copies every writable host
++ * mapping of the binary, so the code stays out of the writable segment.
+  *
+- * Without this, lld gives every permission group its own PT_LOAD and takes the
+- * addresses from this script, so any group that starts mid-page yields two
+- * segments sharing a page. load_elf_binary() maps ET_EXEC segments with
+- * MAP_FIXED_NOREPLACE; the second mmap of a shared page returns -EEXIST, and
+- * since that happens after the point of no return the kernel can only SIGSEGV
+- * the process. It presents as a bare "Segmentation fault" with no output and a
+- * PC that is already unmapped.
+- *
+- * bfd ld merged these into a single RWE segment, which is why UML never had to
+- * think about it and why this only shows up when linking with lld -- as the
+- * Android NDK does. Asking for one segment explicitly reproduces the layout
+- * that has always worked, rather than page-aligning a dozen boundaries that
+- * come from macros and will drift.
++ * Both segments start on a page boundary. With lld, a segment that starts
++ * mid-page shares that page with the one before it; load_elf_binary() maps
++ * ET_EXEC segments with MAP_FIXED_NOREPLACE, the second mmap of the shared
++ * page returns -EEXIST, and because this happens after the point of no return
++ * the kernel can only SIGSEGV the process. The writable segment stays
++ * executable because .fini and .exit.text follow the code in common.lds.S.
+  */
+ PHDRS {
+-  all PT_LOAD FILEHDR PHDRS FLAGS(7);   /* RWX, and map the ELF headers too */
++  text PT_LOAD FILEHDR PHDRS FLAGS(5);  /* RX, and map the ELF headers too */
++  data PT_LOAD FLAGS(7);
+   note PT_NOTE FLAGS(4);
+   tls PT_TLS FLAGS(4);
+ }
+@@ -52,7 +48,7 @@ SECTIONS
+   . = ALIGN(PAGE_SIZE);
+ 
+   _text = .;
+-  INIT_TEXT_SECTION(0) :all
++  INIT_TEXT_SECTION(0) :text
+ 
+   .text      :
+   {
+@@ -92,6 +88,9 @@ SECTIONS
+ 	PROVIDE_HIDDEN(__rela_iplt_end = .);
+   }
+ 
++  . = ALIGN(PAGE_SIZE);
++  .uml.data : { BYTE(0) } :data
++
+   #include <asm/common.lds.S>
+ 
+   __init_begin = .;
+@@ -180,12 +179,12 @@ SECTIONS
+   .eh_frame       : { KEEP (*(.eh_frame)) }
+   .dynamic       : { *(.dynamic) }
+   . = ALIGN(PAGE_SIZE);
+-  .tdata	  : { *(.tdata .tdata.* .gnu.linkonce.td.*) } :all :tls
+-  .tbss		  : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) } :all :tls
++  .tdata	  : { *(.tdata .tdata.* .gnu.linkonce.td.*) } :data :tls
++  .tbss		  : { *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon) } :data :tls
+   /* We want the small data sections together, so single-instruction offsets
+      can access them all, and initialized data all before uninitialized, so
+      we can shorten the on-disk segment size.  */
+-  .sdata     : { *(.sdata) } :all
++  .sdata     : { *(.sdata) } :data
+   _edata  =  .;
+   PROVIDE (edata = .);
+   . = ALIGN(PAGE_SIZE);
