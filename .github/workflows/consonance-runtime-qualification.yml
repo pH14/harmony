@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Qualification / Final Nested Head Evidence
+name: Qualification / Final Fresh Nested Image
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 71f0663ef73dd2de5d8e7508831fd86e15a0e3a9
       - name: Check Intel nested VMX
         run: |
           set -euo pipefail
@@ -42,11 +44,18 @@ jobs:
           gh run download 36892879857 --name nested-host-inputs-36892879857 --dir nested-inputs
           gh run download 36892879857 --name nested-host-36892879857 --dir recorded
       - uses: Swatinem/rust-cache@v2
+      - name: Build the final inner OCI image
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          mkdir -p fresh-inputs
+          bash consonance/nested-driver/build-image.sh fresh-inputs/nested-driver.oci
       - name: Repeated and cold outer restore matrix
         env:
           NESTED_HOST_KERNEL: ${{ github.workspace }}/nested-inputs/bzImage-nested-host
           NESTED_OCI_INITRAMFS: ${{ github.workspace }}/nested-inputs/initramfs-oci.cpio.gz
-          NESTED_DRIVER_IMAGE: ${{ github.workspace }}/nested-inputs/nested-driver.oci
+          NESTED_DRIVER_IMAGE: ${{ github.workspace }}/fresh-inputs/nested-driver.oci
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
@@ -63,13 +72,11 @@ jobs:
           grep -Fq 'NESTED_MATRIX restore_attempt=1' replay-evidence/nested-restore-omission.log
           ! grep -Fq 'NESTED_MATRIX restore=1 pass' replay-evidence/nested-restore-omission.log
       - name: Standard search and full recorded replay
-        env:
-          HARMONY_NESTED_VMCS_DUMP: "1"
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           cargo build --locked --release -p harmony-cli
-          common=(search nested-inputs/nested-driver.oci --package nested --kernel nested-inputs/bzImage-nested-host --base-initramfs nested-inputs/initramfs-oci.cpio.gz --ram-mib 512 --seed 42)
+          common=(search fresh-inputs/nested-driver.oci --package nested --kernel nested-inputs/bzImage-nested-host --base-initramfs nested-inputs/initramfs-oci.cpio.gz --ram-mib 512 --seed 42)
           set +e
           timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" --executions 100 --wall-minutes 5 --out replay-evidence/search 2>&1 | tee replay-evidence/search.log
           search_result=${PIPESTATUS[0]}
@@ -85,4 +92,10 @@ jobs:
         with:
           name: nested-search-replay-${{ github.run_id }}-${{ matrix.os }}-${{ matrix.slot }}
           path: replay-evidence
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nested-fresh-inputs-${{ github.run_id }}-${{ matrix.os }}-${{ matrix.slot }}
+          path: fresh-inputs
           retention-days: 14
