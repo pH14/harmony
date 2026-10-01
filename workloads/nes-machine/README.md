@@ -53,7 +53,7 @@ The libretro FFI is Unix-specific. The pure machine types and test loopback
 allow the boundary and its bounds checks to run without a shared object.
 
 The consonance adapter delegates boot, setup, branch, replay, run, read, SDK
-catalog, and sparse snapshot operations to `consonance-client::Session`. Its
+catalog, and sparse snapshot operations to `consonance-client::session::SearchSession`. Its
 public evidence remains the action observations and portable snapshot state;
 host-only control traces are not part of the machine contract. The adapter
 defers virtual-time checkpoint hashes until requested, avoiding full-memory
@@ -66,7 +66,7 @@ action payload codec.
 
 ## Consonance adapter
 
-With the `consonance` feature on Linux x86-64 or arm64, the NES driver runs a
+With the `hardware` feature on Linux x86-64 or arm64, the NES driver runs a
 prepared OCI ROM and QuickNES agent in one single-vCPU Consonance guest. It discovers
 the publication handle by SDK names, validates the shared `nes-protocol` codec, and reads
 observations at stopped action boundaries. Workload initialization and evaluation
@@ -101,3 +101,8 @@ source-built Nova image:
 cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml \
   --test cartridge_ram -- --ignored
 ```
+
+The `consonance` feature compiles the portable adapter on Linux and macOS,
+including Intel macOS, without hardware dependencies. `ConsonanceMachine::from_session`
+accepts a session with stopped observations and workload composition capabilities.
+`hardware` adds the VM constructor; `nes-workload/consonance` selects that feature.

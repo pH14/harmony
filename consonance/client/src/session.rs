@@ -93,6 +93,7 @@ impl SessionConfig {
 
     #[cfg_attr(
         not(all(
+            feature = "in-process",
             target_os = "linux",
             any(target_arch = "x86_64", target_arch = "aarch64"),
             not(miri)
@@ -427,6 +428,7 @@ impl PortableSnapshot {
 
     #[cfg_attr(
         not(all(
+            feature = "in-process",
             target_os = "linux",
             any(target_arch = "x86_64", target_arch = "aarch64"),
             not(miri)
@@ -493,6 +495,7 @@ type GuardedRun = (Duration, CancelLatch, ProgressClock);
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -518,6 +521,7 @@ fn guarded_run_plan(
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -546,6 +550,7 @@ fn service_branch_spec(
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -560,6 +565,7 @@ struct SnapshotReceipt {
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -594,6 +600,7 @@ fn snapshot_handle<T: Transport>(
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -612,6 +619,7 @@ fn drop_control_handle<T: Transport>(
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -627,6 +635,7 @@ fn expect_unit(reply: Reply, operation: &'static str) -> Result<(), Box<dyn Erro
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -637,6 +646,7 @@ const MAX_CONSOLE_DIAGNOSTIC: usize = 64 * 1024;
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -682,6 +692,7 @@ where
         ),
         all(target_os = "macos", target_arch = "aarch64")
     ),
+    feature = "in-process",
     not(miri)
 ))]
 mod live;
@@ -693,6 +704,7 @@ mod live;
         ),
         all(target_os = "macos", target_arch = "aarch64")
     ),
+    feature = "in-process",
     not(miri)
 ))]
 pub use live::{Session, host_minor_faults};
@@ -704,6 +716,7 @@ pub use live::{Session, host_minor_faults};
         ),
         all(target_os = "macos", target_arch = "aarch64")
     ),
+    feature = "in-process",
     not(miri)
 ))]
 mod worker;
@@ -715,9 +728,13 @@ mod worker;
         ),
         all(target_os = "macos", target_arch = "aarch64")
     ),
+    feature = "in-process",
     not(miri)
 ))]
-pub use worker::{SearchSession, WORKER_FD_ENV, WorkerLauncher, WorkerSession, serve_inherited};
+pub use worker::{WORKER_FD_ENV, WorkerLauncher, WorkerSession, serve_inherited};
+
+mod contract;
+pub use contract::{SearchSession, SessionCapabilities};
 
 pub type SdkEvent = (u64, u32, Vec<u8>);
 
@@ -743,6 +760,7 @@ pub fn observation_descriptor(
 
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
@@ -752,6 +770,7 @@ pub fn observation_descriptor(
 type SparsePage = (u64, Arc<[u8; PAGE_SIZE]>);
 #[cfg_attr(
     not(all(
+        feature = "in-process",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)

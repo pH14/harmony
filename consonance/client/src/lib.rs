@@ -9,7 +9,6 @@ pub mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod watchdog;
 
-#[cfg(all(feature = "in-process", not(miri)))]
 pub mod session;
 
 use control_proto::{Caps, ControlError, Reply, Request};

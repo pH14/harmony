@@ -1,0 +1,22 @@
+{
+  "milestone": 2,
+  "ordinary_users_enabled": false,
+  "uml_revision": "8b273c9210a966ba26bf5690f0d9ff89b934f5ad",
+  "uml_integration": "15 actual adapter tests passed on Linux x86-64, public revision checkout",
+  "build_targets": [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu"
+  ],
+  "checks": {
+    "portable_client_tests": 81,
+    "shared_environment_tests": 42,
+    "hardware_client_tests": 89,
+    "vmm_tests": 551,
+    "vmm_ignored": 1,
+    "portable_nes_tests": 32,
+    "clippy": "portable Linux, Intel macOS and native hardware client passed"
+  },
+  "capabilities": "worker forwarding retains the hardware protocol and adds stopped observation reads; full workload composition requires the separate capability"
+}

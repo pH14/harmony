@@ -368,7 +368,9 @@ mod tests {
     use super::*;
 
     fn fixture() -> Vec<u8> {
-        let mut source = include_str!("../../guest/continuation.wat").replace("10000", "32");
+        let mut source =
+            include_str!("../../../../../consonance/wasm/qualification/guest/continuation.wat")
+                .replace("10000", "32");
         let end = source.rfind(')').unwrap();
         source.insert_str(end, "(export \"__harmony_func_0\" (func $decision)) (export \"__harmony_func_1\" (func $other)) (export \"__harmony_func_2\" (func $nested)) (export \"__harmony_func_3\" (func $run)) (export \"__harmony_global_0\" (global $g)) (export \"__harmony_global_1\" (global $float)) (export \"__harmony_table_0\" (table $table))");
         wat::parse_str(source).unwrap()

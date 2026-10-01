@@ -23,7 +23,7 @@ thiserror = "2"
 libc = "=0.2.189"
 
 [features]
-consonance = ["machine/consonance"]
+consonance = ["machine/hardware"]
 
 [[bin]]
 name = "nes-film"

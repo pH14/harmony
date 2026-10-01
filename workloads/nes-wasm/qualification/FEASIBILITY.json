@@ -1,6 +1,6 @@
 {
   "milestone": 1,
-  "gate": "passed",
+  "status": "passed",
   "selected": "wasmi",
   "ordinary_users_enabled": false,
   "pins": {

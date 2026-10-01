@@ -28,4 +28,4 @@ component boundaries.
 
 The native-hosted WebAssembly feasibility experiments live in
 [`wasm`](wasm/README.md). They are excluded from the product workspace until
-the portable session, deterministic services, and qualification gates pass.
+the portable session, deterministic services, and qualification checks pass.

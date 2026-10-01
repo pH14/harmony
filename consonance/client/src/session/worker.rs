@@ -22,7 +22,10 @@ use environment::{
     input_spec::{InputSpec, ServiceConfig, ServiceFactory},
 };
 
-use super::{SdkEvent, Session, SessionConfig, SessionError, service_branch_spec};
+use super::{
+    SdkEvent, SearchSession, Session, SessionCapabilities, SessionConfig, SessionError,
+    service_branch_spec,
+};
 use crate::cache::segments::SharedRange;
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
@@ -47,49 +50,13 @@ const BRANCH: u8 = 12;
 const RUN_UNTIL: u8 = 13;
 const SDK_EVENTS: u8 = 14;
 const STORE_BYTES: u8 = 15;
+const READ_OBSERVATION: u8 = 16;
 
 const OK: u8 = 0;
 const FAILED: u8 = 1;
 const OTHER: u8 = 0;
 const HUNG: u8 = 1;
 const ABANDONED: u8 = 2;
-
-pub trait SearchSession: std::fmt::Debug {
-    fn setup_handle(&self) -> (SnapId, u64);
-    fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>>;
-    fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>>;
-    fn telemetry_counters(&self) -> Vec<(String, u64)>;
-    fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64>;
-    fn store_bytes(&self) -> Option<u64>;
-    fn publish_snapshot(
-        &self,
-        index: &dyn CacheIndex,
-        namespace: Namespace,
-        key: &[u8],
-        parent: Option<(SnapId, &Lease)>,
-        target: SnapId,
-        cost: u64,
-    ) -> Result<Lease, Box<dyn Error>>;
-    fn import_cached(
-        &mut self,
-        index: &dyn CacheIndex,
-        lease: &Lease,
-        near: SnapId,
-    ) -> Result<(SnapId, u64), Box<dyn Error>>;
-    fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>>;
-    fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>>;
-    fn branch_with_service(
-        &mut self,
-        snapshot: SnapId,
-        config: ServiceConfig,
-        payloads: Vec<Vec<u8>>,
-        effects: Vec<(u64, Effect)>,
-    ) -> Result<(), Box<dyn Error>>;
-    fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>>;
-    fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>>;
-    fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>>;
-    fn abandoned(&self) -> bool;
-}
 
 trait ServedSession: SearchSession {
     fn export_delta(
@@ -106,6 +73,66 @@ trait ServedSession: SearchSession {
 }
 
 impl SearchSession for Session {
+    fn capabilities(&self) -> SessionCapabilities {
+        SessionCapabilities {
+            workload_composition: true,
+            stopped_observations: true,
+            machine_effects: true,
+            portable_snapshots: true,
+            fresh_process_restore: true,
+        }
+    }
+    fn read_observation(
+        &mut self,
+        handle: u32,
+        offset: u32,
+        len: u32,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        Session::read_observation(self, handle, offset, len)
+    }
+    fn run(
+        &mut self,
+        until: control_proto::StopConditions,
+        resolve: Option<control_proto::Resolution>,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        Session::run(self, until, resolve)
+    }
+    fn branch_payloads(
+        &mut self,
+        snapshot: SnapId,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), Box<dyn Error>> {
+        Session::branch_payloads(self, snapshot, payloads)
+    }
+    fn last_seal_dirty_gfns(&self) -> Option<Vec<u64>> {
+        Session::last_seal_dirty_gfns(self)
+    }
+    fn snapshot_chain_len(&self, snapshot: SnapId) -> Option<u32> {
+        Session::snapshot_chain_len(self, snapshot)
+    }
+    fn last_restore_stats(&self) -> (u64, u64) {
+        Session::last_restore_stats(self)
+    }
+    fn doorbell_exits(&self) -> u64 {
+        Session::doorbell_exits(self)
+    }
+    fn export_sparse_snapshot(
+        &self,
+        snapshot: SnapId,
+        base: Option<&super::SparseSnapshot>,
+    ) -> Result<super::SparseSnapshot, Box<dyn Error>> {
+        Session::export_sparse_snapshot(self, snapshot, base)
+    }
+    fn import_sparse_snapshot(
+        &mut self,
+        snapshot: &super::SparseSnapshot,
+    ) -> Result<SnapId, Box<dyn Error>> {
+        Session::import_sparse_snapshot(self, snapshot)
+    }
+    fn snapshot_time(&self, snapshot: SnapId) -> Option<u64> {
+        Session::snapshot_time(self, snapshot)
+    }
+
     fn setup_handle(&self) -> (SnapId, u64) {
         Session::setup_handle(self)
     }
@@ -721,6 +748,30 @@ impl Drop for WorkerSession {
 }
 
 impl SearchSession for WorkerSession {
+    fn capabilities(&self) -> SessionCapabilities {
+        SessionCapabilities {
+            workload_composition: false,
+            stopped_observations: true,
+            machine_effects: true,
+            portable_snapshots: true,
+            fresh_process_restore: true,
+        }
+    }
+    fn read_observation(
+        &mut self,
+        handle: u32,
+        offset: u32,
+        len: u32,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        self.call(
+            Out::op(READ_OBSERVATION)
+                .u64(u64::from(handle))
+                .u64(u64::from(offset))
+                .u64(u64::from(len)),
+            &[],
+        )
+    }
+
     fn setup_handle(&self) -> (SnapId, u64) {
         self.setup
     }
@@ -1024,6 +1075,13 @@ impl Served {
                 encode_reply(0, &Ok(Reply::Stop(stop)), &mut out.0)
                     .map_err(|error| format!("encode stop reason: {error}"))?;
             }
+            READ_OBSERVATION => {
+                let handle = u32::try_from(input.u64()?)?;
+                let offset = u32::try_from(input.u64()?)?;
+                let len = u32::try_from(input.u64()?)?;
+                input.finish()?;
+                out.0 = session.read_observation(handle, offset, len)?;
+            }
             SDK_EVENTS => {
                 input.finish()?;
                 let events = session.sdk_events()?;
@@ -1146,6 +1204,18 @@ mod tests {
     }
 
     impl SearchSession for Fake {
+        fn read_observation(
+            &mut self,
+            handle: u32,
+            offset: u32,
+            len: u32,
+        ) -> Result<Vec<u8>, Box<dyn Error>> {
+            if handle != 7 || offset.checked_add(len).is_none_or(|end| end > 4) {
+                return Err("observation out of bounds".into());
+            }
+            Ok(vec![self.current; len as usize])
+        }
+
         fn setup_handle(&self) -> (SnapId, u64) {
             (SnapId(1), 10)
         }
@@ -1340,6 +1410,9 @@ mod tests {
     fn a_worker_session_forwards_every_call_and_its_errors() {
         let (mut session, server) = threaded(3);
         assert_eq!(session.setup_handle(), (SnapId(1), 10));
+        assert!(session.capabilities().stopped_observations);
+        assert_eq!(session.read_observation(7, 1, 2).unwrap(), vec![3; 2]);
+        assert!(session.read_observation(7, 3, 2).is_err());
         assert_eq!(
             session.run_until(40).unwrap(),
             StopReason::Deadline { vtime: Moment(40) }

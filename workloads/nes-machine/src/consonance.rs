@@ -3,10 +3,25 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Write as _},
-    path::Path,
 };
 
-use consonance_client::session::{Session, SessionConfig, host_minor_faults};
+use consonance_client::session::SearchSession;
+#[cfg(all(
+    feature = "hardware",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
+use consonance_client::session::{Session, SessionConfig};
+fn host_minor_faults() -> Option<u64> {
+    #[cfg(all(
+        feature = "hardware",
+        any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+    ))]
+    {
+        return consonance_client::session::host_minor_faults();
+    }
+    #[allow(unreachable_code)]
+    None
+}
 use control_proto::{
     SnapId as ControlSnapId, StopConditions as ControlStopConditions, StopMask as ControlStopMask,
 };
@@ -16,18 +31,20 @@ use crate::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason, nes,
 };
 
+#[cfg(feature = "hardware")]
 const RAM: usize = 128 * 1024 * 1024;
 #[cfg(target_arch = "x86_64")]
 const BOOT_BUDGET: u64 = 2_000_000_000;
 #[cfg(target_arch = "aarch64")]
 const BOOT_BUDGET: u64 = 20_000_000_000;
 const RUN_BUDGET: u64 = BOOT_BUDGET;
+#[cfg(feature = "hardware")]
 const SEED: u64 = 0x4e4f_5641_5f53_4541;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "hardware", target_arch = "x86_64"))]
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
     nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(feature = "hardware", target_arch = "aarch64"))]
 const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
 
 pub use nes_protocol::{
@@ -278,7 +295,7 @@ fn parse_billboard(
 }
 
 pub struct ConsonanceMachine {
-    session: Session,
+    session: Box<dyn SearchSession>,
     power_on_publication: bool,
     setup: SnapId,
     billboard_handle: u32,
@@ -315,26 +332,41 @@ impl Drop for ConsonanceMachine {
 }
 
 impl ConsonanceMachine {
+    #[cfg(all(
+        feature = "hardware",
+        any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+    ))]
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, MachineError> {
         let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
             .with_identity_tag("consonance-nes-execution-v2")
             .with_deferred_virtual_time_checkpoint_hashes();
         let setup_payloads = vec![vec![0, 1]; 16];
-        let mut session =
+        let session =
             Session::new_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
                 .map_err(|error| MachineError::Backend(error.to_string()))?;
+        Self::from_session(Box::new(session))
+    }
+
+    pub fn from_session(mut session: Box<dyn SearchSession>) -> Result<Self, MachineError> {
+        if !session.capabilities().stopped_observations
+            || !session.capabilities().workload_composition
+        {
+            return Err(MachineError::Backend(
+                "NES requires stopped observations and workload composition".into(),
+            ));
+        }
         let mut profile =
             ConsonanceProfile::new(std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some());
         let (setup_handle, setup_vtime) = session.setup_handle();
         let setup = machine_snap(setup_handle);
         drive_profiled(
-            &mut session,
+            session.as_mut(),
             &mut profile,
             ProfileVerb::Branch,
             "setup replay",
             |s| s.replay_snapshot(control_snap(setup)),
         )?;
-        let registers = state_registers(&mut session, &mut profile)?;
+        let registers = state_registers(session.as_mut(), &mut profile)?;
         let power_on_publication = registers.contains("nes.publication.handle");
         let (handle_name, len_name) = if power_on_publication {
             ("nes.publication.handle", "nes.publication.len")
@@ -360,7 +392,7 @@ impl ConsonanceMachine {
             ));
         }
         let observed = read_billboard(
-            &mut session,
+            session.as_mut(),
             billboard_handle,
             billboard_len,
             &mut profile,
@@ -408,11 +440,11 @@ impl Machine for ConsonanceMachine {
 
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
         let (control_snapshot, vtime) = drive_profiled(
-            &mut self.session,
+            self.session.as_mut(),
             &mut self.profile,
             ProfileVerb::Snapshot,
             "snapshot",
-            Session::snapshot,
+            |s| s.snapshot(),
         )?;
         let snapshot = machine_snap(control_snapshot);
         self.profile.record_seal(
@@ -425,7 +457,7 @@ impl Machine for ConsonanceMachine {
 
     fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
         drive_profiled(
-            &mut self.session,
+            self.session.as_mut(),
             &mut self.profile,
             ProfileVerb::Branch,
             "drop snapshot",
@@ -453,7 +485,7 @@ impl Machine for ConsonanceMachine {
         );
         payloads.push(vec![0, 1]);
         drive_profiled(
-            &mut self.session,
+            self.session.as_mut(),
             &mut self.profile,
             ProfileVerb::Branch,
             "branch",
@@ -471,7 +503,7 @@ impl Machine for ConsonanceMachine {
             MachineError::Backend("replayed snapshot has no recorded V-time".to_owned())
         })?;
         drive_profiled(
-            &mut self.session,
+            self.session.as_mut(),
             &mut self.profile,
             ProfileVerb::Branch,
             "replay",
@@ -500,7 +532,7 @@ impl Machine for ConsonanceMachine {
         let before_dirty = self.profile.dirty_totals();
         let before_doorbells = self.session.doorbell_exits();
         let stop = drive_profiled(
-            &mut self.session,
+            self.session.as_mut(),
             &mut self.profile,
             ProfileVerb::Run,
             "run",
@@ -520,7 +552,7 @@ impl Machine for ConsonanceMachine {
             return Ok(mapped);
         }
         let observed = read_billboard(
-            &mut self.session,
+            self.session.as_mut(),
             self.billboard_handle,
             self.billboard_len,
             &mut self.profile,
@@ -595,11 +627,11 @@ impl Machine for ConsonanceMachine {
 }
 
 fn drive_profiled<T>(
-    session: &mut Session,
+    session: &mut dyn SearchSession,
     profile: &mut ConsonanceProfile,
     verb: ProfileVerb,
     operation: &'static str,
-    operation_fn: impl FnOnce(&mut Session) -> Result<T, Box<dyn std::error::Error>>,
+    operation_fn: impl FnOnce(&mut dyn SearchSession) -> Result<T, Box<dyn std::error::Error>>,
 ) -> Result<T, MachineError> {
     #[allow(clippy::disallowed_methods)]
     let started = profile.enabled.then(std::time::Instant::now);
@@ -612,7 +644,7 @@ fn drive_profiled<T>(
 }
 
 fn state_registers(
-    session: &mut Session,
+    session: &mut dyn SearchSession,
     profile: &mut ConsonanceProfile,
 ) -> Result<consonance_client::catalog::StateCatalog, MachineError> {
     let mut catalog = consonance_client::catalog::StateCatalog::default();
@@ -621,7 +653,7 @@ fn state_registers(
         profile,
         ProfileVerb::SdkEvents,
         "SDK event fetch",
-        Session::sdk_events,
+        |s| s.sdk_events(),
     )?;
     for (_, event_id, bytes) in events {
         catalog
@@ -632,7 +664,7 @@ fn state_registers(
 }
 
 fn read_billboard(
-    session: &mut Session,
+    session: &mut dyn SearchSession,
     billboard_handle: u32,
     billboard_len: u32,
     profile: &mut ConsonanceProfile,
@@ -783,7 +815,14 @@ pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
     )
 }
 
-pub fn from_paths(kernel: &Path, initramfs: &Path) -> Result<ConsonanceMachine, MachineError> {
+#[cfg(all(
+    feature = "hardware",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
+pub fn from_paths(
+    kernel: &std::path::Path,
+    initramfs: &std::path::Path,
+) -> Result<ConsonanceMachine, MachineError> {
     let kernel = std::fs::read(kernel)
         .map_err(|error| MachineError::Backend(format!("read kernel: {error}")))?;
     let initramfs = std::fs::read(initramfs)
