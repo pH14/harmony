@@ -25,6 +25,7 @@ const RESTORE: u32 = 2;
 const MEMORY: u32 = 4;
 const CONTINUE: u32 = 5;
 const MEMORY_ALL: i64 = 1;
+const MEMORY_CHUNK: usize = 65536;
 const OMIT_HOST_MEMORY: u64 = 1;
 const CONTROL_LEN: usize = 16;
 const POLL: Duration = Duration::from_millis(5);
@@ -750,22 +751,28 @@ impl Session {
         }
         let frames = self.memory.physmem_bytes()? / PAGE_SIZE;
         let bitmap = frames.div_ceil(64) * 8;
-        if self.request.len() < bitmap {
-            self.request.resize(bitmap, 0);
-        }
-        let length = self.receive()?;
-        if length != bitmap {
-            return Err(SessionError::Protocol(format!(
-                "expected a {bitmap}-byte memory bitmap, received {length} bytes"
-            )));
+        if self.request.len() < MEMORY_CHUNK {
+            self.request.resize(MEMORY_CHUNK, 0);
         }
         let mut written = Vec::new();
-        for (index, word) in self.request[..bitmap].chunks_exact(8).enumerate() {
-            let mut word = u64::from_le_bytes(word.try_into().unwrap_or_default());
-            while word != 0 {
-                written.push(index as u64 * 64 + u64::from(word.trailing_zeros()));
-                word &= word - 1;
+        let mut received = 0;
+        while received < bitmap {
+            let chunk = (bitmap - received).min(MEMORY_CHUNK);
+            let length = self.receive()?;
+            if length != chunk {
+                return Err(SessionError::Protocol(format!(
+                    "expected {chunk} bytes of the {bitmap}-byte memory bitmap at {received}, received {length} bytes"
+                )));
             }
+            let first = (received / 8) as u64;
+            for (index, word) in self.request[..chunk].chunks_exact(8).enumerate() {
+                let mut word = u64::from_le_bytes(word.try_into().unwrap_or_default());
+                while word != 0 {
+                    written.push((first + index as u64) * 64 + u64::from(word.trailing_zeros()));
+                    word &= word - 1;
+                }
+            }
+            received += chunk;
         }
         Ok(Report::Dirty(written))
     }

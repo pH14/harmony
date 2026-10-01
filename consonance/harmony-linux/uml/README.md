@@ -102,7 +102,8 @@ An image holds:
 
 A restore checks the image before it changes anything and refuses an image
 that does not match. It then reports the pages written since the last
-command, and the host writes back each page that differs from the target
+command as a bitmap, sent in 64 KiB messages so that any guest size fits the
+socket buffer, and the host writes back each page that differs from the target
 checkpoint. After `CONTINUE` the kernel kills the stub processes, removes the
 epoll registrations, copies the image back (writable ranges keep their
 protection, because the arm64 binary's writable segment is also executable),
