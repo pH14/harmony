@@ -1,0 +1,4 @@
+setup /usr/local/bin/duplicate-request init /data/requests
+node handler-0 /usr/local/bin/duplicate-request handler /data/requests
+node handler-1 /usr/local/bin/duplicate-request handler /data/requests
+ready /usr/local/bin/duplicate-request ready

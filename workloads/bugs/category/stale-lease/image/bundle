@@ -1,0 +1,3 @@
+setup /usr/local/bin/stale-lease ready
+node clients /usr/local/bin/stale-lease run
+ready /usr/local/bin/stale-lease ready
