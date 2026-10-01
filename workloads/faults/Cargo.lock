@@ -548,6 +548,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "snapshot-store",
  "tempfile",
  "thiserror",
 ]

@@ -62,6 +62,16 @@ class RepositoryVocabularyTests(unittest.TestCase):
             violations = LINTS.check_repository_vocabulary(root, [name, "asset.bin"])
             self.assertEqual([(v.path, v.line) for v in violations], [(name, 0)])
 
+    def test_lines_a_patch_removes_are_allowed(self):
+        word = LINTS.PROHIBITED_WORD
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fix.patch").write_text(
+                f"Subject: -{word}\n\n-{word}\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n"
+                f"-{word}\n+{word}\n {word}\n")
+            violations = LINTS.check_repository_vocabulary(root, ["fix.patch"])
+            self.assertEqual([v.line for v in violations], [1, 3, 9, 10])
+
     def test_checker_is_in_scope_of_the_vocabulary_rule(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
