@@ -232,6 +232,28 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
         detour.last().unwrap(),
         &nested_driver::Oracle::default().bytes()
     );
+    let detour_snapshot = snapshot(&mut restored)?;
+    let mut portable = Vec::new();
+    restored.export_portable_snapshot(detour_snapshot, &mut portable)?;
+    assert_eq!(&portable[..8], b"HMSNAP01");
+    assert_eq!(u16::from_le_bytes(portable[8..10].try_into()?), 6);
+    assert_eq!(
+        u64::from_le_bytes(portable[12..20].try_into()?),
+        captured_memory.len() as u64
+    );
+    let live = restored.vmm().ok_or("missing outer VMM")?.guest_memory();
+    let changed: Vec<_> = portable[116..116 + live.len()]
+        .chunks(4096)
+        .zip(live.chunks(4096))
+        .enumerate()
+        .filter_map(|(page, (stored, actual))| (stored != actual).then_some(page << 12))
+        .collect();
+    println!(
+        "NESTED_DELTA_RAM changed_pages={} gpas={:x?}",
+        changed.len(),
+        changed
+    );
+    drop(portable);
     for attempt in 1..=8 {
         restored.handle(&Request::Replay(saved))??;
         let memory = restored.vmm().ok_or("missing outer VMM")?.guest_memory();
@@ -246,6 +268,11 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
             changed.len(),
             &changed[..changed.len().min(16)]
         );
+        let vmm = restored.vmm_mut().ok_or("missing outer VMM")?;
+        vmm.restore_guest_memory(&captured_memory)?;
+        assert!(vmm.reset_dirty_tracking());
+        assert_eq!(restored.in_place_fallbacks(), 0);
+        println!("NESTED_RAM_CONTROL attempt={attempt} full_memory=restored in_place_fallbacks=0");
         assert_eq!(register(&restored, 3)?, 3);
         println!("NESTED_MATRIX restore_attempt={attempt}");
         assert_eq!(continuation(&mut restored)?, expected, "restore {attempt}");
