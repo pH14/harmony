@@ -1,0 +1,3 @@
+setup /usr/local/bin/missed-wakeup ready
+node queue /usr/local/bin/missed-wakeup run
+ready /usr/local/bin/missed-wakeup ready
