@@ -44,8 +44,12 @@
   current state and the target. `Checkpoints::delta` lists a checkpoint's
   pages relative to a base for publishing, `Checkpoint::sidecar` encodes the
   services state, and `Checkpoints::import` rebuilds a checkpoint from both.
-  `state_hash` hashes the services state and the pending request. Sessions
-  are Linux only.
+  `state_hash` hashes the guest process's host mapping addresses, the
+  services state and the pending request. A checkpoint holds host addresses,
+  so `Checkpoints::import` is sound only onto a base from a process with the
+  same mappings; a search keys its shared cache by the setup's `state_hash`,
+  which gives workers on a host that randomizes addresses separate caches.
+  Sessions are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event
   count and event hash of a run. It refuses a run with a replaced initramfs,
   which it cannot replay. `Recording::check` refuses a different profile or

@@ -3,6 +3,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
+use environment::input_spec::nominal_factory;
 use serde_json::{Value, json};
 use uml::{
     Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, Session, SessionError, Stop,
@@ -52,6 +53,13 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
             fixture,
         ));
         checks.push(fresh(profile, &base, &reference.events, &points, fixture));
+        checks.push(imported(
+            profile,
+            &base,
+            &reference.events,
+            &points,
+            fixture,
+        ));
     }
     let base = seeded(options, "schedule", SEED);
     let reference = Guest::spawn(&base, profile)
@@ -253,6 +261,107 @@ fn fresh(
             "outcomes": outcomes,
         }),
     )
+}
+
+fn imported(
+    profile: &VerifiedProfile,
+    base: &Launch,
+    reference: &[Event],
+    points: &Points,
+    fixture: &str,
+) -> Value {
+    let outcomes: Vec<Value> = [false, true]
+        .into_iter()
+        .map(
+            |randomized| match import(profile, base, reference, points, randomized) {
+                Ok(outcome) => outcome,
+                Err(error) => json!({"randomized": randomized, "error": error.to_string()}),
+            },
+        )
+        .collect();
+    let passed = outcomes.iter().all(|outcome| {
+        let imported = outcome["failures"]
+            .as_array()
+            .is_some_and(|failures| failures.iter().all(Value::is_null));
+        let shared = outcome["same_layout"] == json!(true);
+        outcome["error"].is_null()
+            && if outcome["randomized"] == json!(true) {
+                !shared || imported
+            } else {
+                shared && imported
+            }
+    });
+    check(
+        &format!("checkpoint_import_{fixture}"),
+        passed,
+        json!({"outcomes": outcomes}),
+    )
+}
+
+fn import(
+    profile: &VerifiedProfile,
+    base: &Launch,
+    reference: &[Event],
+    points: &Points,
+    randomized: bool,
+) -> Result<Value, SessionError> {
+    let publisher = Checkpoints::new();
+    let mut published = start(profile, base, false, &publisher, None)?;
+    if let Some(failure) = pause(&mut published, points.first, reference)? {
+        return Ok(json!({"randomized": randomized, "error": failure}));
+    }
+    let origin = published.capture(Capture::default())?;
+    let layout = published.layout()?;
+    if let Some(failure) = pause(&mut published, points.second, reference)? {
+        return Ok(json!({"randomized": randomized, "error": failure}));
+    }
+    let target = published.capture(Capture::default())?;
+    published.kill()?;
+    let importer = Checkpoints::new();
+    let mut session = start(profile, base, randomized, &importer, None)?;
+    if let Some(failure) = pause(&mut session, points.first, reference)? {
+        return Ok(json!({"randomized": randomized, "error": failure}));
+    }
+    let setup = session.capture(Capture::default())?;
+    let session_layout = session.layout()?;
+    let same_layout = session_layout == layout;
+    if let Some(failure) = pause(&mut session, points.third, reference)? {
+        return Ok(json!({"randomized": randomized, "error": failure}));
+    }
+    let near = session.capture(Capture::default())?;
+    let sidecar = target.sidecar()?;
+    let checkpoint = publisher.delta(&origin, None, &target, |pages, _| {
+        importer.import(&setup, &near, pages, &sidecar, &nominal_factory())
+    })??;
+    let mut failures = Vec::new();
+    match session.restore(&checkpoint) {
+        Ok(()) if session.events() == checkpoint.events() => {
+            failures.push(finished(session.run()?, reference)?)
+        }
+        Ok(()) => failures.push(Some(
+            json!({"step": "restore import", "events": session.events().len()}),
+        )),
+        Err(error) => failures.push(Some(
+            json!({"step": "restore import", "error": error.to_string()}),
+        )),
+    }
+    match start(profile, base, randomized, &importer, Some(&checkpoint)) {
+        Ok(session) if session.events() == checkpoint.events() => {
+            failures.push(finished(session.run()?, reference)?)
+        }
+        Ok(session) => failures.push(Some(
+            json!({"step": "fresh restore import", "events": session.events().len()}),
+        )),
+        Err(error) => failures.push(Some(
+            json!({"step": "fresh restore import", "error": error.to_string().chars().take(200).collect::<String>()}),
+        )),
+    }
+    Ok(json!({
+        "randomized": randomized,
+        "same_layout": same_layout,
+        "layout": if same_layout { Value::Null } else { json!([layout, session_layout]) },
+        "failures": failures,
+    }))
 }
 
 fn omitted_host_memory(

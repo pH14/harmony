@@ -331,12 +331,24 @@ impl Session {
 
     pub fn state_hash(&self) -> Result<[u8; 32], SessionError> {
         let mut digest = Sha256::new();
-        digest.update(b"harmony-uml-session-state-v1\0");
+        digest.update(b"harmony-uml-session-state-v2\0");
+        digest.update(self.layout()?);
         digest.update(self.services.encode().map_err(SessionError::Protocol)?);
         if let Some(request) = &self.pending {
             digest.update(request);
         }
         Ok(digest.finalize().into())
+    }
+
+    pub fn layout(&self) -> Result<String, SessionError> {
+        let maps = std::fs::read_to_string(format!("/proc/{}/maps", self.guest.pid()))?;
+        Ok(maps
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_ascii_whitespace();
+                Some(format!("{} {}\n", fields.next()?, fields.next()?))
+            })
+            .collect())
     }
 
     pub fn run(mut self) -> Result<Exit, SessionError> {

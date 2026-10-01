@@ -248,13 +248,22 @@ then runs six diamonds (`--diamonds`), half of them with the `personality`
 call denied. Each diamond captures at a quarter and at half of the events,
 runs to three quarters, restores the first image in place, runs again to
 half, restores the second image, and runs to the end. Each image is then
-restored into a fresh process, with and without address randomization. Every
-run must end with the cold hash. Two planted omissions must fail: an image
-captured without host memory, and a restore that keeps the host's bridge
-state. The first two diamonds compare every physical page with the stored
-checkpoint after each capture and restore, and fail on a page that changed
-without being reported. The report gives capture and restore times from the
-other diamonds, image sizes and the bytes each checkpoint owns in the store.
+restored into a fresh process, with and without address randomization. A
+search shares checkpoints between workers as page deltas from each worker's
+own setup checkpoint, so the suite also captures at a quarter and at half in
+one process and applies the difference between those two images to a quarter
+image captured in a second process, once without and once with address
+randomization. Without randomization the two processes must have the same
+host mappings and the import must run to the cold hash in place and in a
+fresh process. With randomization the mappings must differ, which keeps the
+workers in separate caches, or the import must also reach the cold hash.
+Every other run must end with the cold hash. Two planted omissions must
+fail: an image captured without host memory, and a restore that keeps the
+host's bridge state. The first two diamonds compare every physical page
+with the stored checkpoint after each capture and restore, and fail on a
+page that changed without being reported. The report gives capture and
+restore times from the other diamonds, image sizes and the bytes each
+checkpoint owns in the store.
 
 The event hash is SHA-256 over each event's virtual time, ID, length and
 data.
