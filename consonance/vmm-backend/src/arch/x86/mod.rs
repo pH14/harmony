@@ -10,6 +10,7 @@ pub use nested::{VMX_NESTED_MAX_LEN, inactive_vmx_nested_state, validate_vmx_nes
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use nested::{
     canonicalize_vmx_exit_info, drain_dirty_pages_with_nested_reprotection, nested_probe,
+    reload_nested_memory_slots,
 };
 
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};

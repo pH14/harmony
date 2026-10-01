@@ -113,9 +113,47 @@ pub(crate) fn canonicalize_vmx_exit_info(bytes: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+pub(crate) fn reload_nested_memory_slots<T: Copy>(
+    slots: &[T],
+    remove: impl Fn(T) -> T,
+    mut install: impl FnMut(T) -> Result<()>,
+) -> Result<()> {
+    for &slot in slots {
+        install(remove(slot))?;
+        install(slot)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_slot_reload_preserves_mappings_and_stops_after_any_ioctl_failure() {
+        let slots = [(1, 0x1000, 0x2000, 0x4000), (2, 0x5000, 0x8000, 0x3000)];
+        let remove = |(slot, gpa, address, _)| (slot, gpa, address, 0);
+        let expected = [remove(slots[0]), slots[0], remove(slots[1]), slots[1]];
+        for stop in 0..=4 {
+            let mut calls = Vec::new();
+            let result = reload_nested_memory_slots(&slots, remove, |slot| {
+                calls.push(slot);
+                if calls.len() == stop {
+                    Err(BackendError::InvalidState)
+                } else {
+                    Ok(())
+                }
+            });
+            if stop == 0 {
+                assert!(result.is_ok());
+                assert_eq!(calls, expected);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(calls, expected[..stop]);
+            }
+        }
+    }
 
     #[test]
     fn nested_probe_preserves_every_returned_payload_byte_and_rejects_bad_sizes() {

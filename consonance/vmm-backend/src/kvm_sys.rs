@@ -199,6 +199,20 @@ impl KvmBackend {
         self.cpuid_installed && self.msr_filter_installed
     }
 
+    fn reload_nested_memory_slots(&self) -> Result<()> {
+        crate::arch::x86::reload_nested_memory_slots(
+            &self.mapped_slots,
+            |region| kvm_userspace_memory_region {
+                memory_size: 0,
+                ..region
+            },
+            |region| {
+                // SAFETY: the owned vCPU is stopped; each nonempty slot describes the same fixed-address owned RAM, deletion does not free that RAM, and no guest entry occurs between deletion and replacement.
+                unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err)
+            },
+        )
+    }
+
     fn run_page(&self) -> RunPage {
         // SAFETY: `self.run` is the live `mmap` of `self.mmap_size` bytes, owned
         // by this backend and not aliased by any live reference.
@@ -747,6 +761,7 @@ impl Backend for KvmBackend {
                 Ok(gfns)
             },
             |bytes| {
+                self.reload_nested_memory_slots()?;
                 // SAFETY: the owned vCPU remains stopped outside nested guest mode; the helper validated the entire initialized current-state payload before clearing dirty bits and reinstalling it.
                 unsafe { raw_set_nested_state(fd, bytes) }
             },
@@ -933,16 +948,7 @@ impl Backend for KvmBackend {
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
         if self.nested_state_size.is_some() {
-            for &region in &self.mapped_slots {
-                let remove = kvm_userspace_memory_region {
-                    memory_size: 0,
-                    ..region
-                };
-                // SAFETY: the owned vCPU is stopped; deleting its slot does not access or free the owned RAM mapping, and no guest entry occurs before replacement.
-                unsafe { self.vm.set_user_memory_region(remove) }.map_err(kvm_err)?;
-                // SAFETY: the saved region describes the same fixed-address RAM retained by this backend; the owned vCPU is stopped throughout replacement.
-                unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err)?;
-            }
+            self.reload_nested_memory_slots()?;
         }
 
         restore_sregs2_with_flush(&state.sregs, |sregs| {
