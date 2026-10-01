@@ -230,6 +230,39 @@ jobs:
           timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" \
             --replay nested-host-evidence/search/stream.jsonl --out nested-host-evidence/replay \
             2>&1 | tee nested-host-evidence/replay.log
+      - name: Verify search and replay evidence
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          evidence = Path("nested-host-evidence")
+          search = json.loads((evidence / "search/report.json").read_text())
+          replay = json.loads((evidence / "replay/report.json").read_text())
+          assert search["execution_budget"] == 100
+          assert 0 < search["executions_completed"] <= 100
+          assert search["execution_work"] > 0
+          assert search["executions_completed"] == replay["executions_completed"]
+          assert search["execution_work"] == replay["execution_work"]
+          assert search["stream_sha256"] == replay["stream_sha256"]
+          observed = search["archive"]["evidence"]
+          assert observed == replay["archive"]["evidence"]
+          assert not observed["failures"]
+          assert 0 < observed["pairs"] < (1 << 36)
+          summary = {
+              "tested_commit": (evidence / "source-commit.txt").read_text().strip(),
+              "execution_budget": search["execution_budget"],
+              "executions_completed": search["executions_completed"],
+              "sdk_operations": search["execution_work"],
+              "covered_pairs": observed["pairs"].bit_count(),
+              "total_pairs": 36,
+              "pair_mask": hex(observed["pairs"]),
+              "stream_sha256": search["stream_sha256"],
+              "replay_matches": True,
+              "failures": observed["failures"],
+          }
+          (evidence / "qualification.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print(json.dumps(summary, indent=2))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -237,3 +270,10 @@ jobs:
           path: nested-host-evidence
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nested-host-inputs-${{ github.run_id }}
+          path: consonance/harmony-linux/build/x86_64
+          include-hidden-files: true
+          retention-days: 7
