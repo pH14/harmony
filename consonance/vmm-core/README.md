@@ -125,6 +125,8 @@ VMST tag 16, raw and component identities, whole-state hashes, and portable
 artifacts. Publication requires L1 outside L2 guest mode; the inner VM remains
 allocated and VMX remains enabled. `nested-driver` qualifies repeated and cold
 outer restores at SDK lifecycle boundaries after inner KVM_RUN has returned.
+The boxed bringup entry point uses the same composition and capability capture
+for the client's dynamically dispatched session backend.
 
 The non-default `omit-nested-state` feature is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive

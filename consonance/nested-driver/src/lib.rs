@@ -6,6 +6,15 @@ use vmm_core::{
     vmm::{GuestRam, Step, Vmm, VmmError},
 };
 
+#[cfg(all(
+    feature = "host-search",
+    target_os = "linux",
+    target_arch = "x86_64",
+    not(miri)
+))]
+pub mod host;
+pub mod operations;
+
 pub const RAM_LEN: usize = 0x10000;
 pub const STEPS: u64 = 12;
 pub const PROGRAM: &[u8] = &[
@@ -50,13 +59,20 @@ impl Oracle {
     }
 }
 
-pub fn compose<B: Backend<A = X86>>(mut backend: B) -> Result<Vmm<B>, VmmError> {
+pub fn compose<B: Backend<A = X86>>(backend: B) -> Result<Vmm<B>, VmmError> {
+    compose_program(backend, PROGRAM)
+}
+
+fn compose_program<B: Backend<A = X86>>(
+    mut backend: B,
+    program: &[u8],
+) -> Result<Vmm<B>, VmmError> {
     backend.set_policy(&X86Policy {
         cpuid: contract::cpuid_model(),
         msr_filter: contract::msr_filter_allow(),
     })?;
     let mut ram = GuestRam::new(RAM_LEN)?;
-    ram.as_mut_bytes()[0x1000..0x1000 + PROGRAM.len()].copy_from_slice(PROGRAM);
+    ram.as_mut_bytes()[0x1000..0x1000 + program.len()].copy_from_slice(program);
     let oracle = Oracle::default();
     for (page, word) in PAGES.into_iter().zip(oracle.memory) {
         ram.as_mut_bytes()[page..page + 2].copy_from_slice(&word.to_le_bytes());

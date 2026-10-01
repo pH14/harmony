@@ -206,6 +206,42 @@ pub fn boot_linux_nested_host_virtual_time(
     cmdline: &str,
     seed: u64,
 ) -> Result<Vmm<vmm_backend::KvmBackend>, VmmError> {
+    let (backend, nested_host) = nested_host_backend()?;
+    compose_linux_nested_host_virtual_time(
+        backend,
+        nested_host,
+        kernel,
+        initramfs,
+        guest_ram_len,
+        cmdline,
+        seed,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn boot_linux_nested_host_virtual_time_boxed(
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    seed: u64,
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
+    let (backend, nested_host) = nested_host_backend()?;
+    let backend: Box<dyn Backend<A = X86>> = Box::new(backend);
+    compose_linux_nested_host_virtual_time(
+        backend,
+        nested_host,
+        kernel,
+        initramfs,
+        guest_ram_len,
+        cmdline,
+        seed,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn nested_host_backend() -> Result<(vmm_backend::KvmBackend, contract::NestedHostContract), VmmError>
+{
     let mut backend = vmm_backend::KvmBackend::new()?;
     let cpuid = contract::NestedHostContract::cpuid_model();
     let msrs = backend.initialize_vmx(
@@ -215,6 +251,20 @@ pub fn boot_linux_nested_host_virtual_time(
     )?;
     let nested_host = contract::NestedHostContract::new(msrs)
         .map_err(|e| VmmError::ContractViolation(e.into()))?;
+    Ok((backend, nested_host))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn compose_linux_nested_host_virtual_time<B: Backend<A = X86>>(
+    backend: B,
+    nested_host: contract::NestedHostContract,
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    seed: u64,
+) -> Result<Vmm<B>, VmmError> {
+    let cpuid = contract::NestedHostContract::cpuid_model();
     let mut wiring =
         crate::vmm::VtimeWiring::new_virtual_time(super::contract_vclock_config(), seed)?;
     let mut boot_seed = [0u8; 64];
