@@ -21,7 +21,23 @@ Before the first policy is installed, `KvmBackend::initialize_vmx` checks
 CPUID model, reads the requested VMX capability MSRs, and sets
 IA32_FEATURE_CONTROL. The VMM's named nested-host policy owns their guest
 dispositions and contract identity. Partial MSR reads or writes fail. This
-initialization does not yet add nested state to snapshot capture or restore.
+initialization enables nested-state capture using a capability-sized,
+initialized buffer. Every returned header and payload byte is retained. Raw
+CPU observations can occur while L2 runs; published snapshots and restore
+inputs require L1 outside nested guest mode with no pending nested entry.
+Ordinary backends neither capture nor accept nested state.
+
+X86 restore uses the host Linux 7.1
+[KVM selftest](https://github.com/torvalds/linux/blob/v7.1/tools/testing/selftests/kvm/lib/x86/processor.c)
+dependency order: special
+registers, MSRs, XCRs, XSAVE, MP state, debug registers, general registers,
+events, then nested state. Event restoration follows general registers because
+KVM_SET_REGS clears the exception queue. The selftest's earlier event write
+loses pending #PF and #GP under the enabled exception-payload API; the existing
+live exception-payload and serviced-MSR regressions exercise that difference.
+The complete VMX payload is installed after all architectural
+state. Invalid format, size, mode flags, or contract presence fails preflight
+before any restore ioctl.
 
 `Backend::drain_dirty_pages` returns the guest pages written since the last
 drain, so snapshots copy and restores reload only those pages. The KVM backends

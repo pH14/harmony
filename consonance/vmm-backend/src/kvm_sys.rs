@@ -40,6 +40,8 @@ const KVM_X86_SET_MSR_FILTER: u64 = ioc(1, 0xAE, 0xC6, size_of::<kvm_msr_filter>
 const KVM_GET_SREGS2: u64 = ioc(2, 0xAE, 0xCC, size_of::<kvm_sregs2>() as u64);
 const KVM_SET_SREGS2: u64 = ioc(1, 0xAE, 0xCD, size_of::<kvm_sregs2>() as u64);
 const KVM_GET_XSAVE2: u64 = ioc(2, 0xAE, 0xCF, size_of::<kvm_xsave>() as u64);
+const KVM_GET_NESTED_STATE: u64 = ioc(3, 0xAE, 0xBE, 128);
+const KVM_SET_NESTED_STATE: u64 = ioc(1, 0xAE, 0xBF, 128);
 const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
 
 pub struct KvmBackend {
@@ -48,6 +50,7 @@ pub struct KvmBackend {
     run: *mut kvm_run,
     mmap_size: usize,
     xsave2_size: Option<usize>,
+    nested_state_size: Option<usize>,
     regions: MemRegions,
     mem_slot_count: u32,
     dirty_log: bool,
@@ -100,6 +103,7 @@ impl KvmBackend {
             run,
             mmap_size,
             xsave2_size,
+            nested_state_size: None,
             regions: MemRegions::new(),
             mem_slot_count: 0,
             dirty_log: true,
@@ -139,7 +143,8 @@ impl KvmBackend {
             ));
         }
         let kvm = Kvm::new().map_err(kvm_err)?;
-        if kvm.check_extension_int(Cap::NestedState) < 128 {
+        let nested_size = kvm.check_extension_int(Cap::NestedState);
+        if nested_size < 128 {
             return Err(BackendError::Capability {
                 cap: "KVM_CAP_NESTED_STATE",
             });
@@ -175,6 +180,8 @@ impl KvmBackend {
         if self.vcpu.set_msrs(&feature_control).map_err(kvm_err)? != 1 {
             return Err(BackendError::Internal("KVM rejected IA32_FEATURE_CONTROL"));
         }
+        crate::arch::x86::nested_probe(nested_size as usize)?;
+        self.nested_state_size = Some(nested_size as usize);
         Ok(capabilities)
     }
 
@@ -522,6 +529,37 @@ impl Drop for KvmBackend {
     }
 }
 
+#[cfg(not(miri))]
+unsafe fn raw_get_nested_state(fd: std::os::fd::RawFd, maximum: usize) -> Result<Vec<u8>> {
+    let mut bytes = crate::arch::x86::nested_probe(maximum)?;
+    // SAFETY: the initialized buffer advertises its complete allocated capacity in the ABI header; KVM writes at most that many bytes to this writable pointer.
+    let result = unsafe { libc::ioctl(fd, KVM_GET_NESTED_STATE as _, bytes.as_mut_ptr()) };
+    if result < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    crate::arch::x86::finish_nested_probe(bytes)
+}
+
+#[cfg(miri)]
+unsafe fn raw_get_nested_state(_fd: std::os::fd::RawFd, _maximum: usize) -> Result<Vec<u8>> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+#[cfg(not(miri))]
+unsafe fn raw_set_nested_state(fd: std::os::fd::RawFd, bytes: &[u8]) -> Result<()> {
+    // SAFETY: the caller has validated that the ABI size equals this initialized slice length; KVM copies those bytes from this pointer while the slice remains live.
+    let result = unsafe { libc::ioctl(fd, KVM_SET_NESTED_STATE as _, bytes.as_ptr()) };
+    if result < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(miri)]
+unsafe fn raw_set_nested_state(_fd: std::os::fd::RawFd, _bytes: &[u8]) -> Result<()> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
 impl KvmBackend {
     fn install_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
         let entries = cpuid_entries(model);
@@ -839,12 +877,30 @@ impl Backend for KvmBackend {
             msrs,
             xsave,
             xsave_restore_bv,
+            nested_state: match self.nested_state_size {
+                Some(size) => {
+                    // SAFETY: this owned stopped vCPU receives a capability-sized initialized buffer; the adapter bounds the returned size before retaining its bytes.
+                    Some(unsafe { raw_get_nested_state(self.vcpu.as_raw_fd(), size)? })
+                }
+                None => None,
+            },
         })
     }
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        match (self.nested_state_size, &state.nested_state) {
+            (Some(maximum), Some(bytes)) => {
+                crate::arch::x86::validate_vmx_nested_state(bytes, maximum)?
+            }
+            (None, None) => {}
+            _ => {
+                return Err(BackendError::Internal(
+                    "nested state does not match the configured contract",
+                ));
+            }
+        }
         restore_xsave_image(&state.xsave, state.xsave_restore_bv).map(|_| ())
     }
 
@@ -854,29 +910,31 @@ impl Backend for KvmBackend {
         self.validate_restore_state(state)?;
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
-        self.vcpu
-            .set_regs(&to_kvm_regs(&state.regs))
-            .map_err(kvm_err)?;
         restore_sregs2_with_flush(&state.sregs, |sregs| {
-            // SAFETY: the owned vCPU is stopped and `sregs` is a complete live
-            // kvm_sregs2 value, including saved flags/PDPTRs. No KVM_RUN occurs
-            // between the transient WP write and exact target write. Pure
-            // sequencing is Miri-tested; the ioctl runs in hardware acceptance.
+            // SAFETY: the owned vCPU is stopped and the adapter reads a complete SREGS2 value; no guest entry occurs between the flush and exact target write.
             unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), sregs) }
         })?;
+        self.restore_msrs(state)?;
+        self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
+        self.restore_xsave(&xsave)?;
+        self.vcpu
+            .set_mp_state(kvm_mp_state {
+                mp_state: mp_to_kvm(state.mp_state),
+            })
+            .map_err(kvm_err)?;
         self.vcpu
             .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
             .map_err(kvm_err)?;
         self.vcpu
+            .set_regs(&to_kvm_regs(&state.regs))
+            .map_err(kvm_err)?;
+        self.vcpu
             .set_vcpu_events(&to_kvm_restore_events(&state.events))
             .map_err(kvm_err)?;
-        let mp = kvm_mp_state {
-            mp_state: mp_to_kvm(state.mp_state),
-        };
-        self.vcpu.set_mp_state(mp).map_err(kvm_err)?;
-        self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
-        self.restore_xsave(&xsave)?;
-        self.restore_msrs(state)?;
+        if let Some(bytes) = &state.nested_state {
+            // SAFETY: contract and capability preflight validated the full initialized ABI byte slice, including its declared size; the owned vCPU is stopped for the ioctl.
+            unsafe { raw_set_nested_state(self.vcpu.as_raw_fd(), bytes)? };
+        }
 
         self.run_page().set_cr8(state.sregs.cr8);
         self.pending_irq = None;
