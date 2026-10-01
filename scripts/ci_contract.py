@@ -59,7 +59,6 @@ PR_BOUNDED_MINUTES = 15
 PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml", "NES Guest Image"): 45,
     (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
-    (f"{WORKFLOW_DIR}/consonance-uml-probe.yml", "Arm64 UML Probe Artifacts"): 45,
 }
 
 
@@ -633,19 +632,6 @@ CONSONANCE_UML = Workflow(
     ),
 )
 
-CONSONANCE_UML_PROBE = Workflow(
-    path=f"{WORKFLOW_DIR}/consonance-uml-probe.yml",
-    name="Checks / Consonance / UML Probe",
-    owner="Consonance",
-    triggers=("pull_request", "push", "workflow_dispatch"),
-    jobs=(
-        Job("Arm64 UML Probe Artifacts", "pr", 45,
-            exception="Cold compilation of the pinned arm64 UML RFC and locked "
-                      "toolchain exceeds the pull request check budget."),
-        Job("Arm64 UML Probe — <Target>", "pr", 15),
-    ),
-)
-
 WORKFLOWS = (
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
@@ -655,7 +641,6 @@ WORKFLOWS = (
     CONSONANCE_RUNTIME,
     CONSONANCE_XSAVE,
     CONSONANCE_UML,
-    CONSONANCE_UML_PROBE,
     DISSONANCE_CHECKS,
     DISSONANCE_ANALYSIS,
     HARMONY_CHECKS,

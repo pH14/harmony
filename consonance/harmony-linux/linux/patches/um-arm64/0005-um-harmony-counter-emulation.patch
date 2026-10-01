@@ -1,0 +1,148 @@
+Emulate counter reads in User-mode Linux on arm64
+
+Guest instructions run natively in the stub processes, so reads of
+CNTVCT_EL0, CNTVCTSS_EL0 and CNTFRQ_EL0 would see the host counter and its
+frequency. Each stub enables PR_TSC_SIGSEGV before running guest code, which
+needs a host running Linux 6.12 or later. The host delivers the trap as a
+SIGSEGV with si_code SI_KERNEL and leaves the signal frame's ESR from an
+earlier fault, so the SIGSEGV path decodes the instruction before it
+classifies the fault. Counter reads charge CONFIG_HARMONY_UML_CLOCK_READ_VNS
+and return the virtual time in nanoseconds, frequency reads return 1 GHz,
+and both step over the instruction. Every other fault keeps its signal.
+The stub waits for the kernel's reply without the RFC's counter-bounded
+spin, since its own counter reads now fault.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/arm64/um/Makefile
++++ b/arch/arm64/um/Makefile
+@@ -3,7 +3,7 @@
+ # arch/arm64/um -- subarch support for ARCH=um SUBARCH=arm64
+ #
+ 
+-obj-y = bugs.o cpuinfo.o delay.o fault.o mem.o ptrace.o \
++obj-y = bugs.o counter.o cpuinfo.o delay.o fault.o mem.o ptrace.o \
+ 	setjmp_aarch64.o signal.o stub_segv.o syscalls.o \
+ 	sys_call_table.o sysrq.o tls.o \
+ 	subarch.o os-Linux/ vdso/
+--- /dev/null
++++ b/arch/arm64/um/counter.c
+@@ -0,0 +1,41 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Counter and counter-frequency reads from guest processes, answered from virtual time. */
++#include <linux/signal.h>
++#include <linux/time-internal.h>
++#include <linux/uaccess.h>
++#include <arch.h>
++#include <sysdep/ptrace.h>
++
++#define MRS_RT_MASK		0x1f
++#define MRS_CNTFRQ_EL0		0xd53be000
++#define MRS_CNTVCT_EL0		0xd53be040
++#define MRS_CNTVCTSS_EL0	0xd53be0c0
++#define COUNTER_HZ		1000000000ULL
++
++int arch_emulate_counter(int si_code, struct uml_pt_regs *regs)
++{
++	unsigned long long value;
++	unsigned int rt;
++	u32 insn;
++
++	if (si_code != SI_KERNEL)
++		return 0;
++	if (get_user(insn, (const u32 __user *)UPT_IP(regs)))
++		return 0;
++	switch (insn & ~MRS_RT_MASK) {
++	case MRS_CNTFRQ_EL0:
++		value = COUNTER_HZ;
++		break;
++	case MRS_CNTVCT_EL0:
++	case MRS_CNTVCTSS_EL0:
++		value = time_travel_counter_read();
++		break;
++	default:
++		return 0;
++	}
++	rt = insn & MRS_RT_MASK;
++	if (rt != 31)
++		UPT_X(regs, rt) = value;
++	UPT_IP(regs) += 4;
++	return 1;
++}
+--- a/arch/um/include/shared/arch.h
++++ b/arch/um/include/shared/arch.h
+@@ -21,6 +21,7 @@ extern int arch_parse_host_cpu_flags(char *line);
+ extern void arch_check_bugs(void);
+ extern int arch_fixup(unsigned long address, struct uml_pt_regs *regs);
+ extern void arch_examine_signal(int sig, struct uml_pt_regs *regs);
++extern int arch_emulate_counter(int si_code, struct uml_pt_regs *regs);
+ 
+ void mc_set_rip(void *_mc, void *target);
+ 
+--- a/arch/um/kernel/skas/stub.c
++++ b/arch/um/kernel/skas/stub.c
+@@ -113,7 +113,6 @@ stub_signal_interrupt(int sig, siginfo_t *info, void *p)
+ 	struct cmsghdr *fd_msg;
+ 	int *fd_map;
+ 	int num_fds;
+-	unsigned long budget;
+ 	unsigned int futex_val;
+ 	long res;
+ 
+@@ -142,14 +141,11 @@ restart_wait:
+ 	}
+ 
+ 	/*
+-	 * Wait for the kernel's reply: spin within the budget first, so a fast
+-	 * reply is observed without ever entering FUTEX_WAIT.
++	 * Wait for the kernel's reply without spinning: the spin bound reads
++	 * the counter, and counter reads in a stub fault so that the kernel
++	 * can answer guest reads from virtual time.
+ 	 */
+-	budget = stub_futex_spin_budget(&d->stub_spin, d->spin_ticks);
+-	futex_val = stub_futex_spin(&d->futex, FUTEX_IN_KERN, budget);
+-	if (budget)
+-		stub_futex_spin_result(&d->stub_spin,
+-				       STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_CHILD);
++	futex_val = stub_futex_load_acquire(&d->futex);
+ 
+ 	if (STUB_FUTEX_OWNER(futex_val) == FUTEX_IN_KERN) {
+ 		/*
+--- a/arch/um/kernel/skas/stub_exe.c
++++ b/arch/um/kernel/skas/stub_exe.c
+@@ -40,6 +40,10 @@ noinline static void real_init(void)
+ 	/* Needed in SECCOMP mode (and safe to do anyway) */
+ 	stub_syscall5(__NR_prctl, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+ 
++	/* Harmony answers counter and counter-frequency reads from virtual time */
++	if (stub_syscall2(__NR_prctl, PR_SET_TSC, PR_TSC_SIGSEGV))
++		stub_syscall1(__NR_exit, 22);
++
+ 	/*
+ 	 * Whatever this architecture has to settle in a fresh stub, before the
+ 	 * seccomp filter is installed and so still able to make any syscall.
+--- a/arch/um/kernel/trap.c
++++ b/arch/um/kernel/trap.c
+@@ -558,11 +558,18 @@ void fatal_sigsegv(void)
+  * If the userfault did not happen in an UML userspace process, bad_segv is called.
+  * Otherwise the signal did happen in a cloned userspace process, handle it.
+  */
+-void segv_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs,
++void segv_handler(int sig, struct siginfo *si, struct uml_pt_regs *regs,
+ 		  void *mc)
+ {
+ 	struct faultinfo * fi = UPT_FAULTINFO(regs);
+ 
++	/*
++	 * The host sends a trapped counter read as a SIGSEGV without updating
++	 * the ESR in the signal frame, so the fault class check below would see
++	 * the ESR of an earlier fault.
++	 */
++	if (UPT_IS_USER(regs) && si && arch_emulate_counter(si->si_code, regs))
++		return;
+ 	if (UPT_IS_USER(regs) && !SEGV_IS_FIXABLE(fi)) {
+ 		show_segv_info(regs);
+ 		bad_segv(*fi, UPT_IP(regs));

@@ -38,6 +38,14 @@ emulates the x86 time-stamp counter, keeps host child-process signals out of
 the guest, fixes the guest's physical memory layout, and lets the host capture
 and restore the kernel while it waits for a bridge answer.
 
+The um-arm64 series applies after the common series to the pinned arm64 UML
+RFC tree. It carries the um series with counter emulation for the arm64
+counter and its frequency register (the stub then waits without the RFC's
+counter-bounded spin), two RFC build fixes (host headers that compile against current
+glibc and a stub without a frame pointer), zeroed floating-point state for
+every new guest program, a copy of the host platform name that outlives the
+host stack, and synchronous reaping of killed stubs.
+
 After a clock or trap patch changes, run the matching instruction reachability
 scan and update its reviewed allowlist when the deliberate instruction count
 changes. After any series change, run `test-patch-series.sh` and the platform

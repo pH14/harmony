@@ -1,0 +1,73 @@
+Keep host child-process signals out of User-mode Linux guests
+
+User-mode Linux turns every host SIGCHLD into guest interrupt 11, which the
+guest counts in /proc/interrupts and /proc/stat and which runs at whatever
+point the host delivers it. A stub process exits only when the kernel kills
+and reaps it, and the reaping happens while signals are blocked, so that
+interrupt arrives at a fixed point. A host stop or continue of a stub raised
+the same signal at a host-chosen point. SIGCHLD now uses SA_NOCLDSTOP, and a
+stub that dies without the kernel killing it panics the guest: the run has
+lost part of its state and cannot be replayed.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/kernel/skas/mmu.c
++++ b/arch/um/kernel/skas/mmu.c
+@@ -213,40 +213,8 @@ static irqreturn_t mm_sigchld_irq(int irq, void* dev)
+ 		* See wait_stub_done_seccomp for more details.
+ 		*/
+ 		list_for_each_entry(mm_context, &mm_list, list) {
+-			if (mm_context->id.pid == pid) {
+-				struct stub_data *stub_data;
+-				printk("Unexpectedly lost MM child! Affected tasks will segfault.");
+-
+-				/* Marks the MM as dead */
+-				mm_context->id.pid = -1;
+-
+-				stub_data = (void *)mm_context->id.stack;
+-				stub_data->futex = FUTEX_IN_KERN;
+-				/*
+-				 * Unconditional on purpose -- the waiter-bit
+-				 * wake elision must never be used on this
+-				 * path. The waiter can be anywhere between
+-				 * spinning and parking, and a dead stub will
+-				 * never issue another handoff to correct a
+-				 * skipped wake: a spurious FUTEX_WAKE here is
+-				 * noise, a missed one is a task hung forever.
+-				 * The plain store can race with the waiter's
+-				 * fetch_or of its waiter bit; that is fine,
+-				 * because FUTEX_WAIT revalidates the value it
+-				 * was passed and this wake always fires. The
+-				 * syscall also carries the barrier the plain
+-				 * store lacks. (This was SMP-only before the
+-				 * spin existed; now the wake is the one kick
+-				 * that works no matter where the waiter is.)
+-				 */
+-				os_futex_wake(&stub_data->futex);
+-
+-				/*
+-				 * NOTE: Currently executing syscalls by
+-				 * affected tasks may finish normally.
+-				 */
+-				break;
+-			}
++			if (mm_context->id.pid == pid)
++				panic("Lost the host process of a guest address space\n");
+ 		}
+ 	}
+ 
+--- a/arch/um/os-Linux/signal.c
++++ b/arch/um/os-Linux/signal.c
+@@ -231,6 +231,9 @@ void set_handler(int sig)
+ 	if (sig == SIGSEGV)
+ 		flags |= SA_NODEFER;
+ 
++	if (sig == SIGCHLD)
++		flags |= SA_NOCLDSTOP;
++
+ 	if (sigismember(&action.sa_mask, sig))
+ 		flags |= SA_RESTART; /* if it's an irq signal */
+ 

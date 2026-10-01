@@ -81,7 +81,7 @@ exception.
  #include <kern_util.h>
  #include <os.h>
  #include <irq_user.h>
-@@ -438,6 +439,24 @@ out:
+@@ -441,6 +442,24 @@ out:
  }
  EXPORT_SYMBOL(deactivate_fd);
  
@@ -336,7 +336,7 @@ exception.
  #include <os.h>
  #include <skas.h>
  #include <stub-data.h>
-@@ -125,3 +126,58 @@ static int __init init_child_tracking(void)
+@@ -249,3 +250,58 @@ static int __init init_child_tracking(void)
  	return 0;
  }
  early_initcall(init_child_tracking)
@@ -1462,7 +1462,7 @@ exception.
 +}
 --- a/arch/um/os-Linux/skas/process.c
 +++ b/arch/um/os-Linux/skas/process.c
-@@ -19,6 +19,7 @@
+@@ -20,6 +20,7 @@
  #include <sys/socket.h>
  #include <asm/unistd.h>
  #include <as-layout.h>
@@ -1470,7 +1470,7 @@ exception.
  #include <init.h>
  #include <kern_util.h>
  #include <mem.h>
-@@ -876,6 +877,22 @@ void initial_thread_cb_skas(void (*proc)(void *), void *arg)
+@@ -1213,6 +1214,22 @@ void initial_thread_cb_skas(void (*proc)(void *), void *arg)
  	cb_back = NULL;
  }
  
@@ -1492,4 +1492,4 @@ exception.
 +
  void halt_skas(void)
  {
- 	block_signals_trace();
+ 	initial_jmpbuf_lock();

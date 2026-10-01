@@ -1,0 +1,24 @@
+Build the arm64 User-mode Linux stub without a frame pointer
+
+arm64 selects ARCH_WANT_FRAME_POINTERS, so the compiler gives the stub's
+signal restorer a frame record. rt_sigreturn then reads the signal frame
+16 bytes below where the host kernel wrote it, and the first guest process
+dies with a fault at address zero. The stub object is built with
+-fomit-frame-pointer.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/kernel/skas/Makefile
++++ b/arch/um/kernel/skas/Makefile
+@@ -49,7 +49,7 @@ targets += stub_exe.dbg stub_exe $(stub_exe_objs-y)
+ # GCC hardened also auto-enables -fpic, but we need %ebx so it can't work ->
+ # disable it
+ 
+-CFLAGS_stub.o := $(CFLAGS_NO_HARDENING)
++CFLAGS_stub.o := $(CFLAGS_NO_HARDENING) -fomit-frame-pointer
+ CFLAGS_stub_exe.o := $(CFLAGS_NO_HARDENING)
+ 
+ # Clang will call memset() from __builtin_alloca() when stack variable

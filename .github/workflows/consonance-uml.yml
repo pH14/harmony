@@ -54,6 +54,8 @@ jobs:
         include:
           - architecture: x86_64
             runner: ubuntu-24.04
+          - architecture: aarch64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
@@ -101,6 +103,14 @@ jobs:
           - target: x86_64 Docker
             architecture: x86_64
             runner: ubuntu-24.04
+            docker: true
+          - target: Arm64 Linux
+            architecture: aarch64
+            runner: ubuntu-24.04-arm
+            docker: false
+          - target: Arm64 Docker
+            architecture: aarch64
+            runner: ubuntu-24.04-arm
             docker: true
     steps:
       - uses: actions/download-artifact@v4
@@ -159,6 +169,14 @@ jobs:
             architecture: x86_64
             runner: ubuntu-24.04
             docker: true
+          - target: Arm64 Linux
+            architecture: aarch64
+            runner: ubuntu-24.04-arm
+            docker: false
+          - target: Arm64 Docker
+            architecture: aarch64
+            runner: ubuntu-24.04-arm
+            docker: true
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -215,6 +233,14 @@ jobs:
           - target: x86_64 Docker
             architecture: x86_64
             runner: ubuntu-24.04
+            docker: true
+          - target: Arm64 Linux
+            architecture: aarch64
+            runner: ubuntu-24.04-arm
+            docker: false
+          - target: Arm64 Docker
+            architecture: aarch64
+            runner: ubuntu-24.04-arm
             docker: true
     steps:
       - uses: actions/download-artifact@v4

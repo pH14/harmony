@@ -46,6 +46,7 @@ pub fn checks(
     for fixture in FIXTURES {
         checks.push(replays(options, profile, host, fixture, &cpus)?);
     }
+    checks.push(replays(options, profile, host, "counter", &cpus)?);
     checks.push(seed_changes_events(options, profile)?);
     checks.push(refusal(profile, host));
     Ok(checks)

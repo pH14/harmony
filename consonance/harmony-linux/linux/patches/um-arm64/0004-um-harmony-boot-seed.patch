@@ -1,0 +1,108 @@
+Seed User-mode Linux randomness from the boot command line
+
+Stock User-mode Linux seeds the kernel random number generator from the host
+getrandom() at boot and returns host random words as the architecture random
+source, and /proc/cpuinfo prints the host uname. Harmony replays a guest from
+its seed, so harmony_seed=<64 hex digits> supplies the boot seed, which is
+hidden from the guest command line, the architecture random source is empty,
+and /proc/cpuinfo has no host line.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/include/asm/archrandom.h
++++ b/arch/um/include/asm/archrandom.h
+@@ -4,17 +4,9 @@
+ 
+ #include <linux/types.h>
+ 
+-/* This is from <os.h>, but better not to #include that in a global header here. */
+-ssize_t os_getrandom(void *buf, size_t len, unsigned int flags);
+-
+ static inline size_t __must_check arch_get_random_longs(unsigned long *v, size_t max_longs)
+ {
+-	ssize_t ret;
+-
+-	ret = os_getrandom(v, max_longs * sizeof(*v), 0);
+-	if (ret < 0)
+-		return 0;
+-	return ret / sizeof(*v);
++	return 0;
+ }
+ 
+ static inline size_t __must_check arch_get_random_seed_longs(unsigned long *v, size_t max_longs)
+--- a/arch/um/kernel/um_arch.c
++++ b/arch/um/kernel/um_arch.c
+@@ -8,6 +8,7 @@
+ #include <linux/init.h>
+ #include <linux/mm.h>
+ #include <linux/ctype.h>
++#include <linux/hex.h>
+ #include <linux/module.h>
+ #include <linux/panic_notifier.h>
+ #include <linux/seq_file.h>
+@@ -64,8 +65,27 @@ struct cpuinfo_um boot_cpu_data = {
+ EXPORT_SYMBOL(boot_cpu_data);
+ 
+ 
+-/* Changed in setup_arch, which is called in early boot */
+-static char host_info[(__NEW_UTS_LEN + 1) * 5];
++static u8 harmony_seed[32] __initdata;
++static bool harmony_seed_set __initdata;
++
++static int __init harmony_seed_setup(char *line, int *add)
++{
++	*add = 0;
++	if (strlen(line) != 2 * sizeof(harmony_seed) ||
++	    hex2bin(harmony_seed, line, sizeof(harmony_seed))) {
++		os_warn("harmony_seed= needs %zu hexadecimal digits\n",
++			2 * sizeof(harmony_seed));
++		return 1;
++	}
++	harmony_seed_set = true;
++	return 0;
++}
++
++__uml_setup("harmony_seed=", harmony_seed_setup,
++"harmony_seed=<64 hexadecimal digits>\n"
++"    Seed the kernel random number generator at boot. Without it the\n"
++"    generator starts unseeded.\n\n"
++);
+ 
+ static int show_cpuinfo(struct seq_file *m, void *v)
+ {
+@@ -81,7 +101,6 @@ static int show_cpuinfo(struct seq_file *m, void *v)
+ 	seq_printf(m, "vendor_id\t: User Mode Linux\n");
+ 	seq_printf(m, "model name\t: UML\n");
+ 	seq_printf(m, "mode\t\t: skas\n");
+-	seq_printf(m, "host\t\t: %s\n", host_info);
+ 	/*
+ 	 * Everything above is the same on every host; everything the host CPU
+ 	 * actually determines is the subarch's business. x86 prints an "fpu"
+@@ -481,8 +500,6 @@ int __init __weak read_initrd(void)
+ 
+ void __init setup_arch(char **cmdline_p)
+ {
+-	u8 rng_seed[32];
+-
+ 	stack_protections((unsigned long) init_task.stack);
+ 	setup_physmem(uml_physmem, uml_reserved, physmem_size);
+ 	uml_dtb_init();
+@@ -490,12 +507,11 @@ void __init setup_arch(char **cmdline_p)
+ 
+ 	strscpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
+ 	*cmdline_p = command_line;
+-	setup_hostinfo(host_info, sizeof host_info);
+ 	prefill_possible_map();
+ 
+-	if (os_getrandom(rng_seed, sizeof(rng_seed), 0) == sizeof(rng_seed)) {
+-		add_bootloader_randomness(rng_seed, sizeof(rng_seed));
+-		memzero_explicit(rng_seed, sizeof(rng_seed));
++	if (harmony_seed_set) {
++		add_bootloader_randomness(harmony_seed, sizeof(harmony_seed));
++		memzero_explicit(harmony_seed, sizeof(harmony_seed));
+ 	}
+ }
+ 
