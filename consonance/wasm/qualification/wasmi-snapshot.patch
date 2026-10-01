@@ -1,0 +1,200 @@
+--- a/src/engine/code_map.rs
++++ b/src/engine/code_map.rs
+@@ -845,3 +845,28 @@
+         self.consts.get_ref()
+     }
+ }
++
++impl CodeMap {
++    pub(crate) fn harmony_position(&self, instruction: &Instruction) -> Result<(u32, u32), Error> {
++        let address = instruction as *const Instruction as usize;
++        for (index, entity) in self.funcs.lock().iter() {
++            if let Some(cref) = entity.get_compiled() {
++                let instrs = cref.instrs();
++                let start = instrs.as_ptr() as usize;
++                let bytes = core::mem::size_of_val(instrs);
++                if address >= start && address < start + bytes {
++                    return Ok((index.0, ((address - start) / core::mem::size_of::<Instruction>()) as u32));
++                }
++            }
++        }
++        Err(Error::new("unknown snapshot instruction"))
++    }
++    pub(crate) fn harmony_instruction(&self, function: u32, offset: u32) -> Result<super::executor::InstructionPtr, Error> {
++        let guard = self.funcs.lock();
++        let cref = guard.get(EngineFunc(function)).and_then(FuncEntity::get_compiled)
++            .ok_or_else(|| Error::new("unknown snapshot function"))?;
++        let instructions = cref.instrs();
++        if offset as usize >= instructions.len() { return Err(Error::new("snapshot instruction exceeds function")); }
++        Ok(super::executor::InstructionPtr::new(instructions.as_ptr().wrapping_add(offset as usize)))
++    }
++}
+--- a/src/engine/executor/mod.rs
++++ b/src/engine/executor/mod.rs
+@@ -1,6 +1,7 @@
++pub(crate) use instr_ptr::InstructionPtr;
+ pub(crate) use self::stack::Stack;
+ use self::{
+-    instr_ptr::InstructionPtr,
++
+     instrs::{dispatch_host_func, execute_instrs},
+     stack::CallFrame,
+ };
+--- a/src/engine/executor/stack/calls.rs
++++ b/src/engine/executor/stack/calls.rs
+@@ -264,3 +264,30 @@
+         self.results
+     }
+ }
++
++impl CallStack {
++    pub(crate) fn harmony_capture(&self, code: &crate::engine::code_map::CodeMap) -> Result<alloc::vec::Vec<[u64; 5]>, crate::Error> {
++        if self.instances.len() != 1 { return Err(crate::Error::new("snapshot requires one instance")); }
++        self.frames.iter().map(|frame| {
++            let (func, offset) = code.harmony_position(frame.instr_ptr.get())?;
++            Ok([u64::from(func), u64::from(offset), usize::from(frame.base_offset()) as u64,
++                usize::from(frame.frame_offset()) as u64, i16::from(frame.results().head()) as u16 as u64])
++        }).collect()
++    }
++    pub(crate) fn harmony_restore(&mut self, code: &crate::engine::code_map::CodeMap, instance: Instance,
++        frames: &[[u64; 5]], values_len: usize) -> Result<(), crate::Error> {
++        if frames.len() > self.recursion_limit { return Err(crate::Error::new("snapshot recursion exceeds limit")); }
++        self.reset();
++        for frame in frames {
++            let instr_ptr = code.harmony_instruction(u32::try_from(frame[0]).map_err(|_| crate::Error::new("bad function"))?,
++                u32::try_from(frame[1]).map_err(|_| crate::Error::new("bad instruction"))?)?;
++            let base = usize::try_from(frame[2]).map_err(|_| crate::Error::new("bad base"))?;
++            let offset = usize::try_from(frame[3]).map_err(|_| crate::Error::new("bad offset"))?;
++            let result = u16::try_from(frame[4]).map_err(|_| crate::Error::new("bad result"))?;
++            if base > values_len || offset > base { return Err(crate::Error::new("bad frame offsets")); }
++            self.push(CallFrame::new(instr_ptr, StackOffsets { base: BaseValueStackOffset::new(base),
++                frame: FrameValueStackOffset::new(offset) }, RegSpan::new(crate::ir::Reg::from(result as i16))), Some(instance))?;
++        }
++        Ok(())
++    }
++}
+--- a/src/engine/executor/stack/values.rs
++++ b/src/engine/executor/stack/values.rs
+@@ -147,8 +147,10 @@
+         if prev_capacity != self.capacity() {
+             on_resize(self);
+         }
+-        let spare = self.values.spare_capacity_mut().as_mut_ptr();
+-        unsafe { self.values.set_len(self.values.len() + additional) };
++        let previous_len = self.values.len();
++        self.values.resize(previous_len + additional, UntypedVal::from_bits64(0));
++        let spare = self.values.as_mut_ptr().wrapping_add(previous_len).cast();
++        // SAFETY: The reserved vector owns this initialized range, the slice stays within its length, and MaybeUninit<UntypedVal> has the same layout as UntypedVal.
+         Ok(unsafe { slice::from_raw_parts_mut(spare, additional) })
+     }
+ 
+@@ -453,3 +455,14 @@
+         unsafe { self.ptr.offset(isize::from(i16::from(register))) }
+     }
+ }
++
++impl ValueStack {
++    pub(crate) fn harmony_capture(&self) -> alloc::vec::Vec<u64> {
++        self.values.iter().map(|v| v.to_bits64()).collect()
++    }
++    pub(crate) fn harmony_restore(&mut self, values: &[u64]) -> Result<(), crate::Error> {
++        if values.len() > self.max_len { return Err(crate::Error::new("snapshot stack exceeds limit")); }
++        self.values = values.iter().copied().map(UntypedVal::from_bits64).collect();
++        Ok(())
++    }
++}
+--- a/src/engine/mod.rs
++++ b/src/engine/mod.rs
+@@ -38,6 +38,7 @@
+     limits::{EnforcedLimits, EnforcedLimitsError, StackLimits},
+     resumable::{
+         ResumableCall,
++        HarmonyContinuation,
+         ResumableCallHostTrap,
+         ResumableCallOutOfFuel,
+         ResumableError,
+--- a/src/engine/resumable.rs
++++ b/src/engine/resumable.rs
+@@ -640,3 +640,35 @@
+             .finish()
+     }
+ }
++
++#[derive(Debug, Clone)]
++pub struct HarmonyContinuation {
++    pub values: alloc::vec::Vec<u64>,
++    pub frames: alloc::vec::Vec<[u64; 5]>,
++    pub required_fuel: Option<u64>,
++    pub caller_result: Option<i16>,
++}
++impl ResumableCall {
++    pub fn harmony_capture(&self) -> Result<HarmonyContinuation, Error> {
++        let (common, required_fuel, caller_result) = match self {
++            Self::HostTrap(trap) => (&trap.common, None, Some(i16::from(trap.caller_results.head()))),
++            Self::OutOfFuel(trap) => (&trap.common, Some(trap.required_fuel), None),
++            Self::Finished => return Err(Error::new("cannot snapshot a finished call")),
++        };
++        Ok(HarmonyContinuation { values: common.stack.values.harmony_capture(),
++            frames: common.stack.calls.harmony_capture(&common.engine.inner.code_map)?, required_fuel, caller_result })
++    }
++    pub unsafe fn harmony_restore(engine: Engine, instance: crate::Instance, root: Func, host: Func,
++        snapshot: &HarmonyContinuation) -> Result<Self, Error> {
++        let mut stack = Stack::new(engine.config().stack_limits());
++        stack.values.harmony_restore(&snapshot.values)?;
++        stack.calls.harmony_restore(&engine.inner.code_map, instance, &snapshot.frames, snapshot.values.len())?;
++        let common = ResumableCallCommon::new(engine, root, stack);
++        match (snapshot.required_fuel, snapshot.caller_result) {
++            (Some(required_fuel), None) => Ok(Self::OutOfFuel(ResumableCallOutOfFuel { common, required_fuel })),
++            (None, Some(result)) => Ok(Self::HostTrap(ResumableCallHostTrap { common, host_func: host,
++                host_error: Error::new("restored pending import"), caller_results: RegSpan::new(crate::ir::Reg::from(result)) })),
++            _ => Err(Error::new("bad continuation kind")),
++        }
++    }
++}
+--- a/src/instance/mod.rs
++++ b/src/instance/mod.rs
+@@ -327,3 +327,34 @@
+         store.into().store.inner.resolve_instance(self).exports()
+     }
+ }
++
++
++impl Instance {
++    pub fn harmony_segment_lengths(&self, mut ctx: impl crate::AsContextMut) -> (alloc::vec::Vec<usize>, alloc::vec::Vec<u32>) {
++        let ctx = ctx.as_context_mut();
++        let entity = ctx.store.inner.resolve_instance(self);
++        let data = entity.data_segments.to_vec();
++        let elements = entity.elem_segments.to_vec();
++        (data.iter().map(|segment| ctx.store.inner.resolve_data_segment_mut(segment).bytes().len()).collect(),
++            elements.iter().map(|segment| ctx.store.inner.resolve_element_segment(segment).size()).collect())
++    }
++    pub fn harmony_restore_segments(&self, mut ctx: impl crate::AsContextMut, data: &[usize], elements: &[u32]) -> Result<(), crate::Error> {
++        let ctx = ctx.as_context_mut();
++        let entity = ctx.store.inner.resolve_instance(self);
++        let handles = entity.data_segments.to_vec();
++        let element_handles = entity.elem_segments.to_vec();
++        if handles.len() != data.len() || element_handles.len() != elements.len() { return Err(crate::Error::new("segment count mismatch")); }
++        for (handle, &length) in handles.iter().zip(data) {
++            let segment = ctx.store.inner.resolve_data_segment_mut(handle);
++            if length == 0 { segment.drop_bytes(); }
++            else if segment.bytes().len() != length { return Err(crate::Error::new("restore requires fresh data segments")); }
++        }
++        for (handle, &length) in element_handles.iter().zip(elements) {
++            let segment = ctx.store.inner.resolve_element_segment_mut(handle);
++            if length == 0 { segment.drop_items(); }
++            else if segment.size() != length { return Err(crate::Error::new("restore requires fresh element segments")); }
++        }
++        Ok(())
++    }
++}
++
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -141,6 +141,7 @@
+         Engine,
+         EngineWeak,
+         ResumableCall,
++        HarmonyContinuation,
+         ResumableCallHostTrap,
+         ResumableCallOutOfFuel,
+         StackLimits,

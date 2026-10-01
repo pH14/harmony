@@ -11,6 +11,7 @@ resolver = "2"
 members = ["cli", "consonance/*"]
 # consonance/harmony-linux/ contains standalone Linux-side crates.
 exclude = [
+  "consonance/wasm",
   "consonance/harmony-linux",
   "dissonance",
   "workloads/nes",

@@ -1,0 +1,18 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+(module
+  (import "harmony_v1" "decision" (func $decision (param i32) (result i32)))
+  (memory (export "memory") 4 4)
+  (func (export "run") (param i32) (result i32)
+    (f32.store (i32.const 0) (f32.add (f32.const nan:0x123) (f32.const 0)))
+    (f64.store (i32.const 8) (f64.mul (f64.const inf) (f64.const 0)))
+    (f32.store (i32.const 16) (f32.sqrt (f32.const -1)))
+    (f64.store (i32.const 24) (f64.div (f64.const 0) (f64.const 0)))
+    (f32.store (i32.const 32) (f32.div (f32.const -0) (f32.const 1)))
+    (f64.store (i32.const 40) (f64.min (f64.const 0) (f64.const -0)))
+    (f32.store (i32.const 48) (f32.max (f32.const -0) (f32.const 0)))
+    (f64.store (i32.const 56) (f64.nearest (f64.const 2.5)))
+    (f32.store (i32.const 64) (f32.mul (f32.const 0x1p-126) (f32.const 0.5)))
+    (drop (call $decision (i32.const 17)))
+    (f64.store (i32.const 72) (f64.promote_f32 (f32.const nan:0x123)))
+    (f32.store (i32.const 80) (f32.demote_f64 (f64.const nan:0x123)))
+    (i32.const 1)))
