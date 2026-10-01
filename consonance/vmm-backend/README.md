@@ -21,7 +21,24 @@ Before the first policy is installed, `KvmBackend::initialize_vmx` checks
 CPUID model, reads the requested VMX capability MSRs, and sets
 IA32_FEATURE_CONTROL. The VMM's named nested-host policy owns their guest
 dispositions and contract identity. Partial MSR reads or writes fail. This
-initialization does not yet add nested state to snapshot capture or restore.
+initialization enables nested-state capture using a capability-sized,
+initialized buffer. The complete returned payload is retained with the inactive
+VMCS12 metadata normalization described below. Raw
+CPU observations can occur while L2 runs; published snapshots and restore
+inputs require L1 outside nested guest mode with no pending nested entry.
+Ordinary backends neither capture nor accept nested state.
+
+X86 restore uses the host Linux 7.1
+[KVM selftest](https://github.com/torvalds/linux/blob/v7.1/tools/testing/selftests/kvm/lib/x86/processor.c)
+dependency order: special
+registers, MSRs, XCRs, XSAVE, MP state, debug registers, general registers,
+events, then nested state. Event restoration follows general registers because
+KVM_SET_REGS clears the exception queue. The selftest's earlier event write
+loses pending #PF and #GP under the enabled exception-payload API; the existing
+live exception-payload and serviced-MSR regressions exercise that difference.
+The complete VMX payload is installed after all architectural
+state. Invalid format, size, mode flags, or contract presence fails preflight
+before any restore ioctl.
 
 `Backend::drain_dirty_pages` returns the guest pages written since the last
 drain, so snapshots copy and restores reload only those pages. The KVM backends
@@ -32,6 +49,20 @@ reruns the store without surfacing an exit. A drain removes write access again
 and reports each recorded page as four 4 KiB guest pages. Hypervisor.framework
 reports these aborts with a translation fault status, so the backend treats any
 lower-EL abort inside mapped RAM as a tracked write.
+
+Nested-host dirty drains capture and validate the current VMX payload before
+clearing dirty bits, then remove and reinstall each outer RAM slot at the same
+address and size before reloading the unchanged nested state. Outer restore also
+reloads those slots after restoring RAM and before installing CPU state. This
+invalidates cached nested EPT mappings, including shadow pages that can survive
+a nested-state reload, and starts a fresh dirty bitmap after consuming the old
+one. The stopped vCPU never enters between slot removal and replacement.
+Without that invalidation, incremental capture can omit L2 writes and restored
+L2 execution can read stale translations despite exact outer RAM restoration.
+The inner process and VM remain allocated. Ordinary guests use the kernel
+bitmap directly. Portable tests and Miri cover payload and mapping preservation,
+preflight before mutation, operation order and stopping on errors. The live
+matrix checks all RAM bytes, while recorded search exercises longer histories.
 
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
@@ -408,3 +439,15 @@ change production snapshot identity or restore semantics.
 The x86 raw ioctl adapters infer the libc request type so the same 32-bit KVM
 request encodings compile under both glibc (unsigned long) and musl (int). This
 allows the production backend to be linked into the static inner driver.
+
+Nested capture canonicalizes inactive VMCS12 exit interrupt information. Linux
+VMCS12 revision `0x11e57ed0` fixes this field at byte 816 of the VMCS payload.
+When its valid bit is clear, the vector/type and error-code bytes have no active
+architectural meaning and can retain a physical host interrupt vector. Capture
+zeros that inactive information, and zeros an error code when its delivery bit
+is clear. Valid interrupt information and all other payload bytes are preserved.
+The revision and field bounds are checked before mutation; an unknown layout
+fails capture. Snapshots, hashes and portable exports retain the complete
+canonical payload. Dirty-log reprotection still reloads the unchanged raw
+current payload. Portable tests cover inactive/valid cases, preservation of the
+remaining bytes, and rejection without mutation, including under Miri.

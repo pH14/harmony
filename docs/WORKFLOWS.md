@@ -197,7 +197,13 @@ requires `KVM_CAP_NESTED_STATE` and KVM-supported Intel VMX on its x86 runner, t
 nested-host kernel and boots L1 under the named nested-host contract. The
 `Nested Host` job runs `x86_kvm_nested_host::l1_creates_kvm_vm`, builds the
 static inner driver and matching OCI runtime, then runs
-`nested-driver::live::inner_consonance_runs_l2`; missing nested
+`nested-driver::live::inner_consonance_runs_inner_guest` and
+`nested-driver::nested_restore::outer_nested_state_snapshot_matrix`. The latter
+runs `cold_snapshot_child` as a capture process that is killed while holding
+its live VM, then imports its artifact in a new process. It compares eight
+detour restores and cold continuation with uninterrupted and capture-only
+execution. A separate `omit-nested-state` build must pass those two controls
+and fail its first restored continuation. Missing nested
 VMX or a guest that cannot create a KVM VM fails the job. Kernel publication
 still requires the instruction audit to pass.
 An AMD runner can expose nested SVM state while lacking VMX; its positive
