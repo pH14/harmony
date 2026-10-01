@@ -32,8 +32,16 @@ pub const RAM_GPA_BASE: u64 = 0;
 #[cfg(target_arch = "aarch64")]
 pub const RAM_GPA_BASE: u64 = 0x4000_0000;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum GuestContract {
+    #[default]
+    Ordinary,
+    NestedHost,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionConfig {
+    pub guest_contract: GuestContract,
     pub ram_bytes: usize,
     pub seed: u64,
     pub run_budget: u64,
@@ -48,6 +56,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
+            guest_contract: GuestContract::Ordinary,
             ram_bytes: DEFAULT_RAM,
             seed: DEFAULT_SEED,
             run_budget: DEFAULT_RUN_BUDGET,
@@ -63,6 +72,7 @@ impl SessionConfig {
     #[must_use]
     pub fn new(ram_bytes: usize, seed: u64, run_budget: u64, cmdline: impl Into<String>) -> Self {
         Self {
+            guest_contract: GuestContract::Ordinary,
             ram_bytes,
             seed,
             run_budget,
@@ -71,6 +81,12 @@ impl SessionConfig {
             wall_limit: None,
             defer_virtual_time_checkpoint_hashes: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_nested_host(mut self) -> Self {
+        self.guest_contract = GuestContract::NestedHost;
+        self
     }
 
     #[must_use]
@@ -797,6 +813,9 @@ fn image_identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionC
         update_digest_field(&mut digest, kernel);
         update_digest_field(&mut digest, initramfs);
     }
+    if config.guest_contract == GuestContract::NestedHost {
+        digest.update(b"\0consonance-nested-host-v1\0");
+    }
     digest.finalize().into()
 }
 
@@ -1057,6 +1076,7 @@ mod tests {
     #[test]
     fn a_config_without_the_option_decodes_with_it_off() {
         let json = serde_json::json!({
+            "guest_contract": "Ordinary",
             "ram_bytes": PAGE_SIZE,
             "seed": 1,
             "run_budget": 2,
@@ -1071,6 +1091,25 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&deferred).expect("encode"))
                 .expect("decode");
         assert_eq!(round_tripped, deferred);
+    }
+
+    #[test]
+    fn nested_host_identity_cannot_share_the_ordinary_or_tagged_snapshot_domain() {
+        for ordinary in [
+            SessionConfig::default(),
+            SessionConfig::default().with_identity_tag("workload"),
+        ] {
+            let nested = ordinary.clone().with_nested_host();
+            assert_ne!(
+                image_identity_with_config(b"kernel", b"initramfs", &ordinary),
+                image_identity_with_config(b"kernel", b"initramfs", &nested)
+            );
+            assert_eq!(
+                serde_json::from_value::<SessionConfig>(serde_json::to_value(&nested).unwrap())
+                    .unwrap(),
+                nested
+            );
+        }
     }
 
     #[test]

@@ -557,21 +557,30 @@ impl WorkerLauncher {
 }
 
 fn put_config(out: &mut Out, config: &SessionConfig) {
-    out.len(config.ram_bytes)
-        .u64(config.seed)
-        .u64(config.run_budget)
-        .bytes(config.cmdline.as_bytes())
-        .bytes(config.identity_tag.as_bytes())
-        .option(
-            config
-                .wall_limit
-                .map(|limit| u64::try_from(limit.as_nanos()).unwrap_or(u64::MAX)),
-        )
-        .u8(u8::from(config.defer_virtual_time_checkpoint_hashes));
+    out.u8(match config.guest_contract {
+        super::GuestContract::Ordinary => 0,
+        super::GuestContract::NestedHost => 1,
+    })
+    .len(config.ram_bytes)
+    .u64(config.seed)
+    .u64(config.run_budget)
+    .bytes(config.cmdline.as_bytes())
+    .bytes(config.identity_tag.as_bytes())
+    .option(
+        config
+            .wall_limit
+            .map(|limit| u64::try_from(limit.as_nanos()).unwrap_or(u64::MAX)),
+    )
+    .u8(u8::from(config.defer_virtual_time_checkpoint_hashes));
 }
 
 fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
     Ok(SessionConfig {
+        guest_contract: match input.u8()? {
+            0 => super::GuestContract::Ordinary,
+            1 => super::GuestContract::NestedHost,
+            _ => return Err(malformed("unknown guest contract")),
+        },
         ram_bytes: input.len()?,
         seed: input.u64()?,
         run_budget: input.u64()?,
@@ -1276,6 +1285,17 @@ mod tests {
             identity_tag: "worker-test".to_owned(),
             ..SessionConfig::default()
         }
+    }
+
+    #[test]
+    fn worker_config_carries_the_named_guest_contract_and_rejects_unknown_profiles() {
+        let config = config().with_nested_host();
+        let mut bytes = Out::default();
+        put_config(&mut bytes, &config);
+        let mut input = In(&bytes.0);
+        assert_eq!(take_config(&mut input).unwrap(), config);
+        bytes.0[0] = 2;
+        assert!(take_config(&mut In(&bytes.0)).is_err());
     }
 
     fn threaded(start: u8) -> (WorkerSession, std::thread::JoinHandle<()>) {
