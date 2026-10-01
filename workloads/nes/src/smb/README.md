@@ -13,10 +13,13 @@ the jump button changes is the common SMB move, and a draw of whole new chords
 rarely keeps it. The first chord of a new game has nothing before it and is
 drawn from the controller vocabulary.
 
-A job runs one to six chords and stops at the chord that brings it to 360
-frames, so it can last up to 479 frames. After the flag,
-the game plays for about 170 frames with an unchanged key before the next level
-starts. A job of one chord, at most 120 frames, never gets past that stretch.
+A job's length comes from its parent's earlier jobs, through the searcher's
+`one_doubling_while_in_place_up_to_64` suffix shape. A parent's first job runs
+one chord, and each job that keeps no state and stays in the parent's place
+doubles the next one, up to 64 chords. SMB has stretches where the key does not
+change: the flag tally lasts about 257 frames and the castle's Toad scene 378.
+A job of one chord, at most 120 frames, never crosses them; a parent in front
+of one reaches a long enough job after a few doublings.
 
 ## Archive key
 

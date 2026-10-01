@@ -21,8 +21,8 @@ pub const SUFFIX_DOUBLING_LIMIT: u8 = 64;
 pub enum SuffixShape {
     OneOrTwo,
     OneToSix,
-    #[default]
     OneToSixBounded,
+    #[default]
     DoubleWhileInPlace,
 }
 
