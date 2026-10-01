@@ -6,6 +6,7 @@ license.workspace = true
 description = "Deterministic virtual-time execution of controlled Linux guests above the Backend trait"
 
 [features]
+omit-nested-state = []
 xsave-diagnostics = ["vmm-backend/xsave-diagnostics"]
 
 [lints]

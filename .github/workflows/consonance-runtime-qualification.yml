@@ -89,8 +89,6 @@ jobs:
       - name: Build the matching nested-host kernel and fixture
         env:
           NESTED_HOST_PROFILE: 1
-          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
           NESTED_HOST_BUSYBOX: /usr/bin/busybox
         run: |
           set -euo pipefail
@@ -130,9 +128,35 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
-            --test live inner_consonance_runs_l2 -- --ignored --exact --test-threads=1 --nocapture \
+            --test live inner_consonance_runs_inner_guest -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee nested-host-evidence/inner-l1-oci.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/inner-l1-oci.log
+      - name: Outer nested state repeated and cold restore qualification
+        env:
+          NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
+          NESTED_OCI_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+          NESTED_DRIVER_IMAGE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/nested-driver.oci
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          # The matrix starts cold_snapshot_child in separate capture and import processes.
+          timeout -k 10 300 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
+            --test nested_restore outer_nested_state_snapshot_matrix -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee nested-host-evidence/nested-restore.log
+          grep -Fq 'NESTED_MATRIX cold_import=pass creations=1 imports=0' nested-host-evidence/nested-restore.log
+          set +e
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver --features omit-nested-state \
+            --test nested_restore outer_nested_state_snapshot_matrix -- --ignored --exact --test-threads=1 --nocapture \
+            >nested-host-evidence/nested-restore-omission.log 2>&1
+          result=$?
+          set -e
+          test "$result" -ne 0
+          test "$result" -ne 124
+          test "$result" -ne 137
+          grep -Fq 'NESTED_MATRIX uninterrupted=pass' nested-host-evidence/nested-restore-omission.log
+          grep -Fq 'NESTED_MATRIX capture_only=pass' nested-host-evidence/nested-restore-omission.log
+          grep -Fq 'NESTED_MATRIX restore_attempt=1' nested-host-evidence/nested-restore-omission.log
+          ! grep -Fq 'NESTED_MATRIX restore=1 pass' nested-host-evidence/nested-restore-omission.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

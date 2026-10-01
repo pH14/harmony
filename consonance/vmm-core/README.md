@@ -38,7 +38,7 @@ fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor
 fingerprint encodings cover the complete state records used for restore, while
 the complete portable artifact digest covers the same persisted bytes. The
-VMST uses the current version 6 wire format; a present `xsave_restore_bv`
+VMST uses the current version 7 wire format; a present `xsave_restore_bv`
 intentionally changes the VCPU identity.
 Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page
@@ -85,10 +85,10 @@ SDK reentry state in the current VM-state container. A terminal restore does not
 enter the guest again.
 
 X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
-flags, in the current VM-state v6 records. Cached PDPTRs are distinct from the
+flags, in the current VM-state records. Cached PDPTRs are distinct from the
 current PDPT contents in guest RAM and must survive restore without reloading
 them from that memory. Every standard-format XSAVE capture retains the original
-`XSTATE_BV` in the v6 tag-15 record, whether or not canonicalization changes the
+`XSTATE_BV` in the tag-15 record, whether or not canonicalization changes the
 x87/SSE init-state bits. The value is validated before restore. It is included in
 both the vCPU identity and the complete VMST identity through the logical
 projection described below. Short or compacted images may omit that optional
@@ -120,8 +120,17 @@ rules are documented in [contracts/x86](contracts/x86/README.md).
 `boot_linux_nested_host_virtual_time` composes the separate experimental x86
 nested-host contract with production `KvmBackend`. It requires host nested VMX,
 records KVM's capability MSRs in the snapshot contract identity, and boots the
-matching KVM-enabled kernel. It is a boot qualification entrypoint; live inner
-VM snapshot continuation has not yet been qualified.
+matching KVM-enabled kernel. Nested VMX state is carried through CPU records,
+VMST tag 16, raw and component identities, whole-state hashes, and portable
+artifacts. Publication requires L1 outside L2 guest mode; the inner VM remains
+allocated and VMX remains enabled. `nested-driver` qualifies repeated and cold
+outer restores at SDK lifecycle boundaries after inner KVM_RUN has returned.
+
+The non-default `omit-nested-state` feature is the qualification negative
+control. Snapshot publication replaces captured VMX state with a valid inactive
+header, while raw CPU observations still capture it. Its uninterrupted and
+capture-only cases must pass and restored L2 continuation must fail. Production
+builds retain the complete payload.
 
 ## Checks
 

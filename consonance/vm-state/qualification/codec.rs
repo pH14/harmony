@@ -37,6 +37,10 @@ fn run_case(size: usize, populated: bool, check: bool) {
         arm64.regs.x[0] = 0xabcdef;
         x86.xsave.0 = vec![0x47; 4096];
         x86.xsave_restore_bv = Some(3);
+        let mut nested = vec![0x5a; 4224];
+        nested[..4].fill(0);
+        nested[4..8].copy_from_slice(&4224_u32.to_le_bytes());
+        x86.nested_state = Some(nested);
         x86.hypercall = vec![5; 64];
         arm64.hypercall = vec![5; 64];
         x86.engine_state = vec![1, 2, 3];

@@ -14,7 +14,7 @@ use vmm_core::{
 
 #[test]
 #[ignore = "requires Intel nested VMX, NESTED_HOST_KERNEL, NESTED_OCI_INITRAMFS and NESTED_DRIVER_IMAGE"]
-fn inner_consonance_runs_l2() -> Result<(), Box<dyn std::error::Error>> {
+fn inner_consonance_runs_inner_guest() -> Result<(), Box<dyn std::error::Error>> {
     let read = |name| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         Ok(std::fs::read(std::env::var(name)?)?)
     };
