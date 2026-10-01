@@ -47,8 +47,9 @@
   `state_hash` hashes the services state and the pending request. Sessions
   are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event
-  count and event hash of a run. `Recording::check` refuses a different
-  profile or host, and `Recording::launch` replays to the recorded cut.
+  count and event hash of a run. It refuses a run with a replaced initramfs,
+  which it cannot replay. `Recording::check` refuses a different profile or
+  host, and `Recording::launch` replays to the recorded cut.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit.

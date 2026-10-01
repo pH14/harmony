@@ -166,7 +166,8 @@ fn cut_replays(
     for step in 1..=options.cuts {
         let cut = (step * reference.len() / options.cuts).max(1);
         let path = directory.path().join(format!("cut-{cut}.json"));
-        let recording = Recording::new(profile, host, base, SEED, &reference[..cut]);
+        let recording = Recording::new(profile, host, base, SEED, &reference[..cut])
+            .map_err(io::Error::other)?;
         std::fs::write(&path, serde_json::to_vec_pretty(&recording)?)?;
         let loaded: Recording = serde_json::from_slice(&std::fs::read(&path)?)?;
         let refused = loaded
@@ -222,7 +223,10 @@ fn seed_changes_events(options: &Options, profile: &VerifiedProfile) -> io::Resu
 
 fn refusal(profile: &VerifiedProfile, host: &HostIdentity) -> Value {
     let base = Launch::new(std::env::temp_dir());
-    let recording = Recording::new(profile, host, &base, SEED, &[]);
+    let recording = match Recording::new(profile, host, &base, SEED, &[]) {
+        Ok(recording) => recording,
+        Err(error) => return check("replay_refuses_other_host", false, json!(error.to_string())),
+    };
     let mut other_cpu = host.clone();
     other_cpu.cpu_model.push_str(";stepping=other");
     let mut other_features = host.clone();

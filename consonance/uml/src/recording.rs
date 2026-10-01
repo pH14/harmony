@@ -27,6 +27,8 @@ pub struct Recording {
 pub enum ReplayRefused {
     #[error("recording schema {0} is unsupported")]
     Schema(u32),
+    #[error("a run with a replaced initramfs cannot be recorded")]
+    Initramfs,
     #[error("recording was made with profile {recorded}; this profile is {current}")]
     Profile { recorded: String, current: String },
     #[error("recording was made on {recorded:?}; this host is {current:?}")]
@@ -43,8 +45,11 @@ impl Recording {
         launch: &Launch,
         seed: u64,
         events: &[Event],
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ReplayRefused> {
+        if launch.initramfs.is_some() {
+            return Err(ReplayRefused::Initramfs);
+        }
+        Ok(Self {
             schema: SCHEMA,
             profile_identity_sha256: profile.identity_sha256.clone(),
             host: host.clone(),
@@ -53,7 +58,7 @@ impl Recording {
             kernel_arguments: launch.kernel_arguments.clone(),
             events: events.len(),
             event_hash: event_hash(events),
-        }
+        })
     }
 
     pub fn check(
@@ -143,7 +148,8 @@ mod tests {
         }];
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.kernel_arguments = vec!["harmony_fixture=values".to_owned()];
-        let recording = Recording::new(&profile("a"), &host("model=1"), &launch, 9, &events);
+        let recording =
+            Recording::new(&profile("a"), &host("model=1"), &launch, 9, &events).unwrap();
         assert!(recording.check(&profile("a"), &host("model=1")).is_ok());
         assert!(matches!(
             recording.check(&profile("b"), &host("model=1")),
@@ -173,5 +179,11 @@ mod tests {
         assert!(!recording.matches(&events[..0]));
         let text = serde_json::to_string(&recording).unwrap();
         assert_eq!(serde_json::from_str::<Recording>(&text).unwrap(), recording);
+
+        launch.initramfs = Some(PathBuf::from("/image.cpio.gz"));
+        assert!(matches!(
+            Recording::new(&profile("a"), &host("model=1"), &launch, 9, &events),
+            Err(ReplayRefused::Initramfs)
+        ));
     }
 }
