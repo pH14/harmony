@@ -16,8 +16,8 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState},
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
-        smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_area_is_loading,
+        smb_camera_pixels, smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
 };
@@ -32,7 +32,7 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
 const PROGRESS_BAND: u16 = 64;
 const BAND_RANK_SHIFT: u32 = 1;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_loop_path_place_screen_x_identity_clock_preference";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -110,14 +110,22 @@ impl ArchiveKey for SmbArchiveKey {
     type Lineage = Vec<SmbRoomIdentity>;
 
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
-        let arrived_here = self.room;
+        let this = match parent {
+            Some((parent_key, _)) if parent_key.room[..2] == self.room[..2] => Self {
+                world: parent_key.world,
+                level: parent_key.level,
+                ..self
+            },
+            _ => self,
+        };
+        let arrived_here = this.room;
         let room = match parent {
             Some((parent_key, rooms))
-                if (parent_key.world, parent_key.level) == (self.world, self.level) =>
+                if (parent_key.world, parent_key.level) == (this.world, this.level) =>
             {
                 let parent_room = parent_key.room;
                 let same_area = parent_room[..2] == arrived_here[..2];
-                let warped = parent_key.progress >= self.progress.saturating_add(ROOM_ARRIVAL_SNAP);
+                let warped = parent_key.progress >= this.progress.saturating_add(ROOM_ARRIVAL_SNAP);
                 if !same_area {
                     arrived_here
                 } else if warped {
@@ -133,7 +141,7 @@ impl ArchiveKey for SmbArchiveKey {
             }
             _ => arrived_here,
         };
-        Self { room, ..self }
+        Self { room, ..this }
     }
 
     fn record(lineage: &mut Self::Lineage, key: Self) {
@@ -210,7 +218,11 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         progress: state.progress,
         player_y_bucket: state.player_y_bucket,
         loop_on_path: wram[LOOP_CORRECT_PASSES_OFFSET] == wram[LOOP_PASSES_OFFSET],
-        room_x_bucket: screen_x_bucket(wram),
+        room_x_bucket: if smb_area_is_loading(wram) {
+            0
+        } else {
+            screen_x_bucket(wram)
+        },
         time_bucket: wram[GAME_TIMER_HUNDREDS_OFFSET],
         clock: game_clock(wram),
         room: [0; 3],
@@ -358,7 +370,7 @@ pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16
 
 #[cfg(test)]
 mod tests {
-    use super::{SmbArchiveKey, SmbRoomIdentity};
+    use super::{SmbArchiveKey, SmbRoomIdentity, archive_key, stamp_arrival_room};
     use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
 
@@ -492,6 +504,56 @@ mod tests {
                 .expect("fresh key")
                 .room,
             [0, 2, 3]
+        );
+    }
+
+    #[test]
+    fn a_new_level_starts_when_its_area_loads() {
+        let castle = SmbArchiveKey {
+            world: 0,
+            level: 3,
+            ..key(150, [3, 0])
+        };
+        let mut wram = [0_u8; 2_048];
+        wram[0x0770] = 1;
+        wram[0x0772] = 0;
+        wram[0x075f] = 1;
+        wram[0x074e] = 1;
+        wram[0x071a] = 9;
+        wram[0x006d] = 9;
+        wram[0x0086] = 120;
+        let loading = stamp_arrival_room(archive_key(&wram), &wram).expect("loading key");
+        assert_eq!((loading.progress, loading.room_x_bucket), (0, 0));
+        let loading = loading.complete(Some((castle, &Vec::new())));
+        assert_eq!(
+            (loading.world, loading.level, loading.room),
+            (1, 0, [1, 0, 0])
+        );
+
+        let warp_zone = SmbArchiveKey {
+            world: 0,
+            level: 1,
+            ..key(182, [2, 0])
+        };
+        let entering_pipe = SmbArchiveKey {
+            world: 2,
+            level: 0,
+            ..key(182, [2, 0])
+        }
+        .complete(Some((warp_zone, &Vec::new())));
+        assert_eq!(
+            (entering_pipe.world, entering_pipe.level, entering_pipe.room),
+            (0, 1, [2, 0, 11])
+        );
+        let arrived = SmbArchiveKey {
+            world: 2,
+            level: 0,
+            ..key(2, [1, 4])
+        }
+        .complete(Some((entering_pipe, &Vec::new())));
+        assert_eq!(
+            (arrived.world, arrived.level, arrived.room),
+            (2, 0, [1, 4, 0])
         );
     }
 

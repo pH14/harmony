@@ -23,3 +23,14 @@ cannot, while both reach the same columns and heights. The key holds the
 equality in the place, so a slower state that can still clear the loop keeps
 its own slot beside a faster state that cannot. In 4-4 and 8-4 the game leaves
 both counters at zero and sends Mario back at a wrong check at once.
+
+The game writes the next level's world and level numbers (`$075F`, `$075C`)
+before it loads that level's area. At a warp pipe it writes them as Mario
+enters the pipe, about 50 frames before the area loads. After a castle it
+writes them on the first frame of area loading (`$0770` = 1, `$0772` = 0). In
+both cases the scroll still holds the old level's position, so the old level's
+end would read as deep progress in the new level and outrank real play there.
+A state whose level numbers differ from the previous state's while its area
+(`$074E`, `$074F`) is unchanged keeps the previous state's world and level.
+States during area loading have progress 0 and screen column 0, because the
+scroll or Mario's position still belongs to the old area.

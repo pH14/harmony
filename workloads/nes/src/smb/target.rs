@@ -132,6 +132,7 @@ const OPER_MODE_OFFSET: usize = 0x0770;
 const OPER_MODE_PLAY: u8 = 1;
 const OPER_MODE_TASK_OFFSET: usize = 0x0772;
 const OPER_MODE_TASK_PLAY: u8 = 3;
+const OPER_MODE_TASK_AREA_INIT: u8 = 0;
 
 #[derive(Debug)]
 pub struct SmbTarget<M = QuickNesMachine, P = Vec<u8>>
@@ -664,12 +665,21 @@ pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalSt
     SmbMechanicalState {
         world: wram[WORLD_NUMBER_OFFSET],
         level: smb_current_level(wram),
-        progress: smb_scroll_bucket(wram),
+        progress: if smb_area_is_loading(wram) {
+            0
+        } else {
+            smb_scroll_bucket(wram)
+        },
         player_y_bucket: wram[PLAYER_Y_OFFSET] / 16,
         player_engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
         dead: smb_player_is_dead(wram),
         flag_active: wram[FLAG_TASK_OFFSET] != 0,
     }
+}
+
+pub(crate) fn smb_area_is_loading(wram: &[u8; WRAM_SIZE]) -> bool {
+    wram[OPER_MODE_OFFSET] == OPER_MODE_PLAY
+        && wram[OPER_MODE_TASK_OFFSET] == OPER_MODE_TASK_AREA_INIT
 }
 
 const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
@@ -722,6 +732,24 @@ mod tests {
         assert_eq!((decoded.world, decoded.level, decoded.progress), (2, 3, 66));
         assert_eq!(decoded.player_y_bucket, 3);
         assert_eq!(decoded.player_engine_state, 7);
+    }
+
+    #[test]
+    fn scroll_progress_is_zero_while_an_area_loads() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[0x075f] = 1;
+        wram[0x071a] = 9;
+        wram[0x0770] = 1;
+        wram[0x0772] = 3;
+        assert_eq!(smb_mechanical_state_from_wram(&wram).progress, 144);
+        wram[0x0772] = 0;
+        assert_eq!(smb_mechanical_state_from_wram(&wram).progress, 0);
+        wram[0x0770] = 2;
+        assert_eq!(
+            smb_mechanical_state_from_wram(&wram).progress,
+            144,
+            "the castle ending starts its tasks at zero"
+        );
     }
 
     #[test]
