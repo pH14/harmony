@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Qualification / Nested Search Replay
+name: Qualification / Nested Search RAM Audit
 on:
   workflow_dispatch:
     inputs:
@@ -43,6 +43,8 @@ jobs:
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver --test live direct_restore_stutters -- --ignored --exact --nocapture 2>&1 | tee replay-evidence/direct.log
       - name: Replay complete recorded campaign
+        env:
+          HARMONY_NESTED_RAM_AUDIT: "1"
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')

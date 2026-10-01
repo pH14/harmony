@@ -1116,6 +1116,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let tracked = window_consumed || vmm.reset_dirty_tracking();
         self.derive_parent = tracked.then_some(store_id);
         self.set_current_image(tracked.then_some(store_id));
+        self.audit_snapshot_ram(store_id, "capture");
 
         let id = self.next_snap;
         self.next_snap += 1;
@@ -1192,7 +1193,43 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         vmm.write_guest_page_refs(&pages).map_err(|_| ())?;
         vmm.restore_vm_state(vm_state).map_err(|_| ())?;
         vmm.prepare_snapshot().map_err(|_| ())?;
+        self.audit_snapshot_ram(store_id, "restore");
         Ok(bytes)
+    }
+
+    fn audit_snapshot_ram(&self, id: SnapshotId, stage: &str) {
+        if std::env::var_os("HARMONY_NESTED_RAM_AUDIT").is_none() {
+            return;
+        }
+        let memory = self.vmm.as_ref().unwrap().guest_memory();
+        let pages = self.engine.restore_pages(None, id, &[]).unwrap();
+        let mut differences = Vec::new();
+        for (gfn, expected) in pages {
+            let start = gfn as usize * 4096;
+            let current = &memory[start..start + 4096];
+            if expected.as_slice() != current {
+                let offset = expected
+                    .iter()
+                    .zip(current)
+                    .position(|(a, b)| a != b)
+                    .unwrap();
+                if differences.len() < 16 {
+                    eprintln!(
+                        "NESTED_RAM_AUDIT stage={stage} gpa={:#x} expected={:02x} current={:02x}",
+                        start + offset,
+                        expected[offset],
+                        current[offset]
+                    );
+                }
+                differences.push(gfn);
+            }
+        }
+        if !differences.is_empty() {
+            eprintln!(
+                "NESTED_RAM_AUDIT stage={stage} changed_pages={}",
+                differences.len()
+            );
+        }
     }
 
     fn set_current_image(&mut self, image: Option<SnapshotId>) {
