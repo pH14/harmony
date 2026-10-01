@@ -139,7 +139,7 @@ mod tests {
         let events = [Event {
             moment: 3,
             id: 0,
-            data: b"{}".to_vec(),
+            data: b"{}"[..].into(),
         }];
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.kernel_arguments = vec!["harmony_fixture=values".to_owned()];

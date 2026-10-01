@@ -401,7 +401,7 @@ impl SearchSession for UmlSession {
                 session
                     .events()
                     .iter()
-                    .map(|event| (event.moment, event.id, event.data.clone()))
+                    .map(|event| (event.moment, event.id, event.data.to_vec()))
                     .collect()
             })
             .unwrap_or_default())
