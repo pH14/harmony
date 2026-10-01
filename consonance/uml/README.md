@@ -66,3 +66,9 @@ must be started from a thread that outlives it.
 
 `harmony-uml-qualify` is the qualification binary described in
 `consonance/harmony-linux/uml/README.md`.
+
+The crate's `unsafe` blocks are host system calls: sequenced-packet sockets,
+descriptor passing, `memfd_create`, fixed mappings and process-group signals.
+Miri cannot run those calls, so the tests that make them are ignored under
+Miri and the qualification suites exercise them on Linux; Miri runs the
+crate's other library tests.
