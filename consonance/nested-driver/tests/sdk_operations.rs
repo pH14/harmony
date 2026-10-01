@@ -97,3 +97,42 @@ fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "isolated SDK seed witness without preceding campaign detours"]
+fn cold_operation_witness() -> Result<(), Box<dyn Error>> {
+    let read =
+        |name| -> Result<Vec<u8>, Box<dyn Error>> { Ok(std::fs::read(std::env::var(name)?)?) };
+    let kernel = read("NESTED_HOST_KERNEL")?;
+    let base = read("NESTED_OCI_INITRAMFS")?;
+    let stage = tempfile::tempdir()?;
+    let image = image::stage(&std::env::var("NESTED_DRIVER_IMAGE")?, stage.path())?;
+    let request = LaunchRequest::new(vec![
+        "/app/nested-driver".into(),
+        "--sdk".into(),
+        "--search".into(),
+    ])
+    .with_kvm();
+    let initramfs = bundle::prepare(&image, &request)?.initramfs(&base);
+    let config = SessionConfig {
+        ram_bytes: 512 << 20,
+        seed: 42,
+        ..SessionConfig::default()
+    }
+    .with_nested_host()
+    .with_deferred_virtual_time_checkpoint_hashes()
+    .with_wall_limit(Duration::from_secs(15));
+    let mut session = Session::new_with_config(&kernel, &initramfs, config)?;
+    assert_eq!(observation(&mut session)?[0..2], [1, 0]);
+    for seed in [
+        1183780418502244392,
+        10532316002689783442,
+        17089026208386007299,
+        10277167538070244994,
+        9680241549636873985,
+        9159021453076825606,
+    ] {
+        advance(&mut session, seed)?;
+    }
+    Ok(())
+}

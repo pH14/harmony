@@ -42,6 +42,15 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver --test live direct_restore_stutters -- --ignored --exact --nocapture 2>&1 | tee replay-evidence/direct.log
+      - name: Cold SDK failure witness
+        env:
+          NESTED_HOST_KERNEL: ${{ github.workspace }}/nested-inputs/bzImage-nested-host
+          NESTED_OCI_INITRAMFS: ${{ github.workspace }}/nested-inputs/initramfs-oci.cpio.gz
+          NESTED_DRIVER_IMAGE: ${{ github.workspace }}/nested-inputs/nested-driver.oci
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver --test sdk_operations cold_operation_witness -- --ignored --exact --nocapture 2>&1 | tee replay-evidence/cold-witness.log
       - name: Search and replay with RAM and result audits
         env:
           HARMONY_NESTED_RAM_AUDIT: "1"
