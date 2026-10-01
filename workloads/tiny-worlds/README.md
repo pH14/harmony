@@ -165,7 +165,21 @@ prospective game predictions before it is called predictive.
 
 The comparison panel includes hidden-gap and visible-progress controls around the recorded 1,095-frame automatic wait. The 960–1,230 range tests sensitivity; it is not a native-rate calibration or a forecast. Duration-only inputs omit control-symbol entropy, the populated game archive, and the later menu decision.
 
-The two new comparison worlds each had zero rejected comparisons in 300 simulated comparisons of the unchanged engine. Each simulation used adaptive doubling from 16 to at most 256 layouts and reused a pool of 512 shared configurations with independent runtime seeds in the two arms; these are approximate resampling rates, not 300 independent experiments. Both hidden-gap arms missed all 512 goals, whereas both visible-progress arms reached all 512. The hidden-gap result reflects a gap above the current 720-tick ordinary suffix bound, not evidence of predictive accuracy. Separately, 16 same-seed identity controls per world preserved exact campaign streams and panel legs. Legacy comparisons against the production-equivalent base preserved all 186 streams across the original twelve worlds.
+The panel gives each clock run 200,000 held ticks, not 200,000 executions.
+Long holds consume that budget in relatively few suffixes. It detects changes
+that cross the hidden gap within this short horizon; an improvement that still
+needs hundreds of thousands of executions can remain censored in both arms.
+Equal misses and an equal budget-capped total-work ratio do not establish equal
+performance. The gaps exceed the ordinary 720-tick suffix bound, but a miss at
+this budget alone is not a rate estimate or evidence of predictive accuracy.
+Use longer scaled runs and prospective game forecasts to qualify such gains.
+
+When both arms miss, the panel cannot estimate the `wait entry to goal` leg.
+That undecided leg keeps adaptive sampling running to its 256-layout limit,
+even when both arms have only censored results. Hidden-gap comparisons can
+therefore pay the maximum sampling cost while providing no completion-rate
+estimate. A final `plausible` status means no regression was detected at the
+sampled horizon; it does not qualify the hidden wait or a game prediction.
 
 ## Archive key
 
