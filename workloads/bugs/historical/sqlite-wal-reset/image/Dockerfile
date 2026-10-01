@@ -58,7 +58,9 @@ COPY --from=fork-build /out/symbols /symbols
 COPY --from=fork-build /out/SQLITE-LICENSE.md /licenses/sqlite.md
 COPY --from=voidstar /out/libvoidstar.so /usr/lib/libvoidstar.so
 COPY workloads/bugs/historical/sqlite-wal-reset/image/bundle /etc/harmony/bundle
-RUN rm -f /usr/lib/*/libmemusage.so \
+COPY workloads/languages/reviewed/bookworm-x86_64.txt /tmp/harmony-base-review
+RUN if [ "$(uname -m)" = x86_64 ]; then cp /tmp/harmony-base-review /etc/harmony/instruction-allowlist; fi \
+    && rm /tmp/harmony-base-review \
     && chmod 0755 /usr/local/bin/sqlite-workload /usr/lib/libvoidstar.so \
     && mkdir -p /data \
     && test -s /symbols/harmony-instrumented-events

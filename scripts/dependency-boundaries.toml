@@ -49,6 +49,7 @@ workload_packages = [
     "workloads/nes-guest",
     "workloads/fault-policy",
     "workloads/faults",
+    "workloads/languages/rust",
     "workloads/nes",
     "workloads/tiny-worlds",
 ]

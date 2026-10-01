@@ -61,6 +61,7 @@ PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
     (f"{WORKFLOW_DIR}/consonance-checks.yml", "Exact Runtime Artifacts"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "Exact Runtime Artifacts"): 45,
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Images"): 45,
 }
 
 
@@ -533,6 +534,20 @@ HARMONY_NES_CHECKS = Workflow(
     ),
 )
 
+HARMONY_LANGUAGES_CHECKS = Workflow(
+    path=f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml",
+    name="Checks / Harmony Workloads / Languages",
+    owner="Harmony Workloads",
+    triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
+    jobs=(
+        Job("Language Images", "pr", 45,
+            exception="From-source language layers and a missing exact guest runtime are built once before bounded consumers.",
+            scope="harmony_languages"),
+        Job("C", "pr", 15, scope="harmony_languages"),
+        Job("Rust", "pr", 15, scope="harmony_languages"),
+    ),
+)
+
 HARMONY_OCI_CHECKS = Workflow(
     path=f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml",
     name="Checks / Harmony Workloads / OCI",
@@ -658,6 +673,7 @@ WORKFLOWS = (
     DISSONANCE_TINY_WORLDS_CHECKS,
     HARMONY_NES_CHECKS,
     HARMONY_OCI_CHECKS,
+    HARMONY_LANGUAGES_CHECKS,
     DISSONANCE_NES_BENCHMARKS,
     HARMONY_NES_BENCHMARKS,
     HARMONY_HISTORICAL_BENCHMARKS,
@@ -725,6 +741,7 @@ SCOPE_KINDS = {
     "dissonance_stb": DISSONANCE_NES_CHECKS.name,
     "harmony_nes": HARMONY_NES_CHECKS.name,
     "harmony_oci": HARMONY_OCI_CHECKS.name,
+    "harmony_languages": HARMONY_LANGUAGES_CHECKS.name,
     "consonance_platform": CONSONANCE_CHECKS.name,
     "consonance_kvm": CONSONANCE_CHECKS.name,
     "kani": CONSONANCE_ANALYSIS.name,

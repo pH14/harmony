@@ -1,0 +1,8 @@
+# Reviewed sites in the immutable pinned Bookworm x86_64 base. See README.md.
+14d0ad938ee07d31ad774567059ac3bb1139e692c6ad21a1450785e880eeb1e8 0xea3d9 RDRAND libgcrypt rndhw.c checks HWF_INTEL_RDRAND from CPUID.1.ECX bit30; frozen guest CPUID clears that bit
+14d0ad938ee07d31ad774567059ac3bb1139e692c6ad21a1450785e880eeb1e8 0xea4b1 RDRAND libgcrypt rndhw.c checks HWF_INTEL_RDRAND from CPUID.1.ECX bit30; frozen guest CPUID clears that bit
+e7848e32af4932840ba775169041759a2a8dd5a008af360e5c55bce506eebcf4 0xd3287 RDRAND GCC12 random.cc _M_init requires CPUID.1.ECX bit30 before installing the hardware function; frozen CPUID clears it
+e7848e32af4932840ba775169041759a2a8dd5a008af360e5c55bce506eebcf4 0xd32c8 RDSEED GCC12 random.cc _M_init requires CPUID.7.EBX bit18 before installing the hardware function; frozen CPUID clears it
+e7848e32af4932840ba775169041759a2a8dd5a008af360e5c55bce506eebcf4 0xd32ef RDSEED GCC12 random.cc _M_init requires CPUID.7.EBX bit18 before installing the hardware function; frozen CPUID clears it
+e7848e32af4932840ba775169041759a2a8dd5a008af360e5c55bce506eebcf4 0xd33c8 RDSEED GCC12 random.cc _M_init requires CPUID.7.EBX bit18 before installing the hardware function; frozen CPUID clears it
+e7848e32af4932840ba775169041759a2a8dd5a008af360e5c55bce506eebcf4 0xd33ec RDSEED GCC12 random.cc _M_init requires CPUID.7.EBX bit18 before installing the hardware function; frozen CPUID clears it

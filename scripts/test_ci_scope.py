@@ -34,7 +34,8 @@ class ScopeTests(unittest.TestCase):
                 self.assertEqual(self.active(path), {"dissonance_stb"})
 
     def test_fault_changes_select_the_oci_composition(self):
-        self.assertEqual(self.active("workloads/faults/src/target.rs"), {"harmony_oci"})
+        self.assertEqual(self.active("workloads/faults/src/target.rs"), {"harmony_oci", "harmony_languages"})
+        self.assertIn("harmony_languages", self.active("workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch"))
 
     def test_historical_publisher_and_report_select_the_oci_composition(self):
         for path in (".github/workflows/harmony-workloads-historical-bugs.yml",
@@ -44,11 +45,11 @@ class ScopeTests(unittest.TestCase):
 
     def test_backend_changes_select_both_execution_scenarios(self):
         self.assertEqual(self.active("consonance/vmm-backend/src/kvm.rs"),
-                         {"consonance_platform", "consonance_kvm", "harmony_nes"})
+                         {"consonance_platform", "consonance_kvm", "harmony_nes", "harmony_languages"})
 
     def test_the_shared_process_protocol_selects_its_consumers(self):
         self.assertEqual(self.active("consonance/process-proto/src/events.rs"),
-                         {"consonance_platform", "harmony_nes", "harmony_oci"})
+                         {"consonance_platform", "harmony_nes", "harmony_oci", "harmony_languages"})
 
     def test_the_nes_guest_runs_through_both_compositions(self):
         self.assertEqual(self.active("workloads/nes-guest/src/agent.rs"),

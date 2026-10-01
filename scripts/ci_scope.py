@@ -15,6 +15,7 @@ SCENARIOS = (
     "dissonance_stb",
     "harmony_nes",
     "harmony_oci",
+    "harmony_languages",
     "consonance_platform",
     "consonance_kvm",
 )
@@ -28,6 +29,7 @@ GLOBAL = (
     ".github/actions/platform-runtime/**",
     ".github/actions/nes-guest-image/**",
     ".github/actions/prepare-nes-guest/**",
+    ".github/workflows/harmony-workloads-languages-checks.yml",
     "scripts/ci_scope.py", "scripts/test_ci_scope.py",
     "scripts/ci_contract.py", "scripts/test_ci_contract.py",
     ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
@@ -57,6 +59,8 @@ def selected(paths):
             result["harmony_oci"] = True
         if path in (".github/workflows/harmony-workloads-historical-bugs.yml", "scripts/render-historical-bugs.py"):
             result["harmony_oci"] = True
+        if path.startswith(("cli/", "consonance/", "workloads/languages/", "workloads/faults/", "workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/")):
+            result["harmony_languages"] = True
         if path.startswith("cli/"):
             result["harmony_oci"] = result["consonance_platform"] = True
         if path.startswith("consonance/"):
