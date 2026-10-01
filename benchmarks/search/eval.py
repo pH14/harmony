@@ -203,7 +203,7 @@ def run_one(job,request,args,cpus,build,host):
                 stage=read_json(campaign/'phase.json',{}).get('phase','preparation')
                 frames=progress.get('execution_work',0)
                 delta=elapsed-last_time
-                sample={'elapsed_seconds':elapsed,'phase':stage,**current,'disk':disk,'executions':progress.get('executions',0),'frames_emulated':frames,'interval_frames_per_second':max(0,frames-last_frames)/delta if delta>0 and stage=='search' and last_phase=='search' else None,'search':progress}
+                sample={'elapsed_seconds':elapsed,'phase':stage,**current,'disk':disk,'executions':progress.get('executions',0),'frames_emulated':frames,'interval_frames_per_second':max(0,frames-last_frames)/delta if delta>0 and stage=='search' and last_phase=='search' else None,'search':{key:value for key,value in progress.items() if value is None or isinstance(value,(str,int,float,bool))}}
                 telemetry.write(json.dumps(sample,separators=(',',':'),allow_nan=False)+'\n');telemetry.flush()
                 if current['rss_bytes'] is not None:
                     peak_rss=max(peak_rss or 0,current['rss_bytes'])

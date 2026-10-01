@@ -103,6 +103,12 @@ enabled for benchmark cells and recorded in both the matrix runner metadata and
 each cell summary. Older summaries omit that field; their runner source must be
 checked before assuming a profiling setting.
 
+Resource samples retain scalar search progress fields alongside host counters.
+Full selector, census and workload diagnostics stay in `campaign/progress.jsonl`
+and the final summary's `last_progress`. Resource polling does not copy those
+nested reports repeatedly while the native evaluator exports or verifies tapes,
+so an unchanged final census cannot multiply telemetry storage at every sample.
+
 `search.result_slots` optionally permits one (the default) or two unadmitted
 result-bearing jobs per physical executor. With two slots, an executor can run
 another already-reserved job while its earlier result awaits ordered admission.
