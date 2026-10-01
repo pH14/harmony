@@ -102,3 +102,32 @@ fn inner_consonance_runs_inner_guest() -> Result<(), Box<dyn std::error::Error>>
     }
     Err("nested L2 exceeded the step budget".into())
 }
+
+#[test]
+#[ignore = "diagnostic control for the recorded restore failure"]
+fn direct_restore_stutters() -> Result<(), Box<dyn std::error::Error>> {
+    use nested_driver::operations::{Choice, Engine, Operation, compose_long};
+    let mut engine = Engine::new(compose_long(vmm_backend::KvmBackend::new()?)?)?;
+    for operation in [
+        Operation::Restore,
+        Operation::Snapshot,
+        Operation::Snapshot,
+        Operation::Snapshot,
+        Operation::Drop,
+        Operation::Restore,
+    ] {
+        engine.execute(&Choice {
+            operation,
+            snapshot: 0,
+            inputs: vec![0],
+            branch_seed: 0,
+        })?;
+        println!(
+            "NESTED_DIRECT_RESTORE type={} snapshots={} bytes={}",
+            operation.name(),
+            engine.live_snapshots(),
+            nested_driver::hex(&engine.oracle.bytes())
+        );
+    }
+    Ok(())
+}
