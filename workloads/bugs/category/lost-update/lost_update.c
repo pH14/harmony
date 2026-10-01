@@ -139,7 +139,7 @@ static int writer(const char *path, int id)
     emit("reachability", STARTED, 1, 1);
     int reported[2] = {0, 0};
     volatile uint64_t sink = 0;
-    const struct timespec pace = {.tv_sec = 0, .tv_nsec = 1000000};
+    const struct timespec pace = {.tv_sec = 0, .tv_nsec = 1000000 * (noise_sites + 1)};
     for (;;) {
         increment(counter, variant);
         __atomic_fetch_add(&counter->done[id], 1, __ATOMIC_RELEASE);
@@ -156,6 +156,8 @@ static int writer(const char *path, int id)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "ready") == 0)
+        return 0;
     if (argc == 3 && strcmp(argv[1], "init") == 0)
         return map_counter(argv[2], 1) ? 0 : 1;
     if (argc == 4 && strcmp(argv[1], "writer") == 0)

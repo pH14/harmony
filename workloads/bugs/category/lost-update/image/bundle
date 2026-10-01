@@ -1,4 +1,4 @@
 setup /usr/local/bin/lost-update init /data/counter
 node writer-0 /usr/local/bin/lost-update writer /data/counter 0
 node writer-1 /usr/local/bin/lost-update writer /data/counter 1
-ready /bin/true
+ready /usr/local/bin/lost-update ready
