@@ -94,14 +94,21 @@ runtime adds one crossing and adds a hash of the site's module offset and the
 bucket to a wrapping sum. A crossing whose module is missing from the list
 waits in a queue that the control thread resolves after its next module
 listing, before it answers any command. A crossing in a module that unloads
-before then hashes its address. A coverage-status command returns both values in its second and third words,
-plus a saturating total callback count in its fourth word. The callback count
-lets the language park fixture measure ongoing progress after all hit-count
-buckets have saturated.
+before then hashes its address. A coverage-status command returns both values
+and a saturating count of all callbacks. The language park check uses that
+count, because hit-count buckets stop changing once they saturate.
 They cover the process since it started. Module offsets make each crossing's
 hash independent of where the loader placed the module. Slots are chosen by
 address, so which sites share a slot can change with placement. Another 512 KiB
 of bucket bytes holds the levels.
+
+`tests/language_park_launcher.c` runs a language fixture, parks one of its
+threads at a coverage site, and requires the callback count to grow while the
+hold lasts. A fixture can print `HARMONY_LANGUAGE_PARK_RANGE start end` to
+limit the park to a range of sites. The launcher then arms that range before
+the fixture starts its spinner, and requires a new timer marker during the
+hold. The Python fixture uses this to park at a Python-level site, which
+releases the GIL.
 
 A claimed kill keeps the callback lock through its report and signal, so a
 later disarm acknowledgement cannot overtake enforcement. Parks release the

@@ -5,25 +5,41 @@ description: Prepare a service or language workload image for deterministic Harm
 
 # Preparing workloads
 
-Inventory every service before changing its image:
+List every service before changing its image:
 
 | Service | Language and version | Build system | Runtime artifact path | Symbol files |
 | --- | --- | --- | --- | --- |
 
-Include helper processes and native libraries that can run long loops. Identify the service's source revision, startup command, readiness check, and existing Harmony bundle. Preserve the user's workload and deployment choices.
+Include helper processes and native libraries that can run long loops. Record each service's source revision, startup command, readiness check, and existing Harmony bundle. Keep the user's workload and deployment choices.
 
-Every target needs three properties: hidden instructions occur only at reviewed sites; the runtime does not generate executable code; and every application loop reaches a libvoidstar callback. Static ELF admission checks instructions and writable executable file segments and executable stacks. It cannot prove arbitrary code has no dynamic code generation: verify runtime/build settings and relevant memory mappings in the language recipe. The guest detector for approved JIT runtimes is a separate, conditional stage.
+Every target image must meet three conditions:
 
-Read [the compiled-language reference](references/compiled.md) for C, C++, LLVM front ends, Rust, and GCC. Only use a language reference after its recipe has passed its acceptance checks.
-Read [the Go reference](references/go.md) for cgo forwarding, standard-library selection, the etcd reference, and measured GC limits.
+1. Hardware entropy instructions appear only at reviewed sites.
+2. The runtime generates no executable code.
+3. Every application loop reaches a libvoidstar callback.
 
-Install the composed runtime at `/usr/lib/libvoidstar.so`. Use the shared build in `workloads/languages/build-runtime.sh`; language layers load this library at execution time. Keep the SDK forwarding code unchanged. Write SHA-256 and absolute image paths to `/symbols/harmony-instrumented-events`, preserve unstripped binaries under `/symbols`, and write a nonempty `*.sym.tsv` using the language's own tool.
+Admission scans every executable and shared object in the image. It rejects writable and executable segments, executable stacks, and unreviewed RDRAND, RDSEED, RNDR or RNDRRS sites. Counter reads need no review, because the guest kernel traps them. Admission cannot prove that a runtime never generates code. Turn off each code generator in the recipe and check `/proc/self/maps` in the fixture.
 
-Run image preflight before a VM test. For each rejected instruction, inspect the exact executable and disassembly at the reported module address. Accept a site only after confirming the runtime cannot execute it under Harmony's fixed CPU policy or that it uses an audited deterministic mechanism. Record the executable digest, address, instruction, and concrete rationale in `/etc/harmony/instruction-allowlist`. Do not copy approvals across changed binaries or approve all instructions merely to pass admission. Remove unused diagnostic libraries instead of approving their counter instructions.
+Read the reference for the language:
 
-Require ordered timer markers, identical logs and execution records from two fixed-seed boots, progress by another thread while one is parked, and an event-enabled reference-case search. Use `workloads/languages/run-check.sh` for the common fixture checks. Write the language reference from the tested recipe, including build inputs and observed limitations.
+- [Compiled languages](references/compiled.md): C, C++, other LLVM front ends, Rust, and GCC.
+- [Go](references/go.md): cgo forwarding, standard-library selection, and the etcd case.
+- [Python](references/python.md): the CPython interpreter, source-built extensions, and the PostgreSQL driver.
 
-The inventory structure follows Antithesis's Apache-2.0 [setup skill](https://github.com/antithesishq/antithesis-skills/tree/1fd8470d36a9629a75bda4619a5589d679a40d7c/antithesis-setup). Harmony's image rules and acceptance commands are maintained here.
+Install the composed runtime at `/usr/lib/libvoidstar.so` with `workloads/languages/compose.Dockerfile`. Keep the SDK forwarding code unchanged. Write the SHA-256 and absolute path of each instrumented file to `/symbols/harmony-instrumented-events`. Keep unstripped binaries under `/symbols`, each with a nonempty `*.sym.tsv` from the language's own tool.
+
+Run `harmony preflight --image IMAGE` before booting a VM. For each rejected instruction, disassemble the reported executable at the reported address. Accept a site only when the runtime cannot reach it under Harmony's fixed CPUID. Record the executable digest, address, instruction, and reason in `/etc/harmony/instruction-allowlist`, as `workloads/languages/reviewed/` does. A rebuilt binary has a new digest and needs a new review.
+
+Acceptance needs four results:
+
+- Twenty ordered timer markers.
+- Identical serial logs and run records from two boots with the same seed.
+- Progress on one thread while the park launcher holds another.
+- An event-enabled search on a reference case that reaches its oracle.
+
+`workloads/languages/run-check.sh` runs the first three. Write the language reference from the recipe that passed, including its build inputs and known limits.
+
+The service table follows Antithesis's Apache-2.0 [setup skill](https://github.com/antithesishq/antithesis-skills/tree/1fd8470d36a9629a75bda4619a5589d679a40d7c/antithesis-setup).
 
 Finish preparation with:
 

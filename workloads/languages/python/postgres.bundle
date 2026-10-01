@@ -1,0 +1,7 @@
+setup /opt/harmony/setup.sh
+node postgres /opt/harmony/node.sh
+ready /opt/harmony/ready.sh
+hook 1 /opt/python/bin/python3.14 /opt/harmony/python-postgres/postgres_driver.py 1
+hook 2 /opt/python/bin/python3.14 /opt/harmony/python-postgres/postgres_driver.py 2
+hook 3 /opt/python/bin/python3.14 /opt/harmony/python-postgres/postgres_driver.py 3
+hook 4 /opt/python/bin/python3.14 /opt/harmony/python-postgres/postgres_driver.py 4
