@@ -1,0 +1,3 @@
+setup /usr/local/bin/mini-wal-reset ready
+node log /usr/local/bin/mini-wal-reset run
+ready /usr/local/bin/mini-wal-reset ready

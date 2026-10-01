@@ -1,0 +1,3 @@
+setup /usr/local/bin/double-vote ready
+node voter /usr/local/bin/double-vote run
+ready /usr/local/bin/double-vote ready
