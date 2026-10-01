@@ -210,3 +210,24 @@ mod tests {
         );
     }
 }
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+pub(crate) fn canonicalize_vmx_exit_info(bytes: &mut [u8]) -> Result<()> {
+    if bytes.len() == NESTED_HEADER_LEN {
+        return Ok(());
+    }
+    let vmcs = bytes
+        .get_mut(NESTED_HEADER_LEN..)
+        .ok_or(BackendError::Internal("short nested VMCS12"))?;
+    if vmcs.len() < 824 || u32::from_le_bytes(vmcs[..4].try_into().unwrap()) != 0x11e5_7ed0 {
+        return Err(BackendError::Internal("unsupported nested VMCS12 revision"));
+    }
+    let info = u32::from_le_bytes(vmcs[816..820].try_into().unwrap());
+    if info & (1 << 31) == 0 {
+        vmcs[816..820].fill(0);
+        vmcs[820..824].fill(0);
+    } else if info & (1 << 11) == 0 {
+        vmcs[820..824].fill(0);
+    }
+    Ok(())
+}
