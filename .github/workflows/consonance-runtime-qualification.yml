@@ -63,6 +63,8 @@ jobs:
           grep -Fq 'NESTED_MATRIX restore_attempt=1' replay-evidence/nested-restore-omission.log
           ! grep -Fq 'NESTED_MATRIX restore=1 pass' replay-evidence/nested-restore-omission.log
       - name: Standard search and full recorded replay
+        env:
+          HARMONY_NESTED_VMCS_DUMP: "1"
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')

@@ -285,7 +285,7 @@ pub struct NestedWorkload {
 
 impl NestedWorkload {
     fn new(kernel: &[u8], initramfs: &[u8], options: &Options) -> Self {
-        let config = SessionConfig {
+        let mut config = SessionConfig {
             ram_bytes: options.ram_mib as usize * (1 << 20),
             seed: options.seed,
             ..SessionConfig::default()
@@ -293,6 +293,9 @@ impl NestedWorkload {
         .with_nested_host()
         .with_deferred_virtual_time_checkpoint_hashes()
         .with_wall_limit(Duration::from_secs(20));
+        if std::env::var_os("HARMONY_NESTED_VMCS_DUMP").is_some() {
+            config.cmdline.push_str(" kvm_intel.dump_invalid_vmcs=1");
+        }
         Self {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
@@ -455,10 +458,10 @@ impl Evaluation for NestedWorkload {
 
 impl Reporting for NestedWorkload {
     fn stream_format(&self) -> &'static str {
-        "nested-consonance-campaign-v1"
+        "nested-consonance-campaign-v2"
     }
     fn checkpoint_format(&self) -> &'static str {
-        "nested-consonance-checkpoint-v1"
+        "nested-consonance-checkpoint-v2"
     }
     fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(self.identity.as_bytes()))
@@ -470,7 +473,23 @@ impl Reporting for NestedWorkload {
         "sdk_operations"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        campaign::postcard_result_sha256(result)
+        let mut canonical = result.clone();
+        for action in &mut canonical.actions {
+            if let Some(candidate) = &mut action.candidate {
+                let snapshot = &mut candidate.snapshot;
+                let sidecar = vmm_core::portable_snapshot::logical_x86_sparse_sidecar(
+                    &snapshot.state.sidecar(),
+                )?;
+                snapshot.state = SparseSnapshot::from_parts(
+                    snapshot.state.base(),
+                    snapshot.state.image_identity(),
+                    snapshot.state.pages().to_vec(),
+                    &sidecar,
+                    None,
+                )?;
+            }
+        }
+        campaign::postcard_result_sha256(&canonical)
     }
     fn evidence_checkpoint(evidence: &Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(serde_json::to_vec(evidence)?)
