@@ -5,6 +5,11 @@ on:
   schedule:
     - cron: "11 5 * * *"
   workflow_dispatch:
+    inputs:
+      nested_host_only:
+        description: Build and qualify only the nested-host kernel
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,6 +28,7 @@ env:
 jobs:
   runtime-artifacts:
     name: Exact Runtime Artifacts
+    if: github.event_name != 'workflow_dispatch' || !inputs.nested_host_only
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -53,4 +59,59 @@ jobs:
           name: platform-qualification-${{ github.run_id }}
           path: platform-smoke
           if-no-files-found: warn
+          retention-days: 14
+
+  nested-host:
+    name: Nested Host
+    if: github.event_name == 'workflow_dispatch' && inputs.nested_host_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check outer host nested VMX before building
+        run: |
+          set -euo pipefail
+          mkdir -p nested-host-evidence
+          git rev-parse HEAD >nested-host-evidence/source-commit.txt
+          uname -a >nested-host-evidence/host.txt
+          lscpu >>nested-host-evidence/host.txt
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          cc -O2 -Wall -Wextra -Werror consonance/harmony-linux/linux/nested-kvm-check.c -o /tmp/nested-kvm-check
+          /tmp/nested-kvm-check | tee nested-host-evidence/host-kvm.txt
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev cpio xz-utils busybox-static
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the matching nested-host kernel and fixture
+        env:
+          NESTED_HOST_PROFILE: 1
+          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
+          NESTED_HOST_BUSYBOX: /usr/bin/busybox
+        run: |
+          set -euo pipefail
+          consonance/harmony-linux/scripts/fetch.sh
+          bash consonance/harmony-linux/linux/build-kernel.sh 2>&1 | tee nested-host-evidence/kernel-build.log
+          bash consonance/harmony-linux/linux/build-nested-host-fixture.sh consonance/harmony-linux/build/x86_64
+      - name: L1 initializes kvm_intel and creates a VM
+        env:
+          NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
+          NESTED_HOST_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-nested-host.cpio.gz
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p vmm-core \
+            --test x86_kvm_nested_host l1_creates_kvm_vm -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee nested-host-evidence/l1-boot.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/l1-boot.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nested-host-${{ github.run_id }}
+          path: nested-host-evidence
+          if-no-files-found: error
           retention-days: 14

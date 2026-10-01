@@ -23,6 +23,10 @@ interfaces.
 
 The x86 series supplies the paravirtual clock, counter confinement and
 emulation, syscall tick, idle port, and x86-specific clock and trap plumbing.
+Its KVM host-counter patch uses the outer VMM's intercepted TSC MSR for shared,
+LAPIC, PMU and nested-VMX counter reads, and disables the optional VMX hardware
+preemption timer by default. KVM hosting is compiled only in the nested-host
+profile; the ordinary guest kernel continues to omit those paths.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,

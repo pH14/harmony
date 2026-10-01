@@ -1,11 +1,22 @@
 # x86 guest CPU policy
 
-`guest.toml` defines the single x86 machine presented to a Harmony guest on all
+`guest.toml` defines the ordinary x86 machine presented to a Harmony guest on all
 physical hosts. It fixes CPUID values, MSR access rules, modeled devices, and
 virtual-time durations. The `GenuineIntel` vendor string and family/model fields
 are guest-visible compatibility values, not a requirement to run on Intel or a
 particular processor. There are no per-vendor or per-microarchitecture files,
 CPU identity probes, or microcode pins.
+
+`nested-host.toml` is a separate named overlay for a one-vCPU Intel VMX host
+guest. It adds CPUID.1:ECX.VMX, locks IA32_FEATURE_CONTROL with VMX outside SMX
+enabled, and exposes the VMX capability MSRs needed by the pinned Linux
+`kvm_intel`. Their values come from KVM after installing the nested CPUID model;
+the overlay's canonical form, ordinary policy hash, and every capability value
+enter its contract hash. A host reporting different VMX capabilities has a
+different nested-host contract. Ordinary and nested-host snapshots are rejected
+by each other's restore paths before mutation. The ordinary TOML and hash are
+unchanged. This profile is experimental until live nested restore qualification
+passes; enabling VMX alone does not make live VMX state restorable.
 
 `vmm-core` embeds this file and derives the CPUID model, MSR filter, access
 handlers, timing rules, and snapshot contract hash from it. Backend capability

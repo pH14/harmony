@@ -127,6 +127,57 @@ impl KvmBackend {
         self.dirty_log = enabled;
     }
 
+    pub fn initialize_vmx(
+        &mut self,
+        cpuid: &CpuidModel,
+        indices: &[u32],
+        feature_control: u64,
+    ) -> Result<BTreeMap<u32, u64>> {
+        if self.cpuid_installed || self.msr_filter_installed {
+            return Err(BackendError::Internal(
+                "VMX initialization requires a fresh vCPU",
+            ));
+        }
+        let kvm = Kvm::new().map_err(kvm_err)?;
+        if kvm.check_extension_int(Cap::NestedState) < 128 {
+            return Err(BackendError::Capability {
+                cap: "KVM_CAP_NESTED_STATE",
+            });
+        }
+        let supported = kvm
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err)?;
+        if !supported
+            .as_slice()
+            .iter()
+            .any(|e| e.function == 1 && e.ecx & (1 << 5) != 0)
+        {
+            return Err(BackendError::Capability { cap: "nested VMX" });
+        }
+        self.install_cpuid(cpuid)?;
+        let entries: Vec<_> = indices
+            .iter()
+            .map(|&index| kvm_msr_entry {
+                index,
+                ..Default::default()
+            })
+            .collect();
+        let mut msrs = Msrs::from_entries(&entries)
+            .map_err(|_| BackendError::Internal("VMX MSR list too large"))?;
+        let got = self.vcpu.get_msrs(&mut msrs).map_err(kvm_err)?;
+        let capabilities = saved_msrs(msrs.as_slice(), got, indices.len())?;
+        let feature_control = Msrs::from_entries(&[kvm_msr_entry {
+            index: 0x3a,
+            data: feature_control,
+            ..Default::default()
+        }])
+        .map_err(|_| BackendError::Internal("feature-control MSR list too large"))?;
+        if self.vcpu.set_msrs(&feature_control).map_err(kvm_err)? != 1 {
+            return Err(BackendError::Internal("KVM rejected IA32_FEATURE_CONTROL"));
+        }
+        Ok(capabilities)
+    }
+
     pub fn write_guest(&mut self, gpa: Gpa, bytes: &[u8]) -> Result<()> {
         self.regions.write(gpa.0, bytes)
     }

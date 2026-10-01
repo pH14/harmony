@@ -12,6 +12,7 @@ use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, TerminalReason, Vmm, VmmError};
 
 pub struct X86Devices {
+    pub(crate) nested_host: Option<contract::NestedHostContract>,
     pub(crate) uart: Uart8250,
     pub(crate) lapic: Option<lapic::Lapic>,
     pub(crate) legacy: Option<LegacyPlatform>,
@@ -20,6 +21,7 @@ pub struct X86Devices {
 impl X86Devices {
     pub(crate) fn new() -> Self {
         Self {
+            nested_host: None,
             uart: Uart8250::new(),
             lapic: None,
             legacy: None,
@@ -368,7 +370,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_rdmsr(&mut self, index: u32) -> Result<Step, VmmError> {
-        let disp = contract::rdmsr_disposition(index);
+        let disp = self
+            .devices
+            .nested_host
+            .as_ref()
+            .and_then(|contract| contract.rdmsr_disposition(index))
+            .unwrap_or_else(|| contract::rdmsr_disposition(index));
         self.advance_virtual_time_for_msr(&disp)?;
         loud_msr(
             MsrDir::Read,
@@ -430,7 +437,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
             )?;
         }
         let state = self.backend.save()?;
-        let base = lookup_cpuid(leaf, subleaf);
+        let mut base = lookup_cpuid(leaf, subleaf);
+        if leaf == 1 && self.devices.nested_host.is_some() {
+            base.ecx |= 1 << 5;
+        }
         let resolved = contract::resolve_cpuid(base, state.sregs.cr4, state.xcr0);
         self.backend.complete_arch(X86Completion::Cpuid {
             eax: resolved.eax,
@@ -560,7 +570,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     fn snapshot_contract_hash_x86(&self) -> [u8; 32] {
-        contract::contract_hash()
+        self.devices
+            .nested_host
+            .as_ref()
+            .map_or_else(contract::contract_hash, contract::NestedHostContract::hash)
     }
 
     pub(crate) fn validate_restore_x86(

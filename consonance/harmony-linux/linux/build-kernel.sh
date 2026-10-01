@@ -18,8 +18,12 @@ require_tools cc make flex bison bc xz gzip
 # Each profile variable names one published artifact and one reviewed
 # counter-opcode baseline, so a build that claimed both would publish a kernel
 # under a label that does not describe it.
-if [ -n "${N6_TRAPS_OFF:-}" ] && [ -n "${TASK_PARK_PROFILE:-}" ]; then
-    echo "FAIL: N6_TRAPS_OFF and TASK_PARK_PROFILE select different kernels; set one" >&2
+profiles=0
+for profile in "${N6_TRAPS_OFF:-}" "${TASK_PARK_PROFILE:-}" "${NESTED_HOST_PROFILE:-}"; do
+    if [ -n "$profile" ]; then profiles=$((profiles + 1)); fi
+done
+if [ "$profiles" -gt 1 ]; then
+    echo "FAIL: N6_TRAPS_OFF, TASK_PARK_PROFILE and NESTED_HOST_PROFILE select different kernels; set one" >&2
     exit 1
 fi
 
@@ -48,7 +52,8 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 allnoconfig
     "$LINUX_DIR"/kata/x86_64/*.conf \
     "$LINUX_DIR/config-fragment" \
     ${N6_TRAPS_OFF:+"$LINUX_DIR/x86-n6-traps-off-config-fragment"} \
-    ${TASK_PARK_PROFILE:+"$LINUX_DIR/x86-task-park-config-fragment"})
+    ${TASK_PARK_PROFILE:+"$LINUX_DIR/x86-task-park-config-fragment"} \
+    ${NESTED_HOST_PROFILE:+"$LINUX_DIR/x86-nested-host-config-fragment"})
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 olddefconfig
 
 # merge_config only warns when a fragment symbol cannot take effect; assert the ones
@@ -92,6 +97,10 @@ fi
 if [ -n "${TASK_PARK_PROFILE:-}" ]; then
     assert_y SMP
 fi
+if [ -n "${NESTED_HOST_PROFILE:-}" ]; then
+    assert_y KVM KVM_INTEL
+    assert_off KVM_AMD
+fi
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)
 # Determinism overlay: every symbol below is set ON by the Kata base and must be
@@ -116,7 +125,7 @@ if ! grep -qxF 'CONFIG_LOCALVERSION=""' "$KOBJ/.config"; then
 fi
 
 echo "== kernel: building bzImage"
-make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
+make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"${HARMONY_BUILD_JOBS:-$(nproc)}" bzImage
 
 # The counter-opcode reachability check (paravirtual clock interface, x86
 # half) — every rdtsc/rdtscp left in the image must match a reviewed,
@@ -149,6 +158,10 @@ if [ -n "${TASK_PARK_PROFILE:-}" ]; then
     rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist-task-park.txt
     rdrand_allowlist=$LINUX_DIR/rdrand-allowlist-task-park.txt
     echo "== kernel: task-park profile scans against its own baseline"
+elif [ -n "${NESTED_HOST_PROFILE:-}" ]; then
+    rdtsc_allowlist=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist-nested-host.txt}
+    rdrand_allowlist=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist-nested-host.txt}
+    echo "== kernel: nested-host profile scans against its own baseline"
 fi
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
     "$rdtsc_allowlist" "$rdrand_allowlist"
@@ -159,6 +172,8 @@ if [ -n "${N6_TRAPS_OFF:-}" ]; then
     kernel_output=bzImage-n6-traps-off
 elif [ -n "${TASK_PARK_PROFILE:-}" ]; then
     kernel_output=bzImage-task-park
+elif [ -n "${NESTED_HOST_PROFILE:-}" ]; then
+    kernel_output=bzImage-nested-host
 fi
 mkdir -p "$ART_DIR/x86_64"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"

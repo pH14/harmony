@@ -90,6 +90,56 @@ struct Raw {
     arrays: BTreeMap<String, Vec<BTreeMap<String, TomlValue>>>,
 }
 
+pub(super) struct NestedHostPolicy {
+    name: String,
+    version: i64,
+    base: String,
+    pub(super) leaf1_ecx_or: u32,
+    pub(super) feature_control: u64,
+    pub(super) vmx_indices: Vec<u32>,
+}
+
+impl NestedHostPolicy {
+    pub(super) fn load(source: &str) -> Self {
+        let raw = parse_raw(source);
+        let contract = &raw.singletons["contract"];
+        let cpuid = &raw.singletons["cpuid"];
+        let msr = &raw.singletons["msr"];
+        let hex = |value: &str| u64::from_str_radix(value.trim_start_matches("0x"), 16).unwrap();
+        let policy = Self {
+            name: contract["name"].as_str().into(),
+            version: contract["version"].as_int(),
+            base: contract["base"].as_str().into(),
+            leaf1_ecx_or: hex(cpuid["leaf1-ecx-or"].as_str()).try_into().unwrap(),
+            feature_control: hex(msr["feature-control"].as_str()),
+            vmx_indices: msr["vmx-indices"]
+                .as_arr()
+                .iter()
+                .map(|i| hex(i).try_into().unwrap())
+                .collect(),
+        };
+        assert_eq!(policy.name, "nested-host");
+        assert_eq!(policy.base, "guest");
+        assert_eq!(policy.version, 1);
+        assert_eq!(policy.leaf1_ecx_or, 1 << 5);
+        assert_eq!(policy.feature_control, 5);
+        assert!(policy.vmx_indices.windows(2).all(|w| w[0] < w[1]));
+        policy
+    }
+
+    pub(super) fn canonical(&self) -> String {
+        format!(
+            "name={}\nversion={}\nbase={}\nleaf1-ecx-or={:08x}\nfeature-control={:016x}\nvmx-indices={:x?}\n",
+            self.name,
+            self.version,
+            self.base,
+            self.leaf1_ecx_or,
+            self.feature_control,
+            self.vmx_indices
+        )
+    }
+}
+
 fn strip_comment(line: &str) -> &str {
     let mut in_str = false;
     for (i, c) in line.char_indices() {

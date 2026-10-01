@@ -9,7 +9,10 @@ use vmm_backend::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 use crate::virtual_time::VirtualTimeTiming;
 
 mod canonical;
+mod nested;
 mod parse;
+
+pub use nested::NestedHostContract;
 
 use parse::{Contract, Subleaf, VendorId};
 
