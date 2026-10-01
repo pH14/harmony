@@ -1,0 +1,15 @@
+{
+  "milestone": 3,
+  "ordinary_users_enabled": false,
+  "runtime": "Wasmi 0.46.0, pinned continuation and numerical patches",
+  "compiler": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+  "checks": {
+    "native_tests": 9,
+    "clippy": "all targets passed",
+    "miri_nan_conversion": "passed, 832.69 seconds",
+    "miri_raw_pending_import_nan": "passed, 2.81 seconds",
+    "build_targets": ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]
+  },
+  "identity": "execution digests include all runtime, transform, meter, compiler and dependency inputs; later milestones require new digests",
+  "remaining": "session driver, untrusted artifact validation, shared cache and final host qualification"
+}

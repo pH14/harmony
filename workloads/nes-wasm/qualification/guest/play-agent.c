@@ -6,8 +6,27 @@
 #include "libretro.h"
 
 extern uint32_t harmony_chord(uint32_t frame);
-__attribute__((import_module("harmony_v1"), import_name("decision")))
-extern uint32_t harmony_decision(uint32_t suggested);
+__attribute__((import_module("harmony_v1"), import_name("request")))
+extern int32_t harmony_request(uint32_t operation, const void *input,
+    uint32_t input_len, void *output, uint32_t output_capacity);
+
+static uint64_t decision_sequence;
+static uint32_t harmony_decision(uint32_t suggested) {
+    uint8_t input[14] = {0x45, 0x4e};
+    uint8_t output[5];
+    uint64_t request_id = decision_sequence++;
+    for (uint32_t i = 0; i < 8; ++i)
+        input[2 + i] = request_id >> (8 * i);
+    for (uint32_t i = 0; i < 4; ++i)
+        input[10 + i] = suggested >> (8 * i);
+    int32_t length = harmony_request((6u << 16) | 3u, input, sizeof(input), output, sizeof(output));
+    if (length == 1 && output[0] == 0)
+        return suggested;
+    if (length != 5 || output[0] != 1)
+        abort();
+    return (uint32_t)output[1] | ((uint32_t)output[2] << 8) |
+        ((uint32_t)output[3] << 16) | ((uint32_t)output[4] << 24);
+}
 
 static uint32_t frame_number;
 static uint32_t buttons;

@@ -187,3 +187,16 @@ ownership and register-allocation assumptions, then rerun Miri, the planted
 continuation differences, NaN/zero/subnormal fixtures, local budgets, and
 same-artifact transfers. Record a new execution identity; do not reuse old
 snapshots or infer compatibility from matching game observations.
+
+The admitted build links `guest/fixed-heap.c` through the linker `sbrk` wrapper.
+The initial libc heap remains bounded by the declared 16 MiB memory. Querying
+its end returns that fixed capacity; extension returns `ENOMEM`. No growth
+instruction survives linking. The original feasibility artifact predates this
+admission change; its digests remain historical measurements.
+
+The current harness imports the versioned `harmony_v1.request` transport and
+encodes opaque SDK service questions with stable request IDs. Nominal answers
+retain the portable Rust action suggestion; data answers supply the declared
+button mask. The historical milestone-1 probe uses its experimental decision
+import. Reproduce those recorded digests from commit `9551b318e`; current builds
+use the admitted ABI and the session runner completed in the next milestone.

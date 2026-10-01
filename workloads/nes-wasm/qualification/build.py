@@ -42,9 +42,10 @@ def main():
     command(["rustc", "--edition=2024", "--target=wasm32-wasip1", "--crate-type=staticlib", "-C", "panic=abort",
              "-C", "opt-level=2", "-g", source / "guest/chord.rs", "-o", output / "chord.a"])
     command([sdk / "bin/clang", "-O2", "-g", "-I", args.quicknes / "libretro/libretro-common/include", "-c", source / "guest/play-agent.c", "-o", output / "agent.o"])
+    command([sdk / "bin/clang", "-O2", "-g", "-c", source / "guest/fixed-heap.c", "-o", output / "fixed-heap.o"])
     command([sdk / "bin/clang++", "-O2", "-g", "-fno-exceptions", "-fno-rtti", "-c", root / "scripts/quicknes-static-runtime.cpp", "-o", output / "runtime.o"])
     command([sdk / "bin/clang", "-mexec-model=reactor", "-Wl,--initial-memory=16777216", "-Wl,--max-memory=16777216",
-             "-Wl,-z,stack-size=1048576", "-Wl,--export-table", output / "agent.o", args.quicknes / "libquicknes_wasm.a",
+             "-Wl,-z,stack-size=1048576", "-Wl,--wrap=sbrk", output / "fixed-heap.o", "-Wl,--export-table", output / "agent.o", args.quicknes / "libquicknes_wasm.a",
              output / "chord.a", output / "runtime.o", "-lm", "-o", output / "quicknes.wasm"])
     artifact = (output / "quicknes.wasm").read_bytes()
     (output / "build.json").write_text(json.dumps({"quicknes_revision": revision, "sdk": "27.0", "rustc": subprocess.check_output(["rustc", "-V"], text=True).strip(),
