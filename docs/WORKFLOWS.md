@@ -164,7 +164,9 @@ static inner driver and matching OCI runtime, then runs
 runs `cold_snapshot_child` as a capture process that is killed while holding
 its live VM, then imports its artifact in a new process. It compares eight
 detour restores and cold continuation with uninterrupted and capture-only
-execution. A separate `omit-nested-state` build must pass those two controls
+execution. Its sparse detour capture and every restored RAM page must match
+the live source or captured cut, respectively, with no in-place fallback.
+A separate `omit-nested-state` build must pass those two controls
 and fail its first restored continuation. Missing nested
 VMX or a guest that cannot create a KVM VM fails the job. Kernel publication
 still requires the instruction audit to pass.
@@ -173,7 +175,11 @@ The job also runs `inner_operation_api_smoke` and
 `harmony search --package nested` with 100 executions and a five-minute wall
 budget, followed by a replay of its recorded campaign. Evidence includes the
 36 ordered operation-pair coverage mask, assertion failures and their layers,
-the campaign stream, and the replay report.
+the campaign stream, and the replay report. The final evidence check requires
+nonzero executed work, a valid 36-bit pair mask, no failures, and matching
+execution counts, work, stream digest and coverage/failure evidence on replay.
+It writes `qualification.json` with the tested commit and measured budget use;
+archive-entry lists may differ because replay materializes final artifacts.
 An AMD runner can expose nested SVM state while lacking VMX; its positive
 nested-state capability does not qualify this Intel-only guest contract.
 

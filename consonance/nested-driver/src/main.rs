@@ -41,6 +41,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Point::state(3, "nested.steps"),
                     Point::state(4, "nested.bytes.0"),
                     Point::state(5, "nested.bytes.1"),
+                    Point::state(6, "nested.failure.actual.0"),
+                    Point::state(7, "nested.failure.actual.1"),
+                    Point::state(8, "nested.failure.expected.0"),
+                    Point::state(9, "nested.failure.expected.1"),
+                    Point::state(10, "nested.failure.step"),
                     Point::always(1, "nested.l2.oracle"),
                 ],
             )
@@ -55,13 +60,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         sdk.state_set(2, imports)
             .map_err(|error| error.to_string())?;
         sdk.state_set(3, 0).map_err(|error| error.to_string())?;
-        publish_bytes(sdk, &oracle.bytes()).map_err(|error| error.to_string())?;
+        publish_bytes(sdk, 4, &oracle.bytes()).map_err(|error| error.to_string())?;
         sdk.setup_complete().map_err(|error| error.to_string())?;
     }
     for number in 1..=STEPS {
         oracle.advance();
         let actual = step(&mut vmm)?;
         if let Some(sdk) = &mut sdk {
+            if actual != oracle {
+                publish_bytes(sdk, 6, &actual.bytes()).map_err(|error| error.to_string())?;
+                publish_bytes(sdk, 8, &oracle.bytes()).map_err(|error| error.to_string())?;
+                sdk.state_set(10, number)
+                    .map_err(|error| error.to_string())?;
+            }
             sdk.assert_always(actual == oracle, 1)
                 .map_err(|error| error.to_string())?;
         }
@@ -76,7 +87,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         std::io::stdout().flush()?;
         if let Some(sdk) = &mut sdk {
-            publish_bytes(sdk, &actual.bytes()).map_err(|error| error.to_string())?;
+            publish_bytes(sdk, 4, &actual.bytes()).map_err(|error| error.to_string())?;
             sdk.state_set(3, number)
                 .map_err(|error| error.to_string())?;
             sdk.frame_complete(number)
@@ -93,12 +104,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn publish_bytes(
     sdk: &mut harmony_sdk::Sdk<hypercall_doorbell::linux::DeviceTransport>,
+    first: u32,
     bytes: &[u8],
 ) -> Result<(), harmony_sdk::SdkError<std::io::Error>> {
     let mut packed = [0; 16];
     packed[..bytes.len()].copy_from_slice(bytes);
-    sdk.state_set(4, u64::from_le_bytes(packed[..8].try_into().unwrap()))?;
-    sdk.state_set(5, u64::from_le_bytes(packed[8..].try_into().unwrap()))
+    sdk.state_set(first, u64::from_le_bytes(packed[..8].try_into().unwrap()))?;
+    sdk.state_set(
+        first + 1,
+        u64::from_le_bytes(packed[8..].try_into().unwrap()),
+    )
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
