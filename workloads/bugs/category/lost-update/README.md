@@ -26,8 +26,8 @@ Kernel command-line knobs, passed with `--knobs`:
 
 | knob | effect |
 |---|---|
-| `lost_update.atomic=1` | the increment is one atomic add; this is the clean control and must never violate the assertion |
-| `lost_update.noise=N` | adds `N` distinct instrumented functions outside the window and spaces increments by `N + 1` ms, for values 0 through 32 |
+| `lost_update.correct=1` | the increment is one atomic add; this is the clean control and must never violate the assertion |
+| `lost_update.noise=N` | adds `N` distinct instrumented function calls per increment, outside the window; clamp to 0 through 32 |
 
 The default is the racy increment with no extra sites.
 

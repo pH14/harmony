@@ -19,6 +19,7 @@ RUN make -C /build/fault-runtime CORE_DIR=/build/libvoidstar BUILD_DIR=/build/li
     && clang -c -O2 -g -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE -pthread \
        /build/fault-runtime/fault_runtime_shim.c -o /build/fault_runtime_shim.o \
     && ar rcs /build/lib/libvoidstar.a /build/voidstar.o /build/fault_runtime.o /build/fault_runtime_shim.o
+COPY workloads/bugs/interleaving.h /build/interleaving.h
 COPY workloads/bugs/category/lost-update/lost_update.c /build/lost_update.c
 RUN clang -c -O1 -g -std=gnu11 -Wall -Wextra -Werror -fsanitize-coverage=trace-pc-guard \
         /build/lost_update.c -o /build/workload.o \

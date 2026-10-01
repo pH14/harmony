@@ -13,15 +13,15 @@ import time
 import uuid
 
 CASES = {
-    "lost-update": ("category", "lost_update", "atomic", "the counter holds every finished increment"),
-    "torn-read": ("category", "torn_read", "correct", "a copied record has matching fields"),
-    "duplicate-request": ("category", "duplicate_request", "correct", "each request is applied at most once"),
-    "missed-wakeup": ("category", "missed_wakeup", "correct", "a queued item never loses its wakeup"),
-    "stale-lease": ("category", "stale_lease", "correct", "store writes never go backwards in fencing tokens"),
-    "aba-reuse": ("category", "aba_reuse", "correct", "the stack never resurrects an owned node"),
-    "stale-cache": ("toys", "stale_cache", "correct", "a filled cache never predates its invalidation"),
-    "double-vote": ("toys", "double_vote", "correct", "one term never elects two leaders"),
-    "mini-wal-reset": ("toys", "mini_wal_reset", "correct", "a checkpoint contains one complete log generation"),
+    "lost-update": ("category", "lost_update", "the counter holds every finished increment"),
+    "torn-read": ("category", "torn_read", "a copied record has matching fields"),
+    "duplicate-request": ("category", "duplicate_request", "each request is applied at most once"),
+    "missed-wakeup": ("category", "missed_wakeup", "a queued item never loses its wakeup"),
+    "stale-lease": ("category", "stale_lease", "store writes never go backwards in fencing tokens"),
+    "aba-reuse": ("category", "aba_reuse", "the stack never resurrects an owned node"),
+    "stale-cache": ("toys", "stale_cache", "a filled cache never predates its invalidation"),
+    "double-vote": ("toys", "double_vote", "one term never elects two leaders"),
+    "mini-wal-reset": ("toys", "mini_wal_reset", "a checkpoint contains one complete log generation"),
 }
 
 
@@ -131,12 +131,12 @@ def main():
             if not image.is_file():
                 parser.error(f"missing image {image}; build it with --build")
             run = campaign / f"{case}-{variant}-n{noise}-s{seed}-{uuid.uuid4().hex[:6]}"
-            prefix, correct, assertion = CASES[case][1:]
+            prefix, assertion = CASES[case][1:]
             command = [str(args.cli.resolve()), "search", "--package", "faults", str(image),
                        "--backend", "consonance", "--kernel", str(args.kernel.resolve()),
                        "--base-initramfs", str(args.initramfs.resolve()), "--seed", str(seed),
                        "--executions", str(args.executions), "--ram-mib", str(args.ram_mib),
-                       "--knobs", f"{prefix}.{correct}={int(variant == 'correct')} {prefix}.noise={noise}",
+                       "--knobs", f"{prefix}.correct={int(variant == 'correct')} {prefix}.noise={noise}",
                        "--out", str(run)]
             start = time.monotonic()
             with run.with_suffix(".console.txt").open("w") as log:
