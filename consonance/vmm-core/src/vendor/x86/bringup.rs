@@ -243,14 +243,26 @@ pub fn boot_linux_nested_host_virtual_time_boxed(
 fn nested_host_backend() -> Result<(vmm_backend::KvmBackend, contract::NestedHostContract), VmmError>
 {
     let mut backend = vmm_backend::KvmBackend::new()?;
-    let cpuid = contract::NestedHostContract::cpuid_model();
-    let msrs = backend.initialize_vmx(
-        &cpuid,
-        contract::NestedHostContract::vmx_indices(),
-        contract::NestedHostContract::feature_control(),
-    )?;
-    let nested_host = contract::NestedHostContract::new(msrs)
-        .map_err(|e| VmmError::ContractViolation(e.into()))?;
+    let (format, svm) = backend.nested_capabilities()?;
+    let nested_host = match format {
+        vmm_backend::arch::x86::NestedFormat::Vmx => {
+            let cpuid = contract::NestedHostContract::vmx_cpuid_model();
+            let msrs = backend.initialize_nested(
+                format,
+                &cpuid,
+                contract::NestedHostContract::vmx_indices(),
+                contract::NestedHostContract::feature_control(),
+            )?;
+            contract::NestedHostContract::vmx(msrs)
+        }
+        vmm_backend::arch::x86::NestedFormat::Svm => {
+            let nested = contract::NestedHostContract::svm(svm.unwrap())
+                .map_err(|e| VmmError::ContractViolation(e.into()))?;
+            backend.initialize_nested(format, &nested.cpuid_model(), &[], 0)?;
+            Ok(nested)
+        }
+    }
+    .map_err(|e| VmmError::ContractViolation(e.into()))?;
     Ok((backend, nested_host))
 }
 
@@ -264,7 +276,7 @@ fn compose_linux_nested_host_virtual_time<B: Backend<A = X86>>(
     cmdline: &str,
     seed: u64,
 ) -> Result<Vmm<B>, VmmError> {
-    let cpuid = contract::NestedHostContract::cpuid_model();
+    let cpuid = nested_host.cpuid_model();
     let mut wiring =
         crate::vmm::VtimeWiring::new_virtual_time(super::contract_vclock_config(), seed)?;
     let mut boot_seed = [0u8; 64];
@@ -279,7 +291,7 @@ fn compose_linux_nested_host_virtual_time<B: Backend<A = X86>>(
         cmdline,
         X86Policy {
             cpuid,
-            msr_filter: contract::NestedHostContract::msr_filter(),
+            msr_filter: nested_host.msr_filter(),
         },
         Some(&boot_seed),
     )?;

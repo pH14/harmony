@@ -15,6 +15,16 @@ cat >"$work/tree/init" <<'INIT'
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev
+check_output=$(/check)
+status=$?
+echo "$check_output"
+if [ "$status" != 0 ]; then
+    echo "NESTED_CHECK_STATUS=$status"
+    /bin/busybox poweroff -f
+    exit 1
+fi
+case "$check_output" in
+*vendor=vmx*)
 timer=$(/bin/busybox cat /sys/module/kvm_intel/parameters/preemption_timer)
 echo "NESTED_PREEMPTION_TIMER=$timer"
 if [ "$timer" != N ]; then
@@ -22,8 +32,10 @@ if [ "$timer" != N ]; then
     /bin/busybox poweroff -f
     exit 1
 fi
-/check
-status=$?
+;;
+*vendor=svm*) echo "NESTED_PREEMPTION_TIMER=not-applicable" ;;
+*) echo "FAIL: unknown nested vendor"; /bin/busybox poweroff -f; exit 1 ;;
+esac
 echo "NESTED_CHECK_STATUS=$status"
 /bin/busybox poweroff -f
 INIT

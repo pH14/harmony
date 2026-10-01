@@ -459,8 +459,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
         }
         let state = self.backend.save()?;
         let mut base = lookup_cpuid(leaf, subleaf);
-        if leaf == 1 && self.devices.nested_host.is_some() {
-            base.ecx |= 1 << 5;
+        if let Some(contract) = &self.devices.nested_host {
+            base = lookup_cpuid_in_model(&contract.cpuid_model(), leaf, subleaf);
         }
         let resolved = contract::resolve_cpuid(base, state.sregs.cr4, state.xcr0);
         self.backend.complete_arch(X86Completion::Cpuid {
@@ -586,8 +586,16 @@ impl<B: Backend<A = X86>> Vmm<B> {
             pvclock: self.pvclock_snapshot(),
         };
         s.devices = records::encode_device_blob(&dev);
-        if cfg!(feature = "omit-nested-state") && self.devices.nested_host.is_some() {
-            s.nested_state = Some(vmm_backend::arch::x86::inactive_vmx_nested_state());
+        if cfg!(feature = "omit-nested-state")
+            && let Some(contract) = &self.devices.nested_host
+        {
+            let format = contract.format();
+            let mut bytes = vmm_backend::arch::x86::inactive_nested_state(format);
+            if format == vmm_backend::arch::x86::NestedFormat::Svm && s.sregs.efer & (1 << 12) != 0
+            {
+                bytes[..2].fill(0);
+            }
+            s.nested_state = Some(bytes);
         }
         s.contract_hash = self.snapshot_contract_hash_x86();
         s
@@ -607,12 +615,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if s.contract_hash != self.snapshot_contract_hash_x86() {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
-        match (self.devices.nested_host.is_some(), &s.nested_state) {
-            (true, Some(bytes)) => vmm_backend::arch::x86::validate_vmx_nested_state(
-                bytes,
-                vmm_backend::arch::x86::VMX_NESTED_MAX_LEN,
-            )?,
-            (false, None) => {}
+        match (self.devices.nested_host.as_ref(), &s.nested_state) {
+            (Some(contract), Some(bytes)) => contract
+                .format()
+                .validate(bytes, contract.format().maximum_len())?,
+            (None, None) => {}
             _ => {
                 return Err(VmmError::ContractViolation(
                     "nested state does not match the snapshot contract".into(),
@@ -728,7 +735,14 @@ fn loud_msr(
 }
 
 pub(crate) fn lookup_cpuid(leaf: u32, subleaf: u32) -> vmm_backend::CpuidEntry {
-    let model = contract::cpuid_model();
+    lookup_cpuid_in_model(&contract::cpuid_model(), leaf, subleaf)
+}
+
+fn lookup_cpuid_in_model(
+    model: &vmm_backend::CpuidModel,
+    leaf: u32,
+    subleaf: u32,
+) -> vmm_backend::CpuidEntry {
     let mut leaf_only = None;
     for e in &model.entries {
         if e.leaf == leaf {

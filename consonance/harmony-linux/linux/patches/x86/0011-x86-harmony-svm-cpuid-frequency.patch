@@ -1,0 +1,52 @@
+From: Harmony Project
+Subject: x86/tsc: use the frozen CPUID frequencies for Harmony SVM hosts
+
+Linux restricts its CPUID frequency fast paths to Intel. Harmony's named SVM
+contract exposes the same fixed TSC/crystal ratio and processor frequency,
+but AMD falls back to native PIT and APIC calibration before the Harmony
+clock can register. Consume the declared frequencies instead.
+
+The extension requires compiled AMD KVM, the Harmony clock request, an AMD
+identity and exposed SVM. Ordinary guest configurations compile it out; a
+stock AMD boot retains Linux's existing calibration behavior.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/kernel/tsc.c
++++ b/arch/x86/kernel/tsc.c
+@@ -656,6 +656,13 @@
+ 	return delta;
+ }
+ 
++static bool harmony_svm_cpuid_frequency(void)
++{
++	return IS_ENABLED(CONFIG_KVM_AMD) && harmony_pvclock_requested() &&
++		boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
++		boot_cpu_has(X86_FEATURE_SVM);
++}
++
+ /**
+  * native_calibrate_tsc - determine TSC frequency
+  * Determine TSC frequency via CPUID, else return 0.
+@@ -665,7 +672,8 @@
+ 	unsigned int eax_denominator, ebx_numerator, ecx_hz, edx;
+ 	unsigned int crystal_khz;
+ 
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL)
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL &&
++	    !harmony_svm_cpuid_frequency())
+ 		return 0;
+ 
+ 	if (boot_cpu_data.cpuid_level < CPUID_LEAF_TSC)
+@@ -738,7 +746,8 @@
+ {
+ 	unsigned int eax_base_mhz, ebx_max_mhz, ecx_bus_mhz, edx;
+ 
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL)
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL &&
++	    !harmony_svm_cpuid_frequency())
+ 		return 0;
+ 
+ 	if (boot_cpu_data.cpuid_level < CPUID_LEAF_FREQ)
