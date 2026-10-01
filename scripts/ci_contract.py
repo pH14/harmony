@@ -388,9 +388,12 @@ CONSONANCE_RUNTIME = Workflow(
     jobs=(
         Job("Exact Runtime Artifacts", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
         Job("Nested Host", "full", 90,
-            test_targets=("vmm-core:x86_kvm_nested_host", "nested-driver:live"),
+            test_targets=("vmm-core:x86_kvm_nested_host", "nested-driver:live",
+                          "nested-driver:nested_restore"),
             ignored_tests=("vmm-core::x86_kvm_nested_host l1_creates_kvm_vm",
-                           "nested-driver::live inner_consonance_runs_l2",)),
+                           "nested-driver::live inner_consonance_runs_inner_guest",
+                           "nested-driver::nested_restore outer_nested_state_snapshot_matrix",
+                           "nested-driver::nested_restore cold_snapshot_child",)),
     ),
 )
 

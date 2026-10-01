@@ -19,7 +19,7 @@ pub use types::{
 
 pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
-pub const VM_STATE_VERSION: u16 = 6;
+pub const VM_STATE_VERSION: u16 = 7;
 
 pub const ARCH_X86_64: u16 = 1;
 
@@ -36,6 +36,7 @@ pub struct VmState {
     pub msrs: MsrBlock,
     pub xsave: XsaveImage,
     pub xsave_restore_bv: Option<u64>,
+    pub nested_state: Option<Vec<u8>>,
     pub vtime: VtimeState,
     pub timers: TimerQueueState,
     pub hypercall: Vec<u8>,

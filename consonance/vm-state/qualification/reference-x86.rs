@@ -4,7 +4,11 @@ impl VmState {
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
         let section_count = SECTION_COUNT
             + u16::from(!self.engine_state.is_empty())
-            + u16::from(self.xsave_restore_bv.is_some());
+            + u16::from(self.xsave_restore_bv.is_some())
+            + u16::from(self.nested_state.is_some());
+        if let Some(bytes) = &self.nested_state {
+            validate_nested_shape(bytes)?;
+        }
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {
@@ -46,6 +50,9 @@ impl VmState {
                 TAG_XSAVE_RESTORE_BV,
                 XsaveRestoreBvWire::from(value).as_bytes(),
             )?;
+        }
+        if let Some(bytes) = &self.nested_state {
+            put_section(&mut out, TAG_NESTED_STATE, bytes)?;
         }
 
         Ok(out)
