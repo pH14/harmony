@@ -14,7 +14,7 @@ defaults:
     shell: bash
 jobs:
   nested-host:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
