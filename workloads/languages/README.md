@@ -6,11 +6,13 @@ These fixtures exercise application loops through the Antithesis libvoidstar ABI
 The C check also runs the GCC-built fixture linked directly to libvoidstar's
 trace-pc callback.
 
-Build a fixture with `bash workloads/languages/build-image.sh c` or `rust`, then run `bash workloads/languages/run-check.sh harmony-language-c:local evidence/c`. Set `HARMONY_GUEST_DIR` to a qualified guest artifact directory and `HARMONY_BINARY` to the CLI binary if necessary. Checks require image admission, identical serial logs and full execution records from two fixed-seed boots, and another instrumented thread progressing while one is held at an event site. The parked-thread launcher checks cumulative callbacks because AFL coverage buckets eventually saturate.
+Build a fixture with `bash workloads/languages/build-image.sh c`, `rust`, or `go`, then run `bash workloads/languages/run-check.sh harmony-language-c:local evidence/c`. Set `HARMONY_GUEST_DIR` to a qualified guest artifact directory and `HARMONY_BINARY` to the CLI binary if necessary. Checks require image admission, identical serial logs and full execution records from two fixed-seed boots, and another instrumented thread progressing while one is held at an event site. The parked-thread launcher checks cumulative callbacks because AFL coverage buckets eventually saturate.
 
 Each Dockerfile produces a `language-base` image with the language binary and symbols. `image-key.py` hashes only that layer's build inputs. `compose.Dockerfile` copies the freshly built runtime and launcher last; `build-runtime.sh` builds the generic ABI shim and fault runtime once, shared with the etcd and SQLite historical recipes. Language code loads `/usr/lib/libvoidstar.so` at runtime.
 
 The C fixture includes the unmodified, pinned upstream forwarding header. Rust uses the pinned upstream instrumentation crate and documented LLVM flags, with an explicit target triple to keep host build scripts uninstrumented. Recipes preserve unstripped binaries and their producer's `*.sym.tsv` files under `/symbols` and attest their installed paths with SHA-256. Debian's unused `libmemusage.so` diagnostic library is removed because it contains raw counters.
+
+The Go recipe uses cgo forwarding and an explicit standard-library selection excluding runtime/SDK dependencies. Its nearby README records the tested coverage boundary, etcd callback cost, and GC stall measurements.
 
 All target images need hidden instructions confined to reviewed digest/site pairs, no runtime code generation, and callbacks in every application loop. Admission scans every ELF, including libraries. Static checks detect forbidden instructions and writable executable ELF segments and stacks; runtime settings and memory-map checks establish the no-code-generation property of each supported recipe. Precompiled libc and Rust standard-library loops remain uninstrumented and bounded by their input.
 

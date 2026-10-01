@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: MIT
+# Opt-in standard-library package selection for the MIT-licensed v0.8.0 tool.
+--- a/tools/antithesis-go-toolexec/policy.go
++++ b/tools/antithesis-go-toolexec/policy.go
+@@ -38 +38,2 @@
+-//   - The standard library. The go command marks those compiles with -std. Some
++//   - Standard library packages absent from an explicit safe allowlist.
++//     The go command marks those compiles with -std. Some
+@@ -51 +52,3 @@
+-	if slices.Contains(args, "-std") || isSDKPackage(importPath) {
++	if isSDKPackage(importPath) || (slices.Contains(args, "-std") &&
++		(importPath == "runtime" || strings.HasPrefix(importPath, "runtime/") ||
++			!slices.Contains(cfg.StdlibPackages, importPath))) {
+--- a/tools/antithesis-go-toolexec/config.go
++++ b/tools/antithesis-go-toolexec/config.go
+@@ -31,0 +32 @@
++	StdlibPackages []string
+@@ -58,0 +60 @@
++		StdlibPackages: splitList(os.Getenv("ANTITHESIS_STDLIB_PACKAGES")),
+@@ -113,0 +116 @@
++		"stdlib=" + strings.Join(c.StdlibPackages, ","),
+--- /dev/null
++++ b/tools/antithesis-go-toolexec/harmony_std_test.go
+@@ -0,0 +1,42 @@
++package main
++
++import "testing"
++
++func TestHarmonyStdPackageAllowlist(t *testing.T) {
++	cfg := &Config{Instrument: []string{"net", "runtime"}}
++	args := []string{"-std", "-importcfg", "unused", "/go/src/net/http/client.go"}
++	t.Setenv("TOOLEXEC_IMPORTPATH", "net/http")
++	if _, selected := selectedPackage(cfg, args); selected {
++		t.Fatal("standard library selected without explicit opt-in")
++	}
++	cfg.StdlibPackages = []string{"net/http", "runtime"}
++	if _, selected := selectedPackage(cfg, args); !selected {
++		t.Fatal("explicitly allowed standard library package skipped")
++	}
++	t.Setenv("TOOLEXEC_IMPORTPATH", "runtime")
++	if _, selected := selectedPackage(cfg, args); selected {
++		t.Fatal("runtime package selected")
++	}
++	cfg.Instrument = []string{sdkInstrumentationPackage}
++	cfg.StdlibPackages = []string{sdkInstrumentationPackage}
++	t.Setenv("TOOLEXEC_IMPORTPATH", sdkInstrumentationPackage)
++	if _, selected := selectedPackage(cfg, args); selected {
++		t.Fatal("SDK package selected")
++	}
++}
++
++func TestHarmonyStdPackageCacheIdentity(t *testing.T) {
++	cfg := &Config{}
++	before, err := cfg.ToolIDSuffix()
++	if err != nil {
++		t.Fatal(err)
++	}
++	cfg.StdlibPackages = []string{"net/http"}
++	after, err := cfg.ToolIDSuffix()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if before == after {
++		t.Fatal("stdlib selection did not change the action cache key")
++	}
++}

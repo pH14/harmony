@@ -544,6 +544,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             scope="harmony_languages"),
         Job("C", "pr", 15, scope="harmony_languages"),
         Job("Rust", "pr", 15, scope="harmony_languages"),
+        Job("Go", "pr", 15, scope="harmony_languages"),
     ),
 )
 

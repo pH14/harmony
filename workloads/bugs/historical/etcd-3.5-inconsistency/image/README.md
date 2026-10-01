@@ -9,9 +9,13 @@ at the pinned `v0.8.0` release, applies the small MIT-licensed
 `antithesis-sdk-go-v0.8.0-linux-arm64.patch` compatibility patch to the SDK's
 architecture-neutral cgo handler, and runs the server through
 `go build -toolexec`. The generated symbol tables are packaged under
-`/symbols`. The image builds the generic `libvoidstar` ABI together with the fixed
-`workloads/faults/runtime` event runtime and installs their composed `libvoidstar.so`; every
-fault workload receives the same composition without a build flag or operator switch. The
+`/symbols`. A second local patch lets the instrumentor cover selected
+standard-library packages; the
+[Go recipe](../../../../languages/go/README.md#standard-library-selection)
+describes the selection, and the lists are kept under `/symbols/stdlib`. The image copies the
+`libvoidstar.so` that the [shared runtime build](../../../../languages/runtime/README.md)
+composes from the generic ABI and the `workloads/faults/runtime` event runtime; every fault
+workload receives the same composition without a build flag or operator switch. The
 upstream SDK and instrumentor are MIT licensed; Harmony does not vendor their source. The runtime
 image retains the Antithesis SDK and etcd license notices under `/licenses`.
 
@@ -82,3 +86,7 @@ acknowledged write`, which fails on a conclusive loss. An empty journal, a down 
 inconclusive read evaluates neither. A
 passing check reports `verified` with the number of acknowledged records confirmed on every
 member.
+
+The final image copies the PEM certificate store from a build-only stage. Go's
+TLS code reads those files directly, so the image needs no OpenSSL libraries
+and none of their RDRAND sites.

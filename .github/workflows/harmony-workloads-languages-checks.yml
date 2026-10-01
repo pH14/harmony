@@ -76,6 +76,7 @@ jobs:
         run: |
           echo "c=$(python3 workloads/languages/image-key.py c)" >>"$GITHUB_OUTPUT"
           echo "rust=$(python3 workloads/languages/image-key.py rust)" >>"$GITHUB_OUTPUT"
+          echo "go=$(python3 workloads/languages/image-key.py go)" >>"$GITHUB_OUTPUT"
       - id: c-cache
         if: steps.scope.outputs.enabled == 'true'
         uses: actions/cache/restore@v4
@@ -90,6 +91,13 @@ jobs:
           path: language-bases/rust.tar
           key: language-base-v1-rust-${{ steps.keys.outputs.rust }}-${{ github.run_id }}
           restore-keys: language-base-v1-rust-${{ steps.keys.outputs.rust }}-
+      - id: go-cache
+        if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: language-bases/go.tar
+          key: language-base-v1-go-${{ steps.keys.outputs.go }}-${{ github.run_id }}
+          restore-keys: language-base-v1-go-${{ steps.keys.outputs.go }}-
       - name: Build or restore language layers and compose the current runtime
         if: steps.scope.outputs.enabled == 'true'
         env:
@@ -105,6 +113,11 @@ jobs:
         with:
           path: language-bases/rust.tar
           key: language-base-v1-rust-${{ steps.keys.outputs.rust }}-${{ github.run_id }}
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: language-bases/go.tar
+          key: language-base-v1-go-${{ steps.keys.outputs.go }}-${{ github.run_id }}
       - if: steps.scope.outputs.enabled == 'true'
         uses: actions/cache/save@v4
         with:
@@ -225,5 +238,53 @@ jobs:
         with:
           name: language-rust-evidence
           path: language-rust-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  go:
+    name: Go
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-images
+          path: language-images
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-language-cli
+      - name: Build the CLI and enable KVM
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          cargo build --locked --release -p harmony-cli
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          docker load --input language-images/go.tar
+      - name: Check admission, timer progress, park progress and replay identity
+        if: steps.scope.outputs.enabled == 'true'
+        run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-go:local language-go-evidence
+      - if: always() && steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-go-evidence
+          path: language-go-evidence
           if-no-files-found: error
           retention-days: 14

@@ -8,7 +8,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 language = sys.argv[1]
-if language not in ("c", "rust"):
+if language not in ("c", "rust", "go"):
     raise SystemExit(f"unsupported language: {language}")
 paths = list((root / "workloads/languages" / language).rglob("*"))
 if language == "c":
@@ -18,6 +18,14 @@ if language == "c":
     paths.append(root / "workloads/faults/runtime/tests/language_fixture.c")
 if language == "rust":
     paths.append(root / "workloads/faults/runtime/tests/language_fixture.rs")
+if language == "go":
+    paths = [root / "workloads/languages/go" / name for name in (
+        "Dockerfile", "configure-stdlib.sh", "antithesis-go-toolexec-v0.8.0-stdlib.patch",
+    )]
+    paths.extend((root / "consonance/harmony-linux/linux/go-runtime-guest/cmd/language-fixture").rglob("*.go"))
+    paths.append(root / "consonance/harmony-linux/linux/go-runtime-guest/go.mod")
+    paths.append(root / "workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch")
+    paths.append(root / "workloads/languages/reviewed/go-fixture-x86_64.txt")
 paths.append(root / "workloads/languages/reviewed/bookworm-x86_64.txt")
 value = hashlib.sha256()
 for path in sorted(paths):
