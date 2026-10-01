@@ -386,7 +386,7 @@ unsafe fn mmap_kvm_run(_fd: std::os::fd::RawFd, _len: usize) -> Result<*mut kvm_
 #[cfg(not(miri))]
 unsafe fn raw_kvm_run(fd: std::os::fd::RawFd) -> libc::c_int {
     // SAFETY: `KVM_RUN` takes no argument; the kernel uses the mapped `kvm_run`.
-    unsafe { libc::ioctl(fd, KVM_RUN as libc::c_ulong, 0) }
+    unsafe { libc::ioctl(fd, KVM_RUN as _, 0) }
 }
 
 #[cfg(miri)]
@@ -404,7 +404,7 @@ unsafe fn raw_set_msr_filter(fd: std::os::fd::RawFd, filter: &kvm_msr_filter) ->
     let rc = unsafe {
         libc::ioctl(
             fd,
-            KVM_X86_SET_MSR_FILTER as libc::c_ulong,
+            KVM_X86_SET_MSR_FILTER as _,
             filter as *const kvm_msr_filter,
         )
     };
@@ -426,13 +426,7 @@ unsafe fn raw_interrupt(fd: std::os::fd::RawFd, vector: u32) -> Result<()> {
     let irq = kvm_interrupt { irq: vector };
     // SAFETY: the ioctl reads a `kvm_interrupt` from `&irq` (valid for the call)
     // and copies it into the kernel.
-    let rc = unsafe {
-        libc::ioctl(
-            fd,
-            KVM_INTERRUPT as libc::c_ulong,
-            &irq as *const kvm_interrupt,
-        )
-    };
+    let rc = unsafe { libc::ioctl(fd, KVM_INTERRUPT as _, &irq as *const kvm_interrupt) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -450,13 +444,7 @@ unsafe fn raw_interrupt(_fd: std::os::fd::RawFd, _vector: u32) -> Result<()> {
 unsafe fn raw_get_sregs2(fd: std::os::fd::RawFd) -> Result<kvm_sregs2> {
     let mut sregs2 = kvm_sregs2::default();
     // SAFETY: the ioctl writes a full `kvm_sregs2` into our out-param.
-    let rc = unsafe {
-        libc::ioctl(
-            fd,
-            KVM_GET_SREGS2 as libc::c_ulong,
-            &mut sregs2 as *mut kvm_sregs2,
-        )
-    };
+    let rc = unsafe { libc::ioctl(fd, KVM_GET_SREGS2 as _, &mut sregs2 as *mut kvm_sregs2) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -473,13 +461,7 @@ unsafe fn raw_get_sregs2(_fd: std::os::fd::RawFd) -> Result<kvm_sregs2> {
 #[cfg(not(miri))]
 unsafe fn raw_set_sregs2(fd: std::os::fd::RawFd, sregs2: &kvm_sregs2) -> Result<()> {
     // SAFETY: the ioctl reads a full `kvm_sregs2` from `sregs2`.
-    let rc = unsafe {
-        libc::ioctl(
-            fd,
-            KVM_SET_SREGS2 as libc::c_ulong,
-            sregs2 as *const kvm_sregs2,
-        )
-    };
+    let rc = unsafe { libc::ioctl(fd, KVM_SET_SREGS2 as _, sregs2 as *const kvm_sregs2) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -498,7 +480,7 @@ unsafe fn raw_set_sregs2(_fd: std::os::fd::RawFd, _sregs2: &kvm_sregs2) -> Resul
 unsafe fn raw_get_xsave2(fd: std::os::fd::RawFd, len: usize) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     // SAFETY: the ioctl writes exactly `len` bytes into `buf` (its capacity).
-    let rc = unsafe { libc::ioctl(fd, KVM_GET_XSAVE2 as libc::c_ulong, buf.as_mut_ptr()) };
+    let rc = unsafe { libc::ioctl(fd, KVM_GET_XSAVE2 as _, buf.as_mut_ptr()) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -517,7 +499,7 @@ unsafe fn raw_get_xsave2(_fd: std::os::fd::RawFd, len: usize) -> Result<Vec<u8>>
 unsafe fn raw_set_xsave(fd: std::os::fd::RawFd, bytes: &[u8]) -> Result<()> {
     // SAFETY: the ioctl reads the host XSAVE size from `bytes` (its length is the
     // validated `KVM_CAP_XSAVE2` size).
-    let rc = unsafe { libc::ioctl(fd, KVM_SET_XSAVE as libc::c_ulong, bytes.as_ptr()) };
+    let rc = unsafe { libc::ioctl(fd, KVM_SET_XSAVE as _, bytes.as_ptr()) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -1152,13 +1134,7 @@ mod xsave_diagnostic {
         while range.size != 0 {
             let remaining = range.size;
             // SAFETY: the live vCPU fd receives the matching ioctl's initialized, writable ABI struct, which remains valid for the call.
-            let result = unsafe {
-                libc::ioctl(
-                    backend.vcpu.as_raw_fd(),
-                    request as libc::c_ulong,
-                    &mut range,
-                )
-            };
+            let result = unsafe { libc::ioctl(backend.vcpu.as_raw_fd(), request as _, &mut range) };
             if result < 0 {
                 let error = std::io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::EINTR) {

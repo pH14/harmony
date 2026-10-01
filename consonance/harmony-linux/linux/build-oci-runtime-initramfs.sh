@@ -26,6 +26,7 @@ case "$runtime_arch" in
         exit 2
         ;;
 esac
+kernel_artifact=${HARMONY_RUNTIME_KERNEL:-$kernel_artifact}
 require_tools cc make gzip readelf python3 sed grep awk nproc
 
 runtime_init=${HARMONY_RUNTIME_INIT:-}
