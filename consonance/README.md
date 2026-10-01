@@ -23,5 +23,6 @@ changes.
 
 The architecture-neutral VMM engine lives in `vmm-core`, virtualization
 substrates live behind `vmm-backend`, and copy-on-write guest-memory snapshots
-live in `snapshot-store`. The other READMEs in this directory document the
-component boundaries.
+live in `snapshot-store`. `uml` verifies and launches the User-mode Linux
+profile, which runs a guest as an ordinary host process. The other READMEs in
+this directory document the component boundaries.

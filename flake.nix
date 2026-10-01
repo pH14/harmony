@@ -108,6 +108,18 @@
               exec ${./consonance/harmony-linux/nix/build-guest-images.sh} "$@"
             '';
           };
+          umlBuilder = pkgs.writeShellApplication {
+            name = "harmony-build-uml";
+            runtimeInputs = commonRuntimeInputs ++ [ pkgs.gcc13 pkgs.glibc.static ];
+            text = ''
+              export HARMONY_NIX_SOURCE=${self.outPath}
+              export HARMONY_NIX_LINUX_SOURCE=${linuxSource}
+              export HARMONY_NIX_MUSL_SOURCE=${muslSource}
+              export LIBRARY_PATH="${pkgs.glibc.static}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+              export NIX_LDFLAGS="-L${pkgs.glibc.static}/lib''${NIX_LDFLAGS:+ $NIX_LDFLAGS}"
+              exec ${./consonance/harmony-linux/uml/nix-build.sh} "$@"
+            '';
+          };
           workloadBuilder = pkgs.writeShellApplication {
             name = "harmony-build-workload-images";
             runtimeInputs = nativeRuntimeInputs;
@@ -134,6 +146,7 @@
           busybox-source = busyboxSource;
           platform-guest-images = platformBuilder;
           workload-guest-images = workloadBuilder;
+          uml-images = umlBuilder;
           guest-images = platformBuilder;
           default = platformBuilder;
         });
@@ -146,6 +159,10 @@
         workload-guest-images = {
           type = "app";
           program = "${self.packages.${system}.workload-guest-images}/bin/harmony-build-workload-images";
+        };
+        uml-images = {
+          type = "app";
+          program = "${self.packages.${system}.uml-images}/bin/harmony-build-uml";
         };
         guest-images = {
           type = "app";

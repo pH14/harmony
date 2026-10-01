@@ -30,6 +30,9 @@ canonical state, counter trap switch, and idle register. Its IRQ-unmask fence
 exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
 
+The um series applies after the common series to the separate User-mode Linux
+source tree. It makes SECCOMP userspace the only UML mode.
+
 After a clock or trap patch changes, run the matching instruction reachability
 scan and update its reviewed allowlist when the deliberate instruction count
 changes. After any series change, run `test-patch-series.sh` and the platform
