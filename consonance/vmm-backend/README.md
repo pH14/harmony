@@ -16,17 +16,23 @@ an ISA-specific exit enum.
 - `Arm64KvmBackend` and `HvfBackend` implement the arm64 KVM and macOS
   Hypervisor.framework paths where their platform APIs are available.
 
-Before the first policy is installed, `KvmBackend::initialize_vmx` checks
-`KVM_CAP_NESTED_STATE` and KVM's supported VMX CPUID bit, installs the requested
-CPUID model, reads the requested VMX capability MSRs, and sets
-IA32_FEATURE_CONTROL. The VMM's named nested-host policy owns their guest
-dispositions and contract identity. Partial MSR reads or writes fail. This
-initialization enables nested-state capture using a capability-sized,
-initialized buffer. The complete returned payload is retained with the inactive
-VMCS12 metadata normalization described below. Raw
-CPU observations can occur while L2 runs; published snapshots and restore
-inputs require L1 outside nested guest mode with no pending nested entry.
-Ordinary backends neither capture nor accept nested state.
+Before the first policy is installed, `KvmBackend::nested_capabilities` selects
+KVM-supported VMX or SVM. `initialize_nested` checks `KVM_CAP_NESTED_STATE` and
+installs the requested vendor's CPUID model. VMX reads the declared capability
+MSRs and sets IA32_FEATURE_CONTROL; SVM uses its supported CPUID capability leaf
+and retains VM_CR and VM_HSAVE_PA through the native MSR filter and snapshot
+MSR block. Partial MSR operations fail. The VMM's named nested-host policy binds
+vendor and every exposed capability into contract identity.
+
+Nested state is captured in a capability-sized initialized buffer. The complete
+returned payload is retained with the inactive VMCS12 metadata normalization
+described below. SVM uses KVM's format 1 and retains its GIF flag unchanged.
+Outside L2 guest mode, SVM returns the 128-byte header; its VMCB is in guest RAM,
+and EFER.SVME and the host-save MSR remain architectural state. Raw observations
+can include an active L2 payload, but publication and restore require L1 outside
+guest mode without a pending nested entry. The validator rejects unknown flags,
+malformed vendor layouts and cross-vendor restore before mutation. Ordinary
+backends neither capture nor accept nested state.
 
 X86 restore uses the host Linux 7.1
 [KVM selftest](https://github.com/torvalds/linux/blob/v7.1/tools/testing/selftests/kvm/lib/x86/processor.c)
@@ -36,7 +42,7 @@ events, then nested state. Event restoration follows general registers because
 KVM_SET_REGS clears the exception queue. The selftest's earlier event write
 loses pending #PF and #GP under the enabled exception-payload API; the existing
 live exception-payload and serviced-MSR regressions exercise that difference.
-The complete VMX payload is installed after all architectural
+The complete nested payload is installed after all architectural
 state. Invalid format, size, mode flags, or contract presence fails preflight
 before any restore ioctl.
 
@@ -50,11 +56,11 @@ and reports each recorded page as four 4 KiB guest pages. Hypervisor.framework
 reports these aborts with a translation fault status, so the backend treats any
 lower-EL abort inside mapped RAM as a tracked write.
 
-Nested-host dirty drains capture and validate the current VMX payload before
+Nested-host dirty drains capture and validate the current nested payload before
 clearing dirty bits, then remove and reinstall each outer RAM slot at the same
 address and size before reloading the unchanged nested state. Outer restore also
 reloads those slots after restoring RAM and before installing CPU state. This
-invalidates cached nested EPT mappings, including shadow pages that can survive
+invalidates cached nested mappings, including shadow pages that can survive
 a nested-state reload, and starts a fresh dirty bitmap after consuming the old
 one. The stopped vCPU never enters between slot removal and replacement.
 Without that invalidation, incremental capture can omit L2 writes and restored

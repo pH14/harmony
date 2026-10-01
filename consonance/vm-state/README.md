@@ -88,3 +88,9 @@ wired; it does not measure guest execution or hypervisor calls. The executable's
 SHA-256 binds both arms to one build. Update the frozen encoding routines when
 intentionally changing the wire format, keeping them independent of the optimized
 implementation.
+
+Nested state tag 16 retains the complete KVM vendor header and payload. VMX
+uses format 0 and SVM format 1. SVM outside L2 carries a 128-byte header with
+GIF; active L2 state can also include the 4 KiB VMCB. EFER and the native SVM
+host-save/control MSRs remain in their architectural fields. The owning VMM
+validates the format against the named contract before restore.

@@ -98,8 +98,8 @@ if [ -n "${TASK_PARK_PROFILE:-}" ]; then
     assert_y SMP
 fi
 if [ -n "${NESTED_HOST_PROFILE:-}" ]; then
-    assert_y KVM KVM_INTEL
-    assert_off KVM_AMD
+    assert_y KVM KVM_INTEL KVM_AMD
+    assert_off KVM_AMD_SEV
 fi
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)

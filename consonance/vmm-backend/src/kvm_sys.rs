@@ -15,7 +15,9 @@ use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
 #[cfg(test)]
 use crate::arch::x86::X86Exit;
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
+use crate::arch::x86::{
+    CpuidEntry, CpuidModel, MsrFilter, NestedFormat, X86, X86Caps, X86Completion, X86Policy,
+};
 use crate::arch::x86::{
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
 };
@@ -50,7 +52,7 @@ pub struct KvmBackend {
     run: *mut kvm_run,
     mmap_size: usize,
     xsave2_size: Option<usize>,
-    nested_state_size: Option<usize>,
+    nested_state_config: Option<(NestedFormat, usize)>,
     regions: MemRegions,
     mem_slot_count: u32,
     dirty_log: bool,
@@ -104,7 +106,7 @@ impl KvmBackend {
             run,
             mmap_size,
             xsave2_size,
-            nested_state_size: None,
+            nested_state_config: None,
             regions: MemRegions::new(),
             mem_slot_count: 0,
             dirty_log: true,
@@ -133,57 +135,101 @@ impl KvmBackend {
         self.dirty_log = enabled;
     }
 
-    pub fn initialize_vmx(
+    pub fn nested_capabilities(&self) -> Result<(NestedFormat, Option<CpuidEntry>)> {
+        let kvm = Kvm::new().map_err(kvm_err)?;
+        let supported = kvm
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err)?;
+        let vmx = supported
+            .as_slice()
+            .iter()
+            .any(|e| e.function == 1 && e.ecx & (1 << 5) != 0);
+        let svm = supported
+            .as_slice()
+            .iter()
+            .any(|e| e.function == 0x8000_0001 && e.ecx & (1 << 2) != 0);
+        match (vmx, svm) {
+            (true, false) => Ok((NestedFormat::Vmx, None)),
+            (false, true) => {
+                let entry = supported
+                    .as_slice()
+                    .iter()
+                    .find(|e| e.function == 0x8000_000a)
+                    .ok_or(BackendError::Capability {
+                        cap: "SVM CPUID capabilities",
+                    })?;
+                Ok((
+                    NestedFormat::Svm,
+                    Some(CpuidEntry {
+                        leaf: entry.function,
+                        subleaf: entry.index,
+                        subleaf_significant: false,
+                        eax: entry.eax,
+                        ebx: entry.ebx,
+                        ecx: entry.ecx,
+                        edx: entry.edx,
+                    }),
+                ))
+            }
+            _ => Err(BackendError::Capability {
+                cap: "one supported nested x86 vendor",
+            }),
+        }
+    }
+
+    pub fn initialize_nested(
         &mut self,
+        format: NestedFormat,
         cpuid: &CpuidModel,
         indices: &[u32],
         feature_control: u64,
     ) -> Result<BTreeMap<u32, u64>> {
         if self.cpuid_installed || self.msr_filter_installed {
             return Err(BackendError::Internal(
-                "VMX initialization requires a fresh vCPU",
+                "nested initialization requires a fresh vCPU",
             ));
         }
         let kvm = Kvm::new().map_err(kvm_err)?;
         let nested_size = kvm.check_extension_int(Cap::NestedState);
-        if nested_size < 128 {
+        if nested_size < 128 || nested_size as usize > format.maximum_len() {
             return Err(BackendError::Capability {
                 cap: "KVM_CAP_NESTED_STATE",
             });
         }
-        let supported = kvm
-            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
-            .map_err(kvm_err)?;
-        if !supported
-            .as_slice()
-            .iter()
-            .any(|e| e.function == 1 && e.ecx & (1 << 5) != 0)
-        {
-            return Err(BackendError::Capability { cap: "nested VMX" });
+        if self.nested_capabilities()?.0 != format {
+            return Err(BackendError::Capability {
+                cap: "nested x86 vendor mismatch",
+            });
+        }
+        if format == NestedFormat::Svm && !indices.is_empty() {
+            return Err(BackendError::Internal("SVM cannot use VMX capability MSRs"));
         }
         self.install_cpuid(cpuid)?;
-        let entries: Vec<_> = indices
-            .iter()
-            .map(|&index| kvm_msr_entry {
-                index,
+        let mut capabilities = BTreeMap::new();
+        if format == NestedFormat::Vmx {
+            let entries: Vec<_> = indices
+                .iter()
+                .map(|&index| kvm_msr_entry {
+                    index,
+                    ..Default::default()
+                })
+                .collect();
+            let mut msrs = Msrs::from_entries(&entries)
+                .map_err(|_| BackendError::Internal("VMX MSR list too large"))?;
+            let got = self.vcpu.get_msrs(&mut msrs).map_err(kvm_err)?;
+            capabilities = saved_msrs(msrs.as_slice(), got, indices.len())?;
+            let feature_control = Msrs::from_entries(&[kvm_msr_entry {
+                index: 0x3a,
+                data: feature_control,
                 ..Default::default()
-            })
-            .collect();
-        let mut msrs = Msrs::from_entries(&entries)
-            .map_err(|_| BackendError::Internal("VMX MSR list too large"))?;
-        let got = self.vcpu.get_msrs(&mut msrs).map_err(kvm_err)?;
-        let capabilities = saved_msrs(msrs.as_slice(), got, indices.len())?;
-        let feature_control = Msrs::from_entries(&[kvm_msr_entry {
-            index: 0x3a,
-            data: feature_control,
-            ..Default::default()
-        }])
-        .map_err(|_| BackendError::Internal("feature-control MSR list too large"))?;
-        if self.vcpu.set_msrs(&feature_control).map_err(kvm_err)? != 1 {
-            return Err(BackendError::Internal("KVM rejected IA32_FEATURE_CONTROL"));
+            }])
+            .map_err(|_| BackendError::Internal("feature-control MSR list too large"))?;
+            if self.vcpu.set_msrs(&feature_control).map_err(kvm_err)? != 1 {
+                return Err(BackendError::Internal("KVM rejected IA32_FEATURE_CONTROL"));
+            }
         }
         crate::arch::x86::nested_probe(nested_size as usize)?;
-        self.nested_state_size = Some(nested_size as usize);
+        self.nested_state_config = Some((format, nested_size as usize));
         Ok(capabilities)
     }
 
@@ -744,7 +790,7 @@ impl Backend for KvmBackend {
         }
         let fd = self.vcpu.as_raw_fd();
         let mut gfns = crate::arch::x86::drain_dirty_pages_with_nested_reprotection(
-            self.nested_state_size,
+            self.nested_state_config,
             |maximum| {
                 // SAFETY: the exclusively borrowed owned vCPU is stopped; the adapter receives a capability-sized initialized buffer and bounds every returned byte.
                 unsafe { raw_get_nested_state(fd, maximum) }
@@ -912,11 +958,16 @@ impl Backend for KvmBackend {
             msrs,
             xsave,
             xsave_restore_bv,
-            nested_state: match self.nested_state_size {
-                Some(size) => {
+            nested_state: match self.nested_state_config {
+                Some((format, size)) => {
                     // SAFETY: this owned stopped vCPU receives a capability-sized initialized buffer; the adapter bounds the returned size before retaining its bytes.
                     let mut bytes = unsafe { raw_get_nested_state(self.vcpu.as_raw_fd(), size)? };
-                    crate::arch::x86::canonicalize_vmx_exit_info(&mut bytes)?;
+                    if NestedFormat::from_state(&bytes)? != format {
+                        return Err(BackendError::Internal(
+                            "KVM returned the wrong nested vendor",
+                        ));
+                    }
+                    crate::arch::x86::canonicalize_nested_metadata(&mut bytes)?;
                     Some(bytes)
                 }
                 None => None,
@@ -927,10 +978,8 @@ impl Backend for KvmBackend {
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
-        match (self.nested_state_size, &state.nested_state) {
-            (Some(maximum), Some(bytes)) => {
-                crate::arch::x86::validate_vmx_nested_state(bytes, maximum)?
-            }
+        match (self.nested_state_config, &state.nested_state) {
+            (Some((format, maximum)), Some(bytes)) => format.validate(bytes, maximum)?,
             (None, None) => {}
             _ => {
                 return Err(BackendError::Internal(
@@ -947,7 +996,7 @@ impl Backend for KvmBackend {
         self.validate_restore_state(state)?;
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
-        if self.nested_state_size.is_some() {
+        if self.nested_state_config.is_some() {
             self.reload_nested_memory_slots()?;
         }
 

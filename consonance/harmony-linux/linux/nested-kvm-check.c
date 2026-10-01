@@ -24,18 +24,20 @@ int main(void)
     if (ioctl(kvm, KVM_GET_SUPPORTED_CPUID, cpuid) < 0) {
         perror("KVM_GET_SUPPORTED_CPUID"); free(cpuid); return 1;
     }
-    int vmx = 0;
+    int vmx = 0, svm = 0, npt = 0;
     for (unsigned int i = 0; i < cpuid->nent && i < capacity; ++i) {
         if (cpuid->entries[i].function == 1 && (cpuid->entries[i].ecx & (1u << 5))) vmx = 1;
+        if (cpuid->entries[i].function == 0x80000001 && (cpuid->entries[i].ecx & (1u << 2))) svm = 1;
+        if (cpuid->entries[i].function == 0x8000000a && (cpuid->entries[i].edx & 1u) && cpuid->entries[i].ebx >= 2) npt = 1;
     }
     free(cpuid);
-    if (!vmx) {
-        fprintf(stderr, "FAIL: nested-host requires KVM-supported Intel VMX (nested_size=%d)\n", nested_size);
+    if ((!vmx && !(svm && npt)) || (vmx && svm)) {
+        fprintf(stderr, "FAIL: nested-host requires KVM-supported VMX or SVM with NPT (nested_size=%d)\n", nested_size);
         return 1;
     }
     int vm = ioctl(kvm, KVM_CREATE_VM, 0);
     if (vm < 0) { perror("KVM_CREATE_VM"); return 1; }
-    printf("NESTED_KVM_OK api=12 vmx=1 nested_size=%d creations=1\n", nested_size);
+    printf("NESTED_KVM_OK api=12 vendor=%s vmx=%d svm=%d nested_size=%d creations=1\n", vmx ? "vmx" : "svm", vmx, svm, nested_size);
     close(vm);
     close(kvm);
     return 0;

@@ -4,28 +4,81 @@ use crate::error::{BackendError, Result};
 
 pub const NESTED_HEADER_LEN: usize = 128;
 pub const VMX_NESTED_MAX_LEN: usize = NESTED_HEADER_LEN + 2 * 4096;
+pub const SVM_NESTED_MAX_LEN: usize = NESTED_HEADER_LEN + 4096;
+pub const SVM_GIF_SET: u16 = 1 << 8;
 
-fn validate_vmx_nested_shape(bytes: &[u8], maximum: usize) -> Result<()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+pub enum NestedFormat {
+    Vmx = 0,
+    Svm = 1,
+}
+
+impl NestedFormat {
+    pub fn from_state(bytes: &[u8]) -> Result<Self> {
+        match bytes.get(2..4) {
+            Some([0, 0]) => Ok(Self::Vmx),
+            Some([1, 0]) => Ok(Self::Svm),
+            _ => Err(BackendError::Internal("unsupported nested state format")),
+        }
+    }
+
+    pub fn maximum_len(self) -> usize {
+        match self {
+            Self::Vmx => VMX_NESTED_MAX_LEN,
+            Self::Svm => SVM_NESTED_MAX_LEN,
+        }
+    }
+
+    pub fn validate(self, bytes: &[u8], maximum: usize) -> Result<()> {
+        validate_nested_state(bytes, maximum)?;
+        if Self::from_state(bytes)? != self {
+            return Err(BackendError::Internal("nested state vendor mismatch"));
+        }
+        Ok(())
+    }
+}
+
+fn validate_nested_shape(bytes: &[u8], maximum: usize) -> Result<()> {
     if bytes.len() < NESTED_HEADER_LEN || bytes.len() > maximum {
         return Err(BackendError::Internal(
-            "nested VMX state length outside host capability",
+            "nested state length outside host capability",
         ));
     }
     let size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    let format = u16::from_le_bytes(bytes[2..4].try_into().unwrap());
-    if size != bytes.len() || format != 0 {
+    let format = NestedFormat::from_state(bytes)?;
+    if size != bytes.len() || bytes.len() > format.maximum_len() {
         return Err(BackendError::Internal(
-            "invalid nested VMX state format or size",
+            "invalid nested state format or size",
         ));
+    }
+    if format == NestedFormat::Svm {
+        let flags = u16::from_le_bytes(bytes[..2].try_into().unwrap());
+        let expected = if flags & 1 != 0 {
+            SVM_NESTED_MAX_LEN
+        } else {
+            NESTED_HEADER_LEN
+        };
+        if size != expected
+            || flags & !(3 | SVM_GIF_SET) != 0
+            || (flags & 1 == 0 && bytes[8..NESTED_HEADER_LEN].iter().any(|&byte| byte != 0))
+        {
+            return Err(BackendError::Internal("invalid nested SVM state shape"));
+        }
     }
     Ok(())
 }
 
-pub fn validate_vmx_nested_state(bytes: &[u8], maximum: usize) -> Result<()> {
-    validate_vmx_nested_shape(bytes, maximum)?;
-    if u16::from_le_bytes(bytes[..2].try_into().unwrap()) != 0 {
+pub fn validate_nested_state(bytes: &[u8], maximum: usize) -> Result<()> {
+    validate_nested_shape(bytes, maximum)?;
+    let flags = u16::from_le_bytes(bytes[..2].try_into().unwrap());
+    let allowed = match NestedFormat::from_state(bytes)? {
+        NestedFormat::Vmx => 0,
+        NestedFormat::Svm => SVM_GIF_SET,
+    };
+    if flags & !allowed != 0 {
         return Err(BackendError::Internal(
-            "nested VMX snapshot requires L1 outside guest mode",
+            "nested snapshot requires L1 outside guest mode",
         ));
     }
     Ok(())
@@ -34,9 +87,7 @@ pub fn validate_vmx_nested_state(bytes: &[u8], maximum: usize) -> Result<()> {
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
 pub(crate) fn nested_probe(maximum: usize) -> Result<Vec<u8>> {
     if !(NESTED_HEADER_LEN..=VMX_NESTED_MAX_LEN).contains(&maximum) {
-        return Err(BackendError::Internal(
-            "unsupported nested VMX capability size",
-        ));
+        return Err(BackendError::Internal("unsupported nested capability size"));
     }
     let mut bytes = vec![0; maximum];
     bytes[4..8].copy_from_slice(&(maximum as u32).to_le_bytes());
@@ -59,28 +110,32 @@ pub(crate) fn finish_nested_probe(mut bytes: Vec<u8>) -> Result<Vec<u8>> {
         ));
     }
     bytes.truncate(size);
-    validate_vmx_nested_shape(&bytes, maximum)?;
+    validate_nested_shape(&bytes, maximum)?;
     Ok(bytes)
 }
 
-pub fn inactive_vmx_nested_state() -> Vec<u8> {
+pub fn inactive_nested_state(format: NestedFormat) -> Vec<u8> {
     let mut bytes = vec![0; NESTED_HEADER_LEN];
     bytes[4..8].copy_from_slice(&(NESTED_HEADER_LEN as u32).to_le_bytes());
-    bytes[8..24].fill(0xff);
+    bytes[2..4].copy_from_slice(&(format as u16).to_le_bytes());
+    match format {
+        NestedFormat::Vmx => bytes[8..24].fill(0xff),
+        NestedFormat::Svm => bytes[..2].copy_from_slice(&SVM_GIF_SET.to_le_bytes()),
+    }
     bytes
 }
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
 pub(crate) fn drain_dirty_pages_with_nested_reprotection(
-    maximum: Option<usize>,
+    configuration: Option<(NestedFormat, usize)>,
     read: impl FnOnce(usize) -> Result<Vec<u8>>,
     drain: impl FnOnce() -> Result<Vec<u64>>,
     reload: impl FnOnce(&[u8]) -> Result<()>,
 ) -> Result<Vec<u64>> {
-    let nested = match maximum {
-        Some(maximum) => {
+    let nested = match configuration {
+        Some((format, maximum)) => {
             let bytes = read(maximum)?;
-            validate_vmx_nested_state(&bytes, maximum)?;
+            format.validate(&bytes, maximum)?;
             Some(bytes)
         }
         None => None,
@@ -93,7 +148,11 @@ pub(crate) fn drain_dirty_pages_with_nested_reprotection(
 }
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
-pub(crate) fn canonicalize_vmx_exit_info(bytes: &mut [u8]) -> Result<()> {
+pub(crate) fn canonicalize_nested_metadata(bytes: &mut [u8]) -> Result<()> {
+    if NestedFormat::from_state(bytes)? == NestedFormat::Svm {
+        validate_nested_shape(bytes, SVM_NESTED_MAX_LEN)?;
+        return Ok(());
+    }
     if bytes.len() == NESTED_HEADER_LEN {
         return Ok(());
     }
@@ -156,6 +215,38 @@ mod tests {
     }
 
     #[test]
+    fn svm_preserves_gif_and_payload_but_rejects_guest_mode_and_vendor_mixing() {
+        for flags in [0, SVM_GIF_SET] {
+            let mut bytes = inactive_nested_state(NestedFormat::Svm);
+            bytes[..2].copy_from_slice(&flags.to_le_bytes());
+            NestedFormat::Svm
+                .validate(&bytes, SVM_NESTED_MAX_LEN)
+                .unwrap();
+            assert!(
+                NestedFormat::Vmx
+                    .validate(&bytes, VMX_NESTED_MAX_LEN)
+                    .is_err()
+            );
+            assert_eq!(finish_nested_probe(bytes.clone()).unwrap(), bytes);
+            let original = bytes.clone();
+            canonicalize_nested_metadata(&mut bytes).unwrap();
+            assert_eq!(bytes, original);
+        }
+        let mut bytes = inactive_nested_state(NestedFormat::Svm);
+        for flags in [1_u16, 2, 4, 8, 0x200] {
+            bytes[..2].copy_from_slice(&flags.to_le_bytes());
+            assert!(validate_nested_state(&bytes, SVM_NESTED_MAX_LEN).is_err());
+        }
+        bytes.resize(SVM_NESTED_MAX_LEN, 0x5a);
+        bytes[4..8].copy_from_slice(&(SVM_NESTED_MAX_LEN as u32).to_le_bytes());
+        bytes[..2].copy_from_slice(&(1 | SVM_GIF_SET).to_le_bytes());
+        assert_eq!(finish_nested_probe(bytes.clone()).unwrap(), bytes);
+        assert!(validate_nested_state(&bytes, SVM_NESTED_MAX_LEN).is_err());
+        bytes[..2].copy_from_slice(&SVM_GIF_SET.to_le_bytes());
+        assert!(finish_nested_probe(bytes).is_err());
+    }
+
+    #[test]
     fn nested_probe_preserves_every_returned_payload_byte_and_rejects_bad_sizes() {
         let mut bytes = nested_probe(VMX_NESTED_MAX_LEN).unwrap();
         bytes[NESTED_HEADER_LEN..].fill(0x5a);
@@ -170,26 +261,26 @@ mod tests {
 
     #[test]
     fn inactive_header_and_live_root_state_are_distinct_and_mode_flags_fail_closed() {
-        let inactive = inactive_vmx_nested_state();
-        validate_vmx_nested_state(&inactive, VMX_NESTED_MAX_LEN).unwrap();
+        let inactive = inactive_nested_state(NestedFormat::Vmx);
+        validate_nested_state(&inactive, VMX_NESTED_MAX_LEN).unwrap();
         let mut live = inactive.clone();
         live[8..16].copy_from_slice(&0x3000_u64.to_le_bytes());
         assert_ne!(live, inactive);
-        validate_vmx_nested_state(&live, VMX_NESTED_MAX_LEN).unwrap();
+        validate_nested_state(&live, VMX_NESTED_MAX_LEN).unwrap();
         for (offset, value) in [(0, 1), (0, 2), (0, 4), (0, 8), (2, 1)] {
             let mut invalid = live.clone();
             invalid[offset] = value;
-            assert!(validate_vmx_nested_state(&invalid, VMX_NESTED_MAX_LEN).is_err());
+            assert!(validate_nested_state(&invalid, VMX_NESTED_MAX_LEN).is_err());
         }
     }
 
     #[test]
     fn vmcs12_exit_info_canonicalizes_only_inactive_metadata_and_rejects_unknown_layouts() {
-        let inactive = inactive_vmx_nested_state();
+        let inactive = inactive_nested_state(NestedFormat::Vmx);
         let mut bytes = inactive.clone();
-        canonicalize_vmx_exit_info(&mut bytes).unwrap();
+        canonicalize_nested_metadata(&mut bytes).unwrap();
         assert_eq!(bytes, inactive);
-        let mut bytes = inactive_vmx_nested_state();
+        let mut bytes = inactive_nested_state(NestedFormat::Vmx);
         bytes.resize(NESTED_HEADER_LEN + 4096, 0x5a);
         let length = bytes.len() as u32;
         bytes[4..8].copy_from_slice(&length.to_le_bytes());
@@ -210,17 +301,17 @@ mod tests {
             expected[NESTED_HEADER_LEN + 820..NESTED_HEADER_LEN + 824]
                 .copy_from_slice(&expected_error.to_le_bytes());
             let mut actual = bytes.clone();
-            canonicalize_vmx_exit_info(&mut actual).unwrap();
+            canonicalize_nested_metadata(&mut actual).unwrap();
             assert_eq!(actual, expected);
         }
         bytes[NESTED_HEADER_LEN] ^= 1;
         let before = bytes.clone();
-        assert!(canonicalize_vmx_exit_info(&mut bytes).is_err());
+        assert!(canonicalize_nested_metadata(&mut bytes).is_err());
         assert_eq!(bytes, before);
         for length in [0, 127, 129, NESTED_HEADER_LEN + 823] {
             let mut bytes = vec![0; length];
             let before = bytes.clone();
-            assert!(canonicalize_vmx_exit_info(&mut bytes).is_err());
+            assert!(canonicalize_nested_metadata(&mut bytes).is_err());
             assert_eq!(bytes, before);
         }
     }
@@ -229,14 +320,14 @@ mod tests {
     fn nested_dirty_reprotection_reloads_the_complete_payload_after_the_drain() {
         use std::cell::RefCell;
 
-        let mut bytes = inactive_vmx_nested_state();
+        let mut bytes = inactive_nested_state(NestedFormat::Vmx);
         bytes.resize(NESTED_HEADER_LEN + 4096, 0x5a);
         let length = bytes.len() as u32;
         bytes[4..8].copy_from_slice(&length.to_le_bytes());
         bytes[8..16].copy_from_slice(&0x3000_u64.to_le_bytes());
         let calls = RefCell::new(Vec::new());
         let dirty = drain_dirty_pages_with_nested_reprotection(
-            Some(VMX_NESTED_MAX_LEN),
+            Some((NestedFormat::Vmx, VMX_NESTED_MAX_LEN)),
             |maximum| {
                 assert_eq!(maximum, VMX_NESTED_MAX_LEN);
                 calls.borrow_mut().push("read");
@@ -268,13 +359,48 @@ mod tests {
     }
 
     #[test]
+    fn svm_dirty_reprotection_preserves_gif_and_rejects_wrong_vendor_before_drain() {
+        use std::cell::RefCell;
+        let bytes = inactive_nested_state(NestedFormat::Svm);
+        let calls = RefCell::new(Vec::new());
+        let dirty = drain_dirty_pages_with_nested_reprotection(
+            Some((NestedFormat::Svm, SVM_NESTED_MAX_LEN)),
+            |_| {
+                calls.borrow_mut().push("read");
+                Ok(bytes.clone())
+            },
+            || {
+                calls.borrow_mut().push("drain");
+                Ok(vec![4])
+            },
+            |state| {
+                calls.borrow_mut().push("reload");
+                assert_eq!(state, bytes);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(dirty, [4]);
+        assert_eq!(*calls.borrow(), ["read", "drain", "reload"]);
+        assert!(
+            drain_dirty_pages_with_nested_reprotection(
+                Some((NestedFormat::Svm, SVM_NESTED_MAX_LEN)),
+                |_| Ok(inactive_nested_state(NestedFormat::Vmx)),
+                || panic!("wrong vendor must not drain dirty pages"),
+                |_| panic!("wrong vendor must not reload state"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn nested_dirty_reprotection_rejects_bad_state_before_drain_and_propagates_errors() {
-        for offset in [0, 2, 4] {
-            let mut bytes = inactive_vmx_nested_state();
+        for offset in [0, 3, 4] {
+            let mut bytes = inactive_nested_state(NestedFormat::Vmx);
             bytes[offset] ^= 1;
             assert!(
                 drain_dirty_pages_with_nested_reprotection(
-                    Some(VMX_NESTED_MAX_LEN),
+                    Some((NestedFormat::Vmx, VMX_NESTED_MAX_LEN)),
                     |_| Ok(bytes),
                     || panic!("invalid nested state cannot clear dirty pages"),
                     |_| panic!("invalid nested state cannot be reloaded"),
@@ -284,7 +410,7 @@ mod tests {
         }
         assert!(
             drain_dirty_pages_with_nested_reprotection(
-                Some(VMX_NESTED_MAX_LEN),
+                Some((NestedFormat::Vmx, VMX_NESTED_MAX_LEN)),
                 |_| Err(BackendError::Internal("read failed")),
                 || panic!("failed capture cannot clear dirty pages"),
                 |_| panic!("failed capture cannot be reloaded"),
@@ -293,8 +419,8 @@ mod tests {
         );
         assert!(
             drain_dirty_pages_with_nested_reprotection(
-                Some(VMX_NESTED_MAX_LEN),
-                |_| Ok(inactive_vmx_nested_state()),
+                Some((NestedFormat::Vmx, VMX_NESTED_MAX_LEN)),
+                |_| Ok(inactive_nested_state(NestedFormat::Vmx)),
                 || Err(BackendError::Internal("drain failed")),
                 |_| panic!("failed drain cannot reload nested state"),
             )
@@ -302,8 +428,8 @@ mod tests {
         );
         assert!(
             drain_dirty_pages_with_nested_reprotection(
-                Some(VMX_NESTED_MAX_LEN),
-                |_| Ok(inactive_vmx_nested_state()),
+                Some((NestedFormat::Vmx, VMX_NESTED_MAX_LEN)),
+                |_| Ok(inactive_nested_state(NestedFormat::Vmx)),
                 || Ok(vec![1]),
                 |_| Err(BackendError::Internal("reload failed")),
             )
