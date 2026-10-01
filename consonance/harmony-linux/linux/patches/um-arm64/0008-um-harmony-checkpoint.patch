@@ -23,7 +23,7 @@ exception.
 ---
 --- /dev/null
 +++ b/arch/um/include/shared/checkpoint.h
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,66 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_CHECKPOINT_H
 +#define __UM_CHECKPOINT_H
@@ -31,6 +31,10 @@ exception.
 +#define UM_CONTROL_MAGIC 0x31435548U
 +#define UM_CONTROL_CAPTURE 1U
 +#define UM_CONTROL_RESTORE 2U
++#define UM_CONTROL_MEMORY 4U
++#define UM_CONTROL_CONTINUE 5U
++
++#define UM_MEMORY_ALL 1L
 +
 +#define UM_CAPTURE_OMIT_HOST_MEMORY 1ULL
 +
@@ -66,6 +70,21 @@ exception.
 +				       unsigned long start, unsigned long end);
 +extern void um_irq_checkpoint_detach(void);
 +extern void um_irq_checkpoint_attach(void);
++
++extern void os_track_init(unsigned long base, unsigned long start,
++			  unsigned long end);
++extern int os_track_writable(unsigned long long phys);
++extern void os_track_mark(unsigned long long phys, unsigned long length);
++extern void os_track_unprotect(unsigned long start, unsigned long end);
++extern int os_track_fault(unsigned long address);
++extern int os_harmony_memory(long flags, const void *bitmap,
++			     unsigned long bytes);
++
++extern void um_checkpoint_revoke(struct mm_struct *mm, unsigned long start,
++				 unsigned long end);
++extern void um_checkpoint_mark_stubs(void);
++extern int um_checkpoint_write_fault(struct mm_struct *mm,
++				     unsigned long address);
 +
 +extern long um_harmony_control(unsigned int command, unsigned long long flags,
 +			       int fd, unsigned int *ack);
@@ -141,22 +160,28 @@ exception.
  # Stub executable
 --- /dev/null
 +++ b/arch/um/kernel/skas/checkpoint.c
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,267 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Checkpoints of a User-mode Linux kernel, requested by the Harmony host
 + * while the guest waits for a bridge answer.
 + *
-+ * The host process memory, its mappings of kernel virtual memory and the
-+ * physical memory file are captured. Stub processes and epoll registrations
-+ * are host resources outside that memory, so a restore tears down the
-+ * current ones and rebuilds them from the restored kernel state.
++ * The host process memory and its mappings of kernel virtual memory are
++ * captured in an image. The Harmony host reads and writes the physical memory
++ * file itself, using the pages reported as written since the last capture or
++ * restore. Stub processes and vmalloc aliases write physical memory without
++ * being tracked, so their pages are reported at every command. Stub processes
++ * and epoll registrations are host resources outside that memory, so a
++ * restore tears down the current ones and rebuilds them from the restored
++ * kernel state.
 + */
 +#include <linux/init.h>
 +#include <linux/irqflags.h>
 +#include <linux/kernel.h>
 +#include <linux/mm.h>
 +#include <linux/pgtable.h>
++#include <linux/sched/signal.h>
++#include <linux/sched/task_stack.h>
 +#include <asm/sections.h>
 +#include <asm/tlbflush.h>
 +#include <linux/time-internal.h>
@@ -225,6 +250,72 @@ exception.
 +	walk_present(mm, start, end, mark_needsync);
 +}
 +
++static void revoke_write(struct mm_struct *mm, unsigned long address,
++			 pte_t *pte)
++{
++	if (pte_write(*pte) && pte_dirty(*pte) && pte_young(*pte))
++		mark_needsync(mm, address, pte);
++}
++
++void um_checkpoint_revoke(struct mm_struct *mm, unsigned long start,
++			  unsigned long end)
++{
++	walk_present(mm, start, end, revoke_write);
++}
++
++int um_checkpoint_write_fault(struct mm_struct *mm, unsigned long address)
++{
++	pgd_t *pgd = pgd_offset(mm, address);
++	p4d_t *p4d;
++	pud_t *pud;
++	pmd_t *pmd;
++	pte_t *pte;
++
++	if (!pgd_present(*pgd))
++		return 0;
++	p4d = p4d_offset(pgd, address);
++	if (!p4d_present(*p4d))
++		return 0;
++	pud = pud_offset(p4d, address);
++	if (!pud_present(*pud))
++		return 0;
++	pmd = pmd_offset(pud, address);
++	if (!pmd_present(*pmd))
++		return 0;
++	pte = pte_offset_kernel(pmd, address);
++	if (!pte_present(*pte) || !pte_write(*pte) || !pte_dirty(*pte) ||
++	    !pte_young(*pte))
++		return 0;
++	os_track_mark(pte_val(*pte) & PAGE_MASK, PAGE_SIZE);
++	mark_needsync(mm, address & PAGE_MASK, pte);
++	return 1;
++}
++
++static void mark_page(struct mm_struct *mm, unsigned long address,
++		      pte_t *pte)
++{
++	os_track_mark(pte_val(*pte) & PAGE_MASK, PAGE_SIZE);
++}
++
++static void mark_untracked(void)
++{
++	walk_present(&init_mm, VMALLOC_START, VMALLOC_END, mark_page);
++	um_checkpoint_mark_stubs();
++}
++
++static void open_stacks(void)
++{
++	struct task_struct *group, *task;
++
++	rcu_read_lock();
++	for_each_process_thread(group, task) {
++		unsigned long stack = (unsigned long)task_stack_page(task);
++
++		os_track_unprotect(stack, stack + THREAD_SIZE);
++	}
++	rcu_read_unlock();
++}
++
 +static void fill_args(struct um_checkpoint_args *args, int fd,
 +		      unsigned long long flags, int nskip)
 +{
@@ -254,8 +345,10 @@ exception.
 +	}
 +	fill_args(&args, fd, flags, nskip);
 +	local_irq_save(irq);
++	mark_untracked();
 +	initial_thread_cb(os_checkpoint_capture, &args);
 +	os_close_file(fd);
++	open_stacks();
 +	if (um_checkpoint_resumed) {
 +		um_checkpoint_resumed = 0;
 +		um_checkpoint_rebuild_stubs();
@@ -287,6 +380,7 @@ exception.
 +		return args.result;
 +	}
 +	local_irq_save(irq);
++	mark_untracked();
 +	um_checkpoint_kill_stubs();
 +	um_irq_checkpoint_detach();
 +	initial_thread_cb(os_checkpoint_restore, &args);
@@ -306,6 +400,14 @@ exception.
 +	os_close_file(fd);
 +	return -EINVAL;
 +}
++
++static int __init harmony_track_init(void)
++{
++	if (os_harmony_available())
++		os_track_init(uml_physmem, uml_reserved, high_physmem);
++	return 0;
++}
++early_initcall(harmony_track_init);
 +
 +static int __init harmony_restore_setup(char *line)
 +{
@@ -336,7 +438,7 @@ exception.
  #include <os.h>
  #include <skas.h>
  #include <stub-data.h>
-@@ -249,3 +250,58 @@ static int __init init_child_tracking(void)
+@@ -249,3 +250,75 @@ static int __init init_child_tracking(void)
  	return 0;
  }
  early_initcall(init_child_tracking)
@@ -369,6 +471,23 @@ exception.
 +	}
 +}
 +
++void um_checkpoint_mark_stubs(void)
++{
++	struct mm_context *context;
++
++	list_for_each_entry(context, &mm_list, list) {
++		struct mm_struct *mm = container_of(context, struct mm_struct, context);
++		struct vm_area_struct *vma;
++		VMA_ITERATOR(vmi, mm, 0);
++
++		if (context->id.stack)
++			os_track_mark(__pa(context->id.stack),
++				      STUB_DATA_PAGES * UM_KERN_PAGE_SIZE);
++		for_each_vma(vmi, vma)
++			um_checkpoint_revoke(mm, vma->vm_start, vma->vm_end);
++	}
++}
++
 +void um_checkpoint_rebuild_stubs(void)
 +{
 +	struct mm_context *context;
@@ -395,6 +514,60 @@ exception.
 +			um_checkpoint_mark_present(mm, vma->vm_start, vma->vm_end);
 +	}
 +}
+--- a/arch/um/kernel/tlb.c
++++ b/arch/um/kernel/tlb.c
+@@ -10,6 +10,7 @@
+ #include <asm/tlbflush.h>
+ #include <asm/mmu_context.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <mem_user.h>
+ #include <os.h>
+ #include <skas.h>
+@@ -73,6 +74,9 @@ static inline int update_pte_range(pmd_t *pmd, unsigned long addr,
+ 				w = 0;
+ 			} else if (!pte_dirty(*pte))
+ 				w = 0;
++			if (w && ops->mmap != kern_map &&
++			    fd == um_physmem_fd() && !os_track_writable(offset))
++				w = 0;
+ 
+ 			prot = (r ? UM_PROT_READ : 0) |
+ 			       (w ? UM_PROT_WRITE : 0) |
+--- a/arch/um/kernel/trap.c
++++ b/arch/um/kernel/trap.c
+@@ -15,6 +15,7 @@
+ #include <asm/tlbflush.h>
+ #include <arch.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <kern_util.h>
+ #include <os.h>
+ #include <skas.h>
+@@ -417,6 +418,9 @@ int handle_page_fault(unsigned long address, unsigned long ip,
+ 	if (faulthandler_disabled())
+ 		goto out_nosemaphore;
+ 
++	if (is_write && um_checkpoint_write_fault(mm, address))
++		return 0;
++
+ 	if (is_user)
+ 		flags |= FAULT_FLAG_USER;
+ retry:
+@@ -468,6 +472,13 @@ retry:
+ 		pte = pte_offset_kernel(pmd, address);
+ 	} while (!pte_present(*pte));
+ 	err = 0;
++	if (is_write && pte_write(*pte) && pte_dirty(*pte) && pte_young(*pte)) {
++		unsigned long page = address & PAGE_MASK;
++
++		os_track_mark(pte_val(*pte) & PAGE_MASK, PAGE_SIZE);
++		*pte = pte_mkneedsync(*pte);
++		um_tlb_mark_sync(mm, page, page + PAGE_SIZE);
++	}
+ 
+ 	/*
+ 	 * The fault is resolved but not yet published to the stub -- that
 --- a/arch/um/os-Linux/harmony.c
 +++ b/arch/um/os-Linux/harmony.c
 @@ -5,9 +5,12 @@
@@ -410,7 +583,7 @@ exception.
  #include <init.h>
  #include <os.h>
  
-@@ -45,6 +48,80 @@ int os_harmony_available(void)
+@@ -45,6 +48,112 @@ int os_harmony_available(void)
  	return harmony_fd >= 0;
  }
  
@@ -488,10 +661,42 @@ exception.
 +	return n == sizeof(ack) ? 0 : -EPROTO;
 +}
 +
++int os_harmony_memory(long flags, const void *bitmap, unsigned long bytes)
++{
++	struct harmony_control control;
++	ssize_t n;
++	int fd, err;
++
++	err = harmony_acknowledge(UM_CONTROL_MEMORY, flags);
++	if (err)
++		return err;
++	if (!(flags & UM_MEMORY_ALL)) {
++		do {
++			n = send(harmony_fd, bitmap, bytes, MSG_NOSIGNAL);
++		} while (n < 0 && errno == EINTR);
++		if (n < 0)
++			return -errno;
++		if ((unsigned long)n != bytes)
++			return -EPROTO;
++	}
++	n = harmony_receive(&fd);
++	if (n < 0)
++		return n;
++	if (fd >= 0)
++		close(fd);
++	memcpy(&control, harmony_frame,
++	       n < (ssize_t)sizeof(control) ? n : sizeof(control));
++	if (fd >= 0 || n != sizeof(control) ||
++	    control.magic != UM_CONTROL_MAGIC ||
++	    control.command != UM_CONTROL_CONTINUE)
++		return -EPROTO;
++	return 0;
++}
++
  int os_harmony_exchange(unsigned long long moment, const void *request,
  			unsigned int length, void *response,
  			unsigned int capacity)
-@@ -55,6 +132,10 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
+@@ -55,6 +164,10 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
  		{ .iov_base = (void *)request, .iov_len = length },
  	};
  	struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
@@ -502,7 +707,7 @@ exception.
  	ssize_t n;
  
  	do {
-@@ -64,14 +145,26 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
+@@ -64,14 +177,26 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
  		return -errno;
  	if ((size_t)n != sizeof(stamp) + length)
  		return -EPROTO;
@@ -536,6 +741,81 @@ exception.
 +	memcpy(response, harmony_frame, n);
  	return n;
  }
+--- a/arch/um/os-Linux/mem.c
++++ b/arch/um/os-Linux/mem.c
+@@ -9,6 +9,7 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <limits.h>
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <sys/mman.h>
+@@ -209,11 +210,43 @@ static int __init create_tmp_file(unsigned long long len)
+ 	return fd;
+ }
+ 
++static int harmony_physmem = -1;
++
++static int __init harmony_physmem_setup(char *line, int *add)
++{
++	char *end;
++	long fd;
++
++	*add = 0;
++	errno = 0;
++	fd = strtol(line, &end, 10);
++	if (*line == '\0' || *end != '\0' || errno || fd < 0 || fd > INT_MAX ||
++	    fcntl(fd, F_GETFD) < 0) {
++		os_warn("harmony_physmem= needs an open file descriptor\n");
++		return 1;
++	}
++	harmony_physmem = fd;
++	return 0;
++}
++
++__uml_setup("harmony_physmem=", harmony_physmem_setup,
++"harmony_physmem=<fd>\n"
++"    An inherited empty memory file that holds physical memory. The Harmony\n"
++"    host maps the same file to read and restore guest memory.\n\n"
++);
++
+ int __init create_mem_file(unsigned long long len)
+ {
+ 	int err, fd;
+ 
+-	fd = create_tmp_file(len);
++	if (harmony_physmem >= 0) {
++		fd = harmony_physmem;
++		if (ftruncate(fd, len) < 0) {
++			perror("harmony_physmem");
++			exit(1);
++		}
++	} else
++		fd = create_tmp_file(len);
+ 
+ 	err = os_set_exec_close(fd);
+ 	if (err < 0) {
+--- a/arch/um/os-Linux/signal.c
++++ b/arch/um/os-Linux/signal.c
+@@ -14,6 +14,7 @@
+ #include <string.h>
+ #include <strings.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <kern_util.h>
+ #include <os.h>
+ #include <skas.h>
+@@ -207,6 +208,9 @@ static void hard_handler(int sig, siginfo_t *si, void *p)
+ 	mcontext_t *mc = &uc->uc_mcontext;
+ 	int save_errno = errno;
+ 
++	if (sig == SIGSEGV && si->si_code == SEGV_ACCERR &&
++	    os_track_fault((unsigned long)si->si_addr))
++		return;
+ 	(*handlers[sig])(sig, (struct siginfo *)si, mc);
+ 
+ 	errno = save_errno;
 --- a/arch/um/os-Linux/skas/Makefile
 +++ b/arch/um/os-Linux/skas/Makefile
 @@ -3,8 +3,10 @@
@@ -552,17 +832,23 @@ exception.
  include $(srctree)/arch/um/scripts/Makefile.rules
 --- /dev/null
 +++ b/arch/um/os-Linux/skas/checkpoint.c
-@@ -0,0 +1,907 @@
+@@ -0,0 +1,988 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Host side of User-mode Linux checkpoints.
 + *
 + * Capture and restore run on the host's initial thread stack with every host
 + * signal blocked. An image holds the kernel process's private memory other
-+ * than its code and the host stack, the data extents of the physical memory
-+ * file, the mappings of that file, the thread pointer, and the inventory of
-+ * host resources that a restore must find unchanged. Stub processes and
-+ * epoll registrations are rebuilt by the kernel after a restore.
++ * than its code and the host stack, the mappings of the physical memory file
++ * outside the direct map, the thread pointer, and the inventory of host
++ * resources that a restore must find unchanged. Stub processes and epoll
++ * registrations are rebuilt by the kernel after a restore.
++ *
++ * The physical memory file is owned by the Harmony host. Both commands
++ * report the pages written since the last capture or restore and wait while
++ * the host reads or rewrites that file. Kernel writes are found by keeping
++ * the direct map read-only until the first write to each page; writes by
++ * guest programs are found when the kernel maps their pages writable.
 + */
 +#include <errno.h>
 +#include <fcntl.h>
@@ -572,7 +858,6 @@ exception.
 +#include <stdlib.h>
 +#include <string.h>
 +#include <unistd.h>
-+#include <linux/falloc.h>
 +#include <sys/mman.h>
 +#include <sys/stat.h>
 +#include <sys/syscall.h>
@@ -581,6 +866,7 @@ exception.
 +#ifdef __x86_64__
 +#include <asm/prctl.h>
 +#endif
++#include <as-layout.h>
 +#include <os.h>
 +#include <checkpoint.h>
 +
@@ -589,13 +875,14 @@ exception.
 +#define MAX_FDS 128
 +#define MAPS_BYTES (256 * 1024)
 +#define RESTORE_FAILED 86
++#define UNPROTECT_LIMIT 16384
++#define LONG_BITS (8 * sizeof(unsigned long))
 +
 +enum region_kind {
 +	KIND_PRIVATE = 1,
 +	KIND_HEAP,
 +	KIND_RESERVE,
 +	KIND_IMAGE,
-+	KIND_PHYSMEM,
 +	KIND_SHARED,
 +	KIND_VVAR,
 +	KIND_VVAR_VCLOCK,
@@ -654,7 +941,20 @@ exception.
 +	const char *name;
 +};
 +
++struct track {
++	unsigned long base;
++	unsigned long start;
++	unsigned long end;
++	unsigned long pages;
++	unsigned long words;
++	unsigned long *bits;
++	unsigned long unprotects;
++	int tracking;
++	int all;
++};
++
 +int um_checkpoint_resumed;
++static struct track track;
 +
 +extern char **environ;
 +
@@ -666,6 +966,125 @@ exception.
 +static unsigned long round_up(unsigned long value, unsigned long page)
 +{
 +	return (value + page - 1) & ~(page - 1);
++}
++
++void os_track_init(unsigned long base, unsigned long start, unsigned long end)
++{
++	unsigned long pages = (end - base) >> UM_KERN_PAGE_SHIFT;
++	unsigned long words = (pages + LONG_BITS - 1) / LONG_BITS;
++	void *bits = mmap(NULL, round_up(words * sizeof(long), page_size()),
++			  PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
++			  -1, 0);
++
++	if (bits == MAP_FAILED)
++		panic("Harmony write tracking needs %lu bytes: %d\n",
++		      words * sizeof(long), errno);
++	track.base = base;
++	track.start = start;
++	track.end = end;
++	track.pages = pages;
++	track.words = words;
++	track.bits = bits;
++}
++
++static void set_page(unsigned long pfn)
++{
++	track.bits[pfn / LONG_BITS] |= 1UL << (pfn % LONG_BITS);
++}
++
++static int test_page(unsigned long pfn)
++{
++	return (track.bits[pfn / LONG_BITS] >> (pfn % LONG_BITS)) & 1;
++}
++
++int os_track_writable(unsigned long long phys)
++{
++	unsigned long pfn = phys >> UM_KERN_PAGE_SHIFT;
++
++	if (!track.tracking || track.all || pfn >= track.pages)
++		return 1;
++	return test_page(pfn);
++}
++
++void os_track_mark(unsigned long long phys, unsigned long length)
++{
++	unsigned long pfn = phys >> UM_KERN_PAGE_SHIFT;
++	unsigned long last = (phys + length - 1) >> UM_KERN_PAGE_SHIFT;
++
++	if (!track.tracking || track.all || !length)
++		return;
++	for (; pfn <= last && pfn < track.pages; pfn++)
++		set_page(pfn);
++}
++
++static void open_all(void)
++{
++	track.all = 1;
++	if (mprotect((void *)track.start, track.end - track.start,
++		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
++		panic("Opening the direct map failed: %d\n", errno);
++}
++
++static void open_range(unsigned long start, unsigned long end)
++{
++	track.unprotects++;
++	if (track.unprotects > UNPROTECT_LIMIT) {
++		open_all();
++		return;
++	}
++	os_track_mark(start - track.base, end - start);
++	if (mprotect((void *)start, end - start,
++		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
++		panic("Opening a direct map page failed: %d\n", errno);
++}
++
++void os_track_unprotect(unsigned long start, unsigned long end)
++{
++	if (!track.tracking || track.all)
++		return;
++	if (start < track.start)
++		start = track.start;
++	if (end > track.end)
++		end = track.end;
++	if (start < end)
++		open_range(start, end);
++}
++
++int os_track_fault(unsigned long address)
++{
++	unsigned long page = address & UM_KERN_PAGE_MASK;
++
++	if (!track.tracking || track.all || address < track.start ||
++	    address >= track.end)
++		return 0;
++	open_range(page, page + UM_KERN_PAGE_SIZE);
++	return 1;
++}
++
++static void protect_all(void)
++{
++	if (!track.tracking || track.all)
++		return;
++	if (mprotect((void *)track.start, track.end - track.start,
++		     PROT_READ | PROT_EXEC) < 0)
++		panic("Protecting the direct map failed: %d\n", errno);
++}
++
++static void track_reset(void)
++{
++	memset(track.bits, 0, track.words * sizeof(long));
++	track.unprotects = 0;
++	track.all = 0;
++	track.tracking = 1;
++	protect_all();
++}
++
++static int report_memory(void)
++{
++	long flags = !track.tracking || track.all ? UM_MEMORY_ALL : 0;
++
++	return os_harmony_memory(flags, track.bits,
++				 track.words * sizeof(long));
 +}
 +
 +#if defined(__x86_64__)
@@ -927,11 +1346,10 @@ exception.
 +	if (map->shared) {
 +		if (!same_file(map, physmem))
 +			return -EINVAL;
-+		if (map->start == args->physmem_start &&
-+		    map->end == args->physmem_end)
-+			region->kind = KIND_PHYSMEM;
-+		else
-+			region->kind = KIND_SHARED;
++		if (map->start >= args->physmem_start &&
++		    map->end <= args->physmem_end)
++			return 0;
++		region->kind = KIND_SHARED;
 +		return 1;
 +	}
 +	if (name_is(map, "[heap]"))
@@ -952,38 +1370,6 @@ exception.
 +	case KIND_HEAP:
 +		return !(flags & UM_CAPTURE_OMIT_HOST_MEMORY) &&
 +		       (region->prot & PROT_READ);
-+	case KIND_PHYSMEM:
-+		return 1;
-+	}
-+	return 0;
-+}
-+
-+static int write_physmem(const struct um_checkpoint_args *args,
-+			 const struct image_region *region)
-+{
-+	unsigned long base = region->start - args->physmem_base;
-+	unsigned long end = region->end - args->physmem_base;
-+	unsigned long position = base;
-+
-+	while (position < end) {
-+		off_t data = lseek(args->physmem_fd, position, SEEK_DATA);
-+		off_t hole;
-+		int err;
-+
-+		if (data < 0)
-+			return errno == ENXIO ? 0 : -errno;
-+		if ((unsigned long)data >= end)
-+			return 0;
-+		hole = lseek(args->physmem_fd, data, SEEK_HOLE);
-+		if (hole < 0)
-+			return -errno;
-+		if ((unsigned long)hole > end)
-+			hole = end;
-+		err = write_all(args->fd, (void *)(region->start + (data - base)),
-+				hole - data, region->offset + (data - base));
-+		if (err)
-+			return err;
-+		position = hole;
 +	}
 +	return 0;
 +}
@@ -1007,9 +1393,6 @@ exception.
 +	header->physmem_start = args->physmem_start;
 +	header->physmem_end = args->physmem_end;
 +
-+	err = thread_count();
-+	if (err != 1)
-+		return err < 0 ? err : -EBUSY;
 +	if (fstat(args->physmem_fd, &physmem) < 0)
 +		return -errno;
 +	err = read_file("/proc/self/maps", maps, MAPS_BYTES);
@@ -1043,11 +1426,8 @@ exception.
 +		if (!has_data(region, args->flags))
 +			continue;
 +		region->offset = cursor;
-+		if (region->kind == KIND_PHYSMEM)
-+			err = write_physmem(args, region);
-+		else
-+			err = write_all(args->fd, (void *)region->start,
-+					region->end - region->start, cursor);
++		err = write_all(args->fd, (void *)region->start,
++				region->end - region->start, cursor);
 +		if (err)
 +			return err;
 +		cursor += region->end - region->start;
@@ -1067,11 +1447,21 @@ exception.
 +	struct image_header header;
 +	char maps[MAPS_BYTES];
 +	sigset_t all, old;
++	long result;
 +
 +	sigfillset(&all);
 +	sigprocmask(SIG_BLOCK, &all, &old);
-+	args->result = capture(args, &header, maps);
++	result = thread_count();
++	if (result == 1)
++		result = report_memory();
++	else if (result >= 0)
++		result = -EBUSY;
++	if (!result) {
++		track_reset();
++		result = capture(args, &header, maps);
++	}
 +	sigprocmask(SIG_SETMASK, &old, NULL);
++	args->result = result;
 +}
 +
 +static int read_header(int fd, struct image_header *header)
@@ -1199,7 +1589,6 @@ exception.
 +
 +		switch (region->kind) {
 +		case KIND_IMAGE:
-+		case KIND_PHYSMEM:
 +			for (j = 0; j < n; j++)
 +				if (current[j].start == region->start &&
 +				    current[j].end == region->end &&
@@ -1248,11 +1637,14 @@ exception.
 +	struct mapping current[MAX_REGIONS * 2];
 +	char maps[MAPS_BYTES];
 +	sigset_t all, old;
++	long result;
 +
 +	sigfillset(&all);
 +	sigprocmask(SIG_BLOCK, &all, &old);
-+	args->result = validate(args, &header, maps, current);
++	protect_all();
++	result = validate(args, &header, maps, current);
 +	sigprocmask(SIG_SETMASK, &old, NULL);
++	args->result = result;
 +}
 +
 +static void ensure_mapped(unsigned long start, unsigned long end, int prot)
@@ -1298,40 +1690,6 @@ exception.
 +		fatal("moving the vDSO", errno);
 +}
 +
-+static void restore_physmem(int image, int physmem_fd, unsigned long base,
-+			    const struct image_region *region)
-+{
-+	unsigned long length = region->end - region->start;
-+	unsigned long file_offset = region->start - base;
-+	unsigned long position = region->offset;
-+	unsigned long end = region->offset + length;
-+
-+	if (fallocate(physmem_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-+		      file_offset, length) < 0)
-+		memset((void *)region->start, 0, length);
-+	while (position < end) {
-+		off_t data = lseek(image, position, SEEK_DATA);
-+		off_t hole;
-+
-+		if (data < 0) {
-+			if (errno == ENXIO)
-+				return;
-+			fatal("finding physical memory data", errno);
-+		}
-+		if ((unsigned long)data >= end)
-+			return;
-+		hole = lseek(image, data, SEEK_HOLE);
-+		if (hole < 0)
-+			fatal("finding physical memory holes", errno);
-+		if ((unsigned long)hole > end)
-+			hole = end;
-+		if (read_all(image, (void *)(region->start + (data - region->offset)),
-+			     hole - data, data))
-+			fatal("reading physical memory", errno);
-+		position = hole;
-+	}
-+}
-+
 +static void restore_region(int image, const struct image_region *region,
 +			   const struct mapping *heap)
 +{
@@ -1368,8 +1726,8 @@ exception.
 +	struct um_checkpoint_args *args = arg;
 +	int image = args->fd;
 +	int physmem_fd = args->physmem_fd;
-+	unsigned long physmem_base = args->physmem_base;
 +	unsigned long physmem_start = args->physmem_start;
++	unsigned long physmem_end = args->physmem_end;
 +	struct stat physmem;
 +	struct image_header header;
 +	struct mapping current[MAX_REGIONS * 2];
@@ -1390,6 +1748,10 @@ exception.
 +	sigaddset(&child, SIGCHLD);
 +	while (sigtimedwait(&child, NULL, &zero) > 0)
 +		;
++	protect_all();
++	n = report_memory();
++	if (n)
++		fatal("exchanging memory with the host", -n);
 +
 +	if (jmpbuf_size > sizeof(jmpbuf))
 +		fatal("initial jump buffer size", EINVAL);
@@ -1418,7 +1780,8 @@ exception.
 +		fatal("reading the physical memory file", errno);
 +	for (i = 0; i < (unsigned int)n; i++)
 +		if (current[i].shared && same_file(&current[i], &physmem) &&
-+		    current[i].start != physmem_start &&
++		    (current[i].start < physmem_start ||
++		     current[i].end > physmem_end) &&
 +		    munmap((void *)current[i].start,
 +			   current[i].end - current[i].start) < 0)
 +			fatal("unmapping kernel virtual memory", errno);
@@ -1437,11 +1800,9 @@ exception.
 +		case KIND_RESERVE:
 +			restore_region(image, region, heap);
 +			break;
-+		case KIND_PHYSMEM:
-+			restore_physmem(image, physmem_fd, physmem_base, region);
-+			break;
 +		}
 +	}
++	track_reset();
 +
 +	set_tls(header.tls);
 +	memcpy(initial, jmpbuf, jmpbuf_size);

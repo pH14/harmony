@@ -64,30 +64,47 @@ sequence of guest events.
 
 ## Checkpoints
 
-The host takes a checkpoint while the guest kernel waits for a `/dev/harmony`
-answer. Instead of the answer, the host sends a control message with a file
-descriptor for the image. The kernel writes the image from the host's initial
-thread with every host signal blocked and acknowledges it with the image size.
-Nothing is flushed or drained and virtual time does not move. The guest then
-waits for the answer again.
+The host creates the guest's physical memory file and passes it as descriptor
+4 with `harmony_physmem=4`. The host takes a checkpoint while the guest kernel
+waits for a `/dev/harmony` answer. Instead of the answer, the host sends a
+control message with a file descriptor for the image. The kernel parks on the
+host stack with every host signal blocked and reports the physical pages
+written since the last capture or restore, or that every page may have
+changed. The host copies those pages while the guest waits, then sends
+`CONTINUE`. The kernel writes the image and acknowledges it with the image
+size. Nothing is flushed or drained and virtual time does not move. The guest
+then waits for the answer again.
+
+The kernel tracks its own writes by mapping the physical memory range
+read-only after each capture or restore. The first write to a page faults, and
+the host signal handler records the page and makes it writable again. A guest
+program's page is mapped writable in its stub process only once the page is
+recorded, so the first write faults into the kernel, which records it without
+counting a page fault for the program. A capture takes write access away from
+the stubs again. Kernel stacks stay writable, because host system calls write
+into them, and are reported at every command. So are stub data pages and
+vmalloc pages, which are written outside tracking. After 16384 pages and
+stacks are made writable in one interval, the kernel makes the whole range
+writable and reports every page.
 
 An image holds:
 
 - captured: the UML process's private memory other than its code and the host
   stack (the binary's data, read-only data and BSS, the heap, anonymous
-  mappings and the C library's thread data), the data extents of the guest
-  physical memory file, the host mappings of that file outside the main
-  physical memory range (vmalloc space), the vDSO address and the thread
-  pointer;
+  mappings and the C library's thread data), the host mappings of the
+  physical memory file outside the main physical memory range (vmalloc
+  space), the vDSO address and the thread pointer;
 - checked, not copied: the executable mappings, the binary's end, the
   physical memory range, a single host thread, and the open host descriptors
   by number, type and access mode, excluding stub sockets.
 
 A restore checks the image before it changes anything and refuses an image
-that does not match. It then kills the stub processes, removes the epoll
-registrations, copies the image back (writable ranges keep their protection,
-because the arm64 binary is one read-write-execute segment that holds the
-running code), moves the vDSO to its captured address,
+that does not match. It then reports the pages written since the last
+command, and the host writes back each page that differs from the target
+checkpoint. After `CONTINUE` the kernel kills the stub processes, removes the
+epoll registrations, copies the image back (writable ranges keep their
+protection, because the arm64 binary is one read-write-execute segment that
+holds the running code), moves the vDSO to its captured address,
 and resumes at the capture point. There the kernel rebuilds what lives outside
 the image: a new stub process and socket for each guest address space, with
 every present page marked for remapping, and the epoll registrations with
@@ -95,6 +112,9 @@ every present page marked for remapping, and the epoll registrations with
 buffer, the environment pointer and the descriptors stay those of the running
 process. The kernel acknowledges the restore and waits for the answer that was
 pending at the capture.
+
+The host stores the image and the physical memory of every checkpoint as
+pages in one `snapshot-store` store, each checkpoint a delta on its parent.
 
 With `harmony_restore` on the command line, the kernel asks the host for an
 image at the end of boot and restores it into the fresh process. The fresh
@@ -223,7 +243,10 @@ half, restores the second image, and runs to the end. Each image is then
 restored into a fresh process, with and without address randomization. Every
 run must end with the cold hash. Two planted omissions must fail: an image
 captured without host memory, and a restore that keeps the host's bridge
-state. The report gives capture and restore times and image sizes.
+state. The first two diamonds compare every physical page with the stored
+checkpoint after each capture and restore, and fail on a page that changed
+without being reported. The report gives capture and restore times from the
+other diamonds, image sizes and the bytes each checkpoint owns in the store.
 
 The event hash is SHA-256 over each event's virtual time, ID, length and
 data.

@@ -3,6 +3,8 @@
 mod bridge;
 mod console;
 mod launch;
+#[cfg(target_os = "linux")]
+mod memory;
 mod process;
 mod profile;
 mod recording;
@@ -12,6 +14,8 @@ mod session;
 pub use bridge::{Bridge, Event, event_hash};
 pub use console::ConsoleTail;
 pub use launch::{Exit, ExitReason, Guest, Launch, LaunchError};
+#[cfg(target_os = "linux")]
+pub use memory::{Checkpoints, MemoryError};
 pub use process::group_members;
 pub use profile::{
     Artifact, HostIdentity, Profile, ProfileError, VerifiedProfile, VirtualTimeCosts,

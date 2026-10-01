@@ -21,6 +21,8 @@ use crate::profile::VerifiedProfile;
 const POLL: Duration = Duration::from_millis(5);
 const SWEEP_LIMIT: Duration = Duration::from_secs(5);
 const BRIDGE_FD: i32 = 3;
+pub(crate) const PHYSMEM_FD: i32 = 4;
+const HIGH_FD: i32 = 10;
 
 #[derive(Clone, Debug)]
 pub struct Launch {
@@ -149,7 +151,7 @@ impl Guest {
     }
 
     pub fn start(command: Command, work: TempDir, launch: &Launch) -> Result<Self, LaunchError> {
-        Self::start_bridged(command, work, launch, true).map(|(guest, _)| guest)
+        Self::start_bridged(command, work, launch, true, None).map(|(guest, _)| guest)
     }
 
     pub(crate) fn start_bridged(
@@ -157,6 +159,7 @@ impl Guest {
         work: TempDir,
         launch: &Launch,
         serve: bool,
+        physmem: Option<OwnedFd>,
     ) -> Result<(Self, Option<OwnedFd>), LaunchError> {
         let (mut reader, writer) = io::pipe()?;
         command.stdout(writer.try_clone()?).stderr(writer);
@@ -164,7 +167,7 @@ impl Guest {
         let host_end = match launch.bridge {
             Some(_) => {
                 let (host, guest) = bridge::socket_pair()?;
-                pass_bridge(&mut command, guest);
+                pass_bridge(&mut command, guest, physmem);
                 Some(host)
             }
             None => None,
@@ -421,20 +424,30 @@ fn set_parent_death_signal(command: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 fn set_parent_death_signal(_command: &mut Command) {}
 
-fn pass_bridge(command: &mut Command, guest: OwnedFd) {
+fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) {
     // SAFETY: the closure runs in the forked child before exec and calls only
-    // dup2(2) and fcntl(2), which are async-signal-safe. `guest` stays open
-    // until the closure is dropped with the command after spawn.
+    // fcntl(2), dup2(2) and close(2), which are async-signal-safe. Both
+    // descriptors stay open until the closure is dropped with the command
+    // after spawn. Each source is first copied above the targets so that a
+    // source already at one target is not overwritten by the other.
     unsafe {
         command.pre_exec(move || {
-            let fd = guest.as_raw_fd();
-            let result = if fd == BRIDGE_FD {
-                libc::fcntl(fd, libc::F_SETFD, 0)
-            } else {
-                libc::dup2(fd, BRIDGE_FD)
-            };
-            if result < 0 {
-                return Err(io::Error::last_os_error());
+            let passed = [
+                Some((&guest, BRIDGE_FD)),
+                physmem.as_ref().map(|fd| (fd, PHYSMEM_FD)),
+            ];
+            let mut copies = [-1; 2];
+            for (copy, (fd, _)) in copies.iter_mut().zip(passed.iter().flatten()) {
+                *copy = libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD, HIGH_FD);
+                if *copy < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            for (copy, (_, target)) in copies.iter().zip(passed.iter().flatten()) {
+                if libc::dup2(*copy, *target) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                libc::close(*copy);
             }
             Ok(())
         });
