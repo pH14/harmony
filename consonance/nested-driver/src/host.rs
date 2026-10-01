@@ -470,7 +470,52 @@ impl Reporting for NestedWorkload {
         "sdk_operations"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        campaign::postcard_result_sha256(result)
+        let digest = campaign::postcard_result_sha256(result)?;
+        if let Some(directory) = std::env::var_os("HARMONY_NESTED_RESULT_AUDIT") {
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let directory = PathBuf::from(directory);
+            fs::create_dir_all(&directory)?;
+            let mut actions = Vec::new();
+            for (index, action) in result.actions.iter().enumerate() {
+                let candidate = if let Some(candidate) = &action.candidate {
+                    let snapshot = &candidate.snapshot;
+                    let sidecar = snapshot.state.sidecar();
+                    fs::write(
+                        directory.join(format!("{sequence}-{index}.sidecar")),
+                        &sidecar,
+                    )?;
+                    let pages: Vec<_> = snapshot
+                        .state
+                        .pages()
+                        .iter()
+                        .map(|(gfn, page)| {
+                            serde_json::json!([
+                                gfn,
+                                format!("{:x}", Sha256::digest(page.as_slice()))
+                            ])
+                        })
+                        .collect();
+                    Some(
+                        serde_json::json!({"key": candidate.key, "viable":candidate.viable,
+                        "at":snapshot.at,"actions":snapshot.actions,"observation":snapshot.observation,
+                        "pages":pages,"sidecar_sha256":format!("{:x}", Sha256::digest(sidecar))}),
+                    )
+                } else {
+                    None
+                };
+                actions.push(
+                    serde_json::json!({"action":action.action,"observations":action.observations,
+                    "milestones":action.milestones,"outcome":action.outcome,"candidate":candidate}),
+                );
+            }
+            fs::write(
+                directory.join(format!("{sequence}.json")),
+                serde_json::to_vec(&serde_json::json!({
+                "digest":digest,"preparation_failure":result.preparation_failure,"actions":actions}))?,
+            )?;
+        }
+        Ok(digest)
     }
     fn evidence_checkpoint(evidence: &Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(serde_json::to_vec(evidence)?)

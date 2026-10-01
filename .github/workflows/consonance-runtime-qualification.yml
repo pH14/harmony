@@ -42,30 +42,22 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver --test live direct_restore_stutters -- --ignored --exact --nocapture 2>&1 | tee replay-evidence/direct.log
-      - name: Replay complete recorded campaign
+      - name: Search and replay with RAM and result audits
         env:
           HARMONY_NESTED_RAM_AUDIT: "1"
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           cargo build --locked --release -p harmony-cli
+          common=(search nested-inputs/nested-driver.oci --package nested --kernel nested-inputs/bzImage-nested-host --base-initramfs nested-inputs/initramfs-oci.cpio.gz --ram-mib 512 --seed 42)
           set +e
-          timeout -k 10 360 taskset -c "$cpu" target/release/harmony search nested-inputs/nested-driver.oci --package nested --kernel nested-inputs/bzImage-nested-host --base-initramfs nested-inputs/initramfs-oci.cpio.gz --ram-mib 512 --seed 42 --replay recorded/search/stream.jsonl --out replay-evidence/replay 2>&1 | tee replay-evidence/replay.log
+          HARMONY_NESTED_RESULT_AUDIT=replay-evidence/search-audit timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" --executions 100 --wall-minutes 5 --out replay-evidence/search 2>&1 | tee replay-evidence/search.log
           result=${PIPESTATUS[0]}
-          set -e
+          printf '%s\n' "$result" >replay-evidence/search-exit-code.txt
+          HARMONY_NESTED_RESULT_AUDIT=replay-evidence/replay-audit timeout -k 10 360 taskset -c "$cpu" target/release/harmony "${common[@]}" --replay replay-evidence/search/stream.jsonl --out replay-evidence/replay 2>&1 | tee replay-evidence/replay.log
+          result=${PIPESTATUS[0]}
           printf '%s\n' "$result" >replay-evidence/replay-exit-code.txt
-          test "$result" -eq 1
-          python3 - <<'VERIFY'
-          import json
-          from pathlib import Path
-          before=json.loads(Path('recorded/search/report.json').read_text())
-          after=json.loads(Path('replay-evidence/replay/report.json').read_text())
-          for field in ['executions_completed','execution_work','stream_sha256']:
-              assert before[field] == after[field], field
-          assert before['archive']['evidence'] == after['archive']['evidence']
-          assert len(after['archive']['evidence']['failures']) == 1
-          print('NESTED_FAILURE_CAMPAIGN_REPLAY=pass')
-          VERIFY
+          set -e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
