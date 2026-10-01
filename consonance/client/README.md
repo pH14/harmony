@@ -159,9 +159,23 @@ parent publishes only after the child answers. An import sends one descriptor pe
 extent in the chain, and the child maps each range read-only for that call.
 A child that dies mid-call therefore leaves no entry half-written and no lease
 held; its unpublished extent is freed like any abandoned extent. Dropping a
-`WorkerSession` closes the socket and reaps the child. `SearchSession` is the set
-of calls a search worker makes, implemented by both `Session` and
-`WorkerSession`.
+`WorkerSession` closes the socket and reaps the child.
+
+`UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
+through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot
+arguments, seed, setup budget and the progress limit after which a guest that
+makes no virtual-time progress is reported as `SessionError::Hung`. Boot runs
+the guest to its setup snapshot point and captures it. Each snapshot is a full
+`uml::Checkpoint`; a restore is in place while the guest is paused and starts
+a fresh process otherwise. A publish exports the checkpoint into one extent,
+and an import reads it back with the session's service factory. Branches
+refuse mechanical effects, because the UML backend cannot write guest memory
+or inject interrupts. `store_bytes` is the allocated size of every held
+checkpoint, and telemetry reports the count and host time of captures,
+restores, fresh restores and imports.
+
+`SearchSession` is the set of calls a search worker makes, implemented by
+`Session`, `WorkerSession` and `UmlSession`.
 
 `placement::CorePool` finds the host's fastest core type within the process's
 CPU affinity, cut to the whole cores of the tightest cgroup `cpu.max` quota: the `cpu_core` and `cpu_atom` lists on hybrid x86, the part

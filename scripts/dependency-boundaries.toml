@@ -32,6 +32,7 @@ platform_contracts = [
 consonance_client = [
     "consonance/client",
     "consonance/hypercall-doorbell",
+    "consonance/uml",
 ]
 workload_support = [
     "consonance/harmony-linux/sdk",

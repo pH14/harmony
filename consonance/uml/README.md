@@ -14,7 +14,8 @@
   `/proc/cpuinfo`.
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
-  output pipe, every other console off, and a per-launch work directory for
+  output pipe, every other console and serial line on `null`, and a
+  per-launch work directory for
   `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR` and
   `GLIBC_TUNABLES`. With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
 - `Bridge` serves the guest's `/dev/harmony` requests on a `SOCK_SEQPACKET`
@@ -22,12 +23,23 @@
   each event with its virtual time, and fails the run if virtual time goes
   backwards. With a cut, it stops answering at that event, and the guest
   stops with `ExitReason::EventCut`.
-- `Session` holds the bridge socket on the caller's thread instead. It runs
-  the guest to an event count and pauses it before the answer, takes a
-  `Checkpoint` there, restores one in place, or starts a fresh process that
-  restores one at boot. A `Checkpoint` is the guest image in a memfd plus the
-  bridge state at the capture: entropy, events, virtual time and the pending
-  answer. Sessions are Linux only.
+- `Session` holds the bridge socket on the caller's thread instead. Its
+  services answer the same SDK requests as the KVM backend through
+  `environment::sdk`: entropy, events, assertion violations, standing-service
+  questions answered by a `ServiceHandler`, payload pulls and coverage.
+  `branch` installs a seed, handler and payloads. `run_until` runs to a
+  virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
+  snapshot request. Each returns a `Stop`: an event count, deadline,
+  snapshot point, violation, exhausted input, a closed bridge, or a guest
+  exit. A guest whose virtual time
+  stops moving for the progress limit fails with `SessionError::Hung`. The
+  session pauses the guest before each answer, takes a `Checkpoint` there,
+  restores one in place, or starts a fresh process that restores one at boot.
+  A `Checkpoint` is the guest image in a memfd plus the services state at the
+  capture. `Checkpoint::export` writes both into one buffer and
+  `Checkpoint::import` reads it back, ignoring trailing padding.
+  `state_hash` hashes the services state and the pending request. Sessions
+  are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event
   count and event hash of a run. `Recording::check` refuses a different
   profile or host, and `Recording::launch` replays to the recorded cut.

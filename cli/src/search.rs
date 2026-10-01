@@ -12,6 +12,7 @@ pub enum Package {
 pub enum Backend {
     Native,
     Consonance,
+    Uml,
 }
 #[derive(clap::Args)]
 pub struct Args {
@@ -44,6 +45,8 @@ pub struct Args {
     replay: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     repeat: u32,
+    #[arg(long)]
+    uml_profile: Option<PathBuf>,
 }
 pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
     let backend = args.backend.unwrap_or(match args.package {
@@ -60,6 +63,16 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
             crate::host::Hypervisor::Unavailable(reason)
             | crate::host::Hypervisor::Unsupported(reason) => return Err(reason.into()),
         }
+    }
+    if matches!(backend, Backend::Uml) {
+        if !cfg!(target_os = "linux") {
+            return Err("User-mode Linux search requires a Linux host".into());
+        }
+        if args.uml_profile.is_none() {
+            return Err("--backend uml requires --uml-profile".into());
+        }
+    } else if args.uml_profile.is_some() {
+        return Err("--uml-profile requires --backend uml".into());
     }
     let output = args.out.clone();
     match (args.package, backend) {
@@ -81,10 +94,13 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
                 &options,
             )?;
         }
-        (Package::Faults, Backend::Native) => {
-            return Err("the faults package requires --backend consonance".into());
+        (Package::Nes, Backend::Uml) => {
+            return Err("the NES package has no User-mode Linux backend".into());
         }
-        (Package::Faults, Backend::Consonance) => {
+        (Package::Faults, Backend::Native) => {
+            return Err("the faults package requires --backend consonance or uml".into());
+        }
+        (Package::Faults, Backend::Consonance | Backend::Uml) => {
             let faults = faults_options(&args)?;
             let replay = read_replay(args.replay.as_deref())?;
             run_faults_consonance(
@@ -134,6 +150,7 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
             .collect(),
         wall_minutes: args.wall_minutes,
         output: args.out.clone(),
+        uml_profile: args.uml_profile.clone(),
     })
 }
 
@@ -241,12 +258,21 @@ fn run_faults_consonance(
         };
         let installed =
             crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
-        let kernel = kernel
-            .or(installed.kernel)
-            .ok_or("controlled guest kernel missing: use --kernel or HARMONY_GUEST_DIR")?;
+        let kernel = match &options.uml_profile {
+            Some(profile) => faults_workload::consonance::UmlGuest::executable(profile)?,
+            None => kernel
+                .or(installed.kernel)
+                .ok_or("controlled guest kernel missing: use --kernel or HARMONY_GUEST_DIR")?,
+        };
         let base = base
             .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
             .ok_or("guest base image missing: use --base-initramfs")?;
+        let worker = match (&options.uml_profile, replay) {
+            (None, None) => Some(consonance_client::session::WorkerLauncher::current_exe(
+                vec![SESSION_WORKER.into()],
+            )?),
+            _ => None,
+        };
         let prepared = faults_workload::prepare::prepare_oci(
             input.to_str().ok_or("OCI input must be UTF-8")?,
             &std::fs::read(base)?,
@@ -264,9 +290,7 @@ fn run_faults_consonance(
                 &prepared.vocabulary,
                 options,
                 &resources.ok_or("search requires worker resources")?,
-                Some(consonance_client::session::WorkerLauncher::current_exe(
-                    vec![SESSION_WORKER.into()],
-                )?),
+                worker,
             )?,
         };
         println!(
@@ -318,6 +342,7 @@ mod tests {
             wall_minutes: None,
             replay: None,
             repeat: 1,
+            uml_profile: None,
         }
     }
 
@@ -333,7 +358,24 @@ mod tests {
             .expect_err("faults must not run through the native backend");
         assert_eq!(
             error.to_string(),
-            "the faults package requires --backend consonance"
+            "the faults package requires --backend consonance or uml"
+        );
+    }
+
+    #[test]
+    fn the_uml_backend_and_its_profile_flag_come_together() {
+        let error = run(args(Package::Faults, Backend::Uml)).expect_err("no profile");
+        let expected = if cfg!(target_os = "linux") {
+            "--backend uml requires --uml-profile"
+        } else {
+            "User-mode Linux search requires a Linux host"
+        };
+        assert_eq!(error.to_string(), expected);
+        let mut args = args(Package::Faults, Backend::Native);
+        args.uml_profile = Some(PathBuf::from("missing-profile"));
+        assert_eq!(
+            run(args).expect_err("profile without backend").to_string(),
+            "--uml-profile requires --backend uml"
         );
     }
 

@@ -29,6 +29,7 @@ pub struct Launch {
     pub console_limit_bytes: u64,
     pub wall_limit: Duration,
     pub kernel_arguments: Vec<String>,
+    pub initramfs: Option<PathBuf>,
     pub work_parent: PathBuf,
     pub bridge: Option<Bridge>,
 }
@@ -86,24 +87,27 @@ impl Launch {
             console_limit_bytes: 16 << 20,
             wall_limit: Duration::from_secs(60),
             kernel_arguments: Vec::new(),
+            initramfs: None,
             work_parent,
             bridge: None,
         }
     }
 
     pub fn command(&self, profile: &VerifiedProfile, work: &Path) -> Result<Command, LaunchError> {
+        let initramfs = self.initramfs.clone().unwrap_or_else(|| profile.rootfs());
         let mut command = Command::new(profile.executable());
         command
             .arg(format!("mem={}M", self.memory_mib))
-            .arg(prefixed("initrd=", &profile.rootfs())?)
+            .arg(prefixed("initrd=", &initramfs)?)
             .args([
                 "seccomp=on",
                 "time-travel=inf-cpu",
                 "time-travel-start=0",
                 "con0=null,fd:1",
-                "con=none",
-                "ssl=none",
+                "con=null",
+                "ssl=null",
                 "umid=harmony",
+                "noreboot",
             ])
             .arg(prefixed("uml_dir=", work)?)
             .args(self.bridge.iter().flat_map(|bridge| {
