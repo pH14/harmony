@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use environment::channel::Effect;
 use vm_state::{Arm64VmState, SnapshotRecords, VmState, VmStateError};
 use vmm_backend::{
     Arm64, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState, Backend, CommonExit, Exit,
@@ -70,11 +69,9 @@ fn arm64_os_debug_lock_accepts_only_the_boot_unlock() {
 }
 
 #[test]
-fn arm64_interrupt_seams_report_no_fabric() {
+fn arm64_without_a_fabric_has_no_pending_guest_interrupt() {
     let mut v = vmm(vec![]);
     assert!(!v.has_pending_guest_interrupt().unwrap());
-    let err = v.apply_effect(&Effect::InjectInterrupt { vector: 40 });
-    assert!(err.is_err(), "no fabric wired: injection must fail loud");
 }
 
 #[test]
@@ -241,17 +238,11 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     gic.set_pmr(0xFF);
     gic.set_group1_enabled(true);
 
+    gic.pulse(40).unwrap();
+
     let mut v = vmm(vec![Exit::Common(CommonExit::Idle)]);
     v.wire_gic(gic);
     assert!(v.gic_wired());
-
-    v.apply_effect(&Effect::InjectInterrupt { vector: 40 })
-        .unwrap();
-    assert!(
-        v.apply_effect(&Effect::InjectInterrupt { vector: 200 })
-            .is_err(),
-        "past the distributor-bounded identity space"
-    );
     assert!(v.has_pending_guest_interrupt().unwrap());
 
     let s = v.save_vm_state().unwrap();

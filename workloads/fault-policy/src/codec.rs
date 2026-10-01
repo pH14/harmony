@@ -15,7 +15,6 @@ const ACT_GUEST: u8 = 1;
 const HF_SKEW_TIME: u8 = 0;
 const HF_SET_CLOCK_RATE: u8 = 1;
 const HF_CORRUPT_MEMORY: u8 = 2;
-const HF_INJECT_INTERRUPT: u8 = 3;
 
 const F_BLOCK_EIO: u8 = 5;
 const F_BLOCK_LATENCY: u8 = 6;
@@ -211,10 +210,6 @@ pub(crate) fn write_host_fault(w: &mut Vec<u8>, f: &HostFault) {
             put_u64(w, *gpa);
             put_u64(w, *mask);
         }
-        HostFault::InjectInterrupt { vector } => {
-            w.push(HF_INJECT_INTERRUPT);
-            put_u32(w, *vector);
-        }
     }
 }
 
@@ -230,7 +225,6 @@ pub(crate) fn read_host_fault(r: &mut Reader) -> Result<HostFault, EnvError> {
             gpa: r.u64()?,
             mask: BitMask(r.u64()?),
         },
-        HF_INJECT_INTERRUPT => HostFault::InjectInterrupt { vector: r.u32()? },
         _ => return Err(EnvError::Malformed),
     };
     Ok(f)

@@ -114,7 +114,6 @@ pub enum ServiceResponse {
 pub enum Effect {
     WriteMemory { gpa: u64, bytes: Vec<u8> },
     XorMemory { gpa: u64, bytes: Vec<u8> },
-    InjectInterrupt { vector: u32 },
 }
 
 impl Effect {
@@ -147,10 +146,6 @@ impl Effect {
                 put_u64(out, *gpa);
                 put_bytes(out, bytes);
             }
-            Self::InjectInterrupt { vector } => {
-                out.push(2);
-                put_u32(out, *vector);
-            }
         }
     }
 
@@ -159,9 +154,6 @@ impl Effect {
         let effect = match reader.u8()? {
             1 => Self::write_memory(reader.u64()?, reader.bytes()?.to_vec())?,
             3 => Self::xor_memory(reader.u64()?, reader.bytes()?.to_vec())?,
-            2 => Self::InjectInterrupt {
-                vector: reader.u32()?,
-            },
             _ => return Err(ChannelError::Malformed),
         };
         reader.finish()?;
@@ -1097,16 +1089,12 @@ mod tests {
     #[test]
     fn mechanical_effect_schedule_is_canonical_and_fault_agnostic() {
         let mut schedule = EffectSchedule::default();
-        schedule.insert(7, Effect::InjectInterrupt { vector: 9 });
-        schedule.insert(7, Effect::InjectInterrupt { vector: 3 });
-        schedule.insert(7, Effect::InjectInterrupt { vector: 9 });
-        assert_eq!(
-            schedule.at(7),
-            &[
-                Effect::InjectInterrupt { vector: 3 },
-                Effect::InjectInterrupt { vector: 9 },
-            ]
-        );
+        let write = Effect::write_memory(0x10, vec![1]).unwrap();
+        let xor = Effect::xor_memory(0x10, vec![1]).unwrap();
+        schedule.insert(7, xor.clone());
+        schedule.insert(7, write.clone());
+        schedule.insert(7, xor.clone());
+        assert_eq!(schedule.at(7), &[write, xor]);
     }
 
     #[test]
@@ -1245,7 +1233,7 @@ mod tests {
         let effects = [
             Effect::write_memory(0x1000, vec![1, 2]).unwrap(),
             Effect::xor_memory(0x2000, vec![3, 4]).unwrap(),
-            Effect::InjectInterrupt { vector: 17 },
+            Effect::write_memory(0x3000, vec![5]).unwrap(),
         ];
         for effect in &effects {
             assert_eq!(Effect::decode(&effect.encode()), Ok(effect.clone()));
@@ -1266,7 +1254,7 @@ mod tests {
             schedule.iter().collect::<Vec<_>>(),
             vec![
                 (3, &[effects[0].clone()][..]),
-                (9, &[effects[1].clone(), effects[2].clone()][..])
+                (9, &[effects[2].clone(), effects[1].clone()][..])
             ]
         );
     }

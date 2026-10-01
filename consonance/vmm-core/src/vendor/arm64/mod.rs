@@ -391,7 +391,7 @@ use vmm_backend::{Arm64, Arm64Exit, Arm64VcpuState, Backend, CommonExit, Exit, G
 
 pub use dispatch::Arm64Devices;
 
-use crate::vendor::{InterruptReject, Vendor};
+use crate::vendor::Vendor;
 use crate::vmm::{Step, Vmm, VmmError};
 
 impl Vendor for Arm64 {
@@ -476,20 +476,6 @@ impl Vendor for Arm64 {
 
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
         vmm.deliverable_timer_deadline_vns_arm64()
-    }
-
-    fn check_wire_interrupt<B: Backend<A = Self>>(
-        vmm: &Vmm<B>,
-        vector: u32,
-    ) -> Result<(), InterruptReject> {
-        vmm.check_wire_interrupt_arm64(vector)
-    }
-
-    fn inject_wire_interrupt<B: Backend<A = Self>>(
-        vmm: &mut Vmm<B>,
-        vector: u32,
-    ) -> Result<(), VmmError> {
-        vmm.inject_host_interrupt_arm64(vector)
     }
 
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(

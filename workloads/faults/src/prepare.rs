@@ -155,14 +155,9 @@ ready /usr/bin/servicectl endpoint health
             execution.execution.bundle.as_deref(),
             Some(SUPERVISOR_BUNDLE)
         );
-        let interrupts = if prepared.vocabulary.interrupt_injection() {
-            "enabled"
-        } else {
-            "none"
-        };
         assert_eq!(
             prepared.vocabulary.identifier(),
-            format!("faultlab_bundle_v5;nodes=1;hooks=1,2;events=none;interrupts={interrupts}")
+            "faultlab_bundle_v6;nodes=1;hooks=1,2;events=none"
         );
     }
 

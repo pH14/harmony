@@ -265,7 +265,6 @@ mod tests {
             FaultAction::Pause(3, tick),
             FaultAction::Restart(3, tick),
             FaultAction::Hook(3, tick),
-            FaultAction::Interrupt(3, tick),
         ];
         let keys: std::collections::BTreeSet<_> =
             actions.iter().map(FaultAction::key_bytes).collect();

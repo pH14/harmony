@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v5";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v6";
 pub const MAX_NODES: u16 = 64;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -10,7 +10,6 @@ pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
     instrumented_events: bool,
-    interrupt_injection: bool,
 }
 
 impl FaultVocabulary {
@@ -33,7 +32,6 @@ impl FaultVocabulary {
             nodes,
             hooks: sorted,
             instrumented_events: false,
-            interrupt_injection: compiled_backend_supports_interrupts(),
         })
     }
 
@@ -108,11 +106,6 @@ impl FaultVocabulary {
     }
 
     #[must_use]
-    pub fn interrupt_injection(&self) -> bool {
-        self.interrupt_injection
-    }
-
-    #[must_use]
     pub fn identifier(&self) -> String {
         let hooks = self
             .hooks
@@ -125,13 +118,8 @@ impl FaultVocabulary {
         } else {
             "none"
         };
-        let interrupts = if self.interrupt_injection {
-            "enabled"
-        } else {
-            "none"
-        };
         format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};interrupts={interrupts}",
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events}",
             self.nodes,
         )
     }
@@ -162,21 +150,6 @@ impl FaultVocabulary {
             "antithesis" => true,
             _ => return Err("fault vocabulary has an unknown event capability".to_owned()),
         };
-        let interrupt_injection = match fields
-            .next()
-            .and_then(|field| field.strip_prefix("interrupts="))
-            .ok_or("fault vocabulary has no interrupt capability")?
-        {
-            "none" => false,
-            "enabled" => true,
-            _ => return Err("fault vocabulary has an unknown interrupt capability".to_owned()),
-        };
-        if interrupt_injection != compiled_backend_supports_interrupts() {
-            return Err(format!(
-                "fault vocabulary interrupt capability ({interrupt_injection}) does not match the compiled backend ({})",
-                compiled_backend_supports_interrupts()
-            ));
-        }
         if fields.next().is_some() {
             return Err("fault vocabulary has trailing fields".to_owned());
         }
@@ -191,19 +164,8 @@ impl FaultVocabulary {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        let mut vocabulary = Self::new(nodes, hooks)?.with_instrumented_events(instrumented_events);
-        vocabulary.interrupt_injection = interrupt_injection;
-        Ok(vocabulary)
+        Ok(Self::new(nodes, hooks)?.with_instrumented_events(instrumented_events))
     }
-}
-
-#[must_use]
-pub const fn compiled_backend_supports_interrupts() -> bool {
-    cfg!(all(
-        feature = "consonance",
-        target_os = "linux",
-        target_arch = "x86_64"
-    ))
 }
 
 #[cfg(test)]
@@ -325,14 +287,9 @@ ready /usr/local/pgsql/bin/pg_isready
             postgres.identifier(),
             "two workloads never record the same alphabet"
         );
-        let interrupts = if compiled_backend_supports_interrupts() {
-            "enabled"
-        } else {
-            "none"
-        };
         assert_eq!(
             etcd.identifier(),
-            format!("faultlab_bundle_v5;nodes=1;hooks=1,2;events=none;interrupts={interrupts}")
+            "faultlab_bundle_v6;nodes=1;hooks=1,2;events=none"
         );
         assert_ne!(
             etcd.identifier(),
@@ -346,28 +303,21 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v0;nodes=1;hooks=1",
             "faultlab_bundle_v1;nodes=1;hooks=1",
             "faultlab_bundle_v2;nodes=1",
-            "faultlab_bundle_v4;nodes=1;hooks=1;events=none;interrupts=enabled",
-            "faultlab_bundle_v5;nodes=0;hooks=1;events=none;interrupts=enabled",
-            "faultlab_bundle_v5;nodes=x;hooks=1;events=none;interrupts=enabled",
-            "faultlab_bundle_v5;nodes=1;hooks=1;events=other;interrupts=enabled",
-            "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=other",
-            "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=enabled;extra=2",
-            "faultlab_bundle_v5;nodes=1;hooks=one;events=none;interrupts=enabled",
+            "faultlab_bundle_v5;nodes=1;hooks=1;events=none;interrupts=enabled",
+            "faultlab_bundle_v6;nodes=0;hooks=1;events=none",
+            "faultlab_bundle_v6;nodes=x;hooks=1;events=none",
+            "faultlab_bundle_v6;nodes=1;hooks=1;events=other",
+            "faultlab_bundle_v6;nodes=1;hooks=1;events=none;extra=2",
+            "faultlab_bundle_v6;nodes=1;hooks=one;events=none",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
                 "{identifier} must be refused"
             );
         }
-        let interrupts = if compiled_backend_supports_interrupts() {
-            "enabled"
-        } else {
-            "none"
-        };
-        let no_hooks = FaultVocabulary::from_identifier(&format!(
-            "faultlab_bundle_v5;nodes=2;hooks=;events=antithesis;interrupts={interrupts}"
-        ))
-        .expect("resolve");
+        let no_hooks =
+            FaultVocabulary::from_identifier("faultlab_bundle_v6;nodes=2;hooks=;events=antithesis")
+                .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
         assert!(no_hooks.hooks().is_empty());
         assert!(no_hooks.instrumented_events());

@@ -253,7 +253,7 @@ mod tests {
         let mut overlap = state();
         overlap
             .recorded
-            .record_effect(20, Effect::InjectInterrupt { vector: 32 });
+            .record_effect(20, Effect::xor_memory(0x20, vec![32]).unwrap());
         assert!(ControlState::decode(&overlap.encode()).is_err());
         bad.poisoned = None;
         bad.pending.set_payloads(Some(vec![]));

@@ -1386,8 +1386,8 @@ mod tests {
             service_config(b"package"),
             vec![b"first".to_vec(), b"second".to_vec()],
             vec![
-                (900, Effect::InjectInterrupt { vector: 33 }),
-                (100, Effect::InjectInterrupt { vector: 32 }),
+                (900, Effect::xor_memory(0x1000, vec![33]).unwrap()),
+                (100, Effect::xor_memory(0x1000, vec![32]).unwrap()),
             ],
         )
         .expect("distinct moments");
@@ -1400,8 +1400,8 @@ mod tests {
         assert_eq!(
             spec.effects().iter().collect::<Vec<_>>(),
             [
-                (&100, &Effect::InjectInterrupt { vector: 32 }),
-                (&900, &Effect::InjectInterrupt { vector: 33 }),
+                (&100, &Effect::xor_memory(0x1000, vec![32]).unwrap()),
+                (&900, &Effect::xor_memory(0x1000, vec![33]).unwrap()),
             ],
             "effects reach the branch in moment order whatever order they were given in",
         );
@@ -1414,8 +1414,8 @@ mod tests {
             service_config(b"package"),
             Vec::new(),
             vec![
-                (100, Effect::InjectInterrupt { vector: 32 }),
-                (100, Effect::InjectInterrupt { vector: 33 }),
+                (100, Effect::xor_memory(0x1000, vec![32]).unwrap()),
+                (100, Effect::xor_memory(0x1000, vec![33]).unwrap()),
             ],
         )
         .expect_err("one moment carries one effect");
