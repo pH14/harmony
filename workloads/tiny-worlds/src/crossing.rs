@@ -3,6 +3,7 @@
 use crate::Key;
 use searcher::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -12,6 +13,8 @@ pub struct Config {
     pub pattern: u32,
     pub layout: u64,
     pub rooted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_denominator: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -28,10 +31,19 @@ impl Config {
         if !(1..=8).contains(&self.length) {
             return Err("crossing length must be 1..=8".into());
         }
+        if self.action_denominator.is_some_and(|choices| choices < 4) {
+            return Err("crossing action_denominator must be 4..=65535".into());
+        }
         if self.pattern >= 1 << (2 * u32::from(self.length)) {
             return Err("crossing pattern exceeds its length".into());
         }
         Ok(())
+    }
+
+    pub fn sample(&self, rand: &mut RomuDuoJrRand) -> u8 {
+        let choices = usize::from(self.action_denominator.unwrap_or(4));
+        rand.below(NonZeroUsize::new(choices).expect("validated action denominator"))
+            .min(4) as u8
     }
 
     pub fn initial(&self) -> State {
@@ -109,6 +121,124 @@ mod tests {
             pattern: 36,
             layout: 73,
             rooted: false,
+            action_denominator: None,
+        }
+    }
+
+    #[test]
+    fn action_denominator_preserve_default_draws_and_add_neutral_actions() {
+        let default = config();
+        let wide = Config {
+            action_denominator: Some(1024),
+            ..default
+        };
+        let mut expected = RomuDuoJrRand::with_seed(97);
+        let mut actual = expected;
+        let mut wide_rand = actual;
+        let mut seen = [false; 5];
+        for _ in 0..100_000 {
+            assert_eq!(
+                default.sample(&mut actual),
+                expected.below(NonZeroUsize::new(4).unwrap()) as u8
+            );
+            let action = wide.sample(&mut wide_rand);
+            seen[usize::from(action)] = true;
+            if action >= 4 {
+                let states = [
+                    wide.initial(),
+                    State {
+                        position: wide.cells + 1,
+                    },
+                ];
+                for state in states {
+                    assert_eq!(wide.step(state, action), state);
+                }
+            }
+        }
+        assert!(seen.into_iter().all(|seen| seen));
+        for _ in 0..256 {
+            assert_eq!(actual.next_u64(), expected.next_u64());
+        }
+        for choices in [0, 3] {
+            assert!(
+                Config {
+                    action_denominator: Some(choices),
+                    ..default
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for choices in [4, 64, 1024, 65535] {
+            assert!(
+                Config {
+                    action_denominator: Some(choices),
+                    ..default
+                }
+                .reachable()
+                .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn sampled_choices_replay_with_an_independent_entry_execution() {
+        for rooted in [false, true] {
+            let workload = crate::Workload {
+                config: crate::worlds::World::Crossing(Config {
+                    cells: 11,
+                    rooted,
+                    action_denominator: Some(64),
+                    ..config()
+                }),
+                broken: false,
+                scale: None,
+            };
+            let seed = crate::test_seed();
+            let report = crate::run(&workload, seed, 120_000, true).unwrap();
+            assert_eq!(report["verified"], true);
+            assert_eq!(report["success"], true);
+            let entry = report["evidence"]["crossing_first_entry_execution"]
+                .as_u64()
+                .unwrap();
+            let objective = report["first_objective_execution"].as_u64().unwrap();
+            assert!(entry <= objective);
+            assert_eq!(entry == 0, rooted);
+            let scaled = crate::run_scaled(
+                &crate::Workload {
+                    config: workload.config.clone(),
+                    broken: false,
+                    scale: Some(crate::Scale {
+                        memory_budget_mib: 8192,
+                        ..crate::Scale::default()
+                    }),
+                },
+                seed,
+                120_000,
+                &mut Vec::new(),
+                crate::SearchSettings {
+                    stop_on_objective: Some(true),
+                    ..crate::SearchSettings::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                scaled["first_objective_execution"],
+                report["first_objective_execution"]
+            );
+            assert_eq!(scaled["crossing"]["first_entry_execution"], entry);
+            assert_eq!(scaled["stream_sha256"].as_str().unwrap().len(), 64);
+            assert_eq!(
+                scaled["crossing"]["first_entry_work"],
+                report["evidence"]["crossing_first_entry_work"]
+            );
+            assert_eq!(
+                report["evidence"]["crossing_first_entry_work"]
+                    .as_u64()
+                    .unwrap()
+                    == 0,
+                rooted
+            );
         }
     }
 

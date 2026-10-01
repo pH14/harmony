@@ -402,13 +402,16 @@ on `--binary` or the fresh build, with the same layouts and runtime seeds on bot
 uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare baseline
 ```
 
-`--workers N` runs every request with `N` workers and an admission window of
-`N`, to check a change at the window sizes a multi-worker search uses.
+`--workers N` uses `N` workers and an admission window of `N` when `N` is
+greater than one, to check the window sizes a multi-worker search uses. The
+default rare crossing requests use one worker and their explicit window of two.
 
 | World | Settings | Game behaviour | Legs |
 | --- | --- | --- | --- |
 | Flat archive crossing | 1,024 places, four exit steps, randomized layout and action pattern | Mega Man 2: an easy local crossing competes with a populated flat-tier archive | To entry, entry to goal, total work |
 | Fresh crossing | Same transitions, rooted at the exit entrance | Control for crossing difficulty without the competing archive | To entry (zero), entry to goal, total work |
+| Rare flat archive crossing | 256 places, eight exit steps, useful-action denominator 1,024 | Mega Man 2: difficult local retries compete with a populated flat-tier archive | Approach tries, entry-to-goal tries, total actions |
+| Rare fresh crossing | Same transitions, rooted at the exit entrance | Control for retry difficulty without the competing archive | As above, with approach zero |
 | Passive clock hidden gap | 960–1,230 hidden clock ticks after two visible events; weighted holds, existing full-six suffix | Automatic equipment messages can advance without a retained cell change | To wait entry, wait entry to goal, total clock ticks |
 | Passive clock visible progress | Same hold distribution and gap range, with an event every 40 ticks | Cause-removal control exposing the waiting progress | As above |
 | Farm loop | `inner` 20, 4 farms | Refills away from the next item draw the search back | To the item, out of the item region, out to the goal |
@@ -422,11 +425,12 @@ uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare bas
 | Gauntlet | `inner` 20, 2 items, 2 farms, `farm_cap` 1, `gauntlet` | Tourian: the last item comes at the entry low on energy, and the refills are far away | To the last item, last item to full-health arrival, full-health arrival to the goal |
 | Gauntlet with hidden timing | as above, `timing` 5 | The same with replayed inputs landing about one time in five | As above |
 
-The passive-clock worlds use `one_to_six` and `energy_splice:6`; the other comparison worlds retain their default search settings. Their work unit is `clock_ticks`, whereas the other worlds count transitions. Compare arms within a world, not their absolute work across families. Older binaries without the new family cannot run these worlds: use a baseline built with the same world implementation and the unchanged engine, and record that source explicitly.
+The passive-clock worlds use `one_to_six` and `energy_splice:6`. The rare crossing worlds use `one_to_six_within_3_max_action_cost_full_hold`, `energy_splice:6`, and scaled low-memory reports; the other worlds retain their default settings. Clocks count `clock_ticks`, whereas crossing work counts actions. The rare crossing entry legs count executions. Compare arms within a world, not absolute work across families. Older binaries without these families or options cannot run them: use a baseline built with the same world implementation and the unchanged engine, and record that source explicitly.
 
-Every world also reports work to the goal, counting a missed goal as 200,000.
-A campaign stops at the goal or after 200,000 work, and a milestone after that
-counts as unreached. Comparison runs skip replay verification; the rule panel
+Every world also reports work to the goal, counting a missed goal at its
+budget: 2,000,000 actions for the rare crossings, 200,000 work for other worlds.
+A campaign stops at the goal or that budget, and a milestone after it counts
+as unreached. Comparison runs skip replay verification; the rule panel
 verifies every run. The off-path and locked worlds start with four times
 `--world-scale` layouts (default 16) and the others start with `--world-scale`.
 A stocked arrival is the first arrival in the boss room holding the item and at
@@ -522,6 +526,55 @@ enters the exit. Correct exit actions advance; incorrect actions reset to the
 exit entrance.
 The exit has no direct transition back to the remote pool. All resources
 and tiers stay constant. The control hides partial exit progress from the key.
+
+Optional `action_denominator` (4–65,535) controls the frequency of useful
+inputs. Each draw picks a uniform slot in that denominator: slots 0–3 keep
+their transitions, and every other slot emits the same neutral action 4. That
+action leaves the state unchanged while spending one action of work. Omitting
+the option retains the uniform-four policy and its RNG draw sequence. An
+explicit denominator is recorded in the policy identifier and must match on
+replay. This separates local retry frequency from competing pool places. It
+does not model health, death, enemy movement or held-action duration.
+
+Diagnostics include both first exit-entry work and first exit-entry execution.
+Subtract the latter from first-objective execution for tries after entry;
+report total approach tries separately. Rooted entry counters are zero. Scaled
+reports expose these fields under `crossing`, so longer calibrations need not retain the full stream. Never
+use pool-start total tries as a checkpoint-slice leg.
+
+A recorded Mega Man 2 boss-arena handoff motivated separate controls for
+local retry difficulty and competition with a populated flat-tier archive.
+The existing uniform-four crossing makes local retries much easier than the
+recorded game leg. Increasing the denominator permits calibration to its
+retry rate before an allocation forecast. A pool gap alone does not qualify
+that calibration or show that action sampling caused the native gap.
+Hiding four consecutive steps with a unit-cost, three-action bounded suffix
+prevents reaching the exit; censored equality in that control is not an
+allocation null result.
+
+The comparison panel includes `rare flat archive crossing` and `rare fresh
+crossing`: 256 pool places, eight visible exit steps, denominator 1,024, the
+bounded one-to-six suffix and `energy_splice:6`. They use a 2,000,000-action
+budget, stop at the goal, and run through the scaled low-memory reporting path.
+The fresh world isolates local retries. The flat world measures the same exit
+with a populated flat-tier pool. Its entry-to-goal leg counts executions;
+approach tries and total action work are separate legs. A missing goal leaves
+the retry leg unobserved and contributes to the panel's goal-miss comparison;
+do not interpret equal censoring as equal retry performance.
+
+The parameter choice followed observation of the calibration runs. It is
+not a prospective prediction, and the world omits health and several native
+archive differences. Unchanged-engine controls used 512 shared layouts per
+world with independent seeds: both full cohorts were plausible, with the
+flat world's entry-to-goal retry leg a watch leg. Among 300 adaptive comparisons
+resampled from each finite layout pool, clearly-bad false rejection occurred
+once for the fresh world (0.33%) and never for the flat world. These are
+approximate pooled rates, not 300 independently generated cohorts. The
+256-layout limit was reached in 279 fresh comparisons and all 300 flat
+comparisons, so short panels can leave substantial uncertainty.
+At that limit, the two added worlds can cost 1,024 binary runs of up to
+2,000,000 actions each; short or identical comparisons establish no searcher
+speedup.
 
 `rooted=true` starts at the exit entrance with the exact same transitions and
 resources. Compare its objective work with entry-to-objective work from a
