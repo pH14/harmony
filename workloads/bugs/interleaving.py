@@ -31,7 +31,8 @@ def verdict(report, summary, assertion, variant, budget, returncode):
                          if a.get("failed") and k not in violations)
     seen = summary.get("assertions", {}).get(assertion, {})
     failures = report.get("execution_failures", 0) or report.get("watchdog_cutoffs", 0)
-    if returncode or failures or any(v != assertion for v in violations):
+    unexplained = any(assertion not in b.get("violations", []) for b in report.get("bugs", []))
+    if returncode or failures or unexplained or any(v != assertion for v in violations):
         return "ERROR", violations
     if variant == "correct":
         passed = (not violations and not report.get("bugs") and not report.get("bug_found")
@@ -68,6 +69,14 @@ def self_test():
             self.assertEqual(verdict({"bugs": [hit]}, {}, "case", "buggy", 5000, 0)[0], "FOUND")
             self.assertEqual(verdict({"bugs": [{**hit, "confirmed": False}]}, {}, "case", "buggy", 5000, 0)[0], "UNCONFIRMED")
             self.assertEqual(verdict({"bugs": [hit], "executions": 5000}, {}, "case", "correct", 5000, 0)[0], "FAIL")
+
+        def test_crash_records_are_not_hidden(self):
+            hit = {"violations": ["case"], "confirmed": True, "replay": {"violations": ["case"]}}
+            crash = {"stop": "Crash", "violations": [], "confirmed": True}
+            summary = {"assertions": {"case": {"passed": True}}}
+            self.assertEqual(verdict({"bugs": [hit, crash]}, summary, "case", "buggy", 5000, 0)[0], "ERROR")
+            report = {"bugs": [crash], "executions": 5000}
+            self.assertEqual(verdict(report, summary, "case", "buggy", 5000, 0)[0], "ERROR")
 
         def test_runtime_failure_cannot_pass(self):
             self.assertEqual(verdict({"execution_failures": 1}, {}, "case", "correct", 5000, 0)[0], "ERROR")
