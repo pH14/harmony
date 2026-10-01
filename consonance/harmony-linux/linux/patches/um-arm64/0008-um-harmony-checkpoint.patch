@@ -16,6 +16,11 @@ rebuilds the stubs and the epoll registrations from the restored kernel
 state and acknowledges the restore. The harmony_restore parameter asks the host for an image at
 the end of boot, which restores a checkpoint into a fresh process.
 
+When a checkpoint has been taken, the first guest write to each page faults
+so the host learns which pages changed. That fault repeats an access the
+guest made once, so it does not count toward the userspace iterations that
+advance the scheduling clock.
+
 This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
 consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
 exception.
@@ -23,7 +28,7 @@ exception.
 ---
 --- /dev/null
 +++ b/arch/um/include/shared/checkpoint.h
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,67 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_CHECKPOINT_H
 +#define __UM_CHECKPOINT_H
@@ -52,6 +57,7 @@ exception.
 +};
 +
 +extern int um_checkpoint_resumed;
++extern int um_checkpoint_write_faulted;
 +
 +extern void os_checkpoint_capture(void *arg);
 +extern void os_checkpoint_validate(void *arg);
@@ -544,17 +550,20 @@ exception.
  #include <kern_util.h>
  #include <os.h>
  #include <skas.h>
-@@ -417,6 +418,9 @@ int handle_page_fault(unsigned long address, unsigned long ip,
+@@ -417,6 +418,12 @@ int handle_page_fault(unsigned long address, unsigned long ip,
  	if (faulthandler_disabled())
  		goto out_nosemaphore;
  
-+	if (is_write && um_checkpoint_write_fault(mm, address))
++	if (is_write && um_checkpoint_write_fault(mm, address)) {
++		if (is_user)
++			um_checkpoint_write_faulted = 1;
 +		return 0;
++	}
 +
  	if (is_user)
  		flags |= FAULT_FLAG_USER;
  retry:
-@@ -468,6 +472,13 @@ retry:
+@@ -468,6 +475,13 @@ retry:
  		pte = pte_offset_kernel(pmd, address);
  	} while (!pte_present(*pte));
  	err = 0;
@@ -1831,7 +1840,36 @@ exception.
  #include <init.h>
  #include <kern_util.h>
  #include <mem.h>
-@@ -1213,6 +1214,22 @@ void initial_thread_cb_skas(void (*proc)(void *), void *arg)
+@@ -716,6 +717,7 @@ out_close:
+ }
+ 
+ static int unscheduled_userspace_iterations;
++int um_checkpoint_write_faulted;
+ extern unsigned long tt_extra_sched_jiffies;
+ 
+ #ifdef UM_SYSCALL_TRAP_INSN
+@@ -776,7 +778,12 @@ void userspace(struct uml_pt_regs *regs)
+ 		if (time_travel_mode == TT_MODE_INFCPU ||
+ 		    time_travel_mode == TT_MODE_EXTERNAL) {
+ #ifdef CONFIG_UML_MAX_USERSPACE_ITERATIONS
++			/*
++			 * A checkpoint write fault repeats an access the guest
++			 * made once, so it is not an iteration of its own.
++			 */
+ 			if (CONFIG_UML_MAX_USERSPACE_ITERATIONS &&
++			    !um_checkpoint_write_faulted &&
+ 			    unscheduled_userspace_iterations++ >
+ 			    CONFIG_UML_MAX_USERSPACE_ITERATIONS) {
+ 				tt_extra_sched_jiffies += 1;
+@@ -784,6 +791,7 @@ void userspace(struct uml_pt_regs *regs)
+ 			}
+ #endif
+ 		}
++		um_checkpoint_write_faulted = 0;
+ 
+ 		time_travel_print_bc_msg();
+ 
+@@ -1213,6 +1221,22 @@ void initial_thread_cb_skas(void (*proc)(void *), void *arg)
  	cb_back = NULL;
  }
  
