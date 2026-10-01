@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod search;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use harmony_sdk::{Point, Sdk};
     use hypercall_doorbell::linux::DeviceTransport;
@@ -15,6 +18,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("nested hardware preemption timer must be disabled".into());
         }
         println!("NESTED_PREEMPTION_TIMER=N");
+    }
+    if std::env::args().any(|arg| arg == "--search") {
+        if !guest {
+            return Err("the operation workload requires --sdk".into());
+        }
+        return search::run();
     }
     let mut creations = 0;
     let backend = KvmBackend::new()?;

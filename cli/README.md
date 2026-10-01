@@ -20,6 +20,9 @@ harmony search --package nes --backend consonance smb.nes \
   --image nes.oci
 harmony search --package faults foo.oci --kernel bzImage \
   --base-initramfs initramfs.cpio.gz --out run
+harmony search --package nested nested-driver.oci --kernel bzImage-nested-host \
+  --base-initramfs initramfs-oci.cpio.gz --ram-mib 512 \
+  --seed 42 --executions 100 --wall-minutes 5 --out nested-run
 ```
 
 NES identifies SMB or Nova by ROM hash and defaults to `native`. Supply the
@@ -50,6 +53,16 @@ input for replay. `--ram-mib` sets guest RAM. `--knobs "k=v k=v"` adds guest
 command-line words, and `--wall-minutes` bounds a search in host time. `--replay INPUT.json --repeat N`
 runs a recorded action list, such as a search's own `bug-1.json`, instead of
 searching. Both modes write `report.json`.
+
+The nested package runs on Linux x86 with Intel nested VMX. It launches the
+production inner VMM in L1 and chooses inner operations through SDK entropy.
+Supply the qualified nested-host kernel explicitly. It uses one search worker,
+one virtual CPU per level, a bounded snapshot archive, and standard Dissonance
+selection and mutation policies. Its state cells contain live snapshot count,
+fork depth and the last operation. `report.json` records all 36 ordered
+operation-pair coverage bits and failures with their SDK assertion, layer and
+input seeds. Replay the complete campaign with `--replay run/stream.jsonl` to
+preserve the outer restore sequence; `--repeat` repeats that verification.
 
 `--seed` and `--executions` bound the campaign's logical work. `--out` selects a fresh output directory. Every package writes
 `stream.jsonl` and `report.json`, retaining campaign choices and results; NES

@@ -171,3 +171,10 @@ arm64 musl source, the runc source, and the Go arm64 bootstrap archive.
 
 The reproducibility manifest records the patch series, configuration inputs,
 and generated artifact hashes. Build transcripts are evidence, not inputs.
+
+The nested-host GitHub qualification job uses Ubuntu 22.04 with an explicit
+KVM-supported VMX and nested-state capacity check before building. Its pinned
+Debian compiler container builds the matching GCC 14 kernel and fixture using
+the nested profile's reviewed instruction baselines. The ordinary guest kernel
+keeps its existing toolchain profiles. Compilation and instruction audits finish
+before the job attempts to boot L1 or run the inner VMM.
