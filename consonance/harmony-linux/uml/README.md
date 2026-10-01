@@ -168,7 +168,10 @@ and asserts the symbols the profile depends on.
   reports clocks, counters, random values, addresses, IDs, the auxiliary
   vector and the `/proc` files a program reads at startup, then runs
   `fixture-registers.c` to report the startup registers and the
-  floating-point and vector state;
+  floating-point and vector state. Six times along the way it writes the
+  same 12,288 pages and reports its thread CPU time, so a run that continues
+  after a checkpoint takes a tracked write fault on every page and shows
+  whether those faults moved the scheduling clock;
   `schedule` runs four workers that yield and exchange pipe messages;
   `timers` uses sleeps, interval timers, `timerfd`, `poll` and `select`;
   `counter` reads the CPU counter (`rdtsc` or `cntvct_el0`) around system

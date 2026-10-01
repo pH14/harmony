@@ -33,6 +33,7 @@
 #define CHILDREN 16
 #define WORKERS 4
 #define TEXT_CHUNK 512
+#define REWRITTEN_PAGES 12288
 
 static void say(const char *line)
 {
@@ -298,6 +299,21 @@ static void counters(void)
 	finish("counter");
 }
 
+static volatile unsigned char *rewritten;
+
+static void rewrite(int pass)
+{
+	long size = sysconf(_SC_PAGESIZE);
+	struct timespec now;
+
+	for (long page = 0; page < REWRITTEN_PAGES; page++)
+		rewritten[page * size] = (unsigned char)pass;
+	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) != 0)
+		fail("clock_gettime");
+	emitf("{\"uml\":\"rewrite\",\"pass\":%d,\"thread_ns\":%lld}", pass,
+	      (long long)now.tv_sec * 1000000000LL + now.tv_nsec);
+}
+
 static void values(void)
 {
 	unsigned char bytes[32];
@@ -306,6 +322,12 @@ static void values(void)
 	void *mapping;
 	pid_t child;
 
+	mapping = mmap(NULL, (size_t)REWRITTEN_PAGES * sysconf(_SC_PAGESIZE),
+		       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (mapping == MAP_FAILED)
+		fail("mmap");
+	rewritten = mapping;
+	rewrite(0);
 	emit_clocks("start");
 	if (uname(&name) != 0)
 		fail("uname");
@@ -319,6 +341,7 @@ static void values(void)
 	if (write(harmony, "", 1) != 1 || read(harmony, drawn, sizeof(drawn)) != (ssize_t)sizeof(drawn))
 		fail("harmony-entropy");
 	emit_bytes("harmony_entropy", drawn, sizeof(drawn));
+	rewrite(1);
 	mapping = mmap(NULL, 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping == MAP_FAILED)
 		fail("mmap");
@@ -326,6 +349,7 @@ static void values(void)
 	      mapping, malloc(64), (void *)&mapping);
 	emitf("{\"uml\":\"ids\",\"pid\":%d,\"ppid\":%d,\"uid\":%d,\"pgid\":%d,\"sid\":%d}",
 	      getpid(), getppid(), getuid(), getpgrp(), getsid(0));
+	rewrite(2);
 	emit_file("/proc/self/auxv");
 	emit_file("/proc/self/maps");
 	emit_file("/proc/self/stat");
@@ -333,10 +357,12 @@ static void values(void)
 	emit_file("/proc/cpuinfo");
 	emit_file("/proc/meminfo");
 	emit_file("/proc/stat");
+	rewrite(3);
 	emit_file("/proc/uptime");
 	emit_file("/proc/interrupts");
 	emit_file("/proc/loadavg");
 	emit_file("/proc/sys/kernel/random/boot_id");
+	rewrite(4);
 	child = fork();
 	if (child < 0)
 		fail("fork");
@@ -345,6 +371,7 @@ static void values(void)
 		_exit(127);
 	}
 	wait_child(child, "registers");
+	rewrite(5);
 	emit_clocks("end");
 	finish("values");
 }
