@@ -25,7 +25,7 @@ use crate::search::checkpoint::{
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
-    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
+    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixShape,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
     suffix_shape_from_identifier, suffix_shape_identifier,
 };
@@ -766,6 +766,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub duration_checkpoint_before: Option<DurationCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_checkpoint_after: Option<DurationCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix_limit: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -795,6 +797,8 @@ pub struct CampaignSkipRecord<C, K = ()> {
     pub duration_checkpoint_before: Option<DurationCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_checkpoint_after: Option<DurationCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix_limit: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1669,7 +1673,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
         let (sequence, decisions, _) =
-            self.admit_job_tracking(workload, parent_id, result, |_| false)?;
+            self.admit_job_tracking(workload, parent_id, result, false, |_| false)?;
         Ok((sequence, decisions))
     }
 
@@ -1678,6 +1682,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         workload: &G,
         parent_id: u64,
         result: CampaignJobResult<G>,
+        limited: bool,
         mut tracked_action: impl FnMut(&G::Action) -> bool,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
         let CampaignJobResult {
@@ -1703,6 +1708,13 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let mut previous_key = None;
         let mut decisions = Vec::new();
         let mut duration = DurationAdmission::default();
+        let actions_run = actions.len();
+        let terminal = actions
+            .last()
+            .is_some_and(|action| action.outcome.disposition.is_terminal());
+        let parent_place = self.archive.entries[parent_index].key.place();
+        let retained_at_start = self.archive.retained;
+        let mut left_place = false;
         for action in actions {
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
@@ -1758,6 +1770,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     },
                     candidate.snapshot,
                 )?;
+                left_place |= key.place() != parent_place;
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
                         duration.useful |= tracked;
@@ -1788,6 +1801,15 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     }
                 }
             }
+        }
+        if limited {
+            self.archive.record_suffix_outcome(
+                parent_index,
+                actions_run,
+                self.archive.retained > retained_at_start,
+                left_place,
+                terminal,
+            );
         }
         if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
@@ -2512,6 +2534,7 @@ struct PendingJob<G: Workload + ?Sized> {
     duration_admission_sequence_at_draw: Option<u64>,
     duration_remaining_work: Option<NonZeroU64>,
     duration_checkpoint_at_draw: Option<DurationCheckpoint>,
+    suffix_limit: Option<u8>,
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -2520,6 +2543,18 @@ struct CompletedJob<G: Workload + ?Sized> {
     result: CampaignJobResult<G>,
     execution_work: u64,
     result_sha256: String,
+}
+
+fn replay_suffix_limit(
+    shape: SuffixShape,
+    drawn: bool,
+    recorded: Option<u8>,
+) -> Result<Option<u8>, Box<dyn Error>> {
+    match (drawn && shape == SuffixShape::DoubleWhileInPlace, recorded) {
+        (true, Some(limit)) if (1..=SUFFIX_DOUBLING_LIMIT).contains(&limit) => Ok(Some(limit)),
+        (false, None) => Ok(None),
+        _ => Err("recorded suffix limit does not match the suffix shape".into()),
+    }
 }
 
 fn replay_splice<G: CampaignTypes>(
@@ -3057,6 +3092,7 @@ where
                             duration_admission_sequence_at_draw: None,
                             duration_remaining_work: None,
                             duration_checkpoint_at_draw: None,
+                            suffix_limit: None,
                         },
                     )));
                 }
@@ -3144,6 +3180,9 @@ where
                     let duration_remaining_work = duration_draw.and(remaining_work);
                     let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
                     let previous = core.archive.last_action(parent_index);
+                    let suffix_limit = (spliced.is_none()
+                        && config.suffix == SuffixShape::DoubleWhileInPlace)
+                        .then(|| core.archive.suffix_limit(parent_index));
                     let mut suffix = match (spliced, duration_draw) {
                         (Some(tail), _) => tail,
                         (None, Some(draw)) => workload.expand_suffix_duration(
@@ -3175,6 +3214,9 @@ where
                     config
                         .suffix
                         .bound_cost(&mut suffix, action_cost, max_action_cost);
+                    if let Some(limit) = suffix_limit {
+                        suffix.truncate(usize::from(limit));
+                    }
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
@@ -3201,6 +3243,7 @@ where
                             duration_checkpoint_at_draw,
                             duration_checkpoint_after: duration_checkpoint_before.clone(),
                             duration_checkpoint_before,
+                            suffix_limit,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
                         core.archive.maintain_memory_budget()?;
@@ -3238,6 +3281,7 @@ where
                             duration_admission_sequence_at_draw,
                             duration_remaining_work,
                             duration_checkpoint_at_draw,
+                            suffix_limit,
                         },
                     )));
                 }
@@ -3416,6 +3460,7 @@ where
                         workload,
                         pending_job.parent_id,
                         result,
+                        pending_job.suffix_limit.is_some(),
                         |action| {
                             tracked_duration.is_some_and(|duration| {
                                 workload.duration_of_action(&config.run, action) == Some(duration)
@@ -3551,6 +3596,7 @@ where
                         duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
                         duration_checkpoint_before,
                         duration_checkpoint_after,
+                        suffix_limit: pending_job.suffix_limit,
                     }))?;
                     coordinator_profile.stream_write_ns = coordinator_profile
                         .stream_write_ns
@@ -4483,6 +4529,8 @@ where
                 if duration_checkpoint_before != skip.duration_checkpoint_before {
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
+                let suffix_limit =
+                    replay_suffix_limit(replay_suffix, spliced.is_none(), skip.suffix_limit)?;
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -4501,6 +4549,9 @@ where
                     )?,
                 };
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
+                if let Some(limit) = suffix_limit {
+                    suffix.truncate(usize::from(limit));
+                }
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -4628,6 +4679,8 @@ where
                 if duration_checkpoint_before != job.duration_checkpoint_before {
                     return Err("replayed job duration state diverged before expansion".into());
                 }
+                let suffix_limit =
+                    replay_suffix_limit(replay_suffix, spliced.is_none(), job.suffix_limit)?;
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -4646,6 +4699,9 @@ where
                     )?,
                 };
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
+                if let Some(limit) = suffix_limit {
+                    suffix.truncate(usize::from(limit));
+                }
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job(
                     &replay_run,
@@ -4686,12 +4742,17 @@ where
                     .as_ref()
                     .map_or(0, |taken| taken.wave.saturating_add(1));
                 core.archive.set_admission_wave(continuation_wave);
-                let (sequence, decisions, duration_admission) =
-                    core.admit_job_tracking(workload, job.parent_id, result, |action| {
+                let (sequence, decisions, duration_admission) = core.admit_job_tracking(
+                    workload,
+                    job.parent_id,
+                    result,
+                    suffix_limit.is_some(),
+                    |action| {
                         tracked_duration.is_some_and(|duration| {
                             workload.duration_of_action(&replay_run, action) == Some(duration)
                         })
-                    })?;
+                    },
+                )?;
                 if sequence != job.sequence {
                     return Err(format!(
                         "replayed admission order {sequence} diverged from recorded {}",
@@ -5942,7 +6003,7 @@ mod tests {
             ],
         };
         let (_, decisions, duration) = core
-            .admit_job_tracking(&workload, 0, result, |action| *action == tracked)
+            .admit_job_tracking(&workload, 0, result, false, |action| *action == tracked)
             .expect("admit mixed novelty");
         assert_eq!(
             decisions,

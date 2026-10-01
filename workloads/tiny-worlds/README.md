@@ -45,8 +45,9 @@ preferences: charge first and health first. `capacity_two` keeps two holders
 per slot under the charge-first preference alone.
 
 An optional `search` object selects existing campaign policies without changing
-the world: `suffix` accepts `one_or_two`, `one_to_six`, or
-`one_to_six_within_3_max_action_cost_full_hold`; `mixture` accepts the identifiers
+the world: `suffix` accepts `one_or_two`, `one_to_six`,
+`one_to_six_within_3_max_action_cost_full_hold`, or
+`one_doubling_while_in_place_up_to_64`; `mixture` accepts the identifiers
 documented in the searcher README, including `energy_splice:6`; and
 `stop_on_objective` overrides campaign stopping. Omitted fields retain the
 world's normal settings. Ordinary runs stop at their first objective by default;
