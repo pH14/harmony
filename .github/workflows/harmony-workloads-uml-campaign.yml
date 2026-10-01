@@ -1,0 +1,285 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# A historical case's fresh search on the User-mode Linux profile, as an
+# ordinary user with ptrace and KVM ioctls denied, followed by fresh-process
+# replays of the reproducer the search recorded.
+name: Benchmarks / Harmony Workloads / UML
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: Historical case id
+        required: false
+        default: etcd-3.5-inconsistency
+        type: string
+      seed:
+        description: Search seed (the run id when empty)
+        required: false
+        type: string
+      executions:
+        description: Execution ceiling (case default when empty)
+        required: false
+        type: string
+      repeats:
+        description: Fresh replays of the reproducer
+        required: false
+        default: "3"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harmony-uml-campaign-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  manifest:
+    name: Case Manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.read.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand the case manifest
+        id: read
+        env:
+          CASE: ${{ inputs.case }}
+        run: |
+          set -euo pipefail
+          python3 scripts/historical-manifest.py --check
+          matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case "${CASE}" --seeds "")
+          jq -e '.include | length == 1' <<<"${matrix}" >/dev/null
+          printf 'matrix=%s\n' "${matrix}" >>"${GITHUB_OUTPUT}"
+
+  guest:
+    name: Guest Runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Compute platform source key
+        id: source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: runtime
+        with:
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
+      - name: Build exact platform artifacts
+        if: steps.runtime.outputs.cache-hit != 'true'
+        env:
+          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget python3
+          rustup toolchain install nightly-2026-06-16 --profile minimal --component rust-src --target x86_64-unknown-linux-musl
+          make -C consonance/harmony-linux fetch
+          consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Verify exact platform inputs
+        run: |
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 --output platform-provenance.json
+          python3 -c 'import json; assert json.load(open("platform-provenance.json"))["scope"] == "exact-input"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uml-campaign-guest-${{ github.run_id }}
+          path: consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  profile:
+    name: UML Profile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build the profile from the locked toolchain
+        run: nix run .#uml-images -- --output "$RUNNER_TEMP/uml"
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-uml-qualify-x86_64
+      - name: Build the qualification binary
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p uml --bin harmony-uml-qualify
+          install -m 0755 target/release/harmony-uml-qualify "$RUNNER_TEMP/uml/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uml-campaign-profile-${{ github.run_id }}
+          path: ${{ runner.temp }}/uml
+          if-no-files-found: error
+          retention-days: 1
+
+  tools:
+    name: Harmony
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build tools
+        run: |
+          cargo build --locked --release -p harmony-cli
+          mkdir -p tools
+          cp target/release/harmony tools/harmony
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uml-campaign-tools-${{ github.run_id }}
+          path: tools
+          if-no-files-found: error
+          retention-days: 1
+
+  image:
+    name: Workload Image
+    needs: manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the declared workload image
+        env:
+          CASE_DIR: ${{ matrix.dir }}
+          IMAGE_PREFIX: ${{ matrix.image_prefix }}
+        run: |
+          set -euo pipefail
+          case_json="${CASE_DIR}/case.json"
+          context=$(jq -er .image.context "${case_json}")
+          dockerfile=$(jq -er .image.dockerfile "${case_json}")
+          version=$(jq -er '.workload.version' "${case_json}")
+          mapfile -t build_args < <(jq -r \
+            '.image.build_args // {} | to_entries[] | "\(.key)=\(.value)"' "${case_json}")
+          args=()
+          for build_arg in "${build_args[@]}"; do
+            args+=(--build-arg "${build_arg}")
+          done
+          mkdir -p oci-images
+          tag="harmony-${IMAGE_PREFIX}:${version}"
+          docker build --pull "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
+          docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
+          (cd oci-images && sha256sum -- *.oci >MANIFEST.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uml-campaign-image-${{ github.run_id }}
+          path: oci-images
+          if-no-files-found: error
+          retention-days: 1
+
+  search:
+    name: ${{ matrix.display_name }}
+    needs: [manifest, guest, profile, tools, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
+    strategy:
+      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-guest-${{ github.run_id }}
+          path: guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-profile-${{ github.run_id }}
+          path: guest/uml
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-tools-${{ github.run_id }}
+          path: tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-image-${{ github.run_id }}
+          path: oci-images
+      - name: Search as an ordinary user with ptrace and KVM denied
+        env:
+          BACKEND: uml
+          CASE_DIR: ${{ matrix.dir }}
+          CASE_ID: ${{ matrix.id }}
+          RUN_KEY: ${{ matrix.run_key }}
+          SOFTWARE_NAME: ${{ matrix.software }}
+          WORKLOAD_VERSION: ${{ matrix.workload_version }}
+          IMAGE_PREFIX: ${{ matrix.image_prefix }}
+          RAM_MIB: ${{ matrix.ram_mib }}
+          SEED: ${{ inputs.seed || github.run_id }}
+          EXECUTIONS: ${{ inputs.executions || matrix.executions }}
+          WALL_MINUTES: ${{ matrix.wall_minutes }}
+          KNOBS: ${{ matrix.knobs }}
+          ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
+        run: scripts/historical-search.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uml-campaign-search-${{ github.run_id }}
+          path: reports
+          if-no-files-found: error
+          retention-days: 30
+
+  replay:
+    name: Reproducer
+    needs: [manifest, guest, profile, tools, image, search]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-guest-${{ github.run_id }}
+          path: guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-profile-${{ github.run_id }}
+          path: guest/uml
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-tools-${{ github.run_id }}
+          path: tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-image-${{ github.run_id }}
+          path: oci-images
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-campaign-search-${{ github.run_id }}
+          path: search
+      - name: Replay the reproducer from genesis in fresh processes
+        env:
+          BACKEND: uml
+          CASE_ID: ${{ matrix.id }}
+          SOFTWARE_NAME: ${{ matrix.software }}
+          WORKLOAD_VERSION: ${{ matrix.workload_version }}
+          IMAGE_PREFIX: ${{ matrix.image_prefix }}
+          RAM_MIB: ${{ matrix.ram_mib }}
+          KNOBS: ${{ matrix.knobs }}
+          ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
+          REPLAY_REPEATS: ${{ inputs.repeats }}
+          MAX_REPLAY_SESSIONS: ${{ inputs.repeats }}
+          REPLAY_TIMEOUT_SECONDS: 3000
+        run: scripts/historical-replay.sh reproduce "search/${CASE_ID}.search/first-bug-input.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uml-campaign-replay-${{ github.run_id }}
+          path: reports
+          if-no-files-found: error
+          retention-days: 30

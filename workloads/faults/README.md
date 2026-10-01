@@ -175,7 +175,7 @@ the next one can boot a virtual machine in that process.
 
 ## User-mode Linux
 
-`--backend uml --uml-profile PROFILE/profile.json` runs the same search on a
+`--backend uml --uml-profile PROFILE` runs the same search on a
 User-mode Linux guest (`UmlSession` in
 [consonance-client](../../consonance/client/README.md)) as an ordinary user on
 any Linux host, with no KVM. The profile is verified at start, its kernel
@@ -197,7 +197,7 @@ harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --replay run/bug-1.json --repeat 10 --out confirm/
 harmony search --package faults IMAGE.oci --backend uml \
-    --uml-profile profile/profile.json --base-initramfs initramfs.cpio.gz \
+    --uml-profile profile --base-initramfs initramfs.cpio.gz \
     --seed 1 --executions 20000 --ram-mib 1024 --out run/
 ```
 

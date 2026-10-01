@@ -589,6 +589,22 @@ HARMONY_HISTORICAL_BENCHMARKS = Workflow(
     ),
 )
 
+HARMONY_UML_CAMPAIGN = Workflow(
+    path=f"{WORKFLOW_DIR}/harmony-workloads-uml-campaign.yml",
+    name="Benchmarks / Harmony Workloads / UML",
+    owner="Harmony Workloads",
+    triggers=("workflow_dispatch",),
+    jobs=(
+        Job("Case Manifest", "full", 5),
+        Job("Guest Runtime", "full", 90),
+        Job("UML Profile", "full", 45),
+        Job("Harmony", "full", 60),
+        Job("Workload Image", "full", 90),
+        Job("<Scenario>", "full", 360),
+        Job("Reproducer", "full", 60),
+    ),
+)
+
 RELEASE = Workflow(
     path=f"{WORKFLOW_DIR}/release.yml",
     name="Release / Harmony",
@@ -651,6 +667,7 @@ WORKFLOWS = (
     DISSONANCE_NES_BENCHMARKS,
     HARMONY_NES_BENCHMARKS,
     HARMONY_HISTORICAL_BENCHMARKS,
+    HARMONY_UML_CAMPAIGN,
     RELEASE,
 )
 

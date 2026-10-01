@@ -22,8 +22,10 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::ffi::OsString;
+    use std::os::unix::process::CommandExt;
     use std::path::PathBuf;
-    use std::process::ExitCode;
+    use std::process::{Command, ExitCode};
     use std::time::Duration;
 
     use serde_json::{Value, json};
@@ -31,7 +33,7 @@ mod linux {
 
     use crate::{boot, checkpoint, filter, replay};
 
-    const USAGE: &str = "usage: harmony-uml-qualify --suite launch|replay|checkpoint --profile DIR [--work DIR] [--report FILE] [--cycles N] [--replays N] [--cuts N] [--diamonds N] [--parallel N]";
+    const USAGE: &str = "usage: harmony-uml-qualify --suite launch|replay|checkpoint --profile DIR [--work DIR] [--report FILE] [--cycles N] [--replays N] [--cuts N] [--diamonds N] [--parallel N]\n       harmony-uml-qualify exec [--report FILE] -- COMMAND [ARGUMENT...]";
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum Suite {
@@ -221,7 +223,57 @@ mod linux {
         }))
     }
 
+    fn exec(
+        mut arguments: impl Iterator<Item = OsString>,
+    ) -> Result<std::convert::Infallible, String> {
+        let mut report = None;
+        loop {
+            match arguments.next().as_ref().and_then(|flag| flag.to_str()) {
+                Some("--report") => {
+                    report = Some(PathBuf::from(
+                        arguments.next().ok_or("--report needs a value")?,
+                    ));
+                }
+                Some("--") => break,
+                _ => return Err(format!("exec needs -- before the command; {USAGE}")),
+            }
+        }
+        let program = arguments
+            .next()
+            .ok_or_else(|| format!("exec needs a command; {USAGE}"))?;
+        let arguments: Vec<OsString> = arguments.collect();
+        let credentials = credentials()?;
+        let denial = filter::deny_host_virtualization()?;
+        let host = HostIdentity::current().map_err(|error| error.to_string())?;
+        let text = serde_json::to_string_pretty(&json!({
+            "credentials": credentials,
+            "denial": denial,
+            "host": host,
+            "host_kernel": host_kernel(),
+            "command": std::iter::once(&program)
+                .chain(&arguments)
+                .map(|argument| argument.to_string_lossy())
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap_or_default()
+            + "\n";
+        match &report {
+            Some(path) => std::fs::write(path, &text)
+                .map_err(|error| format!("cannot write {}: {error}", path.display()))?,
+            None => eprint!("{text}"),
+        }
+        let error = Command::new(&program).args(&arguments).exec();
+        Err(format!("cannot run {}: {error}", program.to_string_lossy()))
+    }
+
     pub fn main() -> ExitCode {
+        let mut arguments = std::env::args_os().skip(1).peekable();
+        if arguments.peek().is_some_and(|first| first == "exec") {
+            arguments.next();
+            let Err(message) = exec(arguments);
+            eprintln!("FAIL: {message}");
+            return ExitCode::FAILURE;
+        }
         let options = match options() {
             Ok(options) => options,
             Err(message) => {

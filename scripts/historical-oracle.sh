@@ -4,11 +4,14 @@
 #
 #   historical-oracle.sh search <report.json>
 #   historical-oracle.sh sample <report.json> <runs> <actions>
+#   historical-oracle.sh reproduce <report.json> <runs> <actions>
 #
 # Search and sample replay have different evidence contracts. A search miss
 # means no candidate was found; a candidate whose fresh replay did not verify is
 # reported separately. A declared clean sample must reach the detector on the
-# same affected version and stay free of the case's assertion.
+# same affected version and stay free of the case's assertion. A reproducer
+# must violate the case's assertion with the detector's evidence in every fresh
+# replay and reach one state digest.
 set -euo pipefail
 
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
@@ -108,6 +111,25 @@ case "${mode}" in
             ))' "${report}" >/dev/null 2>&1 || fail replay-inconclusive
         check replay-inconclusive \
             'all(.replays[]; .bug == false and ((.violations // []) | length) == 0)'
+        check replay-mismatch '[.replays[].state_hash] | unique | length == 1'
+        echo pass
+        ;;
+    reproduce)
+        repeats=${3:?replay count is required}
+        actions=${4:?action count is required}
+        is_uint "${repeats}" || fail infra-failure
+        is_uint "${actions}" || fail infra-failure
+        check infra-failure '.mode == "replay"'
+        check infra-failure "(.replays | length) == ${repeats}"
+        check infra-failure \
+            "all(.replays[]; (.guest_horizons == (.actions_applied + .settle_actions))\
+                and (.actions_applied == ${actions})\
+                and (.settle_ticks >= .settle_actions))"
+        jq -e --arg assertion "${assertion}" --arg evidence "${evidence}" \
+            'all(.replays[]; .bug == true
+                and ((.violations // []) | index($assertion)) != null
+                and ((.sometimes // []) | index($evidence)) != null)' \
+            "${report}" >/dev/null 2>&1 || fail reproduce-miss
         check replay-mismatch '[.replays[].state_hash] | unique | length == 1'
         echo pass
         ;;
