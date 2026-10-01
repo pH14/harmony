@@ -174,9 +174,15 @@ def world_requests(world: str, count: int) -> list[dict]:
 
 def legs(report: dict) -> dict:
     if report["config"]["family"] == "crossing" and report.get("scale") is not None:
-        entry = report["crossing"]["first_entry_execution"]
-        end = report["first_objective_execution"]
-        return {"to the goal (actions)": report["work_budget"] if end is None else report["first_objective_work"],
+        budget = report["work_budget"]
+        goal = report["first_objective_work"]
+        goal = goal if report["success"] and goal is not None and goal <= budget else None
+        horizon = budget if goal is None else goal
+        entry_work = report["crossing"]["first_entry_work"]
+        entry = (report["crossing"]["first_entry_execution"]
+                 if entry_work is not None and entry_work <= horizon else None)
+        end = report["first_objective_execution"] if goal is not None else None
+        return {"to the goal (actions)": horizon,
                 "to crossing entry (tries)": entry,
                 "crossing entry to goal (tries)": None if entry is None or end is None else end - entry}
     evidence = report["evidence"]
@@ -468,7 +474,7 @@ def main() -> int:
     parser.add_argument("--world-scale", type=int, default=16,
                         help="starting layouts per comparison world; light map worlds run four times as many")
     parser.add_argument("--workers", type=int, default=1,
-                        help="search workers per run; the admission window equals the worker count")
+                        help="search workers per run; values above one also set the admission window")
     args = parser.parse_args()
     if not 1 <= args.workers <= 64:
         parser.error("--workers must be 1..64")
