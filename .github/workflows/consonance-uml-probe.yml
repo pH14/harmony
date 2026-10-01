@@ -1,0 +1,467 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Consonance / UML Probe
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: consonance-uml-probe-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UML_PROBE_ARCH: x86_64
+
+jobs:
+  build:
+    name: UML Probe Artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps: &uml_probe_build_steps
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build throwaway probes from the unchanged kernel pin and locked compiler
+        run: |
+          set -euo pipefail
+          probe_root="$RUNNER_TEMP/uml-probe"
+          mkdir -p "$probe_root"
+          cat >"$probe_root/guest.c" <<'PROBE_SOURCE'
+          #define _GNU_SOURCE
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <sys/mman.h>
+          #include <sys/reboot.h>
+          #include <sys/syscall.h>
+          #include <sys/wait.h>
+          #include <unistd.h>
+
+          int main(void)
+          {
+              setbuf(stdout, NULL);
+              if (getpid() != 1) return 10;
+              pid_t child = fork();
+              if (child < 0) return 11;
+              if (child == 0) _exit(37);
+              int status;
+              if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 37) return 12;
+              unsigned long result = 0;
+              for (unsigned long i = 0; i < 1000; i++) result += i * i;
+              if (result != 332833500UL) return 13;
+              puts("UML_PROBE result=332833500 fork_wait=37");
+              puts("MEASURE syscall BEGIN 50000");
+              for (int i = 0; i < 50000; i++) if (syscall(SYS_getpid) != 1) return 14;
+              puts("MEASURE syscall END 50000");
+              size_t pages = 8192;
+              size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+              volatile unsigned char *memory = mmap(NULL, pages * page_size, PROT_READ | PROT_WRITE,
+                                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+              if (memory == MAP_FAILED) return 15;
+              puts("MEASURE page_fault BEGIN 8192");
+              for (size_t i = 0; i < pages; i++) memory[i * page_size] = (unsigned char)i;
+              puts("MEASURE page_fault END 8192");
+              for (size_t i = 0; i < pages; i++) if (memory[i * page_size] != (unsigned char)i) return 16;
+              puts("UML_PROBE PASS");
+              reboot(RB_POWER_OFF);
+              return 17;
+          }
+          PROBE_SOURCE
+          cat >"$probe_root/deny.c" <<'PROBE_SOURCE'
+          #define _GNU_SOURCE
+          #ifdef __x86_64__
+          #include <asm/prctl.h>
+          #endif
+          #include <errno.h>
+          #include <linux/audit.h>
+          #include <linux/filter.h>
+          #include <linux/seccomp.h>
+          #include <stddef.h>
+          #include <signal.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/ioctl.h>
+          #include <sys/prctl.h>
+          #include <sys/syscall.h>
+          #include <sys/wait.h>
+          #include <unistd.h>
+
+          #ifdef __x86_64__
+          #define UML_AUDIT_ARCH AUDIT_ARCH_X86_64
+          static void instruction_probe(int cpuid)
+          {
+              pid_t child = fork();
+              if (child < 0) exit(20);
+              if (child == 0) {
+                  if (cpuid) {
+                      if (syscall(SYS_arch_prctl, ARCH_SET_CPUID, 0) != 0) _exit(77);
+                      unsigned int a = 0, b, c, d;
+                      __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+                  } else {
+                      if (prctl(PR_SET_TSC, PR_TSC_SIGSEGV, 0, 0, 0) != 0) _exit(77);
+                      unsigned int a, d;
+                      __asm__ volatile("rdtsc" : "=a"(a), "=d"(d));
+                  }
+                  _exit(1);
+              }
+              int status;
+              if (waitpid(child, &status, 0) != child) exit(21);
+              printf("HOST_PROBE %s=%s raw_status=%d\n", cpuid ? "cpuid_faulting" : "tsc_sigsegv",
+                     WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV ? "yes" : "no", status);
+          }
+
+          #else
+          #define UML_AUDIT_ARCH AUDIT_ARCH_AARCH64
+          #endif
+
+          int main(int argc, char **argv)
+          {
+              if (argc < 3 || geteuid() == 0) return 22;
+              #ifdef __x86_64__
+              instruction_probe(1);
+              instruction_probe(0);
+              #endif
+              int deny_filter = strcmp(argv[1], "deny-filter") == 0;
+              struct sock_filter filter[] = {
+                  BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+                  BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, UML_AUDIT_ARCH, 1, 0),
+                  BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+                  BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+                  BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ptrace, 0, 1),
+                  BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+                  BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ioctl, 0, 4),
+                  BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
+                  BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0xff00),
+                  BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0xae00, 0, 1),
+                  BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+                  BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+                  BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_seccomp, 0, 1),
+                  BPF_STMT(BPF_RET | BPF_K, deny_filter ? SECCOMP_RET_ERRNO | EPERM : SECCOMP_RET_ALLOW),
+                  BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prctl, 0, 3),
+                  BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
+                  BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, PR_SET_SECCOMP, 0, 1),
+                  BPF_STMT(BPF_RET | BPF_K, deny_filter ? SECCOMP_RET_ERRNO | EPERM : SECCOMP_RET_ALLOW),
+                  BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+              };
+              struct sock_fprog program = { .len = sizeof(filter) / sizeof(filter[0]), .filter = filter };
+              if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) ||
+                  prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program)) return 23;
+              errno = 0;
+              if (syscall(SYS_ptrace, 0, 0, 0, 0) != -1 || errno != EPERM) return 24;
+              errno = 0;
+              if (ioctl(-1, 0xae00, 0) != -1 || errno != EPERM) return 25;
+              printf("HOST_PROBE euid=%d ptrace=denied kvm_ioctl=denied filter_install=%s\n", geteuid(),
+                     deny_filter ? "denied" : "allowed");
+              fflush(stdout);
+              execvp(argv[2], argv + 2);
+              perror("execvp");
+              return 26;
+          }
+          PROBE_SOURCE
+          cat >"$probe_root/build.sh" <<'PROBE_SOURCE'
+          set -euo pipefail
+          probe_root=${1:?probe output directory}
+          mkdir -p "$probe_root"
+          probe_root=$(realpath "$probe_root")
+          . consonance/harmony-linux/linux/versions.lock
+          case "$UML_PROBE_ARCH" in
+            x86_64) probe_subarch=x86_64; probe_commit=upstream-6.18.35 ;;
+            aarch64)
+              probe_subarch=arm64
+              probe_commit=8897487c52233cd00cf2850008ca068892f1ae91
+              KERNEL_VERSION=7.2-rc4
+              KERNEL_URL=https://codeload.github.com/zalexdev/linux-um-arm64/tar.gz/$probe_commit
+              KERNEL_SHA256=8eacae5ab45229ea157d9334c63e9cc9c7f89c466c353843dff1a487f08ac080
+              ;;
+            *) exit 1 ;;
+          esac
+          printf 'architecture=%s\nversion=%s\ncommit=%s\nurl=%s\nsource_sha256=%s\n' \
+            "$UML_PROBE_ARCH" "$KERNEL_VERSION" "$probe_commit" "$KERNEL_URL" "$KERNEL_SHA256" >"$probe_root/source-pin.txt"
+          curl -fSL --retry 2 "$KERNEL_URL" -o "$probe_root/linux.tar.xz"
+          printf '%s  %s\n' "$KERNEL_SHA256" "$probe_root/linux.tar.xz" | sha256sum -c -
+          mkdir -p "$probe_root/source" "$probe_root/obj" "$probe_root/rootfs"
+          tar -xf "$probe_root/linux.tar.xz" -C "$probe_root/source" --strip-components=1
+          if [ "$UML_PROBE_ARCH" = aarch64 ]; then
+            python3 - "$probe_root/source/arch/um/include/shared/user.h" <<'HOST_HEADER_COMPAT'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          old = "#include <stddef.h>\n#include <sys/types.h>"
+          new = "#include <stddef.h>\n#undef __alloc_size__\n#include <sys/types.h>"
+          text = path.read_text()
+          if text.count(old) != 1:
+              raise SystemExit("arm64 RFC host-header anchor changed")
+          path.write_text(text.replace(old, new))
+          HOST_HEADER_COMPAT
+            printf 'probe_patch=undef-alloc-size-in-host-user-header\n' >>"$probe_root/source-pin.txt"
+            python3 - "$probe_root/source/arch/um/kernel/skas/Makefile" <<'STUB_FRAME_POINTER'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          old = "CFLAGS_stub.o := $(CFLAGS_NO_HARDENING)\n"
+          new = "CFLAGS_stub.o := $(CFLAGS_NO_HARDENING) -fomit-frame-pointer\n"
+          text = path.read_text()
+          if text.count(old) != 1:
+              raise SystemExit("arm64 RFC stub Makefile anchor changed")
+          path.write_text(text.replace(old, new))
+          STUB_FRAME_POINTER
+            printf 'probe_patch=stub-omit-frame-pointer\n' >>"$probe_root/source-pin.txt"
+            probe_config=(-d PAGE_SIZE_16KB -e PAGE_SIZE_4KB)
+          else
+            probe_config=()
+          fi
+          export KBUILD_BUILD_TIMESTAMP='Thu Jan 1 00:00:00 UTC 1970'
+          export KBUILD_BUILD_USER=harmony KBUILD_BUILD_HOST=harmony KBUILD_BUILD_VERSION=1
+          export SOURCE_DATE_EPOCH=0 KCONFIG_NOTIMESTAMP=1
+          cc -L"$UML_STATIC_LIB" -O2 -static -Wall -Wextra -Werror "$probe_root/guest.c" -o "$probe_root/rootfs/init"
+          cc -L"$UML_STATIC_LIB" -O2 -static -Wall -Wextra -Werror "$probe_root/deny.c" -o "$probe_root/deny"
+          cc --version >"$probe_root/toolchain.txt"
+          make -C "$probe_root/source" O="$probe_root/obj" ARCH=um SUBARCH="$probe_subarch" defconfig
+          "$probe_root/source/scripts/config" --file "$probe_root/obj/.config" \
+            -e UML_TIME_TRAVEL_SUPPORT -e STATIC_LINK -e BLK_DEV_INITRD -e RD_GZIP \
+            -e DEVTMPFS -e DEVTMPFS_MOUNT -e BINFMT_ELF -e PROC_FS -e TMPFS \
+            -d SMP -d MODULES -d RAID6_PQ_BENCHMARK -d LOCALVERSION_AUTO "${probe_config[@]}"
+          make -C "$probe_root/source" O="$probe_root/obj" ARCH=um SUBARCH="$probe_subarch" olddefconfig
+          if [ "$UML_PROBE_ARCH" = aarch64 ]; then
+            grep -Fx CONFIG_PAGE_SIZE_4KB=y "$probe_root/obj/.config"
+          fi
+          for symbol in UML_TIME_TRAVEL_SUPPORT STATIC_LINK BLK_DEV_INITRD RD_GZIP; do
+            grep -Fx "CONFIG_$symbol=y" "$probe_root/obj/.config"
+          done
+          make -C "$probe_root/source" O="$probe_root/obj" ARCH=um SUBARCH="$probe_subarch" KBUILD_LDFLAGS="-L$UML_STATIC_LIB" -j2 linux
+          cp "$probe_root/obj/linux" "$probe_root/linux"
+          cp "$probe_root/obj/.config" "$probe_root/config"
+          (cd "$probe_root/rootfs"; find . -print0 | LC_ALL=C sort -z | cpio --null -o --format=newc --reproducible --owner=0:0) | gzip -n > "$probe_root/initramfs.cpio.gz"
+          (cd "$probe_root"; sha256sum linux config initramfs.cpio.gz deny > MANIFEST.sha256)
+          PROBE_SOURCE
+          cat >"$probe_root/run.py" <<'PROBE_SOURCE'
+          import ctypes
+          import json
+          import os
+          from pathlib import Path
+          import selectors
+          import signal
+          import subprocess
+          import sys
+          import time
+
+          root = Path(sys.argv[1]).resolve()
+          if os.geteuid() == 0:
+              raise SystemExit("probe requires an ordinary effective UID")
+          subprocess.run(["sha256sum", "-c", "MANIFEST.sha256"], cwd=root, check=True)
+          if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0):
+              raise OSError(ctypes.get_errno(), "cannot become child subreaper")
+          report = {"euid": os.geteuid(), "host": dict(zip(("sysname", "nodename", "release", "version", "machine"), os.uname())), "runs": []}
+          report["credentials"] = [line for line in Path("/proc/self/status").read_text().splitlines()
+                                   if line.startswith(("Uid:", "CapEff:", "NoNewPrivs:", "Seccomp:"))]
+          if "CapEff:\t0000000000000000" not in report["credentials"]:
+              raise SystemExit("effective capabilities must be empty")
+
+          def children():
+              result = []
+              for status in Path("/proc").glob("[0-9]*/status"):
+                  try:
+                      lines = status.read_text().splitlines()
+                      if f"PPid:\t{os.getpid()}" in lines:
+                          result.append(int(status.parent.name))
+                  except (FileNotFoundError, ProcessLookupError):
+                      pass
+              return result
+
+          passed = True
+          for mode in ("allow-filter", "deny-filter"):
+              work = root / mode
+              work.mkdir(exist_ok=True)
+              command = [str(root / "deny"), mode, str(root / "linux"), "seccomp=on", "time-travel=inf-cpu",
+                         "time-travel-start=0", "mem=128M", "initrd=" + str(root / "initramfs.cpio.gz"),
+                         "con0=fd:0,fd:1", "con=none", "ssl=none", "init=/init", "panic=1",
+                         "umid=" + mode, "uml_dir=" + str(work)]
+              env = dict(os.environ, TMPDIR=str(work))
+              started = time.monotonic_ns()
+              process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL, start_new_session=True, env=env)
+              selector = selectors.DefaultSelector()
+              selector.register(process.stdout, selectors.EVENT_READ)
+              output = bytearray()
+              pending = b""
+              marks = {}
+              timed_out = False
+              try:
+                  while selector.get_map():
+                      if time.monotonic_ns() - started > 60_000_000_000:
+                          timed_out = True
+                          break
+                      for key, _ in selector.select(0.1):
+                          chunk = os.read(key.fileobj.fileno(), 65536)
+                          received = time.monotonic_ns()
+                          if not chunk:
+                              selector.unregister(key.fileobj)
+                              continue
+                          output.extend(chunk)
+                          if len(output) > 1_048_576:
+                              raise RuntimeError("console output exceeded 1 MiB")
+                          pending += chunk
+                          while b"\n" in pending:
+                              line, pending = pending.split(b"\n", 1)
+                              words = line.decode(errors="replace").strip().split()
+                              if len(words) == 4 and words[0] == "MEASURE":
+                                  marks[words[1] + ":" + words[2]] = received
+                  if not timed_out:
+                      process.wait(timeout=5)
+              finally:
+                  try:
+                      os.killpg(process.pid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+                  process.wait(timeout=5)
+                  selector.close()
+                  for child in children():
+                      try:
+                          os.kill(child, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                  while True:
+                      try:
+                          os.waitpid(-1, 0)
+                      except ChildProcessError:
+                          break
+              console = output.decode(errors="replace")
+              (root / (mode + ".log")).write_text(console)
+              print(console, flush=True)
+              ok = not timed_out and not children()
+              if mode == "allow-filter":
+                  ok = ok and process.returncode == 0 and "UML_PROBE PASS" in console
+                  ok = ok and "Checking that seccomp filters can be installed...OK" in console
+                  ok = ok and "time-travel=inf-cpu" in console and "Checking that ptrace" not in console
+              else:
+                  ok = ok and process.returncode != 0
+                  ok = ok and "SECCOMP userspace requested but not functional!" in console
+                  ok = ok and "Checking that ptrace" not in console
+              measurements = {}
+              for name, count in (("syscall", 50000), ("page_fault", 8192)):
+                  if name + ":END" in marks and name + ":BEGIN" in marks:
+                      measurements[name] = (marks[name + ":END"] - marks[name + ":BEGIN"]) / count
+              report["runs"].append({"mode": mode, "ok": ok, "status": process.returncode,
+                                     "timed_out": timed_out, "console_boundary_ns_per_operation": measurements})
+              passed = passed and ok
+          report["readiness"] = "pass" if passed else "fail"
+          (root / "report.json").write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
+          raise SystemExit(0 if passed else 1)
+          PROBE_SOURCE
+          # shellcheck disable=SC2016
+          nix develop --impure --inputs-from . --expr '
+            let f = builtins.getFlake (builtins.getEnv "GITHUB_WORKSPACE");
+                p = import f.inputs.nixpkgs { system = (builtins.getEnv "UML_PROBE_ARCH") + "-linux"; };
+            in (p.mkShell.override { stdenv = p.gcc13Stdenv; }) {
+              packages = with p; [ gnumake flex bison bc perl python3 cpio xz gzip curl binutils util-linux ];
+              UML_STATIC_LIB = "${p.glibc.static}/lib";
+            }' --command bash "$probe_root/build.sh" "$probe_root" 2>&1 | tee "$probe_root/build.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uml-probe-build-${{ github.sha }}-${{ env.UML_PROBE_ARCH }}
+          path: |
+            ${{ runner.temp }}/uml-probe/build.log
+            ${{ runner.temp }}/uml-probe/config
+            ${{ runner.temp }}/uml-probe/source-pin.txt
+            ${{ runner.temp }}/uml-probe/toolchain.txt
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uml-probe-artifacts-${{ github.sha }}-${{ env.UML_PROBE_ARCH }}
+          path: |
+            ${{ runner.temp }}/uml-probe/linux
+            ${{ runner.temp }}/uml-probe/config
+            ${{ runner.temp }}/uml-probe/source-pin.txt
+            ${{ runner.temp }}/uml-probe/toolchain.txt
+            ${{ runner.temp }}/uml-probe/deny
+            ${{ runner.temp }}/uml-probe/initramfs.cpio.gz
+            ${{ runner.temp }}/uml-probe/MANIFEST.sha256
+            ${{ runner.temp }}/uml-probe/run.py
+          if-no-files-found: error
+          retention-days: 14
+
+  build-arm64:
+    name: Arm64 UML Probe Artifacts
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      UML_PROBE_ARCH: aarch64
+    steps: *uml_probe_build_steps
+
+  probe:
+    name: UML Probe — ${{ matrix.target }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [Linux, Docker]
+    steps: &uml_probe_execution_steps
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-probe-artifacts-${{ github.sha }}-${{ env.UML_PROBE_ARCH }}
+          path: ${{ runner.temp }}/uml-probe
+      - name: Record host, credentials and executable identity
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/uml-probe"
+          chmod +x linux deny
+          {
+            id
+            uname -a
+            lscpu
+            grep -E '^(Uid|CapEff|NoNewPrivs|Seccomp):' /proc/self/status
+            file linux deny
+          } >host.txt
+          sha256sum -c MANIFEST.sha256
+      - name: Probe native seccomp boot, round trips and failure cleanup
+        if: matrix.target == 'Linux'
+        run: python3 "$RUNNER_TEMP/uml-probe/run.py" "$RUNNER_TEMP/uml-probe"
+      - name: Probe default Docker seccomp with no capabilities, 64 MiB shm and noexec tmp
+        if: matrix.target == 'Docker'
+        run: |
+          set -euo pipefail
+          docker version >"$RUNNER_TEMP/uml-probe/docker.txt"
+          docker pull ubuntu:24.04
+          docker image inspect ubuntu:24.04 >>"$RUNNER_TEMP/uml-probe/docker.txt"
+          mkdir -p "$RUNNER_TEMP/uml-docker"
+          cat >"$RUNNER_TEMP/uml-docker/Dockerfile" <<'EOF'
+          FROM ubuntu:24.04
+          RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+          EOF
+          docker build -t harmony-uml-probe "$RUNNER_TEMP/uml-docker"
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL             --security-opt no-new-privileges --network none --shm-size 64m             --tmpfs /tmp:rw,noexec,nosuid,size=64m             -v "$RUNNER_TEMP/uml-probe:/work" -w /work harmony-uml-probe             bash -c 'command -v python3 && python3 /work/run.py /work'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uml-probe-report-${{ github.sha }}-${{ env.UML_PROBE_ARCH }}-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/uml-probe/report.json
+            ${{ runner.temp }}/uml-probe/host.txt
+            ${{ runner.temp }}/uml-probe/docker.txt
+            ${{ runner.temp }}/uml-probe/*-filter.log
+          if-no-files-found: error
+          retention-days: 14
+
+  probe-arm64:
+    name: Arm64 UML Probe — ${{ matrix.target }}
+    needs: build-arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    env:
+      UML_PROBE_ARCH: aarch64
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [Linux, Docker]
+    steps: *uml_probe_execution_steps
