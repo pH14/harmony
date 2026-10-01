@@ -22,6 +22,12 @@
   each event with its virtual time, and fails the run if virtual time goes
   backwards. With a cut, it stops answering at that event, and the guest
   stops with `ExitReason::EventCut`.
+- `Session` holds the bridge socket on the caller's thread instead. It runs
+  the guest to an event count and pauses it before the answer, takes a
+  `Checkpoint` there, restores one in place, or starts a fresh process that
+  restores one at boot. A `Checkpoint` is the guest image in a memfd plus the
+  bridge state at the capture: entropy, events, virtual time and the pending
+  answer. Sessions are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event
   count and event hash of a run. `Recording::check` refuses a different
   profile or host, and `Recording::launch` replays to the recorded cut.

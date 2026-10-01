@@ -3,6 +3,8 @@
 #[cfg(target_os = "linux")]
 mod boot;
 #[cfg(target_os = "linux")]
+mod checkpoint;
+#[cfg(target_os = "linux")]
 mod filter;
 #[cfg(target_os = "linux")]
 mod replay;
@@ -27,14 +29,15 @@ mod linux {
     use serde_json::{Value, json};
     use uml::{Exit, HostIdentity, Launch, Profile};
 
-    use crate::{boot, filter, replay};
+    use crate::{boot, checkpoint, filter, replay};
 
-    const USAGE: &str = "usage: harmony-uml-qualify --suite launch|replay --profile DIR [--work DIR] [--report FILE] [--cycles N] [--replays N] [--cuts N] [--parallel N]";
+    const USAGE: &str = "usage: harmony-uml-qualify --suite launch|replay|checkpoint --profile DIR [--work DIR] [--report FILE] [--cycles N] [--replays N] [--cuts N] [--diamonds N] [--parallel N]";
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum Suite {
         Launch,
         Replay,
+        Checkpoint,
     }
 
     pub struct Options {
@@ -45,6 +48,7 @@ mod linux {
         pub cycles: usize,
         pub replays: usize,
         pub cuts: usize,
+        pub diamonds: usize,
         pub parallel: usize,
     }
 
@@ -56,6 +60,7 @@ mod linux {
         let mut cycles = 20;
         let mut replays = 100;
         let mut cuts = 5;
+        let mut diamonds = 6;
         let mut parallel = 4;
         let mut arguments = std::env::args_os().skip(1);
         while let Some(flag) = arguments.next() {
@@ -76,7 +81,8 @@ mod linux {
                     suite = Some(match value()?.to_str() {
                         Some("launch") => Suite::Launch,
                         Some("replay") => Suite::Replay,
-                        _ => return Err("--suite is launch or replay".to_owned()),
+                        Some("checkpoint") => Suite::Checkpoint,
+                        _ => return Err("--suite is launch, replay or checkpoint".to_owned()),
                     })
                 }
                 Some("--profile") => profile = Some(PathBuf::from(value()?)),
@@ -85,6 +91,7 @@ mod linux {
                 Some("--cycles") => cycles = count("--cycles")?,
                 Some("--replays") => replays = count("--replays")?,
                 Some("--cuts") => cuts = count("--cuts")?,
+                Some("--diamonds") => diamonds = count("--diamonds")?,
                 Some("--parallel") => parallel = count("--parallel")?,
                 _ => {
                     return Err(format!(
@@ -102,6 +109,7 @@ mod linux {
             cycles,
             replays,
             cuts,
+            diamonds,
             parallel,
         })
     }
@@ -196,6 +204,7 @@ mod linux {
         let (suite, checks) = match options.suite {
             Suite::Launch => ("launch", boot::checks(options, &profile)),
             Suite::Replay => ("replay", replay::checks(options, &profile, &host)),
+            Suite::Checkpoint => ("checkpoint", checkpoint::checks(options, &profile)),
         };
         let checks = checks.map_err(|error| error.to_string())?;
         let passed = checks.iter().all(|check| check["passed"] == json!(true));

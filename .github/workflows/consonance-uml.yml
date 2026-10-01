@@ -198,3 +198,60 @@ jobs:
           path: ${{ runner.temp }}/uml-report
           if-no-files-found: error
           retention-days: 14
+
+  restore:
+    name: UML Restore — ${{ matrix.target }}
+    needs: artifacts
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64 Linux
+            architecture: x86_64
+            runner: ubuntu-24.04
+            docker: false
+          - target: x86_64 Docker
+            architecture: x86_64
+            runner: ubuntu-24.04
+            docker: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-artifacts-${{ github.sha }}-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/uml
+      - name: Record the host
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/uml-report" "$RUNNER_TEMP/uml-work"
+          chmod +x "$RUNNER_TEMP/uml/linux" "$RUNNER_TEMP/uml/harmony-uml-qualify"
+          {
+            id
+            uname -a
+            lscpu
+            grep -E '^(Uid|CapEff|NoNewPrivs|Seccomp):' /proc/self/status
+          } >"$RUNNER_TEMP/uml-report/host.txt"
+      - name: Capture and restore as an ordinary user with ptrace and KVM denied
+        if: ${{ !matrix.docker }}
+        run: |
+          "$RUNNER_TEMP/uml/harmony-uml-qualify" --suite checkpoint --profile "$RUNNER_TEMP/uml" \
+            --work "$RUNNER_TEMP/uml-work" --report "$RUNNER_TEMP/uml-report/report.json"
+      - name: Capture and restore under the default Docker seccomp profile with no capabilities
+        if: ${{ matrix.docker }}
+        run: |
+          set -euo pipefail
+          docker version >"$RUNNER_TEMP/uml-report/docker.txt"
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL \
+            --security-opt no-new-privileges --network none \
+            -v "$RUNNER_TEMP/uml:/uml:ro" -v "$RUNNER_TEMP/uml-work:/work" \
+            -v "$RUNNER_TEMP/uml-report:/report" ubuntu:24.04 \
+            /uml/harmony-uml-qualify --suite checkpoint --profile /uml --work /work \
+            --report /report/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uml-restore-report-${{ github.sha }}-${{ matrix.architecture }}-${{ matrix.docker && 'docker' || 'linux' }}
+          path: ${{ runner.temp }}/uml-report
+          if-no-files-found: error
+          retention-days: 14
