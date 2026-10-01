@@ -13,12 +13,17 @@ pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str =
 
 pub const SUFFIX_COST_BOUND_FULL_HOLDS: u64 = 3;
 
+pub const SUFFIX_DOUBLE_WHILE_IN_PLACE_IDENTIFIER: &str = "one_doubling_while_in_place_up_to_64";
+
+pub const SUFFIX_DOUBLING_LIMIT: u8 = 64;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
     OneOrTwo,
     OneToSix,
     #[default]
     OneToSixBounded,
+    DoubleWhileInPlace,
 }
 
 impl SuffixShape {
@@ -27,6 +32,7 @@ impl SuffixShape {
         match self {
             Self::OneOrTwo => 2,
             Self::OneToSix | Self::OneToSixBounded => 6,
+            Self::DoubleWhileInPlace => usize::from(SUFFIX_DOUBLING_LIMIT),
         }
     }
 
@@ -57,6 +63,7 @@ pub(crate) fn suffix_shape_identifier(shape: SuffixShape) -> &'static str {
         SuffixShape::OneOrTwo => SUFFIX_ONE_OR_TWO_IDENTIFIER,
         SuffixShape::OneToSix => SUFFIX_ONE_TO_SIX_IDENTIFIER,
         SuffixShape::OneToSixBounded => SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER,
+        SuffixShape::DoubleWhileInPlace => SUFFIX_DOUBLE_WHILE_IN_PLACE_IDENTIFIER,
     }
 }
 
@@ -65,6 +72,7 @@ pub fn suffix_shape_from_identifier(identifier: &str) -> Result<SuffixShape, Box
         SUFFIX_ONE_OR_TWO_IDENTIFIER => Ok(SuffixShape::OneOrTwo),
         SUFFIX_ONE_TO_SIX_IDENTIFIER => Ok(SuffixShape::OneToSix),
         SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER => Ok(SuffixShape::OneToSixBounded),
+        SUFFIX_DOUBLE_WHILE_IN_PLACE_IDENTIFIER => Ok(SuffixShape::DoubleWhileInPlace),
         _ => Err(format!("suffix shape {identifier} is not recognized").into()),
     }
 }
@@ -235,6 +243,7 @@ where
         SuffixShape::OneToSix | SuffixShape::OneToSixBounded => {
             1 + rand.below(NonZeroUsize::new(6).ok_or("invalid suffix odds")?)
         }
+        SuffixShape::DoubleWhileInPlace => usize::from(SUFFIX_DOUBLING_LIMIT),
     };
     let mut suffix = Vec::with_capacity(length);
     for _ in 0..length {
@@ -287,6 +296,7 @@ mod tests {
             SuffixShape::OneOrTwo,
             SuffixShape::OneToSix,
             SuffixShape::OneToSixBounded,
+            SuffixShape::DoubleWhileInPlace,
         ] {
             assert_eq!(
                 suffix_shape_from_identifier(suffix_shape_identifier(shape)).expect("round trip"),

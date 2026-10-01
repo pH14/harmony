@@ -430,6 +430,21 @@ benchmark with:
 DISSONANCE_BENCHMARK_SPLICE_TAIL=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib bounded_splice -- --nocapture --test-threads=1
 ```
 
+The suffix shape `one_doubling_while_in_place_up_to_64` sets the length of each
+drawn suffix from its parent's earlier jobs. A stretch where a key's place and
+preferences stay fixed can only be crossed by a single job, because every state
+inside it ties with or loses to the state that arrived there first. A parent's
+first job runs one action. A job that kept no state, never left the parent's
+place and did not end in a terminal state doubles the parent's next length, up
+to 64 actions. A job that kept a state or left the place resets it to one
+action. A job that ended in a terminal state without either leaves it
+unchanged. The archive holds the length per entry, so checkpoints carry it and
+compaction drops it with its entry. Splices and continuations run their
+recorded tails and leave it unchanged. The coordinator reads the length when it
+dispatches the job and records it as `suffix_limit` in the job or skip record.
+Replay cuts the redrawn suffix to the recorded limit and rejects a record whose
+limit does not fit the shape.
+
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
 type, so two holders that differ only in what they carry share one set of

@@ -12,6 +12,7 @@ use std::{
 
 use crate::search::{
     continuation::{Continuation, ContinuationBank},
+    draw::SUFFIX_DOUBLING_LIMIT,
     rand::RomuDuoJrRand,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -483,6 +484,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     portfolio_replacements: Vec<u64>,
     portfolio_cross_improvements: u64,
     replacement_preferences: Vec<u8>,
+    in_place_lengths: Vec<u8>,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
     #[serde(skip, default = "unset_action_cost::<A>")]
@@ -950,6 +952,7 @@ where
             portfolio_replacements: vec![0; K::preferences().max(1)],
             portfolio_cross_improvements: 0,
             replacement_preferences: Vec::new(),
+            in_place_lengths: Vec::new(),
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             action_cost,
@@ -1347,6 +1350,7 @@ where
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
+        self.in_place_lengths = retain_marked(std::mem::take(&mut self.in_place_lengths), &keep);
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
         self.snapshot_selectable =
             retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
@@ -2237,6 +2241,7 @@ where
         self.lineages.push(lineage);
         self.cost_in_group.push(candidate_cost_in_group);
         self.replacement_preferences.push(replacement_preferences);
+        self.in_place_lengths.push(0);
         match &mut self.live_progress {
             Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
                 Ordering::Greater => {
@@ -2997,6 +3002,34 @@ where
     }
 
     #[must_use]
+    pub(crate) fn suffix_limit(&self, id: usize) -> u8 {
+        self.in_place_lengths
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_mul(2)
+            .clamp(1, SUFFIX_DOUBLING_LIMIT)
+    }
+
+    pub(crate) fn record_suffix_outcome(
+        &mut self,
+        id: usize,
+        actions: usize,
+        kept: bool,
+        left_place: bool,
+        terminal: bool,
+    ) {
+        let Some(length) = self.in_place_lengths.get_mut(id) else {
+            return;
+        };
+        if kept || left_place {
+            *length = 0;
+        } else if !terminal {
+            *length = u8::try_from(actions).unwrap_or(u8::MAX);
+        }
+    }
+
+    #[must_use]
     fn portfolio_holders(&self, preferences: usize) -> (u64, u64) {
         let mut exclusive = 0_u64;
         let mut shared = 0_u64;
@@ -3309,7 +3342,7 @@ mod tests {
         MAX_TIER_RANK_SHIFT, SelectorAccounting, SelectorDraw, SelectorPath,
         checked_tier_rank_shift, tier_weight,
     };
-    use crate::search::rand::RomuDuoJrRand;
+    use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
     use std::{collections::BTreeMap, sync::Arc};
 
@@ -5533,6 +5566,44 @@ mod tests {
             .expect("the replacement survives compaction");
         assert_eq!(archive.replacement_preferences(surviving), marked);
         assert_eq!(archive.replacement_preferences.len(), archive.entries.len());
+    }
+
+    #[test]
+    fn a_parent_doubles_its_suffix_after_each_job_that_stays_in_its_place() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let parent = insert_portfolio(&mut archive, 1, 1, 1).expect("the parent is kept");
+        assert_eq!(archive.suffix_limit(parent), 1);
+        archive.record_suffix_outcome(parent, 1, false, false, false);
+        assert_eq!(archive.suffix_limit(parent), 2);
+        archive.record_suffix_outcome(parent, 2, false, false, false);
+        assert_eq!(archive.suffix_limit(parent), 4);
+        archive.record_suffix_outcome(parent, 1, false, false, true);
+        assert_eq!(archive.suffix_limit(parent), 4);
+        archive.record_suffix_outcome(parent, 48, false, false, false);
+        assert_eq!(archive.suffix_limit(parent), SUFFIX_DOUBLING_LIMIT);
+        archive.record_suffix_outcome(parent, 64, false, true, false);
+        assert_eq!(archive.suffix_limit(parent), 1);
+        archive.record_suffix_outcome(parent, 3, false, false, false);
+        assert_eq!(archive.suffix_limit(parent), 6);
+        archive.record_suffix_outcome(parent, 6, true, false, false);
+        assert_eq!(archive.suffix_limit(parent), 1);
+        let replacing = insert_portfolio(&mut archive, 2, 9, 9).expect("the replacement is kept");
+        archive.record_suffix_outcome(replacing, 5, false, false, false);
+        let before = archive.entries.len();
+        archive
+            .compact_history_for_final_report()
+            .expect("compaction succeeds");
+        assert!(
+            archive.entries.len() < before,
+            "compaction dropped an entry"
+        );
+        assert_eq!(archive.in_place_lengths.len(), archive.entries.len());
+        let surviving = archive
+            .entries
+            .iter()
+            .position(|entry| entry.key.first == 9)
+            .expect("the replacement survives compaction");
+        assert_eq!(archive.suffix_limit(surviving), 10);
     }
 
     #[test]
