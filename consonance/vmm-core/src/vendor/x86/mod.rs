@@ -252,7 +252,7 @@ impl Vendor for X86 {
 
     fn check_sealable_vcpu(vcpu: &vmm_backend::VcpuState) -> Result<(), VmmError> {
         if let Some(bytes) = &vcpu.nested_state {
-            vmm_backend::arch::x86::validate_vmx_nested_state(
+            vmm_backend::arch::x86::validate_nested_state(
                 bytes,
                 vmm_backend::arch::x86::VMX_NESTED_MAX_LEN,
             )?;

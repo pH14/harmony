@@ -44,3 +44,14 @@ callers share initialization, and subsequent captures, hashes, and restores copy
 the same 32-byte fingerprint without serializing the policy again. A snapshot
 saved under a different contract is rejected before restore changes the VM. The old Coffee Lake captures and unused AMD draft remain in Git
 history, not in runtime policy or the test matrix.
+
+The separate `nested-host.toml` policy selects VMX or SVM from host KVM support.
+VMX adds its capability MSRs and locked feature-control register. SVM uses an
+AuthenticAMD identity, a fixed family-19h signature, SVM revision 1 and the
+KVM-reported ASID count. Its feature mask exposes NPT, NRIPS, VMCB clean bits,
+flush-by-ASID and decode assists, excluding host-time scaling and unrelated
+extensions. VM_CR and VM_HSAVE_PA remain native stateful MSRs. AMD HWCR reads
+return only the fixed P0-frequency bit required by the Linux invariant-TSC boot
+check; writes remain rejected. The selected
+vendor and every exposed capability contribute to the nested contract hash;
+the ordinary guest contract remains unchanged.

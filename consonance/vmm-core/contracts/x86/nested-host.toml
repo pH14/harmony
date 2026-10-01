@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 [contract]
 name = "nested-host"
-version = 1
+version = 2
 base = "guest"
 
 [cpuid]
 leaf1-ecx-or = "0x00000020"
+svm-signature = "0x00a00f10"
+svm-extended-ecx-or = "0x00000004"
+svm-features-mask = "0x000000e9"
 
 [msr]
 feature-control = "0x0000000000000005"
 vmx-indices = ["0x480", "0x481", "0x482", "0x483", "0x484", "0x485", "0x486", "0x487", "0x488", "0x489", "0x48a", "0x48b", "0x48c", "0x48d", "0x48e", "0x48f", "0x490", "0x491"]
+svm-indices = ["0xc0010114", "0xc0010117"]
+svm-hwcr = "0x0000000001000000"

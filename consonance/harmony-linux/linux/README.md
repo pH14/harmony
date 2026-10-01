@@ -122,7 +122,7 @@ KVM host. These checks supplement the endpoint oracle; they do not replace it.
 ## Direct platform fixtures
 
 The experimental `NESTED_HOST_PROFILE=1` kernel merges
-`x86-nested-host-config-fragment`, builds `KVM` and `KVM_INTEL` into the kernel,
+`x86-nested-host-config-fragment`, builds `KVM`, `KVM_INTEL`, and `KVM_AMD` into the kernel,
 and publishes `bzImage-nested-host` separately after the instruction audit.
 Built-in initialization preserves the no-modules boundary. It is mutually
 exclusive with the traps-off and task-park profiles and requires a matching
@@ -140,8 +140,10 @@ toolchain-specific selections through `HARMONY_RDTSC_ALLOWLIST` and
 `HARMONY_BUILD_JOBS` bounds compiler parallelism for small shared-host proofs.
 `build-nested-host-fixture.sh OUTPUT` packages `nested-kvm-check.c` with a static
 `NESTED_HOST_BUSYBOX`; the check opens `/dev/kvm`, requires nested state and
-KVM-supported Intel VMX, and
-creates one VM. The manual Guest Runtime Qualification job builds and boots
+KVM-supported Intel VMX or AMD SVM with NPT, and creates one VM. The fixture
+checks the disabled hardware preemption timer on Intel and reports it as
+inapplicable on AMD. AMD SEV is disabled; this profile hosts ordinary nested
+VMs without memory encryption. The manual Guest Runtime Qualification job builds and boots
 these exact inputs on an x86 runner.
 
 These targets remain direct substrate checks and are independent of the OCI
@@ -173,7 +175,7 @@ The reproducibility manifest records the patch series, configuration inputs,
 and generated artifact hashes. Build transcripts are evidence, not inputs.
 
 The nested-host GitHub qualification job uses Ubuntu 22.04 with an explicit
-KVM-supported VMX and nested-state capacity check before building. Its pinned
+KVM-supported VMX/SVM and nested-state capacity check before building. Its pinned
 Debian compiler container builds the matching GCC 14 kernel and fixture using
 the nested profile's reviewed instruction baselines. The ordinary guest kernel
 keeps its existing toolchain profiles. Compilation and instruction audits finish

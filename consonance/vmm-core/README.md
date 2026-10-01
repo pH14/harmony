@@ -118,9 +118,14 @@ The x86 policy and snapshot compatibility
 rules are documented in [contracts/x86](contracts/x86/README.md).
 
 `boot_linux_nested_host_virtual_time` composes the separate experimental x86
-nested-host contract with production `KvmBackend`. It requires host nested VMX,
-records KVM's capability MSRs in the snapshot contract identity, and boots the
-matching KVM-enabled kernel. Nested VMX state is carried through CPU records,
+nested-host contract with production `KvmBackend`. It selects KVM-supported
+Intel VMX or AMD SVM and binds the vendor's exposed capabilities into snapshot
+contract identity. SVM presents AuthenticAMD, revision 1, the supported ASID
+count and only NPT, NRIPS, VMCB clean bits, flush-by-ASID and decode assists.
+VM_CR and VM_HSAVE_PA use native KVM handling and are saved with all other
+stateful MSRs. HWCR reads return the fixed P0-frequency bit for Linux's
+invariant-TSC check; writes are rejected. The matching kernel includes both
+vendor backends. Nested state is carried through CPU records,
 VMST tag 16, raw and component identities, whole-state hashes, and portable
 artifacts. Publication requires L1 outside L2 guest mode; the inner VM remains
 allocated and VMX remains enabled. `nested-driver` qualifies repeated and cold
@@ -137,9 +142,10 @@ retain the host restore bitmap and remain the input used for restore.
 
 The non-default `omit-nested-state` feature is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive
-header, while raw CPU observations still capture it. Its uninterrupted and
-capture-only cases must pass and restored L2 continuation must fail. Production
-builds retain the complete payload.
+header; for enabled SVM it discards the saved GIF flag. Raw CPU observations
+still capture the real state. Uninterrupted and capture-only cases must pass.
+The first restored VMX continuation or SVM control-state readback must fail.
+Production builds retain the complete state.
 
 ## Checks
 
