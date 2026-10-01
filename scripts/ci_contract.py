@@ -699,6 +699,7 @@ MIRI_OWNERS = {
     "vmm-backend": "Consonance",
     "snapshot-store": "Consonance",
     "harmony-supervisor": "Consonance",
+    "uml": "Consonance",
     "machine": "Harmony",
     "nes-guest": "Harmony",
 }

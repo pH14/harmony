@@ -62,6 +62,12 @@ TARGETS = (
         "paths": ("consonance/snapshot-store/**",),
     },
     {
+        "name": "uml",
+        "command": "-p uml --lib",
+        "whole_crate": "-p uml --lib",
+        "paths": ("consonance/uml/**",),
+    },
+    {
         "name": "machine",
         "command": "--manifest-path workloads/nes-machine/Cargo.toml",
         "whole_crate": "--manifest-path workloads/nes-machine/Cargo.toml",
