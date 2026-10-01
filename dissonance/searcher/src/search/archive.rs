@@ -2045,6 +2045,20 @@ where
             .map(|(id, _)| id)
     }
 
+    pub(crate) fn complete_after(
+        &self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        key: K,
+    ) -> Result<K, Box<dyn Error>> {
+        if parent_id.is_some_and(|id| self.entries.get(id).is_none()) {
+            return Err("archive candidate parent is missing".into());
+        }
+        let parent_ctx =
+            parent_id.map(|id| (previous.unwrap_or(self.entries[id].key), &self.lineages[id]));
+        Ok(key.complete(parent_ctx))
+    }
+
     pub fn insert_after<T: AsRef<[A]> + Into<Vec<A>>>(
         &mut self,
         parent_id: Option<usize>,
@@ -2061,12 +2075,7 @@ where
         if let Some(existing) = self.existing_input_id(parent_id, suffix.as_ref()) {
             return Ok((Some(existing), self.entries[existing].key));
         }
-        if parent_id.is_some_and(|id| self.entries.get(id).is_none()) {
-            return Err("archive candidate parent is missing".into());
-        }
-        let parent_ctx =
-            parent_id.map(|id| (previous.unwrap_or(self.entries[id].key), &self.lineages[id]));
-        let key = key.complete(parent_ctx);
+        let key = self.complete_after(parent_id, previous, key)?;
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, suffix.as_ref(), key);
         let slot = self
             .slots

@@ -1756,7 +1756,12 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 let completed =
                     workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
                 if !candidate.viable {
-                    left_place |= completed.place() != parent_place;
+                    let key = self.archive.complete_after(
+                        Some(current_parent),
+                        previous_key,
+                        completed,
+                    )?;
+                    left_place |= key.place() != parent_place;
                     self.probe_refused = self.probe_refused.saturating_add(1);
                     decisions.push(CampaignAdmissionDecision::ProbeRefused);
                     continue;
@@ -5010,12 +5015,17 @@ mod tests {
 
         type Lineage = ();
 
-        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
-            self
+        fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
+            match parent {
+                Some((parent, ())) if self.0 == INHERITS_PARENT_PLACE => parent,
+                _ => self,
+            }
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
+
+    const INHERITS_PARENT_PLACE: u8 = u8::MAX;
 
     #[derive(Default)]
     struct LiveTargets {
@@ -6044,6 +6054,11 @@ mod tests {
         };
         core.admit_job_tracking(&workload, 0, refused(home), true, |_| false)
             .expect("admit a refused state in the parent's place");
+        assert_eq!(core.archive.suffix_limit(0), 2);
+        core.admit_job_tracking(&workload, 0, refused(INHERITS_PARENT_PLACE), true, |_| {
+            false
+        })
+        .expect("admit a refused state whose completed key keeps the parent's place");
         assert_eq!(core.archive.suffix_limit(0), 2);
         core.admit_job_tracking(&workload, 0, refused(home.wrapping_add(1)), true, |_| false)
             .expect("admit a refused state in another place");
