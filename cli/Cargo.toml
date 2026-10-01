@@ -24,6 +24,7 @@ environment = { version = "=0.1.0", path = "../consonance/environment" }
 vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
 consonance-client = { path = "../consonance/client", version = "=0.1.0" }
+nested-driver = { path = "../consonance/nested-driver", version = "=0.1.0", features = ["host-search"] }
 
 [lints]
 workspace = true
