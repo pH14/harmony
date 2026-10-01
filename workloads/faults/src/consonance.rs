@@ -498,7 +498,7 @@ impl FaultTarget {
 
     pub fn reset(&mut self) {
         let result = with_live(&self.config, |live| {
-            live.fit_store()?;
+            live.fit_store(1)?;
             let setup = live.setup;
             live.replay(setup)?;
             live.observe(FaultStop::Deadline)
@@ -521,7 +521,7 @@ impl FaultTarget {
 
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
         let rebuilt = with_live(&self.config, |live| {
-            live.fit_store()?;
+            live.fit_store(1)?;
             match live.ensure_prefix(&snapshot.actions)? {
                 Ok(cached) => {
                     live.replay(cached.snap)?;
@@ -838,7 +838,7 @@ impl Live {
         Ok(())
     }
 
-    fn fit_store(&mut self) -> Result<(), String> {
+    fn fit_store(&mut self, keep: usize) -> Result<(), String> {
         let Some(index) = self.chain.shared().map(|shared| Arc::clone(&shared.index)) else {
             return Ok(());
         };
@@ -849,10 +849,7 @@ impl Live {
             if !index.report_store(self.holder, bytes) {
                 return Ok(());
             }
-            let dropped = match self.chain.evict_oldest() {
-                Some(snap) => vec![snap],
-                None => self.chain.truncate(1),
-            };
+            let dropped = self.chain.shed(keep);
             if dropped.is_empty() {
                 return Ok(());
             }
@@ -914,7 +911,7 @@ impl Live {
     ) -> Result<Point, String> {
         let lease = self.publish(actions, snap, moment.saturating_sub(from))?;
         let point = self.push_link(actions, Point { snap, moment }, lease)?;
-        self.fit_store()?;
+        self.fit_store(2)?;
         Ok(point)
     }
 

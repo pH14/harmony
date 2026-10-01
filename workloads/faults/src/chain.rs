@@ -161,6 +161,13 @@ impl Chain {
         self.retire(link)
     }
 
+    pub fn shed(&mut self, keep: usize) -> Vec<SnapId> {
+        match self.evict_oldest() {
+            Some(snap) => vec![snap],
+            None => self.truncate(keep),
+        }
+    }
+
     pub fn push(
         &mut self,
         actions: &[FaultAction],
@@ -324,6 +331,21 @@ mod tests {
             0,
             "an evicted prefix falls back to setup"
         );
+    }
+
+    #[test]
+    fn shedding_keeps_the_newest_link_when_asked() {
+        let mut chain = Chain::new(point(0), None);
+        let path = [wait(1), wait(2)];
+        for len in 1..=2 {
+            chain.push(&path[..len], point(len as u64), None);
+        }
+        assert_eq!(chain.shed(2), vec![SnapId(1)]);
+        assert_eq!(chain.shed(2), Vec::new());
+        let at = chain.local(&path);
+        assert_eq!((chain.depth(at), chain.point(at)), (2, point(2)));
+        assert_eq!(chain.shed(1), vec![SnapId(2)]);
+        assert_eq!(chain.links(), 1);
     }
 
     #[test]
