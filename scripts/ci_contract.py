@@ -43,7 +43,7 @@ CANONICAL_TERMS = (
     "macOS", "etcd", "K3s", "QuickNES", "PostgreSQL", "NES", "OCI", "API",
     "Arm64", "CLI", "KVM", "XSAVE", "HVF", "VM", "CPU", "RAM", "Miri", "Kani",
     "STB", "Nova", "Docker", "Linux", "Go", "Intel", "Harmony", "Consonance",
-    "Dissonance", "N6",
+    "Dissonance", "N6", "UML",
 )
 
 # Words Title Case leaves lowercase unless they open or close a name.
@@ -58,6 +58,8 @@ VARIANT_SEPARATOR = " — "
 PR_BOUNDED_MINUTES = 15
 PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml", "NES Guest Image"): 45,
+    (f"{WORKFLOW_DIR}/consonance-uml-probe.yml", "UML Probe Artifacts"): 45,
+    (f"{WORKFLOW_DIR}/consonance-uml-probe.yml", "Arm64 UML Probe Artifacts"): 45,
 }
 
 
@@ -599,6 +601,24 @@ RELEASE = Workflow(
     ),
 )
 
+CONSONANCE_UML_PROBE = Workflow(
+    path=f"{WORKFLOW_DIR}/consonance-uml-probe.yml",
+    name="Checks / Consonance / UML Probe",
+    owner="Consonance",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(
+        Job("UML Probe Artifacts", "pr", 45,
+            exception="Cold compilation of the pinned UML kernel and locked "
+                      "toolchain exceeds the pull request check budget."),
+        Job("UML Probe — <Target>", "pr", 15),
+        Job("Arm64 UML Probe Artifacts", "pr", 45,
+            exception="Cold compilation of the pinned arm64 UML RFC and locked "
+                      "toolchain exceeds the pull request check budget."),
+        Job("Arm64 UML Probe — <Target>", "pr", 15),
+    ),
+)
+
+
 WORKFLOWS = (
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
@@ -607,6 +627,7 @@ WORKFLOWS = (
     CONSONANCE_HARDWARE,
     CONSONANCE_RUNTIME,
     CONSONANCE_XSAVE,
+    CONSONANCE_UML_PROBE,
     DISSONANCE_CHECKS,
     DISSONANCE_ANALYSIS,
     HARMONY_CHECKS,
