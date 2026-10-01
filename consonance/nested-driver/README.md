@@ -30,14 +30,6 @@ the required artifacts or hardware are absent.
 
 The ignored `tests/live.rs::inner_consonance_runs_inner_guest` proof uses
 `NESTED_HOST_KERNEL`, `NESTED_OCI_INITRAMFS`, and `NESTED_DRIVER_IMAGE`.
-On ms02 the matching guest kernel, rebuilt current OCI runtime, and static
-musl driver passed all twelve L2 steps in 14.31 seconds. Direct and nested
-execution both ended with bytes `401200c00a52cfeb562200c0b8d8`, one creation,
-and zero imports. The static binary scan found no RDTSC/RDTSCP/RDRAND/RDSEED.
-A stale cached runtime from another experiment initially requested a park device;
-rebuilding the current runtime corrected that input mismatch. The musl build
-also exposed the backend’s glibc-specific ioctl argument type; inferring the
-libc request type fixes the static build without changing request encodings.
 
 ```sh
 NESTED_HOST_KERNEL=... NESTED_OCI_INITRAMFS=... NESTED_DRIVER_IMAGE=... \
@@ -47,22 +39,27 @@ NESTED_HOST_KERNEL=... NESTED_OCI_INITRAMFS=... NESTED_DRIVER_IMAGE=... \
 
 `tests/nested_restore.rs::outer_nested_state_snapshot_matrix` captures after
 step three and compares steps four through twelve with an uninterrupted
-reference. It covers capture without restore, eight restores after an
+reference. It also assembles the detour's sparse capture and compares every RAM
+byte with the live guest. It covers capture without restore, eight restores after an
 overwriting detour, and portable export followed by killing the capture process
 and importing into a new process. Its ignored `cold_snapshot_child` helper is
 started by the matrix, with separate capture and import modes; it is not a
 standalone qualification. Each output must agree with the independent oracle,
 with one inner creation and zero imports at every boundary.
+Every restored RAM page must match the cut before continuing L2, with no
+in-place restore fallback.
+On an oracle failure, dedicated SDK registers publish the actual bytes, the
+guest's expected bytes and the step before stopping at the assertion. The
+host prints those values alongside its independent expected bytes. The matrix
+also reports RAM pages that differ immediately after an outer restore. Hosted
+qualification retains the exact kernel, initramfs and OCI inputs with its logs
+so a failed continuation can be reproduced.
 
-The ms02 positive matrix passed with a 4224-byte nested VMX state, valid VMXON
-and current VMCS addresses, and the same final bytes as the direct proof. The
-non-default `omit-nested-state` build discards captured VMX state only when
-publishing the outer snapshot. Uninterrupted and capture-only execution must
-still pass; its first restored continuation must fail. On ms02 it caused L1's
-`kvm_spurious_fault` kernel BUG after the restore, as expected from discarded
-VMX state. The host-side test uses
-the production client watchdog with a twenty-second bound at each lifecycle
-point, so a stalled continuation yields diagnostics and releases the VM.
+The non-default `omit-nested-state` build discards captured VMX state only
+when publishing the outer snapshot. Uninterrupted and capture-only execution
+must still pass; its first restored continuation must fail. The test bounds
+each lifecycle wait with the production client watchdog and releases the VM
+when a continuation stalls.
 
 ```sh
 NESTED_HOST_KERNEL=... NESTED_OCI_INITRAMFS=... NESTED_DRIVER_IMAGE=... \
@@ -91,16 +88,8 @@ Four always assertions cover the L2 oracle, restore readback, operation errors
 and identical replay outputs. Thirty-six sometimes assertions cover ordered
 operation pairs. State registers publish creations, imports, steps, all output
 bytes, live snapshots, fork depth, operation count/type and the pair mask.
-Inputs use the tracked memory-effect API. The initial smoke used the bulk
-page-write API, which marks the whole RAM image dirty and caused an in-place
-restore fallback; switching APIs corrected that composition error.
-
-The short ms02 direct smoke exercised all six operation types. The outer SDK
-smoke also exercised all six types and matched the same two-operation
-continuation after an overwriting detour and outer restore, with one creation
-and no additional inner imports caused by the outer restore. Its run took
-1.20 seconds with one CPU and 256 MiB of L1 RAM. The static musl workload passed
-the hardware-counter and RNG instruction admission scan.
+Inputs use the tracked memory-effect API so restore can use dirty-page
+tracking and keep the existing inner VM in place.
 
 The optional `host-search` feature supplies the `harmony search --package nested`
 adapter. Actions select SDK entropy seeds. Outer SDK boundaries become sparse
@@ -119,12 +108,17 @@ remain in the original snapshots used for restore. RAM, active CPU state,
 nested VMX state, SDK events, policy, control state, observations, outcomes and
 operation inputs remain checked by replay.
 
+A failure during campaign preparation uses the searcher's failed disposition.
+It retains its observation, layer and input seeds when no suffix action runs.
+A failed root reset also survives the following parent restore; the next job
+reset starts a new attempt. Portable adapter tests exercise preparation-failure
+evidence through the generic rollout, report serialization and checkpoint
+roundtrip without requiring KVM.
 
-The two-execution ms02 CLI smoke completed five SDK operations, covered four
-of the 36 ordered pairs (`100002c00`), and found no failures. Replaying its
-complete campaign reproduced that result. This is a short smoke; the required
-100-execution, five-minute-bounded search runs in GitHub qualification.
-An Ubuntu 22.04 capacity probe on Intel Xeon Platinum 8370C exposed VMX and an
-8320-byte nested-state bound. The tested Ubuntu 24.04 runner exposed AMD SVM
-and failed the Intel preflight. Qualification selects Ubuntu 22.04 and retains
-the hardware check; it does not assume every allocation supports VMX.
+The hosted qualification runs a bounded search and replays its complete stream,
+checking execution counts, work, coverage, stream digest and failure evidence.
+It attempts replay even when the search reports a failing assertion, preserving
+both exit statuses and logs while retaining the failed qualification result.
+The runner must expose Intel nested VMX and `KVM_CAP_NESTED_STATE`. Hosted runner
+labels can allocate either Intel or AMD hardware, so the job checks capabilities
+before building artifacts. AMD nested SVM is outside this workload's contract.
