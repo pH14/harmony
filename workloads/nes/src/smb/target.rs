@@ -698,8 +698,23 @@ mod tests {
         BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
         smb_mechanical_state_from_wram,
     };
-    use crate::target::Target;
-    use machine::quicknes::QuickNesMachine;
+    use crate::{nes_backend::NesBackend, target::Target};
+    use machine::{Machine, quicknes::QuickNesMachine};
+
+    #[test]
+    fn native_snapshots_store_a_compressed_state_that_restores_exactly() {
+        let mut machine =
+            QuickNesMachine::loopback_for_tests(&synthetic_nrom()).expect("loopback core");
+        let held = machine.snapshot().expect("snapshot");
+        let state = machine.take_snapshot(held).expect("raw state");
+        let held = machine.import_snapshot(&state);
+        let stored = machine.export_nes(held, None).expect("export");
+        assert!(stored.len() < state.len());
+        assert_eq!(stored.capacity(), stored.len());
+        let restored = machine.import_nes(&stored).expect("import");
+        assert_eq!(machine.take_snapshot(restored).expect("raw state"), state);
+        assert!(machine.import_nes(&vec![4, 0, 0, 0, 0xf0]).is_err());
+    }
 
     #[test]
     fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {

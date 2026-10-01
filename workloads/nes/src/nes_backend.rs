@@ -40,11 +40,16 @@ impl NesBackend<Vec<u8>> for machine::quicknes::QuickNesMachine {
         snapshot: SnapId,
         _base: Option<&Vec<u8>>,
     ) -> Result<Vec<u8>, MachineError> {
-        self.take_snapshot(snapshot)
+        let mut packed = lz4_flex::block::compress_prepend_size(&self.take_snapshot(snapshot)?);
+        packed.shrink_to_fit();
+        Ok(packed)
     }
 
     fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
-        Ok(self.import_snapshot(portable))
+        let state = lz4_flex::block::decompress_size_prepended(portable).map_err(|error| {
+            MachineError::Backend(format!("snapshot does not decompress: {error}"))
+        })?;
+        Ok(self.import_snapshot(&state))
     }
 
     fn release_exported(&mut self, _snapshot: SnapId) -> Result<(), MachineError> {

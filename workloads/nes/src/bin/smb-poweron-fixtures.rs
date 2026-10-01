@@ -3,6 +3,7 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::{Machine, StopConditions, nes, quicknes::QuickNesMachine};
+use nes_workload::nes_backend::NesBackend;
 use nes_workload::smb::{
     campaign::{
         SNAPSHOT_CHECKPOINT_FORMAT, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
@@ -198,9 +199,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 {
                     continue;
                 }
-                let raw = machine.take_snapshot(current)?;
-                current = machine.import_snapshot(&raw);
-                let snapshot = snapshot_from_raw(raw, &wram, frame)?;
+                let stored = machine.export_nes(current, None)?;
+                current = machine.import_nes(&stored)?;
+                let snapshot = snapshot_from_stored(stored, &wram, frame)?;
                 write_fixture(
                     target,
                     &snapshot,
@@ -237,7 +238,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Err(format!("power-on prefix ended before fixtures were captured: {missing}").into())
 }
 
-fn snapshot_from_raw(
+fn snapshot_from_stored(
     emulator_state: Vec<u8>,
     wram: &[u8; nes::WRAM_SIZE],
     frame: u64,
