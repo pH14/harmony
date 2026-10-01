@@ -170,7 +170,17 @@ impl KvmBackend {
         let mut msrs = Msrs::from_entries(&entries)
             .map_err(|_| BackendError::Internal("VMX MSR list too large"))?;
         let got = self.vcpu.get_msrs(&mut msrs).map_err(kvm_err)?;
-        let capabilities = saved_msrs(msrs.as_slice(), got, indices.len())?;
+        let mut capabilities = saved_msrs(msrs.as_slice(), got, indices.len())?;
+        let secondary = capabilities
+            .get_mut(&0x48b)
+            .ok_or(BackendError::Internal("missing VMX secondary controls"))?;
+        if *secondary & (1 << 5) != 0 {
+            return Err(BackendError::Internal("host requires nested VPID"));
+        }
+        *secondary &= !(1_u64 << 37);
+        *capabilities
+            .get_mut(&0x48c)
+            .ok_or(BackendError::Internal("missing EPT/VPID capabilities"))? &= 0xffff_ffff;
         let feature_control = Msrs::from_entries(&[kvm_msr_entry {
             index: 0x3a,
             data: feature_control,
