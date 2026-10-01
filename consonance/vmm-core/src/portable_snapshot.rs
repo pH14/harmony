@@ -827,7 +827,7 @@ mod tests {
     fn sparse_logical_x86_identity_normalizes_only_init_presence_without_mutating_restore_bytes() {
         let mut state = vm_state::VmState::default();
         state.xsave.0 = vec![0; 576];
-        vmm_backend::canonicalize_xsave(&mut state.xsave.0);
+        vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave.0);
         state.xsave_restore_bv = Some(0);
         let expected = x86_sidecar(&state);
         for raw in 0..=3 {
