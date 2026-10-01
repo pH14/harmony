@@ -422,7 +422,7 @@ impl Session {
         for gfn in 0..image_pages {
             let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
             builder
-                .write_page(gfn, &bytes[at..at + PAGE_SIZE])
+                .write_changed_page(gfn, &bytes[at..at + PAGE_SIZE])
                 .map_err(MemoryError::from)?;
         }
         let id = builder.seal(image_state(length));
