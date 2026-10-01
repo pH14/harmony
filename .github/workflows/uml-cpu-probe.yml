@@ -26,14 +26,18 @@ jobs:
           lscpu | head -20
           id
       - name: Build
-        run: gcc -O1 -Wall -o probe probe.c
+        run: |
+          gcc -O1 -Wall -o probe probe.c
+          gcc -O1 -Wall -o seccomp_trap seccomp_trap.c
       - name: Native
-        run: ./probe | tee native.json
+        run: |
+          ./probe | tee native.json
+          ./seccomp_trap | tee -a native.json
       - name: Docker
         run: |
           docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL \
             --security-opt no-new-privileges --network none \
-            -v "$PWD:/p:ro" ubuntu:24.04 /p/probe | tee docker.json
+            -v "$PWD:/p:ro" ubuntu:24.04 sh -c '/p/probe && /p/seccomp_trap' | tee docker.json
       - name: Summary
         run: |
           {
