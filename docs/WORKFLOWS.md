@@ -153,8 +153,10 @@ the job.
 ## Ignored tests
 
 The Guest Runtime Qualification workflow's manual `nested_host_only` run first
-requires `KVM_CAP_NESTED_STATE` and KVM-supported Intel VMX on its x86 runner, then builds the separate
-nested-host kernel and boots L1 under the named nested-host contract. The
+requires `KVM_CAP_NESTED_STATE` and KVM-supported Intel VMX on its Ubuntu 22.04
+x86 runner, then builds the separate
+nested-host kernel in the pinned Debian GCC 14 build container and boots L1
+under the named nested-host contract. The
 `Nested Host` job runs `x86_kvm_nested_host::l1_creates_kvm_vm`, builds the
 static inner driver and matching OCI runtime, then runs
 `nested-driver::live::inner_consonance_runs_inner_guest` and
@@ -166,6 +168,12 @@ execution. A separate `omit-nested-state` build must pass those two controls
 and fail its first restored continuation. Missing nested
 VMX or a guest that cannot create a KVM VM fails the job. Kernel publication
 still requires the instruction audit to pass.
+The job also runs `inner_operation_api_smoke` and
+`sdk_operations::outer_operation_sdk_smoke`, then runs the standard
+`harmony search --package nested` with 100 executions and a five-minute wall
+budget, followed by a replay of its recorded campaign. Evidence includes the
+36 ordered operation-pair coverage mask, assertion failures and their layers,
+the campaign stream, and the replay report.
 An AMD runner can expose nested SVM state while lacking VMX; its positive
 nested-state capability does not qualify this Intel-only guest contract.
 
