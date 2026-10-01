@@ -55,6 +55,7 @@ pub struct KvmBackend {
     mem_slot_count: u32,
     dirty_log: bool,
     dirty_slots: Vec<(u32, u64, u64)>,
+    mapped_slots: Vec<kvm_userspace_memory_region>,
     unlogged_slot: bool,
     msr_filter: Option<MsrFilter>,
     cpuid_installed: bool,
@@ -108,6 +109,7 @@ impl KvmBackend {
             mem_slot_count: 0,
             dirty_log: true,
             dirty_slots: Vec::new(),
+            mapped_slots: Vec::new(),
             unlogged_slot: false,
             msr_filter: None,
             cpuid_installed: false,
@@ -669,6 +671,7 @@ impl Backend for KvmBackend {
         let base_slot = self.mem_slot_count;
         let mut registered = 0u32;
         let dirty_slots_before = self.dirty_slots.len();
+        let mapped_slots_before = self.mapped_slots.len();
         let flags = if self.dirty_log {
             kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES
         } else {
@@ -687,6 +690,7 @@ impl Backend for KvmBackend {
             if let Err(e) = unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err) {
                 self.regions.rollback_last();
                 self.dirty_slots.truncate(dirty_slots_before);
+                self.mapped_slots.truncate(mapped_slots_before);
                 for j in 0..registered {
                     let undo = kvm_userspace_memory_region {
                         slot: base_slot + j,
@@ -703,6 +707,7 @@ impl Backend for KvmBackend {
                 self.dirty_slots
                     .push((base_slot + i as u32, part.gpa, part.size));
             }
+            self.mapped_slots.push(region);
             registered += 1;
         }
         self.mem_slot_count += registered;
@@ -926,6 +931,19 @@ impl Backend for KvmBackend {
         self.drain_staged_completion()?;
         self.validate_restore_state(state)?;
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
+
+        if self.nested_state_size.is_some() {
+            for &region in &self.mapped_slots {
+                let remove = kvm_userspace_memory_region {
+                    memory_size: 0,
+                    ..region
+                };
+                // SAFETY: the owned vCPU is stopped; deleting its slot does not access or free the owned RAM mapping, and no guest entry occurs before replacement.
+                unsafe { self.vm.set_user_memory_region(remove) }.map_err(kvm_err)?;
+                // SAFETY: the saved region describes the same fixed-address RAM retained by this backend; the owned vCPU is stopped throughout replacement.
+                unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err)?;
+            }
+        }
 
         restore_sregs2_with_flush(&state.sregs, |sregs| {
             // SAFETY: the owned vCPU is stopped and the adapter reads a complete SREGS2 value; no guest entry occurs between the flush and exact target write.
