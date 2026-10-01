@@ -112,3 +112,8 @@ The hardware constructor retains its existing relative run budget.
 `from_restored_session` accepts an already initialized publication at a restored
 action boundary. `execution_hash` exposes the underlying session's complete
 state digest for same-artifact replay checks.
+
+Portable session composition supplies a nonzero per-run virtual-time budget to
+`ConsonanceMachine::from_session` and `from_restored_session`. Each action
+deadline is relative to the restored lineage; backend-specific fuel conversion
+and wall-clock cancellation remain in the session.

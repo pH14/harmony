@@ -10,7 +10,7 @@ name = "harmony"
 path = "src/main.rs"
 
 [features]
-default = ["hardware"]
+default = ["hardware", "wasm"]
 hardware = ["nes-workload/consonance", "dep:faults-workload", "faults-workload/consonance", "dep:vmm-core", "dep:vmm-backend"]
 wasm = ["nes-workload/wasm", "dep:nes-wasm"]
 

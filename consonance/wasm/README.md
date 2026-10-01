@@ -1,9 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # WebAssembly execution
 
-The backend remains unavailable to ordinary users until admission, sessions,
-services, portable snapshots and host qualification pass. The runtime experiment
-selects Wasmi 0.46.0 with a complete continuation extension. The continuation
+`WasmSession` supplies in-process deterministic execution on Linux and macOS,
+on x86-64 and Arm64. Actual snapshots transfer among all four supported host
+combinations, including stopped loops and pending imports. The selected runtime
+is Wasmi 0.46.0 with a complete continuation extension. The continuation
 fixtures, pinned patch, source preparation and comparison transforms live in
 `qualification/`. Workload builds and measured evidence live in
 the workload package under `workloads/`.
@@ -40,14 +41,19 @@ source DWARF retains its original code-section coordinate system.
 
 Identity includes source and emitted module digests, input bytes, the limit
 profile, runtime archive and patch, compiler identity, transform and accounting
-source, eager translation, ABI and fuel model. Native builds require the exact
+source, runtime preparation/facade and dependency configuration, eager translation,
+ABI and fuel model. Identity hashes all four consuming lockfiles: the engine,
+root product workspace, portable workload and workload composition workspace. A dependency change in any of
+these builds invalidates artifacts for every consumer. New native consuming
+workspaces must register their lockfile with the composition identity tool and
+repeat qualification before exchanging artifacts. Native builds require the exact
 qualified Rust 1.97.0 compiler. Miri builds use their own compiler identity and
 cannot exchange snapshots with native builds. A runtime or transform update
 creates a different execution identity.
 
 ## Deterministic accounting
 
-`Meter` grants fixed quanta of 1,024 interpreter fuel units, retaining unused
+`Meter` grants fixed quanta of 32,768 interpreter fuel units, retaining unused
 credit between grants. A run request rounds its deadline upward to that quantum
 and checks completion only at the fixed interpreter boundaries. It continues
 until actual consumed fuel plus committed service cost reaches the rounded
@@ -70,8 +76,9 @@ is abandoned. The latch and watchdog time do not enter guest state or identity.
 
 ## Build checks
 
-The package remains outside the product workspace during qualification. The
-pinned interpreter archive and reviewed patch build without network access;
+The engine has its own workspace and is consumed by the product's `wasm` feature
+through a path dependency. It requires no hardware VMM or Linux boot artifacts.
+The pinned interpreter archive and reviewed patch build without network access;
 Python 3 and `patch` are source-preparation prerequisites on Linux and macOS.
 
 ```sh
@@ -113,8 +120,9 @@ A payload branch preserves entropy and the extension handler unless the branch
 explicitly supplies a different service configuration. `branch_input` replaces
 the declared environment as a whole. Verbatim replay restores all inputs and
 host state. Scheduled machine effects are rejected before restore. Cancellation
-belongs to the live session and cannot be rewound; `run_with_watchdog` connects
-the shared progress watchdog to that same cancellation latch.
+belongs to the live session and cannot be rewound; `SearchSession::run` arms the shared progress watchdog with a five-second idle
+limit; `run_with_watchdog` accepts an explicit limit. Both use that same
+cancellation latch.
 
 The descriptor subset opens captured stdout and stderr only. `fd_write` accepts
 at most 128 vectors and `MAX_PAYLOAD` bytes, validates every range before capturing
@@ -153,10 +161,9 @@ input, recorded environment, events and console. These sections also use 4 KiB
 pages in cache deltas, allowing history prefixes to remain shared. Zero pages
 are implicit, page order is strict, and partial-page padding must be zero.
 
-The versioned sidecar includes every scalar register, frame, global, table,
+The version-2 sidecar includes every scalar register, frame, global, table,
 passive-segment status, root invocation and execution phase, cumulative fuel,
-pending request, observations, coverage thresholds and descriptor state. BLAKE3
-protects the complete memory image; SHA-256 protects host sections and the
+pending request, observations, coverage thresholds and descriptor state. An ordered BLAKE3 root over every 4 KiB page protects the complete memory image; SHA-256 protects host sections and the
 checksummed sidecar envelope. Digests detect corruption; structural checks
 prevent unsafe reconstruction from caller-controlled frame metadata. The
 format does not authenticate who created an artifact.
@@ -175,11 +182,11 @@ telemetry reports resident page/sidecar payloads, unique shared host chunks and
 captured register/frame buffers; allocator and index overhead remains outside
 that payload count.
 
-`qualification/SNAPSHOT-BUDGETS.json` records release measurements for 64 KiB,
-1 MiB and 16 MiB memories with 0, 1,000 and 10,000 prior events. Eleven samples
-per case pass the original 15 ms capture/comparison and 100 ms fresh restore
-budgets on the measured host. Representative workload cycles and all supported
-host transfers still require the final qualification milestone.
+The memory/history benchmark exercises 64 KiB, 1 MiB and 16 MiB memories with
+0, 1,000 and 10,000 prior events. It enforces the original 15 ms
+capture/comparison and 100 ms fresh restore limits on each of eleven samples
+per case. Workload cycles and the four-host exchange run in their owning CI
+workflow. Raw measurement records belong in CI artifacts and pull requests.
 
 ## Debug positions
 
@@ -198,3 +205,47 @@ every original function. Offsets are absolute WASM byte positions; subtract
 addresses, as specified by the [WebAssembly debugging conventions](https://github.com/WebAssembly/tool-conventions/blob/main/Debugging.md).
 The original DWARF custom sections remain in the packaged source module. Debug
 metadata is immutable engine data, never portable execution state.
+
+## Qualification and upgrades
+
+`qualification/conformance.py` prepares nine pinned upstream scalar suites:
+i32/i64, f32/f64, comparisons, bitwise float operations and conversions. It adds
+an unused fixed 64 KiB memory to the standalone numeric modules, preserving their
+operators and assertions. The native runtime executes every return/trap assertion
+through admitted, canonicalized code. Negative modules are required to fail
+admission; this checks rejection rather than the specification's precise error
+wording. Unsupported feature suites are not counted as conformance passes.
+
+`tests/portable_matrix.rs` exports stopped indirect-call loop and pending-import
+continuations with live scalar values, numeric edge cases and shared SDK state.
+The four-host CI exchange compares complete artifacts and future hashes. Ordinary
+session checks cover partitioned accounting, malformed artifacts, dirty-instance
+restores, bulk/passive segments, sibling isolation, cancellation and cache leases.
+
+To upgrade the engine, compiler, runtime patch, transform or shared protocol,
+change the pins deliberately and rerun native conformance, full unsafe-path Miri,
+all four actual snapshot transfers and the unchanged workload/memory/history
+budgets. Regenerate package debug mappings against the new execution identity.
+Old artifacts remain incompatible unless a separately qualified migration is
+implemented. Deferred profile extensions and worker launch composition are
+tracked as GitHub issues #470 and #471 in the repository.
+
+The version-2 memory checksum hashes every page and binds total byte length and
+page order in its root. Adjacent identical pages reuse a digest after exact byte comparison.
+This avoids repeatedly hashing identical contents while retaining
+full memory integrity. The capture still compares every page against its parent;
+it uses no dirty tracking. An independent full-page-hash oracle and planted
+length/order/bit changes verify the checksum. Version-1 artifacts are rejected.
+
+The qualified profile uses 32,768 fuel units per fixed boundary. The initial
+1,024-unit prototype and later 4,096-unit profile spent excessive time resuming
+on slower qualification hosts. The
+larger quantum changes deadline rounding and its declared overshoot bound, so
+it creates a new execution identity. Partitioned requests still share the same
+boundaries, and cancellation is checked between bounded quanta. Guest execution
+and service cost per operation remain unchanged.
+
+Snapshot capture reads the stopped runtime memory directly while writing exact
+page differences and the complete memory checksum. It avoids an intermediate
+full-memory allocation. The full-copy capture used by state hashing remains an
+independent oracle; fresh and dirty-instance restores must match that full state.

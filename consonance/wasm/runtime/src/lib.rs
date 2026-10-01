@@ -7,6 +7,8 @@ include!(concat!(
     "/wasmi-0.46.0/src/harmony_root.rs"
 ));
 
+pub const HARMONY_DEPENDENCIES: &str = env!("HARMONY_WASMI_DEPENDENCIES");
+
 pub const HARMONY_COMPILER: &str = env!("HARMONY_WASMI_COMPILER");
 
 mod harmony_wasm;

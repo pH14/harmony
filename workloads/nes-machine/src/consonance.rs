@@ -306,7 +306,7 @@ pub struct ConsonanceMachine {
     ring: Vec<[u8; nes::WRAM_SIZE]>,
     lifetime_frames: u64,
     last_vtime: u64,
-    run_budget: Option<u64>,
+    run_budget: u64,
     snapshot_vtimes: BTreeMap<SnapId, u64>,
     observation_valid: bool,
     profile: ConsonanceProfile,
@@ -346,22 +346,33 @@ impl ConsonanceMachine {
         let session =
             Session::new_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
                 .map_err(|error| MachineError::Backend(error.to_string()))?;
-        Self::from_session_with_budget(Box::new(session), Some(RUN_BUDGET), false)
+        Self::from_session_with_budget(Box::new(session), RUN_BUDGET, false)
     }
 
-    pub fn from_session(session: Box<dyn SearchSession>) -> Result<Self, MachineError> {
-        Self::from_session_with_budget(session, None, false)
+    pub fn from_session(
+        session: Box<dyn SearchSession>,
+        run_budget: u64,
+    ) -> Result<Self, MachineError> {
+        Self::from_session_with_budget(session, run_budget, false)
     }
 
-    pub fn from_restored_session(session: Box<dyn SearchSession>) -> Result<Self, MachineError> {
-        Self::from_session_with_budget(session, None, true)
+    pub fn from_restored_session(
+        session: Box<dyn SearchSession>,
+        run_budget: u64,
+    ) -> Result<Self, MachineError> {
+        Self::from_session_with_budget(session, run_budget, true)
     }
 
     fn from_session_with_budget(
         mut session: Box<dyn SearchSession>,
-        run_budget: Option<u64>,
+        run_budget: u64,
         restored: bool,
     ) -> Result<Self, MachineError> {
+        if run_budget == 0 {
+            return Err(MachineError::Backend(
+                "per-run execution budget must be nonzero".into(),
+            ));
+        }
         if !session.capabilities().stopped_observations
             || !session.capabilities().workload_composition
         {
@@ -548,10 +559,7 @@ impl Machine for ConsonanceMachine {
         validate_supported_stop_conditions(until)?;
         self.ring.clear();
         self.observation_valid = false;
-        let deadline = self
-            .run_budget
-            .map(|budget| run_deadline(self.last_vtime, budget))
-            .transpose()?;
+        let deadline = run_deadline(self.last_vtime, self.run_budget)?;
         let before_faults = self.profile.enabled.then(host_minor_faults).flatten();
         let before_dirty = self.profile.dirty_totals();
         let before_doorbells = self.session.doorbell_exits();
@@ -563,7 +571,7 @@ impl Machine for ConsonanceMachine {
             |session| {
                 session.run(
                     ControlStopConditions {
-                        deadline: deadline.map(control_proto::Moment),
+                        deadline: Some(control_proto::Moment(deadline)),
                         on: ControlStopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
                     },
                     None,

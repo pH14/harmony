@@ -198,49 +198,29 @@ impl WasmSession {
         body: Body,
         parent: Option<SnapId>,
     ) -> Result<()> {
-        let sidecar = body.encode()?;
         let parent = parent
             .and_then(|parent| self.snapshots.get(&parent))
             .map(|parent| parent.storage);
-        let storage = if let Some(parent) = parent {
-            let changed: Vec<_> = self
-                .store
-                .diff_pages(None, parent)?
-                .into_iter()
-                .filter_map(|(gfn, page)| {
-                    let at = gfn as usize * 4096;
-                    (capture.memory[at..at + 4096] != page[..]).then_some(gfn)
-                })
-                .collect();
-            let mut builder = self.store.derive(parent)?;
-            for &gfn in &changed {
-                let at = gfn as usize * 4096;
-                builder.write_page(gfn, &capture.memory[at..at + 4096])?;
-            }
-            self.dirty = changed;
-            builder.seal(sidecar)
-        } else {
-            let mut builder = self.store.begin_base();
-            for (gfn, page) in capture.memory.chunks_exact(4096).enumerate() {
-                builder.write_page(gfn as u64, page)?;
-            }
-            self.dirty = (0..capture.memory.len() as u64 / 4096).collect();
-            builder.seal(sidecar)
-        };
+        let (storage, dirty) = write_snapshot(&mut self.store, &capture.memory, &body, parent)?;
+        self.dirty = dirty;
         capture.memory = Vec::new();
-        self.snapshots.insert(
+        self.record_snapshot(
             id,
-            Rc::new(Snapshot {
+            next,
+            Snapshot {
                 capture,
                 meter,
                 input,
-                storage,
-                body,
                 sections,
-            }),
+                body,
+                storage,
+            },
         );
-        self.next = next;
         Ok(())
+    }
+    fn record_snapshot(&mut self, id: SnapId, next: u64, snapshot: Snapshot) {
+        self.snapshots.insert(id, Rc::new(snapshot));
+        self.next = next;
     }
     fn drive(
         &mut self,
@@ -345,6 +325,39 @@ impl WasmSession {
             }
             self.runtime.execute()?;
         }
+    }
+}
+fn write_snapshot(
+    store: &mut snapshot_store::Store,
+    memory: &[u8],
+    body: &Body,
+    parent: Option<snapshot_store::SnapshotId>,
+) -> Result<(snapshot_store::SnapshotId, Vec<u64>)> {
+    let sidecar = body.encode()?;
+    if let Some(parent) = parent {
+        let changed: Vec<_> = store
+            .diff_pages(None, parent)?
+            .into_iter()
+            .filter_map(|(gfn, page)| {
+                let at = gfn as usize * 4096;
+                (memory[at..at + 4096] != page[..]).then_some(gfn)
+            })
+            .collect();
+        let mut builder = store.derive(parent)?;
+        for &gfn in &changed {
+            let at = gfn as usize * 4096;
+            builder.write_page(gfn, &memory[at..at + 4096])?;
+        }
+        Ok((builder.seal(sidecar), changed))
+    } else {
+        let mut builder = store.begin_base();
+        for (gfn, page) in memory.chunks_exact(4096).enumerate() {
+            builder.write_page(gfn as u64, page)?;
+        }
+        Ok((
+            builder.seal(sidecar),
+            (0..memory.len() as u64 / 4096).collect(),
+        ))
     }
 }
 fn with_moment(stop: StopReason, moment: u64) -> StopReason {
@@ -616,6 +629,11 @@ impl SearchSession for WasmSession {
         )
     }
     fn run(&mut self, until: StopConditions, resolve: Option<Resolution>) -> Result<StopReason> {
+        #[cfg(not(miri))]
+        {
+            self.run_with_watchdog(until, resolve, std::time::Duration::from_secs(5))
+        }
+        #[cfg(miri)]
         self.drive(until, resolve)
     }
     fn snapshot(&mut self) -> Result<(SnapId, u64)> {
@@ -626,13 +644,34 @@ impl SearchSession for WasmSession {
             .next
             .checked_add(1)
             .ok_or_else(|| error("snapshot handles exhausted"))?;
-        let capture = self.runtime.capture()?;
+        let capture = self.runtime.capture_without_memory()?;
         let base = self.near.and_then(|near| self.snapshots.get(&near));
         let sections = Sections::capture(&capture, &self.input, base.map(|base| &base.sections))?;
-        let body = Body::capture(&self.runtime.admitted, &capture, &self.meter, &sections)?;
+        let memory = self.runtime.memory.data(&self.runtime.store);
+        let body = Body::capture(
+            &self.runtime.admitted,
+            &capture,
+            &self.meter,
+            &sections,
+            memory,
+        )?;
+        let parent = base.map(|base| base.storage);
+        let (storage, dirty) = write_snapshot(&mut self.store, memory, &body, parent)?;
         let input = self.input.clone();
         let meter = self.meter.clone();
-        self.insert_snapshot(id, next, capture, meter, input, sections, body, self.near)?;
+        self.dirty = dirty;
+        self.record_snapshot(
+            id,
+            next,
+            Snapshot {
+                capture,
+                meter,
+                input,
+                sections,
+                body,
+                storage,
+            },
+        );
         self.near = Some(id);
         Ok((id, at))
     }

@@ -84,12 +84,13 @@ impl Body {
         capture: &Capture,
         meter: &Meter,
         sections: &Sections,
+        memory: &[u8],
     ) -> Result<Self> {
         meter.validate(capture.fuel)?;
         Ok(Self {
-            version: 1,
+            version: 2,
             execution: module.execution_digest(),
-            memory: *blake3::hash(&capture.memory).as_bytes(),
+            memory: memory_digest(memory),
             input: module.identity_with_input(&sections.0[0].materialize()),
             globals: capture.globals.clone(),
             tables: capture.tables.clone(),
@@ -112,7 +113,7 @@ impl Body {
         })
     }
     pub(crate) fn verify_memory(&self, memory: &[u8]) -> Result<()> {
-        if *blake3::hash(memory).as_bytes() != self.memory {
+        if memory_digest(memory) != self.memory {
             return Err(error("snapshot memory checksum differs"));
         }
         Ok(())
@@ -122,14 +123,14 @@ impl Body {
         if bytes.len() > SIDECAR_LIMIT - 44 {
             return Err(error("snapshot sidecar exceeds artifact bounds"));
         }
-        let mut envelope = b"HWAS0001".to_vec();
+        let mut envelope = b"HWAS0002".to_vec();
         envelope.extend((bytes.len() as u32).to_le_bytes());
         envelope.extend(&bytes);
         envelope.extend(Sha256::digest(&envelope));
         Ok(envelope)
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 44 || bytes.len() > SIDECAR_LIMIT || &bytes[..8] != b"HWAS0001" {
+        if bytes.len() < 44 || bytes.len() > SIDECAR_LIMIT || &bytes[..8] != b"HWAS0002" {
             return Err(error("invalid portable sidecar header"));
         }
         let len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
@@ -192,7 +193,7 @@ pub(crate) fn decode(
         return Err(error("portable snapshot sidecar exceeds its bound"));
     }
     let body = Body::decode(&sidecar)?;
-    if body.encode()? != sidecar || body.version != 1 || body.execution != module.execution_digest()
+    if body.encode()? != sidecar || body.version != 2 || body.execution != module.execution_digest()
     {
         return Err(error(
             "portable snapshot sidecar is noncanonical or incompatible",
@@ -240,7 +241,7 @@ pub(crate) fn decode(
         }
         bytes[at..at + take].copy_from_slice(&page[..take]);
     }
-    if *blake3::hash(&memory).as_bytes() != body.memory {
+    if memory_digest(&memory) != body.memory {
         return Err(error("portable memory checksum differs"));
     }
     for (blob, expected) in blobs.iter().zip(&body.blobs) {
@@ -328,12 +329,53 @@ pub(crate) fn decode(
     Ok((capture, body.meter.clone(), input, sections, body))
 }
 
+fn memory_digest(memory: &[u8]) -> [u8; 32] {
+    let zero = [0u8; 4096];
+    let mut previous = zero.as_slice();
+    let mut previous_digest = blake3::hash(&zero);
+    let mut root = blake3::Hasher::new();
+    root.update(b"HWAS_MEMORY_PAGES_V2");
+    root.update(&(memory.len() as u64).to_le_bytes());
+    for page in memory.chunks(4096) {
+        if page != previous {
+            previous_digest = blake3::hash(page);
+            previous = page;
+        }
+        root.update(previous_digest.as_bytes());
+    }
+    *root.finalize().as_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{WasmSession, admission::Profile};
     use consonance_client::session::SearchSession;
     use environment::input_spec::nominal_factory;
+    #[test]
+    fn page_digest_matches_full_hash_oracle_and_binds_order_and_length() {
+        let mut memory = vec![0u8; 4 * 4096];
+        memory[4096..8192].fill(0x5a);
+        let mut oracle = blake3::Hasher::new();
+        oracle.update(b"HWAS_MEMORY_PAGES_V2");
+        oracle.update(&(memory.len() as u64).to_le_bytes());
+        for page in memory.chunks(4096) {
+            oracle.update(blake3::hash(page).as_bytes());
+        }
+        let expected = *oracle.finalize().as_bytes();
+        assert_eq!(memory_digest(&memory), expected);
+        memory.swap(4096, 8192);
+        assert_ne!(memory_digest(&memory), expected);
+        memory.swap(4096, 8192);
+        memory.push(0);
+        assert_ne!(memory_digest(&memory), expected);
+        memory.pop();
+        for offset in [0, 4095, 4096, 8191, 8192, 16383] {
+            memory[offset] ^= 1;
+            assert_ne!(memory_digest(&memory), expected);
+            memory[offset] ^= 1;
+        }
+    }
     #[test]
     fn rechecksummed_invalid_artifacts_cannot_commit_restore() {
         let source = wat::parse_str("(module (memory 1 1) (global $g (mut i64) (i64.const 1234567890123)) (func (export \"run\") loop global.get $g i64.const 1 i64.add global.set $g br 0 end))").unwrap();

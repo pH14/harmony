@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use consonance_client::session::SearchSession;
+use consonance_wasm::meter::Meter;
 use consonance_wasm::{
     Invocation, WasmSession,
     admission::{AdmittedModule, Profile},
@@ -99,7 +100,7 @@ fn decision_validation_replay_and_import_completion_are_atomic() {
         .unwrap();
     assert_eq!(guest.state_hash().unwrap(), completed);
     guest.replay_snapshot(completed_checkpoint).unwrap();
-    guest.run_until(4096).unwrap();
+    guest.run_until(Meter::QUANTUM).unwrap();
     assert_eq!(guest.sdk_events().unwrap().len(), 2);
     guest.replay_snapshot(completed_checkpoint).unwrap();
     assert_eq!(guest.state_hash().unwrap(), completed);
@@ -168,6 +169,32 @@ fn cancellation_cannot_be_rewound_by_snapshot_or_branch() {
     assert!(guest.branch_payloads(checkpoint, vec![]).is_err());
     assert!(guest.snapshot().is_err());
     assert!(guest.abandoned());
+}
+#[cfg(not(miri))]
+#[test]
+fn expired_watchdog_irrevocably_abandons_the_session() {
+    let mut guest = session(
+        r#"(module (memory (export "memory") 1 1) (func (export "run") loop br 0 end))"#,
+        None,
+    );
+    let checkpoint = guest.snapshot().unwrap().0;
+    assert!(
+        guest
+            .run_with_watchdog(
+                StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE
+                },
+                None,
+                std::time::Duration::ZERO,
+            )
+            .is_err()
+    );
+    assert!(guest.abandoned());
+    assert!(guest.run_until(Meter::QUANTUM).is_err());
+    assert!(guest.snapshot().is_err());
+    assert!(guest.replay_snapshot(checkpoint).is_err());
+    assert!(guest.branch_payloads(checkpoint, vec![]).is_err());
 }
 #[test]
 fn request_partitioning_does_not_change_state() {
@@ -304,24 +331,25 @@ fn malformed_guest_requests_return_deterministic_protocol_errors() {
 fn sparse_artifacts_restore_fresh_and_over_dirtied_instances() {
     let source = "(module (memory 1 1) (global $x (mut i32) (i32.const 0)) (func (export \"run\") loop global.get $x i32.const 1 i32.add global.set $x i32.const 0 global.get $x i32.store br 0 end))";
     let mut guest = session(source, None);
-    guest.run_until(4096).unwrap();
+    guest.run_until(Meter::QUANTUM).unwrap();
     let left = guest.snapshot().unwrap().0;
     let left_hash = guest.state_hash().unwrap();
     let artifact = guest.export_sparse_snapshot(left, None).unwrap();
     assert_eq!(guest.snapshot_owned_pages(left), Some(1));
     assert_eq!(guest.last_seal_dirty_gfns(), Some(vec![0]));
-    guest.run_until(8192).unwrap();
+    guest.run_until(Meter::QUANTUM * 2).unwrap();
     let right = guest.snapshot().unwrap().0;
     let right_hash = guest.state_hash().unwrap();
+    assert_ne!(left_hash, right_hash);
     let mut fresh = session(source, None);
     let initial = fresh.state_hash().unwrap();
     let imported = fresh.import_sparse_snapshot(&artifact).unwrap();
     assert_eq!(fresh.state_hash().unwrap(), initial);
     fresh.replay_snapshot(imported).unwrap();
     assert_eq!(fresh.state_hash().unwrap(), left_hash);
-    fresh.run_until(8192).unwrap();
+    fresh.run_until(Meter::QUANTUM * 2).unwrap();
     assert_eq!(fresh.state_hash().unwrap(), right_hash);
-    guest.run_until(65536).unwrap();
+    guest.run_until(Meter::QUANTUM * 4).unwrap();
     guest.replay_snapshot(left).unwrap();
     assert_eq!(guest.state_hash().unwrap(), left_hash);
     guest.replay_snapshot(right).unwrap();
@@ -335,7 +363,7 @@ fn sparse_artifacts_restore_fresh_and_over_dirtied_instances() {
 fn damaged_artifacts_leave_live_state_and_snapshot_inventory_unchanged() {
     let source = "(module (memory 1 1) (func (export \"run\") loop br 0 end))";
     let mut guest = session(source, None);
-    guest.run_until(4096).unwrap();
+    guest.run_until(Meter::QUANTUM).unwrap();
     let id = guest.snapshot().unwrap().0;
     let artifact = guest.export_sparse_snapshot(id, None).unwrap();
     let before = guest.state_hash().unwrap();
@@ -387,12 +415,12 @@ fn shared_cache_deltas_round_trip_and_release_leases() {
     let mut guest = session(source, None);
     let cache = LocalIndex::new(16 * 1024 * 1024);
     let namespace = Namespace::new(&[b"wasm-test"]);
-    guest.run_until(4096).unwrap();
+    guest.run_until(Meter::QUANTUM).unwrap();
     let left = guest.snapshot().unwrap().0;
     let first = guest
         .publish_snapshot(&cache, namespace, b"left", None, left, 1)
         .unwrap();
-    guest.run_until(8192).unwrap();
+    guest.run_until(Meter::QUANTUM * 2).unwrap();
     let right = guest.snapshot().unwrap().0;
     let expected = guest.state_hash().unwrap();
     let second = guest

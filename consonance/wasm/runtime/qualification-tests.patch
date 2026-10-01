@@ -1,0 +1,386 @@
+--- a/src/engine/translator/tests/op/binary/f32_add.rs
++++ b/src/engine/translator/tests/op/binary/f32_add.rs
+@@ -23,13 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    test_binary_reg_imm_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32(WASM_OP, f32::NAN, Instruction::f32_add)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    test_binary_reg_imm_lhs_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f32::NAN, Instruction::f32_add)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f32_sub.rs
++++ b/src/engine/translator/tests/op/binary/f32_sub.rs
+@@ -23,13 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    test_binary_reg_imm_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32(WASM_OP, f32::NAN, Instruction::f32_sub)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    test_binary_reg_imm_lhs_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32_lhs(WASM_OP, f32::NAN, Instruction::f32_sub)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f32_mul.rs
++++ b/src/engine/translator/tests/op/binary/f32_mul.rs
+@@ -23,13 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    test_binary_reg_imm_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32(WASM_OP, f32::NAN, Instruction::f32_mul)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    test_binary_reg_imm_lhs_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f32::NAN, Instruction::f32_mul)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f32_div.rs
++++ b/src/engine/translator/tests/op/binary/f32_div.rs
+@@ -23,13 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    test_binary_reg_imm_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32(WASM_OP, f32::NAN, Instruction::f32_div)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    test_binary_reg_imm_lhs_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32_lhs(WASM_OP, f32::NAN, Instruction::f32_div)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f32_min.rs
++++ b/src/engine/translator/tests/op/binary/f32_min.rs
+@@ -23,13 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    test_binary_reg_imm_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32(WASM_OP, f32::NAN, Instruction::f32_min)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    test_binary_reg_imm_lhs_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f32::NAN, Instruction::f32_min)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f32_max.rs
++++ b/src/engine/translator/tests/op/binary/f32_max.rs
+@@ -23,13 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    test_binary_reg_imm_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32(WASM_OP, f32::NAN, Instruction::f32_max)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    test_binary_reg_imm_lhs_with(WASM_OP, f32::NAN, [Instruction::return_imm32(f32::NAN)]).run()
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f32::NAN, Instruction::f32_max)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f64_add.rs
++++ b/src/engine/translator/tests/op/binary/f64_add.rs
+@@ -23,17 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    testcase_binary_reg_imm(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32(WASM_OP, f64::NAN, Instruction::f64_add)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    testcase_binary_imm_reg(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f64::NAN, Instruction::f64_add)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f64_sub.rs
++++ b/src/engine/translator/tests/op/binary/f64_sub.rs
+@@ -23,17 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    testcase_binary_reg_imm(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32(WASM_OP, f64::NAN, Instruction::f64_sub)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    testcase_binary_imm_reg(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32_lhs(WASM_OP, f64::NAN, Instruction::f64_sub)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f64_mul.rs
++++ b/src/engine/translator/tests/op/binary/f64_mul.rs
+@@ -23,17 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    testcase_binary_reg_imm(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32(WASM_OP, f64::NAN, Instruction::f64_mul)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    testcase_binary_imm_reg(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f64::NAN, Instruction::f64_mul)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f64_div.rs
++++ b/src/engine/translator/tests/op/binary/f64_div.rs
+@@ -23,17 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    testcase_binary_reg_imm(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32(WASM_OP, f64::NAN, Instruction::f64_div)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    testcase_binary_imm_reg(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32_lhs(WASM_OP, f64::NAN, Instruction::f64_div)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f64_min.rs
++++ b/src/engine/translator/tests/op/binary/f64_min.rs
+@@ -23,17 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    testcase_binary_reg_imm(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32(WASM_OP, f64::NAN, Instruction::f64_min)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    testcase_binary_imm_reg(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f64::NAN, Instruction::f64_min)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/op/binary/f64_max.rs
++++ b/src/engine/translator/tests/op/binary/f64_max.rs
+@@ -23,17 +23,13 @@
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn reg_nan() {
+-    testcase_binary_reg_imm(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32(WASM_OP, f64::NAN, Instruction::f64_max)
+ }
+ 
+ #[test]
+ #[cfg_attr(miri, ignore)]
+ fn nan_reg() {
+-    testcase_binary_imm_reg(WASM_OP, f64::NAN)
+-        .expect_func(ExpectedFunc::new([return_f64imm32_instr(f64::NAN)]))
+-        .run();
++    test_binary_reg_imm32_lhs_commutative(WASM_OP, f64::NAN, Instruction::f64_max)
+ }
+ 
+ #[test]
+--- a/src/engine/translator/tests/wasm_type.rs
++++ b/src/engine/translator/tests/wasm_type.rs
+@@ -69,7 +69,7 @@
+     const VALUE_TYPE: ValType = ValType::F64;
+ 
+     fn return_imm_instr(&self) -> Instruction {
+-        match <Const32<f64>>::try_from(*self).ok() {
++        match <Const32<f64>>::try_from(*self).ok().filter(|_| !self.is_nan()) {
+             Some(value) => Instruction::return_f64imm32(value),
+             None => Instruction::return_reg(Reg::from(-1)),
+         }
+--- a/src/engine/translator/tests/op/return_.rs
++++ b/src/engine/translator/tests/op/return_.rs
+@@ -135,7 +135,11 @@
+             )",
+         );
+         TranslationTest::new(&wasm)
+-            .expect_func_instrs([return_f64imm32_instr(value)])
++            .expect_func(if value.is_nan() {
++                ExpectedFunc::new([Instruction::return_reg(-1)]).consts([value])
++            } else {
++                ExpectedFunc::new([return_f64imm32_instr(value)])
++            })
+             .run()
+     }
+     test_for(0.0);
+--- a/src/engine/translator/tests/op/br.rs
++++ b/src/engine/translator/tests/op/br.rs
+@@ -138,7 +138,11 @@
+             )",
+         );
+         TranslationTest::new(&wasm)
+-            .expect_func_instrs([return_f64imm32_instr(value)])
++            .expect_func(if value.is_nan() {
++                ExpectedFunc::new([Instruction::return_reg(-1)]).consts([value])
++            } else {
++                ExpectedFunc::new([return_f64imm32_instr(value)])
++            })
+             .run()
+     }
+     test_for(0.0);
+--- a/src/engine/translator/tests/op/br_if.rs
++++ b/src/engine/translator/tests/op/br_if.rs
+@@ -212,7 +212,11 @@
+             )",
+         );
+         TranslationTest::new(&wasm)
+-            .expect_func_instrs([return_f64imm32_instr(expected)])
++            .expect_func(if expected.is_nan() {
++                ExpectedFunc::new([Instruction::return_reg(-1)]).consts([expected])
++            } else {
++                ExpectedFunc::new([return_f64imm32_instr(expected)])
++            })
+             .run()
+     }
+     /// Run the test for both sign polarities of the `br_if` condition.
+@@ -449,6 +453,18 @@
+                 )
+             )",
+         );
++        if returned_value.is_nan() {
++            TranslationTest::new(&wasm)
++                .expect_func(ExpectedFunc::new([
++                    Instruction::branch_i32_eq_imm16(0, 0_i16, 3),
++                    Instruction::copy(Reg::from(0), Reg::from(-1)),
++                    Instruction::branch(2),
++                    Instruction::copy(Reg::from(0), Reg::from(-1)),
++                    Instruction::return_reg(0),
++                ]).consts([returned_value]))
++                .run();
++            return;
++        }
+         let returned_value32 = returned_value as f32;
+         TranslationTest::new(&wasm)
+             .expect_func_instrs([
+--- a/src/engine/translator/tests/op/block.rs
++++ b/src/engine/translator/tests/op/block.rs
+@@ -252,6 +252,16 @@
+ #[cfg_attr(miri, ignore)]
+ fn branched_block_1_imm_f64imm32() {
+     fn test_for_f64imm32(value: f64) {
++        if value.is_nan() {
++            testcase_branched_block_1_imm::<f64>(value)
++                .expect_func(ExpectedFunc::new([
++                    Instruction::copy(Reg::from(0), Reg::from(-1)),
++                    Instruction::branch(BranchOffset::from(1)),
++                    Instruction::return_reg(Reg::from(0)),
++                ]).consts([value]))
++                .run();
++            return;
++        }
+         let const32 = <Const32<f64>>::try_from(value)
+             .expect("value must be losslessly 32-bit encodable for this test");
+         testcase_branched_block_1_imm::<f64>(value)
+--- a/src/engine/translator/tests/op/select.rs
++++ b/src/engine/translator/tests/op/select.rs
+@@ -209,12 +209,16 @@
+ #[cfg_attr(miri, ignore)]
+ fn same_f64imm32() {
+     fn test_for(value: f64) {
+-        let expected = [return_f64imm32_instr(value)];
++        let expected = if value.is_nan() {
++            ExpectedFunc::new([Instruction::return_reg(-1)]).consts([value])
++        } else {
++            ExpectedFunc::new([return_f64imm32_instr(value)])
++        };
+         test_same_imm(SelectKind::Select, value)
+-            .expect_func_instrs(expected)
++            .expect_func(expected.clone())
+             .run();
+         test_same_imm(SelectKind::TypedSelect, value)
+-            .expect_func_instrs(expected)
++            .expect_func(expected.clone())
+             .run();
+     }
+ 
+--- a/src/engine/limits/tests.rs
++++ b/src/engine/limits/tests.rs
+@@ -122,7 +122,6 @@
+ }
+ 
+ #[test]
+-#[ignore] // TODO: remove once multi-memories are supported in Wasmi
+ fn max_memories_ok() {
+     let wasm = "
+         (module
+@@ -141,7 +140,6 @@
+ }
+ 
+ #[test]
+-#[ignore] // TODO: remove once multi-memories are supported in Wasmi
+ fn max_memories_err() {
+     let wasm = "
+         (module
+--- a/src/engine/translator/tests/op/unary/op.rs
++++ b/src/engine/translator/tests/op/unary/op.rs
+@@ -229,3 +229,3 @@
+         unary_imm::<f32>(OP_NAME, 42.5, f32::sqrt);
+-        unary_imm::<f32>(OP_NAME, -42.5, f32::sqrt);
++        unary_imm::<f32>(OP_NAME, -42.5, |_| f32::from_bits(0x7fc0_0000));
+     }
+@@ -363,3 +363,3 @@
+         unary_imm::<f64>(OP_NAME, 42.5, f64::sqrt);
+-        unary_imm::<f64>(OP_NAME, -42.5, f64::sqrt);
++        unary_imm::<f64>(OP_NAME, -42.5, |_| f64::from_bits(0x7ff8_0000_0000_0000));
+     }

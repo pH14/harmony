@@ -8,7 +8,7 @@ pub struct Meter {
     service_cost: u64,
 }
 impl Meter {
-    pub const QUANTUM: u64 = 1024;
+    pub const QUANTUM: u64 = 32768;
     pub const MAXIMUM: u64 = 1 << 60;
     pub fn rounded_deadline(deadline: u64) -> Result<u64, AdmissionError> {
         if deadline > Self::MAXIMUM {
@@ -97,9 +97,15 @@ mod tests {
     #[test]
     fn rounding_and_failed_accounting_are_atomic() {
         assert_eq!(Meter::rounded_deadline(0).unwrap(), 0);
-        assert_eq!(Meter::rounded_deadline(1).unwrap(), 1024);
-        assert_eq!(Meter::rounded_deadline(1024).unwrap(), 1024);
-        assert_eq!(Meter::rounded_deadline(1025).unwrap(), 2048);
+        assert_eq!(Meter::rounded_deadline(1).unwrap(), Meter::QUANTUM);
+        assert_eq!(
+            Meter::rounded_deadline(Meter::QUANTUM).unwrap(),
+            Meter::QUANTUM
+        );
+        assert_eq!(
+            Meter::rounded_deadline(Meter::QUANTUM + 1).unwrap(),
+            2 * Meter::QUANTUM
+        );
         assert!(Meter::rounded_deadline(u64::MAX).is_err());
         let mut meter = Meter::default();
         let before = meter.clone();

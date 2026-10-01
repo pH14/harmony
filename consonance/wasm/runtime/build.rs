@@ -17,6 +17,14 @@ fn main() {
         );
     }
     println!("cargo:rustc-env=HARMONY_WASMI_COMPILER={}", compiler.trim());
+    let dependency_identity = source.join("../../../scripts/wasm-dependency-identity.py");
+    println!("cargo:rerun-if-changed={}", dependency_identity.display());
+    let result = Command::new("python3")
+        .arg(dependency_identity)
+        .arg("--cargo")
+        .status()
+        .expect("read consuming dependency identities");
+    assert!(result.success(), "read consuming dependency identities");
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     for path in [
         "prepare.py",
@@ -24,6 +32,7 @@ fn main() {
         "import-completion.patch",
         "validation.patch",
         "debug-positions.patch",
+        "qualification-tests.patch",
         "wasmi-0.46.0.crate",
         "../qualification/prepare-wasmi.py",
         "../qualification/wasmi-snapshot.patch",

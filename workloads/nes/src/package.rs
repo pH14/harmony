@@ -252,12 +252,14 @@ pub fn search_wasm(
         RomKind::Smb => search(
             SmbGame::new_wasm(rom, package, options.seed)?,
             smb_run(),
+            SuffixShape::default(),
             "wasm",
             options,
         ),
         RomKind::Nova => search(
             NovaGame::new_wasm(rom, package, options.seed)?,
             NovaCampaignRun,
+            SuffixShape::OneToSixBounded,
             "wasm",
             options,
         ),

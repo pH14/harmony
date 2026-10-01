@@ -32,6 +32,8 @@ what owns it, and the linter rejects them.
 | --- | --- | --- |
 | `Checks / Repository` | `repository-checks.yml` | pull_request, push |
 | `Checks / Harmony Host Compatibility` | `harmony-host-compatibility.yml` | pull_request, push |
+| `Checks / Consonance / WASM` | `consonance-wasm-checks.yml` | pull_request, push, workflow_dispatch |
+| `Benchmarks / Consonance / WASM` | `consonance-wasm-benchmarks.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance` | `consonance-checks.yml` | pull_request, push |
 | `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
@@ -347,3 +349,34 @@ arbitrary script, prove a change selector correct, or see GitHub's retained
 registry of branch-only workflows. Inspect `gh workflow list --all` before
 disabling an obsolete registry entry; disabling one preserves its old runs and
 is separate from repository lint.
+
+## Portable WebAssembly qualification
+
+WASM Checks builds one pinned QuickNES/play-agent module, debug map, source-built
+Nova ROM, and upstream scalar conformance bundle. All four native hosts consume
+that exact package. Execution jobs export full loop, pending-import and workload
+checkpoints; restore jobs exchange every producer's artifacts and compare full
+state and future hashes on Linux/macOS, Intel/Arm64. Missing producers fail the
+exchange. The bounded jobs include deterministic accounting, artifact rejection,
+branch isolation, portable CLI selection and the pinned scalar conformance suite.
+The execution and exchange jobs require no hypervisor or guest Linux boot
+artifacts. Independent product CLI jobs build and test ordinary defaults on
+each host; portable CLI checks also verify the build without hardware dependencies.
+Each execution job checks bounded package-file decoding and enforces all eleven
+production samples plus the nine memory/history cases against the frozen limits.
+
+`scripts/wasm-dependency-identity.py` binds the engine, root CLI, portable
+workload and workload composition lockfiles into one native execution identity.
+Runtime builds watch all four lockfiles. The repository CI unit checks plant independent changes in
+each consumer and require identity invalidation before artifacts can be reused.
+
+WASM Benchmarks repeats eleven complete 120-frame workload cycles per host and
+reports run, branch, capture, fresh decoding/eager translation, serialized bytes
+and retained payload costs separately. Every sample must satisfy the numerical
+budgets frozen in the first milestone. Its memory/history benchmark retains the
+same capture/restore limits across three memory sizes and three history lengths.
+The owning Consonance Analysis workflow exercises adversarial continuation
+validation and atomic import completion. Harmony Analysis exercises the guest
+allocation/FFI buffer boundary. Wall-clock measurement
+and RSS remain diagnostics outside guest state. These full jobs have independent
+30-minute measurement ceilings; Miri retains the Analysis workflow’s whole-crate ceiling.

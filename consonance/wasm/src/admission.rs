@@ -34,7 +34,7 @@ impl Default for Profile {
             maximum_module_bytes: 4 * 1024 * 1024,
             stack_registers: 131072,
             recursion_depth: 256,
-            fuel_quantum: 1024,
+            fuel_quantum: crate::meter::Meter::QUANTUM,
         }
     }
 }
@@ -51,7 +51,7 @@ impl Profile {
             || self.stack_registers > 131072
             || self.recursion_depth == 0
             || self.recursion_depth > 1024
-            || self.fuel_quantum != 1024
+            || self.fuel_quantum != crate::meter::Meter::QUANTUM
         {
             return Err(reject("limits exceed the qualified profile"));
         }
@@ -323,7 +323,7 @@ impl AdmittedModule {
             .validate_all(&bytes)
             .map_err(|e| reject(e.to_string()))?;
         let mut identity = Sha256::new();
-        identity.update(b"harmony-wasm-execution-v1;wasmi=.46.0;rust=1.97.0;encoder=.236.1;eager;scalar;nan-v1;abi-v1;fuel=wasmi-default;imports=64+bytes;time=fuel;quantum=1024");
+        identity.update(b"harmony-wasm-execution-v2;wasmi=.46.0;rust=1.97.0;encoder=.236.1;eager;scalar;nan-v1;abi-v1;fuel=wasmi-default;imports=64+bytes;time=fuel;quantum=32768");
         identity.update(Sha256::digest(include_bytes!(
             "../runtime/wasmi-0.46.0.crate"
         )));
@@ -351,6 +351,11 @@ impl AdmittedModule {
             "../runtime/debug-positions.patch"
         )));
         for source in [
+            include_bytes!("../Cargo.toml").as_slice(),
+            include_bytes!("../runtime/Cargo.toml").as_slice(),
+            include_bytes!("../runtime/build.rs").as_slice(),
+            include_bytes!("../runtime/prepare.py").as_slice(),
+            include_bytes!("../runtime/src/lib.rs").as_slice(),
             include_bytes!("../../environment/src/channel.rs").as_slice(),
             include_bytes!("../../environment/src/sdk.rs").as_slice(),
             include_bytes!("../../environment/src/input_spec.rs").as_slice(),
@@ -360,7 +365,7 @@ impl AdmittedModule {
             identity.update(Sha256::digest(source));
         }
         identity.update(wasmi::HARMONY_COMPILER.as_bytes());
-        identity.update(Sha256::digest(include_bytes!("../Cargo.lock")));
+        identity.update(wasmi::HARMONY_DEPENDENCIES.as_bytes());
         identity.update(source_digest);
         identity.update(Sha256::digest(&bytes));
         identity.update(postcard::to_allocvec(&profile).map_err(|e| reject(e.to_string()))?);
@@ -615,6 +620,14 @@ mod tests {
             .data(&store)
             .to_vec();
         (result, memory)
+    }
+    #[test]
+    fn profile_declares_the_execution_quantum() {
+        let mut profile = Profile::default();
+        assert_eq!(profile.fuel_quantum, crate::meter::Meter::QUANTUM);
+        profile.validate().unwrap();
+        profile.fuel_quantum /= 2;
+        assert!(profile.validate().is_err());
     }
     #[test]
     fn rejects_reference_bodies_dynamic_resources_and_unknown_imports() {

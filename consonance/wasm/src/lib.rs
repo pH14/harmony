@@ -13,3 +13,6 @@ pub use session::WasmSession;
 
 pub(crate) mod artifact;
 pub mod source_map;
+
+#[cfg(all(test, not(miri)))]
+mod conformance;

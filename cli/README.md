@@ -11,6 +11,7 @@ to the artifact directory when using an external build.
 ```sh
 harmony search --package nes smb.nes --core quicknes_libretro.so
 harmony search --package nes --backend native smb.nes --core quicknes_libretro.so
+harmony search --package nes --backend wasm nova.nes --wasm-package play-package
 harmony search --package nes --backend consonance smb.nes \
   --kernel bzImage --base-initramfs initramfs-oci.cpio.gz \
   --image nes.oci
@@ -97,10 +98,11 @@ The OCI CI check reads `/dev/urandom` and checks byte-identical serial logs and
 digests for repeated seeds, distinct output for different seeds, and cancellation
 of a guest loop that performs no I/O.
 
-A qualification build with `--no-default-features --features wasm` includes
-`search --package nes --backend wasm --wasm-package PATH`. The package contains
-`play-agent.wasm`, `manifest.json`, and the digest-bound `debug-map.json`; the ROM
-is the search input. This build has no hardware VMM dependency or hypervisor
-probe. The default `hardware` feature preserves OCI execution, preflight and
-worker commands. WASM remains outside the default product build until final
-qualification passes.
+Ordinary builds include the `hardware` and `wasm` features. Explicit
+`search --package nes --backend wasm --wasm-package PATH` starts portable
+execution on Linux or macOS, on x86-64 or Arm64, without hardware boot or a
+hypervisor probe. The [portable package builder](../workloads/nes-wasm/README.md)
+produces `play-agent.wasm`, `manifest.json`, and the digest-bound `debug-map.json`;
+the ROM remains the search input. A build with
+`--no-default-features --features wasm` removes hardware VMM dependencies.
+The `hardware` feature supplies OCI execution, preflight and worker commands.

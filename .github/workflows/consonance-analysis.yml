@@ -40,6 +40,8 @@ jobs:
       fail-fast: false
       matrix:
         name:
+          - consonance-wasm-validator
+          - consonance-wasm-imports
           - vmm-core
           - hypercall-doorbell
           - hypercall-doorbell-round-trip
@@ -87,6 +89,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: consonance-wasm-validator
+            command: --manifest-path consonance/wasm/Cargo.toml --lib continuation_validation_rejects_malformed_frames_and_operand_positions
+            miriflags: -Zmiri-permissive-provenance
+          - name: consonance-wasm-imports
+            command: --manifest-path consonance/wasm/Cargo.toml --test session decision_validation_replay_and_import_completion_are_atomic
+            miriflags: -Zmiri-permissive-provenance
           - name: vmm-core
             command: -p vmm-core
             miriflags: -Zmiri-permissive-provenance

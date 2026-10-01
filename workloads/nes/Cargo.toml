@@ -51,3 +51,6 @@ machine = { path = "../nes-machine", version = "=0.1.0", features = ["test-loopb
 name = "nes-backend-oracle"
 path = "src/bin/nes-backend-oracle.rs"
 required-features = ["consonance"]
+
+[profile.release.package.harmony-wasmi]
+codegen-units = 1

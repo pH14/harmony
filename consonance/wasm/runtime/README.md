@@ -13,6 +13,12 @@ compiles the upstream source and patch verbatim. Runtime and patch digests
 belong to execution identity. New runtime versions require a new identity,
 conformance checks, Miri, and host transfer qualification.
 
+The product, engine and qualification workspace release profiles compile this
+runtime with one codegen unit. The native compiler remains pinned; changing
+compiler settings requires repeating host correctness and performance checks.
+Native optimization settings do not enter guest state. Debug and release
+builds must exchange the same scalar continuations and produce identical futures.
+
 `numerical.patch` prevents NaN f64 constants from being compressed through a
 host f32 conversion in the translator's copy, return and branch-table paths.
 The original lossless conversion check cannot guarantee that a later conversion
@@ -48,3 +54,11 @@ words, preserves them during nearby insertion and merging, and exposes them by
 compiled-function identity. It does not change execution or fuel costs. Eager
 translation is required for complete positions; synthetic numerical functions
 remain explicitly distinguishable from original source functions.
+
+`qualification-tests.patch` updates exact upstream translator expectations for
+the intentionally retained arithmetic and full-width NaN literals. It also runs
+upstream's two resource-limit tests with obsolete ignore markers removed; the
+admission profile separately rejects multiple memories before execution. The `wat` feature supplies upstream's fixture parser without
+changing the default production dependency profile. Run all upstream unit and
+documentation tests with `cargo test --workspace --features harmony-wasmi/wat`.
+The facade retains the upstream `wasmi` library name so its doctests compile.

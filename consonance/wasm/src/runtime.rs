@@ -326,6 +326,11 @@ impl Runtime {
         Ok(())
     }
     pub(crate) fn capture(&mut self) -> Result<Capture> {
+        let mut capture = self.capture_without_memory()?;
+        capture.memory = self.memory.data(&self.store).to_vec();
+        Ok(capture)
+    }
+    pub(crate) fn capture_without_memory(&mut self) -> Result<Capture> {
         let functions: Vec<_> = self
             .instance
             .exports(&self.store)
@@ -398,7 +403,7 @@ impl Runtime {
             });
         let (data, elements) = self.instance.harmony_segment_lengths(&mut self.store);
         Ok(Capture {
-            memory: self.memory.data(&self.store).to_vec(),
+            memory: Vec::new(),
             globals,
             tables,
             fuel: self.store.get_fuel().map_err(error)?,
