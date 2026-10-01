@@ -14,7 +14,12 @@ defaults:
     shell: bash
 jobs:
   nested-host:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        slot: [1, 2, 3, 4]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +75,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: nested-search-replay-${{ github.run_id }}
+          name: nested-search-replay-${{ github.run_id }}-${{ matrix.os }}-${{ matrix.slot }}
           path: replay-evidence
           retention-days: 14
