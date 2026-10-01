@@ -35,8 +35,8 @@ image with `--base-initramfs`. The platform runtime provides the supervisor and
 its SDK devices; installed kernel and base-image artifacts are discovered
 through `HARMONY_GUEST_DIR`.
 
-`--backend uml --uml-profile profile.json` runs the faults package on the
-User-mode Linux profile from
+`--backend uml --uml-profile DIR` runs the faults package on the
+User-mode Linux profile directory built by
 [`consonance/harmony-linux/uml`](../consonance/harmony-linux/uml/README.md)
 on any Linux host as an ordinary user. The profile's kernel replaces
 `--kernel`. Each flag requires the other, and UML runs on Linux only.

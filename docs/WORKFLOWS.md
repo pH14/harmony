@@ -50,6 +50,7 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
+| `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
@@ -256,6 +257,16 @@ arm, a control version or a replay mode over a second build.
 `ci-historical-arms` rejects them, along with any matrix dimension that would
 restore the arm. A separate Historical Bugs Checks workflow does not exist; the
 full search lives in Benchmarks and pull requests do not run it.
+
+`Benchmarks / Harmony Workloads / UML` runs one historical case, etcd by
+default, on the User-mode Linux profile when an operator dispatches it.
+`scripts/historical-search.sh` and `scripts/historical-replay.sh` take
+`BACKEND=uml`, which runs the CLI through `harmony-uml-qualify exec`: the
+runner's ordinary UID with ptrace and KVM ioctls denied, with the credentials
+and denial recorded beside the report. The search fails when the campaign
+captured no snapshot or restored none. `Reproducer` then replays the search's
+`first-bug-input.json` from genesis in fresh processes; every replay must
+violate the case's assertion with its evidence and reach one state digest.
 
 ## Naming
 

@@ -194,3 +194,8 @@ data.
 
 The report records the effective UID, `CapEff`, the denial results, the host
 CPU and kernel, and the verified profile.
+
+`harmony-uml-qualify exec [--report FILE] -- COMMAND...` makes the same
+credential checks, installs the same filter, writes the credentials, denial
+results, host and command to the report, and executes the command under the
+filter. Campaigns run `harmony search --backend uml` this way.
