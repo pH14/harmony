@@ -41,6 +41,7 @@ jobs:
       matrix:
         name:
           - vmm-core
+          - nested-driver
           - hypercall-doorbell
           - hypercall-doorbell-round-trip
           - consonance-client
@@ -88,6 +89,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: nested-driver
+            command: -p nested-driver --lib
+            miriflags: -Zmiri-permissive-provenance
           - name: vmm-core
             command: -p vmm-core
             miriflags: -Zmiri-permissive-provenance

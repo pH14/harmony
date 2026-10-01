@@ -147,6 +147,10 @@ these exact inputs on an x86 runner.
 These targets remain direct substrate checks and are independent of the OCI
 runtime assembly:
 
+The OCI runtime assembler accepts `HARMONY_RUNTIME_KERNEL` to identify an
+explicit kernel profile in its manifest, including `bzImage-nested-host`.
+The platform init and supervisor remain explicit, workload-free inputs.
+
 ```sh
 make -C consonance/harmony-linux/linux image
 make -C consonance/harmony-linux/linux test

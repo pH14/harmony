@@ -404,3 +404,7 @@ purity remains required. The XSAVE negative checks changed XMM output; the
 XRSTOR negative supplies non-init MXCSR and checks the guest's saved MXCSR value,
 without relying on an unrelated RAM mutation. This fixture distinction does not
 change production snapshot identity or restore semantics.
+
+The x86 raw ioctl adapters infer the libc request type so the same 32-bit KVM
+request encodings compile under both glibc (unsigned long) and musl (int). This
+allows the production backend to be linked into the static inner driver.

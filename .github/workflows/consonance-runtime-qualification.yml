@@ -108,6 +108,31 @@ jobs:
             --test x86_kvm_nested_host l1_creates_kvm_vm -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee nested-host-evidence/l1-boot.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/l1-boot.log
+      - name: Build the static inner driver and matching OCI runtime
+        env:
+          HARMONY_RUNTIME_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
+          HARMONY_RUNTIME_INIT: ${{ github.workspace }}/consonance/harmony-linux/runtime/init.sh
+          HARMONY_RUNTIME_SUPERVISOR: ${{ github.workspace }}/consonance/harmony-linux/supervisor/target/x86_64-unknown-linux-musl/release/harmony-supervisor
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --locked --release --target x86_64-unknown-linux-musl --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
+          bash consonance/harmony-linux/linux/build-oci-runtime-initramfs.sh x86_64 2>&1 | tee nested-host-evidence/oci-runtime-build.log
+          bash consonance/nested-driver/build-image.sh consonance/harmony-linux/build/x86_64/nested-driver.oci
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          taskset -c "$cpu" target/x86_64-unknown-linux-musl/release/nested-driver | tee nested-host-evidence/inner-direct.log
+      - name: Inner Consonance runs L2 through OCI
+        env:
+          NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
+          NESTED_OCI_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+          NESTED_DRIVER_IMAGE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/nested-driver.oci
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
+            --test live inner_consonance_runs_l2 -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee nested-host-evidence/inner-l1-oci.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/inner-l1-oci.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

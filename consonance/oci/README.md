@@ -35,6 +35,12 @@ as a read-only bind with read-only device policy access. Guest startup invokes
 the pinned `/usr/bin/runc` once with the initramfs `--no-pivot` arrangement. The outer
 guest root is made recursively private before launch; the container uses
 `rslave` propagation, as required by this runtime mode.
+
+`LaunchRequest::with_kvm()` explicitly adds the guest's `/dev/kvm` read/write
+bind and its exact character-device rule (major 10, minor 232). Its destination
+must be symlink-free. The generated control bytes bind this choice into the
+prepared identity. This is used by the inner Consonance workload with the
+separately qualified nested-host kernel and CPU contract.
 The generated device policy contains two numeric placeholders for the
 kernel-created Harmony character device and a fixed read-only rule for
 `/dev/kmsg` (character major 1, minor 11). Platform PID 1 resolves the
