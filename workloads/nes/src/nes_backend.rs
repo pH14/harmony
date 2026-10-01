@@ -46,9 +46,23 @@ impl NesBackend<Vec<u8>> for machine::quicknes::QuickNesMachine {
     }
 
     fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
-        let state = lz4_flex::block::decompress_size_prepended(portable).map_err(|error| {
-            MachineError::Backend(format!("snapshot does not decompress: {error}"))
-        })?;
+        let undecodable =
+            |error| MachineError::Backend(format!("snapshot does not decompress: {error}"));
+        let (declared, block) =
+            lz4_flex::block::uncompressed_size(portable).map_err(undecodable)?;
+        let expected = self.snapshot_len();
+        if declared != expected {
+            return Err(MachineError::Backend(format!(
+                "snapshot declares {declared} bytes; this core's states are {expected}"
+            )));
+        }
+        let mut state = vec![0; expected];
+        let written = lz4_flex::block::decompress_into(block, &mut state).map_err(undecodable)?;
+        if written != expected {
+            return Err(MachineError::Backend(format!(
+                "snapshot decompresses to {written} bytes; this core's states are {expected}"
+            )));
+        }
         Ok(self.import_snapshot(&state))
     }
 

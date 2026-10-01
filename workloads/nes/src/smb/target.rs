@@ -702,6 +702,12 @@ mod tests {
         let restored = machine.import_nes(&stored).expect("import");
         assert_eq!(machine.take_snapshot(restored).expect("raw state"), state);
         assert!(machine.import_nes(&vec![4, 0, 0, 0, 0xf0]).is_err());
+        let mut oversized = stored.clone();
+        oversized[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(machine.import_nes(&oversized).is_err());
+        let mut short = lz4_flex::block::compress_prepend_size(&state[..state.len() - 1]);
+        short[..4].copy_from_slice(&u32::try_from(state.len()).unwrap().to_le_bytes());
+        assert!(machine.import_nes(&short).is_err());
     }
 
     #[test]

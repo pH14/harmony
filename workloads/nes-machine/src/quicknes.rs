@@ -704,6 +704,11 @@ impl QuickNesMachine {
             .ok_or(MachineError::UnknownSnapshot)
     }
 
+    #[must_use]
+    pub fn snapshot_len(&self) -> usize {
+        STATE_HEADER_LEN + self.state_len
+    }
+
     pub fn import_snapshot(&mut self, bytes: &[u8]) -> SnapId {
         self.import_owned_snapshot(bytes.to_vec())
     }
