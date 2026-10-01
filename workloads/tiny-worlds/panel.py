@@ -25,8 +25,8 @@ WORLD_BUDGET = 200_000
 SLOWER, FASTER = 1.25, 0.8
 MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
-REPORT_FIELDS = {"config", "evidence", "first_objective_work", "layout", "stream_sha256", "success", "verified",
-                 "work_budget"}
+REPORT_FIELDS = {"config", "crossing", "evidence", "first_objective_execution", "first_objective_work", "layout",
+                 "scale", "stream_sha256", "success", "verified", "work_budget"}
 SHIELDED_BOSS = {"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24, "shield": 8, "shield_odds": 4,
                  "hit_tier": True, "tail_slots": True}
 WORLDS = {
