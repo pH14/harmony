@@ -306,6 +306,31 @@ pub fn compare_portable_execution_state(
     })
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn logical_x86_sparse_sidecar(bytes: &[u8]) -> Result<Vec<u8>, PortableSnapshotError> {
+    let sidecar = decode_sparse_sidecar(bytes)?;
+    let mut state = vm_state::VmState::decode(&sidecar.vm_state)
+        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+    state.xsave_restore_bv =
+        vmm_backend::logical_xsave_restore_bv(&state.xsave.0, state.xsave_restore_bv)
+            .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse XSAVE state"))?;
+    let vm_state = state
+        .encode()
+        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+    encode_sparse_sidecar(&SparsePortableSidecarRef {
+        vm_state: &vm_state,
+        sdk: sidecar.sdk.as_ref(),
+        policy: &sidecar.policy,
+        at: sidecar.at,
+        sdk_events: sidecar.sdk_events,
+        trace_events: sidecar.trace_events,
+        trace_schedules: sidecar.trace_schedules,
+        tainted: sidecar.tainted,
+        state_blob_suffix: &sidecar.state_blob_suffix,
+        control_state: &sidecar.control_state,
+    })
+}
+
 pub(crate) fn encode_sparse_sidecar(
     sidecar: &SparsePortableSidecarRef<'_>,
 ) -> Result<Vec<u8>, PortableSnapshotError> {
@@ -776,6 +801,72 @@ impl<'a> SliceReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    fn x86_sidecar(state: &vm_state::VmState) -> Vec<u8> {
+        encode_sparse_sidecar(&SparsePortableSidecarRef {
+            vm_state: &state.encode().unwrap(),
+            sdk: None,
+            policy: &ServiceConfig {
+                identity: b"identity".to_vec(),
+                configuration: b"configuration".to_vec(),
+            },
+            at: 23,
+            sdk_events: 0,
+            trace_events: 17,
+            trace_schedules: 5,
+            tainted: true,
+            state_blob_suffix: b"state-suffix",
+            control_state: b"control-state",
+        })
+        .unwrap()
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn sparse_logical_x86_identity_normalizes_only_init_presence_without_mutating_restore_bytes() {
+        let mut state = vm_state::VmState::default();
+        state.xsave.0 = vec![0; 576];
+        vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave.0);
+        state.xsave_restore_bv = Some(0);
+        let expected = x86_sidecar(&state);
+        for raw in 0..=3 {
+            state.xsave_restore_bv = Some(raw);
+            let original = x86_sidecar(&state);
+            assert_eq!(logical_x86_sparse_sidecar(&original).unwrap(), expected);
+            assert_eq!(original, x86_sidecar(&state));
+            assert_eq!(
+                vm_state::VmState::decode(&decode_sparse_sidecar(&original).unwrap().vm_state)
+                    .unwrap()
+                    .xsave_restore_bv,
+                Some(raw)
+            );
+        }
+        state.regs.rbx = 1;
+        assert_ne!(
+            logical_x86_sparse_sidecar(&x86_sidecar(&state)).unwrap(),
+            expected
+        );
+        state.regs.rbx = 0;
+        state.xsave.0[160] = 0x79;
+        state.xsave.0[512] = 2;
+        state.xsave_restore_bv = Some(2);
+        let active = x86_sidecar(&state);
+        assert_eq!(logical_x86_sparse_sidecar(&active).unwrap(), active);
+        state.xsave_restore_bv = Some(3);
+        assert_eq!(
+            logical_x86_sparse_sidecar(&x86_sidecar(&state)).unwrap(),
+            active
+        );
+        state.xsave.0[160] ^= 1;
+        assert_ne!(
+            logical_x86_sparse_sidecar(&x86_sidecar(&state)).unwrap(),
+            active
+        );
+        state.xsave_restore_bv = Some(0);
+        assert!(logical_x86_sparse_sidecar(&x86_sidecar(&state)).is_err());
+        assert!(logical_x86_sparse_sidecar(&active[..83]).is_err());
+    }
 
     #[test]
     #[cfg_attr(

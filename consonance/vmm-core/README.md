@@ -125,6 +125,15 @@ VMST tag 16, raw and component identities, whole-state hashes, and portable
 artifacts. Publication requires L1 outside L2 guest mode; the inner VM remains
 allocated and VMX remains enabled. `nested-driver` qualifies repeated and cold
 outer restores at SDK lifecycle boundaries after inner KVM_RUN has returned.
+The boxed bringup entry point uses the same composition and capability capture
+for the client's dynamically dispatched session backend.
+
+`portable_snapshot::logical_x86_sparse_sidecar` produces a non-mutating identity
+projection for recorded nested campaigns. It validates the complete sidecar and
+CPU records and applies the existing logical XSAVE restore-bitmap rule: presence
+bits for init-valued x87/SSE components normalize, while active components remain
+bound. Every other sidecar field remains encoded. The original portable bytes
+retain the host restore bitmap and remain the input used for restore.
 
 The non-default `omit-nested-state` feature is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive

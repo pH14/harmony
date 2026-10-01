@@ -13,6 +13,46 @@ use vmm_core::{
 };
 
 #[test]
+#[ignore = "requires Linux x86 KVM; the nested-host job runs this short production operation proof"]
+fn inner_operation_api_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    use nested_driver::operations::{Engine, Operation, choose, compose_long};
+    use vmm_backend::KvmBackend;
+
+    let mut engine = Engine::new(compose_long(KvmBackend::new()?)?)?;
+    for operation in [
+        Operation::Run,
+        Operation::Snapshot,
+        Operation::Run,
+        Operation::Restore,
+        Operation::Fork,
+        Operation::Run,
+        Operation::ExportImport,
+        Operation::Drop,
+    ] {
+        let mut entropy = [0x5a; 20];
+        entropy[0] = operation as u8;
+        entropy[1] = 1;
+        entropy[2] = 7;
+        let choice = choose(&entropy, engine.live_snapshots())?;
+        assert_eq!(choice.operation, operation);
+        engine.execute(&choice)?;
+        println!(
+            "NESTED_INNER_SMOKE type={} snapshots={} depth={} steps={} imports={} bytes={}",
+            operation.name(),
+            engine.live_snapshots(),
+            engine.depth,
+            engine.steps,
+            engine.imports,
+            nested_driver::hex(&engine.oracle.bytes())
+        );
+    }
+    assert_eq!(engine.imports, 1);
+    assert_eq!(engine.depth, 0);
+    assert_eq!(engine.live_snapshots(), 3);
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires Intel nested VMX, NESTED_HOST_KERNEL, NESTED_OCI_INITRAMFS and NESTED_DRIVER_IMAGE"]
 fn inner_consonance_runs_inner_guest() -> Result<(), Box<dyn std::error::Error>> {
     let read = |name| -> Result<Vec<u8>, Box<dyn std::error::Error>> {

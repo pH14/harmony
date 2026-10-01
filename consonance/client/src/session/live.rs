@@ -105,10 +105,29 @@ impl Session {
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
         let defer_checkpoint_hashes = config.defer_virtual_time_checkpoint_hashes;
+        let guest_contract = config.guest_contract;
         let boot = move |kernel: &[u8], initramfs: &[u8]| {
             #[cfg(target_arch = "x86_64")]
-            let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, ram, &cmdline, seed)
-                .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
+            let mut vmm = match guest_contract {
+                GuestContract::Ordinary => {
+                    boot_linux_stock_virtual_time(kernel, initramfs, ram, &cmdline, seed)
+                }
+                #[cfg(target_os = "linux")]
+                GuestContract::NestedHost => {
+                    vmm_core::vendor::x86::bringup::boot_linux_nested_host_virtual_time_boxed(
+                        kernel, initramfs, ram, &cmdline, seed,
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                GuestContract::NestedHost => {
+                    return Err("nested-host sessions require Linux x86 KVM".into());
+                }
+            }
+            .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
+            #[cfg(target_arch = "aarch64")]
+            if guest_contract != GuestContract::Ordinary {
+                return Err("nested-host sessions require Linux x86 KVM".into());
+            }
             #[cfg(target_arch = "aarch64")]
             let mut vmm = boot_selected_control(kernel, initramfs, &cmdline, ram, seed)
                 .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
@@ -323,6 +342,10 @@ impl Session {
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), Box<dyn Error>> {
         branch_payload(&mut self.client, snapshot, payloads, self.config.seed)
+    }
+
+    pub fn branch_with_seed(&mut self, snapshot: SnapId, seed: u64) -> Result<(), Box<dyn Error>> {
+        self.branch_input(snapshot, &InputSpec::seeded(seed))
     }
 
     pub fn set_service_factory(&mut self, factory: ServiceFactory) {

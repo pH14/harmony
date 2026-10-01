@@ -7,6 +7,7 @@ use std::{error::Error, path::PathBuf, process::ExitCode};
 pub enum Package {
     Nes,
     Faults,
+    Nested,
 }
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Backend {
@@ -48,7 +49,7 @@ pub struct Args {
 pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
     let backend = args.backend.unwrap_or(match args.package {
         Package::Nes => Backend::Native,
-        Package::Faults => Backend::Consonance,
+        Package::Faults | Package::Nested => Backend::Consonance,
     });
     if matches!(backend, Backend::Consonance) {
         require_supported_host(cfg!(any(
@@ -96,9 +97,53 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
                 args.repeat,
             )?;
         }
+        (Package::Nested, Backend::Native) => {
+            return Err("the nested package requires --backend consonance".into());
+        }
+        (Package::Nested, Backend::Consonance) => run_nested_consonance(&args)?,
     }
     println!("artifacts   {}", output.display());
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_nested_consonance(args: &Args) -> Result<(), Box<dyn Error>> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        if args.knobs.is_some() {
+            return Err("the nested package uses standard search options".into());
+        }
+        let kernel = args.kernel.as_ref().ok_or(
+            "nested search requires --kernel pointing to the qualified nested-host kernel",
+        )?;
+        let installed =
+            crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
+        let base = args
+            .base_initramfs
+            .clone()
+            .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
+            .ok_or(
+                "nested search requires --base-initramfs pointing to the qualified OCI runtime",
+            )?;
+        nested_driver::host::run(
+            args.input.to_str().ok_or("OCI input must be UTF-8")?,
+            &std::fs::read(kernel)?,
+            &std::fs::read(base)?,
+            &nested_driver::host::Options {
+                seed: args.seed,
+                executions: args.executions,
+                ram_mib: args.ram_mib,
+                wall_minutes: args.wall_minutes,
+                output: args.out.clone(),
+            },
+            args.replay.as_deref(),
+            args.repeat,
+        )
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = args;
+        Err("nested search requires Linux x86 KVM with Intel nested VMX".into())
+    }
 }
 
 fn read_replay(
@@ -334,6 +379,16 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the faults package requires --backend consonance"
+        );
+    }
+
+    #[test]
+    fn native_nested_backend_is_rejected_before_input_access() {
+        let error = run(args(Package::Nested, Backend::Native))
+            .expect_err("nested needs the production VMM");
+        assert_eq!(
+            error.to_string(),
+            "the nested package requires --backend consonance"
         );
     }
 
