@@ -3,7 +3,7 @@
 set -euo pipefail
 mkdir -p language-bases language-images language-images-evidence
 runtime=$(bash workloads/languages/build-runtime.sh)
-for language in c rust; do
+for language in c rust go; do
     key=$(python3 workloads/languages/image-key.py "$language")
     base="harmony-language-$language-base:$key"
     if [[ ${REBUILD_IMAGES:-false} != true && -s "language-bases/$language.tar" ]]; then
