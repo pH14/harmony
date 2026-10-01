@@ -27,9 +27,21 @@ Kernel command-line knobs, passed with `--knobs`:
 | knob | effect |
 |---|---|
 | `lost_update.atomic=1` | the increment is one atomic add; this is the clean control and must never violate the assertion |
-| `lost_update.noise=N` | each iteration also calls `N` distinct instrumented functions, 0 through 32, so a park has `N` more sites to land on outside the window |
+| `lost_update.noise=N` | adds `N` distinct instrumented functions outside the window and spaces increments by `N + 1` ms, for values 0 through 32 |
 
 The default is the racy increment with no extra sites.
+
+The trigger needs two increments: A reads the old counter, B finishes an
+increment, and A writes its stale result. The expected difficulty at the default
+setting is hundreds of search executions. Noise adds competing event sites;
+individual seeds need not become harder monotonically.
+
+The image uses a static executable on `scratch` and fits a 256 MiB guest.
+It also carries the composed `libvoidstar.so` at its standard path, which
+the faults package requires when admitting instrumented events. Static linking
+retains the whole runtime archive so the event shim replaces the core's weak
+hook. Workload instrumentation is compiled separately from the runtime and
+linking step.
 
 ## Running
 
