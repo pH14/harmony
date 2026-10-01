@@ -1,0 +1,100 @@
+Give User-mode Linux a fixed physical memory layout
+
+User-mode Linux places guest physical memory after the host heap, and sizes
+it from where the heap starts. The kernel turns off address randomization by
+re-executing itself with ADDR_NO_RANDOMIZE, but a host that refuses that
+personality call, such as Docker's default seccomp profile, leaves the heap
+at a random place in the gigabyte after the binary. Guest memory size, the
+reserved range and the page allocator's zones then change from run to run.
+
+The reserved range now ends at a fixed distance after the binary that covers
+the whole randomization range, guest physical memory adds that range to the
+requested size, and the part of the range after the heap stays reserved
+instead of joining the page allocator. A heap outside the range stops the
+boot.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/kernel/mem.c
++++ b/arch/um/kernel/mem.c
+@@ -57,9 +57,6 @@ pgd_t swapper_pg_dir[PTRS_PER_PGD];
+ /* Initialized at boot time, and readonly after that */
+ int kmalloc_ok = 0;
+ 
+-/* Used during early boot */
+-static unsigned long brk_end;
+-
+ void __init arch_mm_preinit(void)
+ {
+ 	/* Safe to call after jump_label_init(). Enables KASAN. */
+@@ -68,14 +65,6 @@ void __init arch_mm_preinit(void)
+ 	/* clear the zero-page */
+ 	memset(empty_zero_page, 0, PAGE_SIZE);
+ 
+-	/* Map in the area just after the brk now that kmalloc is about
+-	 * to be turned on.
+-	 */
+-	brk_end = (unsigned long) UML_ROUND_UP(sbrk(0));
+-	map_memory(brk_end, __pa(brk_end), uml_reserved - brk_end, 1, 1, 0);
+-	memblock_free((void *)brk_end, uml_reserved - brk_end);
+-	uml_reserved = brk_end;
+-	min_low_pfn = PFN_UP(__pa(uml_reserved));
+ 	max_pfn = max_low_pfn;
+ }
+ 
+--- a/arch/um/kernel/um_arch.c
++++ b/arch/um/kernel/um_arch.c
+@@ -5,6 +5,7 @@
+ 
+ #include <linux/cpu.h>
+ #include <linux/delay.h>
++#include <linux/sizes.h>
+ #include <linux/init.h>
+ #include <linux/mm.h>
+ #include <linux/ctype.h>
+@@ -273,6 +274,8 @@ EXPORT_SYMBOL(task_size);
+ unsigned long host_task_size;
+ 
+ unsigned long brk_start;
++
++#define HARMONY_UML_HOST_RESERVE (SZ_1G + SZ_64M)
+ unsigned long end_iomem;
+ EXPORT_SYMBOL(end_iomem);
+ 
+@@ -366,22 +369,19 @@ int __init linux_main(int argc, char **argv, char **envp)
+ 	brk_start = (unsigned long) sbrk(0);
+ 
+ 	/*
+-	 * Increase physical memory size for exec-shield users
+-	 * so they actually get what they asked for. This should
+-	 * add zero for non-exec shield users
++	 * The host may place the heap anywhere in the gigabyte after the
++	 * binary. A fixed reservation that covers that range keeps the
++	 * guest's physical memory layout independent of where it landed.
+ 	 */
+-
+-	diff = UML_ROUND_UP(brk_start) - UML_ROUND_UP(&_end);
+-	if (diff > 1024 * 1024) {
+-		os_info("Adding %ld bytes to physical memory to account for "
+-			"exec-shield gap\n", diff);
+-		physmem_size += UML_ROUND_UP(brk_start) - UML_ROUND_UP(&_end);
+-	}
+-
+ 	uml_physmem = (unsigned long) __binary_start & PAGE_MASK;
+-
+-	/* Reserve up to 4M after the current brk */
+-	uml_reserved = ROUND_4M(brk_start) + (1 << 22);
++	uml_reserved = ROUND_4M(&_end) + HARMONY_UML_HOST_RESERVE;
++	diff = ROUND_4M(brk_start) + (1 << 22);
++	if (diff > uml_reserved) {
++		os_warn("Host heap at 0x%lx is outside the reserved range ending at 0x%lx\n",
++			brk_start, uml_reserved);
++		exit(1);
++	}
++	physmem_size += uml_reserved - uml_physmem;
+ 
+ 	setup_machinename(init_utsname()->machine);
+ 

@@ -1,13 +1,18 @@
 # User-mode Linux overlay merged last over ARCH=um defconfig. It keeps the
 # guest on one CPU with periodic ticks and time-travel time, links the
 # executable statically so the host library closure is empty, and removes
-# every driver that reads host state outside the Harmony transport.
+# every driver that reads host state outside the Harmony transport. The
+# virtual-time costs are recorded in profile.json.
 CONFIG_LOCALVERSION=""
 # CONFIG_LOCALVERSION_AUTO is not set
 # CONFIG_MODULES is not set
 # CONFIG_SMP is not set
 CONFIG_STATIC_LINK=y
 CONFIG_UML_TIME_TRAVEL_SUPPORT=y
+CONFIG_HARMONY_UML_SYSCALL_VNS=100000
+CONFIG_HARMONY_UML_CLOCK_READ_VNS=1
+CONFIG_HARMONY_DEVICE=y
+# CONFIG_HARMONY_DEVICE_KUNIT_TEST is not set
 CONFIG_HZ_PERIODIC=y
 # CONFIG_NO_HZ is not set
 # CONFIG_NO_HZ_IDLE is not set

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 const PT_INTERP: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,12 +29,22 @@ pub struct Profile {
     pub executable: Artifact,
     pub config: Artifact,
     pub rootfs: Artifact,
+    pub virtual_time: VirtualTimeCosts,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VirtualTimeCosts {
+    pub syscall_vns: u64,
+    pub clock_read_vns: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostIdentity {
     pub architecture: String,
     pub cpu_model: String,
+    pub cpu_features: String,
 }
 
 #[derive(Clone, Debug)]
@@ -141,11 +151,44 @@ impl VerifiedProfile {
 
 impl HostIdentity {
     pub fn current() -> io::Result<Self> {
-        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")?;
-        Ok(Self {
+        Ok(Self::from_cpuinfo(&std::fs::read_to_string(
+            "/proc/cpuinfo",
+        )?))
+    }
+
+    fn from_cpuinfo(cpuinfo: &str) -> Self {
+        let first = cpuinfo.split("\n\n").next().unwrap_or_default();
+        let (model_keys, features_key): (&[&str], &str) = match std::env::consts::ARCH {
+            "aarch64" => (
+                &[
+                    "CPU implementer",
+                    "CPU architecture",
+                    "CPU variant",
+                    "CPU part",
+                    "CPU revision",
+                ],
+                "Features",
+            ),
+            _ => (
+                &["vendor_id", "cpu family", "model", "stepping", "model name"],
+                "flags",
+            ),
+        };
+        let value = |key: &str| {
+            first.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                (name.trim() == key).then(|| value.trim().to_owned())
+            })
+        };
+        Self {
             architecture: std::env::consts::ARCH.to_owned(),
-            cpu_model: cpu_model(&cpuinfo),
-        })
+            cpu_model: model_keys
+                .iter()
+                .filter_map(|key| value(key).map(|value| format!("{key}={value}")))
+                .collect::<Vec<_>>()
+                .join(";"),
+            cpu_features: value(features_key).unwrap_or_default(),
+        }
     }
 }
 
@@ -210,29 +253,6 @@ fn is_static_elf64(bytes: &[u8]) -> bool {
     })
 }
 
-fn cpu_model(cpuinfo: &str) -> String {
-    let first = cpuinfo.split("\n\n").next().unwrap_or_default();
-    let keys: &[&str] = match std::env::consts::ARCH {
-        "aarch64" => &[
-            "CPU implementer",
-            "CPU architecture",
-            "CPU variant",
-            "CPU part",
-            "CPU revision",
-        ],
-        _ => &["vendor_id", "cpu family", "model", "stepping", "model name"],
-    };
-    keys.iter()
-        .filter_map(|key| {
-            first.lines().find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                (name.trim() == *key).then(|| format!("{key}={}", value.trim()))
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +300,10 @@ mod tests {
             executable: artifact("linux"),
             config: artifact("config"),
             rootfs: artifact("initramfs.cpio.gz"),
+            virtual_time: VirtualTimeCosts {
+                syscall_vns: 100_000,
+                clock_read_vns: 1,
+            },
         };
         edit(&mut profile);
         std::fs::write(
@@ -332,16 +356,18 @@ mod tests {
     }
 
     #[test]
-    fn cpu_model_reads_the_first_processor() {
-        let text = "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 183\nmodel name\t: Example CPU\nstepping\t: 1\nmicrocode\t: 0x12b\nCPU implementer\t: 0x61\nCPU part\t: 0x022\n\nprocessor\t: 1\nmodel\t\t: 1\n";
-        let model = cpu_model(text);
+    fn host_identity_reads_the_first_processor() {
+        let text = "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 183\nmodel name\t: Example CPU\nstepping\t: 1\nmicrocode\t: 0x12b\nflags\t\t: fpu tsc avx2\nCPU implementer\t: 0x61\nCPU part\t: 0x022\nFeatures\t: fp asimd\n\nprocessor\t: 1\nmodel\t\t: 1\nflags\t\t: fpu\n";
+        let host = HostIdentity::from_cpuinfo(text);
         if std::env::consts::ARCH == "aarch64" {
-            assert_eq!(model, "CPU implementer=0x61;CPU part=0x022");
+            assert_eq!(host.cpu_model, "CPU implementer=0x61;CPU part=0x022");
+            assert_eq!(host.cpu_features, "fp asimd");
         } else {
             assert_eq!(
-                model,
+                host.cpu_model,
                 "vendor_id=GenuineIntel;cpu family=6;model=183;stepping=1;model name=Example CPU"
             );
+            assert_eq!(host.cpu_features, "fpu tsc avx2");
         }
     }
 }

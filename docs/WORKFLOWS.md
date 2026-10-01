@@ -63,6 +63,9 @@ byte-identical; two cold builds have a registered 45-minute exception.
 ordinary UID, natively and under Docker's default seccomp profile with every
 capability dropped. The qualifier denies ptrace and KVM ioctls to itself and
 every guest, and fails when the host is root or has effective capabilities.
+`UML Replay — <Target>` runs the replay suite on the same targets: 100 replays
+of each fixture under host load, CPU pinning, process stops and host address
+randomization must produce one event hash, and recordings must replay to each cut from a fresh process.
 Reports remain workflow artifacts.
 
 `Checks / Consonance / UML Probe` keeps the arm64 feasibility probe until the
