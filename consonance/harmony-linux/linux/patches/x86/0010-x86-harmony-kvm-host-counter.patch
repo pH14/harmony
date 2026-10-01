@@ -1,0 +1,273 @@
+x86/kvm: route host counter reads through the Harmony TSC oracle
+
+The nested-host guest includes KVM, whose native RDTSC inputs bypass Harmony's
+exit-count clock on stock host KVM. Read IA32_TSC through RDMSR instead: the
+outer MSR filter routes it to Consonance's existing virtual-time handler.
+The return value remains in the architectural TSC tick domain. Keep the
+ordered accessor fenced, and replace every native host counter read in KVM,
+including its PMU, LAPIC and nested-VMX paths.
+
+Disable the optional VMX preemption timer by default. A hardware countdown
+continues in real time even when its deadline was computed from a virtual
+counter; the nested-host profile uses the guest Linux timer path instead.
+
+This patch is Linux-kernel code (GPL-2.0), carried under the repository's
+kernel-patch exception. The armed instruction scan must still qualify all
+remaining counter reads before publishing the nested-host kernel.
+
+--- a/arch/x86/kvm/x86.h
++++ b/arch/x86/kvm/x86.h
+@@ -5,10 +5,27 @@
+ #include <linux/kvm_host.h>
+ #include <asm/fpu/xstate.h>
+ #include <asm/mce.h>
++#include <asm/msr.h>
+ #include <asm/pvclock.h>
+ #include "kvm_cache_regs.h"
+ #include "kvm_emulate.h"
+ #include "cpuid.h"
++
++static __always_inline u64 kvm_host_tsc(void)
++{
++	return native_rdmsrq(MSR_IA32_TSC);
++}
++
++static __always_inline u64 kvm_host_tsc_ordered(void)
++{
++	u64 value;
++
++	mb();
++	rmb();
++	value = kvm_host_tsc();
++	barrier();
++	return value;
++}
+ 
+ #define KVM_MAX_MCE_BANKS 32
+ 
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -2664,7 +2664,7 @@
+ {
+ 	u64 tsc;
+ 
+-	tsc = kvm_scale_tsc(rdtsc(), vcpu->arch.l1_tsc_scaling_ratio);
++	tsc = kvm_scale_tsc(kvm_host_tsc(), vcpu->arch.l1_tsc_scaling_ratio);
+ 
+ 	return target_tsc - tsc;
+ }
+@@ -2903,7 +2903,7 @@
+ 
+ static u64 read_tsc(void)
+ {
+-	u64 ret = (u64)rdtsc_ordered();
++	u64 ret = (u64)kvm_host_tsc_ordered();
+ 	u64 last = pvclock_gtod_data.clock.cycle_last;
+ 
+ 	if (likely(ret >= last))
+@@ -3208,7 +3208,7 @@
+ 	struct kvm_arch *ka = &kvm->arch;
+ 	struct pvclock_vcpu_time_info hv_clock;
+ 
+-	/* both __this_cpu_read() and rdtsc() should be on the same cpu */
++	/* both __this_cpu_read() and kvm_host_tsc() should be on the same cpu */
+ 	get_cpu();
+ 
+ 	data->flags = 0;
+@@ -3222,7 +3222,7 @@
+ 			data->flags |= KVM_CLOCK_REALTIME | KVM_CLOCK_HOST_TSC;
+ 		} else
+ #endif
+-		data->host_tsc = rdtsc();
++		data->host_tsc = kvm_host_tsc();
+ 
+ 		data->flags |= KVM_CLOCK_TSC_STABLE;
+ 		hv_clock.tsc_timestamp = ka->master_cycle_now;
+@@ -3341,7 +3341,7 @@
+ 		return 1;
+ 	}
+ 	if (!use_master_clock) {
+-		host_tsc = rdtsc();
++		host_tsc = kvm_host_tsc();
+ 		kernel_ns = get_kvmclock_base_ns();
+ 	}
+ 
+@@ -4453,7 +4453,7 @@
+ 			ratio = vcpu->arch.tsc_scaling_ratio;
+ 		}
+ 
+-		msr_info->data = kvm_scale_tsc(rdtsc(), ratio) + offset;
++		msr_info->data = kvm_scale_tsc(kvm_host_tsc(), ratio) + offset;
+ 		break;
+ 	}
+ 	case MSR_IA32_CR_PAT:
+@@ -5230,7 +5230,7 @@
+ 
+ 	if (unlikely(vcpu->cpu != cpu) || kvm_check_tsc_unstable()) {
+ 		s64 tsc_delta = !vcpu->arch.last_host_tsc ? 0 :
+-				rdtsc() - vcpu->arch.last_host_tsc;
++				kvm_host_tsc() - vcpu->arch.last_host_tsc;
+ 		if (tsc_delta < 0)
+ 			mark_tsc_unstable("KVM discovered backwards TSC");
+ 
+@@ -5332,7 +5332,7 @@
+ 	}
+ 
+ 	kvm_x86_call(vcpu_put)(vcpu);
+-	vcpu->arch.last_host_tsc = rdtsc();
++	vcpu->arch.last_host_tsc = kvm_host_tsc();
+ }
+ 
+ static int kvm_vcpu_ioctl_get_lapic(struct kvm_vcpu *vcpu,
+@@ -6001,7 +6001,7 @@
+ 			   kvm->arch.last_tsc_khz == vcpu->arch.virtual_tsc_khz &&
+ 			   kvm->arch.last_tsc_offset == offset);
+ 
+-		tsc = kvm_scale_tsc(rdtsc(), vcpu->arch.l1_tsc_scaling_ratio) + offset;
++		tsc = kvm_scale_tsc(kvm_host_tsc(), vcpu->arch.l1_tsc_scaling_ratio) + offset;
+ 		ns = get_kvmclock_base_ns();
+ 
+ 		__kvm_synchronize_tsc(vcpu, offset, tsc, ns, matched, true);
+@@ -11445,7 +11445,7 @@
+ 		hw_breakpoint_restore();
+ 
+ 	vcpu->arch.last_vmentry_cpu = vcpu->cpu;
+-	vcpu->arch.last_guest_tsc = kvm_read_l1_tsc(vcpu, rdtsc());
++	vcpu->arch.last_guest_tsc = kvm_read_l1_tsc(vcpu, kvm_host_tsc());
+ 
+ 	vcpu->mode = OUTSIDE_GUEST_MODE;
+ 	smp_wmb();
+@@ -13088,7 +13088,7 @@
+ 	if (ret != 0)
+ 		return ret;
+ 
+-	local_tsc = rdtsc();
++	local_tsc = kvm_host_tsc();
+ 	stable = !kvm_check_tsc_unstable();
+ 	list_for_each_entry(kvm, &vm_list, vm_list) {
+ 		kvm_for_each_vcpu(i, vcpu, kvm) {
+--- a/arch/x86/kvm/lapic.c
++++ b/arch/x86/kvm/lapic.c
+@@ -1996,7 +1996,7 @@
+ 
+ 	tsc_deadline = apic->lapic_timer.expired_tscdeadline;
+ 	apic->lapic_timer.expired_tscdeadline = 0;
+-	guest_tsc = kvm_read_l1_tsc(vcpu, rdtsc());
++	guest_tsc = kvm_read_l1_tsc(vcpu, kvm_host_tsc());
+ 	trace_kvm_wait_lapic_expire(vcpu->vcpu_id, guest_tsc - tsc_deadline);
+ 
+ 	adjust_lapic_timer_advance(vcpu, guest_tsc - tsc_deadline);
+@@ -2006,7 +2006,7 @@
+ 	 * of the above adjustment to avoid waiting longer than is necessary.
+ 	 */
+ 	if (guest_tsc < tsc_deadline)
+-		guest_tsc = kvm_read_l1_tsc(vcpu, rdtsc());
++		guest_tsc = kvm_read_l1_tsc(vcpu, kvm_host_tsc());
+ 
+ 	if (guest_tsc < tsc_deadline)
+ 		__wait_lapic_expire(vcpu, tsc_deadline - guest_tsc);
+@@ -2090,7 +2090,7 @@
+ 	local_irq_save(flags);
+ 
+ 	now = ktime_get();
+-	guest_tsc = kvm_read_l1_tsc(vcpu, rdtsc());
++	guest_tsc = kvm_read_l1_tsc(vcpu, kvm_host_tsc());
+ 
+ 	ns = (tscdeadline - guest_tsc) * 1000000ULL;
+ 	do_div(ns, this_tsc_khz);
+@@ -2139,7 +2139,7 @@
+ static bool set_target_expiration(struct kvm_lapic *apic, u32 count_reg)
+ {
+ 	ktime_t now;
+-	u64 tscl = rdtsc();
++	u64 tscl = kvm_host_tsc();
+ 	s64 deadline;
+ 
+ 	now = ktime_get();
+@@ -2189,7 +2189,7 @@
+ static void advance_periodic_target_expiration(struct kvm_lapic *apic)
+ {
+ 	ktime_t now = ktime_get();
+-	u64 tscl = rdtsc();
++	u64 tscl = kvm_host_tsc();
+ 	ktime_t delta;
+ 
+ 	/*
+--- a/arch/x86/kvm/pmu.c
++++ b/arch/x86/kvm/pmu.c
+@@ -658,7 +658,7 @@
+ 
+ 	switch (idx) {
+ 	case VMWARE_BACKDOOR_PMC_HOST_TSC:
+-		ctr_val = rdtsc();
++		ctr_val = kvm_host_tsc();
+ 		break;
+ 	case VMWARE_BACKDOOR_PMC_REAL_TIME:
+ 		ctr_val = ktime_get_boottime_ns();
+--- a/arch/x86/kvm/hyperv.c
++++ b/arch/x86/kvm/hyperv.c
+@@ -583,7 +583,7 @@
+ 		return div_u64(get_kvmclock_ns(kvm), 100);
+ 
+ 	vcpu = kvm_get_vcpu(kvm, 0);
+-	tsc = kvm_read_l1_tsc(vcpu, rdtsc());
++	tsc = kvm_read_l1_tsc(vcpu, kvm_host_tsc());
+ 	return mul_u64_u64_shr(tsc, hv->tsc_ref.tsc_scale, 64)
+ 		+ hv->tsc_ref.tsc_offset;
+ }
+--- a/arch/x86/kvm/xen.c
++++ b/arch/x86/kvm/xen.c
+@@ -242,11 +242,11 @@
+ 			 *
+ 			 * There is a small error introduced here because time
+ 			 * continues to elapse between the ktime_get() and the
+-			 * subsequent rdtsc(). But not the systemic drift due
++			 * subsequent kvm_host_tsc(). But not the systemic drift due
+ 			 * to get_kvmclock_ns().
+ 			 */
+ 			kernel_now = ktime_get(); /* This is CLOCK_MONOTONIC */
+-			host_tsc = rdtsc();
++			host_tsc = kvm_host_tsc();
+ 		}
+ 
+ 		/* Calculate the guest kvmclock as the guest would do it. */
+--- a/arch/x86/kvm/vmx/vmx.c
++++ b/arch/x86/kvm/vmx/vmx.c
+@@ -142,7 +142,7 @@
+ 
+ /* Guest_tsc -> host_tsc conversion requires 64-bit division.  */
+ static int __read_mostly cpu_preemption_timer_multi;
+-static bool __read_mostly enable_preemption_timer = 1;
++static bool __read_mostly enable_preemption_timer;
+ #ifdef CONFIG_X86_64
+ module_param_named(preemption_timer, enable_preemption_timer, bool, S_IRUGO);
+ #endif
+@@ -7230,7 +7230,7 @@
+ 		vmcs_write32(VMX_PREEMPTION_TIMER_VALUE, 0);
+ 		vmx->loaded_vmcs->hv_timer_soft_disabled = false;
+ 	} else if (vmx->hv_deadline_tsc != -1) {
+-		tscl = rdtsc();
++		tscl = kvm_host_tsc();
+ 		if (vmx->hv_deadline_tsc > tscl)
+ 			/* set_hv_timer ensures the delta fits in 32-bits */
+ 			delta_tsc = (u32)((vmx->hv_deadline_tsc - tscl) >>
+@@ -8194,7 +8194,7 @@
+ 	struct kvm_timer *ktimer = &vcpu->arch.apic->lapic_timer;
+ 
+ 	vmx = to_vmx(vcpu);
+-	tscl = rdtsc();
++	tscl = kvm_host_tsc();
+ 	guest_tscl = kvm_read_l1_tsc(vcpu, tscl);
+ 	delta_tsc = max(guest_deadline_tsc, guest_tscl) - guest_tscl;
+ 	lapic_timer_advance_cycles = nsec_to_cycles(vcpu,
+--- a/arch/x86/kvm/vmx/nested.c
++++ b/arch/x86/kvm/vmx/nested.c
+@@ -2236,7 +2236,7 @@
+ 	struct vcpu_vmx *vmx = to_vmx(vcpu);
+ 	struct vmcs12 *vmcs12 = get_vmcs12(vcpu);
+ 
+-	u64 l1_scaled_tsc = kvm_read_l1_tsc(vcpu, rdtsc()) >>
++	u64 l1_scaled_tsc = kvm_read_l1_tsc(vcpu, kvm_host_tsc()) >>
+ 			    VMX_MISC_EMULATED_PREEMPTION_TIMER_RATE;
+ 
+ 	if (!vmx->nested.has_preemption_timer_deadline) {

@@ -192,6 +192,15 @@ the job.
 
 ## Ignored tests
 
+The Guest Runtime Qualification workflow's manual `nested_host_only` run first
+requires `KVM_CAP_NESTED_STATE` and KVM-supported Intel VMX on its x86 runner, then builds the separate
+nested-host kernel and boots L1 under the named nested-host contract. The
+`Nested Host` job runs `x86_kvm_nested_host::l1_creates_kvm_vm`; missing nested
+VMX or a guest that cannot create a KVM VM fails the job. Kernel publication
+still requires the instruction audit to pass.
+An AMD runner can expose nested SVM state while lacking VMX; its positive
+nested-state capability does not qualify this Intel-only guest contract.
+
 A test marked `#[ignore]` needs something a plain `cargo test` lacks, such as a
 hypervisor or a built guest image. Each one has a runner in
 `scripts/ci_contract.py`, named as `<binary-id> <test>` the way

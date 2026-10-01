@@ -21,7 +21,7 @@ const BSP_APIC_ID: u32 = 0;
 
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 fn compose_linux_seeded<B: Backend<A = X86>>(
-    mut backend: B,
+    backend: B,
     kernel: &[u8],
     initramfs: &[u8],
     guest_ram_len: usize,
@@ -29,10 +29,31 @@ fn compose_linux_seeded<B: Backend<A = X86>>(
     cpuid: CpuidModel,
     boot_seed: Option<&[u8; 64]>,
 ) -> Result<Vmm<B>, VmmError> {
-    backend.set_policy(&X86Policy {
-        cpuid,
-        msr_filter: contract::msr_filter_allow(),
-    })?;
+    compose_linux_seeded_with_policy(
+        backend,
+        kernel,
+        initramfs,
+        guest_ram_len,
+        cmdline,
+        X86Policy {
+            cpuid,
+            msr_filter: contract::msr_filter_allow(),
+        },
+        boot_seed,
+    )
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+fn compose_linux_seeded_with_policy<B: Backend<A = X86>>(
+    mut backend: B,
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    policy: X86Policy,
+    boot_seed: Option<&[u8; 64]>,
+) -> Result<Vmm<B>, VmmError> {
+    backend.set_policy(&policy)?;
 
     let mut ram = GuestRam::new(guest_ram_len)?;
     let image: LinuxImage = linux_loader::load(
@@ -48,6 +69,8 @@ fn compose_linux_seeded<B: Backend<A = X86>>(
         linux_loader::write_rng_seed(ram.as_mut_bytes(), seed).map_err(VmmError::vendor_boot)?;
     }
 
+    // SAFETY: the page-aligned RAM allocation moves into the returned VMM,
+    // outlives its backend, and is accessed only while that backend is stopped.
     unsafe {
         backend.map_memory(Gpa(0), ram.as_mut_bytes())?;
     }
@@ -173,6 +196,47 @@ pub fn boot_linux_stock_virtual_time(
 ) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
     let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::KvmBackend::new()?);
     compose_linux_virtual_time(backend, kernel, initramfs, guest_ram_len, cmdline, seed)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn boot_linux_nested_host_virtual_time(
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    seed: u64,
+) -> Result<Vmm<vmm_backend::KvmBackend>, VmmError> {
+    let mut backend = vmm_backend::KvmBackend::new()?;
+    let cpuid = contract::NestedHostContract::cpuid_model();
+    let msrs = backend.initialize_vmx(
+        &cpuid,
+        contract::NestedHostContract::vmx_indices(),
+        contract::NestedHostContract::feature_control(),
+    )?;
+    let nested_host = contract::NestedHostContract::new(msrs)
+        .map_err(|e| VmmError::ContractViolation(e.into()))?;
+    let mut wiring =
+        crate::vmm::VtimeWiring::new_virtual_time(super::contract_vclock_config(), seed)?;
+    let mut boot_seed = [0u8; 64];
+    for chunk in boot_seed.chunks_exact_mut(8) {
+        chunk.copy_from_slice(&wiring.next_entropy_word()?.to_le_bytes());
+    }
+    let mut vmm = compose_linux_seeded_with_policy(
+        backend,
+        kernel,
+        initramfs,
+        guest_ram_len,
+        cmdline,
+        X86Policy {
+            cpuid,
+            msr_filter: contract::NestedHostContract::msr_filter(),
+        },
+        Some(&boot_seed),
+    )?;
+    vmm.devices.nested_host = Some(nested_host);
+    vmm.wire_vtime(wiring);
+    vmm.enable_pvclock();
+    Ok(vmm)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

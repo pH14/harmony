@@ -396,6 +396,9 @@ CONSONANCE_RUNTIME = Workflow(
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
         Job("Exact Runtime Artifacts", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
+        Job("Nested Host", "full", 90,
+            test_targets=("vmm-core:x86_kvm_nested_host",),
+            ignored_tests=("vmm-core::x86_kvm_nested_host l1_creates_kvm_vm",)),
     ),
 )
 
