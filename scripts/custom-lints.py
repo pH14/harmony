@@ -1703,7 +1703,10 @@ VOCABULARY_RULE = "no-prohibited-word"
 
 
 def check_repository_vocabulary(repo_root: Path, files: list[str]) -> list[Violation]:
-    """Check every tracked text file and path, including this checker."""
+    """Check every tracked text file and path, including this checker.
+
+    Lines a patch removes are upstream text that the patch must quote exactly.
+    """
     violations = []
     for rel_path in files:
         if PROHIBITED_WORD_RE.search(rel_path):
@@ -1716,7 +1719,11 @@ def check_repository_vocabulary(repo_root: Path, files: list[str]) -> list[Viola
             text = data.decode("utf-8")
         except (OSError, UnicodeError):
             continue
+        in_diff = False
         for line, content in enumerate(text.splitlines(), 1):
+            in_diff = in_diff or (rel_path.endswith(".patch") and content.startswith(("diff --git ", "--- a/")))
+            if in_diff and content.startswith("-") and not content.startswith("---"):
+                continue
             if PROHIBITED_WORD_RE.search(content):
                 violations.append(Violation(VOCABULARY_RULE, rel_path, line, content.strip()))
     return violations
