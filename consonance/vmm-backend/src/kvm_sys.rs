@@ -895,7 +895,9 @@ impl Backend for KvmBackend {
             nested_state: match self.nested_state_size {
                 Some(size) => {
                     // SAFETY: this owned stopped vCPU receives a capability-sized initialized buffer; the adapter bounds the returned size before retaining its bytes.
-                    Some(unsafe { raw_get_nested_state(self.vcpu.as_raw_fd(), size)? })
+                    let mut bytes = unsafe { raw_get_nested_state(self.vcpu.as_raw_fd(), size)? };
+                    crate::arch::x86::canonicalize_vmx_exit_info(&mut bytes)?;
+                    Some(bytes)
                 }
                 None => None,
             },
