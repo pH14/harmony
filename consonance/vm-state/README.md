@@ -9,11 +9,11 @@ hypervisor dependencies.
 
 ## Format
 
-Version 6 is a little-endian TLV container: a 10-byte header (magic, version,
+Version 7 is a little-endian TLV container: a 10-byte header (magic, version,
 architecture tag, and section count) followed by sections in ascending tag
 order. X86 records always use the current SREGS and DEBUGREGS layouts with the
 captured CPU fields (`flags` and `pdptrs`). The engine-state and
-`xsave_restore_bv` sections are optional within this current format. ARM uses
+`xsave_restore_bv` and nested-state sections are optional within this current format. ARM uses
 the same current version and retains its complete architecture-specific record
 set. Older output versions are rejected rather than decoded or re-emitted.
 Fixed-layout records use zerocopy wire types; variable sections are
@@ -41,6 +41,11 @@ are written directly into that output, without temporary section buffers.
 rest of the blob. `VM_STATE_VERSION` identifies the only writer and reader
 format. The restore-bits section is validated for wire shape here; vmm-core owns
 any backend-specific validation of the captured XSAVE image.
+
+X86 tag 16 carries the entire variable-length KVM nested-state header and
+payload. The codec checks the declared size and the supported 128–8320 byte
+bound, and preserves every byte for identity and portable export. The backend
+and VMM validate VMX format, host capability, contract, and capture boundary.
 
 ## Ownership boundaries
 

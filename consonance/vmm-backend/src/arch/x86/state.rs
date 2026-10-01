@@ -16,6 +16,7 @@ pub struct VcpuState {
     pub msrs: BTreeMap<u32, u64>,
     pub xsave: Vec<u8>,
     pub xsave_restore_bv: Option<u64>,
+    pub nested_state: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

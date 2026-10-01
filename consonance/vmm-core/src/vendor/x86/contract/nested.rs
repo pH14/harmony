@@ -130,7 +130,14 @@ mod tests {
         use vmm_backend::MockBackend;
 
         let mut ordinary = Vmm::new(MockBackend::new(), GuestRam::new(0x10000).unwrap());
-        let mut nested = Vmm::new(MockBackend::new(), GuestRam::new(0x10000).unwrap());
+        let mut backend = MockBackend::new();
+        let mut cpu = vmm_backend::VcpuState::default();
+        let mut bytes = vec![0; 128];
+        bytes[4..8].copy_from_slice(&128_u32.to_le_bytes());
+        bytes[8..24].fill(0xff);
+        cpu.nested_state = Some(bytes);
+        backend.set_state(cpu);
+        let mut nested = Vmm::new(backend, GuestRam::new(0x10000).unwrap());
         nested.devices.nested_host = Some(
             NestedHostContract::new(
                 NestedHostContract::vmx_indices()

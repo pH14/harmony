@@ -35,6 +35,8 @@ const TAG_ENGINE_STATE: u16 = 14;
 
 const TAG_XSAVE_RESTORE_BV: u16 = 15;
 
+const TAG_NESTED_STATE: u16 = 16;
+
 const HEADER_LEN: usize = 10;
 
 const MP_STATE_RUNNABLE: u8 = 0;
@@ -46,7 +48,11 @@ impl VmState {
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
         let section_count = SECTION_COUNT
             + u16::from(!self.engine_state.is_empty())
-            + u16::from(self.xsave_restore_bv.is_some());
+            + u16::from(self.xsave_restore_bv.is_some())
+            + u16::from(self.nested_state.is_some());
+        if let Some(bytes) = &self.nested_state {
+            validate_nested_shape(bytes)?;
+        }
         let mut out = Vec::with_capacity(encoding_capacity(
             [
                 size_of::<RegsWire>(),
@@ -68,7 +74,8 @@ impl VmState {
             .chain(
                 self.xsave_restore_bv
                     .map(|_| size_of::<XsaveRestoreBvWire>()),
-            ),
+            )
+            .chain(self.nested_state.as_ref().map(Vec::len)),
         )?);
         out.extend_from_slice(
             HeaderWire {
@@ -112,6 +119,9 @@ impl VmState {
             )?;
         }
 
+        if let Some(bytes) = &self.nested_state {
+            put_section(&mut out, TAG_NESTED_STATE, bytes)?;
+        }
         Ok(out)
     }
 
@@ -151,6 +161,7 @@ impl VmState {
         let mut contract_hash = None;
         let mut engine_state = None;
         let mut xsave_restore_bv = None;
+        let mut nested_state = None;
 
         for _ in 0..section_count {
             let tag = r.u16()?;
@@ -200,6 +211,10 @@ impl VmState {
                     let value = read_fixed::<XsaveRestoreBvWire>(payload)?;
                     xsave_restore_bv = Some((&value).into());
                 }
+                TAG_NESTED_STATE => {
+                    validate_nested_shape(payload)?;
+                    nested_state = Some(payload.to_vec());
+                }
                 other => return Err(VmStateError::UnknownTag(other)),
             }
         }
@@ -218,6 +233,7 @@ impl VmState {
             msrs: msrs.ok_or(VmStateError::MissingSection(TAG_MSRS))?,
             xsave: xsave.ok_or(VmStateError::MissingSection(TAG_XSAVE))?,
             xsave_restore_bv,
+            nested_state,
             vtime: vtime.ok_or(VmStateError::MissingSection(TAG_VTIME))?,
             timers: timers.ok_or(VmStateError::MissingSection(TAG_TIMERS))?,
             hypercall: hypercall.ok_or(VmStateError::MissingSection(TAG_HYPERCALL))?,
@@ -378,6 +394,15 @@ pub(crate) fn put_timers(
             period_vns: e.period_vns.into(),
         };
         out.extend_from_slice(w.as_bytes());
+    }
+    Ok(())
+}
+
+fn validate_nested_shape(bytes: &[u8]) -> Result<(), VmStateError> {
+    if !(128..=8320).contains(&bytes.len())
+        || u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize != bytes.len()
+    {
+        return Err(VmStateError::InvalidField);
     }
     Ok(())
 }

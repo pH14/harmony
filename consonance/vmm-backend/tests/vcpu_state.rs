@@ -152,6 +152,7 @@ fn arb_vcpu_state() -> impl Strategy<Value = VcpuState> {
                 msrs,
                 xsave,
                 xsave_restore_bv: None,
+                nested_state: None,
             },
         )
 }

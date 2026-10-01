@@ -545,6 +545,7 @@ dependencies = [
 name = "nested-driver"
 version = "0.1.0"
 dependencies = [
+ "consonance-client",
  "control-proto",
  "harmony-sdk",
  "hypercall-doorbell",
