@@ -211,8 +211,14 @@ mod tests {
                 ..crate::Scale::default()
             }),
         };
-        let report =
-            crate::run_scaled(&workload, crate::test_seed(), 20_000, &mut std::io::sink()).unwrap();
+        let report = crate::run_scaled(
+            &workload,
+            crate::test_seed(),
+            20_000,
+            &mut std::io::sink(),
+            crate::SearchSettings::default(),
+        )
+        .unwrap();
         assert!(report["live_entries"].as_u64().unwrap() > 5_000);
     }
 }
