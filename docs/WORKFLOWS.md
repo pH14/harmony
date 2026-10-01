@@ -37,6 +37,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
+| `Checks / Consonance / UML` | `consonance-uml.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Consonance / UML Probe` | `consonance-uml-probe.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Dissonance` | `dissonance-checks.yml` | pull_request, push |
 | `Checks / Dissonance / Analysis` | `dissonance-analysis.yml` | schedule, workflow_dispatch |
@@ -54,19 +55,25 @@ what owns it, and the linter rejects them.
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
 
-`Checks / Consonance / UML Probe` checks feasibility for the proposed UML
-backend. It generates throwaway fixtures outside the checkout, builds Linux
-6.18.35 for x86 and the arm64 UML RFC at commit
-`8897487c52233cd00cf2850008ca068892f1ae91` (7.2-rc4), each with the locked
-Nix compiler. It measures seccomp plus infinite-CPU time-travel execution on
-an ordinary Linux UID and under Docker's default seccomp profile. The
-existing Linux lock remains unchanged. The child-local filter denies ptrace
-and all KVM ioctls.
-The arm64 probe records its isolated host-header compatibility fix alongside
-the source pin; the unmodified RFC collides with the locked glibc headers.
-Cold artifact construction has a registered 45-minute exception; each execution
-job stays within 15 minutes. Reports remain workflow artifacts. These probes
-do not qualify deterministic replay, checkpoints or the etcd campaign.
+`Checks / Consonance / UML` owns the User-mode Linux profile. `UML Launcher`
+lints and tests the `uml` crate. `UML Artifacts — <Architecture>` builds the
+profile twice from the locked Nix toolchain and fails unless every artifact is
+byte-identical; two cold builds have a registered 45-minute exception.
+`UML Qualification — <Target>` runs `harmony-uml-qualify` as the runner's
+ordinary UID, natively and under Docker's default seccomp profile with every
+capability dropped. The qualifier denies ptrace and KVM ioctls to itself and
+every guest, and fails when the host is root or has effective capabilities.
+Reports remain workflow artifacts.
+
+`Checks / Consonance / UML Probe` keeps the arm64 feasibility probe until the
+arm64 profile joins `Checks / Consonance / UML`. It builds the arm64 UML RFC at
+commit `8897487c52233cd00cf2850008ca068892f1ae91` (7.2-rc4) with the locked
+Nix compiler, 4 KiB pages, and a frame-pointer-free stub, and measures seccomp
+plus infinite-CPU time-travel execution on an ordinary Linux UID and under
+Docker's default seccomp profile. It records its host-header compatibility
+fix alongside the source pin; the unmodified RFC collides with the locked
+glibc headers. Cold artifact construction has a registered 45-minute
+exception; each execution job stays within 15 minutes.
 
 ## Dissonance Workloads and Harmony Workloads
 

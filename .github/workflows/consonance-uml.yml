@@ -1,0 +1,142 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Consonance / UML
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: consonance-uml-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  launcher:
+    name: UML Launcher
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-uml-launcher
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the launcher
+        run: cargo clippy -p uml --all-features --all-targets -- -D warnings
+      - name: Profile, console and process-group tests
+        run: cargo nextest run --all-features -p uml
+
+  artifacts:
+    name: UML Artifacts — ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build twice from the locked toolchain and compare every artifact
+        run: |
+          set -euo pipefail
+          nix run .#uml-images -- --output "$RUNNER_TEMP/uml-first"
+          nix run .#uml-images -- --output "$RUNNER_TEMP/uml-second"
+          for name in linux config initramfs.cpio.gz profile.json; do
+            cmp "$RUNNER_TEMP/uml-first/$name" "$RUNNER_TEMP/uml-second/$name"
+          done
+          sha256sum "$RUNNER_TEMP"/uml-first/*
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-uml-qualify-${{ matrix.architecture }}
+      - name: Build the qualification binary
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p uml --bin harmony-uml-qualify
+          install -m 0755 target/release/harmony-uml-qualify "$RUNNER_TEMP/uml-first/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uml-artifacts-${{ github.sha }}-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/uml-first
+          if-no-files-found: error
+          retention-days: 14
+
+  qualification:
+    name: UML Qualification — ${{ matrix.target }}
+    needs: artifacts
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64 Linux
+            architecture: x86_64
+            runner: ubuntu-24.04
+            docker: false
+          - target: x86_64 Docker
+            architecture: x86_64
+            runner: ubuntu-24.04
+            docker: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: uml-artifacts-${{ github.sha }}-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/uml
+      - name: Record the host
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/uml-report" "$RUNNER_TEMP/uml-work"
+          chmod +x "$RUNNER_TEMP/uml/linux" "$RUNNER_TEMP/uml/harmony-uml-qualify"
+          {
+            id
+            uname -a
+            lscpu
+            grep -E '^(Uid|CapEff|NoNewPrivs|Seccomp):' /proc/self/status
+          } >"$RUNNER_TEMP/uml-report/host.txt"
+      - name: Qualify as an ordinary user with ptrace and KVM denied
+        if: ${{ !matrix.docker }}
+        run: |
+          "$RUNNER_TEMP/uml/harmony-uml-qualify" --profile "$RUNNER_TEMP/uml" \
+            --work "$RUNNER_TEMP/uml-work" --report "$RUNNER_TEMP/uml-report/report.json"
+      - name: Qualify under the default Docker seccomp profile with no capabilities
+        if: ${{ matrix.docker }}
+        run: |
+          set -euo pipefail
+          docker version >"$RUNNER_TEMP/uml-report/docker.txt"
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL \
+            --security-opt no-new-privileges --network none \
+            -v "$RUNNER_TEMP/uml:/uml:ro" -v "$RUNNER_TEMP/uml-work:/work" \
+            -v "$RUNNER_TEMP/uml-report:/report" ubuntu:24.04 \
+            /uml/harmony-uml-qualify --profile /uml --work /work --report /report/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uml-report-${{ github.sha }}-${{ matrix.architecture }}-${{ matrix.docker && 'docker' || 'linux' }}
+          path: ${{ runner.temp }}/uml-report
+          if-no-files-found: error
+          retention-days: 14

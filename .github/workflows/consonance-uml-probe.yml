@@ -19,14 +19,14 @@ defaults:
     shell: bash
 
 env:
-  UML_PROBE_ARCH: x86_64
+  UML_PROBE_ARCH: aarch64
 
 jobs:
-  build:
-    name: UML Probe Artifacts
-    runs-on: ubuntu-24.04
+  build-arm64:
+    name: Arm64 UML Probe Artifacts
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
-    steps: &uml_probe_build_steps
+    steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
       - name: Build throwaway probes from the unchanged kernel pin and locked compiler
@@ -389,24 +389,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  build-arm64:
-    name: Arm64 UML Probe Artifacts
+  probe-arm64:
+    name: Arm64 UML Probe — ${{ matrix.target }}
+    needs: build-arm64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
-    env:
-      UML_PROBE_ARCH: aarch64
-    steps: *uml_probe_build_steps
-
-  probe:
-    name: UML Probe — ${{ matrix.target }}
-    needs: build
-    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         target: [Linux, Docker]
-    steps: &uml_probe_execution_steps
+    steps:
       - uses: actions/download-artifact@v4
         with:
           name: uml-probe-artifacts-${{ github.sha }}-${{ env.UML_PROBE_ARCH }}
@@ -452,16 +444,3 @@ jobs:
             ${{ runner.temp }}/uml-probe/*-filter.log
           if-no-files-found: error
           retention-days: 14
-
-  probe-arm64:
-    name: Arm64 UML Probe — ${{ matrix.target }}
-    needs: build-arm64
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
-    env:
-      UML_PROBE_ARCH: aarch64
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [Linux, Docker]
-    steps: *uml_probe_execution_steps
