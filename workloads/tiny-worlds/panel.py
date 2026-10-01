@@ -28,6 +28,10 @@ MAX_WORLD_SCALE = 256
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
+    "rare flat archive crossing": ({"cells": 256, "length": 8, "rooted": False,
+                                    "action_denominator": 1024}, 1),
+    "rare fresh crossing": ({"cells": 256, "length": 8, "rooted": True,
+                             "action_denominator": 1024}, 1),
     "passive clock hidden gap": ({"passive_clock": "hidden"}, 1),
     "passive clock visible progress": ({"passive_clock": "visible"}, 1),
     "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
@@ -155,11 +159,26 @@ def world_requests(world: str, count: int) -> list[dict]:
                                           "verify": False, "keep": "portfolio"}}
         if search is not None:
             row["request"]["search"] = search
+        if "action_denominator" in fields:
+            row["request"].update({
+                "work_budget": 2_000_000,
+                "search": {"suffix": "one_to_six_within_3_max_action_cost_full_hold",
+                           "mixture": "energy_splice:6", "stop_on_objective": True},
+                "scale": {"workers": 1, "window": 2, "results_per_worker": 2,
+                          "memory_budget_mib": 8192, "archive_entries": 4096,
+                          "action_cost_ns": 0, "action_sleep_ns": 0, "snapshot_bytes": 0},
+            })
         rows.append(row)
     return rows
 
 
 def legs(report: dict) -> dict:
+    if report["config"]["family"] == "crossing" and report.get("scale") is not None:
+        entry = report["crossing"]["first_entry_execution"]
+        end = report["first_objective_execution"]
+        return {"to the goal (actions)": report["work_budget"] if end is None else report["first_objective_work"],
+                "to crossing entry (tries)": entry,
+                "crossing entry to goal (tries)": None if entry is None or end is None else end - entry}
     evidence = report["evidence"]
 
     goal = report["first_objective_work"]
@@ -321,7 +340,12 @@ WORKERS = 1
 
 
 def execute(binary: Path, job: dict) -> dict:
-    request = job["request"] if WORKERS == 1 else {**job["request"], "workers": WORKERS}
+    request = job["request"]
+    if WORKERS != 1:
+        if request.get("scale") is not None:
+            request = {**request, "scale": {**request["scale"], "workers": WORKERS, "window": WORKERS}}
+        else:
+            request = {**request, "workers": WORKERS}
     process = subprocess.run([str(binary)], input=json.dumps(request),
                              capture_output=True, text=True, check=False)
     if process.returncode:

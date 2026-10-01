@@ -203,6 +203,8 @@ impl<const CAPACITY_TWO: bool> ArchiveKey for Key<CAPACITY_TWO> {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Evidence {
     pub crossing_first_entry_work: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crossing_first_entry_execution: Option<u64>,
     pub crossing_actions: u64,
     pub crossing_pool_actions: u64,
     pub route_trace: Vec<route::Trace>,
@@ -434,6 +436,13 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
             "tiny_actions".into(),
             if matches!(self.config, World::PassiveClock(_)) {
                 "weighted_hold_bands_v1".into()
+            } else if let World::Crossing(w) = &self.config
+                && w.action_denominator.is_some()
+            {
+                format!(
+                    "crossing-action-denominator-{}-v1",
+                    w.action_denominator.unwrap()
+                )
             } else if self.config.changes_actions() && self.broken {
                 "frozen-land-v1".into()
             } else {
@@ -451,6 +460,9 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
     }
     fn sample_alphabet(&self, _: &(), rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
         if let World::PassiveClock(w) = &self.config {
+            return Ok(w.sample(rand));
+        }
+        if let World::Crossing(w) = &self.config {
             return Ok(w.sample(rand));
         }
         Ok(self
@@ -816,9 +828,11 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                 (World::Crossing(w), State::Crossing(before), State::Crossing(after)) => {
                     if w.rooted {
                         e.crossing_first_entry_work.get_or_insert(0);
+                        e.crossing_first_entry_execution.get_or_insert(0);
                     }
                     if before.position < w.cells && after.position >= w.cells {
                         e.crossing_first_entry_work.get_or_insert(reached_work);
+                        e.crossing_first_entry_execution.get_or_insert(sequence);
                     }
                     if !w.goal(before) {
                         e.crossing_actions += u64::from(before.position >= w.cells);
@@ -917,12 +931,19 @@ pub fn run_scaled(
         "executions": report.executions_completed,
         "work_unit": workload.config.work_unit(),
         "passive_clock": report.archive.evidence.passive_clock,
+        "crossing": matches!(workload.config, World::Crossing(_)).then(|| serde_json::json!({
+            "first_entry_execution": report.archive.evidence.crossing_first_entry_execution,
+            "first_entry_work": report.archive.evidence.crossing_first_entry_work,
+            "exit_actions": report.archive.evidence.crossing_actions,
+            "pool_actions": report.archive.evidence.crossing_pool_actions,
+        })),
         "suffix_policy": report.suffix_policy,
         "mixture_policy": report.mixture_policy,
         "stop_on_objective": report.stop_campaign_on_objective,
         "success": report.work_to_first_objective.is_some_and(|w| w <= budget),
         "elapsed_seconds": elapsed,
         "stream_bytes": stream.0,
+        "stream_sha256": report.stream_sha256,
         "resident_memory_bytes": report.resident_memory_bytes,
         "live_entries": report.live_entries,
         "selector": report.archive.selector,
