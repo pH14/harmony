@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use uml::{
-    Capture, Checkpoint, Event, Exit, Guest, Launch, Session, SessionError, Stop, VerifiedProfile,
-    event_hash,
+    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, Session, SessionError, Stop,
+    VerifiedProfile, event_hash,
 };
 
 use crate::filter;
@@ -18,7 +18,8 @@ struct Costs {
     capture_ms: Vec<f64>,
     restore_ms: Vec<f64>,
     image_bytes: Vec<u64>,
-    allocated_bytes: Vec<u64>,
+    owned_bytes: Vec<u64>,
+    missed_writes: Vec<u64>,
 }
 
 struct Points {
@@ -100,7 +101,12 @@ fn diamonds(
     let mut failures = Vec::new();
     for round in 0..options.diamonds {
         let randomized = round % 2 == 1;
-        match diamond(profile, base, reference, points, randomized, &mut costs) {
+        let audit = round < 2;
+        let mut audited = Costs::default();
+        let timed = if audit { &mut audited } else { &mut costs };
+        let outcome = diamond(profile, base, reference, points, randomized, audit, timed);
+        costs.missed_writes.extend(audited.missed_writes);
+        match outcome {
             Ok(None) => {}
             Ok(Some(failure)) => {
                 failures.push(json!({"round": round, "randomized": randomized, "failure": failure}))
@@ -118,6 +124,7 @@ fn diamonds(
             "event_hash": event_hash(reference),
             "points": [points.first, points.second, points.third],
             "diamonds": options.diamonds,
+            "audited_diamonds": options.diamonds.min(2),
             "captures": costs.capture_ms.len(),
             "restores": costs.restore_ms.len(),
             "costs": costs.report(),
@@ -132,10 +139,21 @@ fn diamond(
     reference: &[Event],
     points: &Points,
     randomized: bool,
+    audit: bool,
     costs: &mut Costs,
 ) -> Result<Option<Value>, SessionError> {
-    let mut session = start(profile, base, randomized, None)?;
-    match diamond_steps(&mut session, reference, points, costs) {
+    let checkpoints = Checkpoints::new();
+    let mut session = start(profile, base, randomized, &checkpoints, None)?;
+    session.set_audit(audit);
+    let outcome = diamond_steps(&mut session, reference, points, costs);
+    let missed = session.missed_writes().to_vec();
+    if !missed.is_empty() {
+        costs.missed_writes.extend(&missed);
+        return Ok(Some(
+            json!({"missed_writes": missed.len(), "frames": &missed[..missed.len().min(32)]}),
+        ));
+    }
+    match outcome {
         Ok(None) => finished(session.run()?, reference),
         Ok(Some(failure)) => Ok(Some(failure)),
         Err(error) => Ok(Some(json!({
@@ -185,7 +203,8 @@ fn fresh(
     let mut costs = Costs::default();
     let mut outcomes = Vec::new();
     let run = |costs: &mut Costs, randomized: bool| -> Result<Vec<Option<Value>>, SessionError> {
-        let mut session = start(profile, base, false, None)?;
+        let checkpoints = Checkpoints::new();
+        let mut session = start(profile, base, false, &checkpoints, None)?;
         let mut captured = Vec::new();
         for point in [points.first, points.second] {
             if let Some(failure) = pause(&mut session, point, reference)? {
@@ -198,7 +217,7 @@ fn fresh(
             .iter()
             .map(|checkpoint| {
                 let started = now();
-                let session = start(profile, base, randomized, Some(checkpoint))?;
+                let session = start(profile, base, randomized, &checkpoints, Some(checkpoint))?;
                 costs.restore_ms.push(milliseconds(started.elapsed()));
                 if session.events() != checkpoint.events() {
                     return Ok(Some(
@@ -245,7 +264,8 @@ fn omitted_host_memory(
     let mut launch = base.clone();
     launch.wall_limit = Duration::from_secs(30);
     let outcome = (|| -> Result<Value, SessionError> {
-        let mut session = start(profile, &launch, false, None)?;
+        let checkpoints = Checkpoints::new();
+        let mut session = start(profile, &launch, false, &checkpoints, None)?;
         if let Some(failure) = pause(&mut session, points.first, reference)? {
             return Ok(json!({"setup": failure}));
         }
@@ -268,7 +288,8 @@ fn omitted_bridge_state(
     points: &Points,
 ) -> Value {
     let outcome = (|| -> Result<Value, SessionError> {
-        let mut session = start(profile, base, false, None)?;
+        let checkpoints = Checkpoints::new();
+        let mut session = start(profile, base, false, &checkpoints, None)?;
         if let Some(failure) = pause(&mut session, points.first, reference)? {
             return Ok(json!({"setup": failure}));
         }
@@ -277,7 +298,7 @@ fn omitted_bridge_state(
             return Ok(json!({"setup": failure}));
         }
         let current = session.capture(Capture::default())?;
-        session.restore(&first.with_bridge_of(&current)?)?;
+        session.restore(&first.with_bridge_of(&current))?;
         Ok(diverged(session.run()?, reference))
     })();
     omission("planted_omission_bridge_state", outcome)
@@ -308,6 +329,7 @@ fn start(
     profile: &VerifiedProfile,
     base: &Launch,
     randomized: bool,
+    checkpoints: &Checkpoints,
     restore: Option<&Checkpoint>,
 ) -> Result<Session, SessionError> {
     let work = base.work_directory()?;
@@ -315,7 +337,7 @@ fn start(
     if randomized {
         filter::deny_personality_change(&mut command);
     }
-    Session::start(command, work, base, restore)
+    Session::start(command, work, base, checkpoints, restore)
 }
 
 fn pause(
@@ -355,7 +377,7 @@ impl Costs {
         let checkpoint = session.capture(capture)?;
         self.capture_ms.push(milliseconds(started.elapsed()));
         self.image_bytes.push(checkpoint.bytes());
-        self.allocated_bytes.push(checkpoint.allocated_bytes()?);
+        self.owned_bytes.push(checkpoint.owned_pages() * 4096);
         Ok(checkpoint)
     }
 
@@ -375,7 +397,8 @@ impl Costs {
             "capture_ms": spread(&self.capture_ms),
             "restore_ms": spread(&self.restore_ms),
             "image_bytes": spread(&self.image_bytes.iter().map(|bytes| *bytes as f64).collect::<Vec<_>>()),
-            "allocated_bytes": spread(&self.allocated_bytes.iter().map(|bytes| *bytes as f64).collect::<Vec<_>>()),
+            "owned_bytes": spread(&self.owned_bytes.iter().map(|bytes| *bytes as f64).collect::<Vec<_>>()),
+            "missed_writes": self.missed_writes.len(),
         })
     }
 }

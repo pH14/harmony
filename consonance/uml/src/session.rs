@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -9,20 +9,27 @@ use environment::channel::ServiceHandler;
 use environment::input_spec::ServiceFactory;
 use hypercall_proto::MAX_FRAME;
 use sha2::{Digest, Sha256};
+use snapshot_store::{PAGE_SIZE, PageHash};
 use tempfile::TempDir;
 
 use crate::bridge::{self, Event, Reader, STAMP_LEN, Services, Signal};
-use crate::launch::{Exit, ExitReason, Guest, Launch, LaunchError};
+use crate::launch::{Exit, ExitReason, Guest, Launch, LaunchError, PHYSMEM_FD};
+use crate::memory::{
+    Checkpoints, GuestMemory, IMAGE_PAGES, MemoryError, Snapshot, data_extents, image_state,
+};
 use crate::profile::VerifiedProfile;
 
 const CONTROL_MAGIC: u32 = 0x3143_5548;
 const CAPTURE: u32 = 1;
 const RESTORE: u32 = 2;
+const MEMORY: u32 = 4;
+const CONTINUE: u32 = 5;
+const MEMORY_ALL: i64 = 1;
 const OMIT_HOST_MEMORY: u64 = 1;
 const CONTROL_LEN: usize = 16;
 const POLL: Duration = Duration::from_millis(5);
 const RESTORE_ARGUMENT: &str = "harmony_restore";
-const EXPORT_MAGIC: &[u8; 8] = b"HUMLCKP1";
+const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP2";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
@@ -54,6 +61,8 @@ pub enum SessionError {
     Launch(#[from] LaunchError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
     #[error("a session needs a bridge")]
     NoBridge,
     #[error("the guest is not paused at a request")]
@@ -77,16 +86,19 @@ pub enum SessionError {
 
 #[derive(Debug)]
 pub struct Checkpoint {
-    image: OwnedFd,
-    bytes: u64,
+    memory: Snapshot,
     services: Services,
     request: Vec<u8>,
 }
 
-pub struct Export<'a> {
-    checkpoint: &'a Checkpoint,
-    services: Vec<u8>,
-    extents: Vec<(u64, u64)>,
+enum Ack {
+    Done(i64),
+    Memory(Report),
+}
+
+enum Report {
+    All,
+    Dirty(Vec<u64>),
 }
 
 pub struct Session {
@@ -98,6 +110,12 @@ pub struct Session {
     progress_limit: Option<Duration>,
     request: Vec<u8>,
     response: Vec<u8>,
+    memory: GuestMemory,
+    checkpoints: Checkpoints,
+    memory_at: Option<Snapshot>,
+    image_at: Option<Snapshot>,
+    audit: bool,
+    missed: Vec<u64>,
 }
 
 impl Checkpoint {
@@ -106,38 +124,67 @@ impl Checkpoint {
     }
 
     pub fn bytes(&self) -> u64 {
-        self.bytes
+        self.memory.image_bytes()
+    }
+
+    pub fn owned_pages(&self) -> u64 {
+        self.memory.owned_pages()
     }
 
     pub fn moment(&self) -> u64 {
         stamp(&self.request).unwrap_or(self.services.latest)
     }
 
-    pub fn allocated_bytes(&self) -> io::Result<u64> {
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
-        // SAFETY: `stat` points to a live, writable stat buffer for the call
-        // and `image` is an open descriptor owned by this checkpoint.
-        if unsafe { libc::fstat(self.image.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
+    pub fn with_bridge_of(&self, other: &Checkpoint) -> Checkpoint {
+        Checkpoint {
+            memory: self.memory.share(),
+            services: other.services.clone(),
+            request: other.request.clone(),
         }
-        // SAFETY: fstat(2) succeeded, so it initialized the buffer.
-        let stat = unsafe { stat.assume_init() };
-        Ok(u64::try_from(stat.st_blocks).unwrap_or(0) * 512)
     }
 
-    pub fn export(&self) -> Result<Export<'_>, SessionError> {
-        Ok(Export {
-            checkpoint: self,
-            services: self.services.encode().map_err(SessionError::Protocol)?,
-            extents: data_extents(&self.image, self.bytes)?,
-        })
+    pub fn sidecar(&self) -> Result<Vec<u8>, SessionError> {
+        let services = self.services.encode().map_err(SessionError::Protocol)?;
+        let mut out =
+            Vec::with_capacity(SIDECAR_MAGIC.len() + 24 + services.len() + self.request.len());
+        out.extend_from_slice(SIDECAR_MAGIC);
+        out.extend_from_slice(&self.bytes().to_le_bytes());
+        out.extend_from_slice(&(services.len() as u64).to_le_bytes());
+        out.extend_from_slice(&services);
+        out.extend_from_slice(&(self.request.len() as u64).to_le_bytes());
+        out.extend_from_slice(&self.request);
+        Ok(out)
+    }
+}
+
+impl Checkpoints {
+    pub fn delta<R>(
+        &self,
+        base: &Checkpoint,
+        parent: Option<&Checkpoint>,
+        target: &Checkpoint,
+        use_delta: impl FnOnce(&[(u64, &PageHash, &[u8; PAGE_SIZE])], &[u64]) -> R,
+    ) -> Result<R, SessionError> {
+        Ok(self.delta_pages(
+            &base.memory,
+            parent.map(|parent| &parent.memory),
+            &target.memory,
+            |delta| use_delta(&delta.changed, &delta.reverted),
+        )?)
     }
 
-    pub fn import(bytes: &[u8], factory: &ServiceFactory) -> Result<Self, SessionError> {
-        let malformed = |what: &str| SessionError::Protocol(format!("checkpoint export: {what}"));
+    pub fn import(
+        &self,
+        base: &Checkpoint,
+        near: &Checkpoint,
+        pages: &[(u64, &PageHash, &[u8; PAGE_SIZE])],
+        sidecar: &[u8],
+        factory: &ServiceFactory,
+    ) -> Result<Checkpoint, SessionError> {
+        let malformed = |what: &str| SessionError::Protocol(format!("checkpoint sidecar: {what}"));
         let mut reader = Reader(
-            bytes
-                .strip_prefix(EXPORT_MAGIC)
+            sidecar
+                .strip_prefix(SIDECAR_MAGIC)
                 .ok_or_else(|| malformed("magic"))?,
         );
         let length = |reader: &mut Reader<'_>| {
@@ -146,94 +193,19 @@ impl Checkpoint {
                 .and_then(|length| usize::try_from(length).map_err(|error| error.to_string()))
                 .map_err(SessionError::Protocol)
         };
-        let logical = reader.u64().map_err(SessionError::Protocol)?;
+        let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
         let services = length(&mut reader)
             .and_then(|services| reader.take(services).map_err(SessionError::Protocol))?;
         let services = Services::decode(services, factory).map_err(SessionError::Protocol)?;
         let request = length(&mut reader)
             .and_then(|request| reader.take(request).map_err(SessionError::Protocol))?
             .to_vec();
-        let count = reader.u64().map_err(SessionError::Protocol)?;
-        let mut extents = Vec::new();
-        for _ in 0..count {
-            let offset = reader.u64().map_err(SessionError::Protocol)?;
-            extents.push((offset, length(&mut reader)?));
-        }
-        let image = memfd()?;
-        resize(&image, logical)?;
-        for (offset, length) in extents {
-            if offset
-                .checked_add(length as u64)
-                .is_none_or(|end| end > logical)
-            {
-                return Err(malformed("extent outside the image"));
-            }
-            let data = reader.take(length).map_err(SessionError::Protocol)?;
-            write_at(&image, data, offset)?;
-        }
-        Ok(Self {
-            image,
-            bytes: logical,
+        let memory = self.import_pages(&base.memory, &near.memory, pages, image_bytes)?;
+        Ok(Checkpoint {
+            memory,
             services,
             request,
         })
-    }
-
-    pub fn with_bridge_of(&self, other: &Checkpoint) -> io::Result<Checkpoint> {
-        Ok(Checkpoint {
-            image: self.image.try_clone()?,
-            bytes: self.bytes,
-            services: other.services.clone(),
-            request: other.request.clone(),
-        })
-    }
-}
-
-impl Export<'_> {
-    pub fn len(&self) -> usize {
-        let data: u64 = self.extents.iter().map(|(_, length)| length).sum();
-        EXPORT_MAGIC.len()
-            + 8 * 5
-            + self.services.len()
-            + self.checkpoint.request.len()
-            + 16 * self.extents.len()
-            + usize::try_from(data).unwrap_or(usize::MAX)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        false
-    }
-
-    pub fn write(&self, out: &mut [u8]) -> Result<(), SessionError> {
-        if out.len() != self.len() {
-            return Err(SessionError::Protocol(format!(
-                "checkpoint export needs {} bytes, given {}",
-                self.len(),
-                out.len()
-            )));
-        }
-        let mut at = 0;
-        let mut put = |bytes: &[u8]| {
-            out[at..at + bytes.len()].copy_from_slice(bytes);
-            at += bytes.len();
-        };
-        put(EXPORT_MAGIC);
-        put(&self.checkpoint.bytes.to_le_bytes());
-        put(&(self.services.len() as u64).to_le_bytes());
-        put(&self.services);
-        put(&(self.checkpoint.request.len() as u64).to_le_bytes());
-        put(&self.checkpoint.request);
-        put(&(self.extents.len() as u64).to_le_bytes());
-        for (offset, length) in &self.extents {
-            put(&offset.to_le_bytes());
-            put(&length.to_le_bytes());
-        }
-        for &(offset, length) in &self.extents {
-            let length = usize::try_from(length).unwrap_or(usize::MAX);
-            read_at(&self.checkpoint.image, &mut out[at..at + length], offset)?;
-            at += length;
-        }
-        Ok(())
     }
 }
 
@@ -241,24 +213,34 @@ impl Session {
     pub fn spawn(
         launch: &Launch,
         profile: &VerifiedProfile,
+        checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
     ) -> Result<Self, SessionError> {
         let work = launch.work_directory()?;
         let command = launch.command(profile, work.path())?;
-        Self::start(command, work, launch, restore)
+        Self::start(command, work, launch, checkpoints, restore)
     }
 
     pub fn start(
         mut command: Command,
         work: TempDir,
         launch: &Launch,
+        checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
     ) -> Result<Self, SessionError> {
         let bridge = launch.bridge.ok_or(SessionError::NoBridge)?;
+        let memory = GuestMemory::new()?;
+        command.arg(format!("harmony_physmem={PHYSMEM_FD}"));
         if restore.is_some() {
             command.arg(RESTORE_ARGUMENT);
         }
-        let (guest, socket) = Guest::start_bridged(command, work, launch, false)?;
+        let (guest, socket) = Guest::start_bridged(
+            command,
+            work,
+            launch,
+            false,
+            Some(memory.physmem.try_clone()?),
+        )?;
         let socket = socket.ok_or(SessionError::NoBridge)?;
         let mut session = Self {
             guest,
@@ -269,6 +251,12 @@ impl Session {
             progress_limit: None,
             request: vec![0; STAMP_LEN + MAX_FRAME],
             response: vec![0; MAX_FRAME],
+            memory,
+            checkpoints: checkpoints.clone(),
+            memory_at: None,
+            image_at: None,
+            audit: false,
+            missed: Vec::new(),
         };
         if let Some(checkpoint) = restore
             && let Err(error) = session.restore_at_boot(checkpoint)
@@ -370,16 +358,83 @@ impl Session {
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {
         let request = self.pending.clone().ok_or(SessionError::NotPaused)?;
-        let image = memfd()?;
         let flags = if capture.omit_host_memory {
             OMIT_HOST_MEMORY
         } else {
             0
         };
-        let bytes = self.control(CAPTURE, flags, &image, "capture")?;
+        self.send_control(CAPTURE, flags, true)?;
+        let Ack::Memory(report) = self.acknowledgement(CAPTURE, "capture")? else {
+            return Err(SessionError::Protocol(
+                "the guest captured without reporting its memory".into(),
+            ));
+        };
+        let previous = self.memory_at.take();
+        let previous_image = self.image_at.take();
+        let physmem_bytes = self.memory.map()?;
+        let checkpoints = self.checkpoints.clone();
+        let mut pages = checkpoints.pages(physmem_bytes)?;
+        let parent = match (&report, &previous) {
+            (Report::Dirty(_), Some(at)) => at.id(),
+            _ => pages.root,
+        };
+        let parent_image = pages.image_bytes(parent)?;
+        let written = self.physmem_pages(&report, physmem_bytes)?;
+        // SAFETY: the guest waits for CONTINUE, so its physical memory does not
+        // change, and the image file keeps its full length until the guest
+        // writes the image after CONTINUE.
+        let bytes = unsafe { self.memory.bytes() }.ok_or(MemoryError::Empty)?;
+        if self.audit && matches!(report, Report::Dirty(_)) && previous.is_some() {
+            let missed = self.unexpected_pages(&pages, parent, &written, physmem_bytes, bytes)?;
+            self.missed.extend(missed);
+        }
+        let mut builder = pages.store.derive(parent).map_err(MemoryError::from)?;
+        for gfn in written {
+            let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
+            builder
+                .write_page(gfn, &bytes[at..at + PAGE_SIZE])
+                .map_err(MemoryError::from)?;
+        }
+        self.send_continue()?;
+        let outcome = match self.acknowledgement(CAPTURE, "capture") {
+            Ok(Ack::Done(length)) => {
+                let length = length.unsigned_abs();
+                self.memory
+                    .restore_image_size(length)
+                    .map(|()| length)
+                    .map_err(SessionError::from)
+            }
+            Ok(Ack::Memory(_)) => Err(SessionError::Protocol(
+                "the guest reported its memory twice".into(),
+            )),
+            Err(error) => Err(error),
+        };
+        let length = match outcome {
+            Ok(length) => length,
+            Err(error) => {
+                let id = builder.seal(image_state(parent_image));
+                drop(pages);
+                self.memory_at = Some(checkpoints.adopt(id));
+                return Err(error);
+            }
+        };
+        let image_pages = length.max(parent_image).div_ceil(PAGE_SIZE as u64);
+        for gfn in 0..image_pages {
+            let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
+            builder
+                .write_page(gfn, &bytes[at..at + PAGE_SIZE])
+                .map_err(MemoryError::from)?;
+        }
+        let id = builder.seal(image_state(length));
+        let id = pages.shorten(id, bytes)?;
+        drop(pages);
+        drop(previous);
+        drop(previous_image);
+        let memory = checkpoints.adopt(id);
+        self.memory_at = Some(memory.share());
+        self.image_at = Some(memory.share());
         Ok(Checkpoint {
-            image,
-            bytes: bytes.unsigned_abs(),
+            memory,
             services: self.services.clone(),
             request,
         })
@@ -393,10 +448,146 @@ impl Session {
     }
 
     fn restore_from(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
-        self.control(RESTORE, 0, &checkpoint.image, "restore")?;
+        let physmem_bytes = self.memory.map()?;
+        let checkpoints = self.checkpoints.clone();
+        let target = checkpoint.memory.id();
+        let previous_image = self.image_at.take();
+        {
+            let pages = checkpoints.pages(physmem_bytes)?;
+            let from = match &previous_image {
+                Some(at) => at.id(),
+                None => {
+                    self.memory.clear_image()?;
+                    pages.root
+                }
+            };
+            // SAFETY: the image file has its full length and only the host
+            // writes it while the guest is paused.
+            let bytes = unsafe { self.memory.bytes() }.ok_or(MemoryError::Empty)?;
+            let plan = pages
+                .store
+                .restore_pages(Some(from), target, &[])
+                .map_err(MemoryError::from)?;
+            for (gfn, data) in plan.into_iter().take_while(|(gfn, _)| *gfn < IMAGE_PAGES) {
+                let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
+                bytes[at..at + PAGE_SIZE].copy_from_slice(data);
+            }
+        }
+        drop(previous_image);
+        self.image_at = Some(checkpoint.memory.share());
+        self.send_control(RESTORE, 0, true)?;
+        let Ack::Memory(report) = self.acknowledgement(RESTORE, "restore")? else {
+            return Err(SessionError::Protocol(
+                "the guest restored without reporting its memory".into(),
+            ));
+        };
+        let previous = self.memory_at.take();
+        {
+            let pages = checkpoints.pages(physmem_bytes)?;
+            let (from, dirty) = match (&report, &previous) {
+                (Report::Dirty(_), Some(at)) => {
+                    (at.id(), self.physmem_pages(&report, physmem_bytes)?)
+                }
+                _ => {
+                    self.memory.clear_physmem()?;
+                    (pages.root, Vec::new())
+                }
+            };
+            // SAFETY: the guest waits for CONTINUE, so only the host touches
+            // its physical memory until then.
+            let bytes = unsafe { self.memory.bytes() }.ok_or(MemoryError::Empty)?;
+            let plan = pages
+                .store
+                .restore_pages(Some(from), target, &dirty)
+                .map_err(MemoryError::from)?;
+            for (gfn, data) in plan {
+                if gfn < IMAGE_PAGES {
+                    continue;
+                }
+                let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
+                bytes[at..at + PAGE_SIZE].copy_from_slice(data);
+            }
+            if self.audit {
+                let missed = self.unexpected_pages(&pages, target, &[], physmem_bytes, bytes)?;
+                self.missed.extend(missed);
+            }
+        }
+        drop(previous);
+        self.memory_at = Some(checkpoint.memory.share());
+        self.send_continue()?;
+        let Ack::Done(_) = self.acknowledgement(RESTORE, "restore")? else {
+            return Err(SessionError::Protocol(
+                "the guest reported its memory twice".into(),
+            ));
+        };
         self.services = checkpoint.services.clone();
         self.pending = Some(checkpoint.request.clone());
         Ok(())
+    }
+
+    pub fn set_audit(&mut self, audit: bool) {
+        self.audit = audit;
+    }
+
+    pub fn missed_writes(&self) -> &[u64] {
+        &self.missed
+    }
+
+    fn unexpected_pages(
+        &self,
+        pages: &crate::memory::Pages,
+        expected: snapshot_store::SnapshotId,
+        skip: &[u64],
+        physmem_bytes: usize,
+        bytes: &[u8],
+    ) -> Result<Vec<u64>, SessionError> {
+        let mut candidates = self.physmem_pages(&Report::All, physmem_bytes)?;
+        candidates.extend(
+            pages
+                .store
+                .restore_pages(Some(pages.root), expected, &[])
+                .map_err(MemoryError::from)?
+                .into_iter()
+                .map(|(gfn, _)| gfn)
+                .filter(|&gfn| gfn >= IMAGE_PAGES),
+        );
+        candidates.sort_unstable();
+        candidates.dedup();
+        let mut stored = [0_u8; PAGE_SIZE];
+        let mut missed = Vec::new();
+        for gfn in candidates {
+            if skip.binary_search(&gfn).is_ok() {
+                continue;
+            }
+            pages
+                .store
+                .read_page(expected, gfn, &mut stored)
+                .map_err(MemoryError::from)?;
+            let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
+            if bytes[at..at + PAGE_SIZE] != stored {
+                missed.push(gfn - IMAGE_PAGES);
+            }
+        }
+        Ok(missed)
+    }
+
+    fn physmem_pages(&self, report: &Report, physmem_bytes: usize) -> io::Result<Vec<u64>> {
+        let frames = (physmem_bytes / PAGE_SIZE) as u64;
+        Ok(match report {
+            Report::Dirty(frames_written) => frames_written
+                .iter()
+                .filter(|&&frame| frame < frames)
+                .map(|frame| IMAGE_PAGES + frame)
+                .collect(),
+            Report::All => data_extents(&self.memory.physmem, physmem_bytes as u64)?
+                .into_iter()
+                .flat_map(|(offset, length)| {
+                    let first = offset / PAGE_SIZE as u64;
+                    first..(offset + length).div_ceil(PAGE_SIZE as u64)
+                })
+                .map(|frame| IMAGE_PAGES + frame)
+                .collect(),
+        })
     }
 
     fn serve(&mut self, until: Until) -> Result<Stop, SessionError> {
@@ -497,18 +688,27 @@ impl Session {
         }
     }
 
-    fn control(
-        &mut self,
-        command: u32,
-        flags: u64,
-        image: &OwnedFd,
-        operation: &'static str,
-    ) -> Result<i64, SessionError> {
+    fn send_control(&mut self, command: u32, flags: u64, image: bool) -> io::Result<()> {
         let mut message = [0_u8; CONTROL_LEN];
         message[..4].copy_from_slice(&CONTROL_MAGIC.to_le_bytes());
         message[4..8].copy_from_slice(&command.to_le_bytes());
         message[8..].copy_from_slice(&flags.to_le_bytes());
-        send_with_fd(&self.socket, &message, image)?;
+        if image {
+            send_with_fd(&self.socket, &message, &self.memory.image)
+        } else {
+            bridge::send(&self.socket, &message)
+        }
+    }
+
+    fn send_continue(&mut self) -> io::Result<()> {
+        self.send_control(CONTINUE, 0, false)
+    }
+
+    fn acknowledgement(
+        &mut self,
+        command: u32,
+        operation: &'static str,
+    ) -> Result<Ack, SessionError> {
         let length = self.receive()?;
         let ack = &self.request[..length];
         let (Some(magic), Some(acked), Some(result)) =
@@ -521,10 +721,14 @@ impl Session {
         let magic = u32::from_le_bytes(magic.try_into().unwrap_or_default());
         let acked = u32::from_le_bytes(acked.try_into().unwrap_or_default());
         let result = i64::from_le_bytes(result.try_into().unwrap_or_default());
-        if length != CONTROL_LEN || magic != CONTROL_MAGIC || acked != command {
+        if length != CONTROL_LEN || magic != CONTROL_MAGIC || (acked != command && acked != MEMORY)
+        {
             return Err(SessionError::Protocol(format!(
                 "expected a {operation} acknowledgement, received command {acked}"
             )));
+        }
+        if acked == MEMORY {
+            return self.memory_report(result).map(Ack::Memory);
         }
         if result < 0 {
             return Err(SessionError::Refused {
@@ -532,7 +736,33 @@ impl Session {
                 errno: -result,
             });
         }
-        Ok(result)
+        Ok(Ack::Done(result))
+    }
+
+    fn memory_report(&mut self, flags: i64) -> Result<Report, SessionError> {
+        if flags & MEMORY_ALL != 0 {
+            return Ok(Report::All);
+        }
+        let frames = self.memory.physmem_bytes()? / PAGE_SIZE;
+        let bitmap = frames.div_ceil(64) * 8;
+        if self.request.len() < bitmap {
+            self.request.resize(bitmap, 0);
+        }
+        let length = self.receive()?;
+        if length != bitmap {
+            return Err(SessionError::Protocol(format!(
+                "expected a {bitmap}-byte memory bitmap, received {length} bytes"
+            )));
+        }
+        let mut written = Vec::new();
+        for (index, word) in self.request[..bitmap].chunks_exact(8).enumerate() {
+            let mut word = u64::from_le_bytes(word.try_into().unwrap_or_default());
+            while word != 0 {
+                written.push(index as u64 * 64 + u64::from(word.trailing_zeros()));
+                word &= word - 1;
+            }
+        }
+        Ok(Report::Dirty(written))
     }
 
     fn finish(&mut self, reason: ExitReason) -> Result<Exit, SessionError> {
@@ -560,94 +790,6 @@ fn stamp(request: &[u8]) -> Option<u64> {
 )]
 fn now() -> Instant {
     Instant::now()
-}
-
-fn data_extents(image: &OwnedFd, logical: u64) -> io::Result<Vec<(u64, u64)>> {
-    let mut extents = Vec::new();
-    let mut at = 0;
-    while at < logical {
-        let offset = i64::try_from(at).map_err(io::Error::other)?;
-        // SAFETY: lseek(2) reads only its integer arguments; `image` is open.
-        let start = unsafe { libc::lseek(image.as_raw_fd(), offset, libc::SEEK_DATA) };
-        if start < 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ENXIO) {
-                break;
-            }
-            return Err(error);
-        }
-        // SAFETY: as above, with the data offset just returned.
-        let end = unsafe { libc::lseek(image.as_raw_fd(), start, libc::SEEK_HOLE) };
-        if end < start {
-            return Err(io::Error::last_os_error());
-        }
-        let (start, end) = (start.unsigned_abs(), end.unsigned_abs().min(logical));
-        extents.push((start, end - start));
-        at = end;
-    }
-    Ok(extents)
-}
-
-fn resize(image: &OwnedFd, length: u64) -> io::Result<()> {
-    let length = i64::try_from(length).map_err(io::Error::other)?;
-    // SAFETY: ftruncate(2) reads only its integer arguments; `image` is open.
-    if unsafe { libc::ftruncate(image.as_raw_fd(), length) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn read_at(image: &OwnedFd, mut out: &mut [u8], mut offset: u64) -> io::Result<()> {
-    while !out.is_empty() {
-        let at = i64::try_from(offset).map_err(io::Error::other)?;
-        // SAFETY: `out` is a live, writable buffer of `out.len()` bytes.
-        let read =
-            unsafe { libc::pread(image.as_raw_fd(), out.as_mut_ptr().cast(), out.len(), at) };
-        match read {
-            0 => return Err(io::ErrorKind::UnexpectedEof.into()),
-            read if read < 0 => {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
-            }
-            read => {
-                out = &mut out[read.unsigned_abs()..];
-                offset += read.unsigned_abs() as u64;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_at(image: &OwnedFd, mut bytes: &[u8], mut offset: u64) -> io::Result<()> {
-    while !bytes.is_empty() {
-        let at = i64::try_from(offset).map_err(io::Error::other)?;
-        // SAFETY: `bytes` is a live buffer of `bytes.len()` bytes.
-        let written =
-            unsafe { libc::pwrite(image.as_raw_fd(), bytes.as_ptr().cast(), bytes.len(), at) };
-        if written < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-            continue;
-        }
-        bytes = &bytes[written.unsigned_abs()..];
-        offset += written.unsigned_abs() as u64;
-    }
-    Ok(())
-}
-
-fn memfd() -> io::Result<OwnedFd> {
-    // SAFETY: the name is a NUL-terminated string that outlives the call.
-    let fd = unsafe { libc::memfd_create(c"harmony-uml-checkpoint".as_ptr(), libc::MFD_CLOEXEC) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: memfd_create(2) succeeded, so `fd` is open and owned by nothing
-    // else.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 fn send_with_fd(socket: &OwnedFd, message: &[u8], fd: &OwnedFd) -> io::Result<()> {
@@ -695,13 +837,15 @@ fn send_with_fd(socket: &OwnedFd, message: &[u8], fd: &OwnedFd) -> io::Result<()
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::FromRawFd;
+
     use super::*;
 
     #[test]
     #[cfg_attr(miri, ignore)]
     fn control_messages_carry_the_image_descriptor() {
         let (host, guest) = bridge::socket_pair().unwrap();
-        let image = memfd().unwrap();
+        let image = crate::memory::memfd(c"harmony-uml-test").unwrap();
         let message = [7_u8; CONTROL_LEN];
         send_with_fd(&host, &message, &image).unwrap();
 

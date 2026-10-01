@@ -35,9 +35,15 @@
   stops moving for the progress limit fails with `SessionError::Hung`. The
   session pauses the guest before each answer, takes a `Checkpoint` there,
   restores one in place, or starts a fresh process that restores one at boot.
-  A `Checkpoint` is the guest image in a memfd plus the services state at the
-  capture. `Checkpoint::export` writes both into one buffer and
-  `Checkpoint::import` reads it back, ignoring trailing padding.
+  The host owns the guest's physical memory file and an image file, both
+  memfds, and maps them side by side. A `Checkpoint` is a snapshot in the
+  session's `Checkpoints` page store plus the services state at the capture.
+  A capture stores the image and the physical pages the kernel reports as
+  written since the last capture or restore, as a delta on the previous
+  checkpoint. A restore writes back only the pages that differ between the
+  current state and the target. `Checkpoints::delta` lists a checkpoint's
+  pages relative to a base for publishing, `Checkpoint::sidecar` encodes the
+  services state, and `Checkpoints::import` rebuilds a checkpoint from both.
   `state_hash` hashes the services state and the pending request. Sessions
   are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event

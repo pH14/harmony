@@ -11,10 +11,11 @@ use environment::{
     channel::Effect,
     input_spec::{ServiceConfig, ServiceFactory},
 };
-use uml::{Bridge, Capture, Checkpoint, ExitReason, Launch, Stop, VerifiedProfile};
+use uml::{Bridge, Capture, Checkpoint, Checkpoints, ExitReason, Launch, Stop, VerifiedProfile};
 
 use super::{SdkEvent, SearchSession, SessionError, UmlLaunch};
-use crate::cache::{CacheIndex, Lease, Namespace};
+use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
+use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
 const CONSOLE_TAIL: usize = 64 << 10;
 
@@ -48,6 +49,7 @@ pub struct UmlSession {
     seed: u64,
     progress_limit: Duration,
     factory: ServiceFactory,
+    checkpoints: Checkpoints,
     snapshots: BTreeMap<SnapId, Checkpoint>,
     next: u64,
     setup: (SnapId, u64),
@@ -85,7 +87,8 @@ impl UmlSession {
         launch.wall_limit = Duration::MAX;
         launch.console_limit_bytes = u64::MAX;
         launch.console_tail_bytes = CONSOLE_TAIL;
-        let mut session = uml::Session::spawn(&launch, &profile, None)?;
+        let checkpoints = Checkpoints::new();
+        let mut session = uml::Session::spawn(&launch, &profile, &checkpoints, None)?;
         session.set_progress_limit(Some(config.progress_limit));
         session.branch(
             config.seed,
@@ -116,6 +119,7 @@ impl UmlSession {
             seed: config.seed,
             progress_limit: config.progress_limit,
             factory,
+            checkpoints,
             snapshots: BTreeMap::new(),
             next: 1,
             setup: (SnapId(0), moment),
@@ -162,7 +166,12 @@ impl UmlSession {
             return Ok(());
         }
         self.session = None;
-        let mut session = uml::Session::spawn(&self.launch, &self.profile, Some(checkpoint))?;
+        let mut session = uml::Session::spawn(
+            &self.launch,
+            &self.profile,
+            &self.checkpoints,
+            Some(checkpoint),
+        )?;
         session.set_progress_limit(Some(self.progress_limit));
         self.session = Some(session);
         self.counters.fresh_restores.since(begun);
@@ -250,19 +259,11 @@ impl SearchSession for UmlSession {
     }
 
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
-        self.snapshots
-            .get(&snapshot)
-            .and_then(|checkpoint| checkpoint.allocated_bytes().ok())
-            .map(|bytes| bytes.div_ceil(4096))
+        self.snapshots.get(&snapshot).map(Checkpoint::owned_pages)
     }
 
     fn store_bytes(&self) -> Option<u64> {
-        Some(
-            self.snapshots
-                .values()
-                .map(|checkpoint| checkpoint.allocated_bytes().unwrap_or(checkpoint.bytes()))
-                .sum(),
-        )
+        self.checkpoints.stats().map(|stats| stats.bytes_resident)
     }
 
     fn publish_snapshot(
@@ -270,36 +271,62 @@ impl SearchSession for UmlSession {
         index: &dyn CacheIndex,
         namespace: Namespace,
         key: &[u8],
-        _parent: Option<(SnapId, &Lease)>,
+        parent: Option<(SnapId, &Lease)>,
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        let checkpoint = self
-            .snapshots
-            .get(&target)
-            .ok_or_else(|| SessionError::Control(format!("unknown snapshot {target:?}")))?;
-        let export = checkpoint.export()?;
-        let mut extent = index.extent(export.len())?;
-        export.write(&mut extent.bytes_mut()[..export.len()])?;
-        Ok(index.publish(namespace, key, None, extent, cost)?)
+        let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
+        let checkpoint = |id: SnapId| -> Result<&Checkpoint, Box<dyn Error>> {
+            self.snapshots
+                .get(&id)
+                .ok_or_else(|| SessionError::Control(format!("unknown snapshot {id:?}")).into())
+        };
+        let setup = checkpoint(self.setup.0)?;
+        let parent_checkpoint = parent.map(|(id, _)| checkpoint(id)).transpose()?;
+        let target_checkpoint = checkpoint(target)?;
+        let sidecar = target_checkpoint.sidecar()?;
+        let extent = self.checkpoints.delta(
+            setup,
+            parent_checkpoint,
+            target_checkpoint,
+            |pages, reverted| -> Result<_, Box<dyn Error>> {
+                let len =
+                    extent_len(pages.len(), reverted.len(), sidecar.len()).ok_or_else(|| {
+                        SessionError::Portable("snapshot delta size overflows".into())
+                    })?;
+                let mut extent = index.extent(len)?;
+                write_extent(extent.bytes_mut(), pages, reverted, &sidecar)?;
+                Ok(extent)
+            },
+        )??;
+        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
     }
 
     fn import_cached(
         &mut self,
         index: &dyn CacheIndex,
         lease: &Lease,
-        _near: SnapId,
+        near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
         let begun = started();
         let chain = index.chain(lease)?;
-        let [extent] = chain.as_slice() else {
-            return Err(SessionError::Portable(format!(
-                "a User-mode Linux checkpoint is one extent, the lease names {}",
-                chain.len()
-            ))
-            .into());
-        };
-        let checkpoint = Checkpoint::import(extent.bytes(), &self.factory)?;
+        let deltas = chain
+            .iter()
+            .map(|extent| read_extent(CommittedExtent::bytes(extent)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let resolved = resolve(&deltas)?;
+        let setup = self
+            .snapshots
+            .get(&self.setup.0)
+            .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
+        let near = self.snapshots.get(&near).unwrap_or(setup);
+        let checkpoint = self.checkpoints.import(
+            setup,
+            near,
+            &resolved.pages,
+            resolved.sidecar,
+            &self.factory,
+        )?;
         let id = SnapId(self.next);
         self.next += 1;
         let at = checkpoint.moment();
