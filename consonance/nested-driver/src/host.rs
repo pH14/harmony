@@ -550,7 +550,7 @@ pub fn run(
                 campaign_seed: options.seed,
                 workers: 1,
                 execution_budget: options.executions,
-                host: "linux-x86-nested-vmx".into(),
+                host: "linux-x86-nested-kvm".into(),
                 wall_budget: options
                     .wall_minutes
                     .map(|minutes| Duration::from_secs(minutes.saturating_mul(60))),

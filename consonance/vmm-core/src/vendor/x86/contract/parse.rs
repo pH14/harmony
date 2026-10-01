@@ -97,6 +97,12 @@ pub(super) struct NestedHostPolicy {
     pub(super) leaf1_ecx_or: u32,
     pub(super) feature_control: u64,
     pub(super) vmx_indices: Vec<u32>,
+    pub(super) svm_signature: u32,
+    pub(super) svm_extended_ecx_or: u32,
+    pub(super) svm_features_mask: u32,
+    pub(super) svm_indices: Vec<u32>,
+    pub(super) svm_hwcr: u64,
+    pub(super) svm_syscfg: u64,
 }
 
 impl NestedHostPolicy {
@@ -112,6 +118,18 @@ impl NestedHostPolicy {
             base: contract["base"].as_str().into(),
             leaf1_ecx_or: hex(cpuid["leaf1-ecx-or"].as_str()).try_into().unwrap(),
             feature_control: hex(msr["feature-control"].as_str()),
+            svm_hwcr: hex(msr["svm-hwcr"].as_str()),
+            svm_syscfg: hex(msr["svm-syscfg"].as_str()),
+            svm_signature: hex(cpuid["svm-signature"].as_str()).try_into().unwrap(),
+            svm_extended_ecx_or: hex(cpuid["svm-extended-ecx-or"].as_str())
+                .try_into()
+                .unwrap(),
+            svm_features_mask: hex(cpuid["svm-features-mask"].as_str()).try_into().unwrap(),
+            svm_indices: msr["svm-indices"]
+                .as_arr()
+                .iter()
+                .map(|i| hex(i).try_into().unwrap())
+                .collect(),
             vmx_indices: msr["vmx-indices"]
                 .as_arr()
                 .iter()
@@ -120,22 +138,33 @@ impl NestedHostPolicy {
         };
         assert_eq!(policy.name, "nested-host");
         assert_eq!(policy.base, "guest");
-        assert_eq!(policy.version, 1);
+        assert_eq!(policy.version, 2);
         assert_eq!(policy.leaf1_ecx_or, 1 << 5);
         assert_eq!(policy.feature_control, 5);
+        assert_eq!(policy.svm_extended_ecx_or, 1 << 2);
+        assert_eq!(policy.svm_features_mask, 0xe9);
+        assert_eq!(policy.svm_hwcr, 1 << 24);
+        assert_eq!(policy.svm_syscfg, 0);
+        assert_eq!(policy.svm_indices, [0xc001_0114, 0xc001_0117]);
         assert!(policy.vmx_indices.windows(2).all(|w| w[0] < w[1]));
         policy
     }
 
     pub(super) fn canonical(&self) -> String {
         format!(
-            "name={}\nversion={}\nbase={}\nleaf1-ecx-or={:08x}\nfeature-control={:016x}\nvmx-indices={:x?}\n",
+            "name={}\nversion={}\nbase={}\nleaf1-ecx-or={:08x}\nfeature-control={:016x}\nvmx-indices={:x?}\nsvm-signature={:08x}\nsvm-extended-ecx-or={:08x}\nsvm-features-mask={:08x}\nsvm-indices={:x?}\nsvm-hwcr={:016x}\nsvm-syscfg={:016x}\n",
             self.name,
             self.version,
             self.base,
             self.leaf1_ecx_or,
             self.feature_control,
-            self.vmx_indices
+            self.vmx_indices,
+            self.svm_signature,
+            self.svm_extended_ecx_or,
+            self.svm_features_mask,
+            self.svm_indices,
+            self.svm_hwcr,
+            self.svm_syscfg,
         )
     }
 }

@@ -46,7 +46,7 @@ fn advance(session: &mut Session, seed: u64) -> Result<Vec<u64>, Box<dyn Error>>
 }
 
 #[test]
-#[ignore = "requires Intel nested VMX and matching nested-host OCI artifacts"]
+#[ignore = "requires nested VMX or SVM and matching nested-host OCI artifacts"]
 fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     let read =
         |name| -> Result<Vec<u8>, Box<dyn Error>> { Ok(std::fs::read(std::env::var(name)?)?) };

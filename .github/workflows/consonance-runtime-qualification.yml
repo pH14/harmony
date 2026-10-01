@@ -68,7 +68,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Check outer host nested VMX before building
+      - name: Check outer host nested VMX or SVM before building
         run: |
           set -euo pipefail
           mkdir -p nested-host-evidence
@@ -93,6 +93,24 @@ jobs:
             -e NESTED_HOST_PROFILE=1 -e NESTED_HOST_BUSYBOX=/usr/bin/busybox -e HARMONY_BUILD_JOBS=2 \
             debian:trixie-slim@sha256:7792b1f7702a86946cd518db72b6a407302c3e9bc1635634368b878189e8221c \
             bash -euc '
+              retain_kernel_audit_inputs() {
+                local result=$?
+                local obj=/tmp/harmony-linux-build/kernel-build
+                if [ "$result" -ne 0 ] && [ -f "$obj/vmlinux" ]; then
+                  set +e
+                  mkdir -p nested-host-evidence/kernel-audit
+                  cp "$obj/vmlinux" nested-host-evidence/kernel-audit/
+                  cp "$obj/.config" nested-host-evidence/kernel-audit/kernel.config
+                  mkdir -p nested-host-evidence/kernel-audit/arch/x86/boot/compressed
+                  cp "$obj/arch/x86/boot/setup.elf" "$obj/arch/x86/boot/bzImage" nested-host-evidence/kernel-audit/arch/x86/boot/
+                  cp "$obj/arch/x86/boot/compressed/vmlinux" nested-host-evidence/kernel-audit/arch/x86/boot/compressed/
+                  objdump -d -j .altinstr_replacement "$obj/vmlinux" >nested-host-evidence/kernel-audit/alternatives.txt
+                  readelf -x .altinstructions "$obj/vmlinux" >nested-host-evidence/kernel-audit/altinstructions.txt
+                  objdump -d "$obj/arch/x86/kvm/built-in.a" >nested-host-evidence/kernel-audit/kvm-disassembly.txt
+                fi
+                exit "$result"
+              }
+              trap retain_kernel_audit_inputs EXIT
               apt-get update
               apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev cpio xz-utils busybox-static python3 curl ca-certificates
               cc --version
@@ -101,7 +119,7 @@ jobs:
               bash consonance/harmony-linux/linux/build-nested-host-fixture.sh consonance/harmony-linux/build/x86_64
             ' 2>&1 | tee nested-host-evidence/kernel-build.log
           sudo chown -R "$(id -u):$(id -g)" consonance/harmony-linux/build
-      - name: L1 initializes kvm_intel and creates a VM
+      - name: L1 initializes its KVM vendor backend and creates a VM
         env:
           NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
           NESTED_HOST_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-nested-host.cpio.gz

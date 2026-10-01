@@ -6,7 +6,7 @@ use vmm_core::vendor::x86::bringup::boot_linux_nested_host_virtual_time;
 use vmm_core::vmm::Step;
 
 #[test]
-#[ignore = "requires nested VMX and NESTED_HOST_KERNEL / NESTED_HOST_INITRAMFS"]
+#[ignore = "requires nested VMX or SVM and NESTED_HOST_KERNEL / NESTED_HOST_INITRAMFS"]
 fn l1_creates_kvm_vm() {
     let read = |name| std::fs::read(std::env::var(name).expect(name)).expect(name);
     let kernel = read("NESTED_HOST_KERNEL");

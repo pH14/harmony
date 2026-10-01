@@ -11,14 +11,15 @@ fn nested(size: usize) -> Vec<u8> {
 
 #[test]
 fn nested_state_round_trips_full_payload_and_binds_each_byte() {
-    for size in [128, 4224, 8320] {
+    for (format, size) in [(0_u16, 128), (0, 4224), (0, 8320), (1, 128), (1, 4224)] {
         let mut state = VmState {
             nested_state: Some(nested(size)),
             ..VmState::default()
         };
+        state.nested_state.as_mut().unwrap()[2..4].copy_from_slice(&format.to_le_bytes());
         let encoded = state.encode().unwrap();
         assert_eq!(VmState::decode(&encoded).unwrap(), state);
-        for offset in [0, 8, size - 1] {
+        for offset in [0, 1, 2, 8, size - 1] {
             state.nested_state.as_mut().unwrap()[offset] ^= 1;
             assert_ne!(state.encode().unwrap(), encoded);
             state.nested_state.as_mut().unwrap()[offset] ^= 1;

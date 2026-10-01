@@ -25,7 +25,7 @@ engine as a workload intentionally joins the engine, guest SDK, and OCI test
 surfaces. No hypervisor bindings or hardware logic are duplicated here.
 
 Run portable checks with `cargo test -p nested-driver`. The mapping composition
-test also runs under Miri. Live checks require Intel nested VMX and fail when
+test also runs under Miri. Live checks require nested VMX or SVM and fail when
 the required artifacts or hardware are absent.
 
 The ignored `tests/live.rs::inner_consonance_runs_inner_guest` proof uses
@@ -57,7 +57,11 @@ so a failed continuation can be reproduced.
 
 The non-default `omit-nested-state` build discards captured VMX state only
 when publishing the outer snapshot. Uninterrupted and capture-only execution
-must still pass; its first restored continuation must fail. The test bounds
+must still pass; its first restore must fail. VMX loses its live VMXON/VMCS
+state. Enabled SVM loses GIF; the matrix compares that control state immediately
+after restore, before a later VM entry can change it. Positive SVM captures also
+require EFER.SVME, a live host-save MSR, and exact GIF preservation through every
+restore and cold import. The test bounds
 each lifecycle wait with the production client watchdog and releases the VM
 when a continuation stalls.
 
@@ -105,7 +109,7 @@ Campaign format v2 hashes the complete job result after applying the VMM's
 existing logical XSAVE identity projection to copied sidecars. Init-valued
 x87/SSE presence bits can change during nested KVM execution; their raw values
 remain in the original snapshots used for restore. RAM, active CPU state,
-nested VMX state, SDK events, policy, control state, observations, outcomes and
+nested virtualization state, SDK events, policy, control state, observations, outcomes and
 operation inputs remain checked by replay.
 
 A failure during campaign preparation uses the searcher's failed disposition.
@@ -119,6 +123,8 @@ The hosted qualification runs a bounded search and replays its complete stream,
 checking execution counts, work, coverage, stream digest and failure evidence.
 It attempts replay even when the search reports a failing assertion, preserving
 both exit statuses and logs while retaining the failed qualification result.
-The runner must expose Intel nested VMX and `KVM_CAP_NESTED_STATE`. Hosted runner
-labels can allocate either Intel or AMD hardware, so the job checks capabilities
-before building artifacts. AMD nested SVM is outside this workload's contract.
+The runner must expose KVM-supported VMX or SVM with NPT and
+`KVM_CAP_NESTED_STATE`. Hosted x86 labels can allocate either vendor, so the job
+checks capabilities before building artifacts. Both vendors use the same inner
+driver and six-operation workload; vendor-specific capability identity prevents
+cross-vendor outer snapshot import.

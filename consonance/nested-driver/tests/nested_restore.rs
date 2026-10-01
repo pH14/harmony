@@ -185,26 +185,65 @@ fn continuation(server: &mut Server) -> Result<Vec<Vec<u8>>> {
 
 fn snapshot(server: &mut Server) -> Result<SnapId> {
     let cpu = server.vmm_mut().ok_or("missing outer VMM")?.vcpu_record()?;
-    let bytes = cpu.nested_state.ok_or("nested VMX capture missing")?;
-    assert_ne!(
-        u64::from_le_bytes(bytes[8..16].try_into()?),
-        u64::MAX,
-        "VMX was not live at the prefix"
-    );
-    println!(
-        "NESTED_CAPTURE size={} vmxon={:x} vmcs={:x}",
-        bytes.len(),
-        u64::from_le_bytes(bytes[8..16].try_into()?),
-        u64::from_le_bytes(bytes[16..24].try_into()?)
-    );
+    let bytes = cpu.nested_state.ok_or("nested capture missing")?;
+    let format = vmm_backend::arch::x86::NestedFormat::from_state(&bytes)?;
+    match format {
+        vmm_backend::arch::x86::NestedFormat::Vmx => {
+            assert_ne!(
+                u64::from_le_bytes(bytes[8..16].try_into()?),
+                u64::MAX,
+                "VMX was not live at the prefix"
+            );
+            println!(
+                "NESTED_CAPTURE size={} format=vmx vmxon={:x} vmcs={:x}",
+                bytes.len(),
+                u64::from_le_bytes(bytes[8..16].try_into()?),
+                u64::from_le_bytes(bytes[16..24].try_into()?)
+            );
+        }
+        vmm_backend::arch::x86::NestedFormat::Svm => {
+            assert_ne!(
+                cpu.sregs.efer & (1 << 12),
+                0,
+                "SVM was not enabled at the prefix"
+            );
+            let hsave = cpu
+                .msrs
+                .get(&0xc001_0117)
+                .copied()
+                .ok_or("SVM host-save MSR missing")?;
+            assert_ne!(hsave, 0, "SVM host save area was not live");
+            assert_eq!(
+                u16::from_le_bytes(bytes[..2].try_into()?),
+                vmm_backend::arch::x86::SVM_GIF_SET
+            );
+            println!(
+                "NESTED_CAPTURE size={} format=svm gif=1 hsave={hsave:x}",
+                bytes.len()
+            );
+        }
+    }
     match server.handle(&Request::Snapshot)?? {
         Reply::Snapshot { id, .. } => Ok(id),
         other => Err(format!("snapshot response {other:?}").into()),
     }
 }
 
+fn svm_state(server: &mut Server) -> Result<Option<Vec<u8>>> {
+    let cpu = server.vmm_mut().ok_or("missing outer VMM")?.vcpu_record()?;
+    match cpu.nested_state {
+        Some(bytes)
+            if vmm_backend::arch::x86::NestedFormat::from_state(&bytes)?
+                == vmm_backend::arch::x86::NestedFormat::Svm =>
+        {
+            Ok(Some(bytes))
+        }
+        _ => Ok(None),
+    }
+}
+
 #[test]
-#[ignore = "requires Intel nested VMX and exact nested-host OCI artifacts"]
+#[ignore = "requires nested VMX or SVM and exact nested-host OCI artifacts"]
 fn outer_nested_state_snapshot_matrix() -> Result<()> {
     let mut uninterrupted = server()?;
     prefix(&mut uninterrupted)?;
@@ -222,6 +261,7 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
     let mut restored = server()?;
     prefix(&mut restored)?;
     let saved = snapshot(&mut restored)?;
+    let captured_svm_state = svm_state(&mut restored)?;
     let captured_memory = restored
         .vmm()
         .ok_or("missing outer VMM")?
@@ -270,6 +310,11 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
         assert_eq!(restored.in_place_fallbacks(), 0);
         assert_eq!(register(&restored, 3)?, 3);
         println!("NESTED_MATRIX restore_attempt={attempt}");
+        assert_eq!(
+            svm_state(&mut restored)?,
+            captured_svm_state,
+            "restored SVM control state"
+        );
         assert_eq!(continuation(&mut restored)?, expected, "restore {attempt}");
         println!("NESTED_MATRIX restore={attempt} pass");
     }
@@ -352,6 +397,9 @@ fn cold_snapshot_child() -> Result<()> {
         "capture" => {
             prefix(&mut server)?;
             let saved = snapshot(&mut server)?;
+            if let Some(bytes) = svm_state(&mut server)? {
+                fs::write(directory.join("svm-state"), bytes)?;
+            }
             let mut file = fs::File::create(directory.join("snapshot"))?;
             server.export_portable_snapshot(saved, &mut file)?;
             file.flush()?;
@@ -366,6 +414,13 @@ fn cold_snapshot_child() -> Result<()> {
                 server.import_portable_snapshot(fs::File::open(directory.join("snapshot"))?)?;
             server.handle(&Request::Replay(imported.id))??;
             assert_eq!(register(&server, 3)?, 3);
+            if directory.join("svm-state").exists() {
+                assert_eq!(
+                    svm_state(&mut server)?,
+                    Some(fs::read(directory.join("svm-state"))?),
+                    "cold SVM control state"
+                );
+            }
             fs::write(
                 directory.join("output"),
                 continuation(&mut server)?.concat(),

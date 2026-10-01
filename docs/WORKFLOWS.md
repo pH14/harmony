@@ -193,7 +193,7 @@ the job.
 ## Ignored tests
 
 The Guest Runtime Qualification workflow's manual `nested_host_only` run first
-requires `KVM_CAP_NESTED_STATE` and KVM-supported Intel VMX on its Ubuntu 22.04
+requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its Ubuntu 22.04
 x86 runner, then builds the separate
 nested-host kernel in the pinned Debian GCC 14 build container and boots L1
 under the named nested-host contract. The
@@ -207,9 +207,13 @@ detour restores and cold continuation with uninterrupted and capture-only
 execution. Its sparse detour capture and every restored RAM page must match
 the live source or captured cut, respectively, with no in-place fallback.
 A separate `omit-nested-state` build must pass those two controls
-and fail its first restored continuation. Missing nested
-VMX or a guest that cannot create a KVM VM fails the job. Kernel publication
+and fail its first restore. VMX fails its continuation; SVM fails immediate
+GIF readback before another nested entry can change it. Missing nested
+VMX/SVM or a guest that cannot create a KVM VM fails the job. Kernel publication
 still requires the instruction audit to pass.
+If a compiled kernel fails qualification, the evidence artifact retains its
+unpublished `vmlinux`, matching boot components, configuration, alternatives and
+KVM disassembly for review.
 The job also runs `inner_operation_api_smoke` and
 `sdk_operations::outer_operation_sdk_smoke`, then runs the standard
 `harmony search --package nested` with 100 executions and a five-minute wall
@@ -220,8 +224,10 @@ nonzero executed work, a valid 36-bit pair mask, no failures, and matching
 execution counts, work, stream digest and coverage/failure evidence on replay.
 It writes `qualification.json` with the tested commit and measured budget use;
 archive-entry lists may differ because replay materializes final artifacts.
-An AMD runner can expose nested SVM state while lacking VMX; its positive
-nested-state capability does not qualify this Intel-only guest contract.
+The nested-host job accepts Intel VMX or AMD SVM with NPT, selected from
+KVM-supported CPUID. The matching kernel includes both backends. The state
+format and exposed vendor capabilities bind snapshot identity; snapshots cannot
+cross vendors. SVM restores also compare GIF immediately at the lifecycle cut.
 
 A test marked `#[ignore]` needs something a plain `cargo test` lacks, such as a
 hypervisor or a built guest image. Each one has a runner in
