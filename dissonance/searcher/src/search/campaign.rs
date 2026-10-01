@@ -1753,7 +1753,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 decisions.push(CampaignAdmissionDecision::Objective);
             }
             if let Some(candidate) = action.candidate {
+                let completed =
+                    workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
                 if !candidate.viable {
+                    left_place |= completed.place() != parent_place;
                     self.probe_refused = self.probe_refused.saturating_add(1);
                     decisions.push(CampaignAdmissionDecision::ProbeRefused);
                     continue;
@@ -1765,7 +1768,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     sequence,
                     ArchiveCandidate {
                         suffix: pending_suffix.as_slice(),
-                        key: workload.complete_candidate_key(candidate.key, &candidate.snapshot)?,
+                        key: completed,
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
@@ -6019,6 +6022,32 @@ mod tests {
                 useful: false,
             }
         );
+    }
+
+    #[test]
+    fn a_probe_refused_state_in_another_place_resets_the_suffix_limit() {
+        let (workload, _run, mut core, _target) = test_core();
+        let home = core.archive.entries[0].key.0;
+        let refused = |value: u8| CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            actions: vec![CampaignActionResult {
+                action: TestAction::new(0x01, 1),
+                observations: Vec::new(),
+                milestones: (),
+                outcome: Outcome::default(),
+                candidate: Some(CampaignCandidate {
+                    key: TestKey(value),
+                    viable: false,
+                    snapshot: value,
+                }),
+            }],
+        };
+        core.admit_job_tracking(&workload, 0, refused(home), true, |_| false)
+            .expect("admit a refused state in the parent's place");
+        assert_eq!(core.archive.suffix_limit(0), 2);
+        core.admit_job_tracking(&workload, 0, refused(home.wrapping_add(1)), true, |_| false)
+            .expect("admit a refused state in another place");
+        assert_eq!(core.archive.suffix_limit(0), 1);
     }
 
     #[test]
