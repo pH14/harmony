@@ -184,7 +184,6 @@ fn host_faults() -> Vec<(HostFault, &'static str)> {
             },
             "0200400000000000000800000000000000",
         ),
-        (HostFault::InjectInterrupt { vector: 0x80 }, "0380000000"),
     ]
 }
 
@@ -252,10 +251,10 @@ fn the_unassigned_process_fault_tag_is_refused() {
 
 #[test]
 fn golden_action_wire_format() {
-    let host = Action::Host(HostFault::InjectInterrupt { vector: 0x80 });
+    let host = Action::Host(HostFault::SkewTime(Span(0x80)));
     assert_eq!(
         to_hex(&host.encode()),
-        "000380000000",
+        "00008000000000000000",
         "host plane tag 00 + payload"
     );
 
@@ -273,7 +272,7 @@ fn golden_recorded_blob_with_host_overrides() {
         seed: 0,
         policy: FaultPolicy::none(),
         overrides: BTreeMap::from([
-            (1, Action::Host(HostFault::InjectInterrupt { vector: 0x80 })),
+            (1, Action::Host(HostFault::SkewTime(Span(0x80)))),
             (2, Action::Guest(Answer::Nominal)),
         ]),
         standing: vec![],
@@ -286,7 +285,7 @@ fn golden_recorded_blob_with_host_overrides() {
     } else {
         assert_eq!(
             hex,
-            "4445563207000100000000000000003600000046504c31030000000000010000000000000000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000006000000000380000000020000000000000002000000010000000000010000000300000000000000ced100000000000000",
+            "4445563207000100000000000000003600000046504c3103000000000001000000000000000000000001000000000000000000000001000000000000000000000001000000000000000200000001000000000000000a00000000008000000000000000020000000000000002000000010000000000010000000300000000000000ced100000000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );
         assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);

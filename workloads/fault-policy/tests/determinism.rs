@@ -101,7 +101,13 @@ fn override_map_permutation_is_byte_identical() {
     let entries = [
         (1u64, Action::Guest(Answer::Nominal)),
         (5, Action::Guest(Answer::Supply(vec![1, 2, 3, 4]))),
-        (9, Action::Host(HostFault::InjectInterrupt { vector: 7 })),
+        (
+            9,
+            Action::Host(HostFault::CorruptMemory {
+                gpa: 0x4000,
+                mask: fault_policy::BitMask(0b1000),
+            }),
+        ),
         (2, Action::Guest(Answer::Fault(Fault::NetReset))),
     ];
     let forward: BTreeMap<Moment, Action> = entries.iter().cloned().collect();

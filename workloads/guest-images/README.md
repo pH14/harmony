@@ -25,7 +25,6 @@ The recipes write these layouts below the standard build artifact directory:
 | --- | --- |
 | `postgres-image` | `build/oci-images/postgres.oci` |
 | `campaign-image` | `build/oci-images/campaign.oci` |
-| `order-image` | `build/oci-images/order.oci` |
 | `uuid-image` | `build/oci-images/uuid.oci` |
 | `docker-image` | `build/oci-images/docker.oci` |
 | `k3s-image` | `build/oci-images/k3s.oci` |
@@ -35,7 +34,7 @@ Each layout contains a single deterministic layer and an OCI config whose
 entrypoint is the application workload. The outer platform runtime supplies
 `/proc`, `/dev`, `/sys`, `/run`, and `/tmp`, runs the entrypoint as the OCI
 process, and owns signals and the final VM terminal. PostgreSQL benchmark
-variants share `postgres-workload.sh`; the campaign, ordering, and UUID
+variants share `postgres-workload.sh`; the campaign and UUID
 supervisors remain separate payloads so their fault behavior is preserved.
 
 The x86 PostgreSQL ledger fixture uses PostgreSQL's built-in UUID generation

@@ -136,22 +136,17 @@ fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment
     d
 }
 
-const MUTATE_INTID_MASK: u64 = 0xFF;
-
 fn host_fault_from(rng: &mut Prng) -> HostFault {
-    match rng.next_u64() % 4 {
+    match rng.next_u64() % 3 {
         0 => HostFault::SkewTime(Span(rng.next_u64())),
         1 => {
             let num = rng.next_u64();
             let den = (rng.next_u64() % (1u64 << 32)) + 1;
             HostFault::SetClockRate(Ratio::new(num, den).expect("den >= 1 by construction"))
         }
-        2 => HostFault::CorruptMemory {
+        _ => HostFault::CorruptMemory {
             gpa: rng.next_u64(),
             mask: BitMask(rng.next_u64()),
-        },
-        _ => HostFault::InjectInterrupt {
-            vector: (rng.next_u64() & MUTATE_INTID_MASK) as u32,
         },
     }
 }
@@ -161,7 +156,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{EnvCodec, MUTATE_DOMAIN, MUTATE_INTID_MASK, free_non_guest_slot, host_fault_from};
+    use super::{EnvCodec, MUTATE_DOMAIN, free_non_guest_slot, host_fault_from};
     use crate::Span;
     use crate::catalog::Answer;
     use crate::host::{Action, BitMask, HostFault, Moment, Ratio};
@@ -171,7 +166,7 @@ mod tests {
 
     fn seed_for_arm(arm: u64) -> u64 {
         (0u64..10_000)
-            .find(|&s| Prng::new(s).next_u64() % 4 == arm)
+            .find(|&s| Prng::new(s).next_u64() % 3 == arm)
             .expect("an arm-selecting seed exists in range")
     }
 
@@ -190,7 +185,7 @@ mod tests {
         let expected = HostFault::SkewTime(Span(e.next_u64()));
         assert_eq!(
             got, expected,
-            "arm 0 must map to exactly SkewTime(word1) (deleting it yields InjectInterrupt)"
+            "arm 0 must map to exactly SkewTime(word1) (deleting it yields CorruptMemory)"
         );
     }
 
@@ -205,7 +200,7 @@ mod tests {
         let expected = HostFault::SetClockRate(Ratio::new(num, den).unwrap());
         assert_eq!(
             got, expected,
-            "arm 1 must map to exactly SetClockRate(num/den) (deleting it yields InjectInterrupt)"
+            "arm 1 must map to exactly SetClockRate(num/den) (deleting it yields CorruptMemory)"
         );
     }
 
@@ -220,48 +215,8 @@ mod tests {
         assert_eq!(
             got,
             HostFault::CorruptMemory { gpa, mask },
-            "arm 2 must map to exactly CorruptMemory{{gpa, mask}} (deleting it yields InjectInterrupt)"
+            "arm 2 must map to exactly CorruptMemory{{gpa, mask}}"
         );
-    }
-
-    #[test]
-    fn host_fault_from_arm3_is_exact_inject_interrupt() {
-        let seed = (0u64..10_000)
-            .find(|&s| {
-                let mut p = Prng::new(s);
-                if p.next_u64() % 4 != 3 {
-                    return false;
-                }
-                let v = p.next_u64() & MUTATE_INTID_MASK;
-                v != MUTATE_INTID_MASK && v != 0
-            })
-            .expect("a non-trivial arm-3 seed exists in range");
-        let got = host_fault_from(&mut Prng::new(seed));
-        let mut e = Prng::new(seed);
-        let _arm = e.next_u64();
-        let vector = (e.next_u64() & MUTATE_INTID_MASK) as u32;
-        assert!(
-            u64::from(vector) != MUTATE_INTID_MASK && vector != 0,
-            "chosen seed has a discriminating vector byte"
-        );
-        assert_eq!(
-            got,
-            HostFault::InjectInterrupt { vector },
-            "arm 3 must map to InjectInterrupt with the exact masked low byte"
-        );
-    }
-
-    #[test]
-    fn generated_interrupt_identities_stay_inside_the_admissible_range() {
-        for seed in 0u64..2_000 {
-            if let HostFault::InjectInterrupt { vector } = host_fault_from(&mut Prng::new(seed)) {
-                assert!(
-                    u64::from(vector) <= MUTATE_INTID_MASK,
-                    "seed {seed} minted interrupt identity {vector}, outside the range the \
-                     machine under test can accept — a wasted mutation, not a fault"
-                );
-            }
-        }
     }
 
     #[test]
@@ -307,7 +262,10 @@ mod tests {
     #[test]
     fn mutate_remove_branch_deletes_the_sole_host_override() {
         let k = 100u64;
-        let action = Action::Host(HostFault::InjectInterrupt { vector: 42 });
+        let action = Action::Host(HostFault::CorruptMemory {
+            gpa: 42,
+            mask: BitMask(1),
+        });
         let spec = one_host_spec(k, action);
         let out = EnvCodec::mutate(&spec, salt_for_op(1));
         assert!(
@@ -319,7 +277,10 @@ mod tests {
     #[test]
     fn mutate_move_branch_relocates_preserving_count_and_action() {
         let k = 100u64;
-        let action = Action::Host(HostFault::InjectInterrupt { vector: 42 });
+        let action = Action::Host(HostFault::CorruptMemory {
+            gpa: 42,
+            mask: BitMask(1),
+        });
         let spec = one_host_spec(k, action.clone());
         let out = EnvCodec::mutate(&spec, salt_for_op(2));
         assert_eq!(
@@ -337,7 +298,10 @@ mod tests {
     #[test]
     fn mutate_insert_branch_adds_a_second_host_override() {
         let k = 100u64;
-        let action = Action::Host(HostFault::InjectInterrupt { vector: 42 });
+        let action = Action::Host(HostFault::CorruptMemory {
+            gpa: 42,
+            mask: BitMask(1),
+        });
         let spec = one_host_spec(k, action.clone());
         let out = EnvCodec::mutate(&spec, salt_for_op(0));
         assert_eq!(out.overrides().len(), 2, "insert adds a second override");

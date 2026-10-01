@@ -98,8 +98,8 @@ snapshot/restore and state hashes. Capture and restore failures propagate to the
 caller. The default handler supplies nominal responses.
 
 Workload tooling owns fault catalogs, probabilities, eligibility, and decoding.
-The execution core can schedule bounded memory writes, memory XOR operations,
-and interrupt delivery at exact execution moments. An external package maps its
+The execution core can schedule bounded memory writes and memory XOR operations
+at exact execution moments. An external package maps its
 fault meanings onto these mechanical operations. Input format version 5 records
 these operations and the selected service configuration; the fault-policy
 package explicitly translates supported historical environments.

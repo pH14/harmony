@@ -50,9 +50,8 @@ every action in the suffix takes it:
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
-| `Interrupt(vector, ticks)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
 
-Each fault action except `Interrupt` becomes a standing-fault window on the shared
+Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
@@ -67,9 +66,8 @@ search started by the `harmony` CLI runs each session in a child process
 (`WorkerSession`, started as the hidden `harmony session-worker` command), so
 macOS runs one VM per worker process; library callers without a launcher run
 `Session` in the thread. Each portable action prefix maps to a real whole-VM
-snapshot: the session branches its parent under the prefix's window list and
-the host-plane effect its last action stages, runs to the action's horizon
-deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
+snapshot: the session branches its parent under the prefix's window list, runs
+to the action's horizon deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
@@ -224,10 +222,8 @@ ready nodes in each incarnation; event faults select only those nodes, so mixed
 instrumented and uninstrumented bundles share the same search policy. A step
 drawn from the retained-input table is held to the same rule and falls through
 to the alphabet when its node is not ready, so the readiness a run recorded
-bounds every draw rather than the alphabet alone. Backend capabilities determine
-whether host interrupt actions are available. Unsupported alternatives are
-excluded from the alphabet. The adapter supplies that alphabet and the duration
-each drawn action carries; the searcher owns the suffix draw and the
+bounds every draw rather than the alphabet alone. The adapter supplies that
+alphabet and the duration each drawn action carries; the searcher owns the suffix draw and the
 retained-input table. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.

@@ -35,7 +35,6 @@ pub enum HostFault {
     SkewTime(Span),
     SetClockRate(Ratio),
     CorruptMemory { gpa: u64, mask: BitMask },
-    InjectInterrupt { vector: u32 },
 }
 
 impl HostFault {

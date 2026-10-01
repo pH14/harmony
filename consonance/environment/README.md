@@ -25,8 +25,7 @@ count of its own.
 `input_spec::InputSpec` combines the seed, service configuration, ordered
 payloads, recorded answers, reseed points, and mechanical effects. Its versioned
 codec bounds lengths and validates ordering. Mechanical effects describe memory
-writes, memory XOR, and interrupt delivery; packages choose when and why to use
-them. The VMM validates their machine addresses before applying them.
+writes and memory XOR; packages choose when and why to use them. The VMM validates their machine addresses before applying them.
 
 `InputSpec` writes service configuration and effects directly into its output,
 filling each nested length after encoding. Standalone configuration and effect

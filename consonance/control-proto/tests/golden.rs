@@ -539,15 +539,6 @@ fn err_schedule_unsatisfiable() {
 }
 
 #[test]
-fn err_perturb_reserved_vector() {
-    check_reply(
-        48,
-        Err(ControlError::PerturbReservedVector { vector: 7 }),
-        &[0x01, 0x10, 0x07],
-    );
-}
-
-#[test]
 fn err_read_out_of_range() {
     check_reply(
         49,

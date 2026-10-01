@@ -21,7 +21,7 @@ A bug that cannot be expressed this way does not belong in the collection:
 
 1. **Workload** — what runs in the guest (payload, container image, or init script; reuse the
    `consonance/harmony-linux/linux/` conventions).
-2. **Fault surface** — which Harmony dimension triggers it: timing/interrupt perturbation
+2. **Fault surface** — which Harmony dimension triggers it: timing perturbation
    (vtime), entropy values, host-plane faults, kill/restart at a Moment
    (snapshot/branch), block-layer faults (future), net faults (future).
 3. **Oracle** — how a hit is detected: crash marker on serial, integrity

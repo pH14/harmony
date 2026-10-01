@@ -48,8 +48,6 @@ pub enum ControlError {
     PerturbMomentTaken { at: u64 },
     #[error("run overshot staged Moment {moment} (now at V-time {vtime}); schedule unsatisfiable")]
     ScheduleUnsatisfiable { moment: u64, vtime: u64 },
-    #[error("perturb InjectInterrupt vector {vector} is architecturally reserved (< 16)")]
-    PerturbReservedVector { vector: u8 },
     #[error("read [{gpa:#x}, {gpa:#x}+{len}) is out of range (guest RAM is {ram_len} bytes)")]
     ReadOutOfRange { gpa: u64, len: u32, ram_len: u64 },
     #[error("read len {len} exceeds the per-call cap of {cap} bytes")]

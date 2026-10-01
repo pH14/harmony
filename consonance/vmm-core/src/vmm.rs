@@ -2505,9 +2505,6 @@ where
                 self.mark_host_dirty(*gpa, bytes.len() as u64);
                 Ok(())
             }
-            channel::Effect::InjectInterrupt { vector } => {
-                <B::A as Vendor>::inject_wire_interrupt(self, *vector)
-            }
         }
     }
 

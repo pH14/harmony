@@ -5,7 +5,6 @@ use vm_state::Arm64VmState;
 use vmm_backend::{Arm64, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
 use crate::snapshot::SnapshotError;
-use crate::vendor::InterruptReject;
 use crate::vendor::arm64::contract;
 use crate::vendor::arm64::devices::Pl011;
 use crate::vendor::arm64::records::{
@@ -773,29 +772,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             (Some(a), Some(b)) => Some(a.min(b)),
             (only, None) | (None, only) => only,
         }
-    }
-
-    pub(crate) fn check_wire_interrupt_arm64(&self, vector: u32) -> Result<(), InterruptReject> {
-        let Some(gic) = self.devices.gic.as_ref() else {
-            return Err(InterruptReject::NoFabric);
-        };
-        if !gic.implemented(vector) {
-            return Err(InterruptReject::OutOfRange);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn inject_host_interrupt_arm64(&mut self, vector: u32) -> Result<(), VmmError> {
-        let Some(gic) = self.devices.gic.as_mut() else {
-            return Err(VmmError::ContractViolation(format!(
-                "InjectInterrupt INTID {vector:#x} but no arm64 delivery fabric is wired — the \
-                 GICv3 arbitration model is unwired in this composition and guest delivery is \
-                 AA-6-guarded (the in-kernel vGICv3 round-trip verdict)"
-            )));
-        };
-        gic.pulse(vector).map_err(|e| {
-            VmmError::ContractViolation(format!("InjectInterrupt INTID {vector:#x} rejected: {e}"))
-        })
     }
 
     pub(crate) fn has_pending_guest_interrupt_arm64(&mut self) -> Result<bool, VmmError> {

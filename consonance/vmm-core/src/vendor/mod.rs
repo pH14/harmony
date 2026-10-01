@@ -9,13 +9,6 @@ use crate::vmm::{Step, Vmm, VmmError};
 pub mod arm64;
 pub mod x86;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum InterruptReject {
-    NoFabric,
-    OutOfRange,
-    Reserved { vector: u8 },
-}
-
 pub trait Vendor: Arch + Sized {
     type Devices;
 
@@ -70,16 +63,6 @@ pub trait Vendor: Arch + Sized {
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)>;
 
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64>;
-
-    fn check_wire_interrupt<B: Backend<A = Self>>(
-        vmm: &Vmm<B>,
-        vector: u32,
-    ) -> Result<(), InterruptReject>;
-
-    fn inject_wire_interrupt<B: Backend<A = Self>>(
-        vmm: &mut Vmm<B>,
-        vector: u32,
-    ) -> Result<(), VmmError>;
 
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,

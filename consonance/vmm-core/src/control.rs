@@ -19,7 +19,7 @@ use snapshot_store::SnapshotId;
 use vm_state::SnapshotRecords;
 use vmm_backend::Backend;
 
-use crate::vendor::{InterruptReject, Vendor};
+use crate::vendor::Vendor;
 
 use crate::control_state::{ControlState, ScheduleFailure};
 use crate::exec::ExecSession;
@@ -984,18 +984,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     return Err(ControlError::PerturbOutOfRange {
                         gpa: *gpa,
                         ram_len: vmm.guest_memory().len() as u64,
-                    });
-                }
-            }
-            Effect::InjectInterrupt { vector } => {
-                if let Err(reject) = <B::A as Vendor>::check_wire_interrupt(vmm, *vector) {
-                    return Err(match reject {
-                        InterruptReject::NoFabric | InterruptReject::OutOfRange => {
-                            ControlError::Unsupported
-                        }
-                        InterruptReject::Reserved { vector } => {
-                            ControlError::PerturbReservedVector { vector }
-                        }
                     });
                 }
             }
@@ -4085,7 +4073,7 @@ mod tests {
         hello(&mut s);
         let base = snap(&mut s);
         let mut spec = EnvSpec::seeded(7);
-        spec.record_effect(1234, EnvHostEffect::InjectInterrupt { vector: 32 });
+        spec.record_effect(1234, upset(0x20));
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
@@ -4182,38 +4170,22 @@ mod tests {
             at: Moment(at),
         };
         assert_eq!(
-            s.handle(&perturb(
-                environment::channel::Effect::InjectInterrupt { vector: 32 },
-                1000
-            ))
-            .unwrap(),
+            s.handle(&perturb(upset(0x20), 1000)).unwrap(),
             Ok(Reply::Unit)
         );
         assert_eq!(
-            s.handle(&perturb(
-                environment::channel::Effect::InjectInterrupt { vector: 33 },
-                1000
-            ))
-            .unwrap(),
+            s.handle(&perturb(upset(0x28), 1000)).unwrap(),
             Err(ControlError::PerturbMomentTaken { at: 1000 })
         );
         assert_eq!(
-            s.handle(&perturb(
-                environment::channel::Effect::InjectInterrupt { vector: 34 },
-                100
-            ))
-            .unwrap(),
+            s.handle(&perturb(upset(0x30), 100)).unwrap(),
             Err(ControlError::PerturbPastMoment {
                 at: 100,
                 floor: 500
             })
         );
         assert_eq!(
-            s.handle(&perturb(
-                environment::channel::Effect::InjectInterrupt { vector: 35 },
-                500
-            ))
-            .unwrap(),
+            s.handle(&perturb(upset(0x38), 500)).unwrap(),
             Ok(Reply::Unit)
         );
         assert_eq!(
@@ -5539,7 +5511,7 @@ mod tests {
                     bytes: (0xDEAD_BEEF_0000_0001_u64).to_le_bytes().to_vec(),
                 },
             ),
-            (2, EnvHostEffect::InjectInterrupt { vector: 0x40 }),
+            (2, upset(0x100)),
         ];
         let seed = 0x5EED59;
         let h1 = enforce_hash(&schedule, seed);
@@ -6001,8 +5973,7 @@ mod tests {
             Ok(Reply::Unit)
         );
         assert_eq!(
-            s.handle(&stage(EnvHostEffect::InjectInterrupt { vector: 0x50 }, 1))
-                .unwrap(),
+            s.handle(&stage(upset(0x50), 1)).unwrap(),
             Err(ControlError::PerturbMomentTaken { at: 1 }),
             "a second fault at Moment 1 is rejected (not silently dropped)"
         );
@@ -6033,7 +6004,7 @@ mod tests {
                     bytes: (0x1234_5678_9ABC_DEF0_u64).to_le_bytes().to_vec(),
                 },
             ),
-            (2, EnvHostEffect::InjectInterrupt { vector: 0x60 }),
+            (2, upset(0x100)),
         ];
         let seed = 0xC105u64;
         let (h1, recorded) = enforce_run(&schedule, seed);
@@ -6082,6 +6053,13 @@ mod tests {
             rdtsc_then_hlt_vmm(rdtsc_work),
             Box::new(move || Ok(rdtsc_then_hlt_vmm(rdtsc_work))),
         )
+    }
+
+    fn upset(gpa: u64) -> EnvHostEffect {
+        EnvHostEffect::XorMemory {
+            gpa,
+            bytes: (0xFF_u64).to_le_bytes().to_vec(),
+        }
     }
 
     fn stage_corrupt(s: &mut ControlServer<MockBackend>, at: u64) {
@@ -6200,7 +6178,7 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(100, EnvHostEffect::InjectInterrupt { vector: 40 }),
+                env: host_env(100, upset(0x28)),
             })
             .unwrap(),
             Err(ControlError::PerturbPastMoment {
@@ -6233,7 +6211,7 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(1000, EnvHostEffect::InjectInterrupt { vector: 40 }),
+                env: host_env(1000, upset(0x28)),
             })
             .unwrap(),
             Ok(Reply::Unit)
@@ -6444,14 +6422,14 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(1000, EnvHostEffect::InjectInterrupt { vector: 40 }),
+                env: host_env(1000, upset(0x28)),
             })
             .unwrap(),
             Ok(Reply::Unit)
         );
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 41 }.encode()),
+                fault: HostFault(upset(0x30).encode()),
                 at: Moment(1000),
             })
             .unwrap(),
@@ -6468,12 +6446,8 @@ mod tests {
         fn arbitrary_schedule_applied_twice_is_identical(
             schedule in proptest::collection::btree_map(
                 1u64..=32u64,
-                prop_oneof![
-                    (0u64..(RAM as u64 - 8), any::<u64>())
-                        .prop_map(|(gpa, m)| EnvHostEffect::XorMemory { gpa, bytes: m.to_le_bytes().to_vec() }),
-                    (16u32..=255u32)
-                        .prop_map(|vector| EnvHostEffect::InjectInterrupt { vector }),
-                ],
+                (0u64..(RAM as u64 - 8), any::<u64>())
+                    .prop_map(|(gpa, m)| EnvHostEffect::XorMemory { gpa, bytes: m.to_le_bytes().to_vec() }),
                 0..8usize,
             ),
         ) {
@@ -6664,7 +6638,7 @@ mod tests {
                     bytes: vec![0x0f],
                 },
             );
-            plan.record_effect(3, EnvHostEffect::InjectInterrupt { vector: 0x60 });
+            plan.record_effect(3, upset(0x60));
             plan.record_reseed(0, 7);
             plan.record_reseed(2, 99);
             s.handle(&Request::Branch {
@@ -6959,7 +6933,7 @@ mod tests {
         let mut s = exit_boundary_server();
         arr_hello(&mut s);
         s.handle(&Request::Perturb {
-            fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
+            fault: HostFault(upset(0x40).encode()),
             at: Moment(100),
         })
         .unwrap()
@@ -6978,7 +6952,7 @@ mod tests {
         assert_eq!(s.vmm().unwrap().effective_vns(), Some(100));
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x41 }.encode()),
+                fault: HostFault(upset(0x48).encode()),
                 at: Moment(100),
             })
             .unwrap(),
@@ -7007,67 +6981,12 @@ mod tests {
         assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
+                fault: HostFault(upset(0x40).encode()),
                 at: Moment(10),
             })
             .unwrap(),
             Err(ControlError::Unsupported),
             "an unarmable backend cannot enforce host faults exactly"
-        );
-    }
-
-    #[test]
-    fn perturb_inject_interrupt_reserved_vector_is_rejected_at_stage_time() {
-        let mut s = exit_boundary_server();
-        arr_hello(&mut s);
-        for vector in [0u32, 1, 15] {
-            assert_eq!(
-                s.handle(&Request::Perturb {
-                    fault: HostFault(EnvHostEffect::InjectInterrupt { vector }.encode()),
-                    at: Moment(100),
-                })
-                .unwrap(),
-                Err(ControlError::PerturbReservedVector {
-                    vector: vector as u8
-                })
-            );
-        }
-        assert_eq!(
-            s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 16 }.encode()),
-                at: Moment(100),
-            })
-            .unwrap(),
-            Ok(Reply::Unit)
-        );
-    }
-
-    #[test]
-    fn perturb_inject_interrupt_on_a_no_lapic_vm_is_unsupported() {
-        let mut s = rdtsc_then_hlt_server(500);
-        hello(&mut s);
-        assert_eq!(
-            s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
-                at: Moment(1000),
-            })
-            .unwrap(),
-            Err(ControlError::Unsupported),
-            "no LAPIC ⇒ InjectInterrupt cannot be delivered — rejected at stage time"
-        );
-        assert_eq!(
-            s.handle(&Request::Perturb {
-                fault: HostFault(
-                    EnvHostEffect::XorMemory {
-                        gpa: 0x40,
-                        bytes: (0xFF_u64).to_le_bytes().to_vec(),
-                    }
-                    .encode(),
-                ),
-                at: Moment(1000),
-            })
-            .unwrap(),
-            Ok(Reply::Unit)
         );
     }
 
@@ -7097,7 +7016,7 @@ mod tests {
         arr_hello(&mut s);
         let base = arr_snap(&mut s);
         s.handle(&Request::Perturb {
-            fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
+            fault: HostFault(upset(0x40).encode()),
             at: Moment(50),
         })
         .unwrap()
@@ -7187,15 +7106,12 @@ mod tests {
     fn arb_verb_op() -> impl Strategy<Value = VerbOp> {
         prop_oneof![
             (
-                prop_oneof![
-                    (0u64..(RAM as u64 - 8), any::<u64>()).prop_map(|(gpa, m)| {
-                        EnvHostEffect::XorMemory {
-                            gpa,
-                            bytes: m.to_le_bytes().to_vec(),
-                        }
-                    }),
-                    (16u32..=255u32).prop_map(|vector| EnvHostEffect::InjectInterrupt { vector }),
-                ],
+                (0u64..(RAM as u64 - 8), any::<u64>()).prop_map(|(gpa, m)| {
+                    EnvHostEffect::XorMemory {
+                        gpa,
+                        bytes: m.to_le_bytes().to_vec(),
+                    }
+                }),
                 1u64..=400,
             )
                 .prop_map(|(f, off)| VerbOp::Perturb(f, off)),

@@ -79,8 +79,7 @@
     "Kill",
     "Pause",
     "Restart",
-    "Hook",
-    "Interrupt"
+    "Hook"
   ],
   "run": {
     "ram_mib": 1024,
