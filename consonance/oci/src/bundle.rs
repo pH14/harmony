@@ -16,6 +16,7 @@ pub const EXECUTION_DESTINATION: &str = execution_proto::EXECUTION_PATH;
 pub const SUPERVISOR_PATH: &str = "/usr/lib/harmony/supervisor";
 pub const HARMONY_DEVICE: &str = "/dev/harmony";
 const KERNEL_LOG_DEVICE: &str = "/dev/kmsg";
+const KVM_DEVICE: &str = "/dev/kvm";
 pub const MAX_EXTERNAL_INPUTS: usize = 256;
 pub const MAX_EXTERNAL_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_EXTERNAL_INPUT_PATH_BYTES: usize = 4096;
@@ -68,6 +69,7 @@ pub struct LaunchRequest {
     pub command: Vec<String>,
     pub bundle: Option<String>,
     pub external_inputs: Vec<ExternalInput>,
+    pub kvm: bool,
 }
 
 impl LaunchRequest {
@@ -85,6 +87,11 @@ impl LaunchRequest {
 
     pub fn with_external_inputs(mut self, external_inputs: Vec<ExternalInput>) -> Self {
         self.external_inputs = external_inputs;
+        self
+    }
+
+    pub fn with_kvm(mut self) -> Self {
+        self.kvm = true;
         self
     }
 }
@@ -152,6 +159,9 @@ pub fn prepare(
     for input in &external_inputs {
         validate_mount_path(&image.rootfs, &input.destination)?;
     }
+    if request.kvm {
+        validate_mount_path(&image.rootfs, KVM_DEVICE)?;
+    }
     let credentials = image.config.resolve_process_credentials(&image.rootfs)?;
     let execution = ExecutionSpec {
         version: VERSION,
@@ -165,7 +175,8 @@ pub fn prepare(
     };
     execution.validate()?;
     let rootfs_segment = build_rootfs_segment(&image.rootfs, &image.owners)?;
-    let control_segment = build_control_segment_validated(&execution, &external_inputs)?;
+    let control_segment =
+        build_control_segment_validated(&execution, &external_inputs, request.kvm)?;
     let identity = execution_identity(&rootfs_segment, &control_segment, &execution)?;
     Ok(PreparedExecution {
         rootfs_segment,
@@ -213,16 +224,17 @@ fn build_control_segment(
     external_inputs: &[ExternalInput],
 ) -> Result<Vec<u8>, BundleError> {
     let external_inputs = validate_external_inputs(external_inputs)?;
-    build_control_segment_validated(execution, &external_inputs)
+    build_control_segment_validated(execution, &external_inputs, false)
 }
 
 fn build_control_segment_validated(
     execution: &ExecutionSpec,
     external_inputs: &[ValidatedExternalInput],
+    kvm: bool,
 ) -> Result<Vec<u8>, BundleError> {
     execution.validate()?;
     let external_inputs = validate_external_inputs_owned(external_inputs)?;
-    let config = runc_spec(&external_inputs);
+    let config = runc_spec(&external_inputs, kvm);
     let mut writer = Writer::new();
     writer.dir("harmony-oci", 0o755);
     writer.file(
@@ -285,7 +297,7 @@ fn cwd(config: &super::image::RuntimeConfig) -> String {
     }
 }
 
-fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
+fn runc_spec(external_inputs: &[ValidatedExternalInput], kvm: bool) -> serde_json::Value {
     let mut mounts = vec![
         json!({
             "destination": "/proc",
@@ -360,6 +372,20 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "options": ["bind", "ro"]
         }),
     ];
+    let mut devices = vec![
+        json!({ "allow": true, "type": "c", "major": "HARMONY_SDK_MAJOR", "minor": "HARMONY_SDK_MINOR", "access": "rw" }),
+        json!({ "allow": true, "type": "c", "major": 1, "minor": 11, "access": "r" }),
+    ];
+    if kvm {
+        mounts.push(json!({
+            "destination": KVM_DEVICE,
+            "type": "bind",
+            "source": KVM_DEVICE,
+            "options": ["bind"]
+        }));
+        devices
+            .push(json!({ "allow": true, "type": "c", "major": 10, "minor": 232, "access": "rw" }));
+    }
     for input in external_inputs {
         mounts.push(json!({
             "destination": input.destination,
@@ -388,10 +414,7 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "rootfsPropagation": "rslave",
             "cgroupsPath": "harmony",
             "resources": {
-                "devices": [
-                    { "allow": true, "type": "c", "major": "HARMONY_SDK_MAJOR", "minor": "HARMONY_SDK_MINOR", "access": "rw" },
-                    { "allow": true, "type": "c", "major": 1, "minor": 11, "access": "r" }
-                ]
+                "devices": devices
             },
             "namespaces": [
                 { "type": "pid" },
@@ -690,7 +713,7 @@ mod tests {
                 .filter(|entry| entry.starts_with("LD_BIND_NOW="))
                 .collect::<Vec<_>>();
             assert_eq!(binding, ["LD_BIND_NOW=1"]);
-            let spec = runc_spec(&[]);
+            let spec = runc_spec(&[], false);
             assert!(
                 spec["process"]["env"]
                     .as_array()
@@ -724,7 +747,7 @@ mod tests {
         assert!(text.contains("/dev/harmony"));
         assert!(!text.contains("/dev/mem"));
 
-        let config = runc_spec(&[]);
+        let config = runc_spec(&[], false);
         let mounts = config["mounts"].as_array().unwrap();
         let kmsg = mounts
             .iter()
@@ -742,6 +765,45 @@ mod tests {
                 && device["access"] == "r"
                 && device["allow"] == true
         }));
+    }
+
+    #[test]
+    fn kvm_access_is_explicit_bound_to_identity_and_rejects_aliases() {
+        let image = image();
+        let ordinary = prepare(&image, &LaunchRequest::default()).unwrap();
+        let nested = prepare(&image, &LaunchRequest::default().with_kvm()).unwrap();
+        assert_ne!(ordinary.identity, nested.identity);
+        let ordinary_config = runc_spec(&[], false);
+        assert!(
+            ordinary_config["mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|mount| mount["destination"] != KVM_DEVICE)
+        );
+        let nested_config = runc_spec(&[], true);
+        assert!(
+            nested_config["mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|mount| mount["destination"] == KVM_DEVICE && mount["source"] == KVM_DEVICE)
+        );
+        assert!(
+            nested_config["linux"]["resources"]["devices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|device| device["major"] == 10
+                    && device["minor"] == 232
+                    && device["access"] == "rw")
+        );
+        std::fs::create_dir_all(image.rootfs.join("dev")).unwrap();
+        std::os::unix::fs::symlink("/dev/null", image.rootfs.join("dev/kvm")).unwrap();
+        assert!(matches!(
+            prepare(&image, &LaunchRequest::default().with_kvm()),
+            Err(BundleError::MountSymlink { .. })
+        ));
     }
 
     #[test]

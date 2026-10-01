@@ -18,6 +18,12 @@ from collections.abc import Iterable
 
 TARGETS = (
     {
+        "name": "nested-driver",
+        "command": "-p nested-driver --lib composition_owns_the_loaded_mapping",
+        "whole_crate": "-p nested-driver --lib",
+        "paths": ("consonance/nested-driver/**",),
+    },
+    {
         "name": "vmm-core",
         "command": "-p vmm-core --lib vendor::x86::bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping",
         "whole_crate": "-p vmm-core",

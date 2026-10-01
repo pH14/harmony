@@ -249,7 +249,7 @@ def _consonance_crates() -> tuple[str, ...]:
     return (
         "consonance-client", "control-proto", "environment", "execution-proto",
         "gicv3", "guest-image", "hypercall-doorbell", "hypercall-proto",
-        "lapic", "oci-support", "process-proto", "snapshot-store", "telemetry",
+        "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
         "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
     )
 
@@ -261,7 +261,7 @@ CONSONANCE_CHECKS = Workflow(
     triggers=("pull_request", "push"),
     jobs=(
         Job("Guest Memory", "pr", 15,
-            crates=("guest-image", "oci-support", "vmm-core"),
+            crates=("guest-image", "oci-support", "nested-driver", "vmm-core"),
             test_targets=("vmm-core:linux_loader_proptest",)),
         Job("CPU State", "pr", 15,
             crates=("vm-state", "vmm-backend"),
@@ -388,8 +388,9 @@ CONSONANCE_RUNTIME = Workflow(
     jobs=(
         Job("Exact Runtime Artifacts", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
         Job("Nested Host", "full", 90,
-            test_targets=("vmm-core:x86_kvm_nested_host",),
-            ignored_tests=("vmm-core::x86_kvm_nested_host l1_creates_kvm_vm",)),
+            test_targets=("vmm-core:x86_kvm_nested_host", "nested-driver:live"),
+            ignored_tests=("vmm-core::x86_kvm_nested_host l1_creates_kvm_vm",
+                           "nested-driver::live inner_consonance_runs_l2",)),
     ),
 )
 
@@ -660,6 +661,7 @@ MEDIA_REQUIRED = {
 # Component ownership of the Miri targets declared in `miri_scope.py`.
 MIRI_OWNERS = {
     "vmm-core": "Consonance",
+    "nested-driver": "Consonance",
     "hypercall-doorbell": "Consonance",
     "hypercall-doorbell-round-trip": "Consonance",
     "consonance-client": "Consonance",

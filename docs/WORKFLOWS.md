@@ -155,7 +155,9 @@ the job.
 The Guest Runtime Qualification workflow's manual `nested_host_only` run first
 requires `KVM_CAP_NESTED_STATE` and KVM-supported Intel VMX on its x86 runner, then builds the separate
 nested-host kernel and boots L1 under the named nested-host contract. The
-`Nested Host` job runs `x86_kvm_nested_host::l1_creates_kvm_vm`; missing nested
+`Nested Host` job runs `x86_kvm_nested_host::l1_creates_kvm_vm`, builds the
+static inner driver and matching OCI runtime, then runs
+`nested-driver::live::inner_consonance_runs_l2`; missing nested
 VMX or a guest that cannot create a KVM VM fails the job. Kernel publication
 still requires the instruction audit to pass.
 An AMD runner can expose nested SVM state while lacking VMX; its positive
@@ -356,3 +358,7 @@ arbitrary script, prove a change selector correct, or see GitHub's retained
 registry of branch-only workflows. Inspect `gh workflow list --all` before
 disabling an obsolete registry entry; disabling one preserves its old runs and
 is separate from repository lint.
+
+The Guest Memory job includes the nested driver’s portable arithmetic and
+mapping checks. Its mapping composition runs in the bounded Consonance Miri
+matrix; the full matrix interprets the driver library.

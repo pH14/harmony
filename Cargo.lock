@@ -409,6 +409,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "harmony-sdk"
+version = "0.1.0"
+dependencies = [
+ "hypercall-proto",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -532,6 +539,19 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "nested-driver"
+version = "0.1.0"
+dependencies = [
+ "control-proto",
+ "harmony-sdk",
+ "hypercall-doorbell",
+ "oci-support",
+ "tempfile",
+ "vmm-backend",
+ "vmm-core",
 ]
 
 [[package]]

@@ -41,9 +41,9 @@ jobs:
           tool: cargo-nextest
       - name: Lint the guest memory crates
         run: |
-          cargo clippy -p guest-image -p oci-support -p vmm-core --all-features --all-targets -- -D warnings
+          cargo clippy -p guest-image -p oci-support -p nested-driver -p vmm-core --all-features --all-targets -- -D warnings
       - name: Image assembly and rootfs staging
-        run: cargo nextest run --all-features -p guest-image -p oci-support
+        run: cargo nextest run --all-features -p guest-image -p oci-support -p nested-driver
       - name: Guest RAM, loaders and the run loop
         run: |
           set -euo pipefail
