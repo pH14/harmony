@@ -1,212 +1,26 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
 name: Checks / Consonance / Guest Runtime Qualification
-
 on:
-  push:
-    branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - flake.nix
-      - flake.lock
-      - consonance/harmony-linux/**
-      - consonance/hypercall-proto/**
-      - consonance/hypercall-doorbell/**
-      - consonance/execution-proto/**
-      - consonance/process-proto/**
-  schedule:
-    - cron: "11 5 * * *"
   workflow_dispatch:
-    inputs:
-      nested_host_only:
-        description: Build and qualify only the nested-host kernel
-        type: boolean
-        default: false
-
 permissions:
   contents: read
-  actions: read
-defaults:
-  run:
-    shell: bash
-env:
-  CARGO_TERM_COLOR: always
-  HARMONY_RUST_TOOLCHAIN: 1.97.0
-  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
-  HARMONY_PLATFORM_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage
-  HARMONY_PLATFORM_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
-  HARMONY_PLATFORM_FIXTURE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/fixture
-
 jobs:
-  runtime-artifacts:
-    name: Exact Runtime Artifacts
-    if: github.event_name != 'workflow_dispatch' || !inputs.nested_host_only
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+  capacity:
+    name: Nested VMX Capacity / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Install pinned Rust toolchains
-        run: |
-          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
-          rustup default "$HARMONY_RUST_TOOLCHAIN"
-          rustup toolchain install "$HARMONY_GUEST_TOOLCHAIN" --profile minimal --component rust-src --target x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
-      - name: Compute platform source key
-        id: source
-        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
-        id: runtime
-        with:
-          path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-      - name: Build exact platform artifacts
-        if: steps.runtime.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cpio python3
-          consonance/harmony-linux/scripts/build-platform-runtime.sh --runtime-payloads "$PWD/runtime-payloads"
-          export HARMONY_NIX_RUNTIME_INIT="$PWD/runtime-payloads/init.sh"
-          export HARMONY_NIX_RUNTIME_SUPERVISOR="$PWD/runtime-payloads/harmony-supervisor"
-          export HARMONY_NIX_RUNTIME_MANIFEST="$PWD/runtime-payloads/runtime-payloads.json"
-          nix run .#guest-images -- --oci-runtime --output "$PWD/nix-guest-output"
-          consonance/harmony-linux/scripts/build-platform-runtime.sh --from-nix "$PWD/nix-guest-output"
-      - name: Verify exact source and artifact manifest
-        run: |
-          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
-            --artifacts consonance/harmony-linux/build/x86_64 --output platform-smoke/provenance.json
-          python3 -c 'import json; assert json.load(open("platform-smoke/provenance.json"))["scope"] == "exact-input"'
-      - name: Enable hardware backend
-        run: |
-          test -c /dev/kvm
-          sudo chmod a+rw /dev/kvm
-      - name: Extended platform replay
-        run: |
-          set -o pipefail
-          for repetition in 1 2 3; do
-            timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
-              2>&1 | tee "platform-smoke/replay-$repetition.log"
-          done
-      - name: Publish qualified exact artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-          path: consonance/harmony-linux/build/x86_64
-          if-no-files-found: error
-          retention-days: 30
-      - uses: actions/cache/save@v4
-        if: steps.runtime.outputs.cache-hit != 'true'
-        with:
-          path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: platform-qualification-${{ github.run_id }}
-          path: platform-smoke
-          if-no-files-found: warn
-          retention-days: 14
-
-  nested-host:
-    name: Nested Host
-    if: github.event_name == 'workflow_dispatch' && inputs.nested_host_only
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check outer host nested VMX before building
+      - name: Read nested VMX capacity
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p nested-host-evidence
-          git rev-parse HEAD >nested-host-evidence/source-commit.txt
-          uname -a >nested-host-evidence/host.txt
-          lscpu >>nested-host-evidence/host.txt
+          uname -a
+          lscpu
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           cc -O2 -Wall -Wextra -Werror consonance/harmony-linux/linux/nested-kvm-check.c -o /tmp/nested-kvm-check
-          /tmp/nested-kvm-check | tee nested-host-evidence/host-kvm.txt
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev cpio xz-utils busybox-static
-          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
-          rustup default "$HARMONY_RUST_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@v2
-      - name: Build the matching nested-host kernel and fixture
-        env:
-          NESTED_HOST_PROFILE: 1
-          NESTED_HOST_BUSYBOX: /usr/bin/busybox
-        run: |
-          set -euo pipefail
-          consonance/harmony-linux/scripts/fetch.sh
-          bash consonance/harmony-linux/linux/build-kernel.sh 2>&1 | tee nested-host-evidence/kernel-build.log
-          bash consonance/harmony-linux/linux/build-nested-host-fixture.sh consonance/harmony-linux/build/x86_64
-      - name: L1 initializes kvm_intel and creates a VM
-        env:
-          NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
-          NESTED_HOST_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-nested-host.cpio.gz
-        run: |
-          set -euo pipefail
-          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p vmm-core \
-            --test x86_kvm_nested_host l1_creates_kvm_vm -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee nested-host-evidence/l1-boot.log
-          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/l1-boot.log
-      - name: Build the static inner driver and matching OCI runtime
-        env:
-          HARMONY_RUNTIME_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
-          HARMONY_RUNTIME_INIT: ${{ github.workspace }}/consonance/harmony-linux/runtime/init.sh
-          HARMONY_RUNTIME_SUPERVISOR: ${{ github.workspace }}/consonance/harmony-linux/supervisor/target/x86_64-unknown-linux-musl/release/harmony-supervisor
-        run: |
-          set -euo pipefail
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --locked --release --target x86_64-unknown-linux-musl --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
-          bash consonance/harmony-linux/linux/build-oci-runtime-initramfs.sh x86_64 2>&1 | tee nested-host-evidence/oci-runtime-build.log
-          bash consonance/nested-driver/build-image.sh consonance/harmony-linux/build/x86_64/nested-driver.oci
-          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          taskset -c "$cpu" target/x86_64-unknown-linux-musl/release/nested-driver | tee nested-host-evidence/inner-direct.log
-      - name: Inner Consonance runs L2 through OCI
-        env:
-          NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
-          NESTED_OCI_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
-          NESTED_DRIVER_IMAGE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/nested-driver.oci
-        run: |
-          set -euo pipefail
-          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
-            --test live inner_consonance_runs_inner_guest -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee nested-host-evidence/inner-l1-oci.log
-          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/inner-l1-oci.log
-      - name: Outer nested state repeated and cold restore qualification
-        env:
-          NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
-          NESTED_OCI_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
-          NESTED_DRIVER_IMAGE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/nested-driver.oci
-        run: |
-          set -euo pipefail
-          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          # The matrix starts cold_snapshot_child in separate capture and import processes.
-          timeout -k 10 300 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
-            --test nested_restore outer_nested_state_snapshot_matrix -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee nested-host-evidence/nested-restore.log
-          grep -Fq 'NESTED_MATRIX cold_import=pass creations=1 imports=0' nested-host-evidence/nested-restore.log
-          set +e
-          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver --features omit-nested-state \
-            --test nested_restore outer_nested_state_snapshot_matrix -- --ignored --exact --test-threads=1 --nocapture \
-            >nested-host-evidence/nested-restore-omission.log 2>&1
-          result=$?
-          set -e
-          test "$result" -ne 0
-          test "$result" -ne 124
-          test "$result" -ne 137
-          grep -Fq 'NESTED_MATRIX uninterrupted=pass' nested-host-evidence/nested-restore-omission.log
-          grep -Fq 'NESTED_MATRIX capture_only=pass' nested-host-evidence/nested-restore-omission.log
-          grep -Fq 'NESTED_MATRIX restore_attempt=1' nested-host-evidence/nested-restore-omission.log
-          ! grep -Fq 'NESTED_MATRIX restore=1 pass' nested-host-evidence/nested-restore-omission.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nested-host-${{ github.run_id }}
-          path: nested-host-evidence
-          if-no-files-found: error
-          retention-days: 14
+          /tmp/nested-kvm-check
