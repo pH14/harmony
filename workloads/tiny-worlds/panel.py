@@ -28,6 +28,8 @@ MAX_WORLD_SCALE = 256
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
+    "passive clock hidden gap": ({"passive_clock": "hidden"}, 1),
+    "passive clock visible progress": ({"passive_clock": "visible"}, 1),
     "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
     "whole-map re-walk": ({"inner": 4, "items": 9}, 1),
     "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 1),
@@ -136,9 +138,24 @@ def world_requests(world: str, count: int) -> list[dict]:
         if "cells" in fields:
             config = {"family": "crossing", "parameters": {
                 **fields, "layout": secrets.randbits(64), "pattern": secrets.randbits(2 * fields["length"])}}
-        rows.append({"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
-                                               "work_budget": WORLD_BUDGET, "broken": False,
-                                               "verify": False, "keep": "portfolio"}})
+        search = None
+        if "passive_clock" in fields:
+            end = 15 + 960 + secrets.randbelow(271)
+            events = [12, 13, end - 2, end]
+            if fields["passive_clock"] == "visible":
+                events = sorted(set(events + list(range(53, end, 40))))
+            config = {"family": "passive_clock", "parameters": {
+                "events": events, "holds": [
+                    {"minimum": 2, "maximum": 7, "weight": 2},
+                    {"minimum": 2, "maximum": 12, "weight": 11},
+                    {"minimum": 48, "maximum": 120, "weight": 11}]}}
+            search = {"suffix": "one_to_six", "mixture": "energy_splice:6"}
+        row = {"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
+                                          "work_budget": WORLD_BUDGET, "broken": False,
+                                          "verify": False, "keep": "portfolio"}}
+        if search is not None:
+            row["request"]["search"] = search
+        rows.append(row)
     return rows
 
 
@@ -156,6 +173,11 @@ def legs(report: dict) -> dict:
         return {"to the goal": WORLD_BUDGET if goal is None else goal,
                 "to crossing entry": entry,
                 "crossing entry to goal": None if entry is None or goal is None else goal - entry}
+    if report["config"]["family"] == "passive_clock":
+        entry = within(evidence["passive_clock"]["first_event_work"][1])
+        return {"to the goal": WORLD_BUDGET if goal is None else goal,
+                "to wait entry": entry,
+                "wait entry to goal": None if entry is None or goal is None else goal - entry}
     first = [within(w) for w in evidence["map_first"]]
     tiers = [within(w) for w in evidence["map_first_tier"]]
 

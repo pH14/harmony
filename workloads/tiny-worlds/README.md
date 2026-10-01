@@ -17,7 +17,7 @@ cargo build --release --locked --manifest-path workloads/tiny-worlds/Cargo.toml
 
 The executable reads one JSON request from standard input, capped at 16 KiB.
 Required fields are `config`, `seed`, `work_budget`, `broken`, `verify`, and
-`keep`; `scale` and `workers` are optional.
+`keep`; `scale`, `workers`, and `search` are optional.
 `config` contains `family` and `parameters`; nested objects reject unknown fields.
 Supply a seed at runtime and retain it with the output when reproducing a run.
 Keep generated requests and reports outside the repository.
@@ -44,7 +44,17 @@ PY
 preferences: charge first and health first. `capacity_two` keeps two holders
 per slot under the charge-first preference alone.
 
-`work_budget` accepts 1–2,000,000 transitions. A campaign uses `workers`
+An optional `search` object selects existing campaign policies without changing
+the world: `suffix` accepts `one_or_two`, `one_to_six`, or
+`one_to_six_within_3_max_action_cost_full_hold`; `mixture` accepts the identifiers
+documented in the searcher README, including `energy_splice:6`; and
+`stop_on_objective` overrides campaign stopping. Omitted fields retain the
+world's normal settings. Ordinary runs stop at their first objective by default;
+scaled runs normally continue to their work budget. Calibration can set
+`stop_on_objective=true` in a scaled run and compare first-objective tries and
+work without retaining a large campaign stream.
+
+`work_budget` accepts 1–2,000,000 logical work units. A campaign uses `workers`
 workers (1–64, default one) and an admission window of the same size, an
 archive capacity of 4,096, and a 16 GiB logical memory budget,
 and stops at its first objective. The event stream has a checked 1 GiB
@@ -81,7 +91,7 @@ field is required:
 The payload is derived from the world state, so it adds real resident memory
 without changing any search decision, and job-result hashes leave it out. The
 spin reads the thread's CPU clock only to wait. A scaled run accepts 1–10,000,000,000
-transitions and requires `verify=false` and `keep=portfolio`. It counts the
+logical work units and requires `verify=false` and `keep=portfolio`. It counts the
 campaign stream's bytes instead of storing them, keeps no per-job evidence,
 skips final archive entries, and writes the searcher's progress lines, one per
 100 executions, to standard error. `HARMONY_COORDINATOR_PROFILE` adds the
@@ -111,12 +121,51 @@ representation or action choice affects the same world transitions.
 | `map` | Enter a branch of a grid of rooms, take the item at its far end, leave through the same door, and cross the rest of the map to the goal. | Hide the item from the progress tier. |
 | `graph` | Walk a long line of nodes, with hashed jumps, to its last node. | Hide the progress tier. |
 | `crossing` | Reach a short exit while a large pool of flat-tier places competes for attempts. | Hide partial exit progress. |
+| `passive_clock` | Every sampled hold advances a clock; only specified event boundaries change the archive key. | Hide all intermediate events. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
 an obstacle's time cost succeeds. In `deadline_actions`, ineffective actions
 also spend their configured duration. The action world's `observable` flag
 controls whether regime identity appears in the key.
+
+## Passive clock
+
+`passive_clock` supplies `events`, a strictly increasing list of 1–64 positive
+clock readings, and `holds`, 1–16 weighted duration bands. Each band has
+`minimum`, `maximum` (positive byte values), and a positive `weight`. The sampler
+chooses a band in proportion to its weight, then uniformly draws a duration
+within it. Bands may overlap; their probabilities add. Every hold advances the
+clock regardless of any control symbol, and restoring a snapshot restores that
+clock. The final event is the objective. Reachability follows from positive
+holds and the finite final reading, without enumerating action sequences.
+
+The key is constant between events, with no resource preference for time spent
+waiting. Each event creates a new place; `broken=true` hides intermediate events
+but preserves the objective. This isolates passive time that is lost when a
+later equal-preference state competes with an earlier, cheaper holder. It differs
+from `delayed`, where particular actions advance progress and other actions can
+reset it. Passive clocks are standalone worlds, because chain actions and work
+costs use the four-symbol transition alphabet.
+
+For this family, an action is its held duration and both declared cost units are
+`clock_ticks`; other families retain unit-cost `transitions`. A hold is charged
+in full even if its endpoint passes the final clock reading. Ordinary and scaled
+reports give first-objective executions beside work and the resolved suffix,
+mixture and stopping policies. `passive_clock` evidence
+counts admitted hold durations, jobs by the parent's actual event phase, the
+maximum selected clock in each phase, and the first work/execution for each
+event. These bounded aggregates remain available in scaled calibration runs.
+They describe observed native campaign work, not an independent probability
+forecast. Duration-only inputs abstract otherwise ineffective control symbols.
+Before any retention, this preserves the ordinary duration marginal; after
+retention it can change duplicate and empirical-tail rates, which need separate
+calibration. A new configuration needs unchanged-loss and rate calibration plus
+prospective game predictions before it is called predictive.
+
+The comparison panel includes hidden-gap and visible-progress controls around the recorded 1,095-frame automatic wait. The 960–1,230 range tests sensitivity; it is not a native-rate calibration or a forecast. Duration-only inputs omit control-symbol entropy, the populated game archive, and the later menu decision.
+
+The two new comparison worlds each had zero rejected comparisons in 300 simulated comparisons of the unchanged engine. Each simulation used adaptive doubling from 16 to at most 256 layouts and reused a pool of 512 shared configurations with independent runtime seeds in the two arms; these are approximate resampling rates, not 300 independent experiments. Both hidden-gap arms missed all 512 goals, whereas both visible-progress arms reached all 512. The hidden-gap result reflects a gap above the current 720-tick ordinary suffix bound, not evidence of predictive accuracy. Separately, 16 same-seed identity controls per world preserved exact campaign streams and panel legs. Legacy comparisons against the production-equivalent base preserved all 186 streams across the original twelve worlds.
 
 ## Archive key
 
@@ -225,7 +274,7 @@ suffix were already executed; they produce no job.
 
 Every parameter is required except the optional map fields. Bounds keep
 exhaustive enumeration below 200,000 states; requests exceeding the reachability limit are rejected. The graph
-family's reachability holds by construction.
+family's and passive clock's reachability hold by construction.
 
 | Family | Parameters |
 | --- | --- |
@@ -240,11 +289,12 @@ family's reachability holds by construction.
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–6 with `boss_hits_back`, and not in chain stages; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
+| Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain`, `graph`, and `crossing` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, `crossing`, and `passive_clock` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
@@ -345,6 +395,8 @@ uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare bas
 | --- | --- | --- | --- |
 | Flat archive crossing | 1,024 places, four exit steps, randomized layout and action pattern | Mega Man 2: an easy local crossing competes with a populated flat-tier archive | To entry, entry to goal, total work |
 | Fresh crossing | Same transitions, rooted at the exit entrance | Control for crossing difficulty without the competing archive | To entry (zero), entry to goal, total work |
+| Passive clock hidden gap | 960–1,230 hidden clock ticks after two visible events; weighted holds, existing full-six suffix | Automatic equipment messages can advance without a retained cell change | To wait entry, wait entry to goal, total clock ticks |
+| Passive clock visible progress | Same hold distribution and gap range, with an event every 40 ticks | Cause-removal control exposing the waiting progress | As above |
 | Farm loop | `inner` 20, 4 farms | Refills away from the next item draw the search back | To the item, out of the item region, out to the goal |
 | Whole-map re-walk | `inner` 4, 9 items | Each item sends a new tier back across the map | To the last item, last item to the goal |
 | Boss needing far stock | `inner` 20, 4 farms, `boss_stock` 24 | Kraid and Ridley need missiles farmed far from the boss | To the item, item to stocked arrival, stocked arrival to kill |
@@ -355,6 +407,8 @@ uv run workloads/tiny-worlds/panel.py --jobs 10 --binary candidate --compare bas
 | Locked item with hidden timing | as above, `timing` 5 | Replayed inputs land about one time in five | As above |
 | Gauntlet | `inner` 20, 2 items, 2 farms, `farm_cap` 1, `gauntlet` | Tourian: the last item comes at the entry low on energy, and the refills are far away | To the last item, last item to full-health arrival, full-health arrival to the goal |
 | Gauntlet with hidden timing | as above, `timing` 5 | The same with replayed inputs landing about one time in five | As above |
+
+The passive-clock worlds use `one_to_six` and `energy_splice:6`; the other comparison worlds retain their default search settings. Their work unit is `clock_ticks`, whereas the other worlds count transitions. Compare arms within a world, not their absolute work across families. Older binaries without the new family cannot run these worlds: use a baseline built with the same world implementation and the unchanged engine, and record that source explicitly.
 
 Every world also reports work to the goal, counting a missed goal as 200,000.
 A campaign stops at the goal or after 200,000 work, and a milestone after that
