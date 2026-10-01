@@ -155,6 +155,7 @@ jobs:
         run: |
           node --test scripts/benchmark-report.test.cjs
           python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+          python3 workloads/bugs/interleaving.py --self-test
       - name: Historical scenario tooling
         run: |
           scripts/check-portable-tests.test.sh
