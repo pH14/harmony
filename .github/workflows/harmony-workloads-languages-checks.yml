@@ -1,0 +1,229 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Harmony Workloads / Languages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      rebuild_images:
+        description: Rebuild every language layer without cached build steps
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: harmony-languages-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
+  HARMONY_GUEST_DIR: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64
+  HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+  HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
+
+jobs:
+  images:
+    name: Language Images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - name: Restore the exact guest runtime when available
+        id: runtime
+        if: steps.scope.outputs.enabled == 'true'
+        uses: ./.github/actions/platform-runtime
+        with:
+          require-exact: 'false'
+          report: language-images-evidence
+      - name: Build a missing exact guest runtime
+        if: steps.scope.outputs.enabled == 'true' && steps.runtime.outputs.scope != 'exact-input'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bc binutils bison build-essential bzip2 cpio flex g++ kmod libelf-dev libssl-dev python3 shellcheck wget
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          rustup toolchain install "$HARMONY_GUEST_TOOLCHAIN" --profile minimal --component rust-src --target x86_64-unknown-linux-musl
+          rm -rf consonance/harmony-linux/build/x86_64
+          make -C consonance/harmony-linux fetch
+          consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Verify guest provenance
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 --artifacts "$HARMONY_GUEST_DIR" --output language-images-evidence/provenance.json
+          python3 -c 'import json; assert json.load(open("language-images-evidence/provenance.json"))["scope"] == "exact-input"'
+      - name: Identify language layer inputs
+        id: keys
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          echo "c=$(python3 workloads/languages/image-key.py c)" >>"$GITHUB_OUTPUT"
+          echo "rust=$(python3 workloads/languages/image-key.py rust)" >>"$GITHUB_OUTPUT"
+      - id: c-cache
+        if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: language-bases/c.tar
+          key: language-base-v1-c-${{ steps.keys.outputs.c }}-${{ github.run_id }}
+          restore-keys: language-base-v1-c-${{ steps.keys.outputs.c }}-
+      - id: rust-cache
+        if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: language-bases/rust.tar
+          key: language-base-v1-rust-${{ steps.keys.outputs.rust }}-${{ github.run_id }}
+          restore-keys: language-base-v1-rust-${{ steps.keys.outputs.rust }}-
+      - name: Build or restore language layers and compose the current runtime
+        if: steps.scope.outputs.enabled == 'true'
+        env:
+          REBUILD_IMAGES: ${{ github.event_name == 'schedule' || inputs.rebuild_images }}
+        run: bash workloads/languages/prepare-ci-images.sh
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: language-bases/c.tar
+          key: language-base-v1-c-${{ steps.keys.outputs.c }}-${{ github.run_id }}
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: language-bases/rust.tar
+          key: language-base-v1-rust-${{ steps.keys.outputs.rust }}-${{ github.run_id }}
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.runtime.outputs.source-key }}
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-images
+          path: language-images
+          if-no-files-found: error
+          retention-days: 14
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+          if-no-files-found: error
+          retention-days: 14
+      - if: always() && steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-images-evidence
+          path: language-images-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  c:
+    name: C
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-images
+          path: language-images
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-language-cli
+      - name: Build the CLI and enable KVM
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          cargo build --locked --release -p harmony-cli
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          docker load --input language-images/c.tar
+      - name: Check admission, timer progress, park progress and replay identity
+        if: steps.scope.outputs.enabled == 'true'
+        run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-c:local language-c-evidence
+      - if: always() && steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-c-evidence
+          path: language-c-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  rust:
+    name: Rust
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-images
+          path: language-images
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-language-cli
+      - name: Build the CLI and enable KVM
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          cargo build --locked --release -p harmony-cli
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          docker load --input language-images/rust.tar
+      - name: Check admission, timer progress, park progress and replay identity
+        if: steps.scope.outputs.enabled == 'true'
+        run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-rust:local language-rust-evidence
+      - if: always() && steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-rust-evidence
+          path: language-rust-evidence
+          if-no-files-found: error
+          retention-days: 14
