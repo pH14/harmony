@@ -5,14 +5,15 @@ image=${1:?usage: run-check.sh image evidence-directory}
 evidence=${2:?usage: run-check.sh image evidence-directory}
 binary=${HARMONY_BINARY:-target/release/harmony}
 seed=${HARMONY_LANGUAGE_SEED:-17}
+ram=${HARMONY_LANGUAGE_RAM_MIB:-1024}
 mkdir -p "$evidence"
 "$binary" preflight --image "$image" --json > "$evidence/preflight.json"
 for boot in 1 2; do
-    "$binary" oci run "$image" --seed "$seed" --timeout 120 --out "$evidence/boot-$boot"
+    "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 120 --out "$evidence/boot-$boot"
 done
 python3 "$(dirname "$0")/verify-runs.py" "$evidence/boot-1" "$evidence/boot-2" \
     --output "$evidence/determinism.json"
-"$binary" oci run "$image" --seed "$seed" --timeout 120 --out "$evidence/park" \
+"$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 120 --out "$evidence/park" \
     -- /opt/harmony/park-launcher /opt/harmony/fixture
 python3 - "$evidence/park" <<'PY'
 import json
@@ -26,8 +27,8 @@ assert log.count("HARMONY_LANGUAGE_MARKER ") == 20
 PY
 
 if [[ $image == *language-c* ]]; then
-    "$binary" oci run "$image" --seed "$seed" --timeout 120 --out "$evidence/processes" -- /opt/harmony/fixture processes
-    "$binary" oci run "$image" --seed "$seed" --timeout 120 --out "$evidence/gcc" -- /opt/harmony/gcc-fixture
+    "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 120 --out "$evidence/processes" -- /opt/harmony/fixture processes
+    "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 120 --out "$evidence/gcc" -- /opt/harmony/gcc-fixture
     python3 - "$evidence" <<'PY'
 import json
 import sys

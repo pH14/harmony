@@ -6,29 +6,31 @@ import hashlib
 import sys
 from pathlib import Path
 
+VENDOR = "workloads/languages/vendor"
+FORWARDING = [
+    f"{VENDOR}/antithesis_instrumentation.h",
+    f"{VENDOR}/ANTITHESIS-SDK-CPP-LICENSE",
+    "workloads/languages/c/shim.c",
+]
+EXTRA_INPUTS = {
+    "c": FORWARDING + ["workloads/faults/runtime/tests/language_fixture.c"],
+    "rust": ["workloads/faults/runtime/tests/language_fixture.rs"],
+    "go": [
+        "consonance/harmony-linux/linux/go-runtime-guest/go.mod",
+        "consonance/harmony-linux/linux/go-runtime-guest/cmd/language-fixture/main.go",
+        "workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch",
+    ],
+    "python": FORWARDING,
+}
+
 root = Path(__file__).resolve().parents[2]
 language = sys.argv[1]
-if language not in ("c", "rust", "go"):
+if language not in EXTRA_INPUTS:
     raise SystemExit(f"unsupported language: {language}")
-paths = list((root / "workloads/languages" / language).rglob("*"))
-if language == "c":
-    paths.extend(root / "workloads/languages/vendor" / name for name in (
-        "antithesis_instrumentation.h", "ANTITHESIS-SDK-CPP-LICENSE",
-    ))
-    paths.append(root / "workloads/faults/runtime/tests/language_fixture.c")
-if language == "rust":
-    paths.append(root / "workloads/faults/runtime/tests/language_fixture.rs")
-if language == "go":
-    paths = [root / "workloads/languages/go" / name for name in (
-        "Dockerfile", "configure-stdlib.sh", "antithesis-go-toolexec-v0.8.0-stdlib.patch",
-    )]
-    paths.extend((root / "consonance/harmony-linux/linux/go-runtime-guest/cmd/language-fixture").rglob("*.go"))
-    paths.append(root / "consonance/harmony-linux/linux/go-runtime-guest/go.mod")
-    paths.append(root / "workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch")
-    paths.append(root / "workloads/languages/reviewed/go-fixture-x86_64.txt")
-paths.append(root / "workloads/languages/reviewed/bookworm-x86_64.txt")
+paths = [path for path in (root / "workloads/languages" / language).rglob("*") if path.is_file() and path.suffix != ".md"]
+paths.extend(root / path for path in EXTRA_INPUTS[language])
 value = hashlib.sha256()
 for path in sorted(paths):
-    if path.is_file() and "target" not in path.parts:
+    if "target" not in path.relative_to(root).parts:
         value.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes())
 print(value.hexdigest())

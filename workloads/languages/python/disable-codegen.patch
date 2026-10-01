@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: PSF-2.0
+--- a/Modules/_ctypes/callbacks.c
++++ b/Modules/_ctypes/callbacks.c
+@@ -346,0 +347,3 @@
++    PyErr_SetString(PyExc_RuntimeError, "ctypes callbacks are disabled in this interpreter");
++    return NULL;
++
+--- a/Modules/_ctypes/_ctypes.c
++++ b/Modules/_ctypes/_ctypes.c
+@@ -6392,11 +6392,0 @@
+-    // See https://github.com/python/cpython/issues/128485
+-    // This allocates some memory and then frees it to ensure that the
+-    // the dlmalloc allocator initializes itself to avoid data races
+-    // in free-threading.
+-    void *codeloc = NULL;
+-    void *ptr = Py_ffi_closure_alloc(sizeof(void *), &codeloc);
+-    if (ptr == NULL) {
+-        PyErr_NoMemory();
+-        return -1;
+-    }
+-    Py_ffi_closure_free(ptr);

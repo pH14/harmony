@@ -1,0 +1,17 @@
+{
+  "actions": [
+    {"operation": {"Wait": 50}, "coverage_quantum": 1024},
+    {"operation": {"Hook": [3, 50]}, "coverage_quantum": 1024},
+    {"operation": {"Wait": 1500}, "coverage_quantum": 1024},
+    {
+      "operation": {
+        "EventPark": {"node": 0, "edges": 1, "hold_us": 50000, "ticks": 7000}
+      },
+      "coverage_quantum": 1024
+    },
+    {
+      "operation": {"EventKill": {"node": 0, "rarity": 63, "ticks": 1000}},
+      "coverage_quantum": 1024
+    }
+  ]
+}

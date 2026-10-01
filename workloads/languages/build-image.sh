@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
-language=${1:?usage: build-image.sh c|rust|go [docker build options]}
+language=${1:?usage: build-image.sh LANGUAGE [docker build options]}
 shift
-case "$language" in c|rust|go) ;; *) echo "unsupported language: $language" >&2; exit 2 ;; esac
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$repo"
 key=$(python3 workloads/languages/image-key.py "$language")

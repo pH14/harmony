@@ -132,10 +132,11 @@ Every job declares a trigger class.
   `merge_group`. Artifact-build prerequisites are the exceptions, each capped
   at 45 minutes for a cold build: `NES Guest Image` builds the exact runtime and
   ROM-free image, `UML Artifacts — <Architecture>` builds the UML kernels,
-  `Exact Runtime Artifacts` builds the exact guest runtime, and
-  `Language Images` builds the language workload images. Their consumers
-  keep the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` registers each
-  prerequisite; it does not permit full searches on pull requests.
+  `Exact Runtime Artifacts` builds the exact guest runtime,
+  `Language Guest Runtime` builds the guest for the language checks, and
+  `Language Image — <Language>` builds each language workload image. Their
+  consumers keep the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` registers
+  each prerequisite; it does not permit full searches on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
   to main, and declare their own ceiling.
 
@@ -161,10 +162,12 @@ the job, which states why the work cannot fit the bound:
 
 A trigger-class exception does not let a `pr` job run longer. Artifact build
 budgets are registered separately and apply only to the named prerequisite.
-`Language Images` has a 45-minute artifact budget for source builds and exact guest
-runtime preparation; each language consumer retains the 15-minute bound. Language
-layers are cached by their own recipe inputs, then receive the current shared
-runtime. Weekly runs and `rebuild_images` dispatches rebuild every layer.
+`Language Guest Runtime` builds the exact guest runtime when no cached copy
+exists. Each `Language Image — <Language>` job builds one language layer from
+source when its cache misses, then composes the current shared runtime onto it.
+Both have a 45-minute artifact budget. Each `Check — <Language>` job keeps the
+15-minute bound. A language layer's cache key is the hash of its own recipe
+inputs. Weekly runs and `rebuild_images` dispatches rebuild every layer.
 
 ## Change selection
 

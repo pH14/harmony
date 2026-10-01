@@ -2,18 +2,65 @@
 
 # Instrumented language images
 
-These fixtures exercise application loops through the Antithesis libvoidstar ABI. One thread spins without application system calls while another sleeps for 10 ms and prints twenty ordered markers. Coverage callbacks advance guest virtual time, so the timer thread can wake. The C fixture's `processes` argument exercises the same behavior across a fork.
-The C check also runs the GCC-built fixture linked directly to libvoidstar's
-trace-pc callback.
+Each language has one image recipe and one fixture with the same behaviour. One
+thread spins with no system calls. Another thread sleeps 10 ms, prints a marker,
+and repeats until it has printed twenty. The sleeping thread wakes only because
+coverage callbacks in the spinning thread exit to the VM and advance virtual
+time.
 
-Build a fixture with `bash workloads/languages/build-image.sh c`, `rust`, or `go`, then run `bash workloads/languages/run-check.sh harmony-language-c:local evidence/c`. Set `HARMONY_GUEST_DIR` to a qualified guest artifact directory and `HARMONY_BINARY` to the CLI binary if necessary. Checks require image admission, identical serial logs and full execution records from two fixed-seed boots, and another instrumented thread progressing while one is held at an event site. The parked-thread launcher checks cumulative callbacks because AFL coverage buckets eventually saturate.
+Every target image meets three conditions:
 
-Each Dockerfile produces a `language-base` image with the language binary and symbols. `image-key.py` hashes only that layer's build inputs. `compose.Dockerfile` copies the freshly built runtime and launcher last; `build-runtime.sh` builds the generic ABI shim and fault runtime once, shared with the etcd and SQLite historical recipes. Language code loads `/usr/lib/libvoidstar.so` at runtime.
+| Condition | How it is checked |
+| --- | --- |
+| Hidden instructions appear only at reviewed sites | Admission scans every ELF file in the image ([`reviewed/`](reviewed/README.md)) |
+| No runtime code generation | Recipes turn off code generators; fixtures check `/proc/self/maps` |
+| Every loop reaches a libvoidstar callback | Clang, GCC, Rust or Go coverage instrumentation |
 
-The C fixture includes the unmodified, pinned upstream forwarding header. Rust uses the pinned upstream instrumentation crate and documented LLVM flags, with an explicit target triple to keep host build scripts uninstrumented. Recipes preserve unstripped binaries and their producer's `*.sym.tsv` files under `/symbols` and attest their installed paths with SHA-256. Debian's unused `libmemusage.so` diagnostic library is removed because it contains raw counters.
+## Layout
 
-The Go recipe uses cgo forwarding and an explicit standard-library selection excluding runtime/SDK dependencies. Its nearby README records the tested coverage boundary, etcd callback cost, and GC stall measurements.
+| Path | Contents |
+| --- | --- |
+| `c/`, `rust/`, `go/`, `python/` | One `Dockerfile` per language, with a `language-base` target |
+| `runtime/` | Shared build of libvoidstar, the fault runtime, the park launcher and the GCC fixture |
+| `compose.Dockerfile` | Copies the runtime into a language base image |
+| `vendor/` | The unmodified Antithesis C forwarding header |
+| `reviewed/` | Reviewed instruction sites per executable digest |
 
-All target images need hidden instructions confined to reviewed digest/site pairs, no runtime code generation, and callbacks in every application loop. Admission scans every ELF, including libraries. Static checks detect forbidden instructions and writable executable ELF segments and stacks; runtime settings and memory-map checks establish the no-code-generation property of each supported recipe. Precompiled libc and Rust standard-library loops remain uninstrumented and bounded by their input.
+Each `language-base` image holds the language toolchain output, the fixture,
+unstripped binaries under `/symbols`, and `/symbols/harmony-instrumented-events`
+with the SHA-256 and installed path of every instrumented file. The runtime is
+copied in last, so a change to libvoidstar never rebuilds a language layer.
+`image-key.py` hashes only a layer's own recipe inputs, which makes it the cache
+key for that layer.
 
-`Checks / Harmony Workloads / Languages` builds or restores each layer in a 45-minute artifact prerequisite, composes the current runtime, and hands images plus an exact-source guest runtime to 15-minute language checks. Weekly and `rebuild_images` runs force cold language builds. The preparation skill lives in `.agents/skills/preparing-workloads`; its references follow validated recipes.
+Precompiled libc, libffi and the Rust standard library stay uninstrumented.
+Their loops are bounded by input size.
+
+## Running the checks
+
+```sh
+bash workloads/languages/build-image.sh c
+bash workloads/languages/run-check.sh harmony-language-c:local evidence/c
+```
+
+`run-check.sh` runs `harmony preflight --image`, boots the fixture twice with a
+fixed seed, and requires twenty ordered markers and identical serial logs and
+run records. It then runs the fixture under the park launcher, which holds one
+thread at a coverage site and requires another thread to keep making callbacks.
+The C check also runs the fixture as two processes and the GCC trace-pc build.
+
+Set `HARMONY_BINARY` and `HARMONY_GUEST_DIR` to use another CLI or guest build.
+Guest RAM defaults to 1024 MiB because the initramfs holds the rootfs and
+unstripped symbols; set `HARMONY_LANGUAGE_RAM_MIB` to change it. The seed
+defaults to 17. The macOS OCI backend requires `HARMONY_LANGUAGE_SEED=0`.
+
+## CI
+
+`Checks / Harmony Workloads / Languages` restores or builds the guest in
+`Language Guest Runtime`. Each `Language Image — <Language>` job restores or
+builds one language layer and composes the current runtime onto it. Each
+`Check — <Language>` job runs `run-check.sh` on that image. The weekly schedule and the `rebuild_images` dispatch input
+rebuild every layer without the cache.
+
+The [preparing-workloads skill](../../.agents/skills/preparing-workloads/SKILL.md)
+has one reference per language, written from these recipes.
