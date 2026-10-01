@@ -558,8 +558,8 @@ bounded one-to-six suffix and `energy_splice:6`. They use a 2,000,000-action
 budget, stop at the goal, and run through the scaled low-memory reporting path.
 The fresh world isolates local retries. The flat world measures the same exit
 with a populated flat-tier pool. Its entry-to-goal leg counts executions;
-approach tries and total action work are separate legs. A missing goal leaves
-the retry leg unobserved and contributes to the panel's goal-miss comparison;
+approach tries and total action work are separate legs. A missing goal or one
+recorded after the work horizon leaves the retry leg unobserved and contributes to the panel's goal-miss comparison;
 do not interpret equal censoring as equal retry performance.
 
 The parameter choice followed observation of the calibration runs. It is
@@ -567,11 +567,16 @@ not a prospective prediction, and the world omits health and several native
 archive differences. Unchanged-engine controls used 512 shared layouts per
 world with independent seeds: both full cohorts were plausible, with the
 flat world's entry-to-goal retry leg a watch leg. Among 300 adaptive comparisons
-resampled from each finite layout pool, clearly-bad false rejection occurred
-once for the fresh world (0.33%) and never for the flat world. These are
-approximate pooled rates, not 300 independently generated cohorts. The
-256-layout limit was reached in 279 fresh comparisons and all 300 flat
-comparisons, so short panels can leave substantial uncertainty.
+resampled from each finite layout pool, the actual panel returned a false
+failure in 5/300 fresh comparisons (1.67%: one clearly bad and four undecided)
+and 40/300 flat comparisons (13.33%: all undecided). Watch legs remain
+plausible; undecided worlds fail the panel. These are approximate pooled
+rates, not 300 independently generated cohorts. Final verdicts were computed
+from cached reports at the original adaptive stopping lengths. The full
+512-layout cohorts exceed the panel's normal 256-layout limit, which was
+reached in 279 fresh comparisons and all 300 flat comparisons. In particular,
+the flat world's uncertainty can make an unchanged engine fail a short panel;
+do not relax the acceptance rule or treat an undecided comparison as efficacy.
 At that limit, the two added worlds can cost 1,024 binary runs of up to
 2,000,000 actions each; short or identical comparisons establish no searcher
 speedup.
