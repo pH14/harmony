@@ -109,6 +109,26 @@ fn run_point(server: &mut Server) -> Result<u64> {
     match reply {
         Reply::Stop(StopReason::SnapshotPoint { .. }) => register(server, 3),
         other => {
+            if let Ok(number @ 1..=nested_driver::STEPS) = register(server, 10) {
+                let bytes = |first| -> Result<Vec<u8>> {
+                    let mut bytes = register(server, first)?.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(&register(server, first + 1)?.to_le_bytes());
+                    bytes.truncate(14);
+                    Ok(bytes)
+                };
+                let mut oracle = nested_driver::Oracle::default();
+                for _ in 0..number {
+                    oracle.advance();
+                }
+                println!(
+                    "NESTED_ORACLE_FAILURE step={number} actual={} guest_expected={} host_expected={} creations={} imports={}",
+                    nested_driver::hex(&bytes(6)?),
+                    nested_driver::hex(&bytes(8)?),
+                    nested_driver::hex(&oracle.bytes()),
+                    register(server, 1)?,
+                    register(server, 2)?
+                );
+            }
             let console = server.vmm().map(|vmm| vmm.serial()).unwrap_or(&[]);
             Err(format!(
                 "outer continuation stopped: {other:?}; console={} ",
@@ -202,13 +222,52 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
     let mut restored = server()?;
     prefix(&mut restored)?;
     let saved = snapshot(&mut restored)?;
+    let captured_memory = restored
+        .vmm()
+        .ok_or("missing outer VMM")?
+        .guest_memory()
+        .to_vec();
     let detour = continuation(&mut restored)?;
     assert_ne!(
         detour.last().unwrap(),
         &nested_driver::Oracle::default().bytes()
     );
+    let detour_snapshot = snapshot(&mut restored)?;
+    let sparse = restored.export_sparse_snapshot(saved, detour_snapshot)?;
+    let mut stored_memory = captured_memory.clone();
+    for (gfn, page) in sparse.pages {
+        let offset = usize::try_from(gfn)?
+            .checked_mul(4096)
+            .ok_or("sparse page overflow")?;
+        stored_memory
+            .get_mut(offset..)
+            .and_then(|suffix| suffix.get_mut(..4096))
+            .ok_or("sparse page outside RAM")?
+            .copy_from_slice(page.as_ref());
+    }
+    let changed = ram_difference(
+        &stored_memory,
+        restored.vmm().ok_or("missing outer VMM")?.guest_memory(),
+    );
+    assert!(
+        changed.is_empty(),
+        "incremental capture omitted {} live RAM pages; first GPAs={:x?}",
+        changed.len(),
+        &changed[..changed.len().min(16)]
+    );
+    drop(stored_memory);
+    println!("NESTED_MATRIX incremental_capture=pass");
     for attempt in 1..=8 {
         restored.handle(&Request::Replay(saved))??;
+        let memory = restored.vmm().ok_or("missing outer VMM")?.guest_memory();
+        let changed = ram_difference(&captured_memory, memory);
+        println!(
+            "NESTED_RESTORED_RAM attempt={attempt} changed_pages={} first_gpas={:x?}",
+            changed.len(),
+            &changed[..changed.len().min(16)]
+        );
+        assert!(changed.is_empty(), "outer restore omitted live RAM pages");
+        assert_eq!(restored.in_place_fallbacks(), 0);
         assert_eq!(register(&restored, 3)?, 3);
         println!("NESTED_MATRIX restore_attempt={attempt}");
         assert_eq!(continuation(&mut restored)?, expected, "restore {attempt}");
@@ -271,6 +330,16 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
         nested_driver::hex(expected.last().unwrap())
     );
     Ok(())
+}
+
+fn ram_difference(expected: &[u8], actual: &[u8]) -> Vec<usize> {
+    assert_eq!(expected.len(), actual.len());
+    expected
+        .chunks(4096)
+        .zip(actual.chunks(4096))
+        .enumerate()
+        .filter_map(|(page, (expected, actual))| (expected != actual).then_some(page << 12))
+        .collect()
 }
 
 #[test]

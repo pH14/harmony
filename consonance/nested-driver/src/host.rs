@@ -50,6 +50,24 @@ pub struct Observation {
     pub failure: Option<Failure>,
 }
 
+impl Observation {
+    fn disposition(&self) -> ExecutionDisposition {
+        if self.failure.is_some() {
+            ExecutionDisposition::Failed
+        } else {
+            ExecutionDisposition::Runnable
+        }
+    }
+
+    fn prepare_restore(&mut self, saved: &Self) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        self.clone_from(saved);
+        true
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Snapshot {
     state: SparseSnapshot,
@@ -237,8 +255,10 @@ impl Target {
     }
 
     fn restore(&mut self, snapshot: &Snapshot) {
+        if !self.observation.prepare_restore(&snapshot.observation) {
+            return;
+        }
         self.actions.clone_from(&snapshot.actions);
-        self.observation = snapshot.observation.clone();
         let result = (|| {
             let next = self.session.import_sparse_snapshot(&snapshot.state)?;
             self.session.replay_snapshot(next)?;
@@ -325,6 +345,7 @@ impl TargetExecution for NestedWorkload {
         Target::new(self).map_err(|error| error.to_string())
     }
     fn reset(&self, target: &mut Target) {
+        target.observation.failure = None;
         target.restore(&target.root.clone());
     }
     fn restore(&self, target: &mut Target, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
@@ -369,11 +390,7 @@ fn merge(evidence: &mut Evidence, observation: &Observation) {
 
 impl Evaluation for NestedWorkload {
     fn execution_disposition(&self, target: &Target) -> ExecutionDisposition {
-        if target.observation.failure.is_some() {
-            ExecutionDisposition::Terminal
-        } else {
-            ExecutionDisposition::Runnable
-        }
+        target.observation.disposition()
     }
     fn objective_reached(&self, _: &(), target: &Target) -> Result<bool, Box<dyn Error>> {
         Ok(target.observation.failure.is_some())
@@ -564,4 +581,115 @@ pub fn run(
         return Err("nested search found a failure; replay its stream.jsonl".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use searcher::search::rollout::{Outcome, Rollout, execute_suffix};
+
+    struct FailedParent(Observation);
+
+    impl Rollout<NestedWorkload> for FailedParent {
+        fn apply(&mut self, _: &u64, _: &mut u64) -> Result<(), Box<dyn Error>> {
+            panic!("a failed parent must not execute suffix actions")
+        }
+        fn observations(&self) -> Vec<Observation> {
+            vec![self.0.clone()]
+        }
+        fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
+            Ok(Outcome {
+                objective_reached: self.0.failure.is_some(),
+                disposition: self.0.disposition(),
+            })
+        }
+        fn snapshot(&mut self) -> Result<Snapshot, Box<dyn Error>> {
+            panic!("a failed parent must not publish a candidate")
+        }
+        fn key(&self) -> Result<Key, Box<dyn Error>> {
+            panic!("a failed parent must not publish a key")
+        }
+        fn probe(&mut self, _: &Snapshot) -> Result<bool, Box<dyn Error>> {
+            panic!("a failed parent must not be probed")
+        }
+    }
+
+    fn failed_observation() -> Observation {
+        let mut registers = [0; 11];
+        registers[10] = (1 << 35) | 1;
+        Observation {
+            registers,
+            failure: Some(Failure {
+                layer: "outer-VMM".into(),
+                assertion: None,
+                detail: "outer restore changed the inner counts or published state".into(),
+                actions: vec![42, 19],
+            }),
+        }
+    }
+
+    #[test]
+    fn parent_restore_failure_reaches_serialized_report_and_checkpoint() {
+        let observation = failed_observation();
+        let result = execute_suffix(
+            &mut FailedParent(observation.clone()),
+            0,
+            &[7],
+            RetentionPolicy::Unprobed,
+            true,
+        )
+        .unwrap();
+        assert!(result.actions.is_empty());
+        assert_eq!(result.preparation_failure, Some(vec![observation.clone()]));
+        let workload = NestedWorkload::new(
+            &[],
+            &[],
+            &Options {
+                seed: 42,
+                executions: 1,
+                ram_mib: 256,
+                wall_minutes: None,
+                output: PathBuf::new(),
+            },
+        );
+        let mut evidence = Evidence::default();
+        workload
+            .merge_preparation_failure(&mut evidence, result.preparation_failure.as_ref().unwrap());
+        let checkpoint = NestedWorkload::evidence_checkpoint(&evidence).unwrap();
+        let restored = NestedWorkload::evidence_from_checkpoint(&checkpoint).unwrap();
+        let report = workload.archive_report(
+            &restored,
+            ArchiveReportState {
+                seed: 42,
+                executions: 1,
+                entries: Vec::new(),
+                progress_curve: Vec::new(),
+                retained: 1,
+                rejected: 0,
+                terminal_endpoints: 0,
+                terminal_objectives: 0,
+                execution_failures: 1,
+                selector: Default::default(),
+            },
+        );
+        let decoded: Report =
+            serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
+        assert_eq!(decoded.evidence.pairs, observation.registers[10]);
+        assert_eq!(
+            decoded.evidence.failures,
+            vec![observation.failure.unwrap()]
+        );
+    }
+
+    #[test]
+    fn reset_failure_survives_the_following_parent_restore() {
+        let original = failed_observation();
+        let mut observation = original.clone();
+        assert!(!observation.prepare_restore(&Observation::default()));
+        assert_eq!(observation, original);
+        assert_eq!(observation.disposition(), ExecutionDisposition::Failed);
+        observation.failure = None;
+        assert!(observation.prepare_restore(&Observation::default()));
+        assert_eq!(observation.disposition(), ExecutionDisposition::Runnable);
+    }
 }
