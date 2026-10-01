@@ -88,7 +88,9 @@ The guest execution restrictions and import boundary are documented in the
 
 `cache` holds one snapshot cache for all workers of a search. A namespace
 separates sessions with different images, configuration, setup state, or
-service. Within a namespace an entry's key is the byte encoding of its action
+service. `SearchSession::cache_identity` names the setup state. It is the
+state hash, except for User-mode Linux, whose setup image holds per-process
+host values, so it also hashes the whole setup checkpoint. Within a namespace an entry's key is the byte encoding of its action
 prefix, with fixed-width actions, so a cached prefix of an input is a byte
 prefix of its key. `CacheIndex` is the interface workers use:
 

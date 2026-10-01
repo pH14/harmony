@@ -11,6 +11,7 @@ use environment::{
     channel::Effect,
     input_spec::{ServiceConfig, ServiceFactory},
 };
+use sha2::{Digest, Sha256};
 use uml::{Bridge, Capture, Checkpoint, Checkpoints, ExitReason, Launch, Stop, VerifiedProfile};
 
 use super::{SdkEvent, SearchSession, SessionError, UmlLaunch};
@@ -233,6 +234,20 @@ impl SearchSession for UmlSession {
 
     fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
         Ok(self.live()?.state_hash()?)
+    }
+
+    fn cache_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        let state = self.live()?.state_hash()?;
+        let setup = self
+            .snapshots
+            .get(&self.setup.0)
+            .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?
+            .digest()?;
+        let mut digest = Sha256::new();
+        digest.update(b"harmony-uml-cache-identity-v1\0");
+        digest.update(setup);
+        digest.update(state);
+        Ok(digest.finalize().into())
     }
 
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {

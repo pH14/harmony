@@ -6,6 +6,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use sha2::{Digest, Sha256};
 use snapshot_store::{
     PAGE_SIZE, PageDelta, PageHash, SnapStats, SnapshotId, Store, StoreConfig, StoreStats,
 };
@@ -221,6 +222,17 @@ impl Snapshot {
             .held()
             .and_then(|pages| pages.image_bytes(self.id))
             .unwrap_or(0)
+    }
+
+    pub(crate) fn digest(&self, digest: &mut Sha256) -> Result<(), MemoryError> {
+        let pages = self.checkpoints.held()?;
+        let delta = pages.store.page_delta(pages.root, None, self.id)?;
+        for (gfn, hash, _) in &delta.changed {
+            digest.update(gfn.to_le_bytes());
+            digest.update(hash);
+        }
+        digest.update(pages.image_bytes(self.id)?.to_le_bytes());
+        Ok(())
     }
 
     pub(crate) fn owned_pages(&self) -> u64 {
