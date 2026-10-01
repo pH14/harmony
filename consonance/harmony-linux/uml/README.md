@@ -52,7 +52,9 @@ sequence of guest events.
 - `/proc/cpuinfo` no longer shows the host `uname` line. The CPU flags and
   model still come from the host and `cpuid` runs natively, so the recording
   names both. A guest program that executes `rdrand` or `rdseed` gets host
-  randomness; workloads must not use them.
+  randomness, and one that reads the APIC ID from `cpuid` (leaf 1 EBX bits
+  31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
+  CPU it happens to run on; workloads must not use them.
 - Host stops and continues of stub processes no longer raise guest
   interrupts. A stub that dies without the kernel killing it panics the
   guest.
