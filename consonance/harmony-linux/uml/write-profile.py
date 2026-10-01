@@ -18,6 +18,14 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def config_int(config: Path, symbol: str) -> int:
+    prefix = f"CONFIG_{symbol}="
+    for line in config.read_text().splitlines():
+        if line.startswith(prefix):
+            return int(line[len(prefix) :])
+    raise SystemExit(f"{config}: {prefix} missing")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -27,12 +35,16 @@ def main() -> None:
     args = parser.parse_args()
 
     profile = {
-        "schema": 1,
+        "schema": 2,
         "architecture": args.architecture,
         "kernel_version": args.kernel_version,
         "userspace": "seccomp",
         "patch_series_sha256": sha256(args.patch_series),
         "host_libraries": [],
+        "virtual_time": {
+            "syscall_vns": config_int(args.output / "config", "HARMONY_UML_SYSCALL_VNS"),
+            "clock_read_vns": config_int(args.output / "config", "HARMONY_UML_CLOCK_READ_VNS"),
+        },
     }
     for role, name in ARTIFACTS.items():
         profile[role] = {"name": name, "sha256": sha256(args.output / name)}

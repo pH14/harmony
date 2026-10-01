@@ -31,7 +31,11 @@ exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
 
 The um series applies after the common series to the separate User-mode Linux
-source tree. It makes SECCOMP userspace the only UML mode.
+source tree. It makes SECCOMP userspace the only UML mode, charges virtual
+time per system call and clock read, carries `/dev/harmony` to the host over
+an inherited socket, seeds the random pool from the boot command line,
+emulates the x86 time-stamp counter, keeps host child-process signals out of
+the guest, and fixes the guest's physical memory layout.
 
 After a clock or trap patch changes, run the matching instruction reachability
 scan and update its reviewed allowlist when the deliberate instruction count

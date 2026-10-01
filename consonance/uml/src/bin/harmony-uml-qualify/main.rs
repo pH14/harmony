@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #[cfg(target_os = "linux")]
+mod boot;
+#[cfg(target_os = "linux")]
 mod filter;
+#[cfg(target_os = "linux")]
+mod replay;
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
@@ -21,28 +25,38 @@ mod linux {
     use std::time::Duration;
 
     use serde_json::{Value, json};
-    use uml::{
-        Exit, ExitReason, Guest, HostIdentity, Launch, Profile, VerifiedProfile, group_members,
-    };
+    use uml::{Exit, HostIdentity, Launch, Profile};
 
-    use crate::filter;
+    use crate::{boot, filter, replay};
 
-    const SECCOMP_OK: &str = "Checking that seccomp filters can be installed...OK";
-    const SECCOMP_FAILED: &str = "SECCOMP userspace requested but not functional!";
-    const PTRACE_CHECK: &str = "Checking that ptrace";
+    const USAGE: &str = "usage: harmony-uml-qualify --suite launch|replay --profile DIR [--work DIR] [--report FILE] [--cycles N] [--replays N] [--cuts N] [--parallel N]";
 
-    struct Options {
-        profile: PathBuf,
-        work: PathBuf,
-        report: Option<PathBuf>,
-        cycles: usize,
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Suite {
+        Launch,
+        Replay,
+    }
+
+    pub struct Options {
+        pub suite: Suite,
+        pub profile: PathBuf,
+        pub work: PathBuf,
+        pub report: Option<PathBuf>,
+        pub cycles: usize,
+        pub replays: usize,
+        pub cuts: usize,
+        pub parallel: usize,
     }
 
     fn options() -> Result<Options, String> {
+        let mut suite = None;
         let mut profile = None;
         let mut work = std::env::temp_dir();
         let mut report = None;
         let mut cycles = 20;
+        let mut replays = 100;
+        let mut cuts = 5;
+        let mut parallel = 4;
         let mut arguments = std::env::args_os().skip(1);
         while let Some(flag) = arguments.next() {
             let mut value = || {
@@ -50,29 +64,45 @@ mod linux {
                     .next()
                     .ok_or_else(|| format!("{} needs a value", flag.to_string_lossy()))
             };
+            let mut count = |name: &str| {
+                value()?
+                    .to_str()
+                    .and_then(|text| text.parse().ok())
+                    .filter(|count| *count > 0)
+                    .ok_or_else(|| format!("{name} needs a positive integer"))
+            };
             match flag.to_str() {
+                Some("--suite") => {
+                    suite = Some(match value()?.to_str() {
+                        Some("launch") => Suite::Launch,
+                        Some("replay") => Suite::Replay,
+                        _ => return Err("--suite is launch or replay".to_owned()),
+                    })
+                }
                 Some("--profile") => profile = Some(PathBuf::from(value()?)),
                 Some("--work") => work = PathBuf::from(value()?),
                 Some("--report") => report = Some(PathBuf::from(value()?)),
-                Some("--cycles") => {
-                    cycles = value()?
-                        .to_str()
-                        .and_then(|text| text.parse().ok())
-                        .ok_or("--cycles needs a positive integer")?
-                }
+                Some("--cycles") => cycles = count("--cycles")?,
+                Some("--replays") => replays = count("--replays")?,
+                Some("--cuts") => cuts = count("--cuts")?,
+                Some("--parallel") => parallel = count("--parallel")?,
                 _ => {
                     return Err(format!(
-                        "unknown argument {}; usage: harmony-uml-qualify --profile DIR [--work DIR] [--report FILE] [--cycles N]",
+                        "unknown argument {}; {USAGE}",
                         flag.to_string_lossy()
                     ));
                 }
             }
         }
         Ok(Options {
-            profile: profile.ok_or("--profile is required")?,
+            suite: suite.ok_or_else(|| format!("--suite is required; {USAGE}"))?,
+            profile: profile.ok_or_else(|| format!("--profile is required; {USAGE}"))?,
             work,
             report,
             cycles,
+            replays,
+            cuts,
+            parallel,
         })
     }
 
@@ -106,7 +136,7 @@ mod linux {
         }))
     }
 
-    fn launch(options: &Options, fixture: &str) -> Launch {
+    pub fn launch(options: &Options, fixture: &str) -> Launch {
         let mut launch = Launch::new(options.work.clone());
         launch.console_tail_bytes = 256 << 10;
         launch.wall_limit = Duration::from_secs(60);
@@ -114,17 +144,17 @@ mod linux {
         launch
     }
 
-    fn contains(exit: &Exit, needle: &str) -> bool {
+    pub fn contains(exit: &Exit, needle: &str) -> bool {
         exit.console
             .windows(needle.len())
             .any(|window| window == needle.as_bytes())
     }
 
-    fn clean(exit: &Exit) -> bool {
-        exit.leftovers.is_empty() && exit.work_removed
+    pub fn clean(exit: &Exit) -> bool {
+        exit.leftovers.is_empty() && exit.work_removed && exit.bridge_failure.is_none()
     }
 
-    fn summary(exit: &Exit) -> Value {
+    pub fn summary(exit: &Exit) -> Value {
         let tail =
             String::from_utf8_lossy(&exit.console[exit.console.len().saturating_sub(2048)..]);
         json!({
@@ -133,109 +163,29 @@ mod linux {
             "console_kept": exit.console.len(),
             "leftovers": exit.leftovers,
             "work_removed": exit.work_removed,
+            "bridge_failure": exit.bridge_failure,
+            "events": exit.events.len(),
             "wall_ms": exit.wall.as_millis(),
             "console_tail": tail,
         })
     }
 
-    fn check(name: &str, passed: bool, detail: Value) -> Value {
+    pub fn check(name: &str, passed: bool, detail: Value) -> Value {
         println!("{} {name}", if passed { "PASS" } else { "FAIL" });
         json!({"name": name, "passed": passed, "detail": detail})
     }
 
-    fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> std::io::Result<Value> {
-        let mut walls = Vec::new();
-        let mut failures = Vec::new();
-        for cycle in 0..options.cycles {
-            let exit = Guest::spawn(&launch(options, "boot"), profile)
-                .map_err(std::io::Error::other)?
-                .wait()?;
-            walls.push(exit.wall.as_millis());
-            let passed = exit.reason == ExitReason::Exited(0)
-                && contains(&exit, "HARMONY_UML PASS")
-                && contains(&exit, SECCOMP_OK)
-                && !contains(&exit, PTRACE_CHECK)
-                && clean(&exit);
-            if !passed {
-                failures.push(json!({"cycle": cycle, "exit": summary(&exit)}));
-            }
-        }
-        let mut sorted = walls.clone();
-        sorted.sort_unstable();
-        Ok(check(
-            "boot_cycles",
-            failures.is_empty(),
-            json!({
-                "cycles": options.cycles,
-                "wall_ms_min": sorted.first(),
-                "wall_ms_median": sorted.get(sorted.len() / 2),
-                "wall_ms_max": sorted.last(),
-                "failures": failures,
-            }),
-        ))
-    }
-
-    fn hang(options: &Options, profile: &VerifiedProfile) -> std::io::Result<Value> {
-        let mut launch = launch(options, "hang");
-        launch.wall_limit = Duration::from_secs(10);
-        let mut guest = Guest::spawn(&launch, profile).map_err(std::io::Error::other)?;
-        let ready = guest.wait_for("HARMONY_UML READY", Duration::from_secs(10))?;
-        let exit = guest.wait()?;
-        let passed = ready && exit.reason == ExitReason::WallLimit && clean(&exit);
-        Ok(check("hanging_guest", passed, summary(&exit)))
-    }
-
-    fn console(options: &Options, profile: &VerifiedProfile) -> std::io::Result<Value> {
-        let mut launch = launch(options, "flood");
-        launch.console_tail_bytes = 64 << 10;
-        launch.console_limit_bytes = 1 << 20;
-        let exit = Guest::spawn(&launch, profile)
-            .map_err(std::io::Error::other)?
-            .wait()?;
-        let passed = exit.reason == ExitReason::ConsoleLimit
-            && exit.console.len() <= launch.console_tail_bytes
-            && clean(&exit);
-        Ok(check("bounded_console", passed, summary(&exit)))
-    }
-
-    fn orphans(options: &Options, profile: &VerifiedProfile) -> std::io::Result<Value> {
-        let mut guest =
-            Guest::spawn(&launch(options, "orphans"), profile).map_err(std::io::Error::other)?;
-        let ready = guest.wait_for("HARMONY_UML ORPHANS 16", Duration::from_secs(30))?;
-        let members = group_members(guest.pid()).len();
-        let exit = guest.kill()?;
-        let passed = ready && members >= 17 && clean(&exit);
-        let mut detail = summary(&exit);
-        detail["host_processes_before_kill"] = json!(members);
-        Ok(check("child_cleanup", passed, detail))
-    }
-
-    fn seccomp_denied(options: &Options, profile: &VerifiedProfile) -> std::io::Result<Value> {
-        let launch = launch(options, "boot");
-        let work = launch.work_directory()?;
-        let mut command = launch
-            .command(profile, work.path())
-            .map_err(std::io::Error::other)?;
-        filter::deny_seccomp_install(&mut command);
-        let exit = Guest::start(command, work, &launch)
-            .map_err(std::io::Error::other)?
-            .wait()?;
-        let passed = matches!(exit.reason, ExitReason::Exited(code) if code != 0)
-            && contains(&exit, SECCOMP_FAILED)
-            && !contains(&exit, PTRACE_CHECK)
-            && !contains(&exit, "HARMONY_UML READY")
-            && clean(&exit);
-        Ok(check("failed_seccomp_install", passed, summary(&exit)))
-    }
-
-    fn init_exit(options: &Options, profile: &VerifiedProfile) -> std::io::Result<Value> {
-        let exit = Guest::spawn(&launch(options, "exit"), profile)
-            .map_err(std::io::Error::other)?
-            .wait()?;
-        let passed = !matches!(exit.reason, ExitReason::Exited(0) | ExitReason::WallLimit)
-            && contains(&exit, "Kernel panic")
-            && clean(&exit);
-        Ok(check("guest_panic", passed, summary(&exit)))
+    fn host_kernel() -> Option<String> {
+        let mut uname = std::mem::MaybeUninit::<libc::utsname>::zeroed();
+        // SAFETY: `uname` points to a live, writable utsname for the call.
+        (unsafe { libc::uname(uname.as_mut_ptr()) } == 0).then(|| {
+            // SAFETY: uname(2) returned success, so it initialized the struct.
+            let uname = unsafe { uname.assume_init() };
+            // SAFETY: uname(2) NUL-terminates every utsname field.
+            unsafe { std::ffi::CStr::from_ptr(uname.release.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 
     fn run(options: &Options) -> Result<Value, String> {
@@ -243,34 +193,19 @@ mod linux {
         let denial = filter::deny_host_virtualization()?;
         let host = HostIdentity::current().map_err(|error| error.to_string())?;
         let profile = Profile::load(&options.profile).map_err(|error| error.to_string())?;
-        let checks = [
-            boot_cycles(options, &profile),
-            hang(options, &profile),
-            console(options, &profile),
-            orphans(options, &profile),
-            seccomp_denied(options, &profile),
-            init_exit(options, &profile),
-        ]
-        .into_iter()
-        .collect::<std::io::Result<Vec<Value>>>()
-        .map_err(|error| error.to_string())?;
+        let (suite, checks) = match options.suite {
+            Suite::Launch => ("launch", boot::checks(options, &profile)),
+            Suite::Replay => ("replay", replay::checks(options, &profile, &host)),
+        };
+        let checks = checks.map_err(|error| error.to_string())?;
         let passed = checks.iter().all(|check| check["passed"] == json!(true));
-        let mut uname = std::mem::MaybeUninit::<libc::utsname>::zeroed();
-        // SAFETY: `uname` points to a live, writable utsname for the call.
-        let uname = (unsafe { libc::uname(uname.as_mut_ptr()) } == 0).then(|| {
-            // SAFETY: uname(2) returned success, so it initialized the struct.
-            let uname = unsafe { uname.assume_init() };
-            // SAFETY: uname(2) NUL-terminates every utsname field.
-            unsafe { std::ffi::CStr::from_ptr(uname.release.as_ptr()) }
-                .to_string_lossy()
-                .into_owned()
-        });
         Ok(json!({
+            "suite": suite,
             "result": if passed { "pass" } else { "fail" },
             "credentials": credentials,
             "denial": denial,
             "host": host,
-            "host_kernel": uname,
+            "host_kernel": host_kernel(),
             "profile": profile.profile,
             "profile_identity_sha256": profile.identity_sha256,
             "checks": checks,
@@ -302,11 +237,18 @@ mod linux {
             }
             None => print!("{text}"),
         }
+        let suite = &report["suite"];
         if report["result"] == json!("pass") {
-            println!("PASS uml qualification");
+            println!(
+                "PASS uml {} qualification",
+                suite.as_str().unwrap_or_default()
+            );
             ExitCode::SUCCESS
         } else {
-            println!("FAIL uml qualification");
+            println!(
+                "FAIL uml {} qualification",
+                suite.as_str().unwrap_or_default()
+            );
             ExitCode::FAILURE
         }
     }

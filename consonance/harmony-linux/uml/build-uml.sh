@@ -74,7 +74,8 @@ assert_off() {
     done
 }
 assert_y STATIC_LINK UML_TIME_TRAVEL_SUPPORT HZ_PERIODIC BLK_DEV_INITRD \
-    RD_GZIP DEVTMPFS BINFMT_ELF PROC_FS TMPFS FUTEX SECCOMP_FILTER NULL_CHAN
+    RD_GZIP DEVTMPFS BINFMT_ELF PROC_FS TMPFS FUTEX SECCOMP_FILTER NULL_CHAN \
+    HARMONY_DEVICE
 assert_off SMP MODULES NO_HZ_COMMON HIGH_RES_TIMERS LOCALVERSION_AUTO HOSTFS \
     UML_RANDOM HW_RANDOM MCONSOLE BLK_DEV_UBD UML_NET_VECTOR MAY_HAVE_RUNTIME_DEPS \
     PORT_CHAN PTY_CHAN TTY_CHAN XTERM_CHAN UML_RTC VIRTIO_UML UML_PCI
@@ -100,6 +101,9 @@ echo "== uml: fixture initramfs"
 build_x86_musl
 "$X86_MUSL_PREFIX/bin/musl-gcc" -O2 -static -Wall -Wextra -Werror \
     -o "$uml_root/fixture-init" "$UML_DIR/fixture-init.c"
+"$X86_MUSL_PREFIX/bin/musl-gcc" -O2 -static -nostdlib -ffreestanding -fno-builtin \
+    -fno-stack-protector -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
+    -o "$uml_root/fixture-registers" "$UML_DIR/fixture-registers.c"
 cc -O2 -o "$uml_root/gen_init_cpio" "$uml_src/usr/gen_init_cpio.c"
 spec=$uml_root/initramfs.spec
 cat >"$spec" <<EOF
@@ -108,6 +112,7 @@ nod /dev/console 0600 0 0 c 5 1
 dir /proc 0755 0 0
 dir /sys 0755 0 0
 file /init $uml_root/fixture-init 0755 0 0
+file /registers $uml_root/fixture-registers 0755 0 0
 EOF
 mkdir -p "$uml_out"
 "$uml_root/gen_init_cpio" -t 0 "$spec" | gzip -n -9 >"$uml_out/initramfs.cpio.gz.tmp"

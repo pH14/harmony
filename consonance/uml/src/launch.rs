@@ -2,22 +2,25 @@
 
 use std::ffi::OsString;
 use std::io::{self, Read};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
+use crate::bridge::{self, Bridge, BridgeLog, Event};
 use crate::console::ConsoleTail;
 use crate::process::group_members;
 use crate::profile::VerifiedProfile;
 
 const POLL: Duration = Duration::from_millis(5);
 const SWEEP_LIMIT: Duration = Duration::from_secs(5);
+const BRIDGE_FD: i32 = 3;
 
 #[derive(Clone, Debug)]
 pub struct Launch {
@@ -27,6 +30,7 @@ pub struct Launch {
     pub wall_limit: Duration,
     pub kernel_arguments: Vec<String>,
     pub work_parent: PathBuf,
+    pub bridge: Option<Bridge>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +40,8 @@ pub enum ExitReason {
     WallLimit,
     ConsoleLimit,
     Killed,
+    EventCut,
+    BridgeFailure,
 }
 
 #[derive(Debug)]
@@ -46,6 +52,8 @@ pub struct Exit {
     pub leftovers: Vec<i32>,
     pub work_removed: bool,
     pub wall: Duration,
+    pub events: Vec<Event>,
+    pub bridge_failure: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +71,8 @@ pub struct Guest {
     console: Arc<Mutex<ConsoleTail>>,
     over_limit: Arc<AtomicBool>,
     reader: Option<JoinHandle<io::PipeReader>>,
+    bridge_state: Arc<AtomicU8>,
+    bridge: Option<JoinHandle<BridgeLog>>,
     started: Instant,
     wall_limit: Duration,
     finished: bool,
@@ -77,6 +87,7 @@ impl Launch {
             wall_limit: Duration::from_secs(60),
             kernel_arguments: Vec::new(),
             work_parent,
+            bridge: None,
         }
     }
 
@@ -95,6 +106,12 @@ impl Launch {
                 "umid=harmony",
             ])
             .arg(prefixed("uml_dir=", work)?)
+            .args(self.bridge.iter().flat_map(|bridge| {
+                [
+                    format!("harmony_fd={BRIDGE_FD}"),
+                    format!("harmony_seed={}", bridge.boot_seed()),
+                ]
+            }))
             .args(&self.kernel_arguments)
             .env_clear()
             .env("TMPDIR", work)
@@ -135,9 +152,29 @@ impl Guest {
         let (mut reader, writer) = io::pipe()?;
         command.stdout(writer.try_clone()?).stderr(writer);
         set_parent_death_signal(&mut command);
+        let host_end = match launch.bridge {
+            Some(_) => {
+                let (host, guest) = bridge::socket_pair()?;
+                pass_bridge(&mut command, guest);
+                Some(host)
+            }
+            None => None,
+        };
         let child = command.spawn()?;
         drop(command);
         let pid = i32::try_from(child.id()).map_err(io::Error::other)?;
+        let bridge_state = Arc::new(AtomicU8::new(bridge::RUNNING));
+        let bridge = match (host_end, launch.bridge) {
+            (Some(host), Some(config)) => {
+                let state = Arc::clone(&bridge_state);
+                Some(
+                    std::thread::Builder::new()
+                        .name(format!("uml-bridge-{pid}"))
+                        .spawn(move || bridge::serve(host, config, state))?,
+                )
+            }
+            _ => None,
+        };
         let console = Arc::new(Mutex::new(ConsoleTail::new(launch.console_tail_bytes)));
         let over_limit = Arc::new(AtomicBool::new(false));
         let limit = launch.console_limit_bytes;
@@ -171,6 +208,8 @@ impl Guest {
             console,
             over_limit,
             reader: Some(reader),
+            bridge_state,
+            bridge,
             started: now(),
             wall_limit: launch.wall_limit,
             finished: false,
@@ -209,6 +248,11 @@ impl Guest {
             if self.over_limit.load(Ordering::Acquire) {
                 break ExitReason::ConsoleLimit;
             }
+            match self.bridge_state.load(Ordering::Acquire) {
+                bridge::CUT => break ExitReason::EventCut,
+                bridge::FAILED => break ExitReason::BridgeFailure,
+                _ => {}
+            }
             if let Some(status) = self.child.try_wait()? {
                 break exit_reason(status);
             }
@@ -235,6 +279,17 @@ impl Guest {
         {
             let _ = reader.join();
         }
+        let (events, bridge_failure) = match self.bridge.take() {
+            Some(bridge) if leftovers.is_empty() => match bridge.join() {
+                Ok(log) => {
+                    drop(log.socket);
+                    (log.events, log.failure)
+                }
+                Err(_) => (Vec::new(), Some("bridge thread panicked".to_owned())),
+            },
+            Some(_) => (Vec::new(), Some("bridge left running".to_owned())),
+            None => (Vec::new(), None),
+        };
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
@@ -252,6 +307,8 @@ impl Guest {
             leftovers,
             work_removed,
             wall,
+            events,
+            bridge_failure,
         })
     }
 }
@@ -337,6 +394,26 @@ fn set_parent_death_signal(command: &mut Command) {
 
 #[cfg(not(target_os = "linux"))]
 fn set_parent_death_signal(_command: &mut Command) {}
+
+fn pass_bridge(command: &mut Command, guest: OwnedFd) {
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // dup2(2) and fcntl(2), which are async-signal-safe. `guest` stays open
+    // until the closure is dropped with the command after spawn.
+    unsafe {
+        command.pre_exec(move || {
+            let fd = guest.as_raw_fd();
+            let result = if fd == BRIDGE_FD {
+                libc::fcntl(fd, libc::F_SETFD, 0)
+            } else {
+                libc::dup2(fd, BRIDGE_FD)
+            };
+            if result < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
 
 #[cfg(test)]
 mod tests {

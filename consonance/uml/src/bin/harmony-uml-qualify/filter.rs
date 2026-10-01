@@ -19,6 +19,7 @@ const OFFSET_ARG0: u32 = 16;
 const OFFSET_ARG1: u32 = 24;
 const KVM_IOCTL_TYPE: u32 = 0xae00;
 const INVALID_PTRACE_REQUEST: libc::c_long = 0x7fff_ffff;
+const PERSONALITY_QUERY: u32 = 0xffff_ffff;
 
 #[cfg(target_arch = "x86_64")]
 const AUDIT_ARCH: u32 = 0xc000_003e;
@@ -80,6 +81,20 @@ fn seccomp_install_program() -> Vec<libc::sock_filter> {
     ]
 }
 
+fn personality_program() -> Vec<libc::sock_filter> {
+    vec![
+        statement(BPF_LD_W_ABS, OFFSET_ARCH),
+        jump(AUDIT_ARCH, 1, 0),
+        statement(BPF_RET_K, RET_KILL_PROCESS),
+        statement(BPF_LD_W_ABS, OFFSET_NR),
+        jump(number(libc::SYS_personality), 0, 3),
+        statement(BPF_LD_W_ABS, OFFSET_ARG0),
+        jump(PERSONALITY_QUERY, 1, 0),
+        statement(BPF_RET_K, RET_ERRNO | libc::EPERM as u32),
+        statement(BPF_RET_K, RET_ALLOW),
+    ]
+}
+
 fn install(program: &mut [libc::sock_filter]) -> io::Result<()> {
     let program = libc::sock_fprog {
         len: program.len() as u16,
@@ -135,6 +150,16 @@ pub fn deny_host_virtualization() -> Result<Value, String> {
 
 pub fn deny_seccomp_install(command: &mut Command) {
     let mut program = seccomp_install_program();
+    // SAFETY: the closure runs in the forked child before exec. It installs a
+    // program allocated before the fork and calls only prctl(2), which is
+    // async-signal-safe; it performs no allocation or locking.
+    unsafe {
+        command.pre_exec(move || install(&mut program));
+    }
+}
+
+pub fn deny_personality_change(command: &mut Command) {
+    let mut program = personality_program();
     // SAFETY: the closure runs in the forked child before exec. It installs a
     // program allocated before the fork and calls only prctl(2), which is
     // async-signal-safe; it performs no allocation or locking.
