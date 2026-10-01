@@ -1,0 +1,34 @@
+--- a/src/engine/executor/stack/values.rs
++++ b/src/engine/executor/stack/values.rs
+@@ -466,3 +466,13 @@
+         Ok(())
+     }
+ }
++
++impl ValueStack {
++    pub(crate) fn harmony_write_i32(&mut self, base: usize, register: i16, value: i32) -> Result<(), crate::Error> {
++        let register = usize::try_from(register).map_err(|_| crate::Error::new("import result is a constant register"))?;
++        let index = base.checked_add(register).ok_or_else(|| crate::Error::new("import result offset overflow"))?;
++        let target = self.values.get_mut(index).ok_or_else(|| crate::Error::new("import result exceeds value stack"))?;
++        *target = UntypedVal::from_bits64(u64::from(value as u32));
++        Ok(())
++    }
++}
+--- a/src/engine/resumable.rs
++++ b/src/engine/resumable.rs
+@@ -672,3 +672,15 @@
+         }
+     }
+ }
++
++impl ResumableCall {
++    pub fn harmony_complete_i32<T>(&mut self, ctx: impl crate::AsContext<Data = T>, value: i32) -> Result<(), Error> {
++        let Self::HostTrap(trap) = self else { return Err(Error::new("no pending import")); };
++        trap.validate_inputs(ctx.as_context(), &[crate::Val::I32(value)])?;
++        let frame = trap.common.stack.calls.peek().ok_or_else(|| Error::new("pending import has no caller"))?;
++        trap.common.stack.values.harmony_write_i32(usize::from(frame.base_offset()), i16::from(trap.caller_results.head()), value)?;
++        let Self::HostTrap(trap) = core::mem::replace(self, Self::Finished) else { unreachable!() };
++        *self = Self::OutOfFuel(ResumableCallOutOfFuel { common: trap.common, required_fuel: 0 });
++        Ok(())
++    }
++}

@@ -10,6 +10,7 @@ if target.exists():
     shutil.rmtree(target)
 subprocess.run([sys.executable, str(source.parent / "qualification/prepare-wasmi.py"), str(source / "wasmi-0.46.0.crate"), str(output)], check=True)
 subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-i", str(source / "numerical.patch")], cwd=target, check=True)
+subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-i", str(source / "import-completion.patch")], cwd=target, check=True)
 lines = (target / "src/lib.rs").read_text().splitlines(keepends=True)
 result = []
 skipping = False

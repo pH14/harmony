@@ -27,8 +27,7 @@ counts and module bytes have explicit bounds.
 
 The closed import ABI is `harmony_v1.request(i32,i32,i32,i32,i32)->i32` and the
 three preview-1 descriptor operations `fd_write`, `fd_close` and `fd_seek` with
-exact signatures. These are admission contracts; session service transport is
-implemented in the next milestone. Other preview-1 imports are rejected.
+exact signatures. The session driver implements this closed transport. Other preview-1 imports are rejected.
 
 The binary reencoder adds stable function/global/table exports and a hidden
 memory export. It canonicalizes NaN-producing arithmetic and canonicalizes
@@ -47,7 +46,6 @@ creates a different execution identity.
 
 ## Deterministic accounting
 
-The following primitives define the session driver implemented next.
 `Meter` grants fixed quanta of 1,024 interpreter fuel units, retaining unused
 credit between grants. A run request rounds its deadline upward to that quantum
 and checks completion only at the fixed interpreter boundaries. It continues
@@ -79,3 +77,55 @@ Python 3 and `patch` are source-preparation prerequisites on Linux and macOS.
 cargo test --manifest-path consonance/wasm/Cargo.toml -p consonance-wasm
 cargo clippy --manifest-path consonance/wasm/Cargo.toml -p consonance-wasm --all-targets -- -D warnings
 ```
+
+## In-process session and transport
+
+`WasmSession` implements the portable `SearchSession` contract. Construction
+instantiates a fixed-capacity module and records its initial setup snapshot;
+it does not execute an automatic start or repeat initialization. The declared
+`Invocation` supplies an exported entry and scalar arguments. Workload setup
+runs through that entry and calls `seal_setup` at its lifecycle boundary before
+ordinary search begins. Branches and replay reconstruct a fresh instance from
+an internal capture without invoking guest setup again.
+
+The versioned request ABI packs service in the high 16 bits and opcode in the
+low 16 bits of the first argument. Remaining arguments are request pointer,
+request length, output pointer and output capacity. Payloads use the existing
+SDK encodings. A nonnegative result is the response length; a negative result
+is the negated protocol status. Requests and response capacity are bounded by
+`MAX_PAYLOAD`; the full declared output range is validated before a service
+handler runs. Invalid guest ranges return OutOfRange; malformed SDK payloads
+return BadRequest. An invalid external resolution leaves the request pending.
+SDK decisions, coverage, payloads and event classification use
+the shared environment helpers. Entropy uses the shared seeded supply. Console
+bytes and events are captured, while observation descriptors refer to bounded
+linear-memory ranges and support explicit revocation.
+
+Every import first creates a pending request. Preparing a response clones host
+state and validates the resolution, all output ranges and accounting. Completion
+writes the validated i32 result without executing guest code, commits host state,
+memory and fuel accounting, and only then resumes execution. A failed preparation
+preserves the pending request and complete state. Lifecycle and assertion stops
+occur after that atomic completion and report the actual charged moment.
+
+A payload branch preserves entropy and the extension handler unless the branch
+explicitly supplies a different service configuration. `branch_input` replaces
+the declared environment as a whole. Verbatim replay restores all inputs and
+host state. Scheduled machine effects are rejected before restore. Cancellation
+belongs to the live session and cannot be rewound; `run_with_watchdog` connects
+the shared progress watchdog to that same cancellation latch.
+
+The descriptor subset opens captured stdout and stderr only. `fd_write` accepts
+at most 128 vectors and `MAX_PAYLOAD` bytes, validates every range before capturing
+bytes, and writes the exact count. Closed or unknown descriptors return BADF (8),
+excess vector counts return INVAL (28), and invalid ranges or excess bytes return
+FAULT (21). `fd_close` captures closure and returns BADF on repeat. `fd_seek`
+returns SPIPE (70) for an open console descriptor and BADF otherwise; it writes
+no offset because console streams are never seekable. Process exit, arguments,
+environment, clocks and random preview-1 imports were not required by the build
+probe and remain rejected. Declared input, virtual time and seeded entropy are
+provided through the shared session and SDK contracts.
+
+Internal snapshots support hashing, independent branches, replay and drop.
+Their captures remain private and trusted. Shared caching and external artifact
+imports are unavailable until the next milestone validates portable artifacts.

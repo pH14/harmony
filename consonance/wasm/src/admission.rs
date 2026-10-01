@@ -65,6 +65,7 @@ pub struct AdmittedModule {
     pub(crate) execution_digest: [u8; 32],
     pub(crate) profile: Profile,
     pub(crate) imports: Vec<(String, String)>,
+    pub(crate) entries: std::collections::BTreeSet<String>,
 }
 fn scalar(ty: ValType) -> bool {
     matches!(
@@ -127,6 +128,7 @@ impl AdmittedModule {
             .map_err(|e| reject(e.to_string()))?;
         let mut types = Vec::new();
         let mut imports = Vec::new();
+        let mut entries = std::collections::BTreeSet::new();
         let mut functions = 0;
         let mut globals = 0;
         let mut tables = 0;
@@ -164,6 +166,12 @@ impl AdmittedModule {
                         let ty = &types[index as usize];
                         if ty.params() != params || ty.results() != results {
                             return Err(reject("import signature differs from the versioned ABI"));
+                        }
+                        if imports
+                            .iter()
+                            .any(|(module, name)| module == import.module && name == import.name)
+                        {
+                            return Err(reject("duplicate closed ABI import"));
                         }
                         imports.push((import.module.into(), import.name.into()));
                         functions += 1;
@@ -212,12 +220,14 @@ impl AdmittedModule {
                 Payload::ExportSection(section) => {
                     has_exports = true;
                     for export in section {
-                        if export
-                            .map_err(|e| reject(e.to_string()))?
-                            .name
-                            .starts_with("__harmony_")
-                        {
+                        let export = export.map_err(|e| reject(e.to_string()))?;
+                        if export.name.starts_with("__harmony_") {
                             return Err(reject("reserved execution export name"));
+                        }
+                        if export.kind == wasmparser::ExternalKind::Func
+                            && export.index >= imports.len() as u32
+                        {
+                            entries.insert(export.name.to_owned());
                         }
                     }
                 }
@@ -301,6 +311,12 @@ impl AdmittedModule {
         identity.update(Sha256::digest(include_bytes!(
             "../runtime/src/harmony_wasm.rs"
         )));
+        identity.update(Sha256::digest(include_bytes!(
+            "../runtime/import-completion.patch"
+        )));
+        identity.update(Sha256::digest(include_bytes!("services.rs")));
+        identity.update(Sha256::digest(include_bytes!("runtime.rs")));
+        identity.update(Sha256::digest(include_bytes!("session.rs")));
         identity.update(wasmi::HARMONY_COMPILER.as_bytes());
         identity.update(Sha256::digest(include_bytes!("../Cargo.lock")));
         identity.update(source_digest);
@@ -312,6 +328,7 @@ impl AdmittedModule {
             execution_digest: identity.finalize().into(),
             profile,
             imports,
+            entries,
         })
     }
     pub fn bytes(&self) -> &[u8] {

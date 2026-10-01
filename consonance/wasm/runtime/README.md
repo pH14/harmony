@@ -24,3 +24,10 @@ constant evaluation and execution before writing result registers. This prevents
 a fuel stop at entry to a guest canonicalization helper from retaining a host's
 intermediate NaN bits. Bitwise sign operations and literal NaN payloads retain
 their specified bits. NaN-propagation shortcuts that bypass arithmetic are removed.
+
+`import-completion.patch` validates the single i32 result and writes it through
+a checked value-stack index. It converts a pending import to a ready continuation
+without executing guest instructions or changing fuel. The session then commits
+its already-validated host transaction at the same boundary. This prevents a
+checkpoint from retaining an applied host effect with an unapplied return value.
+The additional patch is included in execution identity.

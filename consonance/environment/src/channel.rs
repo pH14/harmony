@@ -670,6 +670,10 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         Ok(response)
     }
 
+    pub fn replace_handler(&mut self, handler: H) {
+        self.handler = handler;
+    }
+
     pub fn handler(&self) -> &H {
         &self.handler
     }

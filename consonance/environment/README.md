@@ -51,3 +51,9 @@ package. Its dependency graph contains no workload package.
 cargo test -p environment
 cargo clippy -p environment --all-features --all-targets -- -D warnings
 ```
+
+`RecordedEnv::replace_handler` changes only the extension handler. Portable
+session branches use it after validating a factory's identity and configuration;
+core entropy, recorded overrides and payload cursor remain intact until the
+branch explicitly replaces them. Verbatim replay restores the captured handler
+state through the existing snapshot contract.

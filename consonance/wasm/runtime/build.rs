@@ -21,6 +21,7 @@ fn main() {
     for path in [
         "prepare.py",
         "numerical.patch",
+        "import-completion.patch",
         "wasmi-0.46.0.crate",
         "../qualification/prepare-wasmi.py",
         "../qualification/wasmi-snapshot.patch",
