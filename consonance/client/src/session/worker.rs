@@ -57,6 +57,9 @@ const ABANDONED: u8 = 2;
 pub trait SearchSession: std::fmt::Debug {
     fn setup_handle(&self) -> (SnapId, u64);
     fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>>;
+    fn cache_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        self.state_hash()
+    }
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>>;
     fn telemetry_counters(&self) -> Vec<(String, u64)>;
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64>;

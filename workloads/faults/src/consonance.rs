@@ -724,8 +724,8 @@ impl Live {
         let shared = match &config.cache {
             Some(index) => {
                 let setup_hash = session
-                    .state_hash()
-                    .map_err(|error| format!("setup state hash: {error}"))?;
+                    .cache_identity()
+                    .map_err(|error| format!("setup cache identity: {error}"))?;
                 Some(Shared {
                     index: Arc::clone(index),
                     namespace: Namespace::new(&[&config.key, SERVICE_IDENTITY, &setup_hash]),
