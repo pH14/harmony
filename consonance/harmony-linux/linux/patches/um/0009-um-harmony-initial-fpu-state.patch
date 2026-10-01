@@ -1,0 +1,50 @@
+Start x86 User-mode Linux programs in the initial FPU state
+
+User-mode Linux gives every new program the floating-point registers of the
+stub process it sampled at boot. That stub inherits the vector registers of
+the UML process, which hold leftovers from host string handling such as the
+command line and the binary's path, so a new guest program could see host
+bytes that differ between two runs of the same profile. x86 Linux starts
+every program in the initial FPU state: an empty x87 stack with control word
+0x37f, MXCSR 0x1f80 and zeroed vector registers. The sampled state is now
+reset the same way. The protection-key register keeps the sampled value,
+which is the host's default for new programs.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/start_up.c
++++ b/arch/um/os-Linux/start_up.c
+@@ -163,6 +163,30 @@
+ 		exec_fp_regs = malloc(host_fp_size);
+ 		memcpy(exec_regs, regs->gp, sizeof(exec_regs));
+ 		memcpy(exec_fp_regs, regs->fp, host_fp_size);
++#ifdef __x86_64__
++		/*
++		 * x86 Linux starts every program in the initial FPU state. The
++		 * FXSAVE image holds the control word at byte 0, MXCSR at 24 and
++		 * its mask at 28; bytes 464-511 describe the signal frame and the
++		 * XSAVE header's component bits start at 512.
++		 */
++		{
++			unsigned char *fx = (unsigned char *)exec_fp_regs;
++			unsigned short cwd = 0x37f;
++			unsigned int mxcsr = 0x1f80;
++			unsigned long long components;
++
++			memset(fx, 0, 24);
++			memcpy(fx, &cwd, sizeof(cwd));
++			memcpy(fx + 24, &mxcsr, sizeof(mxcsr));
++			memset(fx + 32, 0, 464 - 32);
++			if (host_fp_size >= 512 + sizeof(components)) {
++				memcpy(&components, fx + 512, sizeof(components));
++				components &= 1ULL << 9;
++				memcpy(fx + 512, &components, sizeof(components));
++			}
++		}
++#endif
+ 
+ 		munmap(seccomp_test_stub_data, sizeof(*seccomp_test_stub_data));
+ 
