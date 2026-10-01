@@ -175,7 +175,10 @@ and asserts the symbols the profile depends on.
   calls, and on arm64 the counter frequency.
 - `linux/patches/um/` holds the UML series: SECCOMP userspace as the only
   mode, virtual time and its costs, the host bridge, the boot seed, counter
-  emulation, host child signals, the fixed memory layout and checkpoints.
+  emulation, host child signals, the fixed memory layout, checkpoints, and
+  the initial FPU state for every new program, as x86 Linux does; UML
+  otherwise copies the vector registers of a stub process, which hold
+  leftovers of host strings such as the command line.
   `linux/patches/um-arm64/` ports the same series to the arm64 RFC. Its
   counter emulation also answers the frequency register, and the stub waits
   for the kernel without the RFC's counter-bounded spin, because its own
