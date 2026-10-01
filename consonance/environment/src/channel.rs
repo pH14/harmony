@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use thiserror::Error;
 
@@ -525,7 +525,7 @@ pub struct RecordedEnv<H: ServiceHandler> {
     stream_state: u64,
     overrides: BTreeMap<DecisionKey, Answer>,
     moment: Moment,
-    payloads: Option<Vec<Vec<u8>>>,
+    payloads: Option<Arc<Vec<Vec<u8>>>>,
     payload_cursor: usize,
     handler: H,
 }
@@ -617,7 +617,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
                 check_len(entry.len())?;
             }
         }
-        self.payloads = payloads;
+        self.payloads = payloads.map(Arc::new);
         self.payload_cursor = 0;
         Ok(())
     }
@@ -689,7 +689,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     }
 
     fn restore_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) {
-        self.payloads = payloads;
+        self.payloads = payloads.map(Arc::new);
         self.payload_cursor = 0;
     }
 

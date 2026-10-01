@@ -11,8 +11,8 @@ the workload package under `workloads/`.
 The continuation records live scalar registers and call frames, stable code
 positions, mutable globals, function-index tables and passive segment status.
 A fresh instance replaces the old runtime during restore, without re-running
-initialization. The experimental restore API accepts trusted captures only;
-production artifact validation remains required before enabling the backend.
+initialization. Artifact restore validates complete state, resource bounds and
+compiled continuation structure before reconstructing a runtime.
 
 ## Admission and execution identity
 
@@ -126,6 +126,56 @@ environment, clocks and random preview-1 imports were not required by the build
 probe and remain rejected. Declared input, virtual time and seeded entropy are
 provided through the shared session and SDK contracts.
 
-Internal snapshots support hashing, independent branches, replay and drop.
-Their captures remain private and trusted. Shared caching and external artifact
-imports are unavailable until the next milestone validates portable artifacts.
+Immutable snapshots support hashing, independent branches, replay, drop, shared
+caching and validated external artifact imports.
+
+## Portable snapshots and shared cache
+
+The fixed linear memory uses the shared snapshot store's 4 KiB layers and
+content interning. Capture compares every page exactly against an immutable
+parent and writes only changed pages. It copies the live scalar continuation
+and host metadata; completed event and console history retain immutable shared
+chunks. Input tapes share their storage across environment clones. No dirty
+tracking is used. The full-copy continuation experiment remains the oracle.
+
+Within a live session, restores reuse the compiled module and instantiate a
+fresh store and instance. `WasmSession::from_snapshot` decodes and validates an
+artifact, compiles eagerly once, and directly creates the restored session.
+It executes no initialization or host effects. Import into an existing session
+adds an immutable handle after validation and leaves live execution unchanged.
+Replay installs a validated replacement instance atomically.
+
+Artifacts use the shared sparse snapshot container with canonical base zero
+and the execution identity as image identity. Ordinary frame numbers identify
+memory pages. The high 32 bits select four bounded host-state sections: declared
+input, recorded environment, events and console. These sections also use 4 KiB
+pages in cache deltas, allowing history prefixes to remain shared. Zero pages
+are implicit, page order is strict, and partial-page padding must be zero.
+
+The versioned sidecar includes every scalar register, frame, global, table,
+passive-segment status, root invocation and execution phase, cumulative fuel,
+pending request, observations, coverage thresholds and descriptor state. BLAKE3
+protects the complete memory image; SHA-256 protects host sections and the
+checksummed sidecar envelope. Digests detect corruption; structural checks
+prevent unsafe reconstruction from caller-controlled frame metadata. The
+format does not authenticate who created an artifact.
+
+Decoding enforces a 4 MiB sidecar and 16 MiB per host section, verifies identity,
+checksums, canonical encoding, page inventory, observations, accounting and
+execution phase, and then checks runtime globals, table capacities, root results
+and compiled continuation structure. A corrupt or incompatible artifact leaves
+live state and retained handles unchanged. Reference bits and host pointers
+never appear in the format.
+
+The shared cache stores anchors and page deltas, including changed host-section
+pages and reverts. Leases preserve required ancestry; releasing handles and
+cache leases allows their pages and history chunks to be collected. Store
+telemetry reports resident page/sidecar payloads, unique shared host chunks and
+captured register/frame buffers; allocator and index overhead remains outside
+that payload count.
+
+`qualification/SNAPSHOT-BUDGETS.json` records release measurements for 64 KiB,
+1 MiB and 16 MiB memories with 0, 1,000 and 10,000 prior events. Eleven samples
+per case pass the original 15 ms capture/comparison and 100 ms fresh restore
+budgets on the measured host. Representative workload cycles and all supported
+host transfers still require the final qualification milestone.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::admission::AdmissionError;
+use consonance_client::session::SharedState;
 use control_proto::{
     DecisionId, EventRef, Moment, Resolution, StopConditions, StopReason, class_bit,
 };
@@ -43,8 +44,8 @@ pub(crate) struct Host {
     pub(crate) pending: Option<Pending>,
     pub(crate) observations: BTreeMap<u32, (u64, u32)>,
     pub(crate) thresholds: BTreeMap<u32, u64>,
-    pub(crate) events: Vec<(u64, u32, Vec<u8>)>,
-    pub(crate) console: Vec<u8>,
+    pub(crate) events: SharedState,
+    pub(crate) console: SharedState,
     pub(crate) closed: [bool; 2],
     pub(crate) imports: u64,
 }
@@ -55,8 +56,8 @@ impl Host {
             pending: None,
             observations: BTreeMap::new(),
             thresholds: BTreeMap::new(),
-            events: Vec::new(),
-            console: Vec::new(),
+            events: SharedState::from_bytes(Vec::new(), None),
+            console: SharedState::from_bytes(Vec::new(), None),
             closed: [false; 2],
             imports: 0,
         }
@@ -95,6 +96,7 @@ fn decision_answer(
     moment: u64,
     resolve: Option<&Resolution>,
 ) -> Result<Option<Answer>, AdmissionError> {
+    env.set_moment(moment);
     if let Some(resolve) = resolve {
         if resolve.vtime.0 != moment
             || resolve.service != question.service()
@@ -109,7 +111,6 @@ fn decision_answer(
         env.record_question(moment, question, answer.clone());
         return Ok(Some(answer));
     }
-    env.set_moment(moment);
     match env.decide(question).map_err(|e| invalid(&e.to_string()))? {
         ServiceResponse::Answered(answer) => Ok(Some(answer)),
         ServiceResponse::External => Ok(None),
@@ -303,7 +304,12 @@ impl Host {
                                             );
                                         }
                                     }
-                                    completion.host.events.push((moment, id, data.to_vec()));
+                                    let mut event_bytes = moment.to_le_bytes().to_vec();
+                                    event_bytes.extend(id.to_le_bytes());
+                                    event_bytes.extend((data.len() as u32).to_le_bytes());
+                                    event_bytes.extend(data);
+                                    completion.host.events =
+                                        completion.host.events.appended(&event_bytes);
                                     completion.stop = match event {
                                         EventClass::Violation { id, data } => {
                                             Some(StopReason::Assertion {
@@ -325,7 +331,7 @@ impl Host {
                         }
                     }
                     (s, 1) if s == ServiceId::Console as u32 => {
-                        completion.host.console.extend(request)
+                        completion.host.console = completion.host.console.appended(request)
                     }
                     (1 | 2 | 4 | 6 | 8, _) => status = Status::UnknownOpcode,
                     _ => status = Status::UnknownService,
@@ -371,7 +377,7 @@ impl Host {
                                 written as usize,
                                 (bytes.len() as u32).to_le_bytes().to_vec(),
                             ));
-                            completion.host.console.extend(bytes);
+                            completion.host.console = completion.host.console.appended(&bytes);
                         }
                         Err(_) => completion.value = 21,
                     }
@@ -403,5 +409,30 @@ impl Host {
             id: DecisionId(question.request_id()),
             ctx,
         }
+    }
+}
+
+impl Host {
+    pub(crate) fn events(&self) -> Result<Vec<(u64, u32, Vec<u8>)>, AdmissionError> {
+        let bytes = self.events.materialize();
+        let mut remaining = bytes.as_slice();
+        let mut events = Vec::new();
+        while !remaining.is_empty() {
+            let (header, tail) = remaining
+                .split_first_chunk::<16>()
+                .ok_or_else(|| invalid("truncated captured event"))?;
+            let at = u64::from_le_bytes(header[..8].try_into().unwrap());
+            let id = u32::from_le_bytes(header[8..12].try_into().unwrap());
+            let len = u32::from_le_bytes(header[12..].try_into().unwrap()) as usize;
+            if len > MAX_PAYLOAD - 4 {
+                return Err(invalid("captured event exceeds transport bounds"));
+            }
+            let data = tail
+                .get(..len)
+                .ok_or_else(|| invalid("truncated captured event payload"))?;
+            events.push((at, id, data.to_vec()));
+            remaining = &tail[len..];
+        }
+        Ok(events)
     }
 }

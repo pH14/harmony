@@ -22,6 +22,7 @@ fn main() {
         "prepare.py",
         "numerical.patch",
         "import-completion.patch",
+        "validation.patch",
         "wasmi-0.46.0.crate",
         "../qualification/prepare-wasmi.py",
         "../qualification/wasmi-snapshot.patch",

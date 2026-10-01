@@ -57,3 +57,8 @@ session branches use it after validating a factory's identity and configuration;
 core entropy, recorded overrides and payload cursor remain intact until the
 branch explicitly replaces them. Verbatim replay restores the captured handler
 state through the existing snapshot contract.
+
+Payload tapes are immutable shared vectors in `InputSpec` and `RecordedEnv`.
+Cloning an environment preserves the cursor while sharing tape bytes. Explicit
+replacement and snapshot decoding install a new tape; the wire encodings and
+length checks remain unchanged.

@@ -299,3 +299,229 @@ fn malformed_guest_requests_return_deterministic_protocol_errors() {
     assert!(guest.console_tail().unwrap().is_empty());
     assert_eq!(guest.telemetry_counters()[0].1, 4);
 }
+
+#[test]
+fn sparse_artifacts_restore_fresh_and_over_dirtied_instances() {
+    let source = "(module (memory 1 1) (global $x (mut i32) (i32.const 0)) (func (export \"run\") loop global.get $x i32.const 1 i32.add global.set $x i32.const 0 global.get $x i32.store br 0 end))";
+    let mut guest = session(source, None);
+    guest.run_until(4096).unwrap();
+    let left = guest.snapshot().unwrap().0;
+    let left_hash = guest.state_hash().unwrap();
+    let artifact = guest.export_sparse_snapshot(left, None).unwrap();
+    assert_eq!(guest.snapshot_owned_pages(left), Some(1));
+    assert_eq!(guest.last_seal_dirty_gfns(), Some(vec![0]));
+    guest.run_until(8192).unwrap();
+    let right = guest.snapshot().unwrap().0;
+    let right_hash = guest.state_hash().unwrap();
+    let mut fresh = session(source, None);
+    let initial = fresh.state_hash().unwrap();
+    let imported = fresh.import_sparse_snapshot(&artifact).unwrap();
+    assert_eq!(fresh.state_hash().unwrap(), initial);
+    fresh.replay_snapshot(imported).unwrap();
+    assert_eq!(fresh.state_hash().unwrap(), left_hash);
+    fresh.run_until(8192).unwrap();
+    assert_eq!(fresh.state_hash().unwrap(), right_hash);
+    guest.run_until(65536).unwrap();
+    guest.replay_snapshot(left).unwrap();
+    assert_eq!(guest.state_hash().unwrap(), left_hash);
+    guest.replay_snapshot(right).unwrap();
+    assert_eq!(guest.state_hash().unwrap(), right_hash);
+    let retained = guest.store_bytes().unwrap();
+    guest.drop_snapshot(left).unwrap();
+    guest.drop_snapshot(right).unwrap();
+    assert!(guest.store_bytes().unwrap() < retained);
+}
+#[test]
+fn damaged_artifacts_leave_live_state_and_snapshot_inventory_unchanged() {
+    let source = "(module (memory 1 1) (func (export \"run\") loop br 0 end))";
+    let mut guest = session(source, None);
+    guest.run_until(4096).unwrap();
+    let id = guest.snapshot().unwrap().0;
+    let artifact = guest.export_sparse_snapshot(id, None).unwrap();
+    let before = guest.state_hash().unwrap();
+    let bytes = guest.store_bytes().unwrap();
+    let counters = guest.telemetry_counters();
+    let mut sidecar = artifact.sidecar();
+    *sidecar.last_mut().unwrap() ^= 1;
+    let broken = consonance_client::session::SparseSnapshot::from_parts(
+        0,
+        artifact.image_identity(),
+        artifact.pages().to_vec(),
+        &sidecar,
+        None,
+    )
+    .unwrap();
+    assert!(guest.import_sparse_snapshot(&broken).is_err());
+    let mut pages = artifact.pages().to_vec();
+    let (_, page) = pages.first_mut().unwrap();
+    std::sync::Arc::make_mut(page)[0] ^= 1;
+    let broken = consonance_client::session::SparseSnapshot::from_parts(
+        0,
+        artifact.image_identity(),
+        pages,
+        &artifact.sidecar(),
+        None,
+    )
+    .unwrap();
+    assert!(guest.import_sparse_snapshot(&broken).is_err());
+    let mut identity = artifact.image_identity();
+    identity[0] ^= 1;
+    let broken = consonance_client::session::SparseSnapshot::from_parts(
+        0,
+        identity,
+        artifact.pages().to_vec(),
+        &artifact.sidecar(),
+        None,
+    )
+    .unwrap();
+    assert!(guest.import_sparse_snapshot(&broken).is_err());
+    assert_eq!(guest.state_hash().unwrap(), before);
+    assert_eq!(guest.store_bytes().unwrap(), bytes);
+    assert_eq!(guest.telemetry_counters(), counters);
+}
+#[test]
+#[cfg(not(miri))]
+fn shared_cache_deltas_round_trip_and_release_leases() {
+    use consonance_client::cache::{CacheIndex, LocalIndex, Namespace};
+    let source = "(module (memory 1 1) (func (export \"run\") loop i32.const 0 i32.const 1 i32.const 0 i32.load i32.add i32.store br 0 end))";
+    let mut guest = session(source, None);
+    let cache = LocalIndex::new(16 * 1024 * 1024);
+    let namespace = Namespace::new(&[b"wasm-test"]);
+    guest.run_until(4096).unwrap();
+    let left = guest.snapshot().unwrap().0;
+    let first = guest
+        .publish_snapshot(&cache, namespace, b"left", None, left, 1)
+        .unwrap();
+    guest.run_until(8192).unwrap();
+    let right = guest.snapshot().unwrap().0;
+    let expected = guest.state_hash().unwrap();
+    let second = guest
+        .publish_snapshot(&cache, namespace, b"right", Some((left, &first)), right, 2)
+        .unwrap();
+    assert_eq!(second.depth(), 1);
+    let setup = guest.setup_handle().0;
+    let (imported, at) = guest.import_cached(&cache, &second, setup).unwrap();
+    assert_eq!(at, guest.current_moment().unwrap());
+    guest.replay_snapshot(imported).unwrap();
+    assert_eq!(guest.state_hash().unwrap(), expected);
+    cache.release(first);
+    cache.release(second);
+    assert_eq!(cache.stats().leased, 0);
+}
+
+#[test]
+fn passive_segment_and_indirect_call_state_survives_a_portable_pending_import() {
+    let source = r#"(module
+      (type $value (func (result i32)))
+      (import "harmony_v1" "request" (func $r (param i32 i32 i32 i32 i32) (result i32)))
+      (memory 1 1) (table 2 2 funcref) (elem $functions func $value)
+      (data $bytes "abcd") (data (i32.const 0) "\09\00\07\00\00\00\00\00\00\00\00\00\00\00")
+      (global $g (mut i32) (i32.const 0))
+      (func $value (type $value) i32.const 17)
+      (func (export "run")
+       i32.const 4094 i32.const 0 i32.const 4 memory.init $bytes
+       i32.const 0 i32.const 0 i32.const 1 table.init $functions
+       data.drop $bytes elem.drop $functions
+       i32.const 393219 i32.const 0 i32.const 14 i32.const 32 i32.const 5 call $r drop
+       i32.const 0 call_indirect (type $value) global.set $g
+       i32.const 8190 i32.const 4094 i32.const 4 memory.copy
+       i32.const 12286 i32.const 99 i32.const 4 memory.fill
+       i32.const 0 i32.const 0 i32.const 1 memory.init $bytes))"#;
+    let mut guest = session(source, None);
+    let (at, id) = decision_stop(&mut guest);
+    let checkpoint = guest.snapshot().unwrap().0;
+    let original = guest.state_hash().unwrap();
+    let artifact = guest.export_sparse_snapshot(checkpoint, None).unwrap();
+    let module = AdmittedModule::new(
+        &wat::parse_str(source).unwrap(),
+        Profile {
+            memory_pages: 1,
+            ..Profile::default()
+        },
+    )
+    .unwrap();
+    let mut fresh = WasmSession::from_snapshot(module, &artifact, nominal_factory()).unwrap();
+    assert_eq!(fresh.state_hash().unwrap(), original);
+    let stop = guest
+        .run(frame(), Some(resolve(at, id, Answer::Nominal)))
+        .unwrap();
+    assert!(matches!(stop, StopReason::Crash { .. }));
+    assert_eq!(
+        fresh
+            .run(frame(), Some(resolve(at, id, Answer::Nominal)))
+            .unwrap(),
+        stop
+    );
+    assert_eq!(fresh.state_hash().unwrap(), guest.state_hash().unwrap());
+}
+
+#[test]
+#[ignore = "long capture and restore measurement; use a release build"]
+#[cfg(not(miri))]
+#[allow(clippy::disallowed_methods)]
+fn measure_capture_restore_across_memory_sizes_and_history_lengths() {
+    use std::time::Instant;
+    for pages in [1, 16, 256] {
+        for history in [0, 1000, 10000] {
+            let source = format!(
+                r#"(module
+              (import "harmony_v1" "request" (func $r (param i32 i32 i32 i32 i32) (result i32)))
+              (memory {pages} {pages})
+              (func (export "run") (local $n i32)
+               i32.const 0 i32.const 165 i32.const {bytes} memory.fill
+               i32.const 0 i32.const 50331657 i32.store
+               i32.const 256 i32.const 67108864 i32.store
+               i32.const {history} local.set $n
+               block loop
+                local.get $n i32.eqz br_if 1
+                i32.const 262145 i32.const 0 i32.const 256 i32.const 0 i32.const 0 call $r drop
+                local.get $n i32.const 1 i32.sub local.set $n br 0
+               end end
+               i32.const 262145 i32.const 256 i32.const 4 i32.const 0 i32.const 0 call $r drop
+               loop br 0 end))"#,
+                bytes = pages * 65536
+            );
+            let binary = wat::parse_str(&source).unwrap();
+            let profile = Profile {
+                memory_pages: pages,
+                ..Profile::default()
+            };
+            let module = AdmittedModule::new(&binary, profile.clone()).unwrap();
+            let mut guest = WasmSession::new(
+                module,
+                InputSpec::seeded(4),
+                Invocation::new("run"),
+                nominal_factory(),
+            )
+            .unwrap();
+            guest
+                .run(
+                    StopConditions {
+                        deadline: Some(Moment(10000000)),
+                        on: StopMask::NONE.arm(class_bit::SNAPSHOT_POINT),
+                    },
+                    None,
+                )
+                .unwrap();
+            guest.seal_setup().unwrap();
+            let mut captures = Vec::new();
+            let mut restores = Vec::new();
+            for _ in 0..11 {
+                let started = Instant::now();
+                let id = guest.snapshot().unwrap().0;
+                captures.push(started.elapsed().as_secs_f64());
+                let artifact = guest.export_sparse_snapshot(id, None).unwrap();
+                let started = Instant::now();
+                let module = AdmittedModule::new(&binary, profile.clone()).unwrap();
+                let restored =
+                    WasmSession::from_snapshot(module, &artifact, nominal_factory()).unwrap();
+                restores.push(started.elapsed().as_secs_f64());
+                drop(restored);
+                guest.drop_snapshot(id).unwrap();
+            }
+            println!(
+                "WASM_MEMORY_SAMPLES {{\"pages\":{pages},\"history\":{history},\"capture\":{captures:?},\"fresh_restore\":{restores:?}}}"
+            );
+        }
+    }
+}

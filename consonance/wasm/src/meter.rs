@@ -72,6 +72,10 @@ impl Meter {
         if remaining > self.supplied
             || self.supplied > Self::MAXIMUM
             || self.service_cost > Self::MAXIMUM
+            || self
+                .supplied
+                .checked_add(self.service_cost)
+                .is_none_or(|total| total > Self::MAXIMUM)
             || !self.supplied.is_multiple_of(Self::QUANTUM)
         {
             return Err(AdmissionError("invalid cumulative fuel state".into()));

@@ -78,6 +78,7 @@ pub(crate) struct Capture {
 pub(crate) struct Runtime {
     pub(crate) admitted: Arc<AdmittedModule>,
     pub(crate) engine: Engine,
+    module: Module,
     pub(crate) instance: Instance,
     pub(crate) store: Store<Host>,
     pub(crate) memory: Memory,
@@ -111,6 +112,18 @@ impl Runtime {
         }
         let engine = admitted.engine()?;
         let module = Module::new(&engine, admitted.bytes()).map_err(error)?;
+        Self::instantiate(admitted, engine, module, host, invocation)
+    }
+    fn instantiate(
+        admitted: Arc<AdmittedModule>,
+        engine: Engine,
+        module: Module,
+        host: Host,
+        invocation: Invocation,
+    ) -> Result<Self> {
+        if !admitted.entries.contains(&invocation.name) {
+            return Err(error("entry must name an exported guest function"));
+        }
         let mut store = Store::new(&engine, host);
         store.set_fuel(0).map_err(error)?;
         let mut linker = Linker::new(&engine);
@@ -198,6 +211,7 @@ impl Runtime {
         Ok(Self {
             admitted,
             engine,
+            module,
             instance,
             store,
             memory,
@@ -345,11 +359,54 @@ impl Runtime {
                 .collect::<Result<_>>()?,
         })
     }
-    pub(crate) fn restore_trusted(
-        admitted: Arc<AdmittedModule>,
-        capture: &Capture,
-    ) -> Result<Self> {
-        let mut runtime = Self::new(admitted, capture.host.clone(), capture.invocation.clone())?;
+    pub(crate) fn restore(admitted: Arc<AdmittedModule>, capture: &Capture) -> Result<Self> {
+        let runtime = Self::new(admitted, capture.host.clone(), capture.invocation.clone())?;
+        Self::finish_restore(runtime, capture)
+    }
+    pub(crate) fn restore_cached(&self, capture: &Capture) -> Result<Self> {
+        let runtime = Self::instantiate(
+            self.admitted.clone(),
+            self.engine.clone(),
+            self.module.clone(),
+            capture.host.clone(),
+            capture.invocation.clone(),
+        )?;
+        Self::finish_restore(runtime, capture)
+    }
+    fn finish_restore(mut runtime: Self, capture: &Capture) -> Result<Self> {
+        if capture.memory.len() != runtime.memory.data(&runtime.store).len()
+            || capture.outputs.len() != runtime.outputs.len()
+            || capture
+                .outputs
+                .iter()
+                .zip(&runtime.outputs)
+                .any(|(captured, output)| captured.value().ty() != output.ty())
+        {
+            return Err(error("snapshot memory or root result shape differs"));
+        }
+        let expected_globals: std::collections::BTreeSet<_> = runtime
+            .instance
+            .exports(&runtime.store)
+            .filter(|export| {
+                export.name().starts_with("__harmony_global_")
+                    && export
+                        .clone()
+                        .into_global()
+                        .is_some_and(|global| global.ty(&runtime.store).mutability().is_mut())
+            })
+            .map(|export| export.name().to_owned())
+            .collect();
+        let expected_tables: std::collections::BTreeSet<_> = runtime
+            .instance
+            .exports(&runtime.store)
+            .filter(|export| export.name().starts_with("__harmony_table_"))
+            .map(|export| export.name().to_owned())
+            .collect();
+        if expected_globals != capture.globals.keys().cloned().collect()
+            || expected_tables != capture.tables.keys().cloned().collect()
+        {
+            return Err(error("snapshot global or table inventory differs"));
+        }
         runtime
             .memory
             .write(&mut runtime.store, 0, &capture.memory)
@@ -367,6 +424,9 @@ impl Runtime {
                 .instance
                 .get_table(&runtime.store, name)
                 .ok_or_else(|| error("missing captured table"))?;
+            if table.size(&runtime.store) != entries.len() as u64 {
+                return Err(error("snapshot table capacity differs"));
+            }
             for (index, entry) in entries.iter().enumerate() {
                 let function = entry
                     .map(|index| {
@@ -406,7 +466,16 @@ impl Runtime {
                 required_fuel: continuation.required,
                 caller_result: continuation.result,
             };
-            // SAFETY: Capture is private and created exclusively by the same admitted scalar-only runtime. Only the cloned host environment changes during an internal branch; register values, frames and code positions remain trusted. Untrusted artifact import is unavailable.
+            ResumableCall::harmony_validate(
+                &runtime.engine,
+                &runtime.store,
+                runtime.instance,
+                runtime.root,
+                host,
+                &snapshot,
+            )
+            .map_err(error)?;
+            // SAFETY: Admission excludes reference-valued registers and multiple instances. The validator checks compiled positions, contiguous frame allocations, immutable constants and parent/pending result ranges against this exact eagerly compiled module before reconstructing its continuation.
             runtime.call = Some(unsafe {
                 ResumableCall::harmony_restore(
                     runtime.engine.clone(),
@@ -423,5 +492,110 @@ impl Runtime {
         runtime.trap = capture.trap.clone();
         runtime.outputs = capture.outputs.iter().map(Scalar::value).collect();
         Ok(runtime)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::admission::Profile;
+    use environment::input_spec::{InputSpec, nominal_factory};
+    #[test]
+    fn continuation_validation_rejects_malformed_frames_and_operand_positions() {
+        let source = wat::parse_str(
+            r#"(module
+          (type $t (func (param i64) (result i64)))
+          (import "harmony_v1" "request" (func $request (param i32 i32 i32 i32 i32) (result i32)))
+          (memory 1 1) (table 1 1 funcref) (elem (i32.const 0) $leaf)
+          (func $leaf (type $t) local.get 0 i64.const 1234605616436508552 i64.add
+           i32.const 0 i32.const 0 i32.const 0 i32.const 0 i32.const 0 call $request drop)
+          (func (export "run") (result i64) i64.const 9001 i32.const 0 call_indirect (type $t)))"#,
+        )
+        .unwrap();
+        let module = Arc::new(
+            AdmittedModule::new(
+                &source,
+                Profile {
+                    memory_pages: 1,
+                    ..Profile::default()
+                },
+            )
+            .unwrap(),
+        );
+        let env = InputSpec::seeded(4)
+            .materialize(&nominal_factory())
+            .unwrap();
+        let mut runtime =
+            Runtime::new(module.clone(), Host::new(env), Invocation::new("run")).unwrap();
+        runtime.store.set_fuel(10000).unwrap();
+        runtime.execute().unwrap();
+        let captured = runtime.capture().unwrap();
+        let continuation = runtime.call.as_ref().unwrap().harmony_capture().unwrap();
+        assert_eq!(continuation.frames.len(), 2);
+        let host = runtime.imports[&("harmony_v1".into(), "request".into())];
+        let validate = |snapshot: &HarmonyContinuation| {
+            ResumableCall::harmony_validate(
+                &runtime.engine,
+                &runtime.store,
+                runtime.instance,
+                runtime.root,
+                host,
+                snapshot,
+            )
+        };
+        validate(&continuation).unwrap();
+        let mut bad = continuation.clone();
+        bad.values.pop();
+        assert!(validate(&bad).is_err());
+        for (column, value) in [
+            (0, u64::MAX),
+            (1, u64::MAX),
+            (2, u64::MAX),
+            (3, u64::MAX),
+            (4, u64::MAX),
+        ] {
+            let mut bad = continuation.clone();
+            bad.frames.last_mut().unwrap()[column] = value;
+            assert!(validate(&bad).is_err());
+        }
+        let mut bad = continuation.clone();
+        bad.frames[0][4] = 1;
+        assert!(validate(&bad).is_err());
+        let mut bad = continuation.clone();
+        bad.caller_result = Some(-1);
+        assert!(validate(&bad).is_err());
+        let mut bad = continuation.clone();
+        bad.required_fuel = Some(1);
+        assert!(validate(&bad).is_err());
+        let constant = continuation
+            .frames
+            .iter()
+            .find(|frame| frame[2] > frame[3])
+            .expect("large literal needs an immutable constant register")[3]
+            as usize;
+        let mut bad = continuation.clone();
+        bad.values[constant] ^= 1;
+        assert!(validate(&bad).is_err());
+        let mut operands = 0;
+        for offset in 0..continuation.frames.last().unwrap()[1] {
+            let mut bad = continuation.clone();
+            bad.frames.last_mut().unwrap()[1] = offset;
+            operands += usize::from(validate(&bad).is_err());
+        }
+        assert!(operands > 0);
+        let mut restored = Runtime::restore(module, &captured).unwrap();
+        restored
+            .call
+            .as_mut()
+            .unwrap()
+            .harmony_complete_i32(&restored.store, -2)
+            .unwrap();
+        restored.store.data_mut().pending = None;
+        restored.execute().unwrap();
+        assert!(restored.finished);
+        assert_eq!(
+            Scalar::from_value(restored.outputs[0].clone()).unwrap(),
+            Scalar::I64(1234605616436508552 + 9001)
+        );
     }
 }

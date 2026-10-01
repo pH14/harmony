@@ -31,3 +31,14 @@ without executing guest instructions or changing fuel. The session then commits
 its already-validated host transaction at the same boundary. This prevents a
 checkpoint from retaining an applied host effect with an unapplied return value.
 The additional patch is included in execution identity.
+
+`validation.patch` compares continuation allocations with the eagerly compiled
+functions. Frames must be contiguous after the root result buffer, with the
+exact constant prefix and writable register count. Constant bits are immutable,
+return destinations stay within the parent's writable registers, and a pending
+result names one writable i32 slot. Compiled instruction positions must identify
+executable words rather than register lists, indices or other instruction
+operands. Every frame belongs to the admitted instance and the first frame is
+the declared root. The outer admission contract excludes reference registers,
+multiple instances and multi-result functions; artifact decoding enforces the
+profile's stack and resource bounds before the unsafe reconstruction call.

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::{
     admission::AdmittedModule,
+    artifact::{self, Body, Sections},
     meter::{Cancellation, ExecutionControl, Meter},
     runtime::{Capture, Invocation, Runtime, error},
     services::{Host, Prepared, range},
 };
 use consonance_client::{
     cache::{CacheIndex, Lease, Namespace},
-    session::{SdkEvent, SearchSession, SessionCapabilities},
+    session::{SdkEvent, SearchSession, SessionCapabilities, SparseSnapshot},
 };
 use control_proto::{
     CrashInfo, CrashKind, Moment, Resolution, SnapId, StopConditions, StopMask, StopReason,
@@ -24,6 +25,9 @@ struct Snapshot {
     capture: Capture,
     meter: Meter,
     input: InputSpec,
+    storage: snapshot_store::SnapshotId,
+    body: Body,
+    sections: Sections,
 }
 pub struct WasmSession {
     runtime: Runtime,
@@ -34,6 +38,10 @@ pub struct WasmSession {
     snapshots: BTreeMap<SnapId, Rc<Snapshot>>,
     next: u64,
     setup: (SnapId, u64),
+    store: snapshot_store::Store,
+    near: Option<SnapId>,
+    dirty: Vec<u64>,
+    restore_pages: u64,
 }
 impl std::fmt::Debug for WasmSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,6 +64,9 @@ impl WasmSession {
         }
         let host = Host::new(input.materialize(&factory)?);
         let runtime = Runtime::new(Arc::new(module), host, entry)?;
+        let store = snapshot_store::Store::new(snapshot_store::StoreConfig {
+            mem_pages: u64::from(runtime.admitted.profile().memory_pages) * 16,
+        });
         let mut session = Self {
             runtime,
             meter: Meter::default(),
@@ -65,8 +76,41 @@ impl WasmSession {
             snapshots: BTreeMap::new(),
             next: 1,
             setup: (SnapId(0), 0),
+            store,
+            near: None,
+            dirty: Vec::new(),
+            restore_pages: 0,
         };
         session.setup = session.snapshot()?;
+        Ok(session)
+    }
+    pub fn from_snapshot(
+        module: AdmittedModule,
+        snapshot: &SparseSnapshot,
+        factory: ServiceFactory,
+    ) -> Result<Self> {
+        let (capture, meter, input, sections, body) =
+            artifact::decode(&module, snapshot, &factory)?;
+        let runtime = Runtime::restore(Arc::new(module), &capture)?;
+        let store = snapshot_store::Store::new(snapshot_store::StoreConfig {
+            mem_pages: u64::from(runtime.admitted.profile().memory_pages) * 16,
+        });
+        let at = meter.moment(capture.fuel)?;
+        let mut session = Self {
+            runtime,
+            meter: meter.clone(),
+            input: input.clone(),
+            factory,
+            control: ExecutionControl::default(),
+            snapshots: BTreeMap::new(),
+            next: 1,
+            setup: (SnapId(1), at),
+            store,
+            near: Some(SnapId(1)),
+            dirty: Vec::new(),
+            restore_pages: (capture.memory.len() / 4096) as u64,
+        };
+        session.insert_snapshot(SnapId(1), 2, capture, meter, input, sections, body, None)?;
         Ok(session)
     }
     pub fn cancellation(&self) -> Cancellation {
@@ -100,7 +144,10 @@ impl WasmSession {
         let setup = self.snapshot()?;
         let previous = self.setup.0;
         self.setup = setup;
-        self.snapshots.remove(&previous);
+        if let Some(snapshot) = self.snapshots.remove(&previous) {
+            self.store.release(snapshot.storage)?;
+            self.store.gc();
+        }
         Ok(setup)
     }
     pub fn branch_input(&mut self, snapshot: SnapId, input: InputSpec) -> Result<()> {
@@ -113,12 +160,83 @@ impl WasmSession {
             .get(&snapshot)
             .ok_or_else(|| error("unknown snapshot"))?;
         let host = input.materialize(&self.factory)?;
-        let mut capture = captured.capture.clone();
+        let mut capture = self.materialize(captured)?;
         capture.host.env = host;
-        let candidate = Runtime::restore_trusted(self.runtime.admitted.clone(), &capture)?;
+        let candidate = self.runtime.restore_cached(&capture)?;
         self.runtime = candidate;
         self.meter = captured.meter.clone();
         self.input = input;
+        self.near = Some(snapshot);
+        self.restore_pages = (capture.memory.len() / 4096) as u64;
+        Ok(())
+    }
+    fn materialize(&self, snapshot: &Snapshot) -> Result<Capture> {
+        if self.store.vm_state(snapshot.storage)? != snapshot.body.encode()? {
+            return Err(error("snapshot sidecar differs from its sealed state").into());
+        }
+        let mut capture = snapshot.capture.clone();
+        capture.memory = vec![0; self.runtime.admitted.profile().memory_pages as usize * 65536];
+        for (gfn, page) in self.store.diff_pages(None, snapshot.storage)? {
+            let at = gfn as usize * 4096;
+            capture.memory[at..at + 4096].copy_from_slice(page);
+        }
+        snapshot.body.verify_memory(&capture.memory)?;
+        Ok(capture)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn insert_snapshot(
+        &mut self,
+        id: SnapId,
+        next: u64,
+        mut capture: Capture,
+        meter: Meter,
+        input: InputSpec,
+        sections: Sections,
+        body: Body,
+        parent: Option<SnapId>,
+    ) -> Result<()> {
+        let sidecar = body.encode()?;
+        let parent = parent
+            .and_then(|parent| self.snapshots.get(&parent))
+            .map(|parent| parent.storage);
+        let storage = if let Some(parent) = parent {
+            let changed: Vec<_> = self
+                .store
+                .diff_pages(None, parent)?
+                .into_iter()
+                .filter_map(|(gfn, page)| {
+                    let at = gfn as usize * 4096;
+                    (capture.memory[at..at + 4096] != page[..]).then_some(gfn)
+                })
+                .collect();
+            let mut builder = self.store.derive(parent)?;
+            for &gfn in &changed {
+                let at = gfn as usize * 4096;
+                builder.write_page(gfn, &capture.memory[at..at + 4096])?;
+            }
+            self.dirty = changed;
+            builder.seal(sidecar)
+        } else {
+            let mut builder = self.store.begin_base();
+            for (gfn, page) in capture.memory.chunks_exact(4096).enumerate() {
+                builder.write_page(gfn as u64, page)?;
+            }
+            self.dirty = (0..capture.memory.len() as u64 / 4096).collect();
+            builder.seal(sidecar)
+        };
+        capture.memory = Vec::new();
+        self.snapshots.insert(
+            id,
+            Rc::new(Snapshot {
+                capture,
+                meter,
+                input,
+                storage,
+                body,
+                sections,
+            }),
+        );
+        self.next = next;
         Ok(())
     }
     fn drive(
@@ -250,8 +368,8 @@ impl SearchSession for WasmSession {
             workload_composition: true,
             stopped_observations: true,
             machine_effects: false,
-            portable_snapshots: false,
-            fresh_process_restore: false,
+            portable_snapshots: true,
+            fresh_process_restore: true,
         }
     }
     fn state_hash(&mut self) -> Result<[u8; 32]> {
@@ -288,10 +406,10 @@ impl SearchSession for WasmSession {
         Ok(hash.finalize().into())
     }
     fn console_tail(&mut self) -> Result<Vec<u8>> {
-        Ok(self.runtime.store.data().console.clone())
+        Ok(self.runtime.store.data().console.materialize())
     }
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>> {
-        Ok(self.runtime.store.data().events.clone())
+        Ok(self.runtime.store.data().events()?)
     }
     fn telemetry_counters(&self) -> Vec<(String, u64)> {
         vec![
@@ -302,29 +420,110 @@ impl SearchSession for WasmSession {
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
         self.snapshots
             .get(&snapshot)
-            .map(|snapshot| (snapshot.capture.memory.len() / 4096) as u64)
+            .and_then(|snapshot| self.store.stats(snapshot.storage).ok())
+            .map(|stats| stats.owned_pages)
     }
     fn store_bytes(&self) -> Option<u64> {
-        Some(
-            self.snapshots
-                .values()
-                .map(|snapshot| snapshot.capture.memory.len() as u64)
-                .sum(),
-        )
+        let mut chunks = std::collections::BTreeSet::new();
+        let mut execution = 0;
+        for snapshot in self.snapshots.values() {
+            for section in &snapshot.sections.0 {
+                for chunk in section.chunks() {
+                    chunks.insert(Arc::as_ptr(chunk) as usize);
+                }
+            }
+            if let Some(continuation) = &snapshot.capture.continuation {
+                execution +=
+                    continuation.values.capacity() * 8 + continuation.frames.capacity() * 40;
+            }
+        }
+        Some(self.store.store_stats().bytes_resident + (chunks.len() * 512 + execution) as u64)
     }
     fn publish_snapshot(
         &self,
-        _: &dyn CacheIndex,
-        _: Namespace,
-        _: &[u8],
-        _: Option<(SnapId, &Lease)>,
-        _: SnapId,
-        _: u64,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+        cost: u64,
     ) -> Result<Lease> {
-        Err(error("cache export awaits portable artifact validation").into())
+        use consonance_client::cache::extent::{extent_len, write_extent};
+        let parent =
+            parent.filter(|(_, lease)| lease.depth() + 1 < consonance_client::cache::ANCHOR_DEPTH);
+        let target = self.export_sparse_snapshot(target, None)?;
+        let parent_artifact = parent
+            .map(|(id, _)| self.export_sparse_snapshot(id, None))
+            .transpose()?;
+        let old: BTreeMap<_, _> = parent_artifact
+            .as_ref()
+            .map(|artifact| {
+                artifact
+                    .pages()
+                    .iter()
+                    .map(|(gfn, page)| (*gfn, page))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let pages: Vec<_> = target
+            .pages()
+            .iter()
+            .filter(|(gfn, page)| {
+                old.get(gfn)
+                    .is_none_or(|prior| prior.as_ref() != page.as_ref())
+            })
+            .map(|(gfn, page)| (*gfn, *blake3::hash(page.as_ref()).as_bytes(), page.as_ref()))
+            .collect();
+        let new: std::collections::BTreeSet<_> =
+            target.pages().iter().map(|(gfn, _)| *gfn).collect();
+        let reverted: Vec<_> = old
+            .keys()
+            .filter(|gfn| !new.contains(gfn))
+            .copied()
+            .collect();
+        let sidecar = target.sidecar();
+        let len = extent_len(pages.len(), reverted.len(), sidecar.len())
+            .ok_or_else(|| error("cache extent length overflow"))?;
+        let mut extent = index.extent(len)?;
+        let borrowed: Vec<_> = pages
+            .iter()
+            .map(|(gfn, hash, page)| (*gfn, hash, *page))
+            .collect();
+        write_extent(extent.bytes_mut(), &borrowed, &reverted, &sidecar)?;
+        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
     }
-    fn import_cached(&mut self, _: &dyn CacheIndex, _: &Lease, _: SnapId) -> Result<(SnapId, u64)> {
-        Err(error("cache import awaits portable artifact validation").into())
+    fn import_cached(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+        near: SnapId,
+    ) -> Result<(SnapId, u64)> {
+        use consonance_client::cache::extent::{read_extent, resolve};
+        self.control.check()?;
+        if !self.snapshots.contains_key(&near) {
+            return Err(error("unknown nearby snapshot").into());
+        }
+        let chain = index.chain(lease)?;
+        let deltas = chain
+            .iter()
+            .map(|extent| read_extent(extent.bytes()))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let resolved = resolve(&deltas)?;
+        let pages = resolved
+            .pages
+            .iter()
+            .map(|(gfn, _, page)| (*gfn, Arc::new(**page)))
+            .collect();
+        let artifact = SparseSnapshot::from_parts(
+            0,
+            self.runtime.admitted.execution_digest(),
+            pages,
+            resolved.sidecar,
+            None,
+        )
+        .map_err(error)?;
+        let id = self.import_sparse_snapshot(&artifact)?;
+        Ok((id, self.snapshot_time(id).unwrap()))
     }
     fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<()> {
         self.control.check()?;
@@ -332,19 +531,28 @@ impl SearchSession for WasmSession {
             .snapshots
             .get(&snapshot)
             .ok_or_else(|| error("unknown snapshot"))?;
-        let candidate = Runtime::restore_trusted(self.runtime.admitted.clone(), &captured.capture)?;
+        let capture = self.materialize(captured)?;
+        let candidate = self.runtime.restore_cached(&capture)?;
         self.runtime = candidate;
         self.meter = captured.meter.clone();
         self.input = captured.input.clone();
+        self.near = Some(snapshot);
+        self.restore_pages = (capture.memory.len() / 4096) as u64;
         Ok(())
     }
     fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<()> {
         if snapshot == self.setup.0 {
             return Err(error("setup snapshot is retained by the session").into());
         }
-        self.snapshots
+        let removed = self
+            .snapshots
             .remove(&snapshot)
             .ok_or_else(|| error("unknown snapshot"))?;
+        self.store.release(removed.storage)?;
+        self.store.gc();
+        if self.near == Some(snapshot) {
+            self.near = self.snapshots.keys().next_back().copied();
+        }
         Ok(())
     }
     fn branch_with_service(
@@ -362,7 +570,7 @@ impl SearchSession for WasmSession {
             .snapshots
             .get(&snapshot)
             .ok_or_else(|| error("unknown snapshot"))?;
-        let mut capture = captured.capture.clone();
+        let mut capture = self.materialize(captured)?;
         let mut input = captured.input.clone();
         if &config != input.config() {
             let mut handler = (self.factory)(&config)?;
@@ -377,10 +585,12 @@ impl SearchSession for WasmSession {
         }
         capture.host.env.set_payloads(Some(payloads.clone()))?;
         input.set_payloads(Some(payloads));
-        let candidate = Runtime::restore_trusted(self.runtime.admitted.clone(), &capture)?;
+        let candidate = self.runtime.restore_cached(&capture)?;
         self.runtime = candidate;
         self.meter = captured.meter.clone();
         self.input = input;
+        self.near = Some(snapshot);
+        self.restore_pages = (capture.memory.len() / 4096) as u64;
         Ok(())
     }
     fn branch_payloads(&mut self, snapshot: SnapId, payloads: Vec<Vec<u8>>) -> Result<()> {
@@ -413,15 +623,60 @@ impl SearchSession for WasmSession {
             .next
             .checked_add(1)
             .ok_or_else(|| error("snapshot handles exhausted"))?;
-        let snapshot = Snapshot {
-            capture: self.runtime.capture()?,
-            meter: self.meter.clone(),
-            input: self.input.clone(),
-        };
-        self.snapshots.insert(id, Rc::new(snapshot));
-        self.next = next;
+        let capture = self.runtime.capture()?;
+        let base = self.near.and_then(|near| self.snapshots.get(&near));
+        let sections = Sections::capture(&capture, &self.input, base.map(|base| &base.sections))?;
+        let body = Body::capture(&self.runtime.admitted, &capture, &self.meter, &sections)?;
+        let input = self.input.clone();
+        let meter = self.meter.clone();
+        self.insert_snapshot(id, next, capture, meter, input, sections, body, self.near)?;
+        self.near = Some(id);
         Ok((id, at))
     }
+    fn export_sparse_snapshot(
+        &self,
+        snapshot: SnapId,
+        base: Option<&SparseSnapshot>,
+    ) -> Result<SparseSnapshot> {
+        let stored = self
+            .snapshots
+            .get(&snapshot)
+            .ok_or_else(|| error("unknown snapshot"))?;
+        let capture = self.materialize(stored)?;
+        Ok(artifact::export(
+            &stored.body,
+            &capture.memory,
+            &stored.sections,
+            base,
+        )?)
+    }
+    fn import_sparse_snapshot(&mut self, snapshot: &SparseSnapshot) -> Result<SnapId> {
+        self.control.check()?;
+        let (capture, meter, input, sections, body) =
+            artifact::decode(&self.runtime.admitted, snapshot, &self.factory)?;
+        let candidate = self.runtime.restore_cached(&capture)?;
+        drop(candidate);
+        let id = SnapId(self.next);
+        let next = self
+            .next
+            .checked_add(1)
+            .ok_or_else(|| error("snapshot handles exhausted"))?;
+        self.insert_snapshot(id, next, capture, meter, input, sections, body, None)?;
+        Ok(id)
+    }
+    fn last_seal_dirty_gfns(&self) -> Option<Vec<u64>> {
+        Some(self.dirty.clone())
+    }
+    fn snapshot_chain_len(&self, snapshot: SnapId) -> Option<u32> {
+        self.snapshots
+            .get(&snapshot)
+            .and_then(|snapshot| self.store.stats(snapshot.storage).ok())
+            .map(|stats| stats.chain_len)
+    }
+    fn last_restore_stats(&self) -> (u64, u64) {
+        (self.restore_pages, self.restore_pages)
+    }
+
     fn snapshot_time(&self, snapshot: SnapId) -> Option<u64> {
         self.snapshots
             .get(&snapshot)

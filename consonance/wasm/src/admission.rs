@@ -317,6 +317,19 @@ impl AdmittedModule {
         identity.update(Sha256::digest(include_bytes!("services.rs")));
         identity.update(Sha256::digest(include_bytes!("runtime.rs")));
         identity.update(Sha256::digest(include_bytes!("session.rs")));
+        identity.update(Sha256::digest(include_bytes!(
+            "../runtime/validation.patch"
+        )));
+        identity.update(Sha256::digest(include_bytes!("artifact.rs")));
+        for source in [
+            include_bytes!("../../environment/src/channel.rs").as_slice(),
+            include_bytes!("../../environment/src/sdk.rs").as_slice(),
+            include_bytes!("../../environment/src/input_spec.rs").as_slice(),
+            include_bytes!("../../hypercall-proto/src/lib.rs").as_slice(),
+            include_bytes!("../../hypercall-proto/src/observation.rs").as_slice(),
+        ] {
+            identity.update(Sha256::digest(source));
+        }
         identity.update(wasmi::HARMONY_COMPILER.as_bytes());
         identity.update(Sha256::digest(include_bytes!("../Cargo.lock")));
         identity.update(source_digest);

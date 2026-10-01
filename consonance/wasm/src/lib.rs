@@ -10,3 +10,5 @@ pub(crate) mod runtime;
 pub mod session;
 pub use runtime::{Invocation, Scalar};
 pub use session::WasmSession;
+
+pub(crate) mod artifact;

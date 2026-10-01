@@ -137,11 +137,19 @@ pub struct PortableSnapshot {
 
 const SHARED_STATE_CHUNK_SIZE: usize = 512;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 struct SharedStateInner {
     chunks: Vec<Arc<[u8; SHARED_STATE_CHUNK_SIZE]>>,
     len: usize,
+    hash: Sha256,
 }
+
+impl PartialEq for SharedStateInner {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.chunks == other.chunks
+    }
+}
+impl Eq for SharedStateInner {}
 
 #[derive(Clone)]
 pub struct SharedState {
@@ -167,7 +175,7 @@ impl PartialEq for SharedState {
 impl Eq for SharedState {}
 
 impl SharedState {
-    fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
+    pub fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
         let mut chunks = Vec::with_capacity(bytes.len().div_ceil(SHARED_STATE_CHUNK_SIZE));
         for (index, source) in bytes.chunks(SHARED_STATE_CHUNK_SIZE).enumerate() {
             let mut chunk = [0_u8; SHARED_STATE_CHUNK_SIZE];
@@ -182,11 +190,70 @@ impl SharedState {
             inner: Arc::new(SharedStateInner {
                 chunks,
                 len: bytes.len(),
+                hash: {
+                    let mut hash = Sha256::new();
+                    hash.update(&bytes);
+                    hash
+                },
             }),
         }
     }
 
-    fn materialize(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.len
+    }
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.len == 0
+    }
+    #[must_use]
+    pub fn chunks(&self) -> &[Arc<[u8; SHARED_STATE_CHUNK_SIZE]>] {
+        &self.inner.chunks
+    }
+    #[must_use]
+    pub fn appended(&self, bytes: &[u8]) -> Self {
+        if bytes.is_empty() {
+            return self.clone();
+        }
+        let mut chunks = self.inner.chunks.clone();
+        let mut remaining = bytes;
+        let used = self.inner.len % SHARED_STATE_CHUNK_SIZE;
+        if used != 0 {
+            let mut tail = *chunks.pop().expect("partial state has a tail");
+            let take = remaining.len().min(SHARED_STATE_CHUNK_SIZE - used);
+            tail[used..used + take].copy_from_slice(&remaining[..take]);
+            chunks.push(Arc::new(tail));
+            remaining = &remaining[take..];
+        }
+        for source in remaining.chunks(SHARED_STATE_CHUNK_SIZE) {
+            let mut chunk = [0; SHARED_STATE_CHUNK_SIZE];
+            chunk[..source.len()].copy_from_slice(source);
+            chunks.push(Arc::new(chunk));
+        }
+        Self {
+            inner: Arc::new(SharedStateInner {
+                chunks,
+                len: self
+                    .inner
+                    .len
+                    .checked_add(bytes.len())
+                    .expect("shared state length overflow"),
+                hash: {
+                    let mut hash = self.inner.hash.clone();
+                    hash.update(bytes);
+                    hash
+                },
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        self.inner.hash.clone().finalize().into()
+    }
+
+    pub fn materialize(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.inner.len);
         for chunk in &self.inner.chunks {
             let remaining = self.inner.len.saturating_sub(bytes.len());
@@ -195,7 +262,7 @@ impl SharedState {
         bytes
     }
 
-    fn memory_charge(&self) -> usize {
+    pub fn memory_charge(&self) -> usize {
         self.inner
             .chunks
             .len()
@@ -898,6 +965,26 @@ mod tests {
                 .all(|request| !matches!(request, control_proto::Request::Run { .. })),
             "exact snapshot must not retry through Run: {requests:?}"
         );
+    }
+
+    #[test]
+    fn appended_shared_state_retains_chunks_and_hashes_verbatim_bytes() {
+        let original = SharedState::from_bytes(vec![7; SHARED_STATE_CHUNK_SIZE + 3], None);
+        let appended = original.appended(&vec![9; SHARED_STATE_CHUNK_SIZE + 8]);
+        assert!(Arc::ptr_eq(&original.chunks()[0], &appended.chunks()[0]));
+        assert!(!Arc::ptr_eq(&original.chunks()[1], &appended.chunks()[1]));
+        let expected = [
+            vec![7; SHARED_STATE_CHUNK_SIZE + 3],
+            vec![9; SHARED_STATE_CHUNK_SIZE + 8],
+        ]
+        .concat();
+        assert_eq!(appended.materialize(), expected);
+        assert_eq!(
+            appended.digest(),
+            <[u8; 32]>::from(Sha256::digest(&expected))
+        );
+        assert_eq!(original.materialize(), vec![7; SHARED_STATE_CHUNK_SIZE + 3]);
+        assert_eq!(appended, SharedState::from_bytes(expected, None));
     }
 
     #[test]
