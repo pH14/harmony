@@ -50,3 +50,14 @@ A state whose level numbers differ from the previous state's while its area
 (`$074E`, `$074F`) is unchanged keeps the previous state's world and level.
 States during area loading have progress 0 and screen column 0, because the
 scroll or Mario's position still belongs to the old area.
+
+## Snapshots
+
+A native snapshot stores the QuickNES state as an LZ4 block with its length in
+front. The 12,912-byte state compresses about seven times, and the archive
+charges the compressed length, so a memory budget keeps about seven times as
+many snapshots resident. A job whose parent snapshot was evicted replays from
+the nearest keyframe, and those replayed frames count against the frame budget,
+so a small budget searches faster with compressed snapshots. Compression takes
+about 8 µs and decompression about 5 µs, against about 105 µs for one emulated
+frame.

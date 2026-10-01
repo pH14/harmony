@@ -279,6 +279,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+
+[[package]]
 name = "machine"
 version = "0.1.0"
 dependencies = [
@@ -316,6 +322,7 @@ dependencies = [
  "consonance-client",
  "guest-image",
  "libc",
+ "lz4_flex",
  "machine",
  "oci-support",
  "postcard",
