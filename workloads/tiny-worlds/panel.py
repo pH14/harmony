@@ -390,7 +390,7 @@ def execute(binary: Path, job: dict) -> dict:
         raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
     report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
     report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
-                          if key.startswith(("map_", "crossing_"))}
+                          if key.startswith(("map_", "crossing_", "passive_clock"))}
     report["arm"] = job["arm"]
     return report
 
