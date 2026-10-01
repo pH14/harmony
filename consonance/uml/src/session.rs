@@ -392,7 +392,7 @@ impl Session {
         for gfn in written {
             let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
             builder
-                .write_page(gfn, &bytes[at..at + PAGE_SIZE])
+                .write_changed_page(gfn, &bytes[at..at + PAGE_SIZE])
                 .map_err(MemoryError::from)?;
         }
         self.send_continue()?;

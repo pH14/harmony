@@ -48,7 +48,7 @@ pub struct Bridge {
 pub struct Event {
     pub moment: u64,
     pub id: u32,
-    pub data: Vec<u8>,
+    pub data: Arc<[u8]>,
 }
 
 #[derive(Debug)]
@@ -334,7 +334,7 @@ impl Services {
         self.events.push(Event {
             moment,
             id,
-            data: data.to_vec(),
+            data: data.into(),
         });
         reply(refuse(Status::Ok, response), signal)
     }
@@ -398,7 +398,7 @@ impl Services {
             events.push(Event {
                 moment: reader.u64()?,
                 id: reader.u32()?,
-                data: reader.bytes()?.to_vec(),
+                data: reader.bytes()?.into(),
             });
         }
         if !reader.0.is_empty() {
@@ -551,7 +551,7 @@ mod tests {
             vec![Event {
                 moment: 20,
                 id: 0,
-                data: b"{}".to_vec()
+                data: b"{}"[..].into()
             }]
         );
         assert_ne!(event_hash(&log.events), event_hash(&[]));
