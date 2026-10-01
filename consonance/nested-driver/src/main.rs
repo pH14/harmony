@@ -30,6 +30,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Point::state(1, "nested.creations"),
                     Point::state(2, "nested.imports"),
                     Point::state(3, "nested.steps"),
+                    Point::state(4, "nested.bytes.0"),
+                    Point::state(5, "nested.bytes.1"),
                     Point::always(1, "nested.l2.oracle"),
                 ],
             )
@@ -44,6 +46,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         sdk.state_set(2, imports)
             .map_err(|error| error.to_string())?;
         sdk.state_set(3, 0).map_err(|error| error.to_string())?;
+        publish_bytes(sdk, &oracle.bytes()).map_err(|error| error.to_string())?;
         sdk.setup_complete().map_err(|error| error.to_string())?;
     }
     for number in 1..=STEPS {
@@ -64,6 +67,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         std::io::stdout().flush()?;
         if let Some(sdk) = &mut sdk {
+            publish_bytes(sdk, &actual.bytes()).map_err(|error| error.to_string())?;
             sdk.state_set(3, number)
                 .map_err(|error| error.to_string())?;
             sdk.frame_complete(number)
@@ -75,6 +79,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         hex(&oracle.bytes())
     );
     Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn publish_bytes(
+    sdk: &mut harmony_sdk::Sdk<hypercall_doorbell::linux::DeviceTransport>,
+    bytes: &[u8],
+) -> Result<(), harmony_sdk::SdkError<std::io::Error>> {
+    let mut packed = [0; 16];
+    packed[..bytes.len()].copy_from_slice(bytes);
+    sdk.state_set(4, u64::from_le_bytes(packed[..8].try_into().unwrap()))?;
+    sdk.state_set(5, u64::from_le_bytes(packed[8..].try_into().unwrap()))
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]

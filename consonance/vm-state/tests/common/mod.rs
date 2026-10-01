@@ -260,6 +260,7 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
                                 devices,
                                 contract_hash,
                                 xsave_restore_bv,
+                                nested_state: None,
                                 engine_state,
                             }
                         },
@@ -347,6 +348,7 @@ pub fn fully_populated() -> VmState {
         msrs: MsrBlock(msrs),
         xsave: XsaveImage(vec![0x7f, 0x1f, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd]),
         xsave_restore_bv: None,
+        nested_state: None,
         vtime: VtimeState {
             guest_hz: 2_000_000_000,
             guest_base: 0,
