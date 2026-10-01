@@ -2122,6 +2122,12 @@ where
                 }
             }
         }
+        let improved_preference = !slot.is_empty()
+            && won_preferences.iter().any(|preference| {
+                slot.iter().all(|held| {
+                    key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
+                })
+            });
         let queue_tier = won_preferences
             .iter()
             .filter(|preference| {
@@ -2259,7 +2265,7 @@ where
         self.activate_membership(id);
         let carried_in =
             parent_id.is_some_and(|parent| cell_of(self.entries[parent].key) != cell_of(key));
-        let carried_win = replacement_preferences != 0 && carried_in;
+        let carried_win = carried_in && (replacement_preferences != 0 || improved_preference);
         if new_cell || carried_win {
             let next = self
                 .tiers
@@ -4754,6 +4760,35 @@ mod tests {
         plain.continuations = Some(crate::search::continuation::ContinuationBank::new(4));
         plain.resume_continuations(4);
         assert!(plain.continuations.is_none());
+    }
+
+    #[test]
+    fn a_carried_in_arrival_that_takes_one_preference_counts_as_a_win() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut insert = |input, parent, slot, first, second| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![input],
+                        key: PortfolioKey {
+                            slot,
+                            first,
+                            second,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert portfolio entry")
+        };
+        let parent = insert(1, None, 1, 1, 1);
+        assert_eq!(insert(2, None, 2, 10, 2), Some(1));
+        assert_eq!(insert(3, parent, 2, 5, 8), Some(2));
+        assert_eq!(archive.slots.get(&(((), 2), ())), Some(&vec![1, 2]));
+        let runs = archive.tier_runs(());
+        assert_eq!((runs.yields, runs.wins), (3, 1));
     }
 
     #[test]
