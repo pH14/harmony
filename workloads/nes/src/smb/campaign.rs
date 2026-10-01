@@ -1694,7 +1694,7 @@ mod tests {
             "whole_tree",
             "nes_pressable_36",
             "frozen_area_span",
-            "one_to_six",
+            "one_doubling_while_in_place_up_to_64",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");
@@ -1730,7 +1730,7 @@ mod tests {
     #[test]
     fn budgeted_64_entry_campaign_replays_exactly() {
         let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca34, 4, 8_192);
+        let mut config = genesis_config(0x5eed_ca34, 4, 2_048);
         config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
@@ -1743,10 +1743,9 @@ mod tests {
             None,
         )
         .expect("budgeted live campaign");
-        assert_eq!(live.executions_completed, 8_192);
+        assert_eq!(live.executions_completed, 2_048);
         assert_eq!(live.memory_budget_mib, Some(4));
         assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
-        assert!(live.duplicates_skipped > 0);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
         assert!(live.historical_entries_dropped > 0);

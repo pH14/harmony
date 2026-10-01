@@ -23,7 +23,10 @@
       "id": "smb-full",
       "game": "smb",
       "origin": "power-on gameplay genesis",
-      "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+      "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+      "search": {
+        "suffix": "one_doubling_while_in_place_up_to_64"
+      }
     },
     {
       "id": "nova-level-1",

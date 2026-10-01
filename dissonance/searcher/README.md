@@ -443,7 +443,8 @@ compaction drops it with its entry. Splices and continuations run their
 recorded tails and leave it unchanged. The coordinator reads the length when it
 dispatches the job and records it as `suffix_limit` in the job or skip record.
 Replay cuts the redrawn suffix to the recorded limit and rejects a record whose
-limit does not fit the shape.
+limit does not fit the shape. It is the default shape; a workload that names
+another shape keeps that one.
 
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
