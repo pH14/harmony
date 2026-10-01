@@ -731,6 +731,13 @@ impl Backend for KvmBackend {
                 .map_err(kvm_err)?;
             crate::region::decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns);
         }
+        if let Some(size) = self.nested_state_size {
+            // SAFETY: the exclusively borrowed owned vCPU is stopped; the initialized capability-sized buffer is bounded and validated before it is reinstalled without a guest entry.
+            let bytes = unsafe { raw_get_nested_state(self.vcpu.as_raw_fd(), size)? };
+            crate::arch::x86::validate_vmx_nested_state(&bytes, size)?;
+            // SAFETY: the stopped owned vCPU receives its complete validated current nested state; no architectural registers or guest instructions change between capture and reinstall.
+            unsafe { raw_set_nested_state(self.vcpu.as_raw_fd(), &bytes)? };
+        }
         gfns.sort_unstable();
         gfns.dedup();
         Ok(gfns)

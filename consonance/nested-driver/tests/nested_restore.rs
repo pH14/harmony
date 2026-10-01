@@ -253,6 +253,10 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
         changed.len(),
         changed
     );
+    assert!(
+        changed.is_empty(),
+        "incremental capture omitted live RAM pages"
+    );
     drop(portable);
     for attempt in 1..=8 {
         restored.handle(&Request::Replay(saved))??;
@@ -268,11 +272,8 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
             changed.len(),
             &changed[..changed.len().min(16)]
         );
-        let vmm = restored.vmm_mut().ok_or("missing outer VMM")?;
-        vmm.restore_guest_memory(&captured_memory)?;
-        assert!(vmm.reset_dirty_tracking());
+        assert!(changed.is_empty(), "outer restore omitted live RAM pages");
         assert_eq!(restored.in_place_fallbacks(), 0);
-        println!("NESTED_RAM_CONTROL attempt={attempt} full_memory=restored in_place_fallbacks=0");
         assert_eq!(register(&restored, 3)?, 3);
         println!("NESTED_MATRIX restore_attempt={attempt}");
         assert_eq!(continuation(&mut restored)?, expected, "restore {attempt}");
