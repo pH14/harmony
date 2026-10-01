@@ -592,7 +592,7 @@ exception.
  #include <init.h>
  #include <os.h>
  
-@@ -45,6 +48,112 @@ int os_harmony_available(void)
+@@ -45,6 +48,118 @@ int os_harmony_available(void)
  	return harmony_fd >= 0;
  }
  
@@ -609,6 +609,7 @@ exception.
 +};
 +
 +#define HARMONY_FRAME_MAX 4096
++#define HARMONY_MEMORY_CHUNK 65536
 +
 +static char harmony_frame[HARMONY_FRAME_MAX];
 +
@@ -673,19 +674,24 @@ exception.
 +int os_harmony_memory(long flags, const void *bitmap, unsigned long bytes)
 +{
 +	struct harmony_control control;
++	unsigned long sent, chunk;
 +	ssize_t n;
 +	int fd, err;
 +
 +	err = harmony_acknowledge(UM_CONTROL_MEMORY, flags);
 +	if (err)
 +		return err;
-+	if (!(flags & UM_MEMORY_ALL)) {
++	for (sent = 0; !(flags & UM_MEMORY_ALL) && sent < bytes; sent += n) {
++		chunk = bytes - sent;
++		if (chunk > HARMONY_MEMORY_CHUNK)
++			chunk = HARMONY_MEMORY_CHUNK;
 +		do {
-+			n = send(harmony_fd, bitmap, bytes, MSG_NOSIGNAL);
++			n = send(harmony_fd, (const char *)bitmap + sent, chunk,
++				 MSG_NOSIGNAL);
 +		} while (n < 0 && errno == EINTR);
 +		if (n < 0)
 +			return -errno;
-+		if ((unsigned long)n != bytes)
++		if ((unsigned long)n != chunk)
 +			return -EPROTO;
 +	}
 +	n = harmony_receive(&fd);
@@ -705,7 +711,7 @@ exception.
  int os_harmony_exchange(unsigned long long moment, const void *request,
  			unsigned int length, void *response,
  			unsigned int capacity)
-@@ -55,6 +164,10 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
+@@ -55,6 +170,10 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
  		{ .iov_base = (void *)request, .iov_len = length },
  	};
  	struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
@@ -716,7 +722,7 @@ exception.
  	ssize_t n;
  
  	do {
-@@ -64,14 +177,26 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
+@@ -64,14 +183,26 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
  		return -errno;
  	if ((size_t)n != sizeof(stamp) + length)
  		return -EPROTO;
