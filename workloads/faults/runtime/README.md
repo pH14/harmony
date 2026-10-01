@@ -94,7 +94,10 @@ runtime adds one crossing and adds a hash of the site's module offset and the
 bucket to a wrapping sum. A crossing whose module is missing from the list
 waits in a queue that the control thread resolves after its next module
 listing, before it answers any command. A crossing in a module that unloads
-before then hashes its address. A coverage-status command returns both values.
+before then hashes its address. A coverage-status command returns both values in its second and third words,
+plus a saturating total callback count in its fourth word. The callback count
+lets the language park fixture measure ongoing progress after all hit-count
+buckets have saturated.
 They cover the process since it started. Module offsets make each crossing's
 hash independent of where the loader placed the module. Slots are chosen by
 address, so which sites share a slot can change with placement. Another 512 KiB

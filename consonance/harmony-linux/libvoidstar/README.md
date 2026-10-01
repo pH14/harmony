@@ -7,12 +7,30 @@ ABI used by guest workloads. It sends SDK JSON to `/dev/harmony`, obtains
 seeded entropy through the driver's fixed transaction, and exposes the legacy
 coverage and sanitizer callback symbols expected by instrumented programs.
 
-Device exchanges are serialized per process. A thread that calls
-`harmony_coverage_configure` gets an explicit identity and a callback counter,
-and asks the scheduler for its next threshold each time the counter reaches
-the current one. A thread that never configures makes no coverage exchange,
-so an instrumented program pays no device round trip per edge. Device errors fail closed:
-an event is dropped and entropy returns zero rather than using host randomness.
+Device exchanges are serialized per process. Every instrumented thread counts
+its coverage callbacks, keyed by its Linux thread ID, and exchanges with the VM
+when the count reaches its threshold. The first threshold is one callback; the
+VM supplies each later quantum. Each exchange is a VM exit, so virtual time
+advances and the guest scheduler can preempt a thread that never makes a system
+call. A callback made during an exchange, for example from a signal handler,
+only counts; the next callback at or past the threshold exchanges.
+`harmony_coverage_configure` sets an explicit thread identity and runnable
+width. A forked child resets its counter and identity.
+
+When `/dev/harmony` does not exist, the thread stops exchanging. Any other
+transport error or an invalid threshold aborts the process, because continuing
+would leave a loop that never exits to the VM.
+
+The library matches the Antithesis libvoidstar ABI:
+
+- `notify_coverage(size_t)` returns `bool` and always returns true, so the Go
+  and Python SDKs keep calling on every visit.
+- `notify_coverage_v2`, `coverage_lease_generation_addr` and
+  `instrumentation_request_abi_version` implement the coverage lease ABI. Each
+  lease grants no extra hits, so every visit calls into the library.
+- `init_coverage_module` gives each module a disjoint edge range.
+- Clang `trace-pc-guard` and GCC `trace-pc` callbacks pass the caller address,
+  so the fault runtime can report module offsets.
 
 Coverage callbacks invoke the optional weak `harmony_instrumentation_event`
 hook when a workload links a compatible instrumentation runtime. The library

@@ -5,7 +5,7 @@ use std::{error::Error, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::target::{FaultAction, FaultObservations, FaultStop};
+use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
 pub const PACKAGE: &str = "faults";
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +70,8 @@ pub struct ReplaySummary {
     pub settle_actions: u64,
     pub settle_ticks: u64,
     pub guest_horizons: u64,
+    pub event_kill_fires: u64,
+    pub event_park_fires: u64,
     pub check: Option<crate::target::CheckEvidence>,
 }
 
@@ -132,6 +134,8 @@ impl ReplaySummary {
             settle_actions: 0,
             settle_ticks: 0,
             guest_horizons,
+            event_kill_fires: observation.event_kill_fires,
+            event_park_fires: observation.event_park_fires,
             check: observation.check.clone(),
         }
     }
@@ -245,19 +249,19 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
         return Err("the recorded input names no actions".into());
     }
     for action in &actions {
-        match action {
-            FaultAction::EventKill { rarity, .. } if *rarity >= 64 => {
+        match &action.operation {
+            FaultOperation::EventKill { rarity, .. } if *rarity >= 64 => {
                 return Err("event rarity exceeds the runtime hash width".into());
             }
-            FaultAction::EventPark { edges, .. }
+            FaultOperation::EventPark { edges, .. }
                 if *edges == 0 || *edges > fault_policy::EVENT_PARK_EDGE_LIMIT =>
             {
                 return Err("event park edge count is outside the runtime range".into());
             }
-            FaultAction::EventPark { hold_us: 0, .. } => {
+            FaultOperation::EventPark { hold_us: 0, .. } => {
                 return Err("event park hold must be positive".into());
             }
-            FaultAction::EventPark { hold_us, ticks, .. }
+            FaultOperation::EventPark { hold_us, ticks, .. }
                 if u64::from(*hold_us)
                     > u64::from(ticks.get()) * crate::target::SUPERVISOR_TICK_MICROS =>
             {
@@ -312,7 +316,7 @@ mod live {
         campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_checkpointed},
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         report::{BugReport, write_bug_reports},
-        target::{ActionWindows, FaultAction},
+        target::{ActionWindows, FaultAction, FaultOperation},
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
@@ -567,8 +571,11 @@ mod live {
                 break;
             }
             let before = target.actions().len();
-            target.apply(FaultAction::Wait(
-                std::num::NonZeroU16::new(ticks).expect("settle duration"),
+            target.apply(FaultAction::new(
+                FaultOperation::Wait(std::num::NonZeroU16::new(ticks).expect("settle duration")),
+                actions
+                    .last()
+                    .map_or(std::num::NonZeroU16::MIN, |action| action.coverage_quantum),
             ));
             if target.actions().len() == before {
                 break;
@@ -713,10 +720,10 @@ mod tests {
                 input
                     .actions
                     .iter()
-                    .any(|action| matches!(action, FaultAction::Wait(_)))
+                    .any(|action| matches!(action.operation, FaultOperation::Wait(_)))
             );
-            assert!(input.actions.iter().all(|action| match action {
-                FaultAction::Wait(ticks) => ticks.get() == 50,
+            assert!(input.actions.iter().all(|action| match action.operation {
+                FaultOperation::Wait(ticks) => ticks.get() == 50,
                 _ => true,
             }));
         }
@@ -725,7 +732,10 @@ mod tests {
     #[test]
     fn a_recorded_input_reads_as_a_bug_report_or_a_bare_action_list() {
         let ticks = std::num::NonZeroU16::new(50).unwrap();
-        let actions = vec![FaultAction::Hook(1, ticks), FaultAction::Kill(0, ticks)];
+        let actions = vec![
+            FaultOperation::Hook(1, ticks).into(),
+            FaultOperation::Kill(0, ticks).into(),
+        ];
         let bare = serde_json::to_string(&actions).expect("serialize");
         assert_eq!(
             parse_recorded_input(&bare).expect("bare"),
@@ -742,13 +752,13 @@ mod tests {
         assert!(parse_recorded_input("[]").is_err());
         assert!(parse_recorded_input("{}").is_err());
         let park = |hold_us| {
-            serde_json::to_string(&[FaultAction::EventPark {
+            serde_json::to_string(&[FaultAction::from(FaultOperation::EventPark {
                 node: 0,
                 edges: 1,
                 hold_us,
                 ticks: std::num::NonZeroU16::new(2).unwrap(),
                 target: None,
-            }])
+            })])
             .expect("serialize")
         };
         assert!(parse_recorded_input(&park(20_000)).is_ok());
@@ -774,13 +784,15 @@ mod tests {
             settle_actions: 0,
             settle_ticks: 0,
             guest_horizons: 3,
+            event_kill_fires: 0,
+            event_park_fires: 0,
         }
     }
 
     fn bug_summary(execution: u64, confirmed: bool) -> BugSummary {
         BugSummary {
             execution,
-            actions: vec![FaultAction::Hook(3, std::num::NonZeroU16::new(50).unwrap())],
+            actions: vec![FaultOperation::Hook(3, std::num::NonZeroU16::new(50).unwrap()).into()],
             stop: FaultStop::Assertion { point: 2 },
             violations: ids(&[2]),
             sometimes: ids(&[24]),
@@ -901,6 +913,8 @@ mod tests {
             0x70, 0xcc, 0x5c, 0x96,
         ];
         let observation = FaultObservations {
+            event_kill_fires: 2,
+            event_park_fires: 3,
             check: Some(crate::target::CheckEvidence {
                 run: 3,
                 points: ids(&[7, 11]),
@@ -910,6 +924,7 @@ mod tests {
         };
         let summary = ReplaySummary::from_observation(&observation, state_digest, 1, 1);
         assert_eq!(summary.check, observation.check);
+        assert_eq!((summary.event_kill_fires, summary.event_park_fires), (2, 3));
         assert_eq!((summary.settle_actions, summary.settle_ticks), (0, 0));
         let artifacts = Artifacts {
             kernel: Vec::new(),

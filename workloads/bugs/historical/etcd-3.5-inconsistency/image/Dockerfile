@@ -2,6 +2,7 @@
 ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 ARG GO_IMAGE=golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
+ARG HARMONY_RUNTIME_IMAGE=harmony-language-runtime:local
 FROM ${GO_IMAGE} AS workload-writer-build
 
 ARG TARGETARCH
@@ -103,15 +104,7 @@ RUN mkdir -p /out/etcd /out/symbols \
     && cp /build/etcd/LICENSE /out/ETCD-LICENSE \
     && cp "${sdk_dir}/LICENSE" /out/ANTITHESIS-SDK-GO-LICENSE
 
-COPY consonance/harmony-linux/libvoidstar /build/libvoidstar
-COPY workloads/faults/runtime/Makefile \
-     workloads/faults/runtime/fault_runtime.c \
-     workloads/faults/runtime/fault_runtime.h \
-     workloads/faults/runtime/fault_runtime_shim.c /build/fault-runtime/
-RUN make -C /build/fault-runtime \
-       CORE_DIR=/build/libvoidstar \
-       BUILD_DIR=/build/fault-runtime-build all \
-    && cp /build/fault-runtime-build/libvoidstar.so /out/
+FROM ${HARMONY_RUNTIME_IMAGE} AS voidstar
 
 FROM ${DEBIAN_IMAGE}
 
@@ -127,13 +120,14 @@ COPY --from=instrumented-build /out/etcd/etcd /opt/etcd/etcd
 COPY --from=instrumented-build /out/etcd/etcdctl /opt/etcd/etcdctl
 COPY --from=workload-writer-build /out/etcd-writer /opt/harmony/etcd-writer
 COPY --from=workload-writer-build /out/etcd-oracle /opt/harmony/etcd-oracle
-COPY --from=instrumented-build /out/libvoidstar.so /usr/lib/libvoidstar.so
+COPY --from=voidstar /out/libvoidstar.so /usr/lib/libvoidstar.so
 COPY --from=instrumented-build /out/symbols/*.sym.tsv /symbols/
 COPY --from=instrumented-build /out/harmony-instrumented-events /symbols/harmony-instrumented-events
 COPY --from=instrumented-build /out/ETCD-LICENSE /licenses/etcd.txt
 COPY --from=instrumented-build /out/ANTITHESIS-SDK-GO-LICENSE /licenses/antithesis-sdk-go.txt
 
-RUN chmod 0755 /opt/etcd/etcd /opt/etcd/etcdctl /opt/harmony/etcd-writer \
+RUN rm -f /usr/lib/*/libmemusage.so \
+    && chmod 0755 /opt/etcd/etcd /opt/etcd/etcdctl /opt/harmony/etcd-writer \
         /opt/harmony/etcd-oracle /usr/lib/libvoidstar.so \
     && test -x /opt/etcd/etcd \
     && test -x /opt/etcd/etcdctl \
@@ -154,7 +148,8 @@ COPY workloads/bugs/historical/etcd-3.5-inconsistency/image/setup.sh \
      workloads/bugs/historical/etcd-3.5-inconsistency/image/node.sh \
      workloads/bugs/historical/etcd-3.5-inconsistency/image/ready.sh /opt/harmony/
 
-RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh \
+RUN rm -f /usr/lib/*/libmemusage.so \
+    && chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh \
         /opt/harmony/ready.sh
 
 CMD ["/opt/harmony/node.sh"]

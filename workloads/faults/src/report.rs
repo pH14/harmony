@@ -97,7 +97,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::FaultStop;
+    use crate::target::{FaultOperation, FaultStop};
     use std::num::NonZeroU16;
 
     const WINDOWS: ActionWindows = ActionWindows { root_seal: 1_000 };
@@ -114,7 +114,10 @@ mod tests {
             1,
             42,
             WINDOWS,
-            &[FaultAction::Hook(1, TICKS), FaultAction::Kill(0, TICKS)],
+            &[
+                FaultOperation::Hook(1, TICKS).into(),
+                FaultOperation::Kill(0, TICKS).into(),
+            ],
             &observations,
         )
         .expect("build a report")
@@ -175,8 +178,8 @@ mod tests {
             },
         };
         let bugs = [
-            bug(4, FaultAction::Kill(0, TICKS)),
-            bug(9, FaultAction::Wait(NonZeroU16::MIN)),
+            bug(4, FaultOperation::Kill(0, TICKS).into()),
+            bug(9, FaultOperation::Wait(NonZeroU16::MIN).into()),
         ];
         let windows = ActionWindows { root_seal: 7 };
         let written = write_bug_reports(windows, &bugs, directory.path()).expect("write");

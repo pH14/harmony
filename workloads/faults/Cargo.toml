@@ -21,6 +21,8 @@ control-proto = { path = "../../consonance/control-proto", version = "=0.1.0" }
 environment = { path = "../../consonance/environment", version = "=0.1.0", optional = true }
 fault-policy = { path = "../fault-policy", version = "=0.1.0" }
 oci-support = { path = "../../consonance/oci", version = "=0.1.0" }
+object = { version = "=0.37.3", default-features = false, features = ["read_core", "elf", "std"] }
+iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "decoder"] }
 process-proto = { path = "../../consonance/process-proto", version = "=0.1.0" }
 searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
 uml = { path = "../../consonance/uml", version = "=0.1.0", optional = true }

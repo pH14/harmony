@@ -1,34 +1,55 @@
 {
   "actions": [
     {
-      "Hook": [
-        1,
-        50
-      ]
+      "operation": {
+        "Hook": [
+          1,
+          50
+        ]
+      },
+      "coverage_quantum": 1
     },
     {
-      "Hook": [
-        2,
-        50
-      ]
+      "operation": {
+        "Hook": [
+          2,
+          50
+        ]
+      },
+      "coverage_quantum": 1
     },
     {
-      "Wait": 50
+      "operation": {
+        "Wait": 50
+      },
+      "coverage_quantum": 1
     },
     {
-      "Wait": 50
+      "operation": {
+        "Wait": 50
+      },
+      "coverage_quantum": 1
     },
     {
-      "Hook": [
-        3,
-        50
-      ]
+      "operation": {
+        "Hook": [
+          3,
+          50
+        ]
+      },
+      "coverage_quantum": 1
     },
     {
-      "Wait": 50
+      "operation": {
+        "Wait": 50
+      },
+      "coverage_quantum": 1
     },
     {
-      "Wait": 50
+      "operation": {
+        "Wait": 50
+      },
+      "coverage_quantum": 1
     }
   ]
 }

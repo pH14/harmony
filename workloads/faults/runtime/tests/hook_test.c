@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include <assert.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -12,7 +13,7 @@
 
 #include "../fault_runtime.h"
 
-extern void notify_coverage(uint64_t edge);
+extern bool notify_coverage(size_t edge);
 
 static void put_word(unsigned char *frame, size_t offset, uint64_t value)
 {

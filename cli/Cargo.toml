@@ -20,6 +20,7 @@ sha2 = "0.10"
 tempfile = "3"
 oci-support = { path = "../consonance/oci", version = "=0.1.0" }
 faults-workload = { version = "=0.1.0", path = "../workloads/faults", features = ["consonance"] }
+environment = { version = "=0.1.0", path = "../consonance/environment" }
 vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
 consonance-client = { path = "../consonance/client", version = "=0.1.0" }

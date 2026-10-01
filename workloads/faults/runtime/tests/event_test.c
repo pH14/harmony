@@ -282,6 +282,7 @@ int main(void)
     assert(get_word(response, 8) == harmony_fault_events.coverage_crossings);
     assert(get_word(response, 8) != 0);
     assert(get_word(response, 16) == harmony_fault_events.coverage_digest);
+    assert(get_word(response, 24) == harmony_fault_events.coverage_callbacks);
 
     {
         pthread_t first;

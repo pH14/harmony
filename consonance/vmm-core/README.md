@@ -482,3 +482,10 @@ external events merely because the initial image matches.
 The published API regression remains required on AMD and Intel under supported
 core placement. A successful regression does not establish raw bitmap stability
 or support for arbitrary guest code.
+
+An SDK coverage exchange checks the thread's expected threshold, asks the
+scheduler service which thread runs, and asks environment service 4 for the
+next quantum. The next threshold is part of the SDK snapshot. A thread whose
+count restarts at the first threshold gets a fresh entry, because Linux reuses
+thread IDs. A zero, malformed or overflowing quantum leaves the environment and
+every threshold unchanged.

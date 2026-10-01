@@ -19,7 +19,7 @@ use searcher::search::{
 
 use crate::assertion::{AssertionSet, Assertions};
 use crate::bundle::FaultVocabulary;
-use crate::target::{FaultAction, FaultObservations, SUPERVISOR_TICK_MICROS};
+use crate::target::{FaultAction, FaultObservations, FaultOperation, SUPERVISOR_TICK_MICROS};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
@@ -202,15 +202,15 @@ pub fn sample_action(
         Ok(u16::try_from(bits.trailing_zeros())?)
     };
     let action = match alternatives[pick(rand, alternatives.len())?] {
-        0 => FaultAction::Wait(ticks),
-        1 => FaultAction::Kill(node, ticks),
-        2 => FaultAction::Pause(node, ticks),
-        3 => FaultAction::Restart(node, ticks),
-        4 => FaultAction::Hook(
+        0 => FaultOperation::Wait(ticks),
+        1 => FaultOperation::Kill(node, ticks),
+        2 => FaultOperation::Pause(node, ticks),
+        3 => FaultOperation::Restart(node, ticks),
+        4 => FaultOperation::Hook(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
             ticks,
         ),
-        5 => FaultAction::EventKill {
+        5 => FaultOperation::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
             ticks,
@@ -221,7 +221,7 @@ pub fn sample_action(
                 Some(view) => park_target(rand, view)?,
                 None => None,
             };
-            FaultAction::EventPark {
+            FaultOperation::EventPark {
                 node,
                 edges: if target.is_some() {
                     1
@@ -234,7 +234,14 @@ pub fn sample_action(
             }
         }
     };
-    Ok(action)
+    let quantum = searcher::search::duration::DurationPolicy::draw_without_history(
+        rand,
+        std::num::NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
+    );
+    Ok(FaultAction::new(
+        action,
+        NonZeroU16::new(u16::try_from(quantum)?).unwrap(),
+    ))
 }
 
 const PARK_EDGE_EXPONENTS: u32 = 14;
@@ -607,28 +614,28 @@ mod tests {
         let vocabulary = vocabulary();
         let mut rand = RomuDuoJrRand::with_seed(11);
         let mut kinds = BTreeSet::new();
-        let kind = |action: &FaultAction| match action {
-            FaultAction::Wait(_) => 0,
-            FaultAction::Kill(..) => 1,
-            FaultAction::Pause(..) => 2,
-            FaultAction::Restart(..) => 3,
-            FaultAction::Hook(..) => 4,
-            FaultAction::EventKill { .. } => 5,
-            FaultAction::EventPark { .. } => 6,
+        let kind = |action: &FaultAction| match &action.operation {
+            FaultOperation::Wait(_) => 0,
+            FaultOperation::Kill(..) => 1,
+            FaultOperation::Pause(..) => 2,
+            FaultOperation::Restart(..) => 3,
+            FaultOperation::Hook(..) => 4,
+            FaultOperation::EventKill { .. } => 5,
+            FaultOperation::EventPark { .. } => 6,
         };
         for _ in 0..2_000 {
             let action =
                 sample_action(&mut rand, &vocabulary, 0, TICKS, None).expect("draw an action");
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
-            match action {
-                FaultAction::Wait(_) => {}
-                FaultAction::EventKill { node, rarity, .. } => {
+            match action.operation {
+                FaultOperation::Wait(_) => {}
+                FaultOperation::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
                     assert!(rarity < 64);
                 }
-                FaultAction::EventPark {
+                FaultOperation::EventPark {
                     node,
                     edges,
                     hold_us,
@@ -642,12 +649,12 @@ mod tests {
                             .contains(&u64::from(hold_us))
                     );
                 }
-                FaultAction::Kill(node, _)
-                | FaultAction::Restart(node, _)
-                | FaultAction::Pause(node, _) => {
+                FaultOperation::Kill(node, _)
+                | FaultOperation::Restart(node, _)
+                | FaultOperation::Pause(node, _) => {
                     assert!(node < vocabulary.nodes());
                 }
-                FaultAction::Hook(id, _) => assert!(vocabulary.hooks().contains(&id)),
+                FaultOperation::Hook(id, _) => assert!(vocabulary.hooks().contains(&id)),
             }
         }
         assert_eq!(kinds.len(), 5, "every available action kind is reachable");
@@ -661,16 +668,21 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(19);
         let mut events = 0;
         for _ in 0..2000 {
-            match sample_action(&mut rand, &vocabulary, 0b010, TICKS, None).unwrap() {
-                FaultAction::EventKill { node, .. } | FaultAction::EventPark { node, .. } => {
+            match sample_action(&mut rand, &vocabulary, 0b010, TICKS, None)
+                .unwrap()
+                .operation
+            {
+                FaultOperation::EventKill { node, .. } | FaultOperation::EventPark { node, .. } => {
                     assert_eq!(node, 1);
                     events += 1;
                 }
                 _ => {}
             }
             assert!(!matches!(
-                sample_action(&mut rand, &vocabulary, 0, TICKS, None).unwrap(),
-                FaultAction::EventKill { .. } | FaultAction::EventPark { .. }
+                sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                    .unwrap()
+                    .operation,
+                FaultOperation::EventKill { .. } | FaultOperation::EventPark { .. }
             ));
         }
         assert!(events > 0);
@@ -694,8 +706,10 @@ mod tests {
                         .map(|_| sample_action(&mut rand, &vocabulary, 1, TICKS, Some(view)))
                         .collect::<Result<Vec<_>, _>>()?
                         .into_iter()
-                        .filter_map(|action| match action {
-                            FaultAction::EventPark { edges, target, .. } => Some((edges, target)),
+                        .filter_map(|action| match action.operation {
+                            FaultOperation::EventPark { edges, target, .. } => {
+                                Some((edges, target))
+                            }
                             _ => None,
                         })
                         .collect::<Vec<_>>())
@@ -776,8 +790,9 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(3);
         let mut seen = BTreeSet::new();
         for _ in 0..2_000 {
-            if let FaultAction::Kill(node, _) =
-                sample_action(&mut rand, &wide, 0, TICKS, None).expect("draw")
+            if let FaultOperation::Kill(node, _) = sample_action(&mut rand, &wide, 0, TICKS, None)
+                .expect("draw")
+                .operation
             {
                 seen.insert(node);
             }
@@ -791,7 +806,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(4);
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &hookless, 0, TICKS, None).expect("draw");
-            assert!(!matches!(action, FaultAction::Hook(..)));
+            assert!(!matches!(action.operation, FaultOperation::Hook(..)));
         }
     }
 
@@ -822,14 +837,27 @@ mod tests {
     }
 
     #[test]
+    fn coverage_quanta_cover_the_log_uniform_power_of_two_support() {
+        let mut rand = RomuDuoJrRand::with_seed(23);
+        let mut seen = BTreeSet::new();
+        for _ in 0..2_000 {
+            let action = sample_action(&mut rand, &vocabulary(), 0, TICKS, None).unwrap();
+            let quantum = action.coverage_quantum.get();
+            assert!(quantum.is_power_of_two());
+            seen.insert(quantum);
+        }
+        assert_eq!(seen, (0..16).map(|exponent| 1_u16 << exponent).collect());
+    }
+
+    #[test]
     fn action_costs_charge_the_recorded_guest_duration() {
         assert_eq!(
-            action_cost(&FaultAction::Wait(std::num::NonZeroU16::MIN)),
+            action_cost(&FaultOperation::Wait(std::num::NonZeroU16::MIN).into()),
             1
         );
-        assert_eq!(action_cost(&FaultAction::Kill(4, TICKS)), 50);
+        assert_eq!(action_cost(&FaultOperation::Kill(4, TICKS).into()), 50);
         assert_eq!(
-            action_cost(&FaultAction::Wait(std::num::NonZeroU16::new(8192).unwrap())),
+            action_cost(&FaultOperation::Wait(std::num::NonZeroU16::new(8192).unwrap()).into()),
             8192
         );
     }
