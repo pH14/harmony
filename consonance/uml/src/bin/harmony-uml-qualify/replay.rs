@@ -256,17 +256,30 @@ pub fn first_difference(reference: &[Event], events: &[Event]) -> Option<Value> 
         .zip(events)
         .position(|(left, right)| left != right)
         .or_else(|| (reference.len() != events.len()).then(|| reference.len().min(events.len())))?;
+    let offset = match (reference.get(index), events.get(index)) {
+        (Some(left), Some(right)) => left
+            .data
+            .iter()
+            .zip(right.data.iter())
+            .position(|(left, right)| left != right)
+            .unwrap_or(left.data.len().min(right.data.len())),
+        _ => 0,
+    };
+    let start = offset.saturating_sub(128);
     let describe = |event: Option<&Event>| {
         event.map(|event| {
+            let start = start.min(event.data.len());
             json!({
                 "moment": event.moment,
                 "id": event.id,
-                "data": String::from_utf8_lossy(&event.data[..event.data.len().min(512)]),
+                "data": String::from_utf8_lossy(&event.data[start..event.data.len().min(start + 512)]),
             })
         })
     };
     Some(json!({
         "index": index,
+        "data_offset": offset,
+        "data_start": start,
         "reference": describe(reference.get(index)),
         "replay": describe(events.get(index)),
     }))
