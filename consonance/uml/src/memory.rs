@@ -322,9 +322,8 @@ impl GuestMemory {
 
     // SAFETY: callers touch the image range only while the image file is
     // `IMAGE_BYTES` long, and the physical memory range only while the guest
-    // waits for the host in a memory exchange or after it has exited. The
-    // returned slice must not outlive `self`.
-    pub(crate) unsafe fn bytes<'a>(&self) -> Option<&'a mut [u8]> {
+    // waits for the host in a memory exchange or after it has exited.
+    pub(crate) unsafe fn bytes(&mut self) -> Option<&mut [u8]> {
         self.mapping.map(|mapping| {
             // SAFETY: the mapping covers `IMAGE_BYTES + physmem_bytes` bytes
             // and stays mapped until `self` is dropped.

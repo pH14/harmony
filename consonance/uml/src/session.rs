@@ -392,12 +392,17 @@ impl Session {
         };
         let parent_image = pages.image_bytes(parent)?;
         let written = self.physmem_pages(&report, physmem_bytes)?;
+        let audit = if self.audit && matches!(report, Report::Dirty(_)) && previous.is_some() {
+            Some(self.audit_candidates(&pages, parent, physmem_bytes)?)
+        } else {
+            None
+        };
         // SAFETY: the guest waits for CONTINUE, so its physical memory does not
         // change, and the image file keeps its full length until the guest
         // writes the image after CONTINUE.
         let bytes = unsafe { self.memory.bytes() }.ok_or(MemoryError::Empty)?;
-        if self.audit && matches!(report, Report::Dirty(_)) && previous.is_some() {
-            let missed = self.unexpected_pages(&pages, parent, &written, physmem_bytes, bytes)?;
+        if let Some(candidates) = audit {
+            let missed = unexpected_pages(&pages, parent, candidates, &written, bytes)?;
             self.missed.extend(missed);
         }
         let mut builder = pages.store.derive(parent).map_err(MemoryError::from)?;
@@ -431,6 +436,10 @@ impl Session {
             }
         };
         let image_pages = length.max(parent_image).div_ceil(PAGE_SIZE as u64);
+        // SAFETY: the guest has written the image and waits for the bridge
+        // reply, so neither range changes, and the image file has its full
+        // length again.
+        let bytes = unsafe { self.memory.bytes() }.ok_or(MemoryError::Empty)?;
         for gfn in 0..image_pages {
             let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
             builder
@@ -505,6 +514,11 @@ impl Session {
                     (pages.root, Vec::new())
                 }
             };
+            let audit = if self.audit {
+                Some(self.audit_candidates(&pages, target, physmem_bytes)?)
+            } else {
+                None
+            };
             // SAFETY: the guest waits for CONTINUE, so only the host touches
             // its physical memory until then.
             let bytes = unsafe { self.memory.bytes() }.ok_or(MemoryError::Empty)?;
@@ -519,8 +533,8 @@ impl Session {
                 let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
                 bytes[at..at + PAGE_SIZE].copy_from_slice(data);
             }
-            if self.audit {
-                let missed = self.unexpected_pages(&pages, target, &[], physmem_bytes, bytes)?;
+            if let Some(candidates) = audit {
+                let missed = unexpected_pages(&pages, target, candidates, &[], bytes)?;
                 self.missed.extend(missed);
             }
         }
@@ -545,13 +559,11 @@ impl Session {
         &self.missed
     }
 
-    fn unexpected_pages(
+    fn audit_candidates(
         &self,
         pages: &crate::memory::Pages,
         expected: snapshot_store::SnapshotId,
-        skip: &[u64],
         physmem_bytes: usize,
-        bytes: &[u8],
     ) -> Result<Vec<u64>, SessionError> {
         let mut candidates = self.physmem_pages(&Report::All, physmem_bytes)?;
         candidates.extend(
@@ -565,22 +577,7 @@ impl Session {
         );
         candidates.sort_unstable();
         candidates.dedup();
-        let mut stored = [0_u8; PAGE_SIZE];
-        let mut missed = Vec::new();
-        for gfn in candidates {
-            if skip.binary_search(&gfn).is_ok() {
-                continue;
-            }
-            pages
-                .store
-                .read_page(expected, gfn, &mut stored)
-                .map_err(MemoryError::from)?;
-            let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
-            if bytes[at..at + PAGE_SIZE] != stored {
-                missed.push(gfn - IMAGE_PAGES);
-            }
-        }
-        Ok(missed)
+        Ok(candidates)
     }
 
     fn physmem_pages(&self, report: &Report, physmem_bytes: usize) -> io::Result<Vec<u64>> {
@@ -845,6 +842,31 @@ fn send_with_fd(socket: &OwnedFd, message: &[u8], fd: &OwnedFd) -> io::Result<()
             return Err(error);
         }
     }
+}
+
+fn unexpected_pages(
+    pages: &crate::memory::Pages,
+    expected: snapshot_store::SnapshotId,
+    candidates: Vec<u64>,
+    skip: &[u64],
+    bytes: &[u8],
+) -> Result<Vec<u64>, SessionError> {
+    let mut stored = [0_u8; PAGE_SIZE];
+    let mut missed = Vec::new();
+    for gfn in candidates {
+        if skip.binary_search(&gfn).is_ok() {
+            continue;
+        }
+        pages
+            .store
+            .read_page(expected, gfn, &mut stored)
+            .map_err(MemoryError::from)?;
+        let at = usize::try_from(gfn).map_err(io::Error::other)? * PAGE_SIZE;
+        if bytes[at..at + PAGE_SIZE] != stored {
+            missed.push(gfn - IMAGE_PAGES);
+        }
+    }
+    Ok(missed)
 }
 
 #[cfg(test)]
