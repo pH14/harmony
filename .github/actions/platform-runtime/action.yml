@@ -47,7 +47,7 @@ runs:
       run: |
         run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
           -f name="$ARTIFACT" -F per_page=100 \
-          --jq ".artifacts | map(select(.expired == false and .workflow_run.head_repository_id == $REPOSITORY_ID)) | sort_by(.created_at) | last | .workflow_run.id // empty")
+          --jq ".artifacts | map(select(.expired == false and (.workflow_run.id == $GITHUB_RUN_ID or .workflow_run.head_repository_id == $REPOSITORY_ID))) | sort_by(.created_at) | last | .workflow_run.id // empty")
         echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
     - if: steps.handoff.outputs.run_id != ''
       shell: bash

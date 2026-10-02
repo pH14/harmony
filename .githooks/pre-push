@@ -30,8 +30,8 @@ echo "== pre-push: every Cargo.lock matches its manifest"
 for manifest in $(python3 scripts/ci_contract.py manifests); do
     cargo metadata --format-version 1 --manifest-path "$manifest" >/dev/null
 done
-if ! git diff --quiet -- '*Cargo.lock'; then
-    git diff --name-only -- '*Cargo.lock' | sed 's/^/   updated /'
+if ! git diff --quiet HEAD -- '*Cargo.lock'; then
+    git diff --name-only HEAD -- '*Cargo.lock' | sed 's/^/   updated /'
     echo "   commit the updated lock files, then push again" >&2
     exit 1
 fi

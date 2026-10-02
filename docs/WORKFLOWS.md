@@ -115,7 +115,8 @@ then saves it to the cache and publishes it as an artifact. Every job that
 restores the runtime with `platform-runtime` and requires an exact match needs
 that job, so it never starts before the runtime exists. Guest Runtime
 Qualification uses the same action and adds the extended platform replay. The
-runtime handoff ignores artifacts from fork repositories.
+runtime handoff ignores artifacts from fork repositories, except those published
+earlier in the same run.
 
 `Checks / Dissonance Workloads / Tiny Worlds` builds the standalone workload and
 runs mechanics, archive-retention, replay, work-accounting, formatting, and Clippy
