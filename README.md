@@ -86,6 +86,9 @@ would this still need attention?”** If not, keep the finding in the current ta
   preparation.
 - `scripts/` contains repository-level development and validation helpers.
 
+Repository lint ownership and scope, including Cargo binary entrypoints and
+their helper modules, are specified in the [CI contract](docs/WORKFLOWS.md).
+
 Consonance and Dissonance build independently. Standalone workload crates consume
 their interfaces; the CLI composes them. The [Cargo dependency policy](scripts/dependency-boundaries.toml)
 and its required CI check enforce the direction of dependencies, including
