@@ -25,6 +25,7 @@ Read the reference for the language:
 - [Compiled languages](references/compiled.md): C, C++, other LLVM front ends, Rust, and GCC.
 - [Go](references/go.md): cgo forwarding, standard-library selection, and the etcd case.
 - [Python](references/python.md): the CPython interpreter, source-built extensions, and the PostgreSQL driver.
+- [Java](references/java.md): the OpenJDK Zero interpreter.
 
 Install the composed runtime at `/usr/lib/libvoidstar.so` with `workloads/languages/compose.Dockerfile`. Keep the SDK forwarding code unchanged. Write the SHA-256 and absolute path of each instrumented file to `/symbols/harmony-instrumented-events`. Keep unstripped binaries under `/symbols`, each with a nonempty `*.sym.tsv` from the language's own tool.
 

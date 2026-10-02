@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only WITH Classpath-exception-2.0
+--- a/src/hotspot/share/memory/virtualspace.cpp
++++ b/src/hotspot/share/memory/virtualspace.cpp
+@@ -659,7 +659,7 @@
+ ReservedCodeSpace::ReservedCodeSpace(size_t r_size,
+                                      size_t rs_align,
+                                      size_t rs_page_size) : ReservedSpace() {
+-  initialize(r_size, rs_align, rs_page_size, /*requested address*/ nullptr, /*executable*/ true);
++  initialize(r_size, rs_align, rs_page_size, /*requested address*/ nullptr, /*executable*/ NOT_ZERO(true) ZERO_ONLY(false));
+   MemTracker::record_virtual_memory_type((address)base(), mtCode);
+ }
+ 

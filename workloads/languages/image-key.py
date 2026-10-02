@@ -21,6 +21,7 @@ EXTRA_INPUTS = {
         "workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch",
     ],
     "python": FORWARDING,
+    "java": FORWARDING,
 }
 
 root = Path(__file__).resolve().parents[2]
