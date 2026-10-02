@@ -235,21 +235,19 @@ cargo bench --locked --manifest-path dissonance/Cargo.toml --bench duration
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench parent_selection
 ```
 
-Each tier keeps its cells, and each cell keeps its holders, in a sorted set
-with a Fenwick tree (a binary indexed tree of prefix sums) over their
-count-decay weights, so a cell or holder draw costs O(log n) in the number of
-cells or holders. The tree search returns the same key as a linear prefix scan
-over the sorted keys, so draws and RNG consumption match the linear draw. A
-selection or a draw-count reset updates one weight. A new holder appends to its
-cell. A new cell that sorts before existing cells rebuilds its tier's tree in
-O(places in the tier), so discovering P places in one tier in descending order
-costs O(P²) in total. A removed key keeps a zero weight until removed keys
-outnumber live ones. Each cell also keeps its holders in one ordered set per preference,
-so finding, adding, or removing the best holder costs O(log n). This requires
-`ArchiveKey::preference_cmp` to be a total order among keys that share a place.
-Checkpoints store the same key sets as before, and the weights and ordered sets
-rebuild on the first selection after loading. Debug builds check every drawn
-tier's weights and best holders against a fresh computation.
+Each tier keeps its cells, and each cell keeps its holders, in a treap (a
+binary search tree kept balanced by pseudo-random node priorities) ordered by
+key, where each node stores the count-decay weight sums of its subtree and of
+its left subtree. A draw descends to the first key whose prefix sum exceeds the
+drawn value, which is the key a linear prefix scan over the sorted keys
+returns, so draws and RNG consumption match the linear draw. Draws, weight
+updates, inserts at any position, and removals cost expected O(log n) in the
+number of cells or holders. Each cell also keeps its holders in one ordered set
+per preference, so finding, adding, or removing the best holder costs O(log n).
+This requires `ArchiveKey::preference_cmp` to be a total order among keys that
+share a place. Checkpoints store the same key sets as before, and the weights
+and ordered sets rebuild on the first selection after loading. Debug builds
+check every drawn tier's weights and best holders against a fresh computation.
 
 The candidate-draw differential tests compare IDs, errors, and exact RNG state
 with the previous implementation. The opt-in paired benchmark includes isolated
