@@ -88,17 +88,54 @@ impl Error for EmpiricalStepError {
     }
 }
 
+#[derive(Clone, Debug)]
+struct CompactHistory<Step> {
+    counts: BTreeMap<Step, usize>,
+    ends: Vec<(Step, usize)>,
+}
+
+impl<Step: Clone> CompactHistory<Step> {
+    fn rebuild_ends(&mut self) -> Result<(), EmpiricalStepError> {
+        self.ends.clear();
+        let mut end = 0_usize;
+        for (step, count) in &self.counts {
+            end = end
+                .checked_add(*count)
+                .ok_or(EmpiricalStepError::TableLengthOverflow)?;
+            self.ends.push((step.clone(), end));
+        }
+        Ok(())
+    }
+}
+
+impl<Step: Serialize> Serialize for CompactHistory<Step> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.counts.serialize(serializer)
+    }
+}
+
+impl<'de, Step: DeserializeOwned + Ord + Clone> Deserialize<'de> for CompactHistory<Step> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut history = Self {
+            counts: BTreeMap::deserialize(deserializer)?,
+            ends: Vec::new(),
+        };
+        history.rebuild_ends().map_err(serde::de::Error::custom)?;
+        Ok(history)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(bound(
     serialize = "Step: Serialize",
-    deserialize = "Step: DeserializeOwned + Ord"
+    deserialize = "Step: DeserializeOwned + Ord + Clone"
 ))]
 pub struct EmpiricalStepTables<Step> {
     parameters: EmpiricalStepParameters,
     pending: Vec<Vec<Step>>,
     recent_sequences: VecDeque<Vec<Step>>,
     recent: Vec<Step>,
-    compact_history: BTreeMap<Step, usize>,
+    compact_history: CompactHistory<Step>,
     compact_history_len: usize,
     #[serde(skip)]
     history_hasher: Sha256,
@@ -118,7 +155,10 @@ where
             pending: Vec::new(),
             recent_sequences: VecDeque::new(),
             recent: Vec::new(),
-            compact_history: BTreeMap::new(),
+            compact_history: CompactHistory {
+                counts: BTreeMap::new(),
+                ends: Vec::new(),
+            },
             compact_history_len: 0,
             history_hasher: Sha256::new(),
             table_sha256: String::new(),
@@ -153,7 +193,7 @@ where
         let bytes = serde_json::to_vec(&contribution).map_err(EmpiricalStepError::Serialization)?;
         self.history_hasher.update(&bytes);
         for step in &contribution {
-            if let Some(count) = self.compact_history.get_mut(step) {
+            if let Some(count) = self.compact_history.counts.get_mut(step) {
                 *count = count
                     .checked_add(1)
                     .ok_or(EmpiricalStepError::TableLengthOverflow)?;
@@ -161,8 +201,8 @@ where
                     .compact_history_len
                     .checked_add(1)
                     .ok_or(EmpiricalStepError::TableLengthOverflow)?;
-            } else if self.compact_history.len() < MAX_COMPACT_HISTORY_DISTINCT {
-                self.compact_history.insert(step.clone(), 1);
+            } else if self.compact_history.counts.len() < MAX_COMPACT_HISTORY_DISTINCT {
+                self.compact_history.counts.insert(step.clone(), 1);
                 self.compact_history_len = self
                     .compact_history_len
                     .checked_add(1)
@@ -192,6 +232,7 @@ where
         for contribution in pending {
             self.apply_contribution(contribution)?;
         }
+        self.compact_history.rebuild_ends()?;
         self.table_sha256 = self.hash_current_tables()?;
         Ok(())
     }
@@ -256,10 +297,10 @@ where
 
     #[must_use]
     pub fn view(&self) -> EmpiricalStepTableRef<'_, Step> {
-        EmpiricalStepTableRef::from_counts(
+        EmpiricalStepTableRef::new(
             self.parameters,
             &self.recent,
-            &self.compact_history,
+            &self.compact_history.ends,
             self.compact_history_len,
         )
     }
@@ -271,7 +312,12 @@ where
 
     #[must_use]
     pub fn compact_history(&self) -> &BTreeMap<Step, usize> {
-        &self.compact_history
+        &self.compact_history.counts
+    }
+
+    #[must_use]
+    pub fn history_ends(&self) -> &[(Step, usize)] {
+        &self.compact_history.ends
     }
 
     #[must_use]
@@ -286,8 +332,15 @@ where
             .saturating_mul(step)
             .saturating_add(
                 self.compact_history
+                    .counts
                     .len()
                     .saturating_mul(step.saturating_add(std::mem::size_of::<usize>())),
+            )
+            .saturating_add(
+                self.compact_history
+                    .ends
+                    .len()
+                    .saturating_mul(std::mem::size_of::<(Step, usize)>()),
             )
     }
 }
@@ -296,32 +349,23 @@ where
 pub struct EmpiricalStepTableRef<'a, Step> {
     parameters: EmpiricalStepParameters,
     recent: &'a [Step],
-    history: EmpiricalStepHistoryRef<'a, Step>,
-}
-
-#[derive(Clone, Copy)]
-enum EmpiricalStepHistoryRef<'a, Step> {
-    Counts(&'a BTreeMap<Step, usize>, usize),
+    history_ends: &'a [(Step, usize)],
+    history_len: usize,
 }
 
 impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
     #[must_use]
-    pub fn from_counts(
+    pub fn new(
         parameters: EmpiricalStepParameters,
         recent: &'a [Step],
-        history: &'a BTreeMap<Step, usize>,
+        history_ends: &'a [(Step, usize)],
         history_len: usize,
     ) -> Self {
         Self {
             parameters,
             recent,
-            history: EmpiricalStepHistoryRef::Counts(history, history_len),
-        }
-    }
-
-    fn history_len(&self) -> usize {
-        match &self.history {
-            EmpiricalStepHistoryRef::Counts(_, history_len) => *history_len,
+            history_ends,
+            history_len,
         }
     }
 
@@ -330,7 +374,7 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
             .len()
             .checked_mul(self.parameters.recent_weight)
             .and_then(|recent| {
-                self.history_len()
+                self.history_len
                     .checked_mul(self.parameters.all_history_weight)
                     .and_then(|history| recent.checked_add(history))
             })
@@ -347,24 +391,16 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
             return (!self.recent.is_empty()).then(|| &self.recent[index % self.recent.len()]);
         }
         let history_index = index.checked_sub(recent_span)?;
-        let history_len = self.history_len();
+        let history_len = self.history_len;
         let history_span = history_len.checked_mul(self.parameters.all_history_weight)?;
         if history_index >= history_span || history_len == 0 {
             return None;
         }
         let base_index = history_index % history_len;
-        match self.history {
-            EmpiricalStepHistoryRef::Counts(history, _) => {
-                let mut remaining = base_index;
-                for (step, count) in history {
-                    if remaining < *count {
-                        return Some(step);
-                    }
-                    remaining = remaining.checked_sub(*count)?;
-                }
-                None
-            }
-        }
+        let position = self
+            .history_ends
+            .partition_point(|(_, end)| *end <= base_index);
+        self.history_ends.get(position).map(|(step, _)| step)
     }
 }
 
@@ -513,6 +549,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(1), Some(2), Some(3), Some(3)]
         );
+    }
+
+    #[test]
+    fn history_draws_match_a_scan_of_the_counts_after_a_checkpoint() {
+        use super::EmpiricalStepTables as Tables;
+
+        let mut compact_parameters = parameters();
+        compact_parameters.prefix_steps = 0;
+        compact_parameters.recent_weight = 0;
+        let mut tables = Tables::new(compact_parameters).expect("valid parameters");
+        let mut value = 7_u32;
+        for _ in 0..64 {
+            let sequence = (0..5)
+                .map(|_| {
+                    value = value.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    u16::try_from((value >> 16) % 37).expect("small step")
+                })
+                .collect::<Vec<_>>();
+            tables.fold_retained(&sequence).expect("fold success");
+        }
+        tables.flush().expect("make compact history visible");
+        let restored: Tables<u16> =
+            postcard::from_bytes(&postcard::to_stdvec(&tables).expect("encode tables"))
+                .expect("decode tables");
+        let scan = |index: usize| {
+            let mut remaining = index;
+            for (step, count) in tables.compact_history() {
+                if remaining < *count {
+                    return Some(*step);
+                }
+                remaining -= count;
+            }
+            None
+        };
+        for index in 0..=tables.history_len() {
+            assert_eq!(tables.mixed_step(index).copied(), scan(index));
+            assert_eq!(restored.mixed_step(index).copied(), scan(index));
+        }
     }
 
     #[test]
