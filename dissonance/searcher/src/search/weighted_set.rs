@@ -169,15 +169,14 @@ impl<T: Copy + Ord> WeightedSet<T> {
         let Some(target) = self.position(key) else {
             return false;
         };
-        let delta = weight.wrapping_sub(self.nodes[target].weight);
-        self.nodes[target].weight = weight;
+        let old = std::mem::replace(&mut self.nodes[target].weight, weight);
         let mut node = self.root;
         while node != NONE {
             let current = &mut self.nodes[node];
-            current.sum = current.sum.wrapping_add(delta);
+            current.sum = current.sum - old + weight;
             node = match key.cmp(&current.key) {
                 Ordering::Less => {
-                    current.left_sum = current.left_sum.wrapping_add(delta);
+                    current.left_sum = current.left_sum - old + weight;
                     current.left
                 }
                 Ordering::Greater => current.right,
@@ -222,7 +221,7 @@ impl<T: Copy + Ord> WeightedSet<T> {
             ..
         } = self.nodes[node];
         let left_sum = self.sum(left);
-        let sum = left_sum.wrapping_add(weight).wrapping_add(self.sum(right));
+        let sum = left_sum + weight + self.sum(right);
         let current = &mut self.nodes[node];
         current.left_sum = left_sum;
         current.sum = sum;
