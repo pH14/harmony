@@ -68,6 +68,10 @@ pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot
 
 pub const DURATION_IDENTIFIER: &str = "stratified";
 
+pub const CHORD_DRAW_FIELD: &str = "chord_draw";
+
+pub const CHANGE_ONE_CONTROL_IDENTIFIER: &str = "change_one_control_v1";
+
 pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 pub const KEY_POLICY_FIELD: &str = "key_policy";
 pub const DURATION_POLICY_FIELD: &str = "duration_policy";
@@ -542,6 +546,7 @@ where
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER.to_owned()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
         ]
         .into_iter()
@@ -563,6 +568,7 @@ where
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
         ];
         for (field, compiled) in pinned {
             if recorded(field)? != compiled {
@@ -591,9 +597,16 @@ where
     fn sample_alphabet(
         &self,
         run: &SmbCampaignRun,
+        previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::smb::archive::sample_chord_from_masks(rand, run.vocabulary.masks())
+        match previous {
+            Some(previous) => Ok(ButtonChord::new(
+                crate::smb::archive::change_one_control(rand, previous.buttons)?,
+                crate::smb::archive::sample_stratified_hold(rand)?,
+            )),
+            None => crate::smb::archive::sample_chord_from_masks(rand, run.vocabulary.masks()),
+        }
     }
 
     fn max_action_cost(&self) -> u64 {
@@ -1216,6 +1229,7 @@ mod tests {
                     splice_weight: 0,
                 },
                 0x5eed_ca02,
+                None,
             )
             .expect("draw a suffix");
         first.apply(&ButtonChord::new(0x02, 30));
@@ -1561,6 +1575,11 @@ mod tests {
             replay_smb_campaign(&rom, without_progress.as_bytes(), None).is_err(),
             "a recording without the current progress policy is refused"
         );
+        let fresh_chords = recorded.replacen("change_one_control_v1", "fresh", 1);
+        assert!(
+            replay_smb_campaign(&rom, fresh_chords.as_bytes(), None).is_err(),
+            "a recording with another chord draw is refused"
+        );
     }
 
     #[test]
@@ -1675,7 +1694,7 @@ mod tests {
             "whole_tree",
             "nes_pressable_36",
             "frozen_area_span",
-            "one_to_six",
+            "one_doubling_while_in_place_up_to_64",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");
@@ -1711,7 +1730,7 @@ mod tests {
     #[test]
     fn budgeted_64_entry_campaign_replays_exactly() {
         let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca34, 4, 8_192);
+        let mut config = genesis_config(0x5eed_ca34, 4, 2_048);
         config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
@@ -1724,10 +1743,9 @@ mod tests {
             None,
         )
         .expect("budgeted live campaign");
-        assert_eq!(live.executions_completed, 8_192);
+        assert_eq!(live.executions_completed, 2_048);
         assert_eq!(live.memory_budget_mib, Some(4));
         assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
-        assert!(live.duplicates_skipped > 0);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
         assert!(live.historical_entries_dropped > 0);

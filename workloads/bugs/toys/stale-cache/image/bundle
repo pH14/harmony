@@ -1,0 +1,3 @@
+setup /usr/local/bin/stale-cache ready
+node cache /usr/local/bin/stale-cache run
+ready /usr/local/bin/stale-cache ready

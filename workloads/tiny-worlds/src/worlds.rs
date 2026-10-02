@@ -2,7 +2,7 @@
 
 use crate::{
     Key, actions, backtrack, chain, crossing, deadline, deadline_actions, delayed, graph, map,
-    maze, resource, route, trap,
+    maze, passive_clock, resource, route, trap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,7 @@ pub enum World {
     Map(map::Config),
     Graph(graph::Config),
     Crossing(crossing::Config),
+    PassiveClock(passive_clock::Config),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -44,6 +45,7 @@ pub enum State {
     Map(map::State),
     Graph(graph::State),
     Crossing(crossing::State),
+    PassiveClock(passive_clock::State),
 }
 
 impl World {
@@ -62,6 +64,7 @@ impl World {
             Self::Map(w) => w.validate(),
             Self::Graph(w) => w.validate(),
             Self::Crossing(w) => w.validate(),
+            Self::PassiveClock(w) => w.validate(),
         }
     }
     pub fn valid_state(&self, state: State) -> bool {
@@ -84,6 +87,7 @@ impl World {
                 (Self::Map(w), State::Map(s)) => w.state_is_bounded(s),
                 (Self::Graph(w), State::Graph(s)) => w.state_is_bounded(s),
                 (Self::Crossing(w), State::Crossing(s)) => w.state_is_bounded(s),
+                (Self::PassiveClock(w), State::PassiveClock(s)) => w.valid_state(s),
                 _ => false,
             }
     }
@@ -102,6 +106,7 @@ impl World {
             Self::Map(w) => State::Map(w.initial()),
             Self::Graph(w) => State::Graph(w.initial()),
             Self::Crossing(w) => State::Crossing(w.initial()),
+            Self::PassiveClock(w) => State::PassiveClock(w.initial()),
         }
     }
     pub fn step(&self, state: State, action: u8) -> State {
@@ -121,6 +126,9 @@ impl World {
             (Self::Map(w), State::Map(s)) => State::Map(w.step(s, action)),
             (Self::Graph(w), State::Graph(s)) => State::Graph(w.step(s, action)),
             (Self::Crossing(w), State::Crossing(s)) => State::Crossing(w.step(s, action)),
+            (Self::PassiveClock(w), State::PassiveClock(s)) => {
+                State::PassiveClock(w.step(s, action))
+            }
             _ => panic!("world and state family mismatch"),
         }
     }
@@ -139,6 +147,7 @@ impl World {
             (Self::Map(w), State::Map(s)) => w.goal(s),
             (Self::Graph(w), State::Graph(s)) => w.goal(s),
             (Self::Crossing(w), State::Crossing(s)) => w.goal(s),
+            (Self::PassiveClock(w), State::PassiveClock(s)) => w.goal(s),
             _ => false,
         }
     }
@@ -157,6 +166,7 @@ impl World {
             Self::Map(w) => w.reachable(),
             Self::Graph(w) => w.reachable(),
             Self::Crossing(w) => w.reachable(),
+            Self::PassiveClock(w) => w.reachable(),
         }
     }
     pub fn key(&self, state: State, broken: bool) -> Key {
@@ -174,7 +184,28 @@ impl World {
             (Self::Map(w), State::Map(s)) => w.key(s, broken),
             (Self::Graph(w), State::Graph(s)) => w.key(s, broken),
             (Self::Crossing(w), State::Crossing(s)) => w.key(s, broken),
+            (Self::PassiveClock(w), State::PassiveClock(s)) => w.key(s, broken),
             _ => panic!("world and state family mismatch"),
+        }
+    }
+    pub fn work_unit(&self) -> &'static str {
+        if matches!(self, Self::PassiveClock(_)) {
+            "clock_ticks"
+        } else {
+            "transitions"
+        }
+    }
+    pub fn maximum_action_cost(&self) -> u64 {
+        match self {
+            Self::PassiveClock(w) => w.maximum_hold(),
+            _ => 1,
+        }
+    }
+    pub fn action_cost_fn(&self) -> fn(&u8) -> u64 {
+        if matches!(self, Self::PassiveClock(_)) {
+            |a| u64::from(*a)
+        } else {
+            |_| 1
         }
     }
     pub fn layout(&self) -> serde_json::Value {

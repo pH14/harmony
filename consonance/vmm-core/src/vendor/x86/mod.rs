@@ -17,8 +17,8 @@ use vmm_backend::{Backend, Exit, Gpa, X86, X86Exit};
 
 pub use dispatch::{X86Devices, contract_vclock_config};
 
+use crate::vendor::Vendor;
 use crate::vendor::x86::linux_loader::{LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE_LEN};
-use crate::vendor::{InterruptReject, Vendor};
 use crate::vmm::{Step, Vmm, VmmError};
 
 impl Vendor for X86 {
@@ -131,29 +131,6 @@ impl Vendor for X86 {
         lapic
             .next_timer_deadline()
             .filter(|_| lapic.armed_timer_deliverable())
-    }
-
-    fn check_wire_interrupt<B: Backend<A = Self>>(
-        vmm: &Vmm<B>,
-        vector: u32,
-    ) -> Result<(), InterruptReject> {
-        if vmm.devices().lapic.is_none() {
-            return Err(InterruptReject::NoFabric);
-        }
-        let Ok(vector) = u8::try_from(vector) else {
-            return Err(InterruptReject::OutOfRange);
-        };
-        if vector < 16 {
-            return Err(InterruptReject::Reserved { vector });
-        }
-        Ok(())
-    }
-
-    fn inject_wire_interrupt<B: Backend<A = Self>>(
-        vmm: &mut Vmm<B>,
-        vector: u32,
-    ) -> Result<(), VmmError> {
-        vmm.inject_host_interrupt(vector)
     }
 
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(

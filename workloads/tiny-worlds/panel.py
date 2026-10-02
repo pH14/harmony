@@ -25,14 +25,26 @@ WORLD_BUDGET = 200_000
 SLOWER, FASTER = 1.25, 0.8
 MISS_BAND = 0.05
 MAX_WORLD_SCALE = 256
+REPORT_FIELDS = {"config", "crossing", "evidence", "first_objective_execution", "first_objective_work", "layout",
+                 "scale", "stream_sha256", "success", "verified", "work_budget"}
+SHIELDED_BOSS = {"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24, "shield": 8, "shield_odds": 4,
+                 "hit_tier": True, "tail_slots": True}
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
+    "rare flat archive crossing": ({"cells": 256, "length": 8, "rooted": False,
+                                    "action_denominator": 1024}, 1),
+    "rare fresh crossing": ({"cells": 256, "length": 8, "rooted": True,
+                             "action_denominator": 1024}, 1),
+    "passive clock hidden gap": ({"passive_clock": "hidden"}, 1),
+    "passive clock visible progress": ({"passive_clock": "visible"}, 1),
     "farm loop": ({"inner": 20, "farms": 4, "farm_cap": 63}, 1),
     "whole-map re-walk": ({"inner": 4, "items": 9}, 1),
     "boss needing far stock": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24}, 1),
     "boss needing stock and health": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 6,
                                        "boss_hits_back": True}, 1),
+    "boss after a draining approach": ({"inner": 20, "farms": 4, "farm_cap": 14, "boss_stock": 8,
+                                        "boss_hits_back": True, "approach_drain": True}, 1),
     "off-path item": ({"inner": 6, "item_optional": True}, 4),
     "off-path item with farms": ({"inner": 6, "item_optional": True, "farms": 2, "farm_cap": 63}, 4),
     "locked item": ({"inner": 4, "locked": True}, 4),
@@ -40,7 +52,17 @@ WORLDS = {
     "gauntlet": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True}, 1),
     "gauntlet with hidden timing": ({"inner": 20, "items": 2, "farms": 2, "farm_cap": 1, "gauntlet": True,
                                      "timing": 5}, 1),
+    "boss by the door": ({"inner": 2, "farms": 4, "farm_cap": 14, "boss_stock": 8, "boss_hits_back": True,
+                          "approach_drain": True, "boss_by_door": True, "tail_slots": True}, 1),
+    "boss beside a late item": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 8, "boss_hits_back": True,
+                                 "late_item": True}, 1),
+    "boss past an item at the entry": ({"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 8,
+                                        "boss_hits_back": True, "late_item": True, "item_at_entry": True,
+                                        "tail_slots": True}, 1),
+    "boss behind a shield with damage as a tier": (SHIELDED_BOSS, 1),
 }
+BUDGETS = {"boss by the door": 600_000, "boss beside a late item": 600_000, "boss past an item at the entry": 600_000,
+           "boss behind a shield with damage as a tier": 600_000}
 
 
 def pattern(length: int) -> int:
@@ -118,6 +140,13 @@ def requests(seeds: int) -> list[dict]:
                                                 "loops": 7, "corridor": 2, "shaft": 3, "inner": 20}}
         for arm, broken in (("ranked", False), ("control", True)):
             rows.append(request(f"map/{arm}", grid, seed, broken))
+        for _ in range(2):
+            shielded = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64),
+                                                        "loops": 7, "corridor": 2, "shaft": 3, **SHIELDED_BOSS}}
+            hidden = {**shielded, "parameters": {**shielded["parameters"], "hit_tier": False}}
+            shield_seed = secrets.randbits(64)
+            rows.append(request("shield/tier", shielded, shield_seed, budget=600_000))
+            rows.append(request("shield/hidden", hidden, shield_seed, budget=600_000))
         layout = secrets.randbits(64)
         for arm, farms in (("farms", 4), ("none", 0)):
             rows.append(request(f"farm/{arm}", {"family": "map", "parameters": {
@@ -136,62 +165,106 @@ def world_requests(world: str, count: int) -> list[dict]:
         if "cells" in fields:
             config = {"family": "crossing", "parameters": {
                 **fields, "layout": secrets.randbits(64), "pattern": secrets.randbits(2 * fields["length"])}}
-        rows.append({"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
-                                               "work_budget": WORLD_BUDGET, "broken": False,
-                                               "verify": False, "keep": "portfolio"}})
+        search = None
+        if "passive_clock" in fields:
+            end = 15 + 960 + secrets.randbelow(271)
+            events = [12, 13, end - 2, end]
+            if fields["passive_clock"] == "visible":
+                events = sorted(set(events + list(range(53, end, 40))))
+            config = {"family": "passive_clock", "parameters": {
+                "events": events, "holds": [
+                    {"minimum": 2, "maximum": 7, "weight": 2},
+                    {"minimum": 2, "maximum": 12, "weight": 11},
+                    {"minimum": 48, "maximum": 120, "weight": 11}]}}
+            search = {"suffix": "one_to_six", "mixture": "energy_splice:6"}
+        row = {"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
+                                          "work_budget": BUDGETS.get(world, WORLD_BUDGET), "broken": False,
+                                          "verify": False, "keep": "portfolio"}}
+        if search is not None:
+            row["request"]["search"] = search
+        if "action_denominator" in fields:
+            row["request"].update({
+                "work_budget": 2_000_000,
+                "search": {"suffix": "one_to_six_within_3_max_action_cost_full_hold",
+                           "mixture": "energy_splice:6", "stop_on_objective": True},
+                "scale": {"workers": 1, "window": 2, "results_per_worker": 2,
+                          "memory_budget_mib": 8192, "archive_entries": 4096,
+                          "action_cost_ns": 0, "action_sleep_ns": 0, "snapshot_bytes": 0},
+            })
+        rows.append(row)
     return rows
 
 
-def legs(report: dict) -> dict:
+def legs(report: dict) -> tuple[dict, dict]:
+    if report["config"]["family"] == "crossing" and report.get("scale") is not None:
+        budget = report["work_budget"]
+        goal = report["first_objective_work"]
+        goal = goal if report["success"] and goal is not None and goal <= budget else None
+        horizon = budget if goal is None else goal
+        entry_work = report["crossing"]["first_entry_work"]
+        entry = (report["crossing"]["first_entry_execution"]
+                 if entry_work is not None and entry_work <= horizon else None)
+        end = report["first_objective_execution"] if goal is not None else None
+        return ({"to the goal (actions)": horizon, "to crossing entry (tries)": entry},
+                {"crossing entry to goal (tries)": None if entry is None or end is None else end - entry})
     evidence = report["evidence"]
+    budget = report["work_budget"]
 
     goal = report["first_objective_work"]
-    goal = goal if goal is not None and goal <= WORLD_BUDGET else None
+    goal = goal if goal is not None and goal <= budget else None
 
     def within(work):
-        return work if work is not None and work <= (WORLD_BUDGET if goal is None else goal) else None
+        return work if work is not None and work <= (budget if goal is None else goal) else None
 
     if report["config"]["family"] == "crossing":
         entry = within(evidence["crossing_first_entry_work"])
-        return {"to the goal": WORLD_BUDGET if goal is None else goal,
-                "to crossing entry": entry,
-                "crossing entry to goal": None if entry is None or goal is None else goal - entry}
+        return ({"to the goal": budget if goal is None else goal, "to crossing entry": entry},
+                {"crossing entry to goal": None if entry is None or goal is None else goal - entry})
+    if report["config"]["family"] == "passive_clock":
+        entry = within(evidence["passive_clock"]["first_event_work"][1])
+        return ({"to the goal": budget if goal is None else goal, "to wait entry": entry},
+                {"wait entry to goal": None if entry is None or goal is None else goal - entry})
     first = [within(w) for w in evidence["map_first"]]
     tiers = [within(w) for w in evidence["map_first_tier"]]
 
     def gap(start, end):
         return None if start is None or end is None else end - start
 
-    measured = {"to the goal": WORLD_BUDGET if goal is None else goal}
     parameters = report["config"]["parameters"]
+    stocked = within(evidence.get("map_first_stocked"))
     if parameters.get("gauntlet"):
-        full = within(evidence["map_first_stocked"])
-        measured["to the last item"] = tiers[-1]
-        measured["last item to full-health arrival"] = gap(tiers[-1], full)
-        measured["full-health arrival to the goal"] = gap(full, goal)
+        milestones = {"to the last item": tiers[-1], "to the full-health arrival": stocked}
+        diagnostics = {"last item to full-health arrival": gap(tiers[-1], stocked),
+                       "full-health arrival to the goal": gap(stocked, goal)}
+    elif parameters.get("hit_tier"):
+        milestones = {"to the item": tiers[1], "to the stocked arrival": stocked, "to the first hit": tiers[2]}
+        diagnostics = {"item to stocked arrival": gap(tiers[1], stocked),
+                       "first hit to kill": gap(tiers[2], goal)}
     elif parameters.get("boss_stock"):
-        measured["to the item"] = tiers[1]
-        measured["item to stocked arrival"] = gap(tiers[1], within(evidence["map_first_stocked"]))
-        measured["stocked arrival to kill"] = gap(within(evidence["map_first_stocked"]), goal)
+        milestones = {"to the item": tiers[1], "to the stocked arrival": stocked}
+        diagnostics = {"item to stocked arrival": gap(tiers[1], stocked),
+                       "stocked arrival to kill": gap(stocked, goal)}
     elif parameters.get("locked"):
-        measured["to the key"] = tiers[1]
-        measured["key to the item"] = gap(tiers[1], tiers[2])
-        measured["item to the goal"] = gap(tiers[2], goal)
+        milestones = {"to the key": tiers[1], "to the item": tiers[2]}
+        diagnostics = {"key to the item": gap(tiers[1], tiers[2]), "item to the goal": gap(tiers[2], goal)}
     elif parameters.get("items", 1) > 1:
-        measured["to the last item"] = tiers[-1]
-        measured["last item to the goal"] = gap(tiers[-1], goal)
+        milestones = {"to the last item": tiers[-1]}
+        diagnostics = {"last item to the goal": gap(tiers[-1], goal)}
     elif parameters.get("item_optional"):
-        measured["pickup to the goal"] = gap(tiers[1], goal)
+        milestones = {"to the pickup": tiers[1]}
+        diagnostics = {"pickup to the goal": gap(tiers[1], goal)}
     else:
-        measured["to the item"] = tiers[1]
-        measured["out of the item region"] = gap(first[1], first[2])
-        measured["out to the goal"] = gap(first[2], goal)
-    return measured
+        milestones = {"to the item": tiers[1], "out of the item region": first[2]}
+        diagnostics = {"through the item region": gap(first[1], first[2]),
+                       "out to the goal": gap(first[2], goal)}
+    milestones["to the goal"] = budget if goal is None else goal
+    return milestones, diagnostics
 
 
-def paired(base: list[dict], candidate: list[dict]) -> list[tuple[str, str, float, float, float]]:
+def paired(base: list[dict], candidate: list[dict], kind: int) -> list[tuple[str, str, float, float, float]]:
     rand = random.Random(0)
-    base_legs, candidate_legs = list(map(legs, base)), list(map(legs, candidate))
+    base_legs = [legs(r)[kind] for r in base]
+    candidate_legs = [legs(r)[kind] for r in candidate]
     rows = []
     for leg in base_legs[0]:
         reached = (f"reached {sum(c[leg] is not None for c in candidate_legs)}"
@@ -238,13 +311,13 @@ def missed_goals(base: list[dict], candidate: list[dict]) -> tuple[str, int, int
     return "undecided", arm_only, base_only
 
 
-def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
-    runs = {world: ([], []) for world in WORLDS}
-    done = dict.fromkeys(WORLDS, 0)
-    target = dict.fromkeys(WORLDS, scale)
+def compare(baseline: Path, candidate: Path, scale: int, jobs: int, worlds: list[str]) -> int:
+    runs = {world: ([], []) for world in worlds}
+    done = dict.fromkeys(worlds, 0)
+    target = dict.fromkeys(worlds, scale)
     results = {}
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        while open_worlds := [w for w in WORLDS if done[w] < target[w]]:
+        while open_worlds := [w for w in worlds if done[w] < target[w]]:
             batch = [job for w in open_worlds for job in world_requests(w, target[w] - done[w])]
             pairs = list(pool.map(lambda job: (execute(baseline, job), execute(candidate, job)), batch))
             for world in open_worlds:
@@ -254,18 +327,19 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
                         b.append(x)
                         c.append(y)
                 done[world] = target[world]
-                results[world] = paired(b, c)
+                results[world] = paired(b, c, 0)
                 if (target[world] < MAX_WORLD_SCALE
                         and (missed_goals(b, c)[0] == "undecided"
                              or any(verdict(low, high) == "undecided" for _, _, _, low, high in results[world]))):
                     target[world] = min(2 * target[world], MAX_WORLD_SCALE)
     failed = []
-    for world in WORLDS:
+    for world in worlds:
         b, c = runs[world]
         missed = (sum(not r["success"] for r in b), sum(not r["success"] for r in c))
         misses, arm_only, base_only = missed_goals(b, c)
         if misses == "undecided":
-            misses = "undecided" if arm_only - base_only >= MISS_BAND * len(b) else "watch"
+            misses = ("undecided" if arm_only - base_only >= MISS_BAND * len(b)
+                      and sign_test(arm_only, base_only) < 0.05 else "watch")
         identical = sum(x["stream_sha256"] == y["stream_sha256"] for x, y in zip(b, c))
         verdicts = []
         for _, _, ratio, low, high in results[world]:
@@ -282,16 +356,21 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int) -> int:
             status = "plausible"
         if status != "plausible":
             failed.append(world)
+        diagnostics = paired(b, c, 1)
+        diagnosed = [verdict(low, high) for _, _, _, low, high in diagnostics]
         watched = [leg for (leg, *_), v in zip(results[world], verdicts) if v == "watch"]
+        watched += [leg for (leg, *_), v in zip(diagnostics, diagnosed) if v == "slower"]
         if misses == "watch":
             watched.append("goal misses")
         print(f"{world}: {status}; {len(b)} layouts; goal missed {missed[1]}/{len(c)} vs {missed[0]}/{len(b)} "
               f"(missed by one only: {arm_only} vs {base_only}, {misses}); "
               f"identical runs {identical}/{len(b)}" + (f"; watch {', '.join(watched)}" if watched else ""))
         for (leg, reached, ratio, low, high), v in zip(results[world], verdicts):
-            print(f"    {leg:26} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}")
+            print(f"    {leg:32} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}")
+        for (leg, reached, ratio, low, high), v in zip(diagnostics, diagnosed):
+            print(f"    {leg:32} {ratio:5.2f}x  [{low:.2f}, {high:.2f}]  {reached}  {v}, diagnostic")
     runs_total = sum(2 * len(b) for b, _ in runs.values())
-    print(f"{runs_total} world runs; clearly bad or undecided on {len(failed)} of {len(WORLDS)} worlds")
+    print(f"{runs_total} world runs; clearly bad or undecided on {len(failed)} of {len(worlds)} worlds")
     return 1 if failed else 0
 
 
@@ -299,12 +378,19 @@ WORKERS = 1
 
 
 def execute(binary: Path, job: dict) -> dict:
-    request = job["request"] if WORKERS == 1 else {**job["request"], "workers": WORKERS}
+    request = job["request"]
+    if WORKERS != 1:
+        if request.get("scale") is not None:
+            request = {**request, "scale": {**request["scale"], "workers": WORKERS, "window": WORKERS}}
+        else:
+            request = {**request, "workers": WORKERS}
     process = subprocess.run([str(binary)], input=json.dumps(request),
                              capture_output=True, text=True, check=False)
     if process.returncode:
         raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
-    report = json.loads(process.stdout)
+    report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
+    report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
+                          if key.startswith(("map_", "crossing_", "passive_clock"))}
     report["arm"] = job["arm"]
     return report
 
@@ -332,9 +418,6 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def slow(arm):
         return sum(not r["success"] or r["first_objective_work"] > 1000 for r in by[arm])
 
-    def tier_draws(r):
-        return [d for d in r["parent_draws"] if d[0] and d[1] in ("tiers", "recent")]
-
     def map_ratios(arm):
         return_trip, next_gap = [], []
         for r in by[arm]:
@@ -358,18 +441,11 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def farm_cost():
         return statistics.median(trip_out(f) / max(1, trip_out(c)) for f, c in zip(by["farm/farms"], by["farm/none"]))
 
-    def trap_share(arm):
-        return statistics.median(
-            sum(d[5] for d in tier_draws(r) if d[3] == 1) / max(1, sum(d[5] for d in tier_draws(r)))
-            for r in by[arm])
+    def shield_losses():
+        return sum(h["success"] and not t["success"] for t, h in zip(by["shield/tier"], by["shield/hidden"]))
 
-    def top_share(arm):
-        top = lower = 0
-        for r in by[arm]:
-            top += sum(d[5] for d in tier_draws(r) if d[3] == 1)
-            lower += sum(d[5] for d in tier_draws(r) if d[3] == 0 and d[2] == 1)
-            lower += sum(d[3] for d in r["skipped_draws"] if d[0] and d[1] in ("tiers", "recent") and d[2] == 1)
-        return top / max(1, top + lower)
+    def shield_gains():
+        return sum(t["success"] and not h["success"] for t, h in zip(by["shield/tier"], by["shield/hidden"]))
 
     n = len(by["credit/engaged"])
     m = len(by["boss/tier/tight"])
@@ -386,12 +462,10 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
          high("boss/tier/ample") < low("boss/engaged/ample")),
         ("credit kept after leaving: over 4x slower", f"{shown('credit/engaged/sticky')} vs {shown('credit/engaged')}",
          low("credit/engaged/sticky") > 4 * high("credit/engaged")),
-        ("trap: ranked item over 3x slower than control", f"{shown('trap/ranked')} vs {shown('trap/control')}",
-         low("trap/ranked") > 3 * high("trap/control")),
-        ("trap: item draw share at least 0.8 ranked, at most 0.5 control", f"{trap_share('trap/ranked'):.2f} vs {trap_share('trap/control'):.2f}",
-         trap_share("trap/ranked") >= 0.8 and trap_share("trap/control") <= 0.5),
-        ("trap: top-tier draw share 0.87-0.91", f"{top_share('trap/ranked'):.3f}",
-         0.87 <= top_share("trap/ranked") <= 0.91),
+        ("trap: an unwinnable top tier costs under 4x the control's work", f"{shown('trap/ranked')} vs {shown('trap/control')}",
+         high("trap/ranked") < 4 * low("trap/control")),
+        ("trap: with the item hidden, the goal takes under 300 work", shown("trap/control"),
+         high("trap/control") < 300),
         ("keep: capacity 2 / portfolio median 0.67-1.5", f"{shown('keep/capacity_two')} vs {shown('keep/portfolio')}",
          0.67 <= low("keep/capacity_two") / high("keep/portfolio") and high("keep/capacity_two") / low("keep/portfolio") <= 1.5),
         ("backtrack: ranked items under 2.5x the preference work", f"{shown('backtrack/tier')} vs {shown('backtrack/preference')}",
@@ -409,6 +483,8 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
          map_ratios("map/ranked")[1] > 1),
         ("map: hidden item mostly unsolved", f"{solved('map/control')}/{n}", solved("map/control") <= third),
         ("farm loop: farms off the route slow the trip out under 10x", f"{farm_cost():.2f}", farm_cost() < 10),
+        ("shield: damage as a tier loses more kills than it gains against hidden damage",
+         f"{shield_losses()} vs {shield_gains()}", shield_losses() > shield_gains()),
     ]
 
 
@@ -422,7 +498,9 @@ def main() -> int:
     parser.add_argument("--world-scale", type=int, default=16,
                         help="starting layouts per comparison world; light map worlds run four times as many")
     parser.add_argument("--workers", type=int, default=1,
-                        help="search workers per run; the admission window equals the worker count")
+                        help="search workers per run; values above one also set the admission window")
+    parser.add_argument("--world", action="append", choices=list(WORLDS),
+                        help="compare only this world; repeat for several")
     args = parser.parse_args()
     if not 1 <= args.workers <= 64:
         parser.error("--workers must be 1..64")
@@ -449,7 +527,7 @@ def main() -> int:
         print(f"{'PASS' if ok else 'FAIL'}  {name}: {value}")
     print(f"{len(rows)} runs, {failed} failed rules")
     if args.compare:
-        failed += compare(args.compare, binary, args.world_scale, args.jobs)
+        failed += compare(args.compare, binary, args.world_scale, args.jobs, args.world or list(WORLDS))
     return 1 if failed else 0
 
 

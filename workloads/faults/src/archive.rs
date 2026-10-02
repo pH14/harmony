@@ -173,8 +173,6 @@ pub fn action_cost(action: &FaultAction) -> u64 {
     crate::target::action_ticks(action)
 }
 
-pub const VECTORS: [u32; 2] = [0x20, 0x30];
-
 pub fn sample_action(
     rand: &mut RomuDuoJrRand,
     vocabulary: &FaultVocabulary,
@@ -190,13 +188,10 @@ pub fn sample_action(
     if !vocabulary.hooks().is_empty() {
         alternatives.push(4);
     }
-    if vocabulary.interrupt_injection() {
-        alternatives.push(5);
-    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
     if vocabulary.instrumented_events() && event_ready != 0 {
-        alternatives.extend([6, 7]);
+        alternatives.extend([5, 6]);
     }
     let event_node = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
         let index = pick(rand, event_ready.count_ones() as usize)?;
@@ -215,8 +210,7 @@ pub fn sample_action(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
             ticks,
         ),
-        5 => FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?], ticks),
-        6 => FaultAction::EventKill {
+        5 => FaultAction::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
             ticks,
@@ -609,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vocabulary_only_draws_declared_nodes_hooks_and_vectors() {
+    fn the_vocabulary_only_draws_declared_nodes_and_hooks() {
         let vocabulary = vocabulary();
         let mut rand = RomuDuoJrRand::with_seed(11);
         let mut kinds = BTreeSet::new();
@@ -619,9 +613,8 @@ mod tests {
             FaultAction::Pause(..) => 2,
             FaultAction::Restart(..) => 3,
             FaultAction::Hook(..) => 4,
-            FaultAction::Interrupt(..) => 5,
-            FaultAction::EventKill { .. } => 6,
-            FaultAction::EventPark { .. } => 7,
+            FaultAction::EventKill { .. } => 5,
+            FaultAction::EventPark { .. } => 6,
         };
         for _ in 0..2_000 {
             let action =
@@ -655,14 +648,9 @@ mod tests {
                     assert!(node < vocabulary.nodes());
                 }
                 FaultAction::Hook(id, _) => assert!(vocabulary.hooks().contains(&id)),
-                FaultAction::Interrupt(vector, _) => assert!(VECTORS.contains(&vector)),
             }
         }
-        assert_eq!(
-            kinds.len(),
-            5 + usize::from(vocabulary.interrupt_injection()),
-            "every available action kind is reachable"
-        );
+        assert_eq!(kinds.len(), 5, "every available action kind is reachable");
     }
 
     #[test]

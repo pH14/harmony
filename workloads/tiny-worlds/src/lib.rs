@@ -8,8 +8,10 @@ pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
 pub mod graph;
+pub mod held;
 pub mod map;
 pub mod maze;
+pub mod passive_clock;
 pub mod resource;
 pub mod route;
 pub mod trap;
@@ -17,6 +19,35 @@ pub mod worlds;
 use worlds::{State, World};
 
 pub const STAGE_PLACES: u16 = 1024;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SearchSettings {
+    pub suffix: SuffixShape,
+    pub mixture: Option<searcher::search::draw::DrawMixture>,
+    pub stop_on_objective: Option<bool>,
+}
+
+impl Default for SearchSettings {
+    fn default() -> Self {
+        Self {
+            suffix: SuffixShape::OneOrTwo,
+            mixture: None,
+            stop_on_objective: None,
+        }
+    }
+}
+
+impl SearchSettings {
+    fn apply<const CAPACITY_TWO: bool>(self, config: &mut CampaignConfig<Workload<CAPACITY_TWO>>) {
+        config.suffix = self.suffix;
+        if let Some(mixture) = self.mixture {
+            config.mixture = mixture;
+        }
+        if let Some(stop) = self.stop_on_objective {
+            config.stop_campaign_on_objective = stop;
+        }
+    }
+}
 
 type StreamRecord = CampaignStreamRecord<serde_json::Value, serde_json::Value>;
 
@@ -173,6 +204,8 @@ impl<const CAPACITY_TWO: bool> ArchiveKey for Key<CAPACITY_TWO> {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Evidence {
     pub crossing_first_entry_work: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crossing_first_entry_execution: Option<u64>,
     pub crossing_actions: u64,
     pub crossing_pool_actions: u64,
     pub route_trace: Vec<route::Trace>,
@@ -207,8 +240,12 @@ pub struct Evidence {
     pub map_first: Vec<Option<u64>>,
     pub map_first_tier: Vec<Option<u64>>,
     pub map_first_stocked: Option<u64>,
+    pub map_first_hit_stock: Option<u8>,
+    pub map_max_hits: u8,
     pub admitted_job_work: u64,
     pub job_start_work: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passive_clock: Option<passive_clock::Evidence>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -362,10 +399,10 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
             .expect("serializable config")
     }
     fn action_cost_unit(&self) -> &'static str {
-        "transitions"
+        self.config.work_unit()
     }
     fn execution_work_unit(&self) -> &'static str {
-        "transitions"
+        self.config.work_unit()
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         if self.scale.is_none_or(|scale| scale.snapshot_bytes == 0) {
@@ -395,12 +432,21 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
 }
 impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
     fn max_action_cost(&self) -> u64 {
-        1
+        self.config.maximum_action_cost()
     }
     fn policies(&self, _: &()) -> WorkloadPolicies {
         [(
             "tiny_actions".into(),
-            if self.config.changes_actions() && self.broken {
+            if matches!(self.config, World::PassiveClock(_)) {
+                "weighted_hold_bands_v1".into()
+            } else if let World::Crossing(w) = &self.config
+                && w.action_denominator.is_some()
+            {
+                format!(
+                    "crossing-action-denominator-{}-v1",
+                    w.action_denominator.unwrap()
+                )
+            } else if self.config.changes_actions() && self.broken {
                 "frozen-land-v1".into()
             } else {
                 "uniform-four-v1".into()
@@ -415,7 +461,18 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
         }
         Ok(())
     }
-    fn sample_alphabet(&self, _: &(), rand: &mut RomuDuoJrRand) -> Result<u8, Box<dyn Error>> {
+    fn sample_alphabet(
+        &self,
+        _: &(),
+        _: Option<&u8>,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<u8, Box<dyn Error>> {
+        if let World::PassiveClock(w) = &self.config {
+            return Ok(w.sample(rand));
+        }
+        if let World::Crossing(w) = &self.config {
+            return Ok(w.sample(rand));
+        }
         Ok(self
             .config
             .sample_action(rand.below(NonZeroUsize::new(4).unwrap()) as u8, self.broken))
@@ -446,7 +503,7 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         target.work
     }
     fn action_cost_fn(&self) -> fn(&u8) -> u64 {
-        |_| 1
+        self.config.action_cost_fn()
     }
     fn snapshot_memory_charge(snapshot: &Snapshot) -> usize {
         std::mem::size_of::<Snapshot>() + snapshot.payload.capacity()
@@ -457,16 +514,22 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         action: &u8,
         milestones: &mut bool,
     ) -> Result<(), Box<dyn Error>> {
+        if let World::PassiveClock(w) = &self.config
+            && !w.valid_action(*action)
+        {
+            return Err("unavailable passive-clock duration".into());
+        }
+        let cost = (self.action_cost_fn())(action);
         let before = target.state;
         self.spend_action_cost();
         target.state = self.config.step(target.state, *action);
         target.observation = Some(Observation {
             before,
             after: target.state,
-            work_in_job: target.work + 1,
+            work_in_job: target.work + cost,
             job_work: None,
         });
-        target.work += 1;
+        target.work += cost;
         *milestones |= self.config.goal(target.state);
         Ok(())
     }
@@ -634,6 +697,31 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         before.position == w.length && before.remaining > 0 && a.action == 2,
                     );
                 }
+                (
+                    World::PassiveClock(w),
+                    State::PassiveClock(before),
+                    State::PassiveClock(after),
+                ) => {
+                    let clock = e.passive_clock.get_or_insert_with(Default::default);
+                    clock.held_actions.resize(w.maximum_hold() as usize + 1, 0);
+                    clock.held_actions[usize::from(a.action)] += 1;
+                    clock.parent_phase_jobs.resize(w.events.len() + 1, 0);
+                    clock.maximum_parent_elapsed.resize(w.events.len() + 1, 0);
+                    if observation.job_work.is_some() {
+                        let phase = w.phase(before);
+                        clock.parent_phase_jobs[phase] += 1;
+                        clock.maximum_parent_elapsed[phase] =
+                            clock.maximum_parent_elapsed[phase].max(before.elapsed);
+                    }
+                    clock.first_event_work.resize(w.events.len(), None);
+                    clock.first_event_execution.resize(w.events.len(), None);
+                    for (i, &event) in w.events.iter().enumerate() {
+                        if after.elapsed >= event {
+                            clock.first_event_work[i].get_or_insert(reached_work);
+                            clock.first_event_execution[i].get_or_insert(sequence);
+                        }
+                    }
+                }
                 (World::Delayed(_), State::Delayed(before), State::Delayed(after)) => {
                     if !before.goal {
                         e.delayed_useful_state_actions += u64::from(before.lane == 0);
@@ -738,19 +826,26 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         && after.item
                         && after.arm == 0
                         && after.cell == layout.goal
-                        && after.stock >= w.boss_stock
+                        && after.stock + after.shield >= w.boss_stock + w.shield
+                        && after.hits == 0
                         && (!w.boss_hits_back || after.health >= w.boss_stock)
                     {
                         e.map_first_stocked.get_or_insert(reached_work);
                     }
+                    if after.hits > 0 && before.hits == 0 {
+                        e.map_first_hit_stock.get_or_insert(after.stock);
+                    }
+                    e.map_max_hits = e.map_max_hits.max(after.hits);
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
                 (World::Crossing(w), State::Crossing(before), State::Crossing(after)) => {
                     if w.rooted {
                         e.crossing_first_entry_work.get_or_insert(0);
+                        e.crossing_first_entry_execution.get_or_insert(0);
                     }
                     if before.position < w.cells && after.position >= w.cells {
                         e.crossing_first_entry_work.get_or_insert(reached_work);
+                        e.crossing_first_entry_execution.get_or_insert(sequence);
                     }
                     if !w.goal(before) {
                         e.crossing_actions += u64::from(before.position >= w.cells);
@@ -804,6 +899,7 @@ pub fn run_scaled(
     seed: u64,
     budget: u64,
     progress: &mut dyn Write,
+    settings: SearchSettings,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     workload.config.validate()?;
     let scale = workload.scale.ok_or("scaled run needs scale settings")?;
@@ -811,7 +907,8 @@ pub fn run_scaled(
     if budget == 0 || budget > Scale::MAX_WORK_BUDGET {
         return Err(format!("scaled work budget must be 1..={}", Scale::MAX_WORK_BUDGET).into());
     }
-    let config = campaign_config(workload, seed, budget, scale.workers);
+    let mut config = campaign_config(workload, seed, budget, scale.workers);
+    settings.apply(&mut config);
     let mut stream = CountingStream(0);
     let started = telemetry_now();
     let live = run_campaign_checkpointed_with_options(
@@ -843,9 +940,23 @@ pub fn run_scaled(
         "work_budget": budget,
         "work": report.execution_work,
         "first_objective_work": report.work_to_first_objective,
+        "first_objective_execution": report.executions_to_first_objective,
+        "executions": report.executions_completed,
+        "work_unit": workload.config.work_unit(),
+        "passive_clock": report.archive.evidence.passive_clock,
+        "crossing": matches!(workload.config, World::Crossing(_)).then(|| serde_json::json!({
+            "first_entry_execution": report.archive.evidence.crossing_first_entry_execution,
+            "first_entry_work": report.archive.evidence.crossing_first_entry_work,
+            "exit_actions": report.archive.evidence.crossing_actions,
+            "pool_actions": report.archive.evidence.crossing_pool_actions,
+        })),
+        "suffix_policy": report.suffix_policy,
+        "mixture_policy": report.mixture_policy,
+        "stop_on_objective": report.stop_campaign_on_objective,
         "success": report.work_to_first_objective.is_some_and(|w| w <= budget),
         "elapsed_seconds": elapsed,
         "stream_bytes": stream.0,
+        "stream_sha256": report.stream_sha256,
         "resident_memory_bytes": report.resident_memory_bytes,
         "live_entries": report.live_entries,
         "selector": report.archive.selector,
@@ -862,12 +973,13 @@ pub fn run_kept(
     budget: u64,
     verify: bool,
     workers: u32,
+    settings: SearchSettings,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     if !(1..=64).contains(&workers) {
         return Err("workers must be 1..=64".into());
     }
     let mut report = match keep {
-        Keep::Portfolio => campaign(workload, seed, budget, verify, workers)?,
+        Keep::Portfolio => campaign(workload, seed, budget, verify, workers, settings)?,
         Keep::CapacityTwo => campaign(
             &Workload::<true> {
                 config: workload.config.clone(),
@@ -878,6 +990,7 @@ pub fn run_kept(
             budget,
             verify,
             workers,
+            settings,
         )?,
     };
     report["keep"] = serde_json::to_value(keep)?;
@@ -890,7 +1003,7 @@ pub fn run(
     budget: u64,
     verify: bool,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    campaign(workload, seed, budget, verify, 1)
+    campaign(workload, seed, budget, verify, 1, SearchSettings::default())
 }
 
 fn campaign<const CAPACITY_TWO: bool>(
@@ -899,6 +1012,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     budget: u64,
     verify: bool,
     workers: u32,
+    settings: SearchSettings,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     workload.config.validate()?;
     if workload.scale.is_some() {
@@ -907,7 +1021,8 @@ fn campaign<const CAPACITY_TWO: bool>(
     if budget == 0 || budget > 2_000_000 {
         return Err("work budget must be 1..=2000000".into());
     }
-    let config = campaign_config(workload, seed, budget, workers);
+    let mut config = campaign_config(workload, seed, budget, workers);
+    settings.apply(&mut config);
     let mut stream = BoundedStream(Vec::new());
     let started = telemetry_now();
     let live = run_campaign_checkpointed_with_options(
@@ -1081,6 +1196,9 @@ fn campaign<const CAPACITY_TWO: bool>(
     }
     Ok(serde_json::json!({"seed":seed,"broken":workload.broken,
         "config":workload.config,"work_budget":budget,"work":work,"work_overshoot":work.saturating_sub(budget),
+        "work_unit":workload.config.work_unit(),
+        "suffix_policy":report.suffix_policy,"mixture_policy":report.mixture_policy,
+        "stop_on_objective":report.stop_campaign_on_objective,
         "executions":executions,"first_objective_execution":first_objective_execution,
         "chain_parent_selections":report.archive.evidence.chain_parent_selections,
         "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
@@ -1619,11 +1737,40 @@ mod tests {
     fn a_run_with_many_workers_replays() {
         let w = world();
         for workers in [2, 4, 16] {
-            let report = run_kept(&w, Keep::Portfolio, test_seed(), 2000, true, workers).unwrap();
+            let report = run_kept(
+                &w,
+                Keep::Portfolio,
+                test_seed(),
+                2000,
+                true,
+                workers,
+                SearchSettings::default(),
+            )
+            .unwrap();
             assert_eq!(report["verified"], true, "{workers} workers");
         }
-        assert!(run_kept(&w, Keep::Portfolio, test_seed(), 2000, true, 65).is_err());
-        let spent = run_kept(&w, Keep::Portfolio, test_seed(), 40, true, 16).unwrap();
+        assert!(
+            run_kept(
+                &w,
+                Keep::Portfolio,
+                test_seed(),
+                2000,
+                true,
+                65,
+                SearchSettings::default()
+            )
+            .is_err()
+        );
+        let spent = run_kept(
+            &w,
+            Keep::Portfolio,
+            test_seed(),
+            40,
+            true,
+            16,
+            SearchSettings::default(),
+        )
+        .unwrap();
         assert_eq!(spent["verified"], true);
         assert!(spent["work_overshoot"].as_u64().unwrap() > 0);
     }
@@ -1642,7 +1789,16 @@ mod tests {
         let key = w.config.key(w.config.initial(), false);
         assert_eq!(key.kept::<true>().kept::<false>(), key);
         for keep in [Keep::Portfolio, Keep::CapacityTwo] {
-            let report = run_kept(&w, keep, test_seed(), 2000, true, 1).unwrap();
+            let report = run_kept(
+                &w,
+                keep,
+                test_seed(),
+                2000,
+                true,
+                1,
+                SearchSettings::default(),
+            )
+            .unwrap();
             assert_eq!(report["verified"], true);
             assert_eq!(report["keep"], serde_json::to_value(keep).unwrap());
         }
@@ -1743,7 +1899,14 @@ mod tests {
                     ..Scale::default()
                 }),
             };
-            run_scaled(&workload, seed, 5_000, &mut std::io::sink()).unwrap()
+            run_scaled(
+                &workload,
+                seed,
+                5_000,
+                &mut std::io::sink(),
+                SearchSettings::default(),
+            )
+            .unwrap()
         };
         let plain = scaled(0, 1);
         let padded = scaled(4096, 1);
@@ -1765,7 +1928,8 @@ mod tests {
                 &workload,
                 seed,
                 Scale::MAX_WORK_BUDGET + 1,
-                &mut std::io::sink()
+                &mut std::io::sink(),
+                SearchSettings::default()
             )
             .is_err()
         );

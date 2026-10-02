@@ -187,7 +187,7 @@ fn compose_rekeys_at_nonzero_concrete() {
         overrides: BTreeMap::from([
             (
                 0,
-                Action::Host(fault_policy::HostFault::InjectInterrupt { vector: 1 }),
+                Action::Host(fault_policy::HostFault::SkewTime(fault_policy::Span(1))),
             ),
             (3, Action::Guest(Answer::Nominal)),
         ]),
@@ -204,9 +204,9 @@ fn compose_rekeys_at_nonzero_concrete() {
     assert!(!out.contains_key(&20), "base entry >= at dropped");
     assert_eq!(
         out.get(&10),
-        Some(&Action::Host(fault_policy::HostFault::InjectInterrupt {
-            vector: 1
-        })),
+        Some(&Action::Host(fault_policy::HostFault::SkewTime(
+            fault_policy::Span(1)
+        ))),
         "tail Moment 0 re-keyed to at+0 = 10"
     );
     assert_eq!(

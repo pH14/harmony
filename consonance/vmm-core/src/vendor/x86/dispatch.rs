@@ -340,27 +340,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
         Ok(())
     }
 
-    pub(crate) fn inject_host_interrupt(&mut self, vector: u32) -> Result<(), VmmError> {
-        let Ok(vector) = u8::try_from(vector) else {
-            return Err(VmmError::ContractViolation(format!(
-                "InjectInterrupt vector {vector:#x} exceeds the xAPIC's 8-bit vector space — \
-                 refusing to truncate"
-            )));
-        };
-        let Some(lapic) = self.devices.lapic.as_mut() else {
-            return Err(VmmError::ContractViolation(format!(
-                "InjectInterrupt vector {vector:#x} but the userspace LAPIC is unwired — no IRQ \
-                 arbitration path to assert the vector through (host interrupts are enforced \
-                 through the Linux-boot xAPIC)"
-            )));
-        };
-        lapic.raise(vector).map_err(|e| {
-            VmmError::ContractViolation(format!(
-                "InjectInterrupt vector {vector:#x} rejected: {e:?}"
-            ))
-        })
-    }
-
     pub(crate) fn service_pending_irqs(&mut self) -> Result<(), VmmError> {
         if self.devices.lapic.is_none() {
             return Ok(());

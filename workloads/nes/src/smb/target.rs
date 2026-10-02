@@ -57,9 +57,7 @@ struct SnapshotObservation {
     frame_count: u64,
     decoded: SmbMechanicalState,
     milestones: SmbMilestones,
-    changed_indices: Vec<u16>,
     dead: bool,
-    log_line: String,
 }
 
 impl SnapshotObservation {
@@ -68,9 +66,7 @@ impl SnapshotObservation {
             frame_count: observation.frame_count,
             decoded: observation.decoded,
             milestones: observation.milestones,
-            changed_indices: observation.changed_indices.clone(),
             dead: observation.dead,
-            log_line: observation.log_line.clone(),
         }
     }
 
@@ -80,9 +76,9 @@ impl SnapshotObservation {
             wram,
             decoded: self.decoded,
             milestones: self.milestones,
-            changed_indices: self.changed_indices.clone(),
+            changed_indices: Vec::new(),
             dead: self.dead,
-            log_line: self.log_line.clone(),
+            log_line: format!("frame={} changed=[]", self.frame_count),
         }
     }
 }
@@ -104,15 +100,7 @@ impl<P> SmbSnapshot<P> {
     where
         P: SnapshotState,
     {
-        size_of::<Self>()
-            .saturating_add(self.emulator_state.memory_charge())
-            .saturating_add(
-                self.observation
-                    .changed_indices
-                    .len()
-                    .saturating_mul(size_of::<u16>()),
-            )
-            .saturating_add(self.observation.log_line.len())
+        size_of::<Self>().saturating_add(self.emulator_state.memory_charge())
     }
 }
 
@@ -132,6 +120,7 @@ const OPER_MODE_OFFSET: usize = 0x0770;
 const OPER_MODE_PLAY: u8 = 1;
 const OPER_MODE_TASK_OFFSET: usize = 0x0772;
 const OPER_MODE_TASK_PLAY: u8 = 3;
+const OPER_MODE_TASK_AREA_INIT: u8 = 0;
 
 #[derive(Debug)]
 pub struct SmbTarget<M = QuickNesMachine, P = Vec<u8>>
@@ -664,12 +653,21 @@ pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalSt
     SmbMechanicalState {
         world: wram[WORLD_NUMBER_OFFSET],
         level: smb_current_level(wram),
-        progress: smb_scroll_bucket(wram),
+        progress: if smb_area_is_loading(wram) {
+            0
+        } else {
+            smb_scroll_bucket(wram)
+        },
         player_y_bucket: wram[PLAYER_Y_OFFSET] / 16,
         player_engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
         dead: smb_player_is_dead(wram),
         flag_active: wram[FLAG_TASK_OFFSET] != 0,
     }
+}
+
+pub(crate) fn smb_area_is_loading(wram: &[u8; WRAM_SIZE]) -> bool {
+    wram[OPER_MODE_OFFSET] == OPER_MODE_PLAY
+        && wram[OPER_MODE_TASK_OFFSET] == OPER_MODE_TASK_AREA_INIT
 }
 
 const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
@@ -688,8 +686,29 @@ mod tests {
         BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
         smb_mechanical_state_from_wram,
     };
-    use crate::target::Target;
-    use machine::quicknes::QuickNesMachine;
+    use crate::{nes_backend::NesBackend, target::Target};
+    use machine::{Machine, quicknes::QuickNesMachine};
+
+    #[test]
+    fn native_snapshots_store_a_compressed_state_that_restores_exactly() {
+        let mut machine =
+            QuickNesMachine::loopback_for_tests(&synthetic_nrom()).expect("loopback core");
+        let held = machine.snapshot().expect("snapshot");
+        let state = machine.take_snapshot(held).expect("raw state");
+        let held = machine.import_snapshot(&state);
+        let stored = machine.export_nes(held, None).expect("export");
+        assert!(stored.len() < state.len());
+        assert_eq!(stored.capacity(), stored.len());
+        let restored = machine.import_nes(&stored).expect("import");
+        assert_eq!(machine.take_snapshot(restored).expect("raw state"), state);
+        assert!(machine.import_nes(&vec![4, 0, 0, 0, 0xf0]).is_err());
+        let mut oversized = stored.clone();
+        oversized[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(machine.import_nes(&oversized).is_err());
+        let mut short = lz4_flex::block::compress_prepend_size(&state[..state.len() - 1]);
+        short[..4].copy_from_slice(&u32::try_from(state.len()).unwrap().to_le_bytes());
+        assert!(machine.import_nes(&short).is_err());
+    }
 
     #[test]
     fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {
@@ -722,6 +741,24 @@ mod tests {
         assert_eq!((decoded.world, decoded.level, decoded.progress), (2, 3, 66));
         assert_eq!(decoded.player_y_bucket, 3);
         assert_eq!(decoded.player_engine_state, 7);
+    }
+
+    #[test]
+    fn scroll_progress_is_zero_while_an_area_loads() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[0x075f] = 1;
+        wram[0x071a] = 9;
+        wram[0x0770] = 1;
+        wram[0x0772] = 3;
+        assert_eq!(smb_mechanical_state_from_wram(&wram).progress, 144);
+        wram[0x0772] = 0;
+        assert_eq!(smb_mechanical_state_from_wram(&wram).progress, 0);
+        wram[0x0770] = 2;
+        assert_eq!(
+            smb_mechanical_state_from_wram(&wram).progress,
+            144,
+            "the castle ending starts its tasks at zero"
+        );
     }
 
     #[test]
@@ -793,6 +830,16 @@ mod tests {
         let second_work = target.execution_work();
         assert!(second_work > first_work);
         target.restore(&saved).expect("restore after second action");
+        let restored = target.observe();
+        assert!(restored.changed_indices.is_empty());
+        assert_eq!(
+            restored.log_line,
+            format!("frame={} changed=[]", restored.frame_count)
+        );
+        assert_eq!(
+            saved.resident_memory_charge(),
+            size_of::<super::SmbSnapshot>() + saved.emulator_state_bytes_len()
+        );
         assert_eq!(target.execution_work(), second_work);
         target.reset();
         assert_eq!(target.execution_work(), second_work);

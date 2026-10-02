@@ -21,11 +21,6 @@ case "$variant" in
         supervisor=/campaign-super
         export CAMPAIGN_DEBUG=1
         ;;
-    order)
-        prefix=PGORDER
-        supervisor=/order-super
-        export ORDER_DEBUG=1
-        ;;
     uuid)
         prefix=PGUUID
         supervisor=/uuid-super
@@ -75,13 +70,11 @@ if [ -n "$supervisor" ]; then
     if [ "$status" -eq 0 ]; then
         case "$variant" in
             campaign) echo "CAMPAIGN_CLEAN_TERMINAL: application exit" ;;
-            order) echo "ORDER_CLEAN_TERMINAL: application exit" ;;
             uuid) echo "UUID_CLEAN_TERMINAL: application exit" ;;
         esac
     else
         case "$variant" in
             campaign) echo "CAMPAIGN_BUG_TERMINAL: application exit rc=$status" ;;
-            order) echo "ORDER_ABORT_TERMINAL: application exit rc=$status" ;;
             uuid) echo "UUID_ABORT_TERMINAL: application exit rc=$status" ;;
         esac
     fi

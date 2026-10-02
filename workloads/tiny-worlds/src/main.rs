@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use searcher::search::draw::{draw_mixture_from_identifier, suffix_shape_from_identifier};
 use serde::Deserialize;
 use std::{error::Error, io::Read};
-use tiny_worlds::{Keep, Scale, Workload, run_kept, run_scaled, worlds::World};
+use tiny_worlds::{Keep, Scale, SearchSettings, Workload, run_kept, run_scaled, worlds::World};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +18,19 @@ struct Request {
     scale: Option<Scale>,
     #[serde(default)]
     workers: Option<u32>,
+    #[serde(default)]
+    search: Option<SearchRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchRequest {
+    #[serde(default)]
+    suffix: Option<String>,
+    #[serde(default)]
+    mixture: Option<String>,
+    #[serde(default)]
+    stop_on_objective: Option<bool>,
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let mut input = String::new();
@@ -25,6 +39,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("request exceeds 16KB".into());
     }
     let request: Request = serde_json::from_str(&input)?;
+    let mut settings = SearchSettings::default();
+    if let Some(search) = &request.search {
+        if let Some(suffix) = &search.suffix {
+            settings.suffix = suffix_shape_from_identifier(suffix)?;
+        }
+        settings.mixture = search
+            .mixture
+            .as_deref()
+            .map(draw_mixture_from_identifier)
+            .transpose()?;
+        settings.stop_on_objective = search.stop_on_objective;
+    }
     let workload = Workload {
         config: request.config,
         broken: request.broken,
@@ -44,7 +70,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut progress = std::io::LineWriter::new(std::io::stderr().lock());
         println!(
             "{}",
-            run_scaled(&workload, request.seed, request.work_budget, &mut progress)?
+            run_scaled(
+                &workload,
+                request.seed,
+                request.work_budget,
+                &mut progress,
+                settings
+            )?
         );
         return Ok(());
     }
@@ -56,7 +88,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             request.seed,
             request.work_budget,
             request.verify,
-            request.workers.unwrap_or(1)
+            request.workers.unwrap_or(1),
+            settings
         )?
     );
     Ok(())

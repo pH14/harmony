@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use common::{arb_action, arb_point, arb_policy, config, ref_admissible};
 use fault_policy::{
     Action, Answer, ConnId, DecisionClass, DecisionPoint as P, EnvSpec, Environment, Fault,
-    FaultPolicy, HostFault, Moment, NodeId, Outcome, RecordedEnv, SeededEnv,
+    FaultPolicy, HostFault, Moment, NodeId, Outcome, RecordedEnv, SeededEnv, Span,
 };
 use proptest::prelude::*;
 
@@ -237,7 +237,7 @@ fn host_action_at_a_decision_moment_is_ignored_by_decide() {
     let mut env = EnvSpec::Recorded {
         seed,
         policy: FaultPolicy::none(),
-        overrides: BTreeMap::from([(at, Action::Host(HostFault::InjectInterrupt { vector: 9 }))]),
+        overrides: BTreeMap::from([(at, Action::Host(HostFault::SkewTime(Span(9))))]),
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
         payloads: None,

@@ -457,6 +457,7 @@ impl InputPolicy for StbGame {
     fn sample_alphabet(
         &self,
         _run: &StbCampaignRun,
+        _previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         sample_chord(rand)

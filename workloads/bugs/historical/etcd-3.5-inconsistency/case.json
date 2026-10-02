@@ -51,8 +51,7 @@
     "EventKill",
     "EventPark",
     "Pause",
-    "Restart",
-    "Interrupt"
+    "Restart"
   ],
   "run": {
     "ram_mib": 1024,

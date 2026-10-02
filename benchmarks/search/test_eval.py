@@ -233,6 +233,30 @@ class EvaluationTests(unittest.TestCase):
         result = self.fake_run('(p/"large").write_bytes(b"x"*100000)\ntime.sleep(30)\n', disk=.00001)
         self.assertEqual(result['status'], 'disk_limit')
 
+    def test_large_final_progress_does_not_exhaust_disk_during_verification(self):
+        progress = {'executions': 7, 'execution_work': 123, 'resident_memory_bytes': 4096,
+                    'deepest_key': 'final', 'selector': {'draws_by_cell': {
+                        f'cell-{index}': index for index in range(6000)}},
+                    'retained_diagnostics': {'places': list(range(4000))},
+                    'workload_diagnostics': {'named_progress': {'first_seen': {'finish': None}}}}
+        body = ('progress = ' + repr(progress) + '\n'
+                '(p/"progress.jsonl").write_text(json.dumps(progress) + "\\n")\n'
+                '(p/"phase.json").write_text(\'{"phase":"verification"}\')\n'
+                'while (p.parent/"resources.jsonl").read_text().count(\'"executions":7\') < 24:\n'
+                '    time.sleep(.01)\n'
+                '(p/"result.json").write_text(\'{"solved":false}\')\n')
+        result = self.fake_run(body, disk=.0005)
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual(result['last_progress'], progress)
+        cell = self.root / 'runs' / result['cell']
+        self.assertEqual(json.loads((cell/'campaign/progress.jsonl').read_text()), progress)
+        samples = [json.loads(line) for line in (cell/'resources.jsonl').read_text().splitlines()]
+        measured = [sample for sample in samples if sample['executions'] == 7]
+        self.assertGreaterEqual(len(measured), 12)
+        self.assertTrue(all(sample['search']['resident_memory_bytes'] == 4096 for sample in measured))
+        self.assertLess((cell/'resources.jsonl').stat().st_size, 16 * 1024)
+        self.assertLess(result['final_disk']['logical_bytes'], .0005 * 1024**3)
+
     def test_unsolved_required_case_is_a_regression(self):
         result = self.fake_run('(p/"result.json").write_text(\'{"solved":false}\')\n', require_solved=True)
         self.assertEqual(result['status'], 'regression')

@@ -157,6 +157,7 @@ impl InputPolicy for TestWorkload {
     fn sample_alphabet(
         &self,
         _run: &Self::Run,
+        _previous: Option<&Self::Action>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>> {
         Ok(TestAction::new(rand.next_u64() as u8, 1))
@@ -1012,4 +1013,64 @@ fn a_resume_refuses_a_changed_workload_policy() {
         .expect_err("a changed key policy");
     assert!(error.to_string().contains("key_policy"), "{error}");
     assert!(!error.to_string().contains("parent_scheduler"), "{error}");
+}
+
+#[test]
+fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
+    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.suffix = SuffixShape::DoubleWhileInPlace;
+    let mut bytes = Vec::new();
+    let (live, checkpoint) = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap().to_owned();
+    let records = text
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|value| value["event"] == "job" || value["event"] == "skip")
+        .collect::<Vec<_>>();
+    let limits = records
+        .iter()
+        .filter_map(|value| value["suffix_limit"].as_u64())
+        .collect::<Vec<_>>();
+    assert!(
+        limits.iter().any(|limit| *limit > 1),
+        "no parent doubled its suffix"
+    );
+    assert!(
+        records
+            .iter()
+            .filter(|value| value["splice"]["tail_postcard"].is_array())
+            .all(|value| value["suffix_limit"].is_null()),
+        "a spliced or continued job carries a suffix limit"
+    );
+    let (replayed, replay_checkpoint) =
+        replay_campaign_checkpointed(&TestWorkload, &bytes, None, None).unwrap();
+    assert_eq!(live, replayed);
+    assert_eq!(checkpoint, replay_checkpoint);
+    for tamper in [
+        serde_json::Value::Null,
+        serde_json::json!(0),
+        serde_json::json!(SUFFIX_DOUBLING_LIMIT + 1),
+    ] {
+        let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+        let line = lines
+            .iter_mut()
+            .find(|line| line.contains("\"suffix_limit\""))
+            .expect("a limited record");
+        let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+        value["suffix_limit"] = tamper;
+        *line = serde_json::to_string(&value).unwrap();
+        let error = replay_error(&lines);
+        assert!(
+            error.contains("recorded suffix limit does not match the suffix shape"),
+            "a tampered limit failed for another reason: {error}"
+        );
+    }
 }

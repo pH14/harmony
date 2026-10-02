@@ -121,6 +121,7 @@ fn record_identity(
 fn search<G: Endpointed>(
     game: G,
     run: G::Run,
+    suffix: SuffixShape,
     backend: &str,
     options: &SearchOptions,
 ) -> Result<(), Box<dyn Error>>
@@ -142,7 +143,7 @@ where
         memory_budget_mib: None,
         materialize_final_artifacts: true,
         run,
-        suffix: SuffixShape::default(),
+        suffix,
         mixture: DrawMixture::default(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: Some(options.output.join("victory.json")),
@@ -217,12 +218,14 @@ pub fn search_native(
         RomKind::Smb => search(
             SmbGame::new(rom, core, &core_hash),
             smb_run(),
+            SuffixShape::default(),
             "native",
             options,
         ),
         RomKind::Nova => search(
             NovaGame::new(rom, core, &core_hash),
             NovaCampaignRun,
+            SuffixShape::OneToSixBounded,
             "native",
             options,
         ),
@@ -276,12 +279,14 @@ pub fn search_consonance(
         RomKind::Smb => search(
             SmbGame::new_consonance(rom, kernel, &initramfs),
             smb_run(),
+            SuffixShape::default(),
             "consonance",
             options,
         ),
         RomKind::Nova => search(
             NovaGame::new_consonance(rom, kernel, &initramfs),
             NovaCampaignRun,
+            SuffixShape::OneToSixBounded,
             "consonance",
             options,
         ),

@@ -10,7 +10,20 @@ Entries are named after the **system**. Planted-bug variants live inside the ent
 variant per known mistake), alongside a correct baseline that must survive the same campaign
 clean — the baseline is the nominal control at protocol scale.
 
-## Intended first wave
+## Built interleaving cases
+
+| entry | protocol mistake | correct variant | oracle |
+|---|---|---|---|
+| `stale-cache/` | obsolete cache-miss value fills after invalidation | version check during fill | fill matches the store version |
+| `double-vote/` | concurrent requests both observe an unvoted term | mutex around check and set | one leader per term |
+| `mini-wal-reset/` | checkpoint uses a header from before log reset | read lock across the copy | copied entries match one generation |
+
+These protocol cases use threads inside one guest process, and only scheduling
+faults exercise their planted mistakes. No network or disk fault is needed.
+`stale-cache` is held out from searcher tuning. The collection README describes
+the sequential runner and paired controls.
+
+## Planned protocol cases
 
 - `raft/` — a small Raft with the canonical implementation mistakes as selectable variants:
   `votedFor` not persisted before replying (double-vote after restart), commit-by-count of

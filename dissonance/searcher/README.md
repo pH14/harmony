@@ -153,7 +153,9 @@ through a function bounded only by `TargetExecution`.
 `InputPolicy` requires three things of a workload: the action cost ceiling,
 the policy identifiers a recording must match, and
 `sample_alphabet`, which draws one action from the workload's vocabulary. The
-searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
+draw receives the action just before it: the previous action of the suffix, or
+the parent's last action for the first one, so a workload can draw a change to
+what the input already holds. The searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
 drawn from the retained-input table, `finish_stream_record` folds the record's
 retained suffixes back into it and receives the campaign evidence after the
 record's admission, so a workload can pass feedback to
@@ -310,12 +312,29 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_cell_recent_count_decay_v2`, and the stream header names
+One selector exists, `tier_pace_yield_cell_recent_count_decay_v1`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
 `tier_rank_shift` is three unless the workload says otherwise, so the leading
-tier takes most of the draws, and no tier holding an entry takes zero. A
+tier takes most of the draws, and no tier holding an entry takes zero. The
+leading tier gives up weight while it finds nothing new. Each tier counts its
+draws since a new cell last appeared in it and keeps the longest such run; its
+pace is that longest run or its cell count, whichever is larger. When the
+current count passes twice the pace, the leading tier's weight halves, and it
+halves again each time the count doubles, down to the weight of the rank
+below. The halvings apply only while the rank below yields more per draw than
+the leading tier since the leading tier's last new cell. A tier's yields are
+its new cells and its carried-in wins, admissions that take a slot's
+preference from a parent in another cell. The leading tier counts only its
+carried-in wins there, since a new cell ends the run. With `Td` and `Ty` the
+leading tier's draws and wins in the run, and `Nd` and `Ny` the draws and
+yields of the rank below over the same span, the halvings apply while
+`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`. When the rank below is a
+different tier from the one recorded when the run began, or no tier was
+recorded, `Nd` and `Ny` are that tier's total draws and yields. A leading tier
+that yields at least as much per draw as the rank below keeps its full weight. A new cell in
+the tier restores the full weight. A
 workload whose progress order has many close steps, such as fine progress
 bands, supplies a shift of one so each rank takes half of the one ahead. The
 largest accepted shift is seven, because a larger one overflows the leading
@@ -349,8 +368,11 @@ also resets when a selection from the cell opens a cell that held nothing, so
 the cells at the edge of explored ground keep drawing while they keep opening
 new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
-`cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference and
-the draws each cell received, and
+`cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
+`tier_runs` keyed by each tier's progress value with its current and longest
+run, its total draws and yields, its carried-in wins in the current run, and
+the rank below's name, draws and yields when the run began, and the draws each
+cell received, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear only on every 100,000th execution's
 line and the final line. Counting portfolio holders compares every pair of
@@ -407,6 +429,22 @@ benchmark with:
 ```sh
 DISSONANCE_BENCHMARK_SPLICE_TAIL=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib bounded_splice -- --nocapture --test-threads=1
 ```
+
+The suffix shape `one_doubling_while_in_place_up_to_64` sets the length of each
+drawn suffix from its parent's earlier jobs. A stretch where a key's place and
+preferences stay fixed can only be crossed by a single job, because every state
+inside it ties with or loses to the state that arrived there first. A parent's
+first job runs one action. A job that kept no state, never left the parent's
+place and did not end in a terminal state doubles the parent's next length, up
+to 64 actions. A job that kept a state or left the place resets it to one
+action. A job that ended in a terminal state without either leaves it
+unchanged. The archive holds the length per entry, so checkpoints carry it and
+compaction drops it with its entry. Splices and continuations run their
+recorded tails and leave it unchanged. The coordinator reads the length when it
+dispatches the job and records it as `suffix_limit` in the job or skip record.
+Replay cuts the redrawn suffix to the recorded limit and rejects a record whose
+limit does not fit the shape. It is the default shape; a workload that names
+another shape keeps that one.
 
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
@@ -549,7 +587,10 @@ checkpoint listed.
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
 list it by entry id and offset. Each `.ckpt` file holds its header, that index,
-and the postcard body; `checkpoints.jsonl` records write time and sizes.
+and the postcard body; `checkpoints.jsonl` records write time and sizes. The
+archive stores its `SelectorAccounting` as JSON inside that body, so a counter
+added there, such as `tier_runs`, reads as empty from a checkpoint written
+before the counter existed.
 `CampaignOrigin::SearchCheckpoint` resumes one. The admission
 window, limits, workload identity and the workload policies that give stored
 inputs and keys their meaning must match. The suffix, mixture and retention

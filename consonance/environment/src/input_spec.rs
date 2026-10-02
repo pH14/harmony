@@ -343,7 +343,6 @@ mod tests {
                         bytes: vec![9; bytes],
                     },
                 );
-                spec.record_effect(7, Effect::InjectInterrupt { vector: 32 });
                 spec.record_reseed(9, 0x9876);
                 spec.set_payloads(payloads);
                 spec.record_answer(11, 19, 3, Answer::Data(vec![4, 5]))
@@ -360,7 +359,7 @@ mod tests {
     fn inputs_round_trip_and_reject_every_truncation() {
         let mut spec = InputSpec::seeded(41);
         spec.record_effect(12, Effect::write_memory(4096, vec![7, 8]).unwrap());
-        spec.record_effect(20, Effect::InjectInterrupt { vector: 32 });
+        spec.record_effect(20, Effect::xor_memory(0x20, vec![32]).unwrap());
         spec.record_reseed(8, 92);
         spec.set_payloads(Some(vec![vec![], vec![1, 2, 3]]));
         let bytes = spec.encode();
@@ -441,13 +440,13 @@ mod tests {
         };
         spec.set_config(config.clone());
         assert_eq!(spec.config(), &config);
-        spec.record_effect(12, Effect::InjectInterrupt { vector: 32 });
-        spec.record_effect(12, Effect::InjectInterrupt { vector: 33 });
+        spec.record_effect(12, Effect::xor_memory(0x20, vec![32]).unwrap());
+        spec.record_effect(12, Effect::xor_memory(0x20, vec![33]).unwrap());
         spec.record_reseed(13, 41);
         spec.record_reseed(13, 42);
         assert_eq!(
             spec.effects(),
-            &BTreeMap::from([(12, Effect::InjectInterrupt { vector: 33 })])
+            &BTreeMap::from([(12, Effect::xor_memory(0x20, vec![33]).unwrap())])
         );
         assert_eq!(spec.reseeds(), &BTreeMap::from([(13, 42)]));
         spec.record_answer(14, 10, 9, Answer::Nominal).unwrap();
@@ -615,7 +614,10 @@ mod tests {
         bytes.extend((effects.len() as u32).to_le_bytes());
         for at in effects {
             bytes.extend(at.to_le_bytes());
-            put(&mut bytes, &Effect::InjectInterrupt { vector: 32 }.encode());
+            put(
+                &mut bytes,
+                &Effect::xor_memory(0x20, vec![32]).unwrap().encode(),
+            );
         }
         bytes.extend((reseeds.len() as u32).to_le_bytes());
         for at in reseeds {

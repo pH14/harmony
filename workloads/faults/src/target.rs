@@ -4,9 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;
 
 use control_proto::StopReason;
-use fault_policy::{
-    DecisionClass, Fault, HostFault, ParkTarget, Span, StandingWindow, process_target,
-};
+use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, process_target};
 use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
@@ -51,7 +49,6 @@ pub enum FaultAction {
     Pause(u16, NonZeroU16),
     Restart(u16, NonZeroU16),
     Hook(u32, NonZeroU16),
-    Interrupt(u32, NonZeroU16),
 }
 
 impl FaultAction {
@@ -64,8 +61,7 @@ impl FaultAction {
             | Self::EventPark { ticks, .. }
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
-            | Self::Hook(_, ticks)
-            | Self::Interrupt(_, ticks) => u64::from(ticks.get()),
+            | Self::Hook(_, ticks) => u64::from(ticks.get()),
         }
     }
 
@@ -98,7 +94,6 @@ impl FaultAction {
             Self::Pause(node, _) => Self::Pause(node, ticks),
             Self::Restart(node, _) => Self::Restart(node, ticks),
             Self::Hook(id, _) => Self::Hook(id, ticks),
-            Self::Interrupt(vector, _) => Self::Interrupt(vector, ticks),
         }
     }
 }
@@ -167,11 +162,6 @@ impl FaultAction {
                 put(&id.to_le_bytes());
                 put(&ticks.get().to_le_bytes());
             }
-            Self::Interrupt(vector, ticks) => {
-                put(&[7]);
-                put(&vector.to_le_bytes());
-                put(&ticks.get().to_le_bytes());
-            }
         }
         out
     }
@@ -224,16 +214,9 @@ pub struct FaultSnapshot {
     pub failed: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StagedPerturb {
-    pub fault: Vec<u8>,
-    pub at: u64,
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ActionDelta {
     pub standing: Option<StandingWindow>,
-    pub perturb: Option<StagedPerturb>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -284,7 +267,6 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 process_target(node, &Fault::ProcEventKill { rarity }),
                 (start, u64::MAX),
             )),
-            perturb: None,
         },
         FaultAction::EventPark {
             node,
@@ -304,21 +286,18 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 ),
                 (start, end),
             )),
-            perturb: None,
         },
         FaultAction::Kill(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
                 (start, end),
             )),
-            perturb: None,
         },
         FaultAction::Pause(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcPause(Span(horizon))),
                 (start, end),
             )),
-            perturb: None,
         },
         FaultAction::Restart(node, _) => ActionDelta {
             standing: Some(standing(
@@ -330,21 +309,12 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                     ),
                 ),
             )),
-            perturb: None,
         },
         FaultAction::Hook(id, _) => ActionDelta {
             standing: Some(standing(
                 process_target(0, &Fault::RunHook(id)),
                 (start, end),
             )),
-            perturb: None,
-        },
-        FaultAction::Interrupt(vector, _) => ActionDelta {
-            standing: None,
-            perturb: Some(StagedPerturb {
-                fault: HostFault::InjectInterrupt { vector }.encode(),
-                at: start,
-            }),
         },
     }
 }
@@ -743,7 +713,6 @@ mod tests {
             FaultAction::Pause(1, ticks(9)),
             FaultAction::Restart(1, ticks(9)),
             FaultAction::Hook(4, ticks(9)),
-            FaultAction::Interrupt(0x20, ticks(9)),
         ];
         for action in actions {
             let adapted = action.with_ticks(ticks(12));
@@ -907,7 +876,6 @@ mod tests {
             Some((2, Fault::ProcKill))
         );
         assert_eq!((fault.start, fault.end), window);
-        assert!(delta.perturb.is_none());
     }
 
     #[test]
@@ -961,24 +929,10 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_stages_a_host_fault_and_no_standing_fault() {
-        let window = WINDOWS.window(&kills(4), 2).unwrap();
-        let delta = action_delta(FaultAction::Interrupt(0x30, ticks(50)), window);
-        assert!(delta.standing.is_none());
-        let perturb = delta.perturb.expect("interrupt stages a host fault");
-        assert_eq!(perturb.at, window.0);
-        assert_eq!(
-            HostFault::decode(&perturb.fault),
-            Ok(HostFault::InjectInterrupt { vector: 0x30 })
-        );
-    }
-
-    #[test]
     fn an_input_installs_one_standing_fault_per_faulting_action() {
         let actions = [
             FaultAction::Hook(1, ticks(50)),
             FaultAction::Wait(NonZeroU16::MIN),
-            FaultAction::Interrupt(32, ticks(50)),
             FaultAction::Kill(0, ticks(50)),
         ];
         let faults = standing_windows(WINDOWS, &actions).unwrap();
@@ -989,7 +943,7 @@ mod tests {
         );
         assert_eq!(
             (faults[1].start, faults[1].end),
-            WINDOWS.window(&actions, 3).unwrap()
+            WINDOWS.window(&actions, 2).unwrap()
         );
         assert!(
             faults

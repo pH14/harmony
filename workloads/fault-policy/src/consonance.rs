@@ -161,7 +161,6 @@ pub fn effect(fault: &HostFault) -> Result<Effect, ChannelError> {
             gpa: *gpa,
             bytes: mask.0.to_le_bytes().to_vec(),
         }),
-        HostFault::InjectInterrupt { vector } => Ok(Effect::InjectInterrupt { vector: *vector }),
         HostFault::SkewTime(_) | HostFault::SetClockRate(_) => Err(ChannelError::Handler(
             "historical clock fault has no supported enforcement".into(),
         )),

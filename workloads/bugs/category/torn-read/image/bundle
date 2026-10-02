@@ -1,0 +1,4 @@
+setup /usr/local/bin/torn-read init /data/record
+node writer /usr/local/bin/torn-read writer /data/record
+node reader /usr/local/bin/torn-read reader /data/record
+ready /usr/local/bin/torn-read ready

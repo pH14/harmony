@@ -94,7 +94,7 @@ fn truncations_of_a_valid_blob_never_panic() {
             (9, Action::Guest(Answer::Supply(vec![1, 2, 3, 4]))),
             (
                 12,
-                Action::Host(HostFault::InjectInterrupt { vector: 0x80 }),
+                Action::Host(HostFault::SkewTime(fault_policy::Span(0x80))),
             ),
         ]),
         standing: vec![fault_policy::StandingFault {
@@ -125,7 +125,7 @@ fn trailing_bytes_are_rejected() {
 
 #[test]
 fn action_from_plane_conversions() {
-    let hf = HostFault::InjectInterrupt { vector: 3 };
+    let hf = HostFault::SkewTime(fault_policy::Span(3));
     assert_eq!(Action::from(hf), Action::Host(hf));
 
     let ans = Answer::Supply(vec![1, 2, 3, 4]);
@@ -138,9 +138,9 @@ fn perturb_and_record_stamp_one_action_per_moment() {
         seed: 0,
         policy: fault_policy::FaultPolicy::none(),
     };
-    spec.perturb(HostFault::InjectInterrupt { vector: 1 }, 100);
+    spec.perturb(HostFault::SkewTime(fault_policy::Span(1)), 100);
     spec.record(50, Action::Guest(Answer::Nominal));
-    spec.perturb(HostFault::InjectInterrupt { vector: 2 }, 100);
+    spec.perturb(HostFault::SkewTime(fault_policy::Span(2)), 100);
 
     let EnvSpec::Recorded { overrides, .. } = &spec else {
         panic!("perturb promotes to Recorded");
@@ -148,13 +148,16 @@ fn perturb_and_record_stamp_one_action_per_moment() {
     assert_eq!(overrides.len(), 2, "two distinct Moments");
     assert_eq!(
         overrides[&100],
-        Action::Host(HostFault::InjectInterrupt { vector: 2 }),
+        Action::Host(HostFault::SkewTime(fault_policy::Span(2))),
         "last write wins at Moment 100"
     );
     assert_eq!(overrides[&50], Action::Guest(Answer::Nominal));
 
     let hosts: Vec<_> = spec.host_faults().collect();
-    assert_eq!(hosts, vec![(100, HostFault::InjectInterrupt { vector: 2 })]);
+    assert_eq!(
+        hosts,
+        vec![(100, HostFault::SkewTime(fault_policy::Span(2)))]
+    );
 
     assert_eq!(
         EnvSpec::decode(&spec.encode()).unwrap(),

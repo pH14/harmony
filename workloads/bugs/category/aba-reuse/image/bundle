@@ -1,0 +1,3 @@
+setup /usr/local/bin/aba-reuse ready
+node stack /usr/local/bin/aba-reuse run
+ready /usr/local/bin/aba-reuse ready

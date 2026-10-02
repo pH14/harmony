@@ -22,9 +22,7 @@ use consonance_client::{
 use control_proto::{SnapId, StopReason};
 use environment::{
     Moment,
-    channel::{
-        Answer as ChannelAnswer, ChannelError, Effect, Question, ServiceHandler, ServiceResponse,
-    },
+    channel::{Answer as ChannelAnswer, ChannelError, Question, ServiceHandler, ServiceResponse},
     input_spec::{ServiceConfig, ServiceFactory, nominal_factory},
 };
 use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
@@ -33,8 +31,8 @@ use sha2::{Digest, Sha256};
 
 use crate::chain::{Chain, Hit, Point, Shared};
 use crate::target::{
-    ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, action_delta,
-    actions_key, decode_sdk_events, standing_windows,
+    ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, actions_key,
+    decode_sdk_events, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -906,34 +904,13 @@ impl Live {
     fn branch(&mut self, parent: Point, actions: &[FaultAction]) -> Result<(), String> {
         let config = branch_config(self.windows, actions)
             .map_err(|error| format!("branch configuration: {error}"))?;
-        let effects = self.staged_effects(actions, parent.moment)?;
         let branch_started = started();
         let result = self
             .session
-            .branch_with_service(parent.snap, config, Vec::new(), effects)
+            .branch_with_service(parent.snap, config, Vec::new(), Vec::new())
             .map_err(|error| format!("branch: {error}"));
         self.telemetry.branches.since(branch_started);
         result
-    }
-
-    fn staged_effects(
-        &self,
-        actions: &[FaultAction],
-        floor: u64,
-    ) -> Result<Vec<(u64, Effect)>, String> {
-        let Some(index) = actions.len().checked_sub(1) else {
-            return Ok(Vec::new());
-        };
-        let Some(perturb) =
-            action_delta(actions[index], self.windows.window(actions, index)?).perturb
-        else {
-            return Ok(Vec::new());
-        };
-        let fault = fault_policy::HostFault::decode(&perturb.fault)
-            .map_err(|error| format!("staged host fault: {error}"))?;
-        let effect = fault_policy::consonance::effect(&fault)
-            .map_err(|error| format!("staged host fault: {error}"))?;
-        Ok(vec![(perturb.at.max(floor), effect)])
     }
 
     fn run_action(

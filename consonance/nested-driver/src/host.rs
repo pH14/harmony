@@ -335,7 +335,12 @@ impl InputPolicy for NestedWorkload {
         }
         Ok(())
     }
-    fn sample_alphabet(&self, _: &(), rand: &mut RomuDuoJrRand) -> Result<u64, Box<dyn Error>> {
+    fn sample_alphabet(
+        &self,
+        _: &(),
+        _: Option<&u64>,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<u64, Box<dyn Error>> {
         Ok(rand.next_u64())
     }
 }

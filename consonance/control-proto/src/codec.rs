@@ -70,7 +70,6 @@ const CE_PERTURB_OUT_OF_RANGE: u8 = 11;
 const CE_PERTURB_PAST_MOMENT: u8 = 12;
 const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
 const CE_SCHEDULE_UNSATISFIABLE: u8 = 14;
-const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
 const CE_READ_OUT_OF_RANGE: u8 = 17;
 const CE_READ_TOO_LARGE: u8 = 18;
 const CE_TAINTED: u8 = 19;
@@ -627,10 +626,6 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             put_u64(w, *moment);
             put_u64(w, *vtime);
         }
-        Ce::PerturbReservedVector { vector } => {
-            w.push(CE_PERTURB_RESERVED_VECTOR);
-            w.push(*vector);
-        }
         Ce::ReadOutOfRange { gpa, len, ram_len } => {
             w.push(CE_READ_OUT_OF_RANGE);
             put_u64(w, *gpa);
@@ -685,7 +680,6 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
             moment: r.u64()?,
             vtime: r.u64()?,
         },
-        CE_PERTURB_RESERVED_VECTOR => Ce::PerturbReservedVector { vector: r.u8()? },
         CE_READ_OUT_OF_RANGE => Ce::ReadOutOfRange {
             gpa: r.u64()?,
             len: r.u32()?,

@@ -3,7 +3,7 @@
 # are owned by consonance/harmony-linux; this Makefile owns application inputs.
 
 .PHONY: fetch postgres-image arm64-postgres-kernel arm64-postgres-image \
-    campaign-image order-image uuid-image docker-image k3s-image
+    campaign-image uuid-image docker-image k3s-image
 
 fetch:
 	$(MAKE) -C ../../consonance/harmony-linux fetch
@@ -20,9 +20,6 @@ arm64-postgres-image: arm64-postgres-kernel
 
 campaign-image:
 	./build-campaign-image.sh
-
-order-image:
-	./build-order-image.sh
 
 uuid-image:
 	./build-uuid-image.sh

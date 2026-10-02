@@ -39,10 +39,9 @@ The same call carries the host-plane effects the run after the branch applies,
 each against the virtual moment it lands at, so a package stages a machine-level
 perturbation without reaching past the session boundary. The control server
 checks every effect against the branched snapshot before the live VM changes: a
-moment behind the snapshot, a moment already occupied, an out-of-range address,
-an interrupt identity the machine reserves, or a backend that cannot arm the
-exact-count arrival all fail the branch with the session untouched. One moment
-carries one effect, so a duplicate is reported rather than overwritten.
+moment behind the snapshot, a moment already occupied, an out-of-range address, or a backend that cannot arm
+the exact-count arrival all fail the branch with the session untouched. One
+moment carries one effect, so a duplicate is reported rather than overwritten.
 
 `Session::run_until` runs to an absolute virtual-time deadline or an earlier
 stop. `Session::snapshot` captures that exact stopped state in one control
