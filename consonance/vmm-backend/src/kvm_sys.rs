@@ -814,6 +814,18 @@ impl Backend for KvmBackend {
         )?;
         gfns.sort_unstable();
         gfns.dedup();
+        if self
+            .dirty_slots
+            .iter()
+            .map(|&(_, _, size)| size)
+            .sum::<u64>()
+            == 65536
+        {
+            eprintln!(
+                "KVM_DIRTY_TRACE nested={:?} gfns={gfns:?}",
+                self.nested_state_config
+            );
+        }
         Ok(gfns)
     }
 
