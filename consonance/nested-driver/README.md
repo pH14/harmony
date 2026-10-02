@@ -89,7 +89,10 @@ the same inputs. The second restore is read back immediately too, so retained
 RAM from the readback step fails at the restore boundary. The SDK smoke imports
 and restores the cold outer root twice, then starts with the Run seed from the
 hosted Intel failure before warming the inner VM. It uses the campaign's
-512 MiB outer RAM configuration. Fork and portable import use production
+512 MiB outer RAM configuration and follows the five-operation Intel
+ExportImport failure prefix. The operation workload enables KVM's invalid
+VMCS dump in the L1 kernel command line so a rejected VM entry retains the
+guest, host, and control fields in the console evidence. Fork and portable import use production
 control operations.
 Any in-place fallback fails instead of recreating the inner VM.
 

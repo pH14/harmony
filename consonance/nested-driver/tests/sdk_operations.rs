@@ -61,7 +61,7 @@ fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     ])
     .with_kvm();
     let initramfs = bundle::prepare(&image, &request)?.initramfs(&base);
-    let config = SessionConfig {
+    let mut config = SessionConfig {
         ram_bytes: 512 << 20,
         seed: 42,
         ..SessionConfig::default()
@@ -69,6 +69,7 @@ fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     .with_nested_host()
     .with_deferred_virtual_time_checkpoint_hashes()
     .with_wall_limit(Duration::from_secs(15));
+    config.cmdline.push_str(" kvm_intel.dump_invalid_vmcs=1");
     let mut session = Session::new_with_config(&kernel, &initramfs, config)?;
     assert_eq!(observation(&mut session)?[0..2], [1, 0]);
     let root = session.setup_sparse_snapshot()?;
@@ -80,6 +81,14 @@ fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     }
     let cold = advance(&mut session, 6_012_046_879_400_776_456)?;
     assert_eq!(cold[8..10], [1, 0]);
+    for seed in [
+        4_043_733_305_989_114_339,
+        17_338_899_251_130_015_454,
+        946_952_341_274_287_066,
+        10_155_054_555_646_050_472,
+    ] {
+        advance(&mut session, seed)?;
+    }
     for seed in 0..8 {
         advance(&mut session, seed)?;
     }
