@@ -1,0 +1,50 @@
+From: Harmony Project
+Subject: kvm: invalidate guest mappings after Harmony bitmap drains
+
+On hosted Intel nesting, automatic dirty-log reprotection can leave cached
+writable L2 mappings alive. A cold inner restore followed by one L2 readback
+writes five pages, but the following KVM_GET_DIRTY_LOG returns an empty bitmap.
+An in-place restore then correctly selects no RAM pages and retains those
+writes. Native Intel and hosted SVM controls report all five writes.
+
+After harvesting the bitmap, invalidate the memory slot's shadow mappings
+through KVM's existing slot invalidation path. The next inner entry rebuilds
+its mappings with dirty logging enabled, so fresh writes are recorded even
+when the bitmap was empty at the preceding drain. Keep RAM, the VM and vCPU
+allocated; do not repair the workload's memory or replace incremental restore.
+
+The extension requires the Harmony clock and automatic bitmap protection.
+Manual-protection semantics stay unchanged. CONFIG_HARMONY_PVCLOCK guards the
+architecture-specific include and code; ordinary Harmony kernels omit KVM,
+and a KVM kernel without the Harmony clock uses the original path. VMX and
+SVM share this reprotection rule. It trades extra MMU faults for correct
+incremental tracking inside the controlled guest kernel.
+
+This patch is Linux-kernel code (GPL-2.0), carried under the repository's
+kernel-patch exception.
+
+---
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -52,6 +52,9 @@
+ 
+ #include <asm/processor.h>
+ #include <asm/ioctl.h>
++#ifdef CONFIG_HARMONY_PVCLOCK
++#include <asm/harmony_pvclock.h>
++#endif
+ #include <linux/uaccess.h>
+ 
+ #include "coalesced_mmio.h"
+@@ -2287,6 +2290,11 @@
+ 		}
+ 		KVM_MMU_UNLOCK(kvm);
+ 	}
++
++#ifdef CONFIG_HARMONY_PVCLOCK
++	if (!kvm->manual_dirty_log_protect && harmony_pvclock_requested())
++		kvm_arch_flush_shadow_memslot(kvm, memslot);
++#endif
+ 
+ 	if (flush)
+ 		kvm_flush_remote_tlbs_memslot(kvm, memslot);
