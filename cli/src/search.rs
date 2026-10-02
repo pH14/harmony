@@ -113,7 +113,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
                 args.repeat,
             )?;
         }
-        (Package::Nested, Backend::Native) => {
+        (Package::Nested, Backend::Native | Backend::Uml) => {
             return Err("the nested package requires --backend consonance".into());
         }
         (Package::Nested, Backend::Consonance) => run_nested_consonance(&args)?,
