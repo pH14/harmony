@@ -53,6 +53,7 @@ pub struct KvmBackend {
     mmap_size: usize,
     xsave2_size: Option<usize>,
     nested_state_config: Option<(NestedFormat, usize)>,
+    nested_state_guard: crate::arch::x86::NestedStateGuard,
     regions: MemRegions,
     mem_slot_count: u32,
     dirty_log: bool,
@@ -107,6 +108,7 @@ impl KvmBackend {
             mmap_size,
             xsave2_size,
             nested_state_config: None,
+            nested_state_guard: Default::default(),
             regions: MemRegions::new(),
             mem_slot_count: 0,
             dirty_log: true,
@@ -266,6 +268,7 @@ impl KvmBackend {
     }
 
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        self.nested_state_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
         let next = finish_staged_completion(page, &mut self.pending, &mut self.completion, || {
@@ -304,6 +307,7 @@ impl KvmBackend {
     }
 
     fn enter_guest(&mut self) -> Result<Exit<X86>> {
+        self.nested_state_guard.ensure_healthy()?;
         loop {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
@@ -679,6 +683,7 @@ impl KvmBackend {
     }
 
     fn run_guarded_entry(&mut self) -> Result<()> {
+        self.nested_state_guard.ensure_healthy()?;
         self.check_completion_clear()?;
         // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
         let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
@@ -778,6 +783,7 @@ impl Backend for KvmBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.nested_state_guard.ensure_healthy()?;
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (dirty logging disabled)",
@@ -789,29 +795,36 @@ impl Backend for KvmBackend {
             });
         }
         let fd = self.vcpu.as_raw_fd();
-        let mut gfns = crate::arch::x86::drain_dirty_pages_with_nested_reprotection(
-            self.nested_state_config,
-            |maximum| {
-                // SAFETY: the exclusively borrowed owned vCPU is stopped; the adapter receives a capability-sized initialized buffer and bounds every returned byte.
-                unsafe { raw_get_nested_state(fd, maximum) }
-            },
-            || {
-                let mut gfns = Vec::new();
-                for &(slot, gpa, size) in &self.dirty_slots {
-                    let bitmap = self
-                        .vm
-                        .get_dirty_log(slot, size as usize)
-                        .map_err(kvm_err)?;
-                    crate::region::decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns);
-                }
-                Ok(gfns)
-            },
-            |bytes| {
-                self.reload_nested_memory_slots()?;
-                // SAFETY: the owned vCPU remains stopped outside nested guest mode; the helper validated the entire initialized current-state payload before clearing dirty bits and reinstalling it.
-                unsafe { raw_set_nested_state(fd, bytes) }
-            },
-        )?;
+        let drain = || {
+            crate::arch::x86::drain_dirty_pages_with_nested_reprotection(
+                self.nested_state_config,
+                |maximum| {
+                    // SAFETY: the exclusively borrowed owned vCPU is stopped; the adapter receives a capability-sized initialized buffer and bounds every returned byte.
+                    unsafe { raw_get_nested_state(fd, maximum) }
+                },
+                || {
+                    let mut gfns = Vec::new();
+                    for &(slot, gpa, size) in &self.dirty_slots {
+                        let bitmap = self
+                            .vm
+                            .get_dirty_log(slot, size as usize)
+                            .map_err(kvm_err)?;
+                        crate::region::decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns);
+                    }
+                    Ok(gfns)
+                },
+                |bytes| {
+                    self.reload_nested_memory_slots()?;
+                    // SAFETY: the owned vCPU remains stopped outside nested guest mode; the helper validated the entire initialized current-state payload before clearing dirty bits and reinstalling it.
+                    unsafe { raw_set_nested_state(fd, bytes) }
+                },
+            )
+        };
+        let mut gfns = if self.nested_state_config.is_some() {
+            self.nested_state_guard.mutate(drain)?
+        } else {
+            drain()?
+        };
         gfns.sort_unstable();
         gfns.dedup();
         Ok(gfns)
@@ -932,6 +945,7 @@ impl Backend for KvmBackend {
     }
 
     fn save(&mut self) -> Result<VcpuState> {
+        self.nested_state_guard.ensure_healthy()?;
         self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
@@ -976,6 +990,7 @@ impl Backend for KvmBackend {
     }
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
+        self.nested_state_guard.ensure_healthy()?;
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
         match (self.nested_state_config, &state.nested_state) {
@@ -996,34 +1011,43 @@ impl Backend for KvmBackend {
         self.validate_restore_state(state)?;
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
-        if self.nested_state_config.is_some() {
-            self.reload_nested_memory_slots()?;
-        }
+        let restore = || {
+            if self.nested_state_config.is_some() {
+                self.reload_nested_memory_slots()?;
+            }
 
-        restore_sregs2_with_flush(&state.sregs, |sregs| {
-            // SAFETY: the owned vCPU is stopped and the adapter reads a complete SREGS2 value; no guest entry occurs between the flush and exact target write.
-            unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), sregs) }
-        })?;
-        self.restore_msrs(state)?;
-        self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
-        self.restore_xsave(&xsave)?;
-        self.vcpu
-            .set_mp_state(kvm_mp_state {
-                mp_state: mp_to_kvm(state.mp_state),
-            })
-            .map_err(kvm_err)?;
-        self.vcpu
-            .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
-            .map_err(kvm_err)?;
-        self.vcpu
-            .set_regs(&to_kvm_regs(&state.regs))
-            .map_err(kvm_err)?;
-        self.vcpu
-            .set_vcpu_events(&to_kvm_restore_events(&state.events))
-            .map_err(kvm_err)?;
-        if let Some(bytes) = &state.nested_state {
-            // SAFETY: contract and capability preflight validated the full initialized ABI byte slice, including its declared size; the owned vCPU is stopped for the ioctl.
-            unsafe { raw_set_nested_state(self.vcpu.as_raw_fd(), bytes)? };
+            restore_sregs2_with_flush(&state.sregs, |sregs| {
+                // SAFETY: the owned vCPU is stopped and the adapter reads a complete SREGS2 value; no guest entry occurs between the flush and exact target write.
+                unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), sregs) }
+            })?;
+            self.restore_msrs(state)?;
+            self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
+            self.restore_xsave(&xsave)?;
+            self.vcpu
+                .set_mp_state(kvm_mp_state {
+                    mp_state: mp_to_kvm(state.mp_state),
+                })
+                .map_err(kvm_err)?;
+            self.vcpu
+                .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
+                .map_err(kvm_err)?;
+            self.vcpu
+                .set_regs(&to_kvm_regs(&state.regs))
+                .map_err(kvm_err)?;
+            self.vcpu
+                .set_vcpu_events(&to_kvm_restore_events(&state.events))
+                .map_err(kvm_err)?;
+            if let Some(bytes) = &state.nested_state {
+                // SAFETY: contract and capability preflight validated the full initialized ABI byte slice, including its declared size; the owned vCPU is stopped for the ioctl.
+                unsafe { raw_set_nested_state(self.vcpu.as_raw_fd(), bytes)? };
+            }
+
+            Ok(())
+        };
+        if self.nested_state_config.is_some() {
+            self.nested_state_guard.mutate(restore)?;
+        } else {
+            restore()?;
         }
 
         self.run_page().set_cr8(state.sregs.cr8);

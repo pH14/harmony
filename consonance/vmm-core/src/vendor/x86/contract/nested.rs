@@ -157,6 +157,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nested_snapshot_publication_retains_every_live_backend_byte() {
+        use crate::vmm::{GuestRam, Vmm};
+        use vmm_backend::{MockBackend, VcpuState};
+        let mut bytes = vec![0x5a; vmm_backend::arch::x86::VMX_NESTED_MAX_LEN];
+        bytes[..4].fill(0);
+        let size = bytes.len() as u32;
+        bytes[4..8].copy_from_slice(&size.to_le_bytes());
+        bytes[8..16].copy_from_slice(&0x1000_u64.to_le_bytes());
+        bytes[16..24].copy_from_slice(&0x2000_u64.to_le_bytes());
+        let mut backend = MockBackend::new();
+        backend.set_state(VcpuState {
+            nested_state: Some(bytes.clone()),
+            ..Default::default()
+        });
+        let mut vmm = Vmm::new(backend, GuestRam::new(0x10000).unwrap());
+        vmm.devices.nested_host = Some(
+            NestedHostContract::vmx(
+                NestedHostContract::vmx_indices()
+                    .iter()
+                    .map(|&index| (index, 0))
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(vmm.save_vm_state().unwrap().nested_state, Some(bytes));
+    }
+
+    #[test]
     fn nested_host_adds_only_vmx_to_cpuid() {
         let ordinary = cpuid_model();
         let mut nested = NestedHostContract::vmx_cpuid_model();

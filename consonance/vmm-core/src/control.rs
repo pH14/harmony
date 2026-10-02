@@ -996,34 +996,36 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         vmm: &mut Vmm<B>,
         parent: Option<SnapshotId>,
         blob: &[u8],
-    ) -> Result<(SnapshotId, bool, Option<Vec<u64>>), SnapshotError> {
+    ) -> Result<(SnapshotId, bool, Option<Vec<u64>>), VmmError> {
         if let Some(parent) = parent {
             let chain_ok = engine
                 .stats(parent)
                 .is_ok_and(|s| s.chain_len < engine.max_chain_len());
-            if chain_ok && let Some(gfns) = vmm.drain_dirty_pages() {
+            if chain_ok && let Some(gfns) = vmm.drain_dirty_pages()? {
                 return match engine.snapshot_derive(parent, vmm.guest_memory(), Some(&gfns), blob) {
                     Ok(id) => Ok((id, true, Some(gfns))),
                     Err(_) => engine
                         .snapshot_base(vmm.guest_memory(), blob)
                         .map(|id| (id, true, Some(gfns))),
-                };
+                }.map_err(VmmError::from);
             }
             if !chain_ok
                 && engine.stats(parent).is_ok()
-                && let Some(gfns) = vmm.drain_dirty_pages()
+                && let Some(gfns) = vmm.drain_dirty_pages()?
             {
                 return match engine.snapshot_flatten(parent, vmm.guest_memory(), &gfns, blob) {
                     Ok(id) => Ok((id, true, Some(gfns))),
                     Err(_) => engine
                         .snapshot_base(vmm.guest_memory(), blob)
                         .map(|id| (id, true, Some(gfns))),
-                };
+                }
+                .map_err(VmmError::from);
             }
         }
         engine
             .snapshot_base(vmm.guest_memory(), blob)
             .map(|id| (id, false, None))
+            .map_err(VmmError::from)
     }
 
     fn timed_snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
@@ -1099,9 +1101,25 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let parent = self.derive_parent.take();
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let (store_id, window_consumed, dirty_gfns) =
-            Self::seal_into_store(&mut self.engine, vmm, parent, &blob)?;
+            match Self::seal_into_store(&mut self.engine, vmm, parent, &blob) {
+                Ok(sealed) => sealed,
+                Err(error) => {
+                    self.retire_vmm();
+                    return Err(error.into());
+                }
+            };
         self.last_seal_dirty_gfns = dirty_gfns;
-        let tracked = window_consumed || vmm.reset_dirty_tracking();
+        let tracked = if window_consumed {
+            true
+        } else {
+            match vmm.reset_dirty_tracking() {
+                Ok(tracked) => tracked,
+                Err(error) => {
+                    self.retire_vmm();
+                    return Err(error.into());
+                }
+            }
+        };
         self.derive_parent = tracked.then_some(store_id);
         self.set_current_image(tracked.then_some(store_id));
 
@@ -1162,7 +1180,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let dirty = {
             let vmm = self.vmm.as_mut().ok_or(())?;
             vmm.retire_pending_completion().map_err(|_| ())?;
-            vmm.drain_dirty_pages()
+            vmm.drain_dirty_pages().map_err(|_| ())?
         };
         if dirty.is_none() && from.is_some() {
             return Err(());
@@ -1462,7 +1480,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-            let tracked = vmm.reset_dirty_tracking();
+            let tracked = match vmm.reset_dirty_tracking() {
+                Ok(tracked) => tracked,
+                Err(error) => {
+                    self.retire_vmm();
+                    return Err(error.into());
+                }
+            };
             self.derive_parent = tracked.then_some(store_id);
             self.set_current_image(tracked.then_some(store_id));
         }
@@ -1963,6 +1987,44 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[test]
+    fn dirty_log_failure_retires_the_vm_without_publishing_a_snapshot() {
+        use crate::vendor::x86::contract::NestedHostContract;
+        for derived in [false, true] {
+            let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+            let vmm = server.vmm_mut().unwrap();
+            vmm.devices.nested_host = Some(
+                NestedHostContract::vmx(
+                    NestedHostContract::vmx_indices()
+                        .iter()
+                        .map(|&index| (index, 0))
+                        .collect(),
+                )
+                .unwrap(),
+            );
+            let mut cpu = vmm.backend_mut().save().unwrap();
+            cpu.nested_state = Some(vmm_backend::arch::x86::inactive_nested_state(
+                vmm_backend::arch::x86::NestedFormat::Vmx,
+            ));
+            vmm.backend_mut().set_state(cpu);
+            vmm.backend_mut().enable_dirty_tracking();
+            hello(&mut server);
+            if derived {
+                snap(&mut server);
+            }
+            let count = server.snaps.len();
+            server
+                .vmm_mut()
+                .unwrap()
+                .backend_mut()
+                .fail_next_dirty_drain();
+            assert!(server.handle(&Request::Snapshot).is_err());
+            assert_eq!(server.snaps.len(), count);
+            assert!(server.vmm().is_none());
+            assert!(server.handle(&Request::Snapshot).is_err());
+        }
     }
 
     #[derive(Clone)]

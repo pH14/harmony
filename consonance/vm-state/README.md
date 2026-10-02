@@ -94,3 +94,7 @@ uses format 0 and SVM format 1. SVM outside L2 carries a 128-byte header with
 GIF; active L2 state can also include the 4 KiB VMCB. EFER and the native SVM
 host-save/control MSRs remain in their architectural fields. The owning VMM
 validates the format against the named contract before restore.
+
+The generic property generators include absent, header-only, VMCS12/VMCB and
+full VMCS12-plus-shadow nested payloads. Strict-decoder fixtures contain tag 16
+and check its optionality, ordering, uniqueness, size field and truncation.
