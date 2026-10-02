@@ -17,6 +17,11 @@ only counts; the next callback at or past the threshold exchanges.
 `harmony_coverage_configure` sets an explicit thread identity and runnable
 width. A forked child resets its counter and identity.
 
+`harmony_coverage_add(hits)` counts several callbacks at once and returns how
+many more the thread may count before its next exchange. The Java runtime counts
+back-edges in Java code and calls it once per batch, because a native call at
+every back-edge would cost more than the loop body.
+
 When `/dev/harmony` does not exist, the thread stops exchanging. Any other
 transport error or an invalid threshold aborts the process, because continuing
 would leave a loop that never exits to the VM.

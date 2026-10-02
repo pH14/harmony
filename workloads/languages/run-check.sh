@@ -26,6 +26,15 @@ assert log.count("HARMONY_LANGUAGE_PARK_PROGRESS\n") == 1
 assert log.count("HARMONY_LANGUAGE_MARKER ") == 20
 PY
 
+if [[ $image == *language-java* ]]; then
+    for boot in 1 2; do
+        "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 300 --out "$evidence/xcomp-$boot" \
+            -- /opt/java/bin/java -Xcomp -cp /opt/harmony/java Fixture
+    done
+    python3 "$(dirname "$0")/verify-runs.py" "$evidence/xcomp-1" "$evidence/xcomp-2" \
+        --output "$evidence/xcomp-determinism.json"
+fi
+
 if [[ $image == *language-c* ]]; then
     "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 120 --out "$evidence/processes" -- /opt/harmony/fixture processes
     "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 120 --out "$evidence/gcc" -- /opt/harmony/gcc-fixture

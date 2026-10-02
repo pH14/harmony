@@ -7,20 +7,35 @@ import java.util.concurrent.CountDownLatch;
 public final class Fixture {
     private static volatile boolean done;
 
+    private static final long CODE_CACHE_LIMIT = 240L << 20;
+
     private static void checkMappings() throws IOException {
-        if (!System.getProperty("java.vm.name").contains("Zero")) {
-            throw new AssertionError("expected the Zero VM, found " + System.getProperty("java.vm.name"));
+        if (!System.getProperty("java.vm.name").contains("Server")) {
+            throw new AssertionError("expected the server VM, found " + System.getProperty("java.vm.name"));
         }
+        long low = Long.MAX_VALUE;
+        long high = 0;
         for (String line : Files.readAllLines(Path.of("/proc/self/maps"))) {
             String[] fields = line.trim().split("\\s+", 6);
             if (fields[1].indexOf('x') < 0) {
                 continue;
             }
-            boolean named = fields.length == 6
-                    && (fields[5].startsWith("/") || fields[5].equals("[vdso]") || fields[5].equals("[vsyscall]"));
-            if (fields[1].indexOf('w') >= 0 || !named) {
-                throw new AssertionError("executable anonymous or writable mapping: " + line);
+            String name = fields.length == 6 ? fields[5] : "";
+            if (name.equals("[vdso]") || name.equals("[vsyscall]")) {
+                continue;
             }
+            if (name.startsWith("/")) {
+                if (fields[1].indexOf('w') >= 0) {
+                    throw new AssertionError("writable executable file mapping: " + line);
+                }
+                continue;
+            }
+            String[] range = fields[0].split("-");
+            low = Math.min(low, Long.parseUnsignedLong(range[0], 16));
+            high = Math.max(high, Long.parseUnsignedLong(range[1], 16));
+        }
+        if (high > low && high - low > CODE_CACHE_LIMIT) {
+            throw new AssertionError("anonymous executable mappings span more than the code cache");
         }
     }
 

@@ -15,17 +15,17 @@ Include helper processes and native libraries that can run long loops. Record ea
 Every target image must meet three conditions:
 
 1. Hardware entropy instructions appear only at reviewed sites.
-2. The runtime generates no executable code.
+2. Machine code comes only from scanned files or from a reviewed code generator.
 3. Every application loop reaches a libvoidstar callback.
 
-Admission scans every executable and shared object in the image. It rejects writable and executable segments, executable stacks, and unreviewed RDRAND, RDSEED, RNDR or RNDRRS sites. Counter reads need no review, because the guest kernel traps them. Admission cannot prove that a runtime never generates code. Turn off each code generator in the recipe and check `/proc/self/maps` in the fixture.
+Admission scans every executable and shared object in the image. It rejects writable and executable segments, executable stacks, and unreviewed RDRAND, RDSEED, RNDR or RNDRRS sites. Counter reads need no review, because the guest kernel traps them. Admission cannot scan code that a runtime generates. Turn off each code generator in the recipe, or review the generator's source for entropy encodings and check that review at build time, as the Java recipe does for HotSpot. Check `/proc/self/maps` in the fixture.
 
 Read the reference for the language:
 
 - [Compiled languages](references/compiled.md): C, C++, other LLVM front ends, Rust, and GCC.
 - [Go](references/go.md): cgo forwarding, standard-library selection, and the etcd case.
 - [Python](references/python.md): the CPython interpreter, source-built extensions, and the PostgreSQL driver.
-- [Java](references/java.md): the OpenJDK Zero interpreter.
+- [Java](references/java.md): the OpenJDK server VM with bytecode rewriting.
 
 Install the composed runtime at `/usr/lib/libvoidstar.so` with `workloads/languages/compose.Dockerfile`. Keep the SDK forwarding code unchanged. Write the SHA-256 and absolute path of each instrumented file to `/symbols/harmony-instrumented-events`. Keep unstripped binaries under `/symbols`, each with a nonempty `*.sym.tsv` from the language's own tool.
 
