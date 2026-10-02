@@ -252,6 +252,7 @@ fn snapshot_from_stored(
             "milestones": smb_milestones_from_wram(wram),
             "dead": false,
         },
+        "work_ram": null,
         "room_area": [wram[ROOM_IDENTITY_BYTES[0]], wram[ROOM_IDENTITY_BYTES[1]]],
         "dead": false,
         "failed": false,

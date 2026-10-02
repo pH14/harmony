@@ -96,9 +96,13 @@ Nova and Super Tilt Bro keep a live handle for the current state and export
 from it; SMB, Metroid and Mega Man 2 take a handle, export it and release it.
 The Consonance backend stores its own portable state through the same trait.
 
-A snapshot keeps the decoded observation it was taken at and no copy of work
-RAM. Observations carry no list of changed RAM addresses and no log line,
-because nothing reads them.
+A snapshot keeps the decoded observation it was taken at. QuickNES serves
+reads right after a restore, so a game that needs work RAM after a restore
+reads it from the machine. The Consonance backend serves reads only after a
+run. `SnapshotState::WorkRam` is the copy of work RAM that a snapshot of that
+state keeps: none for QuickNES and 2 KiB for Consonance. SMB stores its work
+RAM there. Nova needs no work RAM after a restore. Observations carry no list of changed RAM
+addresses and no log line, because nothing reads them.
 
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy

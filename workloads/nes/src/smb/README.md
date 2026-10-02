@@ -11,6 +11,15 @@ Holding B to run while the jump button changes is the common SMB move, and a
 draw of whole new chords rarely keeps it. The first chord of a new game has
 nothing before it and is drawn from the controller vocabulary.
 
+An action runs its chord in one machine run and reads each frame's work RAM
+from the run. The target stops reading at the frame where Mario dies or the
+game is won, and counts the frames up to that one. The machine has run the
+rest of the chord by then, so the target keeps the action's starting state. A
+dead or won target takes no further action. A snapshot of it first reruns the
+chord from that starting state up to the stop frame, so the snapshot holds the
+state Mario died or won in. A viability probe runs its frames the same way and
+then returns the machine to the state it started from.
+
 A job's length comes from its parent's earlier jobs, through the searcher's
 `one_doubling_while_in_place_up_to_64` suffix shape. A parent's first job runs
 one chord, and each job that keeps no state and stays in the parent's place
@@ -66,5 +75,9 @@ about 8 µs and decompression about 5 µs, against about 105 µs for one emulate
 frame.
 
 A snapshot also keeps the last frame's count, decoded state, milestones and
-death flag, and reads work RAM back from the machine on restore. A compressed
-snapshot stores about 1.8 KB.
+death flag. A restored target needs work RAM for its archive key, its victory
+check and the next action's starting scroll position. QuickNES serves reads
+right after a restore, so a native snapshot keeps no copy of work RAM and a
+restore reads it from the machine. The Consonance backend serves reads only
+after a run, so a Consonance snapshot keeps a 2 KiB copy, and the archive
+charges it. A compressed native snapshot stores about 1.8 KB.
