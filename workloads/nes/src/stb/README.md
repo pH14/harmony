@@ -156,9 +156,10 @@ the adapter supplies the generic layout and leaves the source conversion to
 the ROM. Search chords combine nine non-conflicting direction states with the
 four A/B states. Select is excluded because it has no gameplay action in this
 mode; Start is excluded because it pauses the match. Durations are sampled as
-short holds of 2--12 frames or long holds of 48--120 frames. That vocabulary is the adapter's alphabet
-sampler and nothing else about drawing; the searcher owns the suffix draw and
-the retained-input table. The primary campaign uses ordinary `Unprobed`
+short holds of 2--12 frames or long holds of 48--120 frames. The adapter
+supplies that vocabulary, with no tap button, to the shared NES chord draw in
+the [package README](../../README.md#chord-draw); the searcher owns the suffix
+draw and the retained-input table. The primary campaign uses ordinary `Unprobed`
 admission, `OneToSix` suffixes, and the game-neutral `AlphabetOnly` draw
 mixture, which never consults the table. The repaired survival helper is
 standalone probe code; `ProbeAtAdmission` is explicitly rejected because

@@ -5,13 +5,11 @@
 ## Actions
 
 An action is a controller chord held for 2–12 or 96–120 frames. A new chord
-changes one control of the chord before it. The controls are the D-pad, with
-nine positions, and the A and B buttons. The draw picks the D-pad, A, B or
-no change with equal odds. A D-pad change moves to one of the other eight
-positions, and an A or B change toggles that button. Holding B to run while
-the jump button changes is the common SMB move, and a draw of whole new chords
-rarely keeps it. The first chord of a new game has nothing before it and is
-drawn from the controller vocabulary.
+changes one control of the chord before it, through the shared NES chord draw
+in the [package README](../../README.md#chord-draw). SMB has no tap button.
+Holding B to run while the jump button changes is the common SMB move, and a
+draw of whole new chords rarely keeps it. The first chord of a new game has
+nothing before it and is drawn from the controller vocabulary.
 
 A job's length comes from its parent's earlier jobs, through the searcher's
 `one_doubling_while_in_place_up_to_64` suffix shape. A parent's first job runs

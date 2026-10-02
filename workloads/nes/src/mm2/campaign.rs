@@ -11,12 +11,13 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
     mm2::{
         archive::{
             DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, Mm2ArchiveKey, Mm2ArchiveReport,
             Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones, Mm2ProgressWatermark,
             REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
-            merge_progress_watermark, milestone_key, milestones, progress_watermark, sample_chord,
+            merge_progress_watermark, milestone_key, milestones, progress_watermark,
         },
         target::{
             ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
@@ -531,6 +532,7 @@ impl InputPolicy for Mm2Game {
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
         ]
@@ -564,10 +566,10 @@ impl InputPolicy for Mm2Game {
     fn sample_alphabet(
         &self,
         _run: &Mm2CampaignRun,
-        _previous: Option<&ButtonChord>,
+        previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        sample_chord(rand)
+        crate::mm2::archive::CHORDS.draw(rand, previous)
     }
 }
 

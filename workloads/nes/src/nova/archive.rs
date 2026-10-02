@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     nova::target::{
         ButtonChord, NovaInput, NovaMechanicalState, NovaObservations, NovaSnapshot,
         preference_tuple,
     },
-    search::{
-        archive::{
-            Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-            entries_by_suffix,
-        },
-        rand::RomuDuoJrRand,
+    search::archive::{
+        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
+        entries_by_suffix,
     },
 };
 
@@ -219,25 +217,17 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 
 pub const LONGEST_HOLD_FRAMES: u8 = 120;
 
-const DIRECTIONS: [u8; 9] = [0, 0x10, 0x20, 0x40, 0x80, 0x50, 0x90, 0x60, 0xa0];
-const AB: [u8; 4] = [0, 0x01, 0x02, 0x03];
-
-pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Error>> {
-    let direction = DIRECTIONS
-        [rand.below(NonZeroUsize::new(DIRECTIONS.len()).ok_or("empty Nova direction vocabulary")?)];
-    let buttons =
-        direction | AB[rand.below(NonZeroUsize::new(AB.len()).ok_or("empty Nova A/B vocabulary")?)];
-    let hold_frames = if rand.below(NonZeroUsize::new(2).ok_or("invalid duration odds")?) == 0 {
-        u8::try_from(2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short duration")?))?
-    } else {
-        u8::try_from(48 + rand.below(NonZeroUsize::new(73).ok_or("invalid long duration")?))?
-    };
-    Ok(ButtonChord::new(buttons, hold_frames))
-}
+pub const CHORDS: ChordVocabulary = ChordVocabulary {
+    held: &NES_PRESSABLE_BUTTON_MASKS,
+    tap: None,
+    short_hold: SHORT_HOLD_FRAMES,
+    long_hold: LONG_HOLD_FRAMES,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::rand::RomuDuoJrRand;
 
     fn state(x: u16, health: u8, cleared: u8) -> NovaMechanicalState {
         let mut value = NovaMechanicalState {
@@ -266,8 +256,12 @@ mod tests {
     #[test]
     fn vocabulary_never_draws_start_or_select_or_conflicting_verticals() {
         let mut rand = RomuDuoJrRand::with_seed(7);
+        let mut previous = None;
         for _ in 0..1_000 {
-            let chord = sample_chord(&mut rand).expect("draw chord");
+            let chord = CHORDS
+                .draw(&mut rand, previous.as_ref())
+                .expect("draw chord");
+            previous = Some(chord);
             assert_eq!(chord.buttons & 0x0c, 0);
             assert_ne!(chord.buttons & 0x30, 0x30);
             assert_ne!(chord.buttons & 0xc0, 0xc0);

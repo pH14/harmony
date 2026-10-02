@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    chord::{
+        ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES, Tap,
+    },
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
         Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, preference_tuple,
     },
-    search::{
-        archive::{
-            Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-            entries_by_suffix,
-        },
-        rand::RomuDuoJrRand,
+    search::archive::{
+        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
+        entries_by_suffix,
     },
 };
 
@@ -222,31 +222,23 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 
 pub const LONGEST_HOLD_FRAMES: u8 = 120;
 
-const DIRECTIONS: [u8; 9] = [0, 0x10, 0x20, 0x40, 0x80, 0x50, 0x90, 0x60, 0xa0];
-const AB: [u8; 4] = [0, 0x01, 0x02, 0x03];
 const START: u8 = 0x08;
-const START_ODDS: usize = 12;
 
-pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Error>> {
-    if rand.below(NonZeroUsize::new(START_ODDS).ok_or("invalid start odds")?) == 0 {
-        let hold = u8::try_from(2 + rand.below(NonZeroUsize::new(6).ok_or("invalid tap")?))?;
-        return Ok(ButtonChord::new(START, hold));
-    }
-    let direction = DIRECTIONS
-        [rand.below(NonZeroUsize::new(DIRECTIONS.len()).ok_or("empty direction vocabulary")?)];
-    let buttons =
-        direction | AB[rand.below(NonZeroUsize::new(AB.len()).ok_or("empty A/B vocabulary")?)];
-    let hold_frames = if rand.below(NonZeroUsize::new(2).ok_or("invalid duration odds")?) == 0 {
-        u8::try_from(2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short duration")?))?
-    } else {
-        u8::try_from(48 + rand.below(NonZeroUsize::new(73).ok_or("invalid long duration")?))?
-    };
-    Ok(ButtonChord::new(buttons, hold_frames))
-}
+pub const CHORDS: ChordVocabulary = ChordVocabulary {
+    held: &NES_PRESSABLE_BUTTON_MASKS,
+    tap: Some(Tap {
+        buttons: START,
+        odds: 12,
+        hold_frames: (2, 7),
+    }),
+    short_hold: SHORT_HOLD_FRAMES,
+    long_hold: LONG_HOLD_FRAMES,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::rand::RomuDuoJrRand;
 
     fn state(x: u8, health: u8, weapons: u8) -> Mm2MechanicalState {
         Mm2MechanicalState {
@@ -342,12 +334,15 @@ mod tests {
     fn vocabulary_draws_bare_start_taps_and_never_select_or_conflicting_directions() {
         let mut rand = RomuDuoJrRand::with_seed(7);
         let mut starts = 0;
+        let mut previous = None;
         for _ in 0..1_000 {
-            let chord = sample_chord(&mut rand).expect("draw chord");
+            let chord = CHORDS
+                .draw(&mut rand, previous.as_ref())
+                .expect("draw chord");
+            previous = Some(chord);
             assert_eq!(chord.buttons & 0x04, 0);
             if chord.buttons & START != 0 {
-                assert_eq!(chord.buttons, START);
-                assert!(chord.hold_frames <= 8);
+                assert!(chord.hold_frames <= 7);
                 starts += 1;
             }
             assert_ne!(chord.buttons & 0x30, 0x30);

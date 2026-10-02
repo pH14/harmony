@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    search::{
-        archive::{
-            Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-            entries_by_suffix,
-        },
-        rand::RomuDuoJrRand,
+    chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
+    search::archive::{
+        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
+        entries_by_suffix,
     },
     stb::target::{ButtonChord, StbInput, StbMechanicalState, StbObservations, StbSnapshot},
 };
@@ -292,25 +290,17 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 
 pub const LONGEST_HOLD_FRAMES: u8 = 120;
 
-const DIRECTIONS: [u8; 9] = [0, 0x10, 0x20, 0x40, 0x80, 0x90, 0x50, 0xa0, 0x60];
-const AB: [u8; 4] = [0, 0x02, 0x01, 0x03];
-
-pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Error>> {
-    let direction = DIRECTIONS
-        [rand.below(NonZeroUsize::new(DIRECTIONS.len()).ok_or("empty STB direction vocabulary")?)];
-    let buttons =
-        direction | AB[rand.below(NonZeroUsize::new(AB.len()).ok_or("empty STB A/B vocabulary")?)];
-    let hold_frames = if rand.below(NonZeroUsize::new(2).ok_or("invalid duration odds")?) == 0 {
-        u8::try_from(2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short duration")?))?
-    } else {
-        u8::try_from(48 + rand.below(NonZeroUsize::new(73).ok_or("invalid long duration")?))?
-    };
-    Ok(ButtonChord::new(buttons, hold_frames))
-}
+pub const CHORDS: ChordVocabulary = ChordVocabulary {
+    held: &NES_PRESSABLE_BUTTON_MASKS,
+    tap: None,
+    short_hold: SHORT_HOLD_FRAMES,
+    long_hold: LONG_HOLD_FRAMES,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::rand::RomuDuoJrRand;
 
     fn state(x: i16, b_damage: u8, b_stocks: u8) -> StbMechanicalState {
         StbMechanicalState {
@@ -394,8 +384,12 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(7);
         let mut saw_a = false;
         let mut saw_b = false;
+        let mut previous = None;
         for _ in 0..1_000 {
-            let chord = sample_chord(&mut rand).expect("draw chord");
+            let chord = CHORDS
+                .draw(&mut rand, previous.as_ref())
+                .expect("draw chord");
+            previous = Some(chord);
             assert_eq!(chord.buttons & 0x0c, 0);
             saw_a |= chord.buttons & 0x01 != 0;
             saw_b |= chord.buttons & 0x02 != 0;
