@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v2";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v3";
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
@@ -377,6 +377,43 @@ mod tests {
         assert!(
             CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).is_err(),
             "a directory holds one run's snapshot store"
+        );
+        fs::remove_dir_all(&directory).expect("remove the directory");
+    }
+
+    #[test]
+    fn a_checkpoint_of_another_format_is_refused_before_its_body_is_read() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-format-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut writer =
+            CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
+        let header = CheckpointHeader {
+            format: "dissonance-search-checkpoint-v2".to_owned(),
+            reason: "interval".to_owned(),
+            workload_identity_sha256: String::new(),
+            campaign_seed: 1,
+            window: 1,
+            archive_entry_limit: 8,
+            memory_budget_mib: None,
+            policies: BTreeMap::new(),
+            executions: 10,
+            reserved: 10,
+            next_admission: 0,
+        };
+        writer
+            .write(&header, std::iter::empty::<(u64, &Vec<u8>)>(), |out| {
+                Ok(postcard::to_io(&7_u32, out).map(|_| ())?)
+            })
+            .expect("write the checkpoint");
+        let refused = CheckpointReader::open(&directory.join("000000000010-interval.ckpt"))
+            .err()
+            .expect("another format is refused");
+        assert_eq!(
+            refused.to_string(),
+            "search checkpoint format is not recognized"
         );
         fs::remove_dir_all(&directory).expect("remove the directory");
     }
