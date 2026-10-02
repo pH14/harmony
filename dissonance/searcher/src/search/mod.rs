@@ -12,3 +12,4 @@ pub mod parallel;
 pub mod rand;
 pub mod rollout;
 pub mod telemetry;
+mod weighted_set;

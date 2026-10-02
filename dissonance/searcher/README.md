@@ -235,12 +235,18 @@ cargo bench --locked --manifest-path dissonance/Cargo.toml --bench duration
 cargo bench --locked --manifest-path dissonance/Cargo.toml --bench parent_selection
 ```
 
-Cell and holder draws build only the weight vector, reserving exactly the
-candidate count even for tiny sets. Candidate IDs stay in the
-ordered map or set, and the selected index is retrieved from its nearer end.
-Weights are computed once in their original order; the weighted draw and RNG
-consumption are unchanged. This removes one temporary candidate vector per
-cell draw and one per holder draw, without adding retained state.
+Each tier keeps its cells, and each cell keeps its holders, in a sorted set
+with a Fenwick tree (a binary indexed tree of prefix sums) over their
+count-decay weights, so a cell or holder draw costs O(log n) in the number of
+cells or holders. The tree search returns the same key as a linear prefix scan
+over the sorted keys, so draws and RNG consumption match the linear draw. A
+selection or a draw-count reset updates one weight. A new holder appends to its
+cell. A removed key keeps a zero weight until removed keys outnumber live ones.
+Each cell also caches its best holder per preference: an inserted holder is
+compared with the cached one, and the cell recomputes only when its best holder
+leaves. Checkpoints store the same key sets as before, and the weights rebuild
+on the first selection after loading. Debug builds check every drawn tier's
+weights and best holders against a fresh computation.
 
 The candidate-draw differential tests compare IDs, errors, and exact RNG state
 with the previous implementation. The opt-in paired benchmark includes isolated
