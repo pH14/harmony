@@ -268,7 +268,28 @@ fn current_extended_cpu_fields_and_lengths_are_strict() {
 #[test]
 fn truncations_never_panic() {
     let blob = valid();
-    for n in 0..blob.len() {
+    let cuts = if cfg!(miri) && option_env!("HARMONY_MIRI_PR_SMOKE").is_some() {
+        let mut cuts = (0..HEADER_LEN).collect::<Vec<_>>();
+        let mut pos = HEADER_LEN;
+        for (_, payload) in split(&blob).1 {
+            cuts.extend(pos..pos + 6);
+            pos += 6;
+            cuts.extend([
+                pos,
+                pos + 1,
+                pos + payload.len() / 2,
+                pos + payload.len().saturating_sub(1),
+            ]);
+            pos += payload.len();
+        }
+        cuts.retain(|&n| n < blob.len());
+        cuts.sort_unstable();
+        cuts.dedup();
+        cuts
+    } else {
+        (0..blob.len()).collect()
+    };
+    for n in cuts {
         assert!(VmState::decode(&blob[..n]).is_err());
     }
 }
