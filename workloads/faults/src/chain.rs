@@ -153,6 +153,21 @@ impl Chain {
         dropped
     }
 
+    pub fn evict_oldest(&mut self) -> Option<SnapId> {
+        if self.links.len() <= 2 {
+            return None;
+        }
+        let link = self.links.remove(1);
+        self.retire(link)
+    }
+
+    pub fn shed(&mut self, keep: usize) -> Vec<SnapId> {
+        match self.evict_oldest() {
+            Some(snap) => vec![snap],
+            None => self.truncate(keep),
+        }
+    }
+
     pub fn push(
         &mut self,
         actions: &[FaultAction],
@@ -296,6 +311,41 @@ mod tests {
         assert_eq!(chain.local(&path), 2, "the key follows the last link");
         assert_eq!(chain.truncate(0), vec![SnapId(2), SnapId(1)]);
         assert_eq!(chain.links(), 1, "setup stays");
+    }
+
+    #[test]
+    fn eviction_drops_the_oldest_link_and_keeps_setup_and_the_newest() {
+        let mut chain = Chain::new(point(0), None);
+        let path = [wait(1), wait(2), wait(3)];
+        for len in 1..=3 {
+            chain.push(&path[..len], point(len as u64), None);
+        }
+        assert_eq!(chain.evict_oldest(), Some(SnapId(1)));
+        assert_eq!(chain.evict_oldest(), Some(SnapId(2)));
+        assert_eq!(chain.evict_oldest(), None);
+        assert_eq!(chain.links(), 2);
+        let at = chain.local(&path);
+        assert_eq!((chain.depth(at), chain.point(at)), (3, point(3)));
+        assert_eq!(
+            chain.local(&path[..2]),
+            0,
+            "an evicted prefix falls back to setup"
+        );
+    }
+
+    #[test]
+    fn shedding_keeps_the_newest_link_when_asked() {
+        let mut chain = Chain::new(point(0), None);
+        let path = [wait(1), wait(2)];
+        for len in 1..=2 {
+            chain.push(&path[..len], point(len as u64), None);
+        }
+        assert_eq!(chain.shed(2), vec![SnapId(1)]);
+        assert_eq!(chain.shed(2), Vec::new());
+        let at = chain.local(&path);
+        assert_eq!((chain.depth(at), chain.point(at)), (2, point(2)));
+        assert_eq!(chain.shed(1), vec![SnapId(2)]);
+        assert_eq!(chain.links(), 1);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: test test-linux test-libvoidstar libvoidstar fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image oci-runtime-image arm64-oci-image clean
+.PHONY: test test-linux test-libvoidstar libvoidstar fetch fetch-uml-arm64 kernel initramfs image arm64-kernel arm64-initramfs arm64-image oci-runtime-image arm64-oci-image clean
 
 test: test-libvoidstar test-linux
 
@@ -30,6 +30,10 @@ endif
 # platform build needs network access.
 fetch:
 	scripts/fetch.sh
+
+# The arm64 User-mode Linux source and musl, for uml/build-uml.sh on arm64.
+fetch-uml-arm64:
+	scripts/fetch.sh uml-arm64
 
 kernel initramfs image arm64-kernel arm64-initramfs arm64-image oci-runtime-image arm64-oci-image:
 ifeq ($(UNAME_S),Linux)

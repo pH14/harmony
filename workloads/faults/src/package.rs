@@ -16,6 +16,7 @@ pub struct Options {
     pub knobs: Vec<String>,
     pub wall_minutes: Option<u64>,
     pub output: PathBuf,
+    pub uml_profile: Option<PathBuf>,
 }
 
 impl Options {
@@ -309,7 +310,7 @@ mod live {
     use crate::{
         bundle::FaultVocabulary,
         campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_checkpointed},
-        consonance::{FaultConfig, FaultTarget, identity},
+        consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         report::{BugReport, write_bug_reports},
         target::{ActionWindows, FaultAction},
     };
@@ -361,11 +362,19 @@ mod live {
         })
     }
 
-    fn config(options: &Options) -> FaultConfig {
-        FaultConfig {
+    fn config(options: &Options) -> Result<FaultConfig, String> {
+        let backend = match &options.uml_profile {
+            None => GuestBackend::Vm,
+            Some(profile) => GuestBackend::Uml(UmlGuest::load(
+                profile,
+                std::env::temp_dir().join("harmony-uml"),
+            )?),
+        };
+        Ok(FaultConfig {
             knobs: options.knobs.clone(),
             ram_mib: options.ram_mib,
-        }
+            backend,
+        })
     }
 
     pub fn search(
@@ -377,7 +386,7 @@ mod live {
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let workers = u32::try_from(resources.placement.workers.len())?;
-        let config = config(options);
+        let config = config(options)?;
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
@@ -517,7 +526,7 @@ mod live {
         if repeat == 0 {
             return Err("--repeat must be positive".into());
         }
-        let config = config(options);
+        let config = config(options)?;
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("replay", artifacts, identity, options, 1);
         #[allow(clippy::disallowed_methods)]
@@ -616,6 +625,7 @@ mod tests {
             knobs: Vec::new(),
             wall_minutes: None,
             output: PathBuf::from("unused"),
+            uml_profile: None,
         }
     }
 

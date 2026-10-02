@@ -1,0 +1,213 @@
+Answer /dev/harmony frames over a host socket in User-mode Linux
+
+User-mode Linux has no doorbell port or MMIO window. With harmony_fd=<fd> the
+kernel owns two ordinary pages for the request and response frames and rings
+the doorbell by sending the virtual time and the request frame on the
+inherited SOCK_SEQPACKET socket, then blocking for the response frame. The
+host process answers while the guest is stopped, so the exchange takes no
+virtual time. A failed exchange panics the guest. Without harmony_fd= the
+driver registers no device.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/include/shared/os.h
++++ b/arch/um/include/shared/os.h
+@@ -219,6 +219,12 @@ int os_futex_wake(void *uaddr);
+ 
+ /* execvp.c */
+ extern int execvp_noalloc(char *buf, const char *file, char *const argv[]);
++/* harmony.c */
++extern int os_harmony_available(void);
++extern int os_harmony_exchange(unsigned long long moment, const void *request,
++			       unsigned int length, void *response,
++			       unsigned int capacity);
++
+ /* helper.c */
+ extern int run_helper(void (*pre_exec)(void *), void *pre_data, char **argv);
+ extern int run_helper_thread(int (*proc)(void *), void *arg,
+--- a/arch/um/os-Linux/Makefile
++++ b/arch/um/os-Linux/Makefile
+@@ -6,7 +6,7 @@
+ # Don't instrument UML-specific code
+ KCOV_INSTRUMENT                := n
+ 
+-obj-y = elf_aux.o execvp.o file.o helper.o irq.o main.o mem.o process.o \
++obj-y = elf_aux.o execvp.o file.o harmony.o helper.o irq.o main.o mem.o process.o \
+ 	registers.o sigio.o signal.o start_up.o time.o tty.o \
+ 	umid.o user_syms.o util.o skas/
+ 
+@@ -16,7 +16,7 @@ CFLAGS_main.o += -Wno-frame-larger-than
+ 
+ obj-$(CONFIG_SMP) += smp.o
+ 
+-USER_OBJS := $(user-objs-y) elf_aux.o execvp.o file.o helper.o irq.o \
++USER_OBJS := $(user-objs-y) elf_aux.o execvp.o file.o harmony.o helper.o irq.o \
+ 	main.o mem.o process.o registers.o sigio.o signal.o start_up.o time.o \
+ 	tty.o umid.o util.o smp.o
+ 
+--- /dev/null
++++ b/arch/um/os-Linux/harmony.c
+@@ -0,0 +1,77 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Host side of the User-mode Linux /dev/harmony doorbell. */
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <sys/socket.h>
++#include <sys/types.h>
++#include <sys/uio.h>
++#include <init.h>
++#include <os.h>
++
++static int harmony_fd = -1;
++
++static int __init harmony_fd_setup(char *line, int *add)
++{
++	char *end;
++	long fd;
++
++	*add = 0;
++	errno = 0;
++	fd = strtol(line, &end, 10);
++	if (*line == '\0' || *end != '\0' || errno || fd < 0 || fd > INT_MAX) {
++		os_warn("harmony_fd= needs a file descriptor number\n");
++		return 1;
++	}
++	if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
++		os_warn("harmony_fd=%ld is not an open descriptor\n", fd);
++		return 1;
++	}
++	harmony_fd = fd;
++	return 0;
++}
++
++__uml_setup("harmony_fd=", harmony_fd_setup,
++"harmony_fd=<fd>\n"
++"    An inherited SOCK_SEQPACKET socket that answers every /dev/harmony\n"
++"    request with one response frame. Each request is the virtual time in\n"
++"    nanoseconds as a little-endian 64-bit integer followed by the frame.\n\n"
++);
++
++int os_harmony_available(void)
++{
++	return harmony_fd >= 0;
++}
++
++int os_harmony_exchange(unsigned long long moment, const void *request,
++			unsigned int length, void *response,
++			unsigned int capacity)
++{
++	uint64_t stamp = moment;
++	struct iovec iov[2] = {
++		{ .iov_base = &stamp, .iov_len = sizeof(stamp) },
++		{ .iov_base = (void *)request, .iov_len = length },
++	};
++	struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
++	ssize_t n;
++
++	do {
++		n = sendmsg(harmony_fd, &msg, MSG_NOSIGNAL);
++	} while (n < 0 && errno == EINTR);
++	if (n < 0)
++		return -errno;
++	if ((size_t)n != sizeof(stamp) + length)
++		return -EPROTO;
++	do {
++		n = recv(harmony_fd, response, capacity, MSG_TRUNC);
++	} while (n < 0 && errno == EINTR);
++	if (n < 0)
++		return -errno;
++	if (n == 0)
++		return -EPIPE;
++	if ((size_t)n > capacity)
++		return -EMSGSIZE;
++	return n;
++}
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -640,7 +640,7 @@ source "drivers/misc/cb710/Kconfig"
+ 
+ config HARMONY_DEVICE
+ 	bool "Harmony deterministic hypercall character device"
+-	depends on X86_64 || ARM64
++	depends on X86_64 || ARM64 || UML
+ 	default n
+ 	help
+ 	  Expose /dev/harmony for synchronous application traffic to the
+@@ -649,6 +649,8 @@ config HARMONY_DEVICE
+ 	  eight-byte read obtains entropy from the seeded hypercall stream.
+ 	  The driver owns the fixed 0xe000/0xf000 frame pages and rings I/O
+ 	  port or board MMIO doorbell, so applications need no physical access.
++	  User-mode Linux exchanges the same frames over the socket passed
++	  with harmony_fd= and registers no device without one.
+ 
+ config HARMONY_DEVICE_KUNIT_TEST
+ 	bool "KUnit test for Harmony transaction serialization"
+--- a/drivers/misc/harmony.c
++++ b/drivers/misc/harmony.c
+@@ -27,6 +27,10 @@
+ 
+ #include <asm/io.h>
+ #include <asm/ptrace.h>
++#ifdef CONFIG_UML
++#include <linux/time-internal.h>
++#include <os.h>
++#endif
+ 
+ #define HARMONY_DOORBELL_PORT	0x0ca1
+ #define HARMONY_DOORBELL_MMIO	0x0a000000UL
+@@ -90,7 +94,14 @@ static void __iomem *harmony_doorbell;
+ 
+ static void harmony_ring(u32 length)
+ {
+-#ifdef CONFIG_X86_64
++#if defined(CONFIG_UML)
++	int ret = os_harmony_exchange(time_travel_read(), harmony_req_page,
++				      length, harmony_resp_page,
++				      HARMONY_PAGE_SIZE);
++
++	if (ret < 0)
++		panic("harmony: host exchange failed: %d\n", ret);
++#elif defined(CONFIG_X86_64)
+ 	outl(length, HARMONY_DOORBELL_PORT);
+ #else
+ 	writel(length, harmony_doorbell);
+@@ -753,10 +764,17 @@ static int __init harmony_init(void)
+ {
+ 	int ret;
+ 
++#ifdef CONFIG_UML
++	if (!os_harmony_available())
++		return 0;
++	harmony_req_page = (void *)get_zeroed_page(GFP_KERNEL);
++	harmony_resp_page = (void *)get_zeroed_page(GFP_KERNEL);
++#else
+ 	harmony_req_page = memremap(HARMONY_REQ_GPA, HARMONY_PAGE_SIZE,
+ 				     MEMREMAP_WB);
+ 	harmony_resp_page = memremap(HARMONY_RESP_GPA, HARMONY_PAGE_SIZE,
+ 				      MEMREMAP_WB);
++#endif
+ 	if (!harmony_req_page || !harmony_resp_page) {
+ 		ret = -ENOMEM;
+ 		goto out_unmap;
+@@ -779,10 +797,15 @@ out_unmap:
+ 	if (harmony_doorbell)
+ 		iounmap(harmony_doorbell);
+ #endif
++#ifdef CONFIG_UML
++	free_page((unsigned long)harmony_req_page);
++	free_page((unsigned long)harmony_resp_page);
++#else
+ 	if (harmony_req_page)
+ 		memunmap(harmony_req_page);
+ 	if (harmony_resp_page)
+ 		memunmap(harmony_resp_page);
++#endif
+ 	return ret;
+ }
+ device_initcall(harmony_init);

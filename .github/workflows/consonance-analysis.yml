@@ -49,6 +49,7 @@ jobs:
           - vmm-backend
           - snapshot-store
           - harmony-supervisor
+          - uml
     env:
       HARMONY_MIRI_PR_SMOKE: "1"
     steps:
@@ -111,6 +112,9 @@ jobs:
             miriflags: -Zmiri-permissive-provenance -Zmiri-disable-isolation
           - name: harmony-supervisor
             command: --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --lib --bins
+            miriflags: -Zmiri-permissive-provenance
+          - name: uml
+            command: -p uml --lib
             miriflags: -Zmiri-permissive-provenance
     steps:
       - uses: actions/checkout@v4

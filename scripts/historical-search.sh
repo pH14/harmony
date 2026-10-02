@@ -24,10 +24,9 @@ done
 
 oracle=$(dirname "$0")/historical-oracle.sh
 harmony=${PWD}/tools/harmony
-kernel=${PWD}/guest/bzImage
 base_initramfs=${PWD}/guest/initramfs-oci.cpio.gz
 chmod +x "${harmony}"
-test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
+test -x "${harmony}" && test -s "${base_initramfs}"
 
 report_dir=reports
 if [ "${RUN_KEY:-${CASE_ID}}" != "${CASE_ID}" ]; then
@@ -38,16 +37,21 @@ out="${report_dir}/${CASE_ID}.search"
 console="${report_dir}/${CASE_ID}.search.console.txt"
 rm -rf "${out}"
 
+launcher=()
+guest_arguments=()
+# shellcheck source=historical-backend.sh disable=SC1091
+. "$(dirname "$0")/historical-backend.sh"
+historical_backend "${report_dir}/${CASE_ID}.search.denial.json"
+
 # The outer bound covers a process that stops answering after the campaign's
 # own wall budget. A guest watchdog cutoff is a structured workload result and
 # is preserved as measured status; an outer CLI timeout is infrastructure
 # failure even when it left a partial report behind.
 status=0
 timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
-    "${harmony}" search --package faults \
+    ${launcher[@]+"${launcher[@]}"} "${harmony}" search --package faults \
     "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci" \
-    --backend consonance \
-    --kernel "${kernel}" \
+    "${guest_arguments[@]}" \
     --base-initramfs "${base_initramfs}" \
     --seed "${SEED}" \
     --executions "${EXECUTIONS}" \
@@ -129,12 +133,17 @@ for structured in "${report}" "${out}/campaign-summary.json"; do
     fi
 done
 
+snapshots=$(historical_snapshots "${out}/campaign-summary.json")
+
 outcome=pass
 if (( status != 0 )); then
     outcome="fail: infra-failure (CLI exit ${status})"
     verdict=1
 elif (( execution_failures > watchdog_cutoffs )); then
     outcome="fail: infra-failure (execution failures ${execution_failures} exceed watchdog cutoffs ${watchdog_cutoffs})"
+    verdict=1
+elif ! historical_snapshots_used "${snapshots}"; then
+    outcome="fail: infra-failure (the ${BACKEND:-consonance} search restored no snapshot: ${snapshots})"
     verdict=1
 elif ! outcome=$("${oracle}" search "${report}"); then
     verdict=1
@@ -169,8 +178,9 @@ jq -n \
     --argjson executions_budget "${EXECUTIONS}" \
     --argjson ram_mib "${RAM_MIB}" \
     --argjson wall_minutes "${WALL_MINUTES}" --arg knobs "${knobs}" \
-    --arg reproducer "${reproducer}" \
-    '{case_id:$case_id, software:$software, version:$version,
+    --arg reproducer "${reproducer}" --arg backend "${BACKEND:-consonance}" \
+    --arg snapshots "${snapshots}" \
+    '{case_id:$case_id, backend:$backend, snapshots:$snapshots, software:$software, version:$version,
       image_prefix:$image_prefix, seed:$seed, workers:$workers,
       executions_budget:$executions_budget,
       ram_mib:$ram_mib, wall_minutes:$wall_minutes,
@@ -188,7 +198,10 @@ jq -n \
     echo "|---|---|"
     jq -r --arg outcome "${outcome}" --arg execution_status "${execution_status}" \
         --arg status "${status}" --arg cutoff "${watchdog_cutoffs}" --arg assertion "${ORACLE_ASSERTION}" \
+        --arg backend "${BACKEND:-consonance}" --arg snapshots "${snapshots}" \
         --arg evidence "${ORACLE_EVIDENCE}" '
+        ["backend", $backend],
+        ["snapshots", $snapshots],
         ["seed", (.seed | tostring)],
         ["workers", (.workers | tostring)],
         ["executions", (.executions | tostring)],

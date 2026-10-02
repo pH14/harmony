@@ -78,6 +78,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror",
+ "uml",
  "vmm-backend",
  "vmm-core",
 ]
@@ -149,6 +150,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 name = "environment"
 version = "0.1.0"
 dependencies = [
+ "hypercall-proto",
  "thiserror",
 ]
 
@@ -201,6 +203,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "uml",
 ]
 
 [[package]]
@@ -534,6 +537,21 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "uml"
+version = "0.1.0"
+dependencies = [
+ "environment",
+ "hypercall-proto",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "snapshot-store",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "unicode-ident"

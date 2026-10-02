@@ -4,7 +4,7 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     error::Error,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -15,8 +15,8 @@ use std::{
 use consonance_client::{
     cache::{CacheError, CacheIndex, Lease, Namespace},
     session::{
-        SearchSession, Session, SessionConfig, SessionError, WorkerLauncher, WorkerSession,
-        identity_with_config,
+        SearchSession, Session, SessionConfig, SessionError, UmlLaunch, WorkerLauncher,
+        WorkerSession, identity_with_config,
     },
 };
 use control_proto::{SnapId, StopReason};
@@ -55,6 +55,54 @@ const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 nohlt rdinit=/i
 pub struct FaultConfig {
     pub knobs: Vec<String>,
     pub ram_mib: u32,
+    pub backend: GuestBackend,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum GuestBackend {
+    #[default]
+    Vm,
+    Uml(UmlGuest),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UmlGuest {
+    pub profile: PathBuf,
+    pub identity: String,
+    pub work_parent: PathBuf,
+}
+
+impl UmlGuest {
+    pub fn load(profile: &Path, work_parent: PathBuf) -> Result<Self, String> {
+        let verified = uml::Profile::load(profile)
+            .map_err(|error| format!("User-mode Linux profile: {error}"))?;
+        let host = uml::HostIdentity::current()
+            .map_err(|error| format!("User-mode Linux host identity: {error}"))?;
+        let identity = format!(
+            "profile={};architecture={};cpu={};features={:x}",
+            verified.identity_sha256,
+            host.architecture,
+            host.cpu_model,
+            Sha256::digest(host.cpu_features.as_bytes())
+        );
+        Ok(Self {
+            profile: profile.to_path_buf(),
+            identity,
+            work_parent,
+        })
+    }
+
+    pub fn executable(profile: &Path) -> Result<PathBuf, String> {
+        uml::Profile::load(profile)
+            .map(|verified| verified.executable())
+            .map_err(|error| format!("User-mode Linux profile: {error}"))
+    }
+
+    fn kernel_arguments(knobs: &[String]) -> Vec<String> {
+        let mut arguments = knobs.to_vec();
+        arguments.push("rdinit=/init".to_owned());
+        arguments
+    }
 }
 
 impl FaultConfig {
@@ -66,6 +114,14 @@ impl FaultConfig {
             cmdline.push_str(knob);
         }
         cmdline
+    }
+
+    #[must_use]
+    pub fn uml(&self) -> Option<&UmlGuest> {
+        match &self.backend {
+            GuestBackend::Vm => None,
+            GuestBackend::Uml(guest) => Some(guest),
+        }
     }
 
     #[must_use]
@@ -179,6 +235,39 @@ struct Config {
     session: SessionConfig,
     cache: Option<Arc<dyn CacheIndex>>,
     worker: Option<WorkerLauncher>,
+    uml: Option<UmlLaunch>,
+}
+
+fn uml_launch(
+    guest: &UmlGuest,
+    initramfs: &[u8],
+    config: &FaultConfig,
+) -> Result<UmlLaunch, String> {
+    let digest = Sha256::digest(initramfs);
+    std::fs::create_dir_all(&guest.work_parent)
+        .map_err(|error| format!("User-mode Linux work directory: {error}"))?;
+    let path = guest
+        .work_parent
+        .join(format!("harmony-initramfs-{digest:x}.cpio"));
+    if !path.exists() {
+        let mut staged = tempfile::NamedTempFile::new_in(&guest.work_parent)
+            .map_err(|error| format!("stage initramfs: {error}"))?;
+        std::io::Write::write_all(&mut staged, initramfs)
+            .map_err(|error| format!("stage initramfs: {error}"))?;
+        staged
+            .persist(&path)
+            .map_err(|error| format!("stage initramfs: {error}"))?;
+    }
+    Ok(UmlLaunch {
+        profile: guest.profile.clone(),
+        initramfs: path,
+        memory_mib: config.ram_mib,
+        kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),
+        work_parent: guest.work_parent.clone(),
+        seed: SEED,
+        setup_budget: SETUP_BUDGET,
+        progress_limit: WALL_LIMIT,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,6 +405,10 @@ impl FaultTarget {
             session: config.session_config(),
             cache,
             worker,
+            uml: config
+                .uml()
+                .map(|guest| uml_launch(guest, initramfs, config))
+                .transpose()?,
         });
         let (observation, root_seal) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
@@ -405,7 +498,7 @@ impl FaultTarget {
 
     pub fn reset(&mut self) {
         let result = with_live(&self.config, |live| {
-            live.fit_store()?;
+            live.fit_store(1)?;
             let setup = live.setup;
             live.replay(setup)?;
             live.observe(FaultStop::Deadline)
@@ -428,7 +521,7 @@ impl FaultTarget {
 
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
         let rebuilt = with_live(&self.config, |live| {
-            live.fit_store()?;
+            live.fit_store(1)?;
             match live.ensure_prefix(&snapshot.actions)? {
                 Ok(cached) => {
                     live.replay(cached.snap)?;
@@ -590,6 +683,19 @@ fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
 
 impl Live {
     fn open(config: &Config) -> Result<Box<dyn SearchSession>, Box<dyn Error>> {
+        if let Some(launch) = &config.uml {
+            #[cfg(target_os = "linux")]
+            return Ok(Box::new(consonance_client::session::UmlSession::boot(
+                launch,
+                service_factory(),
+            )?));
+            #[cfg(not(target_os = "linux"))]
+            return Err(format!(
+                "User-mode Linux runs only on Linux hosts; {} cannot boot here",
+                launch.profile.display()
+            )
+            .into());
+        }
         if let Some(launcher) = &config.worker {
             return Ok(Box::new(WorkerSession::spawn(
                 launcher,
@@ -618,8 +724,8 @@ impl Live {
         let shared = match &config.cache {
             Some(index) => {
                 let setup_hash = session
-                    .state_hash()
-                    .map_err(|error| format!("setup state hash: {error}"))?;
+                    .cache_identity()
+                    .map_err(|error| format!("setup cache identity: {error}"))?;
                 Some(Shared {
                     index: Arc::clone(index),
                     namespace: Namespace::new(&[&config.key, SERVICE_IDENTITY, &setup_hash]),
@@ -732,22 +838,23 @@ impl Live {
         Ok(())
     }
 
-    fn fit_store(&mut self) -> Result<(), String> {
-        let Some(shared) = self.chain.shared() else {
+    fn fit_store(&mut self, keep: usize) -> Result<(), String> {
+        let Some(index) = self.chain.shared().map(|shared| Arc::clone(&shared.index)) else {
             return Ok(());
         };
-        let Some(bytes) = self.session.store_bytes() else {
-            return Ok(());
-        };
-        if !shared.index.report_store(self.holder, bytes) {
-            return Ok(());
+        loop {
+            let Some(bytes) = self.session.store_bytes() else {
+                return Ok(());
+            };
+            if !index.report_store(self.holder, bytes) {
+                return Ok(());
+            }
+            let dropped = self.chain.shed(keep);
+            if dropped.is_empty() {
+                return Ok(());
+            }
+            self.drop_snapshots(dropped)?;
         }
-        let dropped = self.chain.truncate(1);
-        self.drop_snapshots(dropped)?;
-        if let (Some(shared), Some(bytes)) = (self.chain.shared(), self.session.store_bytes()) {
-            shared.index.report_store(self.holder, bytes);
-        }
-        Ok(())
     }
 
     fn push_link(
@@ -803,7 +910,9 @@ impl Live {
         from: u64,
     ) -> Result<Point, String> {
         let lease = self.publish(actions, snap, moment.saturating_sub(from))?;
-        self.push_link(actions, Point { snap, moment }, lease)
+        let point = self.push_link(actions, Point { snap, moment }, lease)?;
+        self.fit_store(2)?;
+        Ok(point)
     }
 
     fn find(&mut self, actions: &[FaultAction]) -> Result<usize, String> {
@@ -1032,6 +1141,18 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
 
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
+    if let Some(guest) = config.uml() {
+        return format!(
+            "faults-uml-v1;{};executable={:x};initramfs={:x};memory_mib={};arguments={};\
+             seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
+             action=standing-fault-delta-v3;snapshot=uml-checkpoint-v1",
+            guest.identity,
+            Sha256::digest(kernel),
+            Sha256::digest(initramfs),
+            config.ram_mib,
+            UmlGuest::kernel_arguments(&config.knobs).join(" "),
+        );
+    }
     format!(
         "faults-consonance-whole-vm-v2;session={};\
          action=standing-fault-delta-v3;snapshot=portable-prefix-to-vm-snapshot-v1",
@@ -1062,10 +1183,12 @@ mod tests {
                 session: FaultConfig {
                     knobs: Vec::new(),
                     ram_mib: DEFAULT_RAM_MIB,
+                    backend: GuestBackend::Vm,
                 }
                 .session_config(),
                 cache: None,
                 worker: None,
+                uml: None,
             }),
             actions: Vec::new(),
             observation: FaultObservations::default(),

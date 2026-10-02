@@ -43,7 +43,7 @@ CANONICAL_TERMS = (
     "macOS", "etcd", "K3s", "QuickNES", "PostgreSQL", "NES", "OCI", "API",
     "Arm64", "CLI", "KVM", "XSAVE", "HVF", "VM", "CPU", "RAM", "Miri", "Kani",
     "STB", "Nova", "Docker", "Linux", "Go", "Intel", "Harmony", "Consonance",
-    "Dissonance", "N6",
+    "Dissonance", "N6", "UML",
 )
 
 # Words Title Case leaves lowercase unless they open or close a name.
@@ -58,6 +58,7 @@ VARIANT_SEPARATOR = " — "
 PR_BOUNDED_MINUTES = 15
 PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml", "NES Guest Image"): 45,
+    (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
 }
 
 
@@ -250,7 +251,7 @@ def _consonance_crates() -> tuple[str, ...]:
         "consonance-client", "control-proto", "environment", "execution-proto",
         "gicv3", "guest-image", "hypercall-doorbell", "hypercall-proto",
         "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
-        "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
+        "uml", "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
     )
 
 
@@ -596,6 +597,22 @@ HARMONY_HISTORICAL_BENCHMARKS = Workflow(
     ),
 )
 
+HARMONY_UML_CAMPAIGN = Workflow(
+    path=f"{WORKFLOW_DIR}/harmony-workloads-uml-campaign.yml",
+    name="Benchmarks / Harmony Workloads / UML",
+    owner="Harmony Workloads",
+    triggers=("workflow_dispatch",),
+    jobs=(
+        Job("Case Manifest", "full", 5),
+        Job("Guest Runtime", "full", 90),
+        Job("UML Profile", "full", 45),
+        Job("Harmony", "full", 60),
+        Job("Workload Image", "full", 90),
+        Job("<Scenario>", "full", 360),
+        Job("Reproducer", "full", 60),
+    ),
+)
+
 RELEASE = Workflow(
     path=f"{WORKFLOW_DIR}/release.yml",
     name="Release / Harmony",
@@ -608,6 +625,22 @@ RELEASE = Workflow(
     ),
 )
 
+CONSONANCE_UML = Workflow(
+    path=f"{WORKFLOW_DIR}/consonance-uml.yml",
+    name="Checks / Consonance / UML",
+    owner="Consonance",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(
+        Job("UML Launcher", "pr", 15, crates=("uml",)),
+        Job("UML Artifacts — <Architecture>", "pr", 45,
+            exception="Two cold compilations of the pinned UML kernel and locked "
+                      "toolchain exceed the pull request check budget."),
+        Job("UML Qualification — <Target>", "pr", 15),
+        Job("UML Replay — <Target>", "pr", 15),
+        Job("UML Restore — <Target>", "pr", 15),
+    ),
+)
+
 WORKFLOWS = (
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
@@ -616,6 +649,7 @@ WORKFLOWS = (
     CONSONANCE_HARDWARE,
     CONSONANCE_RUNTIME,
     CONSONANCE_XSAVE,
+    CONSONANCE_UML,
     DISSONANCE_CHECKS,
     DISSONANCE_ANALYSIS,
     HARMONY_CHECKS,
@@ -627,6 +661,7 @@ WORKFLOWS = (
     DISSONANCE_NES_BENCHMARKS,
     HARMONY_NES_BENCHMARKS,
     HARMONY_HISTORICAL_BENCHMARKS,
+    HARMONY_UML_CAMPAIGN,
     RELEASE,
 )
 
@@ -674,6 +709,7 @@ MIRI_OWNERS = {
     "vmm-backend": "Consonance",
     "snapshot-store": "Consonance",
     "harmony-supervisor": "Consonance",
+    "uml": "Consonance",
     "machine": "Harmony",
     "nes-guest": "Harmony",
 }

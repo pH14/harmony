@@ -65,6 +65,12 @@ fetch_one() {
     echo "ok: $file (downloaded, hash verified)"
 }
 
+if [ "${1:-}" = uml-arm64 ]; then
+    fetch_one "$UML_ARM64_URL" "$UML_ARM64_SHA256"
+    fetch_one "$MUSL_URL" "$MUSL_SHA256"
+    exit 0
+fi
+
 fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
 fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256" \
     "https://ftp.gwdg.de/pub/linux/gentoo/distfiles/e3/busybox-1.38.0.tar.bz2"

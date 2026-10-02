@@ -1,0 +1,100 @@
+Emulate time-stamp counter reads in User-mode Linux on x86-64
+
+Guest instructions run natively in the stub processes, so RDTSC and RDTSCP
+would read the host counter. Each stub enables PR_TSC_SIGSEGV before running
+guest code. The resulting general-protection fault is decoded in the SIGSEGV
+path: RDTSC and RDTSCP charge CONFIG_HARMONY_UML_CLOCK_READ_VNS, return the
+virtual time in nanoseconds, set the RDTSCP processor id to zero and step
+over the instruction. Every other fault keeps its signal.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/include/shared/arch.h
++++ b/arch/um/include/shared/arch.h
+@@ -11,6 +11,7 @@
+ extern void arch_check_bugs(void);
+ extern int arch_fixup(unsigned long address, struct uml_pt_regs *regs);
+ extern void arch_examine_signal(int sig, struct uml_pt_regs *regs);
++extern int arch_emulate_counter(struct uml_pt_regs *regs);
+ 
+ void mc_set_rip(void *_mc, void *target);
+ 
+--- a/arch/um/kernel/skas/stub_exe.c
++++ b/arch/um/kernel/skas/stub_exe.c
+@@ -40,6 +40,12 @@ noinline static void real_init(void)
+ 	/* Needed in SECCOMP mode (and safe to do anyway) */
+ 	stub_syscall5(__NR_prctl, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+ 
++#ifdef __x86_64__
++	/* Harmony answers time-stamp counter reads from virtual time */
++	if (stub_syscall2(__NR_prctl, PR_SET_TSC, PR_TSC_SIGSEGV))
++		stub_syscall1(__NR_exit, 22);
++#endif
++
+ 	/* read information from STDIN and close it */
+ 	res = stub_syscall3(__NR_read, 0,
+ 			    (unsigned long)&init_data, sizeof(init_data));
+--- a/arch/um/kernel/trap.c
++++ b/arch/um/kernel/trap.c
+@@ -292,6 +292,8 @@ void segv_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs,
+ 	struct faultinfo * fi = UPT_FAULTINFO(regs);
+ 
+ 	if (UPT_IS_USER(regs) && !SEGV_IS_FIXABLE(fi)) {
++		if (arch_emulate_counter(regs))
++			return;
+ 		show_segv_info(regs);
+ 		bad_segv(*fi, UPT_IP(regs));
+ 		return;
+--- a/arch/x86/um/Makefile
++++ b/arch/x86/um/Makefile
+@@ -9,7 +9,7 @@ else
+ 	BITS := 64
+ endif
+ 
+-obj-y = bugs_$(BITS).o delay.o fault.o \
++obj-y = bugs_$(BITS).o counter.o delay.o fault.o \
+ 	ptrace.o ptrace_$(BITS).o ptrace_user.o setjmp_$(BITS).o signal.o \
+ 	stub_segv.o \
+ 	sys_call_table_$(BITS).o sysrq_$(BITS).o tls_$(BITS).o \
+--- /dev/null
++++ b/arch/x86/um/counter.c
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Time-stamp counter reads from guest processes, answered from virtual time. */
++#include <linux/time-internal.h>
++#include <linux/uaccess.h>
++#include <arch.h>
++#include <sysdep/ptrace.h>
++
++#define X86_TRAP_GP	13
++
++int arch_emulate_counter(struct uml_pt_regs *regs)
++{
++	const u8 __user *ip = (const u8 __user *)UPT_IP(regs);
++	unsigned long long now;
++	unsigned int length;
++	u8 insn[3];
++
++	if (regs->faultinfo.trap_no != X86_TRAP_GP)
++		return 0;
++	if (copy_from_user(insn, ip, 2) || insn[0] != 0x0f)
++		return 0;
++	if (insn[1] == 0x31)
++		length = 2;
++	else if (insn[1] == 0x01 && !copy_from_user(&insn[2], ip + 2, 1) &&
++		 insn[2] == 0xf9)
++		length = 3;
++	else
++		return 0;
++
++	now = time_travel_counter_read();
++	UPT_AX(regs) = (u32)now;
++	UPT_DX(regs) = now >> 32;
++	if (length == 3)
++		UPT_CX(regs) = 0;
++	UPT_IP(regs) += length;
++	return 1;
++}

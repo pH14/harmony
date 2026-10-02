@@ -38,6 +38,12 @@ image with `--base-initramfs`. The platform runtime provides the supervisor and
 its SDK devices; installed kernel and base-image artifacts are discovered
 through `HARMONY_GUEST_DIR`.
 
+`--backend uml --uml-profile DIR` runs the faults package on the
+User-mode Linux profile directory built by
+[`consonance/harmony-linux/uml`](../consonance/harmony-linux/uml/README.md)
+on any Linux host as an ordinary user. The profile's kernel replaces
+`--kernel`. Each flag requires the other, and UML runs on Linux only.
+
 Wait durations adapt automatically to campaign feedback and are recorded in each
 input for replay. `--ram-mib` sets guest RAM. `--knobs "k=v k=v"` adds guest
 command-line words, and `--wall-minutes` bounds a search in host time. `--replay INPUT.json --repeat N`

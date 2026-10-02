@@ -17,6 +17,10 @@
             url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.35.tar.xz";
             sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236";
           };
+          umlArm64Source = pkgs.fetchurl {
+            url = "https://github.com/zalexdev/linux-um-arm64/archive/8897487c52233cd00cf2850008ca068892f1ae91.tar.gz";
+            sha256 = "8eacae5ab45229ea157d9334c63e9cc9c7f89c466c353843dff1a487f08ac080";
+          };
           busyboxSource = pkgs.fetchurl {
             urls = [
               "https://sources.buildroot.net/busybox/busybox-1.38.0.tar.bz2"
@@ -108,6 +112,18 @@
               exec ${./consonance/harmony-linux/nix/build-guest-images.sh} "$@"
             '';
           };
+          umlBuilder = pkgs.writeShellApplication {
+            name = "harmony-build-uml";
+            runtimeInputs = commonRuntimeInputs ++ [ pkgs.gcc13 pkgs.glibc.static ];
+            text = ''
+              export HARMONY_NIX_SOURCE=${self.outPath}
+              export HARMONY_NIX_LINUX_SOURCE=${if isArm64 then umlArm64Source else linuxSource}
+              export HARMONY_NIX_MUSL_SOURCE=${muslSource}
+              export LIBRARY_PATH="${pkgs.glibc.static}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+              export NIX_LDFLAGS="-L${pkgs.glibc.static}/lib''${NIX_LDFLAGS:+ $NIX_LDFLAGS}"
+              exec ${./consonance/harmony-linux/uml/nix-build.sh} "$@"
+            '';
+          };
           workloadBuilder = pkgs.writeShellApplication {
             name = "harmony-build-workload-images";
             runtimeInputs = nativeRuntimeInputs;
@@ -134,6 +150,7 @@
           busybox-source = busyboxSource;
           platform-guest-images = platformBuilder;
           workload-guest-images = workloadBuilder;
+          uml-images = umlBuilder;
           guest-images = platformBuilder;
           default = platformBuilder;
         });
@@ -146,6 +163,10 @@
         workload-guest-images = {
           type = "app";
           program = "${self.packages.${system}.workload-guest-images}/bin/harmony-build-workload-images";
+        };
+        uml-images = {
+          type = "app";
+          program = "${self.packages.${system}.uml-images}/bin/harmony-build-uml";
         };
         guest-images = {
           type = "app";

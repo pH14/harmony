@@ -37,6 +37,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
+| `Checks / Consonance / UML` | `consonance-uml.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Dissonance` | `dissonance-checks.yml` | pull_request, push |
 | `Checks / Dissonance / Analysis` | `dissonance-analysis.yml` | schedule, workflow_dispatch |
 | `Checks / Harmony` | `harmony-checks.yml` | pull_request, push |
@@ -48,10 +49,29 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
+| `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
+
+`Checks / Consonance / UML` owns the User-mode Linux profiles for x86-64 and
+arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
+<Architecture>` builds the profile twice from the locked Nix toolchain and
+fails unless every artifact is byte-identical; two cold builds have a
+registered 45-minute exception. The arm64 profile builds from the pinned RFC
+port, and every check below runs on an x86-64 and an arm64 runner.
+`UML Qualification — <Target>` runs `harmony-uml-qualify` as the runner's
+ordinary UID, natively and under Docker's default seccomp profile with every
+capability dropped. The qualifier denies ptrace and KVM ioctls to itself and
+every guest, and fails when the host is root or has effective capabilities.
+`UML Replay — <Target>` runs the replay suite on the same targets: 100 replays
+of each fixture under host load, CPU pinning, process stops and host address
+randomization must produce one event hash, and recordings must replay to each cut from a fresh process.
+`UML Restore — <Target>` runs the checkpoint suite on the same targets:
+in-place and fresh-process restores of each fixture must reach the cold event
+hash, and an image without host memory or a restore without the bridge state
+must diverge. Reports remain workflow artifacts.
 
 ## Dissonance Workloads and Harmony Workloads
 
@@ -269,6 +289,16 @@ arm, a control version or a replay mode over a second build.
 `ci-historical-arms` rejects them, along with any matrix dimension that would
 restore the arm. A separate Historical Bugs Checks workflow does not exist; the
 full search lives in Benchmarks and pull requests do not run it.
+
+`Benchmarks / Harmony Workloads / UML` runs one historical case, etcd by
+default, on the User-mode Linux profile when an operator dispatches it.
+`scripts/historical-search.sh` and `scripts/historical-replay.sh` take
+`BACKEND=uml`, which runs the CLI through `harmony-uml-qualify exec`: the
+runner's ordinary UID with ptrace and KVM ioctls denied, with the credentials
+and denial recorded beside the report. The search fails when the campaign
+captured no snapshot or restored none. `Reproducer` then replays the search's
+`first-bug-input.json` from genesis in fresh processes; every replay must
+violate the case's assertion with its evidence and reach one state digest.
 
 ## Naming
 

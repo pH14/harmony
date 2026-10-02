@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Replay one declared clean sample against a historical case's affected version.
+# Replay one declared clean sample, or a search's reproducer, against a
+# historical case's affected version.
 #
 #   historical-replay.sh sample <sample.json>
+#   historical-replay.sh reproduce <first-bug-input.json>
 #
 # The campaign itself already performs one fresh replay for every finding.
 # Samples replay twice so the oracle can compare the two fresh state digests,
@@ -18,6 +20,7 @@ input=${2:?input is required}
 
 case "${mode}" in
     sample) default_repeats=2 ;;
+    reproduce) default_repeats=3 ;;
     *) echo "historical-replay: unknown mode ${mode}" >&2; exit 2 ;;
 esac
 
@@ -27,10 +30,9 @@ esac
 }
 
 harmony=${PWD}/tools/harmony
-kernel=${PWD}/guest/bzImage
 base_initramfs=${PWD}/guest/initramfs-oci.cpio.gz
 chmod +x "${harmony}"
-test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
+test -x "${harmony}" && test -s "${base_initramfs}"
 
 oracle=$(dirname "$0")/historical-oracle.sh
 knobs=${KNOBS:-}
@@ -71,10 +73,14 @@ out="reports/${CASE_ID}.${label}"
 console="reports/${CASE_ID}.${label}.console.txt"
 rm -rf "${out}"
 status=0
-timeout -k 30 "${timeout_seconds}" "${harmony}" search --package faults \
+launcher=()
+guest_arguments=()
+# shellcheck source=historical-backend.sh disable=SC1091
+. "$(dirname "$0")/historical-backend.sh"
+historical_backend "reports/${CASE_ID}.${label}.denial.json"
+timeout -k 30 "${timeout_seconds}" ${launcher[@]+"${launcher[@]}"} "${harmony}" search --package faults \
     "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci" \
-    --backend consonance \
-    --kernel "${kernel}" \
+    "${guest_arguments[@]}" \
     --base-initramfs "${base_initramfs}" \
     --replay "${input}" \
     --repeat "${repeats}" \

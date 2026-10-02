@@ -734,6 +734,23 @@ mod worker;
     not(miri)
 ))]
 pub use worker::{SearchSession, WORKER_FD_ENV, WorkerLauncher, WorkerSession, serve_inherited};
+#[cfg(all(target_os = "linux", feature = "uml"))]
+mod uml;
+#[cfg(all(target_os = "linux", feature = "uml"))]
+pub use uml::UmlSession;
+
+#[cfg(feature = "uml")]
+#[derive(Clone, Debug)]
+pub struct UmlLaunch {
+    pub profile: std::path::PathBuf,
+    pub initramfs: std::path::PathBuf,
+    pub memory_mib: u32,
+    pub kernel_arguments: Vec<String>,
+    pub work_parent: std::path::PathBuf,
+    pub seed: u64,
+    pub setup_budget: u64,
+    pub progress_limit: Duration,
+}
 
 pub type SdkEvent = (u64, u32, Vec<u8>);
 

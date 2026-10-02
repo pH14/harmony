@@ -51,6 +51,8 @@ use crate::{
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v5";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v1";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v1";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -316,17 +318,28 @@ impl CampaignTypes for FaultWorkload {
 
 impl Reporting for FaultWorkload {
     fn stream_format(&self) -> &'static str {
-        CAMPAIGN_STREAM_FORMAT
+        if self.config.uml().is_some() {
+            UML_CAMPAIGN_STREAM_FORMAT
+        } else {
+            CAMPAIGN_STREAM_FORMAT
+        }
     }
 
     fn checkpoint_format(&self) -> &'static str {
-        SNAPSHOT_CHECKPOINT_FORMAT
+        if self.config.uml().is_some() {
+            UML_SNAPSHOT_CHECKPOINT_FORMAT
+        } else {
+            SNAPSHOT_CHECKPOINT_FORMAT
+        }
     }
 
     fn workload_identity_sha256(&self) -> String {
         let mut digest = Sha256::new();
         digest.update(&self.kernel);
         digest.update(&self.initramfs);
+        if let Some(guest) = self.config.uml() {
+            digest.update(guest.identity.as_bytes());
+        }
         format!("{:x}", digest.finalize())
     }
 
@@ -882,13 +895,14 @@ pub fn run_fault_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consonance::DEFAULT_RAM_MIB;
+    use crate::consonance::{DEFAULT_RAM_MIB, GuestBackend};
     use searcher::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawVersionSchedule};
 
     fn config(knobs: &[&str]) -> FaultConfig {
         FaultConfig {
             knobs: knobs.iter().map(|knob| (*knob).to_owned()).collect(),
             ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Vm,
         }
     }
 
@@ -1168,6 +1182,31 @@ mod tests {
             etcd.workload_identity_sha256(),
             postgres.workload_identity_sha256()
         );
+    }
+
+    #[test]
+    fn a_uml_profile_separates_identity_and_formats_from_the_vm() {
+        let uml = |identity: &str| {
+            let mut config = config(&[]);
+            config.backend = GuestBackend::Uml(crate::consonance::UmlGuest {
+                profile: "profile".into(),
+                identity: identity.to_owned(),
+                work_parent: "work".into(),
+            });
+            FaultWorkload::new(b"kernel", b"initramfs", &config)
+        };
+        let vm = game();
+        let first = uml("profile=a;cpu=x");
+        let other_cpu = uml("profile=a;cpu=y");
+        for (left, right) in [(&vm, &first), (&first, &other_cpu)] {
+            assert_ne!(left.image_identity(), right.image_identity());
+            assert_ne!(
+                left.workload_identity_sha256(),
+                right.workload_identity_sha256()
+            );
+        }
+        assert_ne!(vm.stream_format(), first.stream_format());
+        assert_ne!(vm.checkpoint_format(), first.checkpoint_format());
     }
 
     #[test]

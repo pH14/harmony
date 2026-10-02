@@ -1,0 +1,191 @@
+Charge virtual time per system call in User-mode Linux
+
+Harmony runs User-mode Linux in time-travel=inf-cpu mode, where guest time
+moves only when the kernel moves it. Stock UML moves it when the clocksource
+is read, when sched_yield runs and when a system call fails, and starts the
+wall clock from the host clock. Harmony instead charges a fixed cost before
+every system call: CONFIG_HARMONY_UML_CLOCK_READ_VNS for clock_gettime,
+gettimeofday and time, and CONFIG_HARMONY_UML_SYSCALL_VNS for every other
+call. Kernel clocksource reads cost nothing and return nanoseconds, the wall
+clock starts at time-travel-start= or zero, and boot panics in any other
+time-travel mode. Equal deadlines keep UML's first-in, first-out order.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/Kconfig
++++ b/arch/um/Kconfig
+@@ -227,6 +227,23 @@ config UML_TIME_TRAVEL_SUPPORT
+ 
+ 	  It is safe to say Y, but you probably don't need this.
+ 
++config HARMONY_UML_SYSCALL_VNS
++	int "Virtual nanoseconds charged for each system call"
++	default 100000
++	depends on UML_TIME_TRAVEL_SUPPORT
++	help
++	  Harmony advances inf-cpu virtual time by this amount before every
++	  system call other than a clock read, including sched_yield.
++
++config HARMONY_UML_CLOCK_READ_VNS
++	int "Virtual nanoseconds charged for each clock read"
++	default 1
++	depends on UML_TIME_TRAVEL_SUPPORT
++	help
++	  Harmony advances inf-cpu virtual time by this amount before
++	  clock_gettime, gettimeofday and time, and before an emulated
++	  time-stamp counter read.
++
+ config UML_MAX_USERSPACE_ITERATIONS
+ 	int
+ 	prompt "Maximum number of unscheduled userspace iterations"
+--- a/arch/um/include/linux/time-internal.h
++++ b/arch/um/include/linux/time-internal.h
+@@ -10,7 +10,7 @@
+ #include <asm/bug.h>
+ #include <shared/timetravel.h>
+ 
+-#define TIMER_MULTIPLIER 256
++#define TIMER_MULTIPLIER 1
+ #define TIMER_MIN_DELTA  500
+ 
+ #ifdef CONFIG_UML_TIME_TRAVEL_SUPPORT
+@@ -90,4 +90,6 @@ extern unsigned long tt_extra_sched_jiffies;
+  * which is intentional since we really shouldn't link it in that case.
+  */
+ void time_travel_ndelay(unsigned long nsec);
++unsigned long long time_travel_read(void);
++unsigned long long time_travel_counter_read(void);
+ #endif /* __TIMER_INTERNAL_H__ */
+--- a/arch/um/kernel/skas/syscall.c
++++ b/arch/um/kernel/skas/syscall.c
+@@ -12,7 +12,20 @@
+ #include <linux/time-internal.h>
+ #include <asm/syscall.h>
+ #include <asm/unistd.h>
+-#include <asm/delay.h>
++
++static unsigned long syscall_cost(int syscall)
++{
++	switch (syscall) {
++	case __NR_clock_gettime:
++	case __NR_gettimeofday:
++#ifdef __NR_time
++	case __NR_time:
++#endif
++		return CONFIG_HARMONY_UML_CLOCK_READ_VNS;
++	default:
++		return CONFIG_HARMONY_UML_SYSCALL_VNS;
++	}
++}
+ 
+ void handle_syscall(struct uml_pt_regs *r)
+ {
+@@ -31,16 +44,7 @@ void handle_syscall(struct uml_pt_regs *r)
+ 		goto out;
+ 
+ 	syscall = UPT_SYSCALL_NR(r);
+-
+-	/*
+-	 * If no time passes, then sched_yield may not actually yield, causing
+-	 * broken spinlock implementations in userspace (ASAN) to hang for long
+-	 * periods of time.
+-	 */
+-	if ((time_travel_mode == TT_MODE_INFCPU ||
+-	     time_travel_mode == TT_MODE_EXTERNAL) &&
+-	    syscall == __NR_sched_yield)
+-		tt_extra_sched_jiffies += 1;
++	time_travel_ndelay(syscall_cost(syscall));
+ 
+ 	if (syscall >= 0 && syscall < __NR_syscalls) {
+ 		unsigned long ret;
+@@ -53,20 +57,6 @@ void handle_syscall(struct uml_pt_regs *r)
+ 						 UPT_SYSCALL_ARG6(&regs->regs));
+ 
+ 		PT_REGS_SET_SYSCALL_RETURN(regs, ret);
+-
+-		/*
+-		 * An error value here can be some form of -ERESTARTSYS
+-		 * and then we'd just loop. Make any error syscalls take
+-		 * some time, so that it won't just loop if something is
+-		 * not ready, and hopefully other things will make some
+-		 * progress.
+-		 */
+-		if (IS_ERR_VALUE(ret) &&
+-		    (time_travel_mode == TT_MODE_INFCPU ||
+-		     time_travel_mode == TT_MODE_EXTERNAL)) {
+-			um_udelay(1);
+-			schedule();
+-		}
+ 	}
+ 
+ out:
+--- a/arch/um/kernel/time.c
++++ b/arch/um/kernel/time.c
+@@ -594,6 +594,17 @@ void time_travel_ndelay(unsigned long nsec)
+ }
+ EXPORT_SYMBOL(time_travel_ndelay);
+ 
++unsigned long long time_travel_read(void)
++{
++	return time_travel_time;
++}
++
++unsigned long long time_travel_counter_read(void)
++{
++	time_travel_update_time_rel(CONFIG_HARMONY_UML_CLOCK_READ_VNS);
++	return time_travel_time;
++}
++
+ void time_travel_add_irq_event(struct time_travel_event *e)
+ {
+ 	BUG_ON(time_travel_mode != TT_MODE_EXTERNAL);
+@@ -711,9 +722,9 @@ static void time_travel_set_start(void)
+ 		time_travel_start -= time_travel_time;
+ 		break;
+ 	case TT_MODE_INFCPU:
++		break;
+ 	case TT_MODE_BASIC:
+-		if (!time_travel_start_set)
+-			time_travel_start = os_persistent_clock_emulation();
++		time_travel_start = os_persistent_clock_emulation();
+ 		break;
+ 	case TT_MODE_OFF:
+ 		/* we just read the host clock with os_persistent_clock_emulation() */
+@@ -874,24 +885,8 @@ static irqreturn_t um_timer(int irq, void *dev)
+ 
+ static u64 timer_read(struct clocksource *cs)
+ {
+-	if (time_travel_mode != TT_MODE_OFF) {
+-		/*
+-		 * We make reading the timer cost a bit so that we don't get
+-		 * stuck in loops that expect time to move more than the
+-		 * exact requested sleep amount, e.g. python's socket server,
+-		 * see https://bugs.python.org/issue37026.
+-		 *
+-		 * However, don't do that when we're in interrupt or such as
+-		 * then we might recurse into our own processing, and get to
+-		 * even more waiting, and that's not good - it messes up the
+-		 * "what do I do next" and onstack event we use to know when
+-		 * to return from time_travel_update_time().
+-		 */
+-		if (!irqs_disabled() && !in_interrupt() && !in_softirq() &&
+-		    !time_travel_ext_waiting)
+-			time_travel_update_time_rel(TIMER_MULTIPLIER);
++	if (time_travel_mode != TT_MODE_OFF)
+ 		return time_travel_time / TIMER_MULTIPLIER;
+-	}
+ 
+ 	return os_nsecs() / TIMER_MULTIPLIER;
+ }
+@@ -944,6 +939,8 @@ void read_persistent_clock64(struct timespec64 *ts)
+ 
+ void __init time_init(void)
+ {
++	if (time_travel_mode != TT_MODE_INFCPU)
++		panic("Harmony requires time-travel=inf-cpu\n");
+ 	timer_set_signal_handler();
+ 	late_time_init = um_timer_setup;
+ }

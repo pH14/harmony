@@ -1,0 +1,1900 @@
+Let the Harmony host capture and restore a User-mode Linux kernel
+
+While the kernel waits for a /dev/harmony answer, the host may instead send
+a control message with an image file descriptor. A capture writes the host
+process's private memory, the data extents of guest physical memory, the
+thread pointer and an inventory of open host descriptors into that file. It
+runs on the initial host thread with signals blocked, so it neither flushes
+nor drains anything and virtual time does not move.
+
+A restore checks the image against the running process first and refuses
+it when the layout or the descriptor inventory differ. It then kills the
+stub processes, removes the epoll registrations, copies the image back,
+including the host mappings of kernel virtual memory where vmalloc stacks
+live, and returns to the point where the capture was taken. That point
+rebuilds the stubs and the epoll registrations from the restored kernel
+state and acknowledges the restore. The harmony_restore parameter asks the host for an image at
+the end of boot, which restores a checkpoint into a fresh process.
+
+When a checkpoint has been taken, the first guest write to each page faults
+so the host learns which pages changed. That fault repeats an access the
+guest made once, so it does not count toward the userspace iterations that
+advance the scheduling clock.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- /dev/null
++++ b/arch/um/include/shared/checkpoint.h
+@@ -0,0 +1,67 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __UM_CHECKPOINT_H
++#define __UM_CHECKPOINT_H
++
++#define UM_CONTROL_MAGIC 0x31435548U
++#define UM_CONTROL_CAPTURE 1U
++#define UM_CONTROL_RESTORE 2U
++#define UM_CONTROL_MEMORY 4U
++#define UM_CONTROL_CONTINUE 5U
++
++#define UM_MEMORY_ALL 1L
++
++#define UM_CAPTURE_OMIT_HOST_MEMORY 1ULL
++
++struct um_checkpoint_args {
++	int fd;
++	unsigned long long flags;
++	const int *skip_fds;
++	int nskip;
++	int physmem_fd;
++	unsigned long physmem_base;
++	unsigned long physmem_start;
++	unsigned long physmem_end;
++	unsigned long binary_end;
++	long result;
++};
++
++extern int um_checkpoint_resumed;
++extern int um_checkpoint_write_faulted;
++
++extern void os_checkpoint_capture(void *arg);
++extern void os_checkpoint_validate(void *arg);
++extern void os_checkpoint_restore(void *arg);
++extern void os_checkpoint_kill(int pid);
++extern void *os_initial_jmpbuf(unsigned long *size);
++extern void os_checkpoint_resume(void);
++
++struct mm_struct;
++
++extern int um_physmem_fd(void);
++extern int um_checkpoint_stub_fds(int *fds, int capacity);
++extern void um_checkpoint_kill_stubs(void);
++extern void um_checkpoint_rebuild_stubs(void);
++extern void um_checkpoint_mark_present(struct mm_struct *mm,
++				       unsigned long start, unsigned long end);
++extern void um_irq_checkpoint_detach(void);
++extern void um_irq_checkpoint_attach(void);
++
++extern void os_track_init(unsigned long base, unsigned long start,
++			  unsigned long end);
++extern int os_track_writable(unsigned long long phys);
++extern void os_track_mark(unsigned long long phys, unsigned long length);
++extern void os_track_unprotect(unsigned long start, unsigned long end);
++extern int os_track_fault(unsigned long address);
++extern int os_harmony_memory(long flags, const void *bitmap,
++			     unsigned long bytes);
++
++extern void um_checkpoint_revoke(struct mm_struct *mm, unsigned long start,
++				 unsigned long end);
++extern void um_checkpoint_mark_stubs(void);
++extern int um_checkpoint_write_fault(struct mm_struct *mm,
++				     unsigned long address);
++
++extern long um_harmony_control(unsigned int command, unsigned long long flags,
++			       int fd, unsigned int *ack);
++
++#endif
+--- a/arch/um/kernel/irq.c
++++ b/arch/um/kernel/irq.c
+@@ -16,6 +16,7 @@
+ #include <linux/seq_file.h>
+ #include <linux/slab.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <kern_util.h>
+ #include <os.h>
+ #include <irq_user.h>
+@@ -438,6 +439,24 @@ void deactivate_fd(int fd, int irqnum)
+ }
+ EXPORT_SYMBOL(deactivate_fd);
+ 
++void um_irq_checkpoint_detach(void)
++{
++	struct irq_entry *entry;
++
++	list_for_each_entry(entry, &active_fds, list)
++		os_del_epoll_fd(entry->fd);
++}
++
++void um_irq_checkpoint_attach(void)
++{
++	struct irq_entry *entry;
++
++	list_for_each_entry(entry, &active_fds, list) {
++		os_set_fd_async(entry->fd);
++		update_irq_entry(entry);
++	}
++}
++
+ /*
+  * Called just before shutdown in order to provide a clean exec
+  * environment in case the system is rebooting.  No locking because
+--- a/arch/um/kernel/physmem.c
++++ b/arch/um/kernel/physmem.c
+@@ -10,6 +10,7 @@
+ #include <asm/page.h>
+ #include <asm/sections.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <init.h>
+ #include <kern.h>
+ #include <kern_util.h>
+@@ -97,6 +98,11 @@ void __init setup_physmem(unsigned long start, unsigned long reserve_end,
+ 	max_low_pfn = min_low_pfn + (map_size >> PAGE_SHIFT);
+ }
+ 
++int um_physmem_fd(void)
++{
++	return physmem_fd;
++}
++
+ int phys_mapping(unsigned long phys, unsigned long long *offset_out)
+ {
+ 	int fd = -1;
+--- a/arch/um/kernel/skas/Makefile
++++ b/arch/um/kernel/skas/Makefile
+@@ -3,7 +3,7 @@
+ # Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
+ #
+ 
+-obj-y := stub.o mmu.o process.o syscall.o uaccess.o \
++obj-y := checkpoint.o stub.o mmu.o process.o syscall.o uaccess.o \
+ 	 stub_exe_embed.o
+ 
+ # Stub executable
+--- /dev/null
++++ b/arch/um/kernel/skas/checkpoint.c
+@@ -0,0 +1,267 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Checkpoints of a User-mode Linux kernel, requested by the Harmony host
++ * while the guest waits for a bridge answer.
++ *
++ * The host process memory and its mappings of kernel virtual memory are
++ * captured in an image. The Harmony host reads and writes the physical memory
++ * file itself, using the pages reported as written since the last capture or
++ * restore. Stub processes and vmalloc aliases write physical memory without
++ * being tracked, so their pages are reported at every command. Stub processes
++ * and epoll registrations are host resources outside that memory, so a
++ * restore tears down the current ones and rebuilds them from the restored
++ * kernel state.
++ */
++#include <linux/init.h>
++#include <linux/irqflags.h>
++#include <linux/kernel.h>
++#include <linux/mm.h>
++#include <linux/pgtable.h>
++#include <linux/sched/signal.h>
++#include <linux/sched/task_stack.h>
++#include <asm/sections.h>
++#include <asm/tlbflush.h>
++#include <linux/time-internal.h>
++#include <as-layout.h>
++#include <checkpoint.h>
++#include <kern_util.h>
++#include <os.h>
++#include <skas.h>
++
++#define MAX_STUB_FDS 1024
++
++static int stub_fds[MAX_STUB_FDS];
++static bool restore_at_boot;
++
++typedef void (*present_fn)(struct mm_struct *mm, unsigned long address,
++			   pte_t *pte);
++
++static void walk_present(struct mm_struct *mm, unsigned long start,
++			 unsigned long end, present_fn fn)
++{
++	unsigned long address = start;
++
++	while (address < end) {
++		pgd_t *pgd = pgd_offset(mm, address);
++		p4d_t *p4d;
++		pud_t *pud;
++		pmd_t *pmd;
++		pte_t *pte;
++
++		if (!pgd_present(*pgd)) {
++			address = pgd_addr_end(address, end);
++			continue;
++		}
++		p4d = p4d_offset(pgd, address);
++		if (!p4d_present(*p4d)) {
++			address = p4d_addr_end(address, end);
++			continue;
++		}
++		pud = pud_offset(p4d, address);
++		if (!pud_present(*pud)) {
++			address = pud_addr_end(address, end);
++			continue;
++		}
++		pmd = pmd_offset(pud, address);
++		if (!pmd_present(*pmd)) {
++			address = pmd_addr_end(address, end);
++			continue;
++		}
++		pte = pte_offset_kernel(pmd, address);
++		if (pte_present(*pte))
++			fn(mm, address, pte);
++		address += PAGE_SIZE;
++	}
++}
++
++static void mark_needsync(struct mm_struct *mm, unsigned long address,
++			  pte_t *pte)
++{
++	*pte = pte_mkneedsync(*pte);
++	um_tlb_mark_sync(mm, address, address + PAGE_SIZE);
++}
++
++void um_checkpoint_mark_present(struct mm_struct *mm, unsigned long start,
++				unsigned long end)
++{
++	walk_present(mm, start, end, mark_needsync);
++}
++
++static void revoke_write(struct mm_struct *mm, unsigned long address,
++			 pte_t *pte)
++{
++	if (pte_write(*pte) && pte_dirty(*pte) && pte_young(*pte))
++		mark_needsync(mm, address, pte);
++}
++
++void um_checkpoint_revoke(struct mm_struct *mm, unsigned long start,
++			  unsigned long end)
++{
++	walk_present(mm, start, end, revoke_write);
++}
++
++int um_checkpoint_write_fault(struct mm_struct *mm, unsigned long address)
++{
++	pgd_t *pgd = pgd_offset(mm, address);
++	p4d_t *p4d;
++	pud_t *pud;
++	pmd_t *pmd;
++	pte_t *pte;
++
++	if (!pgd_present(*pgd))
++		return 0;
++	p4d = p4d_offset(pgd, address);
++	if (!p4d_present(*p4d))
++		return 0;
++	pud = pud_offset(p4d, address);
++	if (!pud_present(*pud))
++		return 0;
++	pmd = pmd_offset(pud, address);
++	if (!pmd_present(*pmd))
++		return 0;
++	pte = pte_offset_kernel(pmd, address);
++	if (!pte_present(*pte) || !pte_write(*pte) || !pte_dirty(*pte) ||
++	    !pte_young(*pte))
++		return 0;
++	os_track_mark(pte_val(*pte) & PAGE_MASK, PAGE_SIZE);
++	mark_needsync(mm, address & PAGE_MASK, pte);
++	return 1;
++}
++
++static void mark_page(struct mm_struct *mm, unsigned long address,
++		      pte_t *pte)
++{
++	os_track_mark(pte_val(*pte) & PAGE_MASK, PAGE_SIZE);
++}
++
++static void mark_untracked(void)
++{
++	walk_present(&init_mm, VMALLOC_START, VMALLOC_END, mark_page);
++	um_checkpoint_mark_stubs();
++}
++
++static void open_stacks(void)
++{
++	struct task_struct *group, *task;
++
++	rcu_read_lock();
++	for_each_process_thread(group, task) {
++		unsigned long stack = (unsigned long)task_stack_page(task);
++
++		os_track_unprotect(stack, stack + THREAD_SIZE);
++	}
++	rcu_read_unlock();
++}
++
++static void fill_args(struct um_checkpoint_args *args, int fd,
++		      unsigned long long flags, int nskip)
++{
++	memset(args, 0, sizeof(*args));
++	args->fd = fd;
++	args->flags = flags;
++	args->skip_fds = stub_fds;
++	args->nskip = nskip;
++	args->physmem_fd = um_physmem_fd();
++	args->physmem_base = uml_physmem;
++	args->physmem_start = uml_reserved;
++	args->physmem_end = high_physmem;
++	args->binary_end = (unsigned long)&_end;
++}
++
++static long capture(unsigned long long flags, int fd, unsigned int *ack)
++{
++	struct um_checkpoint_args args;
++	unsigned long irq;
++	int nskip;
++
++	*ack = UM_CONTROL_CAPTURE;
++	nskip = um_checkpoint_stub_fds(stub_fds, MAX_STUB_FDS);
++	if (nskip < 0) {
++		os_close_file(fd);
++		return nskip;
++	}
++	fill_args(&args, fd, flags, nskip);
++	local_irq_save(irq);
++	mark_untracked();
++	initial_thread_cb(os_checkpoint_capture, &args);
++	os_close_file(fd);
++	open_stacks();
++	if (um_checkpoint_resumed) {
++		um_checkpoint_resumed = 0;
++		um_checkpoint_rebuild_stubs();
++		um_irq_checkpoint_attach();
++		local_irq_restore(irq);
++		*ack = UM_CONTROL_RESTORE;
++		return 0;
++	}
++	local_irq_restore(irq);
++	return args.result;
++}
++
++static long restore(int fd, unsigned int *ack)
++{
++	struct um_checkpoint_args args;
++	unsigned long irq;
++	int nskip;
++
++	*ack = UM_CONTROL_RESTORE;
++	nskip = um_checkpoint_stub_fds(stub_fds, MAX_STUB_FDS);
++	if (nskip < 0) {
++		os_close_file(fd);
++		return nskip;
++	}
++	fill_args(&args, fd, 0, nskip);
++	initial_thread_cb(os_checkpoint_validate, &args);
++	if (args.result) {
++		os_close_file(fd);
++		return args.result;
++	}
++	local_irq_save(irq);
++	mark_untracked();
++	um_checkpoint_kill_stubs();
++	um_irq_checkpoint_detach();
++	initial_thread_cb(os_checkpoint_restore, &args);
++	panic("Harmony checkpoint restore returned\n");
++}
++
++long um_harmony_control(unsigned int command, unsigned long long flags,
++			int fd, unsigned int *ack)
++{
++	switch (command) {
++	case UM_CONTROL_CAPTURE:
++		return capture(flags, fd, ack);
++	case UM_CONTROL_RESTORE:
++		return restore(fd, ack);
++	}
++	*ack = command;
++	os_close_file(fd);
++	return -EINVAL;
++}
++
++static int __init harmony_track_init(void)
++{
++	if (os_harmony_available())
++		os_track_init(uml_physmem, uml_reserved, high_physmem);
++	return 0;
++}
++early_initcall(harmony_track_init);
++
++static int __init harmony_restore_setup(char *line)
++{
++	restore_at_boot = true;
++	return 1;
++}
++__setup("harmony_restore", harmony_restore_setup);
++
++static int __init harmony_restore_at_boot(void)
++{
++	int ret;
++
++	if (!restore_at_boot)
++		return 0;
++	if (!os_harmony_available())
++		panic("harmony_restore needs harmony_fd\n");
++	ret = os_harmony_exchange(time_travel_read(), NULL, 0, NULL, 0);
++	panic("The Harmony host did not restore a checkpoint: %d\n", ret);
++}
++late_initcall_sync(harmony_restore_at_boot);
+--- a/arch/um/kernel/skas/mmu.c
++++ b/arch/um/kernel/skas/mmu.c
+@@ -13,6 +13,7 @@
+ #include <asm/sections.h>
+ #include <asm/mmu_context.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <os.h>
+ #include <skas.h>
+ #include <stub-data.h>
+@@ -125,3 +126,75 @@ static int __init init_child_tracking(void)
+ 	return 0;
+ }
+ early_initcall(init_child_tracking)
++
++int um_checkpoint_stub_fds(int *fds, int capacity)
++{
++	struct mm_context *context;
++	int n = 0;
++
++	guard(spinlock_irqsave)(&mm_list_lock);
++	list_for_each_entry(context, &mm_list, list) {
++		if (!using_seccomp || context->id.sock <= 0)
++			continue;
++		if (n == capacity)
++			return -E2BIG;
++		fds[n++] = context->id.sock;
++	}
++	return n;
++}
++
++void um_checkpoint_kill_stubs(void)
++{
++	struct mm_context *context;
++
++	list_for_each_entry(context, &mm_list, list) {
++		if (context->id.pid > 0)
++			os_checkpoint_kill(context->id.pid);
++		if (using_seccomp && context->id.sock > 0)
++			os_close_file(context->id.sock);
++	}
++}
++
++void um_checkpoint_mark_stubs(void)
++{
++	struct mm_context *context;
++
++	list_for_each_entry(context, &mm_list, list) {
++		struct mm_struct *mm = container_of(context, struct mm_struct, context);
++		struct vm_area_struct *vma;
++		VMA_ITERATOR(vmi, mm, 0);
++
++		if (context->id.stack)
++			os_track_mark(__pa(context->id.stack),
++				      STUB_DATA_PAGES * UM_KERN_PAGE_SIZE);
++		for_each_vma(vmi, vma)
++			um_checkpoint_revoke(mm, vma->vm_start, vma->vm_end);
++	}
++}
++
++void um_checkpoint_rebuild_stubs(void)
++{
++	struct mm_context *context;
++
++	list_for_each_entry(context, &mm_list, list) {
++		struct mm_struct *mm = container_of(context, struct mm_struct, context);
++		struct mm_id *id = &context->id;
++		struct vm_area_struct *vma;
++		VMA_ITERATOR(vmi, mm, 0);
++		int ret;
++
++		if (id->pid <= 0)
++			continue;
++		memset((void *)id->stack, 0, STUB_DATA_PAGES * UM_KERN_PAGE_SIZE);
++		id->pid = -1;
++		id->sock = 0;
++		id->syscall_data_len = 0;
++		id->syscall_fd_num = 0;
++		ret = start_userspace(id);
++		if (ret < 0)
++			panic("Restoring an address space failed: %d\n", ret);
++		unmap(id, 0, STUB_START);
++		for_each_vma(vmi, vma)
++			um_checkpoint_mark_present(mm, vma->vm_start, vma->vm_end);
++	}
++}
+--- a/arch/um/kernel/tlb.c
++++ b/arch/um/kernel/tlb.c
+@@ -10,6 +10,7 @@
+ #include <asm/tlbflush.h>
+ #include <asm/mmu_context.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <mem_user.h>
+ #include <os.h>
+ #include <skas.h>
+@@ -74,6 +75,9 @@ static inline int update_pte_range(pmd_t *pmd, unsigned long addr,
+ 				w = 0;
+ 			} else if (!pte_dirty(*pte))
+ 				w = 0;
++			if (w && ops->mmap != kern_map &&
++			    fd == um_physmem_fd() && !os_track_writable(offset))
++				w = 0;
+ 
+ 			prot = (r ? UM_PROT_READ : 0) |
+ 			       (w ? UM_PROT_WRITE : 0) |
+--- a/arch/um/kernel/trap.c
++++ b/arch/um/kernel/trap.c
+@@ -13,6 +13,7 @@
+ #include <asm/tlbflush.h>
+ #include <arch.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <kern_util.h>
+ #include <os.h>
+ #include <skas.h>
+@@ -156,6 +157,12 @@ int handle_page_fault(unsigned long address, unsigned long ip,
+ 	if (faulthandler_disabled())
+ 		goto out_nosemaphore;
+ 
++	if (is_write && um_checkpoint_write_fault(mm, address)) {
++		if (is_user)
++			um_checkpoint_write_faulted = 1;
++		return 0;
++	}
++
+ 	if (is_user)
+ 		flags |= FAULT_FLAG_USER;
+ retry:
+@@ -207,6 +214,13 @@ int handle_page_fault(unsigned long address, unsigned long ip,
+ 		pte = pte_offset_kernel(pmd, address);
+ 	} while (!pte_present(*pte));
+ 	err = 0;
++	if (is_write && pte_write(*pte) && pte_dirty(*pte) && pte_young(*pte)) {
++		unsigned long page = address & PAGE_MASK;
++
++		os_track_mark(pte_val(*pte) & PAGE_MASK, PAGE_SIZE);
++		*pte = pte_mkneedsync(*pte);
++		um_tlb_mark_sync(mm, page, page + PAGE_SIZE);
++	}
+ 	/*
+ 	 * The below warning was added in place of
+ 	 *	pte_mkyoung(); if (is_write) pte_mkdirty();
+--- a/arch/um/os-Linux/harmony.c
++++ b/arch/um/os-Linux/harmony.c
+@@ -5,9 +5,12 @@
+ #include <limits.h>
+ #include <stdlib.h>
+ #include <stdint.h>
++#include <string.h>
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <sys/uio.h>
++#include <unistd.h>
++#include <checkpoint.h>
+ #include <init.h>
+ #include <os.h>
+ 
+@@ -45,6 +48,118 @@ int os_harmony_available(void)
+ 	return harmony_fd >= 0;
+ }
+ 
++struct harmony_control {
++	uint32_t magic;
++	uint32_t command;
++	uint64_t flags;
++};
++
++struct harmony_ack {
++	uint32_t magic;
++	uint32_t command;
++	int64_t result;
++};
++
++#define HARMONY_FRAME_MAX 4096
++#define HARMONY_MEMORY_CHUNK 65536
++
++static char harmony_frame[HARMONY_FRAME_MAX];
++
++static int harmony_receive(int *fd)
++{
++	char control[CMSG_SPACE(sizeof(int))];
++	struct iovec iov = {
++		.iov_base = harmony_frame,
++		.iov_len = sizeof(harmony_frame),
++	};
++	struct msghdr msg = {
++		.msg_iov = &iov,
++		.msg_iovlen = 1,
++		.msg_control = control,
++		.msg_controllen = sizeof(control),
++	};
++	struct cmsghdr *cmsg;
++	ssize_t n;
++
++	*fd = -1;
++	do {
++		n = recvmsg(harmony_fd, &msg, MSG_TRUNC | MSG_CMSG_CLOEXEC);
++	} while (n < 0 && errno == EINTR);
++	if (n < 0)
++		return -errno;
++	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
++		if (cmsg->cmsg_level == SOL_SOCKET &&
++		    cmsg->cmsg_type == SCM_RIGHTS &&
++		    cmsg->cmsg_len == CMSG_LEN(sizeof(int)) && *fd < 0) {
++			memcpy(fd, CMSG_DATA(cmsg), sizeof(int));
++		}
++	}
++	if (msg.msg_flags & MSG_CTRUNC) {
++		if (*fd >= 0)
++			close(*fd);
++		return -EPROTO;
++	}
++	if (n == 0)
++		return -EPIPE;
++	if ((size_t)n > sizeof(harmony_frame))
++		return -EMSGSIZE;
++	return n;
++}
++
++static int harmony_acknowledge(unsigned int command, long result)
++{
++	struct harmony_ack ack = {
++		.magic = UM_CONTROL_MAGIC,
++		.command = command,
++		.result = result,
++	};
++	ssize_t n;
++
++	do {
++		n = send(harmony_fd, &ack, sizeof(ack), MSG_NOSIGNAL);
++	} while (n < 0 && errno == EINTR);
++	if (n < 0)
++		return -errno;
++	return n == sizeof(ack) ? 0 : -EPROTO;
++}
++
++int os_harmony_memory(long flags, const void *bitmap, unsigned long bytes)
++{
++	struct harmony_control control;
++	unsigned long sent, chunk;
++	ssize_t n;
++	int fd, err;
++
++	err = harmony_acknowledge(UM_CONTROL_MEMORY, flags);
++	if (err)
++		return err;
++	for (sent = 0; !(flags & UM_MEMORY_ALL) && sent < bytes; sent += n) {
++		chunk = bytes - sent;
++		if (chunk > HARMONY_MEMORY_CHUNK)
++			chunk = HARMONY_MEMORY_CHUNK;
++		do {
++			n = send(harmony_fd, (const char *)bitmap + sent, chunk,
++				 MSG_NOSIGNAL);
++		} while (n < 0 && errno == EINTR);
++		if (n < 0)
++			return -errno;
++		if ((unsigned long)n != chunk)
++			return -EPROTO;
++	}
++	n = harmony_receive(&fd);
++	if (n < 0)
++		return n;
++	if (fd >= 0)
++		close(fd);
++	memcpy(&control, harmony_frame,
++	       n < (ssize_t)sizeof(control) ? n : sizeof(control));
++	if (fd >= 0 || n != sizeof(control) ||
++	    control.magic != UM_CONTROL_MAGIC ||
++	    control.command != UM_CONTROL_CONTINUE)
++		return -EPROTO;
++	return 0;
++}
++
+ int os_harmony_exchange(unsigned long long moment, const void *request,
+ 			unsigned int length, void *response,
+ 			unsigned int capacity)
+@@ -55,6 +170,10 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
+ 		{ .iov_base = (void *)request, .iov_len = length },
+ 	};
+ 	struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
++	struct harmony_control control;
++	unsigned int ack;
++	long result;
++	int fd, err;
+ 	ssize_t n;
+ 
+ 	do {
+@@ -64,14 +183,26 @@ int os_harmony_exchange(unsigned long long moment, const void *request,
+ 		return -errno;
+ 	if ((size_t)n != sizeof(stamp) + length)
+ 		return -EPROTO;
+-	do {
+-		n = recv(harmony_fd, response, capacity, MSG_TRUNC);
+-	} while (n < 0 && errno == EINTR);
+-	if (n < 0)
+-		return -errno;
+-	if (n == 0)
+-		return -EPIPE;
++	for (;;) {
++		n = harmony_receive(&fd);
++		if (n < 0)
++			return n;
++		if (fd < 0)
++			break;
++		memcpy(&control, harmony_frame,
++		       n < (ssize_t)sizeof(control) ? n : sizeof(control));
++		if (n != sizeof(control) || control.magic != UM_CONTROL_MAGIC) {
++			close(fd);
++			return -EPROTO;
++		}
++		result = um_harmony_control(control.command, control.flags, fd,
++					    &ack);
++		err = harmony_acknowledge(ack, result);
++		if (err)
++			return err;
++	}
+ 	if ((size_t)n > capacity)
+ 		return -EMSGSIZE;
++	memcpy(response, harmony_frame, n);
+ 	return n;
+ }
+--- a/arch/um/os-Linux/mem.c
++++ b/arch/um/os-Linux/mem.c
+@@ -9,6 +9,7 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <limits.h>
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <sys/mman.h>
+@@ -209,11 +210,43 @@ static int __init create_tmp_file(unsigned long long len)
+ 	return fd;
+ }
+ 
++static int harmony_physmem = -1;
++
++static int __init harmony_physmem_setup(char *line, int *add)
++{
++	char *end;
++	long fd;
++
++	*add = 0;
++	errno = 0;
++	fd = strtol(line, &end, 10);
++	if (*line == '\0' || *end != '\0' || errno || fd < 0 || fd > INT_MAX ||
++	    fcntl(fd, F_GETFD) < 0) {
++		os_warn("harmony_physmem= needs an open file descriptor\n");
++		return 1;
++	}
++	harmony_physmem = fd;
++	return 0;
++}
++
++__uml_setup("harmony_physmem=", harmony_physmem_setup,
++"harmony_physmem=<fd>\n"
++"    An inherited empty memory file that holds physical memory. The Harmony\n"
++"    host maps the same file to read and restore guest memory.\n\n"
++);
++
+ int __init create_mem_file(unsigned long long len)
+ {
+ 	int err, fd;
+ 
+-	fd = create_tmp_file(len);
++	if (harmony_physmem >= 0) {
++		fd = harmony_physmem;
++		if (ftruncate(fd, len) < 0) {
++			perror("harmony_physmem");
++			exit(1);
++		}
++	} else
++		fd = create_tmp_file(len);
+ 
+ 	err = os_set_exec_close(fd);
+ 	if (err < 0) {
+--- a/arch/um/os-Linux/signal.c
++++ b/arch/um/os-Linux/signal.c
+@@ -14,6 +14,7 @@
+ #include <string.h>
+ #include <strings.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <kern_util.h>
+ #include <os.h>
+ #include <sysdep/mcontext.h>
+@@ -200,6 +201,9 @@ static void hard_handler(int sig, siginfo_t *si, void *p)
+ 	mcontext_t *mc = &uc->uc_mcontext;
+ 	int save_errno = errno;
+ 
++	if (sig == SIGSEGV && si->si_code == SEGV_ACCERR &&
++	    os_track_fault((unsigned long)si->si_addr))
++		return;
+ 	(*handlers[sig])(sig, (struct siginfo *)si, mc);
+ 
+ 	errno = save_errno;
+--- a/arch/um/os-Linux/skas/Makefile
++++ b/arch/um/os-Linux/skas/Makefile
+@@ -3,8 +3,10 @@
+ # Copyright (C) 2002 - 2007 Jeff Dike (jdike@{linux.intel,addtoit}.com)
+ #
+ 
+-obj-y := mem.o process.o
++obj-y := checkpoint.o mem.o process.o
+ 
+ USER_OBJS := $(obj-y)
+ 
++CFLAGS_checkpoint.o += -D_GNU_SOURCE -Wno-frame-larger-than
++
+ include $(srctree)/arch/um/scripts/Makefile.rules
+--- /dev/null
++++ b/arch/um/os-Linux/skas/checkpoint.c
+@@ -0,0 +1,988 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Host side of User-mode Linux checkpoints.
++ *
++ * Capture and restore run on the host's initial thread stack with every host
++ * signal blocked. An image holds the kernel process's private memory other
++ * than its code and the host stack, the mappings of the physical memory file
++ * outside the direct map, the thread pointer, and the inventory of host
++ * resources that a restore must find unchanged. Stub processes and epoll
++ * registrations are rebuilt by the kernel after a restore.
++ *
++ * The physical memory file is owned by the Harmony host. Both commands
++ * report the pages written since the last capture or restore and wait while
++ * the host reads or rewrites that file. Kernel writes are found by keeping
++ * the direct map read-only until the first write to each page; writes by
++ * guest programs are found when the kernel maps their pages writable.
++ */
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <sys/sysmacros.h>
++#include <sys/wait.h>
++#ifdef __x86_64__
++#include <asm/prctl.h>
++#endif
++#include <as-layout.h>
++#include <os.h>
++#include <checkpoint.h>
++
++#define IMAGE_MAGIC 0x314b434d4c4d5548ULL
++#define MAX_REGIONS 512
++#define MAX_FDS 128
++#define MAPS_BYTES (256 * 1024)
++#define RESTORE_FAILED 86
++#define UNPROTECT_LIMIT 16384
++#define LONG_BITS (8 * sizeof(unsigned long))
++
++enum region_kind {
++	KIND_PRIVATE = 1,
++	KIND_HEAP,
++	KIND_RESERVE,
++	KIND_IMAGE,
++	KIND_SHARED,
++	KIND_VVAR,
++	KIND_VVAR_VCLOCK,
++	KIND_VDSO,
++};
++
++struct image_region {
++	unsigned long start;
++	unsigned long end;
++	unsigned long offset;
++	unsigned long file_offset;
++	unsigned int prot;
++	unsigned int kind;
++};
++
++struct image_fd {
++	int fd;
++	unsigned int type;
++	unsigned int access;
++	unsigned int reserved;
++};
++
++struct image_header {
++	unsigned long long magic;
++	unsigned long long flags;
++	unsigned long page_size;
++	unsigned long binary_end;
++	unsigned long physmem_base;
++	unsigned long physmem_start;
++	unsigned long physmem_end;
++	unsigned long tls;
++	unsigned long length;
++	unsigned int nregions;
++	unsigned int nfds;
++	struct image_fd fds[MAX_FDS];
++	struct image_region regions[MAX_REGIONS];
++};
++
++struct linux_dirent64 {
++	uint64_t d_ino;
++	int64_t d_off;
++	unsigned short d_reclen;
++	unsigned char d_type;
++	char d_name[];
++};
++
++struct mapping {
++	unsigned long start;
++	unsigned long end;
++	unsigned long offset;
++	unsigned long inode;
++	unsigned int major;
++	unsigned int minor;
++	unsigned int prot;
++	int shared;
++	const char *name;
++};
++
++struct track {
++	unsigned long base;
++	unsigned long start;
++	unsigned long end;
++	unsigned long pages;
++	unsigned long words;
++	unsigned long *bits;
++	unsigned long unprotects;
++	int tracking;
++	int all;
++};
++
++int um_checkpoint_resumed;
++static struct track track;
++
++extern char **environ;
++
++static unsigned long page_size(void)
++{
++	return (unsigned long)sysconf(_SC_PAGESIZE);
++}
++
++static unsigned long round_up(unsigned long value, unsigned long page)
++{
++	return (value + page - 1) & ~(page - 1);
++}
++
++void os_track_init(unsigned long base, unsigned long start, unsigned long end)
++{
++	unsigned long pages = (end - base) >> UM_KERN_PAGE_SHIFT;
++	unsigned long words = (pages + LONG_BITS - 1) / LONG_BITS;
++	void *bits = mmap(NULL, round_up(words * sizeof(long), page_size()),
++			  PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
++			  -1, 0);
++
++	if (bits == MAP_FAILED)
++		panic("Harmony write tracking needs %lu bytes: %d\n",
++		      words * sizeof(long), errno);
++	track.base = base;
++	track.start = start;
++	track.end = end;
++	track.pages = pages;
++	track.words = words;
++	track.bits = bits;
++}
++
++static void set_page(unsigned long pfn)
++{
++	track.bits[pfn / LONG_BITS] |= 1UL << (pfn % LONG_BITS);
++}
++
++static int test_page(unsigned long pfn)
++{
++	return (track.bits[pfn / LONG_BITS] >> (pfn % LONG_BITS)) & 1;
++}
++
++int os_track_writable(unsigned long long phys)
++{
++	unsigned long pfn = phys >> UM_KERN_PAGE_SHIFT;
++
++	if (!track.tracking || track.all || pfn >= track.pages)
++		return 1;
++	return test_page(pfn);
++}
++
++void os_track_mark(unsigned long long phys, unsigned long length)
++{
++	unsigned long pfn = phys >> UM_KERN_PAGE_SHIFT;
++	unsigned long last = (phys + length - 1) >> UM_KERN_PAGE_SHIFT;
++
++	if (!track.tracking || track.all || !length)
++		return;
++	for (; pfn <= last && pfn < track.pages; pfn++)
++		set_page(pfn);
++}
++
++static void open_all(void)
++{
++	track.all = 1;
++	if (mprotect((void *)track.start, track.end - track.start,
++		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
++		panic("Opening the direct map failed: %d\n", errno);
++}
++
++static void open_range(unsigned long start, unsigned long end)
++{
++	track.unprotects++;
++	if (track.unprotects > UNPROTECT_LIMIT) {
++		open_all();
++		return;
++	}
++	os_track_mark(start - track.base, end - start);
++	if (mprotect((void *)start, end - start,
++		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
++		panic("Opening a direct map page failed: %d\n", errno);
++}
++
++void os_track_unprotect(unsigned long start, unsigned long end)
++{
++	if (!track.tracking || track.all)
++		return;
++	if (start < track.start)
++		start = track.start;
++	if (end > track.end)
++		end = track.end;
++	if (start < end)
++		open_range(start, end);
++}
++
++int os_track_fault(unsigned long address)
++{
++	unsigned long page = address & UM_KERN_PAGE_MASK;
++
++	if (!track.tracking || track.all || address < track.start ||
++	    address >= track.end)
++		return 0;
++	open_range(page, page + UM_KERN_PAGE_SIZE);
++	return 1;
++}
++
++static void protect_all(void)
++{
++	if (!track.tracking || track.all)
++		return;
++	if (mprotect((void *)track.start, track.end - track.start,
++		     PROT_READ | PROT_EXEC) < 0)
++		panic("Protecting the direct map failed: %d\n", errno);
++}
++
++static void track_reset(void)
++{
++	memset(track.bits, 0, track.words * sizeof(long));
++	track.unprotects = 0;
++	track.all = 0;
++	track.tracking = 1;
++	protect_all();
++}
++
++static int report_memory(void)
++{
++	long flags = !track.tracking || track.all ? UM_MEMORY_ALL : 0;
++
++	return os_harmony_memory(flags, track.bits,
++				 track.words * sizeof(long));
++}
++
++#if defined(__x86_64__)
++static unsigned long get_tls(void)
++{
++	unsigned long tls = 0;
++
++	syscall(SYS_arch_prctl, ARCH_GET_FS, &tls);
++	return tls;
++}
++
++static void set_tls(unsigned long tls)
++{
++	syscall(SYS_arch_prctl, ARCH_SET_FS, tls);
++}
++#elif defined(__aarch64__)
++static unsigned long get_tls(void)
++{
++	unsigned long tls;
++
++	asm volatile("mrs %0, tpidr_el0" : "=r"(tls));
++	return tls;
++}
++
++static void set_tls(unsigned long tls)
++{
++	asm volatile("msr tpidr_el0, %0" : : "r"(tls));
++}
++#else
++#error "User-mode Linux checkpoints need the host thread pointer"
++#endif
++
++static void fatal(const char *what, int error)
++{
++	char line[160];
++	int n = snprintf(line, sizeof(line),
++			 "Harmony checkpoint restore failed: %s (errno %d)\n",
++			 what, error);
++
++	if (n > 0)
++		write(2, line, n);
++	_exit(RESTORE_FAILED);
++}
++
++static int read_file(const char *path, char *buffer, size_t capacity)
++{
++	size_t length = 0;
++	ssize_t n;
++	int fd = open(path, O_RDONLY | O_CLOEXEC);
++
++	if (fd < 0)
++		return -errno;
++	for (;;) {
++		n = read(fd, buffer + length, capacity - 1 - length);
++		if (n < 0 && errno == EINTR)
++			continue;
++		if (n <= 0)
++			break;
++		length += n;
++		if (length >= capacity - 1) {
++			close(fd);
++			return -E2BIG;
++		}
++	}
++	close(fd);
++	if (n < 0)
++		return -errno;
++	buffer[length] = '\0';
++	return length;
++}
++
++static int thread_count(void)
++{
++	char stat[1024];
++	char *field;
++	int index;
++	int err = read_file("/proc/self/stat", stat, sizeof(stat));
++
++	if (err < 0)
++		return err;
++	field = strrchr(stat, ')');
++	if (!field)
++		return -EINVAL;
++	for (index = 2; index < 20 && field; index++) {
++		field = strchr(field + 1, ' ');
++	}
++	if (!field)
++		return -EINVAL;
++	return strtol(field + 1, NULL, 10);
++}
++
++static char *parse_mapping(char *line, struct mapping *map)
++{
++	char *next = strchr(line, '\n');
++	char *cursor;
++	char *perms;
++
++	if (next)
++		*next++ = '\0';
++	else
++		next = line + strlen(line);
++
++	map->start = strtoul(line, &cursor, 16);
++	map->end = strtoul(cursor + 1, &cursor, 16);
++	perms = cursor + 1;
++	map->prot = (perms[0] == 'r' ? PROT_READ : 0) |
++		    (perms[1] == 'w' ? PROT_WRITE : 0) |
++		    (perms[2] == 'x' ? PROT_EXEC : 0);
++	map->shared = perms[3] == 's';
++	cursor = perms + 5;
++	map->offset = strtoul(cursor, &cursor, 16);
++	map->major = strtoul(cursor + 1, &cursor, 16);
++	map->minor = strtoul(cursor + 1, &cursor, 16);
++	map->inode = strtoul(cursor + 1, &cursor, 10);
++	while (*cursor == ' ')
++		cursor++;
++	map->name = cursor;
++	return next;
++}
++
++static int name_is(const struct mapping *map, const char *name)
++{
++	return strcmp(map->name, name) == 0;
++}
++
++static int same_file(const struct mapping *map, const struct stat *file)
++{
++	return map->inode == file->st_ino && map->major == major(file->st_dev) &&
++	       map->minor == minor(file->st_dev);
++}
++
++static int skipped(int fd, const struct um_checkpoint_args *args, int own)
++{
++	int i;
++
++	if (fd == args->fd || fd == own)
++		return 1;
++	for (i = 0; i < args->nskip; i++)
++		if (args->skip_fds[i] == fd)
++			return 1;
++	return 0;
++}
++
++static int fd_inventory(const struct um_checkpoint_args *args,
++			struct image_fd *fds, unsigned int *count)
++{
++	char buffer[8192];
++	int dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++	unsigned int n = 0, i, j;
++	long got;
++
++	if (dir < 0)
++		return -errno;
++	while ((got = syscall(SYS_getdents64, dir, buffer, sizeof(buffer))) > 0) {
++		long position = 0;
++
++		while (position < got) {
++			struct linux_dirent64 *entry = (void *)(buffer + position);
++			struct stat file;
++			int fd, flags;
++
++			position += entry->d_reclen;
++			if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
++				continue;
++			fd = strtol(entry->d_name, NULL, 10);
++			if (skipped(fd, args, dir))
++				continue;
++			if (n >= MAX_FDS) {
++				close(dir);
++				return -EMFILE;
++			}
++			if (fstat(fd, &file) < 0 ||
++			    (flags = fcntl(fd, F_GETFL)) < 0) {
++				close(dir);
++				return -errno;
++			}
++			fds[n].fd = fd;
++			fds[n].type = file.st_mode & S_IFMT;
++			fds[n].access = flags & O_ACCMODE;
++			fds[n].reserved = 0;
++			n++;
++		}
++	}
++	close(dir);
++	if (got < 0)
++		return -errno;
++	for (i = 1; i < n; i++)
++		for (j = i; j > 0 && fds[j - 1].fd > fds[j].fd; j--) {
++			struct image_fd swap = fds[j];
++
++			fds[j] = fds[j - 1];
++			fds[j - 1] = swap;
++		}
++	*count = n;
++	return 0;
++}
++
++static int write_all(int fd, const void *data, unsigned long length,
++		     unsigned long offset)
++{
++	const char *cursor = data;
++
++	while (length) {
++		ssize_t n = pwrite(fd, cursor, length, offset);
++
++		if (n < 0 && errno == EINTR)
++			continue;
++		if (n <= 0)
++			return n < 0 ? -errno : -EIO;
++		cursor += n;
++		offset += n;
++		length -= n;
++	}
++	return 0;
++}
++
++static int read_all(int fd, void *data, unsigned long length,
++		    unsigned long offset)
++{
++	char *cursor = data;
++
++	while (length) {
++		ssize_t n = pread(fd, cursor, length, offset);
++
++		if (n < 0 && errno == EINTR)
++			continue;
++		if (n <= 0)
++			return n < 0 ? -errno : -EIO;
++		cursor += n;
++		offset += n;
++		length -= n;
++	}
++	return 0;
++}
++
++static int classify(const struct mapping *map, const struct um_checkpoint_args *args,
++		    const struct stat *physmem, struct image_region *region)
++{
++	region->start = map->start;
++	region->end = map->end;
++	region->offset = 0;
++	region->file_offset = map->offset;
++	region->prot = map->prot;
++
++	if (name_is(map, "[vsyscall]") || name_is(map, "[stack]"))
++		return 0;
++	if (name_is(map, "[vvar]")) {
++		region->kind = KIND_VVAR;
++		return 1;
++	}
++	if (name_is(map, "[vvar_vclock]")) {
++		region->kind = KIND_VVAR_VCLOCK;
++		return 1;
++	}
++	if (name_is(map, "[vdso]")) {
++		region->kind = KIND_VDSO;
++		return 1;
++	}
++	if (map->shared) {
++		if (!same_file(map, physmem))
++			return -EINVAL;
++		if (map->start >= args->physmem_start &&
++		    map->end <= args->physmem_end)
++			return 0;
++		region->kind = KIND_SHARED;
++		return 1;
++	}
++	if (name_is(map, "[heap]"))
++		region->kind = KIND_HEAP;
++	else if (map->inode == 0 && !map->prot)
++		region->kind = KIND_RESERVE;
++	else if ((map->prot & PROT_EXEC) && !(map->prot & PROT_WRITE))
++		region->kind = KIND_IMAGE;
++	else
++		region->kind = KIND_PRIVATE;
++	return 1;
++}
++
++static int has_data(const struct image_region *region, unsigned long long flags)
++{
++	switch (region->kind) {
++	case KIND_PRIVATE:
++	case KIND_HEAP:
++		return !(flags & UM_CAPTURE_OMIT_HOST_MEMORY) &&
++		       (region->prot & PROT_READ);
++	}
++	return 0;
++}
++
++static long capture(const struct um_checkpoint_args *args, struct image_header *header,
++		    char *maps)
++{
++	unsigned long page = page_size();
++	unsigned long cursor;
++	struct stat physmem;
++	char *line;
++	unsigned int i;
++	int err;
++
++	memset(header, 0, sizeof(*header));
++	header->magic = IMAGE_MAGIC;
++	header->flags = args->flags;
++	header->page_size = page;
++	header->binary_end = args->binary_end;
++	header->physmem_base = args->physmem_base;
++	header->physmem_start = args->physmem_start;
++	header->physmem_end = args->physmem_end;
++
++	if (fstat(args->physmem_fd, &physmem) < 0)
++		return -errno;
++	err = read_file("/proc/self/maps", maps, MAPS_BYTES);
++	if (err < 0)
++		return err;
++	for (line = maps; *line;) {
++		struct mapping map;
++		struct image_region *region = &header->regions[header->nregions];
++
++		line = parse_mapping(line, &map);
++		if (header->nregions >= MAX_REGIONS)
++			return -E2BIG;
++		err = classify(&map, args, &physmem, region);
++		if (err < 0) {
++			os_warn("Harmony checkpoint: unsupported shared mapping %lx-%lx %s\n",
++				map.start, map.end, map.name);
++			return err;
++		}
++		header->nregions += err;
++	}
++
++	err = fd_inventory(args, header->fds, &header->nfds);
++	if (err)
++		return err;
++	header->tls = get_tls();
++
++	cursor = round_up(sizeof(*header), page);
++	for (i = 0; i < header->nregions; i++) {
++		struct image_region *region = &header->regions[i];
++
++		if (!has_data(region, args->flags))
++			continue;
++		region->offset = cursor;
++		err = write_all(args->fd, (void *)region->start,
++				region->end - region->start, cursor);
++		if (err)
++			return err;
++		cursor += region->end - region->start;
++	}
++	header->length = cursor;
++	if (ftruncate(args->fd, cursor) < 0)
++		return -errno;
++	err = write_all(args->fd, header, sizeof(*header), 0);
++	if (err)
++		return err;
++	return cursor;
++}
++
++void os_checkpoint_capture(void *arg)
++{
++	struct um_checkpoint_args *args = arg;
++	struct image_header header;
++	char maps[MAPS_BYTES];
++	sigset_t all, old;
++	long result;
++
++	sigfillset(&all);
++	sigprocmask(SIG_BLOCK, &all, &old);
++	result = thread_count();
++	if (result == 1)
++		result = report_memory();
++	else if (result >= 0)
++		result = -EBUSY;
++	if (!result) {
++		track_reset();
++		result = capture(args, &header, maps);
++	}
++	sigprocmask(SIG_SETMASK, &old, NULL);
++	args->result = result;
++}
++
++static int read_header(int fd, struct image_header *header)
++{
++	int err = read_all(fd, header, sizeof(*header), 0);
++
++	if (err)
++		return err;
++	if (header->magic != IMAGE_MAGIC || header->page_size != page_size() ||
++	    header->nregions > MAX_REGIONS || header->nfds > MAX_FDS)
++		return -EINVAL;
++	return 0;
++}
++
++static int load_mappings(char *maps, struct mapping *current, int capacity)
++{
++	int n = 0;
++	char *line;
++	int err = read_file("/proc/self/maps", maps, MAPS_BYTES);
++
++	if (err < 0)
++		return err;
++	for (line = maps; *line && n < capacity; n++)
++		line = parse_mapping(line, &current[n]);
++	return *line ? -E2BIG : n;
++}
++
++static const struct mapping *find_special(const struct mapping *current, int n,
++					  unsigned int kind)
++{
++	static const char *const names[] = {
++		[KIND_VVAR] = "[vvar]",
++		[KIND_VVAR_VCLOCK] = "[vvar_vclock]",
++		[KIND_VDSO] = "[vdso]",
++	};
++	int i;
++
++	for (i = 0; i < n; i++)
++		if (name_is(&current[i], names[kind]))
++			return &current[i];
++	return NULL;
++}
++
++static int overlaps(const struct mapping *map, unsigned long start,
++		    unsigned long end)
++{
++	return map->start < end && start < map->end;
++}
++
++static int collision(const struct image_region *region,
++		     const struct mapping *map)
++{
++	os_warn("Harmony checkpoint: %lx-%lx collides with %lx-%lx %s\n",
++		region->start, region->end, map->start, map->end, map->name);
++	return -EEXIST;
++}
++
++static int has_fd(const struct image_fd *fds, unsigned int n,
++		  const struct image_fd *fd)
++{
++	unsigned int i;
++
++	for (i = 0; i < n; i++)
++		if (!memcmp(&fds[i], fd, sizeof(*fd)))
++			return 1;
++	return 0;
++}
++
++static void report_fds(const struct image_fd *image, unsigned int nimage,
++		       const struct image_fd *now, unsigned int nnow)
++{
++	char path[64], target[256];
++	unsigned int i;
++	ssize_t length;
++
++	os_warn("Harmony checkpoint: open descriptors differ from the image\n");
++	for (i = 0; i < nimage; i++)
++		if (!has_fd(now, nnow, &image[i]))
++			os_warn("Harmony checkpoint: image descriptor %d (type %o, access %u) is not open\n",
++				image[i].fd, image[i].type, image[i].access);
++	for (i = 0; i < nnow; i++) {
++		if (has_fd(image, nimage, &now[i]))
++			continue;
++		snprintf(path, sizeof(path), "/proc/self/fd/%d", now[i].fd);
++		length = readlink(path, target, sizeof(target) - 1);
++		target[length < 0 ? 0 : length] = '\0';
++		os_warn("Harmony checkpoint: descriptor %d (type %o, access %u, %s) is not in the image\n",
++			now[i].fd, now[i].type, now[i].access, target);
++	}
++}
++
++static int validate(const struct um_checkpoint_args *args, struct image_header *header,
++		    char *maps, struct mapping *current)
++{
++	struct image_fd fds[MAX_FDS];
++	unsigned int nfds, i;
++	int n, j, err;
++
++	err = read_header(args->fd, header);
++	if (err)
++		return err;
++	if (header->binary_end != args->binary_end ||
++	    header->physmem_base != args->physmem_base ||
++	    header->physmem_start != args->physmem_start ||
++	    header->physmem_end != args->physmem_end)
++		return -EXDEV;
++	err = thread_count();
++	if (err != 1)
++		return err < 0 ? err : -EBUSY;
++	err = fd_inventory(args, fds, &nfds);
++	if (err)
++		return err;
++	if (nfds != header->nfds ||
++	    memcmp(fds, header->fds, nfds * sizeof(fds[0]))) {
++		report_fds(header->fds, header->nfds, fds, nfds);
++		return -EBADF;
++	}
++
++	n = load_mappings(maps, current, MAX_REGIONS * 2);
++	if (n < 0)
++		return n;
++	for (i = 0; i < header->nregions; i++) {
++		const struct image_region *region = &header->regions[i];
++		const struct mapping *special;
++
++		switch (region->kind) {
++		case KIND_IMAGE:
++			for (j = 0; j < n; j++)
++				if (current[j].start == region->start &&
++				    current[j].end == region->end &&
++				    current[j].prot == region->prot)
++					break;
++			if (j == n) {
++				os_warn("Harmony checkpoint: no mapping %lx-%lx\n",
++					region->start, region->end);
++				return -EFAULT;
++			}
++			break;
++		case KIND_SHARED:
++			break;
++		case KIND_VVAR:
++		case KIND_VVAR_VCLOCK:
++		case KIND_VDSO:
++			special = find_special(current, n, region->kind);
++			if (!special ||
++			    special->end - special->start != region->end - region->start) {
++				os_warn("Harmony checkpoint: vDSO mapping differs\n");
++				return -EFAULT;
++			}
++			if (special->start == region->start)
++				break;
++			for (j = 0; j < n; j++)
++				if (&current[j] != special &&
++				    overlaps(&current[j], region->start, region->end))
++					return collision(region, &current[j]);
++			break;
++		default:
++			for (j = 0; j < n; j++)
++				if (overlaps(&current[j], region->start, region->end) &&
++				    (current[j].shared || current[j].name[0] == '[') &&
++				    !name_is(&current[j], "[heap]"))
++					return collision(region, &current[j]);
++			break;
++		}
++	}
++	return 0;
++}
++
++void os_checkpoint_validate(void *arg)
++{
++	struct um_checkpoint_args *args = arg;
++	struct image_header header;
++	struct mapping current[MAX_REGIONS * 2];
++	char maps[MAPS_BYTES];
++	sigset_t all, old;
++	long result;
++
++	sigfillset(&all);
++	sigprocmask(SIG_BLOCK, &all, &old);
++	protect_all();
++	result = validate(args, &header, maps, current);
++	sigprocmask(SIG_SETMASK, &old, NULL);
++	args->result = result;
++}
++
++static void ensure_mapped(unsigned long start, unsigned long end, int prot)
++{
++	unsigned long page = page_size();
++	unsigned long address = start;
++
++	while (address < end) {
++		unsigned char resident;
++		unsigned long gap;
++
++		if (mincore((void *)address, page, &resident) == 0) {
++			address += page;
++			continue;
++		}
++		if (errno != ENOMEM)
++			fatal("mincore", errno);
++		gap = address;
++		while (gap < end && mincore((void *)gap, page, &resident) < 0 &&
++		       errno == ENOMEM)
++			gap += page;
++		if (mmap((void *)address, gap - address, prot,
++			 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) !=
++		    (void *)address)
++			fatal("mapping a captured range", errno);
++		address = gap;
++	}
++}
++
++static void move_special(const struct mapping *current, int n,
++			 const struct image_region *region)
++{
++	const struct mapping *special = find_special(current, n, region->kind);
++	unsigned long length = region->end - region->start;
++
++	if (!special)
++		fatal("missing vDSO mapping", ENOENT);
++	if (special->start == region->start)
++		return;
++	if (mremap((void *)special->start, length, length,
++		   MREMAP_MAYMOVE | MREMAP_FIXED, (void *)region->start) !=
++	    (void *)region->start)
++		fatal("moving the vDSO", errno);
++}
++
++static void restore_region(int image, const struct image_region *region,
++			   const struct mapping *heap)
++{
++	unsigned long length = region->end - region->start;
++	/*
++	 * A writable range keeps its protection while it is copied: it may hold
++	 * the code running this restore, as the single RWX segment of a binary
++	 * linked from one PT_LOAD does.
++	 */
++	int writable = region->prot & PROT_WRITE;
++
++	if (region->kind == KIND_HEAP && heap && heap->start == region->start &&
++	    heap->end < region->end)
++		syscall(SYS_brk, region->end);
++	ensure_mapped(region->start, region->end,
++		      region->kind == KIND_RESERVE || writable ?
++			      region->prot : PROT_READ | PROT_WRITE);
++	if (!region->offset)
++		return;
++	if (!writable &&
++	    mprotect((void *)region->start, length, PROT_READ | PROT_WRITE) < 0)
++		fatal("opening a captured range", errno);
++	if (read_all(image, (void *)region->start, length, region->offset))
++		fatal("reading host memory", errno);
++	if (region->prot & PROT_EXEC)
++		__builtin___clear_cache((char *)region->start,
++					(char *)region->end);
++	if (!writable && mprotect((void *)region->start, length, region->prot) < 0)
++		fatal("protecting a captured range", errno);
++}
++
++void os_checkpoint_restore(void *arg)
++{
++	struct um_checkpoint_args *args = arg;
++	int image = args->fd;
++	int physmem_fd = args->physmem_fd;
++	unsigned long physmem_start = args->physmem_start;
++	unsigned long physmem_end = args->physmem_end;
++	struct stat physmem;
++	struct image_header header;
++	struct mapping current[MAX_REGIONS * 2];
++	const struct mapping *heap = NULL;
++	char maps[MAPS_BYTES];
++	char jmpbuf[256];
++	unsigned long jmpbuf_size;
++	void *initial = os_initial_jmpbuf(&jmpbuf_size);
++	char **environment = environ;
++	struct timespec zero = { 0, 0 };
++	sigset_t all, old, child;
++	unsigned int i;
++	int n;
++
++	sigfillset(&all);
++	sigprocmask(SIG_BLOCK, &all, &old);
++	sigemptyset(&child);
++	sigaddset(&child, SIGCHLD);
++	while (sigtimedwait(&child, NULL, &zero) > 0)
++		;
++	protect_all();
++	n = report_memory();
++	if (n)
++		fatal("exchanging memory with the host", -n);
++
++	if (jmpbuf_size > sizeof(jmpbuf))
++		fatal("initial jump buffer size", EINVAL);
++	memcpy(jmpbuf, initial, jmpbuf_size);
++	if (read_header(image, &header))
++		fatal("reading the image header", errno);
++	n = load_mappings(maps, current, MAX_REGIONS * 2);
++	if (n < 0)
++		fatal("reading host mappings", -n);
++	for (i = 0; i < (unsigned int)n; i++)
++		if (name_is(&current[i], "[heap]"))
++			heap = &current[i];
++
++	for (i = 0; i < header.nregions; i++) {
++		const struct image_region *region = &header.regions[i];
++
++		switch (region->kind) {
++		case KIND_VVAR:
++		case KIND_VVAR_VCLOCK:
++		case KIND_VDSO:
++			move_special(current, n, region);
++			break;
++		}
++	}
++	if (fstat(physmem_fd, &physmem) < 0)
++		fatal("reading the physical memory file", errno);
++	for (i = 0; i < (unsigned int)n; i++)
++		if (current[i].shared && same_file(&current[i], &physmem) &&
++		    (current[i].start < physmem_start ||
++		     current[i].end > physmem_end) &&
++		    munmap((void *)current[i].start,
++			   current[i].end - current[i].start) < 0)
++			fatal("unmapping kernel virtual memory", errno);
++	for (i = 0; i < header.nregions; i++) {
++		const struct image_region *region = &header.regions[i];
++
++		switch (region->kind) {
++		case KIND_SHARED:
++			if (mmap((void *)region->start, region->end - region->start,
++				 region->prot, MAP_SHARED | MAP_FIXED, physmem_fd,
++				 region->file_offset) != (void *)region->start)
++				fatal("mapping kernel virtual memory", errno);
++			break;
++		case KIND_PRIVATE:
++		case KIND_HEAP:
++		case KIND_RESERVE:
++			restore_region(image, region, heap);
++			break;
++		}
++	}
++	track_reset();
++
++	set_tls(header.tls);
++	memcpy(initial, jmpbuf, jmpbuf_size);
++	environ = environment;
++	um_checkpoint_resumed = 1;
++	close(image);
++	sigprocmask(SIG_SETMASK, &old, NULL);
++	os_checkpoint_resume();
++}
++
++void os_checkpoint_kill(int pid)
++{
++	if (pid <= 0)
++		return;
++	kill(pid, SIGKILL);
++	while (waitpid(pid, NULL, __WALL) < 0 && errno == EINTR)
++		;
++}
+--- a/arch/um/os-Linux/skas/process.c
++++ b/arch/um/os-Linux/skas/process.c
+@@ -19,6 +19,7 @@
+ #include <sys/socket.h>
+ #include <asm/unistd.h>
+ #include <as-layout.h>
++#include <checkpoint.h>
+ #include <init.h>
+ #include <kern_util.h>
+ #include <mem.h>
+@@ -548,6 +549,7 @@ int start_userspace(struct mm_id *mm_id)
+ }
+ 
+ static int unscheduled_userspace_iterations;
++int um_checkpoint_write_faulted;
+ extern unsigned long tt_extra_sched_jiffies;
+ 
+ void userspace(struct uml_pt_regs *regs)
+@@ -577,7 +579,12 @@ void userspace(struct uml_pt_regs *regs)
+ 		if (time_travel_mode == TT_MODE_INFCPU ||
+ 		    time_travel_mode == TT_MODE_EXTERNAL) {
+ #ifdef CONFIG_UML_MAX_USERSPACE_ITERATIONS
++			/*
++			 * A checkpoint write fault repeats an access the guest
++			 * made once, so it is not an iteration of its own.
++			 */
+ 			if (CONFIG_UML_MAX_USERSPACE_ITERATIONS &&
++			    !um_checkpoint_write_faulted &&
+ 			    unscheduled_userspace_iterations++ >
+ 			    CONFIG_UML_MAX_USERSPACE_ITERATIONS) {
+ 				tt_extra_sched_jiffies += 1;
+@@ -585,6 +592,7 @@ void userspace(struct uml_pt_regs *regs)
+ 			}
+ #endif
+ 		}
++		um_checkpoint_write_faulted = 0;
+ 
+ 		time_travel_print_bc_msg();
+ 
+@@ -876,6 +884,22 @@ void initial_thread_cb_skas(void (*proc)(void *), void *arg)
+ 	cb_back = NULL;
+ }
+ 
++void *os_initial_jmpbuf(unsigned long *size)
++{
++	*size = sizeof(initial_jmpbuf);
++	return &initial_jmpbuf;
++}
++
++/*
++ * A restore switches the thread pointer, and start_idle_thread() may still
++ * hold the old one, so the jump back to the captured caller reads cb_back
++ * here.
++ */
++void os_checkpoint_resume(void)
++{
++	longjmp(*cb_back, 1);
++}
++
+ void halt_skas(void)
+ {
+ 	block_signals_trace();

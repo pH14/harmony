@@ -401,6 +401,11 @@ impl RecordedState {
         self.payloads.clone()
     }
 
+    #[must_use]
+    pub fn handler(&self) -> &HandlerSnapshot {
+        &self.handler
+    }
+
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         if bytes.len() > MAX_RECORDED_STATE_BYTES {
             return Err(ChannelError::TooLarge);

@@ -80,10 +80,12 @@ missing prefix is rebuilt from the chain's longest matching link.
 One memory budget covers the shared cache and every worker's local snapshot
 store. It is the free memory left after a 1 GiB reserve and each worker's guest
 RAM plus 512 MiB; the worker count drops until each worker also has room for a
-store as large as its guest RAM. On macOS a search runs at most four workers. Before each execution a worker reports its
+store as large as its guest RAM. On macOS a search runs at most four workers.
+Before each execution and after each sealed prefix, a worker reports its
 store's resident bytes to the cache, which evicts entries to keep the total in
-budget. When eviction cannot, the worker with the largest store drops its chain
-back to the setup snapshot. The run prints the worker count and budget, and
+budget. When eviction cannot, the worker with the largest store drops its
+oldest prefix snapshots one at a time until the total fits, keeping setup and
+its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`.
 A fault search keeps sixteen reservations per worker in its admission window
@@ -171,6 +173,19 @@ Hypervisor.framework allows one virtual machine per process, so a macOS run
 takes one worker per process. A worker releases its target when it finishes so
 the next one can boot a virtual machine in that process.
 
+## User-mode Linux
+
+`--backend uml --uml-profile PROFILE` runs the same search on a
+User-mode Linux guest (`UmlSession` in
+[consonance-client](../../consonance/client/README.md)) as an ordinary user on
+any Linux host, with no KVM. The profile is verified at start, its kernel
+replaces `--kernel`, and each session runs in the search thread. The profile
+identity, host architecture, CPU model and CPU feature flags join the
+execution identity and the workload identity, and the campaign stream and
+snapshot checkpoint get UML formats of their own, so a UML run never reuses
+VM state. Each snapshot is a full guest image of about the guest's RAM, so a
+worker's store fills its budget faster than under KVM.
+
 ## Running it
 
 ```
@@ -181,6 +196,9 @@ harmony search --package faults IMAGE.oci --backend consonance \
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --replay run/bug-1.json --repeat 10 --out confirm/
+harmony search --package faults IMAGE.oci --backend uml \
+    --uml-profile profile --base-initramfs initramfs.cpio.gz \
+    --seed 1 --executions 20000 --ram-mib 1024 --out run/
 ```
 
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
@@ -254,7 +272,8 @@ number of Sometimes and Reachable assertions the state has passed. The
 selector's tiers rank states by that count and draw most parents from the
 states that passed the most. Places inside a tier rank by their draw counts.
 
-The Consonance backend needs Linux and KVM. The action model, the bundle
+The Consonance backend needs Linux and KVM, or HVF on macOS. The UML backend
+needs Linux. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.
 

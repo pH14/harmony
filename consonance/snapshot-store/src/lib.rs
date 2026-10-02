@@ -791,6 +791,25 @@ impl BuilderCore<'_> {
         Ok(())
     }
 
+    fn write_changed_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
+        if data.len() != PAGE_SIZE {
+            return Err(StoreError::BadPageLength { len: data.len() });
+        }
+        if gfn >= self.store.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn,
+                mem_pages: self.store.cfg.mem_pages,
+            });
+        }
+        if let Some(parent) = self.parent
+            && !self.pages.contains_key(&gfn)
+            && self.store.stored_page(SnapshotId(parent), gfn)?[..] == *data
+        {
+            return Ok(());
+        }
+        self.write_page(gfn, data)
+    }
+
     fn write_hashed_page(
         &mut self,
         gfn: u64,
@@ -949,6 +968,10 @@ impl DeltaBuilder<'_> {
         self.core.write_page(gfn, data)
     }
 
+    pub fn write_changed_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
+        self.core.write_changed_page(gfn, data)
+    }
+
     pub fn write_hashed_page(
         &mut self,
         gfn: u64,
@@ -1096,6 +1119,46 @@ mod tests {
                 .changed
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_changed_page_write_records_only_pages_that_differ_from_the_parent() {
+        let mut store = Store::new(cfg(8));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[2; PAGE_SIZE]).unwrap();
+        let base = builder.seal(Vec::new());
+        let mut builder = store.derive(base).unwrap();
+        builder.write_changed_page(0, &[1; PAGE_SIZE]).unwrap();
+        builder.write_changed_page(1, &[3; PAGE_SIZE]).unwrap();
+        builder.write_changed_page(2, &[0; PAGE_SIZE]).unwrap();
+        builder.write_changed_page(3, &[4; PAGE_SIZE]).unwrap();
+        let target = builder.seal(Vec::new());
+
+        let delta = store.page_delta(base, None, target).unwrap();
+        assert_eq!(delta_summary(&delta), (vec![(1, 3), (3, 4)], Vec::new()));
+        let mut page = [0; PAGE_SIZE];
+        store.read_page(target, 0, &mut page).unwrap();
+        assert_eq!(page, [1; PAGE_SIZE]);
+
+        let mut builder = store.derive(base).unwrap();
+        builder.write_page(1, &[5; PAGE_SIZE]).unwrap();
+        builder.write_changed_page(1, &[2; PAGE_SIZE]).unwrap();
+        let reverted = builder.seal(Vec::new());
+        store.read_page(reverted, 1, &mut page).unwrap();
+        assert_eq!(page, [2; PAGE_SIZE]);
+
+        assert!(matches!(
+            store.derive(target).unwrap().write_changed_page(0, &[1; 8]),
+            Err(StoreError::BadPageLength { len: 8 })
+        ));
+        assert!(matches!(
+            store
+                .derive(target)
+                .unwrap()
+                .write_changed_page(8, &[0; PAGE_SIZE]),
+            Err(StoreError::GfnOutOfRange { gfn: 8, .. })
+        ));
     }
 
     #[test]

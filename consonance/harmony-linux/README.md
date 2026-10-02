@@ -39,7 +39,8 @@ runtime inputs are supplied. Native Linux/aarch64 produces the corresponding
 `aarch64` directory. The workload builder owns application image recipes and
 application source inputs; those inputs are outside the platform closure. The
 existing `.#guest-images` app remains an alias for the platform builder while
-callers migrate to the explicit names.
+callers migrate to the explicit names. `nix run .#uml-images -- --output DIR`
+builds the User-mode Linux profile described in `uml/README.md`.
 
 The pinned BusyBox source is also available as a standalone flake package for
 reproducible image preparation and CI reuse:
@@ -60,6 +61,9 @@ therefore does not change the accepted source bytes.
   workload-free OCI runtime. Kernel patches provide the guest device,
   paravirtual clock, observation, and task-park interfaces; build scripts
   verify source and artifact hashes.
+- `uml/` builds the User-mode Linux profile: the pinned kernel as a static
+  host executable, a fixture initramfs, and the profile that hashes them. It
+  applies `linux/patches/common` and `linux/patches/um`.
 - `libvoidstar/` implements the SDK-facing dynamic ABI and communicates with
   `/dev/harmony`.
 - `sdk/` provides the no-std event, state, assertion, lifecycle, and entropy
