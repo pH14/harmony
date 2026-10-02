@@ -1,0 +1,62 @@
+From: Harmony Project
+Subject: x86/pci: initialize Harmony SVM's empty type-1 bus
+
+Harmony supplies the type-1 configuration address latch and an empty PCI bus.
+Without BIOS/DMI or a host-bridge device, Linux rejects that interface and
+tries the unsupported type-2 ports. Accept the empty bus after the existing
+type-1 latch round-trip succeeds. The separate AMD physical-northbridge
+initializer is unnecessary for this virtual platform and must not configure
+its absent NB_CFG hardware register.
+
+Both changes require compiled AMD KVM, the Harmony clock request, an AMD
+identity and SVM. Ordinary configurations compile the extension out; stock
+AMD boots retain the existing initialization paths.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/pci/direct.c
++++ b/arch/x86/pci/direct.c
+@@ -6,6 +6,7 @@
+ #include <linux/pci.h>
+ #include <linux/init.h>
+ #include <linux/dmi.h>
++#include <asm/harmony_pvclock.h>
+ #include <asm/pci_x86.h>
+ 
+ /*
+@@ -198,6 +199,11 @@
+ 	u32 x = 0;
+ 	int devfn;
+ 
++	if (IS_ENABLED(CONFIG_KVM_AMD) && harmony_pvclock_requested() &&
++	    boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
++	    boot_cpu_has(X86_FEATURE_SVM) && o == &pci_direct_conf1)
++		return 1;
++
+ 	if (pci_probe & PCI_NO_CHECKS)
+ 		return 1;
+ 	/* Assume Type 1 works for newer systems.
+--- a/arch/x86/pci/amd_bus.c
++++ b/arch/x86/pci/amd_bus.c
+@@ -5,6 +5,7 @@
+ #include <linux/cpu.h>
+ #include <linux/range.h>
+ 
++#include <asm/harmony_pvclock.h>
+ #include <asm/amd/nb.h>
+ #include <asm/pci_x86.h>
+ 
+@@ -403,6 +404,11 @@
+ 	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
+ 		return 0;
+ 
++	if (IS_ENABLED(CONFIG_KVM_AMD) && harmony_pvclock_requested() &&
++	    boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
++	    boot_cpu_has(X86_FEATURE_SVM))
++		return 0;
++
+ 	early_root_info_init();
+ 	pci_io_ecs_init();
+ 
