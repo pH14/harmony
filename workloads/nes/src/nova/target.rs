@@ -947,6 +947,8 @@ mod tests {
     struct FakePortable(Vec<u8>);
 
     impl SnapshotState for FakePortable {
+        type WorkRam = ();
+
         fn memory_charge(&self) -> usize {
             self.0.len()
         }

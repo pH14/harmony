@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 use crate::{
-    nes_backend::{NesBackend, SnapshotState, capture_nes, restore_nes},
+    nes_backend::{NesBackend, SnapshotState, WorkRamCopy, capture_nes, restore_nes},
     target::Target,
 };
 
@@ -42,9 +42,11 @@ pub struct SmbObservations {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SmbSnapshot<P = Vec<u8>> {
+#[serde(bound = "")]
+pub struct SmbSnapshot<P: SnapshotState = Vec<u8>> {
     emulator_state: P,
     observation: SnapshotObservation,
+    work_ram: P::WorkRam,
     room_area: [u8; 2],
     dead: bool,
     failed: bool,
@@ -79,24 +81,20 @@ impl SnapshotObservation {
     }
 }
 
-impl<P> SmbSnapshot<P> {
+impl<P: SnapshotState> SmbSnapshot<P> {
     pub(crate) fn room_area(&self) -> [u8; 2] {
         self.room_area
     }
 
     #[must_use]
-    pub fn emulator_state_bytes_len(&self) -> usize
-    where
-        P: SnapshotState,
-    {
+    pub fn emulator_state_bytes_len(&self) -> usize {
         self.emulator_state.memory_charge()
     }
 
-    pub(crate) fn resident_memory_charge(&self) -> usize
-    where
-        P: SnapshotState,
-    {
-        size_of::<Self>().saturating_add(self.emulator_state.memory_charge())
+    pub(crate) fn resident_memory_charge(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(self.emulator_state.memory_charge())
+            .saturating_add(self.work_ram.memory_charge())
     }
 }
 
@@ -127,8 +125,10 @@ where
     machine: M,
     snapshot_base: Option<P>,
     genesis: SnapId,
+    genesis_observation: SmbObservations,
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
+    stopped_at: Option<(SnapId, ButtonChord)>,
     dead: bool,
     failed: bool,
     execution_work: u64,
@@ -187,8 +187,10 @@ where
             machine,
             snapshot_base: None,
             genesis,
+            genesis_observation: observation.clone(),
             action_observations: vec![observation.clone()],
             observation,
+            stopped_at: None,
             dead: false,
             failed: false,
             execution_work: 0,
@@ -196,7 +198,7 @@ where
     }
 
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-        if self.failed || self.dead {
+        if self.failed || self.dead || !self.rerun_to_stop() {
             return false;
         }
         let mut env = Vec::new();
@@ -210,72 +212,82 @@ where
             self.failed = true;
             return false;
         };
-        let survived = self.probe_env(start, env);
+        let survived = self.probe_env(start, &env, usize::from(frames));
+        if self.machine.replay(start).is_err() {
+            self.failed = true;
+        }
         let _ = self.machine.drop_snapshot(start);
-        survived
+        survived && !self.failed
     }
 
-    fn probe_env(&mut self, start: SnapId, env: Vec<ButtonChord>) -> bool {
-        if self.machine.branch(start, &nes::reproducer(&env)).is_err() {
+    fn probe_env(&mut self, start: SnapId, env: &[ButtonChord], frames: usize) -> bool {
+        if self.machine.branch(start, &nes::reproducer(env)).is_err() {
             self.failed = true;
             return false;
         }
-        loop {
-            match self.run_one_frame() {
-                Ok(true) => {}
-                Ok(false) => return true,
-                Err(()) => return false,
-            }
-            if self.read_dead() {
-                self.dead = true;
+        let mut observed = 0_usize;
+        while observed < frames {
+            if !self.run_staged() {
                 return false;
             }
+            let produced = self.machine.frames();
+            if produced.is_empty()
+                || produced
+                    .iter()
+                    .take(frames - observed)
+                    .any(smb_player_is_dead)
+            {
+                return false;
+            }
+            observed = observed.saturating_add(produced.len());
+        }
+        true
+    }
+
+    fn rerun_to_stop(&mut self) -> bool {
+        let Some((start, chord)) = self.stopped_at.take() else {
+            return true;
+        };
+        let rerun = if self
+            .machine
+            .branch(start, &nes::reproducer(&[chord]))
+            .is_ok()
+        {
+            self.run_staged()
+        } else {
+            self.failed = true;
+            false
+        };
+        let _ = self.machine.drop_snapshot(start);
+        rerun
+    }
+
+    fn forget_stop(&mut self) {
+        if let Some((start, _)) = self.stopped_at.take() {
+            let _ = self.machine.drop_snapshot(start);
         }
     }
 
-    fn run_one_frame(&mut self) -> Result<bool, ()> {
-        let deadline = machine::Moment(self.machine.now().0.saturating_add(1));
-        match self.machine.run(
-            StopConditions {
-                deadline: Some(deadline),
-                on: machine::StopMask::NONE,
-            },
-            None,
-        ) {
-            Ok(machine::StopReason::Deadline { .. }) => Ok(true),
-            Ok(machine::StopReason::Quiescent { .. }) => Ok(false),
-            Ok(_) => {
-                self.failed = true;
-                Err(())
-            }
-            Err(_) => {
-                self.failed = true;
-                Err(())
-            }
-        }
+    fn run_staged(&mut self) -> bool {
+        let stopped = matches!(
+            self.machine.run(StopConditions::default(), None),
+            Ok(machine::StopReason::Quiescent { .. } | machine::StopReason::SnapshotPoint { .. })
+        );
+        self.failed |= !stopped;
+        stopped
     }
 
     #[must_use]
     pub fn wram(&self) -> [u8; WRAM_SIZE] {
-        wram_array(&self.machine).unwrap_or([0; WRAM_SIZE])
+        self.observation
+            .wram
+            .as_slice()
+            .try_into()
+            .unwrap_or([0; WRAM_SIZE])
     }
 
     pub(crate) fn mechanical_state(&self) -> SmbMechanicalState {
         self.observation.decoded
-    }
-
-    fn read_dead(&self) -> bool {
-        let engine_state = self.read_byte(PLAYER_ENGINE_STATE_OFFSET);
-        let vertical_page = self.read_byte(PLAYER_VERTICAL_PAGE_OFFSET);
-        engine_state == PLAYER_KILLED_STATE || vertical_page >= PLAYER_BELOW_PLAY_AREA_PAGE
-    }
-
-    fn read_byte(&self, addr: usize) -> u8 {
-        self.machine
-            .read(addr as u64, 1)
-            .ok()
-            .and_then(|bytes| bytes.first().copied())
-            .unwrap_or(0)
     }
 
     #[must_use]
@@ -302,20 +314,15 @@ where
     pub fn last_action_observations(&self) -> &[SmbObservations] {
         &self.action_observations
     }
+}
 
-    fn observation_from(
-        &self,
-        wram: &[u8; WRAM_SIZE],
-        frame_count: u64,
-        dead: bool,
-    ) -> SmbObservations {
-        SmbObservations {
-            frame_count,
-            wram: wram.to_vec(),
-            decoded: smb_mechanical_state_from_wram(wram),
-            milestones: smb_milestones_from_wram(wram),
-            dead,
-        }
+fn observation_from(wram: &[u8; WRAM_SIZE], frame_count: u64, dead: bool) -> SmbObservations {
+    SmbObservations {
+        frame_count,
+        wram: wram.to_vec(),
+        decoded: smb_mechanical_state_from_wram(wram),
+        milestones: smb_milestones_from_wram(wram),
+        dead,
     }
 }
 
@@ -340,11 +347,11 @@ where
     type Snapshot = SmbSnapshot<P>;
 
     fn reset(&mut self) {
+        self.forget_stop();
         self.failed = self.machine.replay(self.genesis).is_err();
         self.snapshot_base = None;
         self.dead = false;
-        let wram = self.wram();
-        self.observation = self.observation_from(&wram, 0, false);
+        self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
     }
 
@@ -353,11 +360,6 @@ where
         if self.failed || self.dead || self.is_victory() {
             return;
         }
-        let Ok(start_wram) = wram_array(&self.machine) else {
-            self.failed = true;
-            return;
-        };
-        let mut prior_bucket = smb_scroll_bucket(&start_wram);
         let Ok(start) = self.machine.snapshot() else {
             self.failed = true;
             return;
@@ -371,46 +373,52 @@ where
             let _ = self.machine.drop_snapshot(start);
             return;
         }
-        let _ = self.machine.drop_snapshot(start);
-        let hold_frames = action.bounded_hold_frames();
+        if !self.run_staged() {
+            let _ = self.machine.drop_snapshot(start);
+            return;
+        }
+        let mut endpoint = self.wram();
+        let mut prior_bucket = smb_scroll_bucket(&endpoint);
         let mut executed_frames = 0_u64;
-        for _ in 0..hold_frames {
-            match self.run_one_frame() {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(()) => break,
-            }
+        for wram in self
+            .machine
+            .frames()
+            .iter()
+            .take(usize::from(action.bounded_hold_frames()))
+        {
             executed_frames = executed_frames.saturating_add(1);
-            self.execution_work = self.execution_work.saturating_add(1);
-            let Ok(wram) = wram_array(&self.machine) else {
-                self.failed = true;
-                break;
-            };
-            let current_bucket = smb_scroll_bucket(&wram);
-            self.dead = smb_player_is_dead(&wram);
-            let victory = smb_is_victory(&wram);
+            endpoint = *wram;
+            let current_bucket = smb_scroll_bucket(wram);
+            self.dead = smb_player_is_dead(wram);
+            let victory = smb_is_victory(wram);
             if current_bucket != prior_bucket || self.dead || victory {
-                let observation = self.observation_from(
-                    &wram,
+                prior_bucket = current_bucket;
+                self.action_observations.push(observation_from(
+                    wram,
                     self.observation.frame_count.saturating_add(executed_frames),
                     self.dead,
-                );
-                prior_bucket = current_bucket;
-                self.action_observations.push(observation);
+                ));
             }
             if self.dead || victory {
                 break;
             }
         }
+        if executed_frames < self.machine.frames().len() as u64 {
+            let chord =
+                ButtonChord::new(action.buttons, u8::try_from(executed_frames).unwrap_or(1));
+            self.stopped_at = Some((start, chord));
+        } else {
+            let _ = self.machine.drop_snapshot(start);
+        }
+        self.execution_work = self.execution_work.saturating_add(executed_frames);
         let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
         let endpoint_already_recorded = self
             .action_observations
             .last()
             .is_some_and(|observation| observation.frame_count == endpoint_frame);
         if !endpoint_already_recorded {
-            let wram = self.wram();
             self.action_observations
-                .push(self.observation_from(&wram, endpoint_frame, self.dead));
+                .push(observation_from(&endpoint, endpoint_frame, self.dead));
         }
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
@@ -434,33 +442,39 @@ where
     }
 
     fn snapshot(&mut self) -> Option<Self::Snapshot> {
+        if !self.rerun_to_stop() {
+            return None;
+        }
         let Ok(emulator_state) = capture_nes(&mut self.machine, self.snapshot_base.as_ref()) else {
             self.failed = true;
             return None;
         };
         self.snapshot_base = Some(emulator_state.clone());
-        let observation = SnapshotObservation::from_observation(&self.observation);
-        let mut room_area = [0_u8; 2];
-        for (slot, offset) in room_area.iter_mut().zip(ROOM_IDENTITY_BYTES) {
-            let Some(value) = self.observation.wram.get(offset).copied() else {
-                self.failed = true;
-                return None;
-            };
-            *slot = value;
-        }
+        let wram = self.wram();
         Some(SmbSnapshot {
             emulator_state,
-            observation,
-            room_area,
+            observation: SnapshotObservation::from_observation(&self.observation),
+            work_ram: P::WorkRam::copy_of(&wram),
+            room_area: ROOM_IDENTITY_BYTES.map(|offset| wram[offset]),
             dead: self.dead,
             failed: self.failed,
         })
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
+        let kept = snapshot
+            .work_ram
+            .work_ram()
+            .map(<[u8; WRAM_SIZE]>::try_from)
+            .transpose()
+            .map_err(|_| "SMB snapshot work RAM is not exactly 2 KiB")?;
+        self.forget_stop();
         restore_nes(&mut self.machine, &snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
-        let wram = wram_array(&self.machine).map_err(|error| error.to_string())?;
+        let wram = match kept {
+            Some(wram) => wram,
+            None => wram_array(&self.machine).map_err(|error| error.to_string())?,
+        };
         self.observation = snapshot.observation.materialize(wram.to_vec());
         self.action_observations = vec![self.observation.clone()];
         self.dead = snapshot.dead;
@@ -637,12 +651,22 @@ fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
 }
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
-        BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
+        BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, OPER_MODE_OFFSET, OPER_MODE_PLAY,
+        OPER_MODE_TASK_OFFSET, OPER_MODE_TASK_PLAY, PLAYER_ENGINE_STATE_OFFSET,
+        PLAYER_KILLED_STATE, SCREEN_X_OFFSET, SmbSnapshot, SmbTarget, WRAM_SIZE, smb_is_victory,
         smb_mechanical_state_from_wram,
     };
-    use crate::target::Target;
-    use machine::quicknes::QuickNesMachine;
+    use crate::{
+        nes_backend::{NesBackend, SnapshotState},
+        target::{ExitKind, Target},
+    };
+    use machine::{
+        Machine, MachineError, Moment, SnapId, StopConditions, nes, quicknes::QuickNesMachine,
+    };
+    use serde::{Deserialize, Serialize};
 
     #[test]
     fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {
@@ -776,5 +800,239 @@ mod tests {
         assert!(target.execution_work() > second_work);
         target.reset();
         assert_eq!(target.snapshot().expect("snapshot reset"), genesis);
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct FakePortable(Vec<u8>);
+
+    impl SnapshotState for FakePortable {
+        type WorkRam = Box<[u8]>;
+
+        fn memory_charge(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeMachine {
+        wram: [u8; WRAM_SIZE],
+        snapshots: BTreeMap<u64, [u8; WRAM_SIZE]>,
+        next_snapshot: u64,
+        staged: Vec<ButtonChord>,
+        frames: Vec<[u8; WRAM_SIZE]>,
+        vtime: u64,
+        readable: bool,
+        kill_on_frame: Option<usize>,
+    }
+
+    impl FakeMachine {
+        fn new() -> Self {
+            let mut wram = [0; WRAM_SIZE];
+            wram[OPER_MODE_OFFSET] = OPER_MODE_PLAY;
+            wram[OPER_MODE_TASK_OFFSET] = OPER_MODE_TASK_PLAY;
+            Self {
+                wram,
+                snapshots: BTreeMap::new(),
+                next_snapshot: 0,
+                staged: Vec::new(),
+                frames: Vec::new(),
+                vtime: 0,
+                readable: true,
+                kill_on_frame: None,
+            }
+        }
+
+        fn hold(&mut self, wram: [u8; WRAM_SIZE]) -> SnapId {
+            let id = self.next_snapshot;
+            self.next_snapshot += 1;
+            self.snapshots.insert(id, wram);
+            SnapId(id)
+        }
+
+        fn held(&self, snap: SnapId) -> Result<[u8; WRAM_SIZE], MachineError> {
+            self.snapshots
+                .get(&snap.0)
+                .copied()
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+    }
+
+    impl Machine for FakeMachine {
+        type Portable = FakePortable;
+
+        fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            Ok(self.hold(self.wram))
+        }
+
+        fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.snapshots
+                .remove(&snap.0)
+                .map(|_| ())
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+
+        fn branch(&mut self, snap: SnapId, env: &machine::Reproducer) -> Result<(), MachineError> {
+            self.wram = self.held(snap)?;
+            self.staged = nes::actions_of(env)?;
+            self.readable = false;
+            Ok(())
+        }
+
+        fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.wram = self.held(snap)?;
+            self.staged.clear();
+            self.readable = false;
+            Ok(())
+        }
+
+        fn run(
+            &mut self,
+            until: StopConditions,
+            resolve: Option<&machine::Answer>,
+        ) -> Result<machine::StopReason, MachineError> {
+            if until != StopConditions::default() || resolve.is_some() {
+                return Err(MachineError::Backend(
+                    "only default stop conditions are supported".to_owned(),
+                ));
+            }
+            self.frames.clear();
+            for chord in std::mem::take(&mut self.staged) {
+                for _ in 0..chord.bounded_hold_frames() {
+                    self.wram[SCREEN_X_OFFSET] =
+                        self.wram[SCREEN_X_OFFSET].wrapping_add(chord.buttons);
+                    if self.kill_on_frame == Some(self.frames.len() + 1) {
+                        self.wram[PLAYER_ENGINE_STATE_OFFSET] = PLAYER_KILLED_STATE;
+                    }
+                    self.frames.push(self.wram);
+                    self.vtime += 1;
+                }
+            }
+            self.readable = true;
+            Ok(machine::StopReason::SnapshotPoint { vtime: self.now() })
+        }
+
+        fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
+            if !self.readable {
+                return Err(MachineError::Backend(
+                    "no cached observation at the current stop".to_owned(),
+                ));
+            }
+            let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
+            let end = start
+                .checked_add(usize::try_from(len).map_err(|_| MachineError::ReadOutOfBounds)?)
+                .ok_or(MachineError::ReadOutOfBounds)?;
+            self.wram
+                .get(start..end)
+                .map(<[u8]>::to_vec)
+                .ok_or(MachineError::ReadOutOfBounds)
+        }
+
+        fn export(
+            &mut self,
+            snap: SnapId,
+            _base: Option<&Self::Portable>,
+        ) -> Result<Self::Portable, MachineError> {
+            Ok(FakePortable(self.held(snap)?.to_vec()))
+        }
+
+        fn import(&mut self, portable: &Self::Portable) -> Result<SnapId, MachineError> {
+            let wram = portable
+                .0
+                .as_slice()
+                .try_into()
+                .map_err(|_| MachineError::Backend("fake state is not work RAM".to_owned()))?;
+            Ok(self.hold(wram))
+        }
+
+        fn portable_memory_charge(portable: &Self::Portable) -> usize {
+            portable.0.len()
+        }
+
+        fn now(&self) -> Moment {
+            Moment(self.vtime)
+        }
+
+        fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+            &self.frames
+        }
+    }
+
+    impl NesBackend<FakePortable> for FakeMachine {
+        fn export_nes(
+            &mut self,
+            snapshot: SnapId,
+            base: Option<&FakePortable>,
+        ) -> Result<FakePortable, MachineError> {
+            self.export(snapshot, base)
+        }
+
+        fn import_nes(&mut self, portable: &FakePortable) -> Result<SnapId, MachineError> {
+            self.import(portable)
+        }
+    }
+
+    #[test]
+    fn a_restore_succeeds_on_a_machine_that_reads_only_after_a_run() {
+        let mut target = SmbTarget::from_machine(FakeMachine::new()).expect("boot");
+        let genesis = target.observe();
+        target.apply(&ButtonChord::new(0x10, 3));
+        let snapshot = target.snapshot().expect("snapshot");
+        assert_eq!(
+            snapshot.resident_memory_charge(),
+            size_of::<SmbSnapshot<FakePortable>>()
+                + snapshot.emulator_state_bytes_len()
+                + WRAM_SIZE
+        );
+        let observed = target.observe();
+        target.apply(&ButtonChord::new(0x20, 3));
+        let action = ButtonChord::new(0x10, 4);
+
+        target.restore(&snapshot).expect("restore");
+        assert_eq!(target.observe(), observed);
+        assert_eq!(target.snapshot(), Some(snapshot.clone()));
+        target.apply(&action);
+        let expected = target.last_action_observations().to_vec();
+        assert_eq!(expected.len(), 4);
+
+        target.restore(&snapshot).expect("restore");
+        assert!(target.survives_probe(0x01, 200));
+        target.apply(&action);
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        assert_eq!(target.last_action_observations(), expected);
+        assert_eq!(target.observe().frame_count, observed.frame_count + 4);
+
+        target.reset();
+        assert_eq!(target.observe(), genesis);
+        target.apply(&action);
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        assert_eq!(target.observe().frame_count, 4);
+    }
+
+    #[test]
+    fn a_death_inside_a_chord_ends_the_action_at_the_death_frame() {
+        let mut target = SmbTarget::from_machine(FakeMachine::new()).expect("boot");
+        target.machine.kill_on_frame = Some(2);
+        assert!(!target.survives_probe(0x10, 5));
+        assert!(!target.is_dead());
+        assert_eq!(target.execution_work(), 0);
+
+        target.apply(&ButtonChord::new(0x10, 5));
+        assert!(target.is_dead());
+        assert_eq!(target.execution_work(), 2);
+        let observations = target.last_action_observations();
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| (observation.frame_count, observation.dead))
+                .collect::<Vec<_>>(),
+            [(1, false), (2, true)]
+        );
+
+        let stopped = target.snapshot().expect("snapshot");
+        assert_eq!(target.snapshot(), Some(stopped.clone()));
+        let mut ended = SmbTarget::from_machine(FakeMachine::new()).expect("boot");
+        ended.machine.kill_on_frame = Some(2);
+        ended.apply(&ButtonChord::new(0x10, 2));
+        assert_eq!(ended.snapshot(), Some(stopped));
     }
 }

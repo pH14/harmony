@@ -2,16 +2,56 @@
 
 use std::fmt;
 
-use machine::{Machine, MachineError, SnapId, quicknes::QuickNesMachine};
+use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE, quicknes::QuickNesMachine};
 use serde::{Serialize, de::DeserializeOwned};
 
 pub trait SnapshotState:
     Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned
 {
+    type WorkRam: WorkRamCopy;
+
     fn memory_charge(&self) -> usize;
 }
 
+pub trait WorkRamCopy:
+    Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned
+{
+    fn copy_of(wram: &[u8; WRAM_SIZE]) -> Self;
+
+    fn work_ram(&self) -> Option<&[u8]>;
+
+    fn memory_charge(&self) -> usize;
+}
+
+impl WorkRamCopy for () {
+    fn copy_of(_wram: &[u8; WRAM_SIZE]) -> Self {}
+
+    fn work_ram(&self) -> Option<&[u8]> {
+        None
+    }
+
+    fn memory_charge(&self) -> usize {
+        0
+    }
+}
+
+impl WorkRamCopy for Box<[u8]> {
+    fn copy_of(wram: &[u8; WRAM_SIZE]) -> Self {
+        wram.as_slice().into()
+    }
+
+    fn work_ram(&self) -> Option<&[u8]> {
+        Some(self)
+    }
+
+    fn memory_charge(&self) -> usize {
+        self.len()
+    }
+}
+
 impl SnapshotState for Vec<u8> {
+    type WorkRam = ();
+
     fn memory_charge(&self) -> usize {
         self.len()
     }
@@ -106,6 +146,8 @@ where
     not(miri)
 ))]
 impl SnapshotState for machine::consonance::ConsonancePortable {
+    type WorkRam = Box<[u8]>;
+
     fn memory_charge(&self) -> usize {
         self.memory_charge()
     }
