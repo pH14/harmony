@@ -460,6 +460,7 @@ pub struct QuickNesMachine {
     save_ram_frames: Vec<u8>,
     capture_video: bool,
     capture_audio: bool,
+    capture_marks: Vec<(usize, usize)>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -569,6 +570,7 @@ impl QuickNesMachine {
             save_ram_frames: Vec::new(),
             capture_video: false,
             capture_audio: false,
+            capture_marks: Vec::new(),
             _not_sync: PhantomData,
         })
     }
@@ -696,6 +698,15 @@ impl QuickNesMachine {
     pub fn take_audio_samples(&mut self) -> Vec<i16> {
         self.api.activate();
         AUDIO_SAMPLES.with(|samples| std::mem::take(&mut *samples.borrow_mut()))
+    }
+
+    pub fn keep_run_capture(&mut self, frames: usize) {
+        let Some(&(video, audio)) = self.capture_marks.get(frames) else {
+            return;
+        };
+        CAPTURED_VIDEO.with(|captured| captured.borrow_mut().truncate(video));
+        AUDIO_SAMPLES.with(|samples| samples.borrow_mut().truncate(audio));
+        self.capture_marks.truncate(frames);
     }
 
     pub fn take_snapshot(&mut self, snap: SnapId) -> Result<Vec<u8>, MachineError> {
@@ -984,6 +995,7 @@ impl Machine for QuickNesMachine {
     ) -> Result<StopReason, MachineError> {
         self.frames.clear();
         self.save_ram_frames.clear();
+        self.capture_marks.clear();
         if resolve.is_some() {
             return Err(MachineError::ResolveWithoutDecision);
         }
@@ -1003,6 +1015,12 @@ impl Machine for QuickNesMachine {
                 };
                 self.input = chord.buttons;
                 self.hold_remaining = chord.bounded_hold_frames();
+            }
+            if self.capture_video || self.capture_audio {
+                self.capture_marks.push((
+                    CAPTURED_VIDEO.with(|captured| captured.borrow().len()),
+                    AUDIO_SAMPLES.with(|samples| samples.borrow().len()),
+                ));
             }
             self.run_frame()?;
             self.hold_remaining -= 1;
@@ -1443,6 +1461,8 @@ mod loopback {
         static ACTIVE: Cell<u64> = const { Cell::new(0) };
         static NEXT_ID: Cell<u64> = const { Cell::new(1) };
         static STATES: RefCell<BTreeMap<u64, Box<State>>> = const { RefCell::new(BTreeMap::new()) };
+        static VIDEO: Cell<Option<VideoCallback>> = const { Cell::new(None) };
+        static AUDIO_BATCH: Cell<Option<AudioBatchCallback>> = const { Cell::new(None) };
     }
 
     pub(super) fn activate(id: u64) {
@@ -1472,9 +1492,13 @@ mod loopback {
     }
 
     unsafe extern "C" fn set_environment(_: EnvironmentCallback) {}
-    unsafe extern "C" fn set_video(_: VideoCallback) {}
+    unsafe extern "C" fn set_video(callback: VideoCallback) {
+        VIDEO.with(|video| video.set(Some(callback)));
+    }
     unsafe extern "C" fn set_audio(_: AudioCallback) {}
-    unsafe extern "C" fn set_audio_batch(_: AudioBatchCallback) {}
+    unsafe extern "C" fn set_audio_batch(callback: AudioBatchCallback) {
+        AUDIO_BATCH.with(|audio| audio.set(Some(callback)));
+    }
     unsafe extern "C" fn set_input_poll(_: InputPollCallback) {}
     unsafe extern "C" fn set_input_state(_: InputStateCallback) {}
     unsafe extern "C" fn void() {}
@@ -1503,10 +1527,21 @@ mod loopback {
         }
     }
     unsafe extern "C" fn run() {
-        let _ = with_state_mut(|state| {
+        let Some(byte) = with_state_mut(|state| {
             state.byte = state.byte.wrapping_add(1);
             state.wram[0] = state.wram[0].wrapping_add(1);
-        });
+            state.byte
+        }) else {
+            return;
+        };
+        if let Some(video) = VIDEO.with(Cell::get) {
+            let pixel = [byte, 0, 0, 0];
+            video(pixel.as_ptr().cast(), 1, 1, pixel.len());
+        }
+        if let Some(audio) = AUDIO_BATCH.with(Cell::get) {
+            let samples = [i16::from(byte); 2];
+            audio(samples.as_ptr(), 1);
+        }
     }
     unsafe extern "C" fn serialize_size() -> usize {
         FAKE_STATE_LEN
@@ -1960,6 +1995,47 @@ mod tests {
         );
         assert!(machine.take_video_frame().is_none());
         machine.set_video_capture(false);
+    }
+
+    #[test]
+    fn a_run_keeps_only_the_capture_of_its_first_frames() {
+        reset_capture_state();
+        let mut machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
+        machine.set_video_capture(true);
+        machine.set_audio_capture(true);
+        let mut format = PIXEL_FORMAT_XRGB8888;
+        assert!(environment_callback(
+            RETRO_ENVIRONMENT_SET_PIXEL_FORMAT,
+            (&raw mut format).cast()
+        ));
+        let base = machine.snapshot().expect("snapshot");
+        let chord = nes::reproducer(&[nes::ButtonChord::new(0x01, 4)]);
+
+        machine.branch(base, &chord).expect("branch");
+        machine.run(StopConditions::default(), None).expect("run");
+        machine.keep_run_capture(2);
+        assert_eq!(
+            machine
+                .take_video_frames()
+                .iter()
+                .map(|frame| frame.rgb24[2])
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(machine.take_audio_samples(), vec![1, 1, 2, 2]);
+
+        machine.branch(base, &chord).expect("branch");
+        machine.run(StopConditions::default(), None).expect("run");
+        machine.keep_run_capture(4);
+        assert_eq!(machine.take_video_frames().len(), 4);
+        assert_eq!(machine.take_audio_samples().len(), 8);
+        machine.branch(base, &chord).expect("branch");
+        machine.run(StopConditions::default(), None).expect("run");
+        machine.keep_run_capture(0);
+        assert!(machine.take_video_frames().is_empty());
+        assert!(machine.take_audio_samples().is_empty());
+        machine.set_video_capture(false);
+        machine.set_audio_capture(false);
     }
 
     #[test]

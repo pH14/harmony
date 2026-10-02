@@ -258,6 +258,7 @@ where
             self.failed = true;
             false
         };
+        self.machine.keep_run_capture(0);
         let _ = self.machine.drop_snapshot(start);
         rerun
     }
@@ -404,9 +405,9 @@ where
             }
         }
         if executed_frames < self.machine.frames().len() as u64 {
-            let chord =
-                ButtonChord::new(action.buttons, u8::try_from(executed_frames).unwrap_or(1));
-            self.stopped_at = Some((start, chord));
+            let kept = u8::try_from(executed_frames).unwrap_or(1);
+            self.machine.keep_run_capture(usize::from(kept));
+            self.stopped_at = Some((start, ButtonChord::new(action.buttons, kept)));
         } else {
             let _ = self.machine.drop_snapshot(start);
         }
@@ -823,6 +824,7 @@ mod tests {
         vtime: u64,
         readable: bool,
         kill_on_frame: Option<usize>,
+        kept_capture: Vec<usize>,
     }
 
     impl FakeMachine {
@@ -839,6 +841,7 @@ mod tests {
                 vtime: 0,
                 readable: true,
                 kill_on_frame: None,
+                kept_capture: Vec::new(),
             }
         }
 
@@ -969,6 +972,10 @@ mod tests {
         fn import_nes(&mut self, portable: &FakePortable) -> Result<SnapId, MachineError> {
             self.import(portable)
         }
+
+        fn keep_run_capture(&mut self, frames: usize) {
+            self.kept_capture.push(frames);
+        }
     }
 
     #[test]
@@ -1019,6 +1026,7 @@ mod tests {
         target.apply(&ButtonChord::new(0x10, 5));
         assert!(target.is_dead());
         assert_eq!(target.execution_work(), 2);
+        assert_eq!(target.machine.kept_capture, [2]);
         let observations = target.last_action_observations();
         assert_eq!(
             observations
@@ -1029,6 +1037,7 @@ mod tests {
         );
 
         let stopped = target.snapshot().expect("snapshot");
+        assert_eq!(target.machine.kept_capture, [2, 0]);
         assert_eq!(target.snapshot(), Some(stopped.clone()));
         let mut ended = SmbTarget::from_machine(FakeMachine::new()).expect("boot");
         ended.machine.kill_on_frame = Some(2);

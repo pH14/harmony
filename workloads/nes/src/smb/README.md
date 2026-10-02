@@ -13,7 +13,8 @@ nothing before it and is drawn from the controller vocabulary.
 
 An action runs its chord in one machine run and reads each frame's work RAM
 from the run. The target stops reading at the frame where Mario dies or the
-game is won, and counts the frames up to that one. The machine has run the
+game is won, and counts the frames up to that one. A film of the action keeps
+the video and audio of those frames only. The machine has run the
 rest of the chord by then, so the target keeps the action's starting state. A
 dead or won target takes no further action. A snapshot of it first reruns the
 chord from that starting state up to the stop frame, so the snapshot holds the
