@@ -56,12 +56,14 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 9;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 10;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
-     window and admitted in reservation order; physical workers drain the window dynamically, \
-     but host completion order cannot reach campaign state; the same seed, configuration, \
-     origin, and workload bytes produce the same recorded stream";
+     window; each job's planned finish is the planned finish of the admission before its \
+     selection plus its planned action cost, and jobs are admitted in planned-finish order; \
+     physical workers run queued jobs in that order, but host completion order cannot reach \
+     campaign state; the same seed, configuration, origin, and workload bytes produce the same \
+     recorded stream";
 
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const ORIGIN_GENESIS: &str = "genesis";
@@ -127,8 +129,8 @@ pub const fn default_window(workers: u32) -> usize {
     workers as usize
 }
 
-const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_v4";
-const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_v5";
+const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "planned_finish_window_";
 const DEFAULT_MIXTURE_WEIGHT: u8 = 128;
 
 fn schedule_policy_identifier(window: usize) -> String {
@@ -737,6 +739,7 @@ pub enum CampaignAdmissionDecision {
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 pub struct CampaignJobRecord<C, K = ()> {
     pub sequence: u64,
+    pub reservation: u64,
     pub parent_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_energy: Option<u16>,
@@ -1913,7 +1916,7 @@ fn resolve_origin<G: Workload>(
         let reader = search_checkpoint.ok_or("a search checkpoint origin was not opened")?;
         let checkpoint_policy_changes = search_checkpoint_policy_changes(
             &reader.header,
-            &search_checkpoint_header(workload, config, &reader.header.reason, 0, 0, 0),
+            &search_checkpoint_header(workload, config, &reader.header.reason, 0, 0, 0, 0),
         )?;
         let path = path.display().to_string();
         let resume_input_sha256 = format!(
@@ -2125,7 +2128,7 @@ fn validate_duration_reservation<C>(
     admission_sequence: Option<u64>,
     recorded_remaining_work: Option<NonZeroU64>,
     current_sequence: u64,
-    window_depth: usize,
+    selection_sequence: u64,
     campaign_work_budget: Option<u64>,
     current_work: u64,
     work_history: &VecDeque<(u64, u64)>,
@@ -2142,12 +2145,11 @@ fn validate_duration_reservation<C>(
     let Some(admission_sequence) = admission_sequence else {
         return Err("recorded duration choice is missing its admission sequence".into());
     };
-    let window_depth = u64::try_from(window_depth)?;
     if admission_sequence > current_sequence {
         return Err("duration choice claims a future admission sequence".into());
     }
-    if current_sequence.saturating_sub(admission_sequence) > window_depth {
-        return Err("duration choice is older than the bounded admission window".into());
+    if admission_sequence != selection_sequence {
+        return Err("duration choice was not drawn at its selection point".into());
     }
     let work_at_draw = if admission_sequence == current_sequence {
         Some(current_work)
@@ -2462,6 +2464,18 @@ struct JobSpec<G: Workload + ?Sized> {
 
 type SelectedJob<G> = (JobSpec<G>, PendingJob<G>);
 
+fn planned_finish<G: Workload + ?Sized>(
+    clock: u64,
+    spec: &JobSpec<G>,
+    cost: fn(&G::Action) -> u64,
+) -> u64 {
+    spec.replay
+        .iter()
+        .chain(&spec.suffix)
+        .map(cost)
+        .fold(clock, u64::saturating_add)
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 struct JobSpecRecord<G: Workload + ?Sized> {
@@ -2517,7 +2531,8 @@ struct CoreCheckpoint<G: Workload + ?Sized> {
 struct SearchResume<G: Workload + ?Sized> {
     rand: RomuDuoJrRand,
     reserved: u64,
-    next_admission: usize,
+    admitted: usize,
+    planned_clock: u64,
     profile: LiveCoordinatorProfile,
     in_flight: Vec<InFlightJob<G>>,
 }
@@ -2543,6 +2558,7 @@ struct PendingJob<G: Workload + ?Sized> {
     duration_remaining_work: Option<NonZeroU64>,
     duration_checkpoint_at_draw: Option<DurationCheckpoint>,
     suffix_limit: Option<u8>,
+    planned_finish: u64,
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -2989,13 +3005,15 @@ where
             let search_started = std::time::Instant::now();
             telemetry_started = search_started;
             let started = config.wall_budget.map(|_| telemetry_started);
-            let mut resumed_admission = 0_usize;
+            let mut admitted = 0_usize;
+            let mut planned_clock = 0_u64;
             let mut resumed_in_flight = None;
             if let Some(resume) = resume {
                 rand = resume.rand;
                 reserved = resume.reserved;
                 coordinator_profile = resume.profile;
-                resumed_admission = resume.next_admission;
+                admitted = resume.admitted;
+                planned_clock = resume.planned_clock;
                 resumed_in_flight = Some(resume.in_flight);
             }
             let mut checkpoints = options
@@ -3101,6 +3119,7 @@ where
                             duration_remaining_work: None,
                             duration_checkpoint_at_draw: None,
                             suffix_limit: None,
+                            planned_finish: 0,
                         },
                     )));
                 }
@@ -3290,6 +3309,7 @@ where
                             duration_remaining_work,
                             duration_checkpoint_at_draw,
                             suffix_limit,
+                            planned_finish: 0,
                         },
                     )));
                 }
@@ -3298,9 +3318,8 @@ where
             let pipeline_depth = config.window;
             let mut pending = BTreeMap::<usize, PendingJob<G>>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            let mut queued_specs = VecDeque::with_capacity(
-                pipeline_depth.min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX)),
-            );
+            let mut schedule = BTreeSet::<(u64, usize)>::new();
+            let mut queued_specs = BTreeMap::<(u64, usize), JobSpec<G>>::new();
             for job in resumed_in_flight.take().unwrap_or_default() {
                 let index = core
                     .archive
@@ -3310,13 +3329,18 @@ where
                     .snapshot
                     .clone()
                     .ok_or("search checkpoint in-flight job has no stored snapshot")?;
-                queued_specs.push_back(JobSpec {
-                    reservation: job.reservation,
-                    snapshot,
-                    replay: job.spec.replay.clone(),
-                    parent_milestones: job.spec.parent_milestones,
-                    suffix: job.spec.suffix.clone(),
-                });
+                let key = (job.pending.planned_finish, job.reservation);
+                schedule.insert(key);
+                queued_specs.insert(
+                    key,
+                    JobSpec {
+                        reservation: job.reservation,
+                        snapshot,
+                        replay: job.spec.replay.clone(),
+                        parent_milestones: job.spec.parent_milestones,
+                        suffix: job.spec.suffix.clone(),
+                    },
+                );
                 if checkpoints.is_some() {
                     spec_records.insert(job.reservation, job.spec);
                 }
@@ -3342,7 +3366,7 @@ where
                     .selection_ns
                     .saturating_add(profile_elapsed(selection_started));
                 coordinator_profile.selections = coordinator_profile.selections.saturating_add(1);
-                let Some((mut spec, pending_job)) = selected else {
+                let Some((mut spec, mut pending_job)) = selected else {
                     break;
                 };
                 coordinator_profile.note_dispatch(
@@ -3352,28 +3376,33 @@ where
                 );
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
+                pending_job.planned_finish = planned_finish(planned_clock, &spec, action_cost);
+                let key = (pending_job.planned_finish, reservation);
                 if pending.insert(reservation, pending_job).is_some() {
                     return Err("campaign reserved one job twice".into());
                 }
                 if checkpoints.is_some() {
                     spec_records.insert(reservation, JobSpecRecord::of(&spec));
                 }
-                queued_specs.push_back(spec);
+                schedule.insert(key);
+                queued_specs.insert(key, spec);
             }
             let mut running = 0_usize;
             let mut result_bound = ResultBound::new(workers.saturating_mul(result_limit));
             while !queued_specs.is_empty() && result_bound.reserve() {
-                let spec = queued_specs
-                    .pop_front()
+                let (_, spec) = queued_specs
+                    .pop_first()
                     .ok_or("campaign prefill lost queued job")?;
                 pool.dispatch(spec)?;
                 running += 1;
             }
             idle_clock.update(running, IdleReason::NoJob);
 
-            let mut next_admission = resumed_admission;
             while !pending.is_empty() || !completed.is_empty() {
-                let mut ready_reply = if completed.contains_key(&next_admission) {
+                let next_admission = schedule.first().map(|(_, reservation)| *reservation);
+                let mut ready_reply = if next_admission
+                    .is_some_and(|reservation| completed.contains_key(&reservation))
+                {
                     pool.try_receive()?
                 } else if pending.is_empty() {
                     return Err("campaign reorder window ended with an admission gap".into());
@@ -3408,7 +3437,7 @@ where
                         .checked_sub(1)
                         .ok_or("campaign worker replied without queued work")?;
                     let (reservation, result, execution_work, result_sha256) = outcome;
-                    let held = reservation != next_admission;
+                    let held = Some(reservation) != next_admission;
                     idle_clock.update(
                         running,
                         if held {
@@ -3441,8 +3470,13 @@ where
                     ready_reply = pool.try_receive()?;
                 }
 
-                while let Some(completed_job) = completed.remove(&next_admission) {
-                    spec_records.remove(&next_admission);
+                while let Some(&(finish, reservation)) = schedule.first() {
+                    let Some(completed_job) = completed.remove(&reservation) else {
+                        break;
+                    };
+                    schedule.pop_first();
+                    planned_clock = finish;
+                    spec_records.remove(&reservation);
                     let pending_job = completed_job.pending;
                     let result = completed_job.result;
                     let execution_work = completed_job.execution_work;
@@ -3586,6 +3620,7 @@ where
                     writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
                         continuation_energy: pending_job.continuation_energy,
                         sequence,
+                        reservation: u64::try_from(reservation)?,
                         parent_id: pending_job.parent_id,
                         mutation_seed: pending_job.mutation_seed,
                         execution_work,
@@ -3670,7 +3705,7 @@ where
                             );
                         }
                     }
-                    next_admission = next_admission.saturating_add(1);
+                    admitted = admitted.saturating_add(1);
                     let selection_started = profile_now();
                     let selected = select(
                         &mut core,
@@ -3686,7 +3721,7 @@ where
                         .saturating_add(profile_elapsed(selection_started));
                     coordinator_profile.selections =
                         coordinator_profile.selections.saturating_add(1);
-                    if let Some((mut spec, pending_job)) = selected {
+                    if let Some((mut spec, mut pending_job)) = selected {
                         coordinator_profile.note_dispatch(
                             &spec,
                             matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
@@ -3694,18 +3729,22 @@ where
                         );
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;
+                        pending_job.planned_finish =
+                            planned_finish(planned_clock, &spec, action_cost);
+                        let key = (pending_job.planned_finish, reservation);
                         if pending.insert(reservation, pending_job).is_some() {
                             return Err("campaign reserved one job twice".into());
                         }
                         if checkpoints.is_some() {
                             spec_records.insert(reservation, JobSpecRecord::of(&spec));
                         }
-                        queued_specs.push_back(spec);
+                        schedule.insert(key);
+                        queued_specs.insert(key, spec);
                     }
 
                     while !queued_specs.is_empty() && result_bound.reserve() {
-                        let spec = queued_specs
-                            .pop_front()
+                        let (_, spec) = queued_specs
+                            .pop_first()
                             .ok_or("campaign queued-job count changed while dispatching")?;
                         pool.dispatch(spec)?;
                         running += 1;
@@ -3737,7 +3776,9 @@ where
                             &counters,
                             &coordinator_profile,
                             reserved,
-                            next_admission,
+                            admitted,
+                            planned_clock,
+                            &schedule,
                             &pending,
                             &completed,
                             &spec_records,
@@ -3745,8 +3786,8 @@ where
                     }
                 }
                 while !queued_specs.is_empty() && result_bound.reserve() {
-                    let spec = queued_specs
-                        .pop_front()
+                    let (_, spec) = queued_specs
+                        .pop_first()
                         .ok_or("campaign queued-job count changed while dispatching")?;
                     pool.dispatch(spec)?;
                     running += 1;
@@ -3760,7 +3801,7 @@ where
                     },
                 );
             }
-            if !completed.is_empty() {
+            if !completed.is_empty() || !schedule.is_empty() {
                 return Err("campaign reorder window ended with an admission gap".into());
             }
             if !queued_specs.is_empty() {
@@ -3856,7 +3897,8 @@ fn search_checkpoint_header<G: Workload>(
     reason: &str,
     executions: u64,
     reserved: u64,
-    next_admission: usize,
+    admitted: usize,
+    planned_clock: u64,
 ) -> CheckpointHeader {
     let mut policies = recorded_policies(workload, &config.run);
     for (field, value) in [
@@ -3898,7 +3940,8 @@ fn search_checkpoint_header<G: Workload>(
         policies,
         executions,
         reserved,
-        next_admission,
+        admitted,
+        planned_clock,
     }
 }
 
@@ -3949,7 +3992,7 @@ fn restore_search_checkpoint<G: Workload>(
     counters: &mut CampaignCounters,
 ) -> Result<SearchResume<G>, Box<dyn Error>> {
     let header = reader.header.clone();
-    let expected = search_checkpoint_header(workload, config, &header.reason, 0, 0, 0);
+    let expected = search_checkpoint_header(workload, config, &header.reason, 0, 0, 0, 0);
     if header.workload_identity_sha256 != expected.workload_identity_sha256 {
         return Err("search checkpoint belongs to a different workload".into());
     }
@@ -4008,21 +4051,28 @@ fn restore_search_checkpoint<G: Workload>(
         rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
     }
     let reserved = usize::try_from(header.reserved)?;
-    if in_flight
-        .iter()
-        .map(|job| job.reservation)
-        .ne(header.next_admission..reserved)
+    let ordered = in_flight
+        .windows(2)
+        .all(|pair| pair[0].reservation < pair[1].reservation);
+    if !ordered
+        || in_flight
+            .last()
+            .is_some_and(|job| job.reservation >= reserved)
+        || reserved.checked_sub(header.admitted) != Some(in_flight.len())
+        || in_flight
+            .iter()
+            .any(|job| job.pending.planned_finish < header.planned_clock)
     {
-        return Err("search checkpoint in-flight jobs do not fill the admission window".into());
+        return Err("search checkpoint in-flight jobs do not match its admission count".into());
     }
-    if core.sequence != u64::try_from(header.next_admission)? || core.sequence != header.executions
-    {
+    if core.sequence != u64::try_from(header.admitted)? || core.sequence != header.executions {
         return Err("search checkpoint admission count disagrees with its archive".into());
     }
     Ok(SearchResume {
         rand,
         reserved: header.reserved,
-        next_admission: header.next_admission,
+        admitted: header.admitted,
+        planned_clock: header.planned_clock,
         profile,
         in_flight,
     })
@@ -4041,12 +4091,19 @@ fn write_search_checkpoint<G: Workload>(
     counters: &CampaignCounters,
     profile: &LiveCoordinatorProfile,
     reserved: u64,
-    next_admission: usize,
+    admitted: usize,
+    planned_clock: u64,
+    schedule: &BTreeSet<(u64, usize)>,
     pending: &BTreeMap<usize, PendingJob<G>>,
     completed: &BTreeMap<usize, CompletedJob<G>>,
     spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
 ) -> Result<(), Box<dyn Error>> {
-    let in_flight = (next_admission..usize::try_from(reserved)?)
+    let reservations = schedule
+        .iter()
+        .map(|(_, reservation)| *reservation)
+        .collect::<BTreeSet<_>>();
+    let in_flight = reservations
+        .into_iter()
         .map(|reservation| -> Result<_, Box<dyn Error>> {
             let pending = pending
                 .get(&reservation)
@@ -4068,7 +4125,8 @@ fn write_search_checkpoint<G: Workload>(
         reason,
         core.sequence,
         reserved,
-        next_admission,
+        admitted,
+        planned_clock,
     );
     let evidence = G::evidence_checkpoint(&core.evidence)?;
     let draw = draw_state.to_resume_bytes()?;
@@ -4250,15 +4308,18 @@ where
     }
     let record_lines = lines.collect::<Vec<_>>();
     let mut required_draw_versions = DrawVersionSchedule::default();
-    let mut replay_job_parents = Vec::<u64>::new();
-    let mut replay_job_metadata = Vec::<Vec<u64>>::new();
+    let mut replay_job_reservations = BTreeMap::<u64, u64>::new();
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
-                replay_job_parents.push(job.parent_id);
-                replay_job_metadata.push(vec![job.parent_id]);
+                if replay_job_reservations
+                    .insert(job.reservation, job.parent_id)
+                    .is_some()
+                {
+                    return Err("campaign stream admits one reservation twice".into());
+                }
                 job.draw_checkpoint_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
@@ -4267,6 +4328,18 @@ where
             required_draw_versions.require(workload.draw_checkpoint_version(&before), index);
         }
     }
+    if !replay_job_reservations
+        .keys()
+        .copied()
+        .eq(0..u64::try_from(replay_job_reservations.len())?)
+    {
+        return Err("campaign stream job reservations are not contiguous".into());
+    }
+    let replay_job_parents = replay_job_reservations.into_values().collect::<Vec<_>>();
+    let replay_job_metadata = replay_job_parents
+        .iter()
+        .map(|parent_id| vec![*parent_id])
+        .collect::<Vec<_>>();
     let resume_input = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
             if origin_report.is_some() {
@@ -4428,6 +4501,9 @@ where
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
     let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
+    let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
+    let mut replay_planned_clock = 0_u64;
+    let mut last_admitted = None::<(u64, usize)>;
     core.archive.preserve_inactive_snapshots(false)?;
     for (job_slot, parent_id) in replay_job_parents
         .iter()
@@ -4451,6 +4527,7 @@ where
             .index_of_id(*parent_id)
             .ok_or("initial replay job names a parent the archive does not hold")?;
         replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
+        replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
         for metadata_id in &replay_job_metadata[job_slot] {
             let uses = replay_metadata_uses.entry(*metadata_id).or_default();
             *uses = uses
@@ -4461,7 +4538,7 @@ where
     core.archive
         .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
 
-    let mut replay_job_index = 0_usize;
+    let mut replay_admissions = 0_usize;
     for (replay_record_index, line) in record_lines.into_iter().enumerate() {
         draw_state.release_versions(&required_draw_versions, replay_record_index);
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
@@ -4491,7 +4568,7 @@ where
                     skip.duration_admission_sequence_at_draw,
                     skip.duration_remaining_work,
                     core.sequence,
-                    replay_window_depth,
+                    core.sequence,
                     header.work_budget,
                     counters
                         .bootstrap_execution_work
@@ -4597,8 +4674,12 @@ where
                         "continuation job lacks its registered schedule or complete tail".into(),
                     );
                 }
-                let replay_job_slot = replay_job_index;
-                replay_job_index = replay_job_index.saturating_add(1);
+                let replay_job_slot = usize::try_from(job.reservation)?;
+                let admission_index = replay_admissions;
+                replay_admissions = replay_admissions.saturating_add(1);
+                let (planned_start, selection_sequence) = replay_selections
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job was admitted before its selection")?;
                 let taken_continuation = replay_continuations.remove(&replay_job_slot);
                 continuation_reservation_matches::<G>(
                     taken_continuation.as_ref(),
@@ -4646,7 +4727,7 @@ where
                     job.duration_admission_sequence_at_draw,
                     job.duration_remaining_work,
                     core.sequence,
-                    replay_window_depth,
+                    selection_sequence,
                     header.work_budget,
                     counters
                         .bootstrap_execution_work
@@ -4710,6 +4791,20 @@ where
                 if let Some(limit) = suffix_limit {
                     suffix.truncate(usize::from(limit));
                 }
+                let finish = replay
+                    .iter()
+                    .chain(&suffix)
+                    .map(action_cost)
+                    .fold(planned_start, u64::saturating_add);
+                if last_admitted.is_some_and(|last| last >= (finish, replay_job_slot)) {
+                    return Err(format!(
+                        "replayed job {} was admitted out of planned-finish order",
+                        job.sequence
+                    )
+                    .into());
+                }
+                last_admitted = Some((finish, replay_job_slot));
+                replay_planned_clock = finish;
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job(
                     &replay_run,
@@ -4792,9 +4887,6 @@ where
                         before: duration_checkpoint_before.clone(),
                         evicted,
                     });
-                    while duration_admissions.len() > replay_window_depth {
-                        duration_admissions.pop_front();
-                    }
                 }
                 let duration_checkpoint_after = duration_draw
                     .and_then(|draw| duration_policies.context_checkpoint(draw.context));
@@ -4863,9 +4955,9 @@ where
                     }
                 }
                 if let Some(parent_id) =
-                    replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
+                    replay_job_parents.get(admission_index.saturating_add(replay_window_depth))
                 {
-                    let next_slot = replay_job_slot.saturating_add(replay_window_depth);
+                    let next_slot = admission_index.saturating_add(replay_window_depth);
                     let (energy, continuation) = continuation_attempt(
                         &mut core,
                         header.campaign_seed,
@@ -4884,6 +4976,7 @@ where
                         .ok_or("next replay job names a parent the archive does not hold")?;
                     replay_job_snapshots
                         .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
+                    replay_selections.insert(next_slot, (replay_planned_clock, core.sequence));
                     for metadata_id in &replay_job_metadata[next_slot] {
                         let uses = replay_metadata_uses.entry(*metadata_id).or_default();
                         *uses = uses
@@ -4901,8 +4994,20 @@ where
                         .bootstrap_execution_work
                         .saturating_add(counters.job_execution_work),
                 ));
-                while duration_work.len() > replay_window_depth.saturating_add(1) {
+                let oldest_selection = replay_selections
+                    .first_key_value()
+                    .map_or(core.sequence, |(_, (_, selection))| *selection);
+                while duration_work
+                    .front()
+                    .is_some_and(|(sequence, _)| *sequence < oldest_selection)
+                {
                     duration_work.pop_front();
+                }
+                while duration_admissions
+                    .front()
+                    .is_some_and(|admission| admission.sequence <= oldest_selection)
+                {
+                    duration_admissions.pop_front();
                 }
                 if objectives_before == 0 && core.objectives_reached > 0 {
                     counters.note_first_objective(sequence);
@@ -5148,7 +5253,8 @@ mod tests {
             mutation_seed: u64,
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-            Ok(vec![TestAction::new(mutation_seed as u8, 1)])
+            let length = 1 + usize::from(mutation_seed >> 32 & 1 == 1);
+            Ok(vec![TestAction::new(mutation_seed as u8, 1); length])
         }
         fn expand_suffix_recorded(
             &self,
@@ -5790,8 +5896,8 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":9,"format":"campaign-v1","campaign_seed":7,
-"schedule_policy":"deterministic_window_2_v4","progress_policy":"mechanical_watermark_bounded_1024_v2",
+    const RECORDED_HEADER: &str = r#"{"schema_version":10,"format":"campaign-v1","campaign_seed":7,
+"schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
 "archive_entry_limit":128,"action_vocabulary":"test_inputs",
@@ -6370,16 +6476,14 @@ mod tests {
     #[test]
     fn schedule_policy_dispatch_accepts_only_current_windows() {
         let current = schedule_policy_identifier(default_window(1));
-        assert_eq!(current, "deterministic_window_1_v4");
+        assert_eq!(current, "planned_finish_window_1_v5");
         assert_eq!(schedule_policy_window(&current), Some(1));
-        assert!(schedule_policy_is_supported("deterministic_window_64_v4"));
-        assert!(!schedule_policy_is_supported(
-            "deterministic_window_4_per_worker_v3"
-        ));
-        assert!(!schedule_policy_is_supported("deterministic_window_0_v4"));
+        assert!(schedule_policy_is_supported("planned_finish_window_64_v5"));
+        assert!(!schedule_policy_is_supported("deterministic_window_64_v4"));
+        assert!(!schedule_policy_is_supported("planned_finish_window_0_v5"));
         assert!(!schedule_policy_is_supported("unknown-schedule"));
         assert_eq!(
-            schedule_policy_window("deterministic_window_16_v4"),
+            schedule_policy_window("planned_finish_window_16_v5"),
             Some(16)
         );
     }
@@ -6422,7 +6526,7 @@ mod tests {
         let compact = RECORDED_HEADER.replace('\n', "");
         let header: CampaignStreamHeader<()> =
             serde_json::from_str(&compact).expect("recorded header parses");
-        assert_eq!(header.schedule_policy, "deterministic_window_2_v4");
+        assert_eq!(header.schedule_policy, "planned_finish_window_2_v5");
         assert_eq!(
             header.progress_policy,
             "mechanical_watermark_bounded_1024_v2"
@@ -6546,7 +6650,7 @@ mod tests {
 
     #[test]
     fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
-        let line = r#"{"event":"job","sequence":1,"parent_id":0,"mutation_seed":9,
+        let line = r#"{"event":"job","sequence":1,"reservation":1,"parent_id":0,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
 "selector":{"path":"tiers","tier_rank":0},
 "draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
@@ -6592,7 +6696,7 @@ mod tests {
 
     #[test]
     fn a_job_records_its_dispatch_time_splice_resolution() {
-        let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":3,"mutation_seed":9,
+        let line = r#"{"event":"job","sequence":1,"reservation":1,"worker":0,"parent_id":3,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
 "splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
 "selector":{"path":"tiers","tier_rank":1}}"#
@@ -6700,6 +6804,100 @@ mod tests {
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert!(replayed.0.telemetry.workers.is_empty());
         assert_eq!(replayed, live);
+    }
+
+    fn job_lines(stream: &[u8]) -> Vec<(usize, CampaignJobRecord<EmpiricalStepCheckpoint>)> {
+        std::str::from_utf8(stream)
+            .expect("stream is text")
+            .lines()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(index, line)| {
+                match serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint>>(line)
+                    .expect("stream record parses")
+                {
+                    CampaignStreamRecord::Job(job) => Some((index, job)),
+                    CampaignStreamRecord::Skip(_) => None,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn jobs_are_admitted_in_planned_finish_order_and_replay() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("campaign");
+        let reservations = job_lines(&stream)
+            .into_iter()
+            .map(|(_, job)| job.reservation)
+            .collect::<Vec<_>>();
+        let mut ordered = reservations.clone();
+        ordered.sort_unstable();
+        assert_eq!(
+            ordered,
+            (0..u64::try_from(reservations.len()).unwrap()).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            reservations, ordered,
+            "a cheaper later reservation is admitted first"
+        );
+        let replayed =
+            replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
+        assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn replay_refuses_jobs_admitted_out_of_planned_finish_order() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("campaign");
+        let lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let jobs = job_lines(&stream);
+        let refused = jobs.windows(2).filter(|pair| {
+            let mut tampered = lines.clone();
+            tampered[pair[0].0] = lines[pair[0].0].replacen(
+                &format!("\"reservation\":{},", pair[0].1.reservation),
+                &format!("\"reservation\":{},", pair[1].1.reservation),
+                1,
+            );
+            tampered[pair[1].0] = lines[pair[1].0].replacen(
+                &format!("\"reservation\":{},", pair[1].1.reservation),
+                &format!("\"reservation\":{},", pair[0].1.reservation),
+                1,
+            );
+            replay_campaign_checkpointed(&workload, tampered.join("\n").as_bytes(), None, None)
+                .is_err_and(|error| error.to_string().contains("out of planned-finish order"))
+        });
+        assert!(refused.count() > jobs.len() / 2);
     }
 
     fn run_placed(placement: ThreadPlacement) -> Result<CampaignOutcome<TestWorkload>, String> {

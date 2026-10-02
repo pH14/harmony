@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v3";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v4";
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
@@ -59,7 +59,8 @@ pub struct CheckpointHeader {
     pub policies: BTreeMap<String, String>,
     pub executions: u64,
     pub reserved: u64,
-    pub next_admission: usize,
+    pub admitted: usize,
+    pub planned_clock: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -329,7 +330,8 @@ mod tests {
             policies: BTreeMap::new(),
             executions,
             reserved: executions,
-            next_admission: 0,
+            admitted: 0,
+            planned_clock: 0,
         };
         let first = [(1_u64, vec![1_u8, 2]), (2, vec![3])];
         writer
@@ -401,7 +403,8 @@ mod tests {
             policies: BTreeMap::new(),
             executions: 10,
             reserved: 10,
-            next_admission: 0,
+            admitted: 0,
+            planned_clock: 0,
         };
         writer
             .write(&header, std::iter::empty::<(u64, &Vec<u8>)>(), |out| {
