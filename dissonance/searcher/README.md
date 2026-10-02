@@ -77,7 +77,13 @@ visits per admission, so resident bytes sit above the limit while maintenance
 catches up. Maintenance does not always converge below the limit: history
 compaction batches and declines to run below `HISTORY_COMPACTION_MIN_DROPS`,
 and entry dropping stops at one surviving active entry, so a campaign can
-carry an over-budget tail of retained history to its end. Final compaction
+carry an over-budget tail of retained history to its end. A scan that finds
+too few entries to drop records how many it found. Later scans wait until
+deactivations, released pins, a moved liveness anchor and reclaimed snapshots
+could have freed enough entries to reach the threshold, so an archive whose
+history stays over its target scans once per batch of releases instead of once
+per admission. A skipped scan could not have compacted, so the stream is
+unchanged. Final compaction
 bypasses the batching threshold and rejects an archive that is still over its
 limit. Because of that lag, the archive's resident bytes are not checked
 against the whole budget during the campaign.

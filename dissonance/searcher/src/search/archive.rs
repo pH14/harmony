@@ -519,6 +519,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     snapshot_evictions: u64,
     history_compactions: u64,
     historical_entries_dropped: u64,
+    #[serde(skip)]
+    keep_releases: usize,
+    #[serde(skip)]
+    failed_compaction: Option<(usize, usize)>,
     input_reconstructions: std::cell::Cell<u64>,
     continuations: Option<ContinuationBank<Position<K>, A>>,
     continuation_wave: u32,
@@ -977,6 +981,8 @@ where
             snapshot_evictions: 0,
             history_compactions: 0,
             historical_entries_dropped: 0,
+            keep_releases: 0,
+            failed_compaction: None,
             input_reconstructions: std::cell::Cell::new(0),
             continuations: None,
             continuation_wave: 0,
@@ -1005,6 +1011,7 @@ where
         }) {
             return;
         }
+        self.release_keep(1);
         self.liveness_anchor = self
             .entries
             .iter()
@@ -1057,8 +1064,11 @@ where
             .snapshot
             .as_ref()
             .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1);
-        if !self.preserve_inactive_snapshots && !worker_holds_snapshot {
-            self.entries[id].snapshot.take();
+        if !self.preserve_inactive_snapshots
+            && !worker_holds_snapshot
+            && self.entries[id].snapshot.take().is_some()
+        {
+            self.release_keep(2);
         }
     }
 
@@ -1084,6 +1094,7 @@ where
         }
         self.active[id] = false;
         self.active_count = self.active_count.saturating_sub(1);
+        self.release_keep(2);
         let key = self.entries[id].key;
         let slot_key = slot_of_key(key);
         let remove_slot = if let Some(slot) = self.slots.get_mut(&slot_key) {
@@ -1272,6 +1283,29 @@ where
         )
     }
 
+    fn release_keep(&mut self, entries: usize) {
+        self.keep_releases = self.keep_releases.saturating_add(entries);
+    }
+
+    fn history_keep(&self) -> Vec<bool> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                self.active.get(index).copied().unwrap_or(false)
+                    || self.metadata_pins.contains_key(&entry.id)
+                    || self.inflight_snapshot_pins.contains_key(&entry.id)
+                    || (self.keyframe[index] && self.keyframe_dependents[index] > 0)
+                    || (self.preserve_inactive_snapshots && entry.snapshot.is_some())
+                    || (self.liveness_anchor == Some(entry.id) && entry.snapshot.is_some())
+                    || entry
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1)
+            })
+            .collect()
+    }
+
     fn compact_history(&mut self, force: bool) -> Result<(), &'static str> {
         let history_target = self
             .memory_limit
@@ -1289,28 +1323,28 @@ where
         {
             return Ok(());
         }
-
-        let keep = self
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                self.active.get(index).copied().unwrap_or(false)
-                    || self.metadata_pins.contains_key(&entry.id)
-                    || self.inflight_snapshot_pins.contains_key(&entry.id)
-                    || (self.keyframe[index] && self.keyframe_dependents[index] > 0)
-                    || (self.preserve_inactive_snapshots && entry.snapshot.is_some())
-                    || (self.liveness_anchor == Some(entry.id) && entry.snapshot.is_some())
-                    || entry
-                        .snapshot
-                        .as_ref()
-                        .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1)
-            })
-            .collect::<Vec<_>>();
-        let dropped = keep.iter().filter(|keep| !**keep).count();
-        if !force && dropped < HISTORY_COMPACTION_MIN_DROPS {
+        if !force
+            && let Some((releases, dropped)) = self.failed_compaction
+            && self
+                .keep_releases
+                .saturating_sub(releases)
+                .saturating_add(dropped)
+                < HISTORY_COMPACTION_MIN_DROPS
+        {
+            debug_assert!(
+                self.history_keep().iter().filter(|keep| !**keep).count()
+                    < HISTORY_COMPACTION_MIN_DROPS
+            );
             return Ok(());
         }
+
+        let keep = self.history_keep();
+        let dropped = keep.iter().filter(|keep| !**keep).count();
+        if !force && dropped < HISTORY_COMPACTION_MIN_DROPS {
+            self.failed_compaction = Some((self.keep_releases, dropped));
+            return Ok(());
+        }
+        self.failed_compaction = None;
 
         for (index, entry) in self.entries.iter().enumerate() {
             if keep[index] {
@@ -1452,6 +1486,7 @@ where
         preserve: bool,
     ) -> Result<(), &'static str> {
         self.preserve_inactive_snapshots = preserve;
+        self.failed_compaction = None;
         if !preserve {
             for id in 0..self.entries.len() {
                 if !self.snapshot_selectable[id] {
@@ -1495,6 +1530,7 @@ where
         };
         if remove {
             self.metadata_pins.remove(&id);
+            self.release_keep(1);
             if let Some(index) = self.index_of_id(id) {
                 self.reclaim_inactive_snapshot(index);
             }
@@ -1503,6 +1539,7 @@ where
 
     pub(crate) fn preserve_recorded_metadata_uses(&mut self, uses: BTreeMap<u64, u32>) {
         self.metadata_pins = uses;
+        self.failed_compaction = None;
     }
 
     fn input_index_start(&self, parent_id: Option<usize>) -> usize {
@@ -1557,6 +1594,7 @@ where
         };
         if remove {
             self.inflight_snapshot_pins.remove(&id);
+            self.release_keep(1);
             if let Some(charge) = self.inflight_snapshot_charges.remove(&id) {
                 self.inflight_snapshot_bytes = self.inflight_snapshot_bytes.saturating_sub(charge);
             }
@@ -6485,6 +6523,37 @@ mod tests {
         archive.record_selection(new, &draw);
         assert_eq!(archive.cell_draws(old), 1);
     }
+    #[test]
+    fn a_failed_compaction_skips_scans_until_enough_keeps_are_released() {
+        let mut archive = archive_with_prunable_history();
+        let history = archive.history_memory_bytes();
+        archive.memory_limit = Some(history.saturating_mul(2));
+        let ids = archive.entries[..HISTORY_COMPACTION_MIN_DROPS]
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        for id in &ids {
+            archive.pin_metadata(*id).unwrap();
+        }
+        archive.compact_history_if_needed().unwrap();
+        let failed = archive.failed_compaction;
+        assert_eq!(failed.map(|(_, dropped)| dropped), Some(0));
+        for id in &ids[1..] {
+            archive.unpin_metadata(*id);
+            archive.compact_history_if_needed().unwrap();
+            assert_eq!(archive.failed_compaction, failed);
+        }
+        assert_eq!(archive.history_compactions(), 0);
+        archive.unpin_metadata(ids[0]);
+        archive.compact_history_if_needed().unwrap();
+        assert_eq!(archive.history_compactions(), 1);
+        assert_eq!(archive.failed_compaction, None);
+        assert_eq!(
+            archive.historical_entries_dropped(),
+            u64::try_from(HISTORY_COMPACTION_MIN_DROPS).unwrap()
+        );
+    }
+
     #[test]
     fn entry_pressure_triggers_history_compaction() {
         let mut archive = archive_with_prunable_history();
