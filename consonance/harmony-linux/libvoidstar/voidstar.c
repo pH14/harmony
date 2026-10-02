@@ -278,13 +278,12 @@ uint64_t init_coverage_module(size_t edges, const char *symbols)
     return offset;
 }
 
-bool notify_coverage(size_t edge)
+static void coverage_count(uint64_t hits)
 {
-    if (harmony_coverage.thread == 0)
-        harmony_coverage.thread = harmony_thread_id();
-    harmony_instrumentation_event(edge);
-    if (harmony_coverage.counter != UINT64_MAX)
-        harmony_coverage.counter++;
+    if (hits > UINT64_MAX - harmony_coverage.counter)
+        harmony_coverage.counter = UINT64_MAX;
+    else
+        harmony_coverage.counter += hits;
     if (!harmony_coverage.exchanging &&
         harmony_coverage.counter >= harmony_coverage.threshold) {
         int result;
@@ -296,7 +295,25 @@ bool notify_coverage(size_t edge)
         if (result > 0)
             harmony_coverage.threshold = UINT64_MAX;
     }
+}
+
+bool notify_coverage(size_t edge)
+{
+    if (harmony_coverage.thread == 0)
+        harmony_coverage.thread = harmony_thread_id();
+    harmony_instrumentation_event(edge);
+    coverage_count(1);
     return true;
+}
+
+uint64_t harmony_coverage_add(uint64_t hits)
+{
+    if (harmony_coverage.thread == 0)
+        harmony_coverage.thread = harmony_thread_id();
+    coverage_count(hits);
+    if (harmony_coverage.counter >= harmony_coverage.threshold)
+        return 1;
+    return harmony_coverage.threshold - harmony_coverage.counter;
 }
 
 uint64_t notify_coverage_v2(size_t edge, uint64_t hits)

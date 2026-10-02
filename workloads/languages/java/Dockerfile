@@ -6,6 +6,8 @@ FROM ${DEBIAN_IMAGE} AS compiled
 ENV SOURCE_DATE_EPOCH=1778371200
 ARG JDK_TAG=jdk-21.0.12.1-ga
 ARG JDK_SHA256=9c719670e7be6080a46ebeb1223a375bd53818ba7c5ae11f11a02907b593775f
+ARG ASM_VERSION=9.8
+ARG ASM_SHA256=876eab6a83daecad5ca67eb9fcabb063c97b5aeb8cf1fca7a989ecde17522051
 RUN apt-get update && apt-get install --yes --no-install-recommends \
     clang make autoconf file zip unzip patch ca-certificates curl binutils libc6-dev \
     libffi-dev libasound2-dev libcups2-dev libfontconfig1-dev \
@@ -14,31 +16,45 @@ RUN apt-get update && apt-get install --yes --no-install-recommends \
 COPY --from=boot-jdk /opt/java/openjdk /opt/boot-jdk
 COPY workloads/languages/vendor /build/vendor
 COPY workloads/languages/c/shim.c /build/c/shim.c
-COPY workloads/languages/java/zero-code-cache.patch /build/zero-code-cache.patch
+COPY workloads/languages/java/harmony-coverage.patch /build/harmony-coverage.patch
+COPY workloads/languages/java/rewriter /build/rewriter
+COPY workloads/languages/java/check-code-generator.sh /build/check-code-generator.sh
 RUN curl --fail --silent --show-error --location "https://codeload.github.com/openjdk/jdk21u/tar.gz/refs/tags/${JDK_TAG}" -o /build/jdk.tar.gz \
     && echo "${JDK_SHA256}  /build/jdk.tar.gz" | sha256sum --check --strict \
     && mkdir -p /build/jdk \
     && tar -xzf /build/jdk.tar.gz -C /build/jdk --strip-components=1 \
     && rm /build/jdk.tar.gz \
-    && patch --batch --forward --fuzz=0 -d /build/jdk -p1 < /build/zero-code-cache.patch \
+    && sh /build/check-code-generator.sh /build/jdk \
+    && patch --batch --forward --fuzz=0 -d /build/jdk -p1 < /build/harmony-coverage.patch \
+    && curl --fail --silent --show-error --location "https://repo1.maven.org/maven2/org/ow2/asm/asm/${ASM_VERSION}/asm-${ASM_VERSION}.jar" -o /build/asm.jar \
+    && echo "${ASM_SHA256}  /build/asm.jar" | sha256sum --check --strict \
+    && /opt/boot-jdk/bin/javac -d /build/rewriter-classes -cp /build/asm.jar /build/rewriter/CoverageRewriter.java \
     && clang -O1 -g -fPIC -c /build/c/shim.c -o /build/shim.o \
     && ar rcs /build/libharmony-forwarding.a /build/shim.o
 WORKDIR /build/jdk
 RUN bash configure --with-boot-jdk=/opt/boot-jdk --with-build-jdk=/opt/boot-jdk \
-        --with-jvm-variants=zero --with-toolchain-type=clang \
-        --with-debug-level=release --with-native-debug-symbols=internal --enable-headless-only \
+        --with-jvm-variants=server --with-toolchain-type=clang \
+        --with-debug-level=release --with-native-debug-symbols=none --enable-headless-only \
         --with-zlib=bundled --disable-warnings-as-errors --with-source-date=${SOURCE_DATE_EPOCH} \
         --with-version-opt=harmony \
         --with-extra-cflags='-fsanitize-coverage=trace-pc-guard' \
         --with-extra-cxxflags='-fsanitize-coverage=trace-pc-guard' \
         --with-extra-ldflags='-fno-sanitize-link-runtime -Wl,--undefined=__sanitizer_cov_trace_pc_guard_init /build/libharmony-forwarding.a -ldl' \
     && make java.base-jmod \
-    && /opt/boot-jdk/bin/jlink --module-path build/linux-*/images/jmods --add-modules java.base --output /opt/java \
+    && /opt/boot-jdk/bin/jmod extract --dir /build/java.base build/linux-*/images/jmods/java.base.jmod \
+    && /opt/boot-jdk/bin/java -cp /build/rewriter-classes:/build/asm.jar CoverageRewriter /build/java.base/classes \
+    && mkdir /build/jmods \
+    && /opt/boot-jdk/bin/jmod create --class-path /build/java.base/classes --libs /build/java.base/lib \
+        --cmds /build/java.base/bin --config /build/java.base/conf --legal-notices /build/java.base/legal \
+        --target-platform "$(/opt/boot-jdk/bin/jmod describe build/linux-*/images/jmods/java.base.jmod | awk '$1 == "platform" {print $2}')" \
+        /build/jmods/java.base.jmod \
+    && /opt/boot-jdk/bin/jlink --module-path /build/jmods --add-modules java.base --output /opt/java \
         --no-header-files --no-man-pages --strip-java-debug-attributes \
-    && /opt/java/bin/java -version 2>&1 | grep -q 'Zero VM'
+    && /opt/java/bin/java -version 2>&1 | grep -q 'Server VM'
 COPY workloads/languages/java/Fixture.java /build/fixture/Fixture.java
 RUN mkdir -p /out/fixture /out/symbols/native /out/licenses \
     && /opt/boot-jdk/bin/javac --release 21 -d /out/fixture /build/fixture/Fixture.java \
+    && /opt/boot-jdk/bin/java -cp /build/rewriter-classes:/build/asm.jar CoverageRewriter /out/fixture \
     && printf '#!/bin/sh\nexec /opt/java/bin/java -cp /opt/harmony/java Fixture "$@"\n' > /out/fixture-launcher \
     && chmod +x /out/fixture-launcher \
     && cp /build/jdk/LICENSE /out/licenses/openjdk.txt \

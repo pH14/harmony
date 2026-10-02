@@ -1,0 +1,85 @@
+diff --git a/src/java.base/share/classes/java/lang/HarmonyCoverage.java b/src/java.base/share/classes/java/lang/HarmonyCoverage.java
+new file mode 100644
+index 000000000..bad30e4ec
+--- /dev/null
++++ b/src/java.base/share/classes/java/lang/HarmonyCoverage.java
+@@ -0,0 +1,27 @@
++// SPDX-License-Identifier: GPL-2.0-only WITH Classpath-exception-2.0
++package java.lang;
++
++/**
++ * Coverage callbacks for Java code running under Harmony. Every Java loop must
++ * reach libvoidstar, so that a thread spinning in compiled code still exits to
++ * the VM and advances virtual time.
++ */
++public final class HarmonyCoverage {
++    private HarmonyCoverage() {
++    }
++
++    /**
++     * Counts one back-edge. Rewritten class files call this before every
++     * backward jump.
++     */
++    public static void tick() {
++        Thread thread = Thread.currentCarrierThread();
++        if (thread != null && --thread.harmonyCoverageRemaining <= 0) {
++            long next = add(thread.harmonyCoverageBatch - thread.harmonyCoverageRemaining);
++            thread.harmonyCoverageBatch = next;
++            thread.harmonyCoverageRemaining = next;
++        }
++    }
++
++    private static native long add(long hits);
++}
+diff --git a/src/java.base/share/classes/java/lang/Thread.java b/src/java.base/share/classes/java/lang/Thread.java
+index 6d56a37ea..1f2644539 100644
+--- a/src/java.base/share/classes/java/lang/Thread.java
++++ b/src/java.base/share/classes/java/lang/Thread.java
+@@ -236,6 +236,10 @@ public class Thread implements Runnable {
+     // thread id
+     private final long tid;
+ 
++    // coverage callbacks this carrier thread may make before its next exchange with libvoidstar
++    long harmonyCoverageBatch;
++    long harmonyCoverageRemaining;
++
+     // thread name
+     private volatile String name;
+ 
+diff --git a/src/java.base/share/native/libjava/HarmonyCoverage.c b/src/java.base/share/native/libjava/HarmonyCoverage.c
+new file mode 100644
+index 000000000..fb5f65235
+--- /dev/null
++++ b/src/java.base/share/native/libjava/HarmonyCoverage.c
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: GPL-2.0-only WITH Classpath-exception-2.0
++#include <dlfcn.h>
++#include <pthread.h>
++#include <stdint.h>
++
++#include "jni.h"
++
++typedef uint64_t (*harmony_coverage_add_function)(uint64_t);
++
++static pthread_once_t harmony_coverage_once = PTHREAD_ONCE_INIT;
++static harmony_coverage_add_function harmony_coverage_add;
++
++static void harmony_coverage_resolve(void)
++{
++    void *library = dlopen("/usr/lib/libvoidstar.so", RTLD_NOW);
++    if (library != NULL)
++        harmony_coverage_add = (harmony_coverage_add_function)dlsym(library, "harmony_coverage_add");
++}
++
++JNIEXPORT jlong JNICALL
++Java_java_lang_HarmonyCoverage_add(JNIEnv *env, jclass cls, jlong hits)
++{
++    uint64_t next;
++    (void)env;
++    (void)cls;
++    (void)pthread_once(&harmony_coverage_once, harmony_coverage_resolve);
++    if (harmony_coverage_add == NULL)
++        return INT64_MAX;
++    next = harmony_coverage_add((uint64_t)hits);
++    return next > INT64_MAX ? INT64_MAX : (jlong)next;
++}

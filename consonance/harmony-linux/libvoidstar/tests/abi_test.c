@@ -163,6 +163,18 @@ int main(void)
     assert(pthread_join(thread, NULL) == 0);
     assert(coverage_requests == 13);
     assert(harmony_coverage.counter == 10);
+    assert(harmony_coverage_add(0) == 1);
+    assert(coverage_requests == 14);
+    assert(harmony_coverage.threshold == 11);
+    assert(harmony_coverage_add(3) == 1);
+    assert(coverage_requests == 15);
+    assert(harmony_coverage.counter == 13);
+    harmony_coverage.threshold = 20;
+    assert(harmony_coverage_add(2) == 5);
+    assert(coverage_requests == 15);
+    assert(harmony_coverage_add(UINT64_MAX) == 1);
+    assert(harmony_coverage.counter == UINT64_MAX);
+    assert(coverage_requests == 16);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {

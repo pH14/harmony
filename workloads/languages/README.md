@@ -13,8 +13,8 @@ Every target image meets three conditions:
 | Condition | How it is checked |
 | --- | --- |
 | Hidden instructions appear only at reviewed sites | Admission scans every ELF file in the image ([`reviewed/`](reviewed/README.md)) |
-| No runtime code generation | Recipes turn off code generators; fixtures check `/proc/self/maps` |
-| Every loop reaches a libvoidstar callback | Clang, GCC, Rust or Go coverage instrumentation |
+| Machine code comes from scanned files or a reviewed code generator | Recipes turn off code generators, except HotSpot's JIT, whose assembler source is checked at build time; fixtures check `/proc/self/maps` |
+| Every loop reaches a libvoidstar callback | Clang, GCC, Rust or Go coverage instrumentation, and a callback at every Java back-edge |
 
 ## Layout
 
@@ -48,6 +48,7 @@ fixed seed, and requires twenty ordered markers and identical serial logs and
 run records. It then runs the fixture under the park launcher, which holds one
 thread at a coverage site and requires another thread to keep making callbacks.
 The C check also runs the fixture as two processes and the GCC trace-pc build.
+The Java check also boots the fixture twice under `-Xcomp` and compares the runs.
 
 Set `HARMONY_BINARY` and `HARMONY_GUEST_DIR` to use another CLI or guest build.
 Guest RAM defaults to 1024 MiB because the initramfs holds the rootfs and
