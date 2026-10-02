@@ -33,6 +33,16 @@ if [[ $image == *language-java* ]]; then
     done
     python3 "$(dirname "$0")/verify-runs.py" "$evidence/xcomp-1" "$evidence/xcomp-2" \
         --output "$evidence/xcomp-determinism.json"
+    "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 300 --out "$evidence/generated" \
+        -- /opt/java/bin/java -Xcomp -cp /opt/harmony/java Fixture generated
+    python3 - "$evidence/generated" <<'PY'
+import json
+import sys
+from pathlib import Path
+run = Path(sys.argv[1])
+assert json.loads((run / "run.json").read_text())["container_rc"] == 0
+assert (run / "serial.log").read_text().count("HARMONY_LANGUAGE_MARKER ") == 20
+PY
 fi
 
 if [[ $image == *language-c* ]]; then
