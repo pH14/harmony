@@ -15,6 +15,11 @@ on:
         type: choice
         options: [auto, vmx, svm]
         default: auto
+      nested_runner:
+        description: Standard x86 runner image for nested qualification
+        type: choice
+        options: [ubuntu-22.04, ubuntu-24.04]
+        default: ubuntu-22.04
 
 permissions:
   contents: read
@@ -69,7 +74,7 @@ jobs:
   nested-host:
     name: Nested Host
     if: github.event_name == 'workflow_dispatch' && inputs.nested_host_only
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.nested_runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
