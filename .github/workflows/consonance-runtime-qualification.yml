@@ -10,6 +10,11 @@ on:
         description: Build and qualify only the nested-host kernel
         type: boolean
         default: false
+      nested_vendor:
+        description: Require this nested vendor before building
+        type: choice
+        options: [auto, vmx, svm]
+        default: auto
 
 permissions:
   contents: read
@@ -69,6 +74,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check outer host nested VMX or SVM before building
+        env:
+          REQUIRED_NESTED_VENDOR: ${{ inputs.nested_vendor }}
         run: |
           set -euo pipefail
           mkdir -p nested-host-evidence
@@ -79,6 +86,16 @@ jobs:
           sudo chmod a+rw /dev/kvm
           cc -O2 -Wall -Wextra -Werror consonance/harmony-linux/linux/nested-kvm-check.c -o /tmp/nested-kvm-check
           /tmp/nested-kvm-check | tee nested-host-evidence/host-kvm.txt
+          if [[ "$REQUIRED_NESTED_VENDOR" != auto ]]; then
+            grep -Fq "vendor=$REQUIRED_NESTED_VENDOR " nested-host-evidence/host-kvm.txt
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nested-host-preflight-${{ github.run_id }}
+          path: nested-host-evidence
+          if-no-files-found: error
+          retention-days: 14
       - name: Install build tools
         run: |
           sudo apt-get update
