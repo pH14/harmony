@@ -588,6 +588,9 @@ Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
 list it by entry id and offset. Each `.ckpt` file holds its header, that index,
 and the postcard body; `checkpoints.jsonl` records write time and sizes. The
+header names the body's layout, `SEARCH_CHECKPOINT_FORMAT`. The name changes
+whenever a stored type such as `Archive` changes, and a reader refuses a
+checkpoint of any other layout before it decodes the body. The
 archive stores its `SelectorAccounting` as JSON inside that body, so a counter
 added there, such as `tier_runs`, reads as empty from a checkpoint written
 before the counter existed.
