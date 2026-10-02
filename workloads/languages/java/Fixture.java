@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import java.io.IOException;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
@@ -39,13 +42,36 @@ public final class Fixture {
         }
     }
 
+    private static boolean running() {
+        return !done;
+    }
+
+    private static Runnable spinLoop(boolean generated) throws ReflectiveOperationException {
+        if (!generated) {
+            return () -> {
+                while (!done) {
+                }
+            };
+        }
+        MethodHandle predicate = MethodHandles.lookup()
+                .findStatic(Fixture.class, "running", MethodType.methodType(boolean.class));
+        MethodHandle loop = MethodHandles.whileLoop(null, predicate, MethodHandles.empty(MethodType.methodType(void.class)));
+        return () -> {
+            try {
+                loop.invokeExact();
+            } catch (Throwable e) {
+                throw new AssertionError(e);
+            }
+        };
+    }
+
     public static void main(String[] args) throws Exception {
         checkMappings();
         CountDownLatch started = new CountDownLatch(1);
+        Runnable spin = spinLoop(args.length > 0 && args[0].equals("generated"));
         Thread spinner = new Thread(() -> {
             started.countDown();
-            while (!done) {
-            }
+            spin.run();
         });
         spinner.start();
         started.await();

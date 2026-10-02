@@ -1,3 +1,61 @@
+diff --git a/src/java.base/share/classes/java/lang/ClassLoader.java b/src/java.base/share/classes/java/lang/ClassLoader.java
+index 079a40acc..806c08121 100644
+--- a/src/java.base/share/classes/java/lang/ClassLoader.java
++++ b/src/java.base/share/classes/java/lang/ClassLoader.java
+@@ -61,6 +61,7 @@ import jdk.internal.loader.ClassLoaders;
+ import jdk.internal.loader.NativeLibrary;
+ import jdk.internal.loader.NativeLibraries;
+ import jdk.internal.perf.PerfCounter;
++import jdk.internal.misc.HarmonyRewriter;
+ import jdk.internal.misc.Unsafe;
+ import jdk.internal.misc.VM;
+ import jdk.internal.reflect.CallerSensitive;
+@@ -1024,6 +1025,12 @@ public abstract class ClassLoader {
+     {
+         protectionDomain = preDefineClass(name, protectionDomain);
+         String source = defineClassSourceLocation(protectionDomain);
++        byte[] rewritten = HarmonyRewriter.rewrite(b, off, len);
++        if (rewritten != null) {
++            b = rewritten;
++            off = 0;
++            len = rewritten.length;
++        }
+         Class<?> c = defineClass1(this, name, b, off, len, protectionDomain, source);
+         postDefineClass(c, protectionDomain);
+         return c;
+@@ -1099,25 +1106,14 @@ public abstract class ClassLoader {
+     {
+         int len = b.remaining();
+ 
+-        // Use byte[] if not a direct ByteBuffer:
+-        if (!b.isDirect()) {
+-            if (b.hasArray()) {
+-                return defineClass(name, b.array(),
+-                                   b.position() + b.arrayOffset(), len,
+-                                   protectionDomain);
+-            } else {
+-                // no array, or read-only array
+-                byte[] tb = new byte[len];
+-                b.get(tb);  // get bytes out of byte buffer.
+-                return defineClass(name, tb, 0, len, protectionDomain);
+-            }
++        if (b.hasArray()) {
++            return defineClass(name, b.array(),
++                               b.position() + b.arrayOffset(), len,
++                               protectionDomain);
+         }
+-
+-        protectionDomain = preDefineClass(name, protectionDomain);
+-        String source = defineClassSourceLocation(protectionDomain);
+-        Class<?> c = defineClass2(this, name, b, b.position(), len, protectionDomain, source);
+-        postDefineClass(c, protectionDomain);
+-        return c;
++        byte[] tb = new byte[len];
++        b.get(tb);
++        return defineClass(name, tb, 0, len, protectionDomain);
+     }
+ 
+     static native Class<?> defineClass1(ClassLoader loader, String name, byte[] b, int off, int len,
 diff --git a/src/java.base/share/classes/java/lang/HarmonyCoverage.java b/src/java.base/share/classes/java/lang/HarmonyCoverage.java
 new file mode 100644
 index 000000000..bad30e4ec
@@ -31,6 +89,28 @@ index 000000000..bad30e4ec
 +
 +    private static native long add(long hits);
 +}
+diff --git a/src/java.base/share/classes/java/lang/System.java b/src/java.base/share/classes/java/lang/System.java
+index ac2305f58..1d5119047 100644
+--- a/src/java.base/share/classes/java/lang/System.java
++++ b/src/java.base/share/classes/java/lang/System.java
+@@ -2388,11 +2388,15 @@ public final class System {
+                 return cl.createOrGetClassLoaderValueMap();
+             }
+             public Class<?> defineClass(ClassLoader loader, String name, byte[] b, ProtectionDomain pd, String source) {
+-                return ClassLoader.defineClass1(loader, name, b, 0, b.length, pd, source);
++                byte[] rewritten = jdk.internal.misc.HarmonyRewriter.rewrite(b, 0, b.length);
++                byte[] bytes = rewritten == null ? b : rewritten;
++                return ClassLoader.defineClass1(loader, name, bytes, 0, bytes.length, pd, source);
+             }
+             public Class<?> defineClass(ClassLoader loader, Class<?> lookup, String name, byte[] b, ProtectionDomain pd,
+                                         boolean initialize, int flags, Object classData) {
+-                return ClassLoader.defineClass0(loader, lookup, name, b, 0, b.length, pd, initialize, flags, classData);
++                byte[] rewritten = jdk.internal.misc.HarmonyRewriter.rewrite(b, 0, b.length);
++                byte[] bytes = rewritten == null ? b : rewritten;
++                return ClassLoader.defineClass0(loader, lookup, name, bytes, 0, bytes.length, pd, initialize, flags, classData);
+             }
+             public Class<?> findBootstrapClassOrNull(String name) {
+                 return ClassLoader.findBootstrapClassOrNull(name);
 diff --git a/src/java.base/share/classes/java/lang/Thread.java b/src/java.base/share/classes/java/lang/Thread.java
 index 6d56a37ea..1f2644539 100644
 --- a/src/java.base/share/classes/java/lang/Thread.java
@@ -45,6 +125,176 @@ index 6d56a37ea..1f2644539 100644
 +
      // thread name
      private volatile String name;
+ 
+diff --git a/src/java.base/share/classes/jdk/internal/misc/HarmonyRewriter.java b/src/java.base/share/classes/jdk/internal/misc/HarmonyRewriter.java
+new file mode 100644
+index 000000000..b23b4f028
+--- /dev/null
++++ b/src/java.base/share/classes/jdk/internal/misc/HarmonyRewriter.java
+@@ -0,0 +1,149 @@
++// SPDX-License-Identifier: GPL-2.0-only WITH Classpath-exception-2.0
++package jdk.internal.misc;
++
++import java.io.IOException;
++import java.nio.file.DirectoryStream;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++
++import jdk.internal.org.objectweb.asm.ClassReader;
++import jdk.internal.org.objectweb.asm.ClassVisitor;
++import jdk.internal.org.objectweb.asm.ClassWriter;
++import jdk.internal.org.objectweb.asm.Label;
++import jdk.internal.org.objectweb.asm.MethodVisitor;
++import jdk.internal.org.objectweb.asm.Opcodes;
++
++public final class HarmonyRewriter {
++    private static final String TICK_OWNER = "java/lang/HarmonyCoverage";
++
++    private HarmonyRewriter() {
++    }
++
++    public static byte[] rewrite(byte[] bytes, int offset, int length) {
++        try {
++            return rewriteStrict(bytes, offset, length, new long[1]);
++        } catch (RuntimeException | LinkageError e) {
++            return null;
++        }
++    }
++
++    private static byte[] rewriteStrict(byte[] bytes, int offset, int length, long[] sites) {
++        ClassReader reader = new ClassReader(bytes, offset, length);
++        String name = reader.getClassName();
++        if (name.equals("module-info") || name.equals(TICK_OWNER)) {
++            return null;
++        }
++        long before = sites[0];
++        ClassWriter writer = new ClassWriter(reader, 0);
++        reader.accept(new Methods(writer, sites), 0);
++        return sites[0] == before ? null : writer.toByteArray();
++    }
++
++    public static void main(String[] args) throws IOException {
++        long[] sites = new long[1];
++        long classes = 0;
++        for (String argument : args) {
++            List<Path> files = new ArrayList<>();
++            collect(Path.of(argument), files);
++            Collections.sort(files);
++            for (Path file : files) {
++                byte[] original = Files.readAllBytes(file);
++                byte[] rewritten = rewriteStrict(original, 0, original.length, sites);
++                if (rewritten != null) {
++                    Files.write(file, rewritten);
++                    classes++;
++                }
++            }
++        }
++        System.out.println("rewrote " + classes + " classes, " + sites[0] + " back-edges");
++    }
++
++    private static void collect(Path path, List<Path> files) throws IOException {
++        if (Files.isDirectory(path)) {
++            try (DirectoryStream<Path> entries = Files.newDirectoryStream(path)) {
++                for (Path entry : entries) {
++                    collect(entry, files);
++                }
++            }
++        } else if (path.toString().endsWith(".class")) {
++            files.add(path);
++        }
++    }
++
++    private static final class Methods extends ClassVisitor {
++        private final long[] sites;
++
++        Methods(ClassVisitor next, long[] sites) {
++            super(Opcodes.ASM9, next);
++            this.sites = sites;
++        }
++
++        @Override
++        public MethodVisitor visitMethod(int access, String method, String descriptor, String signature,
++                String[] exceptions) {
++            return new BackEdges(super.visitMethod(access, method, descriptor, signature, exceptions), sites);
++        }
++    }
++
++    private static final class BackEdges extends MethodVisitor {
++        private final Set<Label> seen = new HashSet<>();
++        private final long[] sites;
++
++        BackEdges(MethodVisitor next, long[] sites) {
++            super(Opcodes.ASM9, next);
++            this.sites = sites;
++        }
++
++        private void tick() {
++            sites[0]++;
++            super.visitMethodInsn(Opcodes.INVOKESTATIC, TICK_OWNER, "tick", "()V", false);
++        }
++
++        @Override
++        public void visitLabel(Label label) {
++            seen.add(label);
++            super.visitLabel(label);
++        }
++
++        @Override
++        public void visitJumpInsn(int opcode, Label label) {
++            if (seen.contains(label)) {
++                tick();
++            }
++            super.visitJumpInsn(opcode, label);
++        }
++
++        @Override
++        public void visitTableSwitchInsn(int min, int max, Label fallback, Label... labels) {
++            if (backward(fallback, labels)) {
++                tick();
++            }
++            super.visitTableSwitchInsn(min, max, fallback, labels);
++        }
++
++        @Override
++        public void visitLookupSwitchInsn(Label fallback, int[] keys, Label[] labels) {
++            if (backward(fallback, labels)) {
++                tick();
++            }
++            super.visitLookupSwitchInsn(fallback, keys, labels);
++        }
++
++        private boolean backward(Label fallback, Label[] labels) {
++            if (seen.contains(fallback)) {
++                return true;
++            }
++            for (Label label : labels) {
++                if (seen.contains(label)) {
++                    return true;
++                }
++            }
++            return false;
++        }
++    }
++}
+diff --git a/src/java.base/share/classes/jdk/internal/misc/Unsafe.java b/src/java.base/share/classes/jdk/internal/misc/Unsafe.java
+index 47e8bf80c..8b02adc27 100644
+--- a/src/java.base/share/classes/jdk/internal/misc/Unsafe.java
++++ b/src/java.base/share/classes/jdk/internal/misc/Unsafe.java
+@@ -1327,6 +1327,10 @@ public final class Unsafe {
+             throw new ArrayIndexOutOfBoundsException();
+         }
+ 
++        byte[] rewritten = HarmonyRewriter.rewrite(b, off, len);
++        if (rewritten != null) {
++            return defineClass0(name, rewritten, 0, rewritten.length, loader, protectionDomain);
++        }
+         return defineClass0(name, b, off, len, loader, protectionDomain);
+     }
  
 diff --git a/src/java.base/share/native/libjava/HarmonyCoverage.c b/src/java.base/share/native/libjava/HarmonyCoverage.c
 new file mode 100644
