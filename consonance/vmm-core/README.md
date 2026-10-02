@@ -40,6 +40,10 @@ fingerprint encodings cover the complete state records used for restore, while
 the complete portable artifact digest covers the same persisted bytes. The
 VMST uses the current version 7 wire format; a present `xsave_restore_bv`
 intentionally changes the VCPU identity.
+Dirty-page drains and resets distinguish unsupported tracking from backend
+errors. Unsupported tracking permits a full capture; an operational error
+retires the live VMM and fails the snapshot instead of publishing partial state.
+
 Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page
 contents. The control server holds a store reference on the image the VM last
@@ -142,12 +146,15 @@ bits for init-valued x87/SSE components normalize, while active components remai
 bound. Every other sidecar field remains encoded. The original portable bytes
 retain the host restore bitmap and remain the input used for restore.
 
-The non-default `omit-nested-state` feature is the qualification negative
+The non-default `harmony_omit_nested_state` compiler configuration is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive
 header; for enabled SVM it discards the saved GIF flag. Raw CPU observations
 still capture the real state. Uninterrupted and capture-only cases must pass.
 The first restored VMX continuation or SVM control-state readback must fail.
-Production builds retain the complete state.
+Production builds, including `--all-features`, retain the complete state.
+The control requires the explicit compiler flag
+`RUSTFLAGS="--cfg harmony_omit_nested_state"`; it is not a Cargo feature.
+A portable live-payload publication test fails under that configuration.
 
 ## Checks
 

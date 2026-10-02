@@ -215,6 +215,30 @@ pub fn arb_contract_hash() -> impl Strategy<Value = [u8; 32]> {
     })
 }
 
+pub fn arb_nested_state() -> impl Strategy<Value = Option<Vec<u8>>> {
+    proptest::option::of(
+        proptest::sample::select(vec![
+            (0_u16, 128_usize),
+            (0, 4224),
+            (1, 128),
+            (1, 4224),
+            (0, 8320),
+        ])
+        .prop_flat_map(|(format, size)| {
+            proptest::collection::vec(any::<u8>(), size).prop_map(move |mut bytes| {
+                bytes[..128].fill(0);
+                bytes[2..4].copy_from_slice(&format.to_le_bytes());
+                bytes[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+                if format == 1 {
+                    let flags = 0x100_u16 | u16::from(size > 128);
+                    bytes[..2].copy_from_slice(&flags.to_le_bytes());
+                }
+                bytes
+            })
+        }),
+    )
+}
+
 pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
     (
         arb_regs(),
@@ -236,6 +260,7 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
                     arb_contract_hash(),
                     proptest::option::of(any::<u64>()),
                     proptest::collection::vec(any::<u8>(), 0..64),
+                    arb_nested_state(),
                 )
                     .prop_map(
                         move |(
@@ -244,6 +269,7 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
                             contract_hash,
                             xsave_restore_bv,
                             engine_state,
+                            nested_state,
                         )| {
                             VmState {
                                 regs,
@@ -260,7 +286,7 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
                                 devices,
                                 contract_hash,
                                 xsave_restore_bv,
-                                nested_state: None,
+                                nested_state,
                                 engine_state,
                             }
                         },
@@ -270,6 +296,9 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
 }
 
 pub fn fully_populated() -> VmState {
+    let mut nested_state = vec![0; 8320];
+    nested_state[4..8].copy_from_slice(&8320_u32.to_le_bytes());
+    nested_state[8319] = 0xa5;
     let seg = |n: u64| Segment {
         base: 0x1000 * n,
         limit: 0x10 + n as u32,
@@ -348,7 +377,7 @@ pub fn fully_populated() -> VmState {
         msrs: MsrBlock(msrs),
         xsave: XsaveImage(vec![0x7f, 0x1f, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd]),
         xsave_restore_bv: None,
-        nested_state: None,
+        nested_state: Some(nested_state),
         vtime: VtimeState {
             guest_hz: 2_000_000_000,
             guest_base: 0,

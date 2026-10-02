@@ -250,7 +250,7 @@ jobs:
             2>&1 | tee nested-host-evidence/nested-restore.log
           grep -Fq 'NESTED_MATRIX cold_import=pass creations=1 imports=0' nested-host-evidence/nested-restore.log
           set +e
-          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver --features omit-nested-state \
+          RUSTFLAGS="--cfg harmony_omit_nested_state" timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
             --test nested_restore outer_nested_state_snapshot_matrix -- --ignored --exact --test-threads=1 --nocapture \
             >nested-host-evidence/nested-restore-omission.log 2>&1
           result=$?

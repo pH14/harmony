@@ -413,6 +413,7 @@ fn cold_snapshot_child() -> Result<()> {
             let imported =
                 server.import_portable_snapshot(fs::File::open(directory.join("snapshot"))?)?;
             server.handle(&Request::Replay(imported.id))??;
+            assert_eq!(server.in_place_fallbacks(), 0);
             assert_eq!(register(&server, 3)?, 3);
             if directory.join("svm-state").exists() {
                 assert_eq!(

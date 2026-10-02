@@ -7,6 +7,31 @@ pub const VMX_NESTED_MAX_LEN: usize = NESTED_HEADER_LEN + 2 * 4096;
 pub const SVM_NESTED_MAX_LEN: usize = NESTED_HEADER_LEN + 4096;
 pub const SVM_GIF_SET: u16 = 1 << 8;
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[derive(Default)]
+pub(crate) struct NestedStateGuard {
+    poisoned: std::cell::Cell<bool>,
+}
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+impl NestedStateGuard {
+    pub(crate) fn ensure_healthy(&self) -> Result<()> {
+        if self.poisoned.get() {
+            Err(BackendError::Internal("nested state mutation failed"))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn mutate<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.ensure_healthy()?;
+        self.poisoned.set(true);
+        let value = operation()?;
+        self.poisoned.set(false);
+        Ok(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum NestedFormat {
@@ -188,6 +213,47 @@ pub(crate) fn reload_nested_memory_slots<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_reload_failure_prevents_guest_entry_and_retry() {
+        let slots = [1, 2];
+        for fail_at in 1..=4 {
+            let guard = NestedStateGuard::default();
+            let mut calls = Vec::new();
+            assert!(
+                guard
+                    .mutate(|| reload_nested_memory_slots(
+                        &slots,
+                        |slot| -slot,
+                        |slot| {
+                            calls.push(slot);
+                            if calls.len() == fail_at {
+                                Err(BackendError::InvalidState)
+                            } else {
+                                Ok(())
+                            }
+                        },
+                    ))
+                    .is_err()
+            );
+            assert_eq!(calls.len(), fail_at);
+            assert!(guard.ensure_healthy().is_err());
+            assert!(
+                guard
+                    .mutate::<()>(|| panic!("a poisoned VM must not mutate again"))
+                    .is_err()
+            );
+        }
+        let guard = NestedStateGuard::default();
+        assert!(guard.mutate(|| Ok(())).is_ok());
+        assert!(guard.ensure_healthy().is_ok());
+        assert!(
+            guard
+                .mutate(|| Err::<(), _>(BackendError::InvalidState))
+                .is_err()
+        );
+        assert!(guard.ensure_healthy().is_err());
+    }
 
     #[test]
     fn nested_slot_reload_preserves_mappings_and_stops_after_any_ioctl_failure() {
