@@ -23,6 +23,19 @@ if ! git diff --quiet; then
     git add -u
 fi
 
+# A crate shared by several workspaces appears in several lock files, and
+# building the root workspace updates only the root one. CI runs with --locked,
+# so every lock file must already match its manifest.
+echo "== pre-push: every Cargo.lock matches its manifest"
+for manifest in $(python3 scripts/ci_contract.py manifests); do
+    cargo metadata --format-version 1 --manifest-path "$manifest" >/dev/null
+done
+if ! git diff --quiet -- '*Cargo.lock'; then
+    git diff --name-only -- '*Cargo.lock' | sed 's/^/   updated /'
+    echo "   commit the updated lock files, then push again" >&2
+    exit 1
+fi
+
 echo "== pre-push: cargo fmt --check"
 cargo fmt --all -- --check
 
