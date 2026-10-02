@@ -64,6 +64,23 @@ covers the video, and a duration floor. Its `--media` mode applies the same
 checks to an MP4 a workload wrote without a `film.json`, which is how the Super
 Tilt Bro campaign's own witness is checked.
 
+## Chord draw
+
+`src/chord.rs` draws the controller chords for every game. An action is a chord
+held for a short hold of 2–12 frames or a long hold, with equal odds. The long
+hold is 96–120 frames for SMB and 48–120 frames for the other games. Each game
+names its held chords and at most one tap button: Select for Metroid, Start for
+Mega Man 2, none for SMB, Nova and Super Tilt Bro.
+
+A new chord changes one control of the chord before it. The controls are the
+D-pad, with nine positions, and the A and B buttons. The draw picks the D-pad,
+A, B or no change with equal odds. A D-pad change moves to another position,
+and an A or B change toggles that button. A change that would leave the game's
+held chords keeps that control as it was. One draw in twelve is a tap instead:
+the tap button joins the chord before it for 2–7 frames, and the next chord
+drops the tap button and keeps the rest. The first chord of a game has nothing
+before it and is drawn whole: a tap alone, or a held chord at random.
+
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.

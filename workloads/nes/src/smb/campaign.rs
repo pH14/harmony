@@ -13,6 +13,10 @@ use sha2::{Digest, Sha256};
 use crate::target::ExitKind;
 
 use crate::{
+    chord::{
+        CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD, ChordVocabulary,
+        NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES,
+    },
     nes_backend::{NesBackend, SnapshotState},
     search::archive::RetentionPolicy,
     search::campaign::{
@@ -28,10 +32,10 @@ use crate::{
     search::rand::RomuDuoJrRand,
     search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
-        DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
-        SmbArchiveReport, admission_is_viable, archive_key, chord_time, merge_action_milestones,
-        merge_milestones, merge_progress_watermark, milestone_key, stamp_arrival_room,
-        stamp_arrival_room_identity, update_first_inputs,
+        DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER,
+        SmbArchiveKey, SmbArchiveReport, admission_is_viable, archive_key, chord_time,
+        merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
+        stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
@@ -67,10 +71,6 @@ pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v
 pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v1";
 
 pub const DURATION_IDENTIFIER: &str = "stratified";
-
-pub const CHORD_DRAW_FIELD: &str = "chord_draw";
-
-pub const CHANGE_ONE_CONTROL_IDENTIFIER: &str = "change_one_control_v1";
 
 pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 pub const KEY_POLICY_FIELD: &str = "key_policy";
@@ -424,7 +424,17 @@ impl SmbButtonVocabulary {
             Self::DownTenMask => &DOWN_TEN_BUTTON_MASKS,
             Self::NesDownTen => &crate::smb::archive::NES_DOWN_TEN_BUTTON_MASKS,
             Self::NesRunThirteen => &crate::smb::archive::NES_RUN_THIRTEEN_BUTTON_MASKS,
-            Self::NesPressable => &crate::smb::archive::NES_PRESSABLE_BUTTON_MASKS,
+            Self::NesPressable => &NES_PRESSABLE_BUTTON_MASKS,
+        }
+    }
+
+    #[must_use]
+    pub fn chords(self) -> ChordVocabulary {
+        ChordVocabulary {
+            held: self.masks(),
+            tap: None,
+            short_hold: SHORT_HOLD_FRAMES,
+            long_hold: LONG_HOLD_FRAMES,
         }
     }
 }
@@ -600,17 +610,11 @@ where
         previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        match previous {
-            Some(previous) => Ok(ButtonChord::new(
-                crate::smb::archive::change_one_control(rand, previous.buttons)?,
-                crate::smb::archive::sample_stratified_hold(rand)?,
-            )),
-            None => crate::smb::archive::sample_chord_from_masks(rand, run.vocabulary.masks()),
-        }
+        run.vocabulary.chords().draw(rand, previous)
     }
 
     fn max_action_cost(&self) -> u64 {
-        u64::from(crate::smb::archive::LONG_HOLD_FRAMES.1)
+        u64::from(LONG_HOLD_FRAMES.1)
     }
 }
 
@@ -933,6 +937,7 @@ mod tests {
     use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution, default_window};
     use crate::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables};
     use crate::{
+        chord::CHANGE_ONE_CONTROL_IDENTIFIER,
         smb::archive::SmbArchiveReport,
         smb::target::{
             ButtonChord, SmbInput, SmbMechanicalState, SmbMilestones, SmbObservations,
@@ -1575,7 +1580,7 @@ mod tests {
             replay_smb_campaign(&rom, without_progress.as_bytes(), None).is_err(),
             "a recording without the current progress policy is refused"
         );
-        let fresh_chords = recorded.replacen("change_one_control_v1", "fresh", 1);
+        let fresh_chords = recorded.replacen(CHANGE_ONE_CONTROL_IDENTIFIER, "fresh", 1);
         assert!(
             replay_smb_campaign(&rom, fresh_chords.as_bytes(), None).is_err(),
             "a recording with another chord draw is refused"

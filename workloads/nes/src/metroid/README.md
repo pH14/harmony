@@ -59,8 +59,10 @@ trajectory achieved their union. The count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
-The adapter supplies its controller vocabulary as the alphabet sampler and
-nothing else about drawing; the searcher owns the suffix draw and the
+The adapter supplies its controller vocabulary to the shared NES chord draw in
+the [package README](../../README.md#chord-draw): the 36 chords of nine
+D-pad positions and four A/B states, with Select as the tap button, since
+Select switches to missiles. The searcher owns the suffix draw and the
 retained-input table.
 
 The progress tier is the items held and whether the lineage has damaged the

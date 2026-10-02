@@ -12,13 +12,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
     metroid::{
         archive::{
             DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MetroidArchiveKey, MetroidArchiveReport,
             MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
             MetroidProgressWatermark, PREFERENCE_IDENTIFIER, REPLACEMENT_IDENTIFIER, archive_key,
             chord_time, merge_milestones, merge_progress_watermark, milestone_key, milestones,
-            progress_watermark, sample_chord,
+            progress_watermark,
         },
         progress::{FirstSeen, NamedProgress},
         target::{
@@ -760,6 +761,7 @@ impl InputPolicy for MetroidGame {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (PREFERENCE_POLICY_FIELD, PREFERENCE_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, self.terminal_policy.identifier()),
         ]
@@ -791,10 +793,10 @@ impl InputPolicy for MetroidGame {
     fn sample_alphabet(
         &self,
         _run: &MetroidCampaignRun,
-        _previous: Option<&ButtonChord>,
+        previous: Option<&ButtonChord>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        sample_chord(rand)
+        crate::metroid::archive::CHORDS.draw(rand, previous)
     }
 }
 

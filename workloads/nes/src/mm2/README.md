@@ -19,9 +19,10 @@ corrects wrapped coordinates and transition states that caused false deaths in
 the earlier experiments. Controller sampling covers nine directions times four
 A/B combinations plus ordinary Start taps; Start is necessary to operate the
 weapon menu. The v2 controller identifier corrects the prototype's stale
-`no_start` label. No control is selected based on a named situation. That
-vocabulary is the adapter's alphabet sampler and nothing else about drawing;
-the searcher owns the suffix draw and the retained-input table.
+`no_start` label. No control is selected based on a named situation. The
+adapter supplies that vocabulary, with Start as the tap button, to the shared
+NES chord draw in the [package README](../../README.md#chord-draw); the
+searcher owns the suffix draw and the retained-input table.
 
 The v20 key buckets position at 16 pixels. Health and weapon energy are
 same-slot preferences: they choose which endpoint holds a slot and add no
