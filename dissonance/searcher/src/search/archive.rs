@@ -14,6 +14,7 @@ use crate::search::{
     continuation::{Continuation, ContinuationBank},
     draw::SUFFIX_DOUBLING_LIMIT,
     rand::RomuDuoJrRand,
+    weighted_set::WeightedSet,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -491,8 +492,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
     selector_indexed: bool,
+    #[serde(skip)]
+    selector_weighted: bool,
     active_ids: ActiveIds,
-    tiers: BTreeMap<K::Progress, BTreeMap<K::Place, CellMembers>>,
+    tiers: BTreeMap<K::Progress, TierCells<K::Place>>,
     #[serde(skip)]
     parent_index: Vec<usize>,
     preserve_inactive_snapshots: bool,
@@ -539,7 +542,43 @@ struct CellState {
 
 #[derive(Default, Deserialize, Serialize)]
 struct CellMembers {
-    ids: BTreeSet<usize>,
+    ids: WeightedSet<usize>,
+    #[serde(skip)]
+    best: Vec<usize>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(
+    transparent,
+    bound(
+        serialize = "P: Copy + Ord + Serialize",
+        deserialize = "P: Copy + Ord + DeserializeOwned"
+    )
+)]
+struct TierCells<P> {
+    places: BTreeMap<P, CellMembers>,
+    #[serde(skip)]
+    weights: WeightedSet<P>,
+}
+
+impl<P> Default for TierCells<P> {
+    fn default() -> Self {
+        Self {
+            places: BTreeMap::new(),
+            weights: WeightedSet::default(),
+        }
+    }
+}
+
+fn draw_member<T: Copy + Ord>(
+    rand: &mut RomuDuoJrRand,
+    set: &WeightedSet<T>,
+) -> Result<T, Box<dyn Error>> {
+    let total =
+        NonZeroUsize::new(usize::try_from(set.total())?).ok_or("weighted draw over nothing")?;
+    let draw = u64::try_from(rand.below(total))?;
+    set.find(draw)
+        .ok_or_else(|| "weighted draw exceeded its total".into())
 }
 
 #[derive(Deserialize, Serialize)]
@@ -955,6 +994,7 @@ where
             action_cost,
             live_progress: None,
             selector_indexed: false,
+            selector_weighted: false,
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
             parent_index: Vec::new(),
@@ -1711,11 +1751,42 @@ where
     fn rebuild_selector_index(&mut self) {
         self.selector_indexed = true;
         self.active_ids = ActiveIds::from_ids(self.active_ids());
-        self.tiers.clear();
-        let active = self.active_ids.ids().collect::<Vec<_>>();
-        for id in active {
-            self.insert_active_cell_member(id);
+        let mut grouped = BTreeMap::<K::Progress, BTreeMap<K::Place, Vec<usize>>>::new();
+        for id in self.active_ids.ids() {
+            let key = self.entries[id].key;
+            grouped
+                .entry(key.progress())
+                .or_default()
+                .entry(key.place())
+                .or_default()
+                .push(id);
         }
+        self.tiers = grouped
+            .into_iter()
+            .map(|(progress, places)| {
+                let places = places
+                    .into_iter()
+                    .map(|(place, ids)| {
+                        let ids = WeightedSet::from_sorted(ids.into_iter().map(|id| (id, 0)));
+                        (
+                            place,
+                            CellMembers {
+                                ids,
+                                best: Vec::new(),
+                            },
+                        )
+                    })
+                    .collect();
+                (
+                    progress,
+                    TierCells {
+                        places,
+                        weights: WeightedSet::default(),
+                    },
+                )
+            })
+            .collect();
+        self.reweight_selector_index();
     }
 
     pub(crate) fn prepare_selection(&mut self) {
@@ -1727,6 +1798,8 @@ where
     fn ensure_selector_index(&mut self) {
         if !self.selector_indexed {
             self.rebuild_selector_index();
+        } else if !self.selector_weighted {
+            self.reweight_selector_index();
         }
     }
 
@@ -1816,31 +1889,124 @@ where
         }
         self.active_ids.remove(id);
         let key = self.entries[id].key;
-        let Some(places) = self.tiers.get_mut(&key.progress()) else {
+        let (progress, place) = (key.progress(), key.place());
+        let Some(tier) = self.tiers.get_mut(&progress) else {
             return;
         };
-        let mut removed_cell = false;
-        if let Some(members) = places.get_mut(&key.place()) {
+        let mut stale_best = false;
+        if let Some(members) = tier.places.get_mut(&place) {
             members.ids.remove(&id);
-            removed_cell = members.ids.is_empty();
+            if members.ids.is_empty() {
+                tier.places.remove(&place);
+                tier.weights.remove(&place);
+            } else {
+                stale_best = members.best.contains(&id);
+            }
         }
-        if removed_cell {
-            places.remove(&key.place());
+        if tier.places.is_empty() {
+            self.tiers.remove(&progress);
         }
-        if places.is_empty() {
-            self.tiers.remove(&key.progress());
+        if stale_best {
+            let best = self
+                .tiers
+                .get(&progress)
+                .and_then(|tier| tier.places.get(&place))
+                .map(|members| self.cell_best(&members.ids));
+            if let (Some(best), Some(members)) = (
+                best,
+                self.tiers
+                    .get_mut(&progress)
+                    .and_then(|tier| tier.places.get_mut(&place)),
+            ) {
+                members.best = best;
+            }
         }
     }
 
     fn insert_active_cell_member(&mut self, id: usize) {
         let key = self.entries[id].key;
-        self.tiers
-            .entry(key.progress())
-            .or_default()
-            .entry(key.place())
-            .or_default()
-            .ids
-            .insert(id);
+        let (progress, place) = (key.progress(), key.place());
+        let place_weight = self.place_weight(progress, place);
+        let holder_weight = count_decay(self.selected[id]);
+        let best = match self
+            .tiers
+            .get(&progress)
+            .and_then(|tier| tier.places.get(&place))
+        {
+            Some(members) if !members.ids.is_empty() => members
+                .best
+                .iter()
+                .enumerate()
+                .map(|(preference, holder)| {
+                    if self.holder_order(preference, id, *holder) == Ordering::Greater {
+                        id
+                    } else {
+                        *holder
+                    }
+                })
+                .collect(),
+            _ => vec![id; K::preferences()],
+        };
+        let tier = self.tiers.entry(progress).or_default();
+        tier.weights.insert(place, place_weight);
+        let members = tier.places.entry(place).or_default();
+        members.ids.insert(id, holder_weight);
+        members.best = best;
+    }
+
+    fn place_weight(&self, progress: K::Progress, place: K::Place) -> u64 {
+        count_decay(
+            self.cells
+                .get(&(progress, place))
+                .map_or(0, |state| state.draws),
+        )
+    }
+
+    fn holder_order(&self, preference: usize, left: usize, right: usize) -> Ordering {
+        self.entries[left]
+            .key
+            .preference_cmp(preference, self.entries[right].key)
+            .then_with(|| {
+                (self.cost_in_group[right], self.entries[right].id)
+                    .cmp(&(self.cost_in_group[left], self.entries[left].id))
+            })
+    }
+
+    fn cell_best(&self, ids: &WeightedSet<usize>) -> Vec<usize> {
+        (0..K::preferences())
+            .filter_map(|preference| {
+                ids.iter().reduce(|best, id| {
+                    if self.holder_order(preference, id, best) == Ordering::Greater {
+                        id
+                    } else {
+                        best
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn reweight_selector_index(&mut self) {
+        let mut tiers = std::mem::take(&mut self.tiers);
+        for (progress, tier) in &mut tiers {
+            tier.weights = WeightedSet::from_sorted(
+                tier.places
+                    .keys()
+                    .map(|place| (*place, self.place_weight(*progress, *place))),
+            );
+            for members in tier.places.values_mut() {
+                let ids = WeightedSet::from_sorted(
+                    members
+                        .ids
+                        .iter()
+                        .map(|id| (id, count_decay(self.selected[id]))),
+                );
+                members.best = self.cell_best(&ids);
+                members.ids = ids;
+            }
+        }
+        self.tiers = tiers;
+        self.selector_weighted = true;
     }
 
     fn sync_parent_index(&mut self) {
@@ -2425,6 +2591,11 @@ where
             return Err("archive has no expandable entry".into());
         }
         let (progress, rank) = self.draw_tier(rand)?;
+        debug_assert!(
+            self.tiers
+                .get(&progress)
+                .is_some_and(|tier| self.tier_weights_current(progress, tier))
+        );
         let recent = self.draw_recent_cell(rand, progress)?;
         let place = match recent {
             Some(place) => place,
@@ -2497,39 +2668,35 @@ where
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
         let shift = checked_tier_rank_shift(K::tier_rank_shift())?;
         let tiers = self.tiers.len();
-        let halvings = self
-            .tiers
-            .iter()
-            .next_back()
-            .map_or(0, |(progress, places)| {
-                let runs = self.tier_runs(*progress);
-                let cells = u64::try_from(places.len().max(1)).unwrap_or(u64::MAX);
-                let pace = runs.longest.max(cells);
-                let (next_draws, next_yields) =
-                    self.tiers.iter().rev().nth(1).map_or((0, 0), |(next, _)| {
-                        let counts = self.tier_runs(*next);
-                        if format!("{next:?}") == runs.next_tier {
-                            (
-                                counts.draws.saturating_sub(runs.next_draws),
-                                counts.yields.saturating_sub(runs.next_yields),
-                            )
-                        } else {
-                            (counts.draws, counts.yields)
-                        }
-                    });
-                let next_yields_more = u128::from(next_yields.saturating_add(1))
-                    * u128::from(runs.current.saturating_add(1))
-                    > u128::from(runs.wins.saturating_add(1))
-                        * u128::from(next_draws.saturating_add(1));
-                if next_yields_more {
-                    (runs.current.saturating_sub(1) / pace)
-                        .max(1)
-                        .ilog2()
-                        .min(shift)
-                } else {
-                    0
-                }
-            });
+        let halvings = self.tiers.iter().next_back().map_or(0, |(progress, tier)| {
+            let runs = self.tier_runs(*progress);
+            let cells = u64::try_from(tier.places.len().max(1)).unwrap_or(u64::MAX);
+            let pace = runs.longest.max(cells);
+            let (next_draws, next_yields) =
+                self.tiers.iter().rev().nth(1).map_or((0, 0), |(next, _)| {
+                    let counts = self.tier_runs(*next);
+                    if format!("{next:?}") == runs.next_tier {
+                        (
+                            counts.draws.saturating_sub(runs.next_draws),
+                            counts.yields.saturating_sub(runs.next_yields),
+                        )
+                    } else {
+                        (counts.draws, counts.yields)
+                    }
+                });
+            let next_yields_more = u128::from(next_yields.saturating_add(1))
+                * u128::from(runs.current.saturating_add(1))
+                > u128::from(runs.wins.saturating_add(1))
+                    * u128::from(next_draws.saturating_add(1));
+            if next_yields_more {
+                (runs.current.saturating_sub(1) / pace)
+                    .max(1)
+                    .ilog2()
+                    .min(shift)
+            } else {
+                0
+            }
+        });
         let weights = (0..tiers).map(|rank| {
             let weight = tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift);
             if rank == 0 && tiers > 1 {
@@ -2554,27 +2721,24 @@ where
         rand: &mut RomuDuoJrRand,
         progress: K::Progress,
     ) -> Result<K::Place, Box<dyn Error>> {
-        let places = self
+        let tier = self
             .tiers
             .get(&progress)
             .ok_or("tier draw chose an absent tier")?;
-        let mut weights = Vec::with_capacity(places.len());
-        weights.extend(places.keys().map(|place| {
-            count_decay(
-                self.cells
-                    .get(&(progress, *place))
-                    .map_or(0, |state| state.draws),
-            )
-        }));
-        let index = draw_weighted(rand, weights.iter().copied())?;
-        let place = if index < places.len() / 2 {
-            places.keys().nth(index)
-        } else {
-            places.keys().nth_back(places.len() - index - 1)
-        };
-        place
-            .copied()
-            .ok_or_else(|| "cell draw chose an absent cell".into())
+        draw_member(rand, &tier.weights)
+    }
+
+    fn tier_weights_current(&self, progress: K::Progress, tier: &TierCells<K::Place>) -> bool {
+        tier.weights.len() == tier.places.len()
+            && tier.places.iter().all(|(place, members)| {
+                tier.weights.weight(place) == Some(self.place_weight(progress, *place))
+                    && members.ids.len() == members.ids.iter().count()
+                    && members
+                        .ids
+                        .iter()
+                        .all(|id| members.ids.weight(&id) == Some(count_decay(self.selected[id])))
+                    && members.best == self.cell_best(&members.ids)
+            })
     }
 
     fn draw_best_share(&self, rand: &mut RomuDuoJrRand) -> Result<Option<usize>, Box<dyn Error>> {
@@ -2594,23 +2758,10 @@ where
         preference: usize,
     ) -> Result<usize, Box<dyn Error>> {
         members
-            .ids
-            .iter()
+            .best
+            .get(preference)
             .copied()
-            .reduce(|best, id| {
-                let ordering = self.entries[id]
-                    .key
-                    .preference_cmp(preference, self.entries[best].key)
-                    .then_with(|| {
-                        (self.cost_in_group[best], self.entries[best].id)
-                            .cmp(&(self.cost_in_group[id], self.entries[id].id))
-                    });
-                if ordering == Ordering::Greater {
-                    id
-                } else {
-                    best
-                }
-            })
+            .filter(|_| !members.ids.is_empty())
             .ok_or_else(|| "cell draw chose an empty cell".into())
     }
 
@@ -2623,7 +2774,7 @@ where
         let members = self
             .tiers
             .get(&progress)
-            .and_then(|places| places.get(&place))
+            .and_then(|tier| tier.places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
         if let Some(preference) = self.draw_best_share(rand)? {
             return Ok((
@@ -2631,17 +2782,7 @@ where
                 Some(u8::try_from(preference)?),
             ));
         }
-        let mut weights = Vec::with_capacity(members.ids.len());
-        weights.extend(members.ids.iter().map(|id| count_decay(self.selected[*id])));
-        let index = draw_weighted(rand, weights.iter().copied())?;
-        let id = if index < members.ids.len() / 2 {
-            members.ids.iter().nth(index)
-        } else {
-            members.ids.iter().nth_back(members.ids.len() - index - 1)
-        };
-        id.copied()
-            .map(|id| (id, None))
-            .ok_or_else(|| "holder draw chose an absent holder".into())
+        Ok((draw_member(rand, &members.ids)?, None))
     }
 
     fn champions_slot(&self, slot: &[usize], id: usize, preference: usize) -> bool {
@@ -2684,6 +2825,9 @@ where
             state.draws = 0;
             self.selector_accounting.cell_resets =
                 self.selector_accounting.cell_resets.saturating_add(1);
+            if let Some(tier) = self.tiers.get_mut(&cell.0) {
+                tier.weights.set_weight(&cell.1, count_decay(0));
+            }
         }
     }
 
@@ -2971,6 +3115,14 @@ where
         let state = self.cells.entry(cell_of(key)).or_default();
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
+        let place_weight = count_decay(state.draws);
+        let holder_weight = count_decay(self.selected[id]);
+        if let Some(tier) = self.tiers.get_mut(&key.progress()) {
+            tier.weights.set_weight(&key.place(), place_weight);
+            if let Some(members) = tier.places.get_mut(&key.place()) {
+                members.ids.set_weight(&id, holder_weight);
+            }
+        }
         match draw.path {
             SelectorPath::Continuation => {
                 let count = self
@@ -3252,11 +3404,11 @@ where
         rand: &mut RomuDuoJrRand,
         progress: K::Progress,
     ) -> Result<K::Place, Box<dyn Error>> {
-        let places = self
+        let tier = self
             .tiers
             .get(&progress)
             .ok_or("tier draw chose an absent tier")?;
-        let candidates = places.keys().copied().collect::<Vec<_>>();
+        let candidates = tier.places.keys().copied().collect::<Vec<_>>();
         let weights = candidates
             .iter()
             .map(|place| {
@@ -3280,9 +3432,9 @@ where
         let members = self
             .tiers
             .get(&progress)
-            .and_then(|places| places.get(&place))
+            .and_then(|tier| tier.places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
-        let ids = members.ids.iter().copied().collect::<Vec<_>>();
+        let ids = members.ids.iter().collect::<Vec<_>>();
         let preferences = K::preferences();
         if preferences > 0 {
             let outcome = rand.below(
@@ -3364,8 +3516,8 @@ mod tests {
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY,
-        MAX_TIER_RANK_SHIFT, SelectorAccounting, SelectorDraw, SelectorPath,
-        checked_tier_rank_shift, tier_weight,
+        MAX_TIER_RANK_SHIFT, SelectorAccounting, SelectorDraw, SelectorPath, TierCells,
+        WeightedSet, checked_tier_rank_shift, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -4328,10 +4480,10 @@ mod tests {
         archive.selected = (0..count * 3 + 1)
             .map(|id| draws.saturating_add((id % 7) as u64))
             .collect();
-        let mut places = BTreeMap::new();
+        let mut tier = TierCells::default();
         for index in 0..count {
             let place = u16::try_from(index * 3 + 1).unwrap();
-            places.insert(place, CellMembers::default());
+            tier.places.insert(place, CellMembers::default());
             archive.cells.insert(
                 ((0, 0), place),
                 CellState {
@@ -4340,11 +4492,15 @@ mod tests {
                 },
             );
         }
-        places.entry(1).or_default().ids = (0..count).map(|id| id * 3 + 1).collect();
-        if count == 0 {
-            places.clear();
+        let members = tier.places.entry(1).or_default();
+        for id in 0..count {
+            members.ids.insert(id * 3 + 1, 0);
         }
-        archive.tiers.insert((0, 0), places);
+        if count == 0 {
+            tier.places.clear();
+        }
+        archive.tiers.insert((0, 0), tier);
+        archive.reweight_selector_index();
         archive
     }
 
@@ -4394,16 +4550,19 @@ mod tests {
             match case {
                 0 => archive.cells.clear(),
                 1 => archive.tiers.clear(),
-                2 => archive.tiers.get_mut(&(0, 0)).unwrap().clear(),
-                _ => archive
-                    .tiers
-                    .get_mut(&(0, 0))
-                    .unwrap()
-                    .get_mut(&1)
-                    .unwrap()
-                    .ids
-                    .clear(),
+                2 => archive.tiers.get_mut(&(0, 0)).unwrap().places.clear(),
+                _ => {
+                    archive
+                        .tiers
+                        .get_mut(&(0, 0))
+                        .unwrap()
+                        .places
+                        .get_mut(&1)
+                        .unwrap()
+                        .ids = WeightedSet::default();
+                }
             }
+            archive.reweight_selector_index();
             let mut actual = RomuDuoJrRand::with_seed(17);
             let mut reference = actual;
             for _ in 0..64 {
@@ -4579,7 +4738,7 @@ mod tests {
         for count in [0, 1, 2, 7, 8, 9, 16, 255, 256, 257, 4096] {
             let mut archive = Archive::<u8, TierKey<SHIFT>, (), ()>::new(|_| 1);
             for tier in 0..count {
-                archive.tiers.insert(tier * 3 + 5, BTreeMap::new());
+                archive.tiers.insert(tier * 3 + 5, TierCells::default());
             }
             let tiers = archive.tiers.keys().rev().copied().collect::<Vec<_>>();
             let weights = (0..tiers.len())
@@ -5166,6 +5325,7 @@ mod tests {
         for state in archive.cells.values_mut() {
             state.draws = 32;
         }
+        archive.selector_weighted = false;
         for _ in 0..128 {
             let (_, draw) = archive.select_parent(&mut rand).unwrap();
             assert_eq!(draw.path, SelectorPath::Tiers);
@@ -8181,9 +8341,9 @@ mod tests {
     #[test]
     fn cells_in_one_tier_share_draws_by_their_own_count() {
         let mut archive = tier_archive(&[(1, 1, 0), (1, 1, 0)]);
-        archive.entries[1].key.region = [1, 0, 0];
-        let key = archive.entries[1].key;
         archive.deactivate(1);
+        let mut key = archive.entries[1].key;
+        key.region = [1, 0, 0];
         archive
             .insert(
                 None,
