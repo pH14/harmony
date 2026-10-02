@@ -47,8 +47,9 @@ path, so the build runs `HarmonyRewriter` over the extracted `java.base` jmod
 before `jlink`. Application classes and jars need no preparation.
 
 A class that the rewriter cannot parse, such as a class file newer than Java
-21, is defined unchanged. Classes defined through JNI `DefineClass` are not
-rewritten.
+21, is defined unchanged. A malformed class file is also defined unchanged, so
+the VM reports the same error it would without rewriting. Classes defined
+through JNI `DefineClass` are not rewritten.
 
 ## Machine code at runtime
 
