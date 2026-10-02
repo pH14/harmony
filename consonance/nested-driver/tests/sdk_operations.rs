@@ -71,6 +71,8 @@ fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     .with_wall_limit(Duration::from_secs(15));
     let mut session = Session::new_with_config(&kernel, &initramfs, config)?;
     assert_eq!(observation(&mut session)?[0..2], [1, 0]);
+    let cold = advance(&mut session, 6_012_046_879_400_776_456)?;
+    assert_eq!(cold[8..10], [1, 0]);
     for seed in 0..8 {
         advance(&mut session, seed)?;
     }

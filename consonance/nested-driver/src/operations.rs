@@ -345,6 +345,13 @@ impl<B: Backend<A = X86>> Engine<B> {
             ));
         }
         self.request(Request::Replay(cut.id))?;
+        let actual = checked(observe(self.vmm()?))?;
+        if actual != cut.oracle {
+            return Err(Failure::new(
+                RESTORE_ASSERTION,
+                format!("restored after L2 readback {actual:?} != {:?}", cut.oracle),
+            ));
+        }
         self.oracle = cut.oracle;
         self.depth = cut.depth;
         self.steps = cut.steps;
