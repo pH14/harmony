@@ -206,7 +206,7 @@ its live VM, then imports its artifact in a new process. It compares eight
 detour restores and cold continuation with uninterrupted and capture-only
 execution. Its sparse detour capture and every restored RAM page must match
 the live source or captured cut, respectively, with no in-place fallback.
-A separate `omit-nested-state` build must pass those two controls
+A separate `harmony_omit_nested_state` compiler configuration must pass those two controls
 and fail its first restore. VMX fails its continuation; SVM fails immediate
 GIF readback before another nested entry can change it. Missing nested
 VMX/SVM or a guest that cannot create a KVM VM fails the job. Kernel publication

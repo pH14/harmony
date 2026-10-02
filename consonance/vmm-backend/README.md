@@ -69,6 +69,10 @@ The inner process and VM remain allocated. Ordinary guests use the kernel
 bitmap directly. Portable tests and Miri cover payload and mapping preservation,
 preflight before mutation, operation order and stopping on errors. The live
 matrix checks all RAM bytes, while recorded search exercises longer histories.
+Any failed nested reprotection or CPU-state mutation poisons that backend.
+Further entry, preparation, capture and restore fail; a deleted slot cannot
+be reused after an incomplete reload. Portable fault injection exercises each
+slot-removal/replacement error and the final nested-state installation boundary.
 
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes

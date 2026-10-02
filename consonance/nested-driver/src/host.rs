@@ -141,6 +141,13 @@ fn read_observation(session: &mut Session) -> Result<Observation, Box<dyn Error>
     })
 }
 
+fn require_in_place_restore(fallbacks: u64) -> Result<(), Box<dyn Error>> {
+    if fallbacks != 0 {
+        return Err(format!("outer restore recreated the VMM ({fallbacks} fallbacks)").into());
+    }
+    Ok(())
+}
+
 pub struct Target {
     session: Session,
     root: Snapshot,
@@ -229,6 +236,7 @@ impl Target {
         self.work += 1;
         let result = (|| {
             self.session.branch_with_seed(self.current, seed)?;
+            require_in_place_restore(self.session.last_restore_stats().1)?;
             self.session.run_to_snapshot(self.at)?;
             let observation = read_observation(&mut self.session)?;
             let (next, at) = self.session.snapshot()?;
@@ -262,6 +270,7 @@ impl Target {
         let result = (|| {
             let next = self.session.import_sparse_snapshot(&snapshot.state)?;
             self.session.replay_snapshot(next)?;
+            require_in_place_restore(self.session.last_restore_stats().1)?;
             let observed = read_observation(&mut self.session)?;
             if observed != snapshot.observation {
                 return Err("outer restore changed the inner counts or published state".into());
@@ -709,5 +718,25 @@ mod tests {
         observation.failure = None;
         assert!(observation.prepare_restore(&Observation::default()));
         assert_eq!(observation.disposition(), ExecutionDisposition::Runnable);
+    }
+
+    #[test]
+    fn restored_guest_counts_cannot_hide_an_outer_vmm_recreation() {
+        assert!(require_in_place_restore(0).is_ok());
+        let mut observation = failed_observation();
+        observation.registers[0] = 1;
+        observation.failure = Some(Failure {
+            layer: "outer-VMM".into(),
+            assertion: None,
+            detail: require_in_place_restore(1).unwrap_err().to_string(),
+            actions: vec![42],
+        });
+        assert_eq!(observation.disposition(), ExecutionDisposition::Failed);
+        assert!(!observation.prepare_restore(&Observation::default()));
+        let mut evidence = Evidence::default();
+        merge(&mut evidence, &observation);
+        let bytes = NestedWorkload::evidence_checkpoint(&evidence).unwrap();
+        let decoded = NestedWorkload::evidence_from_checkpoint(&bytes).unwrap();
+        assert_eq!(decoded.failures, vec![observation.failure.unwrap()]);
     }
 }

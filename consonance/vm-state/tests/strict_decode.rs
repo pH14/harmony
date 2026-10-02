@@ -9,6 +9,7 @@ use vm_state::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState, VmStateEr
 const HEADER_LEN: usize = 10;
 const ENGINE_STATE_TAG: u16 = 14;
 const XSAVE_RESTORE_BV_TAG: u16 = 15;
+const NESTED_STATE_TAG: u16 = 16;
 
 fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
     let count = u16::from_le_bytes([blob[8], blob[9]]);
@@ -94,6 +95,7 @@ fn current_optional_sections_round_trip() {
         (vec![4, 5, 6], Some(0x66), 15),
     ] {
         let mut state = fully_populated();
+        state.nested_state = None;
         state.engine_state = engine_state;
         state.xsave_restore_bv = restore_bv;
         let blob = state.encode().unwrap();
@@ -107,6 +109,7 @@ fn current_optional_sections_round_trip() {
 fn current_engine_state_section_is_nonempty_and_optional() {
     let mut state = fully_populated();
     state.engine_state = vec![1, 2, 3];
+    state.nested_state = None;
     let good = state.encode().unwrap();
     let (count, sections) = split(&good);
     assert_eq!(count, 14);
@@ -142,7 +145,9 @@ fn current_engine_state_section_is_nonempty_and_optional() {
 
 #[test]
 fn current_restore_bits_section_is_optional_and_exact() {
-    let good = valid();
+    let mut state = VmState::decode(&valid()).unwrap();
+    state.nested_state = None;
+    let good = state.encode().unwrap();
     let (count, sections) = split(&good);
     assert_eq!(count, 15);
     assert_eq!(
@@ -181,6 +186,45 @@ fn current_restore_bits_section_is_optional_and_exact() {
         VmState::decode(&pack(count, &out_of_order)),
         Err(VmStateError::SectionOrder(ENGINE_STATE_TAG))
     );
+}
+
+#[test]
+fn current_nested_section_is_optional_ordered_unique_and_length_checked() {
+    let good = valid();
+    let (count, sections) = split(&good);
+    assert_eq!(count, 16);
+    assert_eq!(sections.last().unwrap().0, NESTED_STATE_TAG);
+    let payload = &sections.last().unwrap().1;
+    assert_eq!(payload.len(), 8320);
+    let mut missing = sections.clone();
+    missing.pop();
+    assert_eq!(
+        VmState::decode(&pack(count - 1, &missing))
+            .unwrap()
+            .nested_state,
+        None
+    );
+    let mut duplicate = sections.clone();
+    duplicate.push(sections.last().unwrap().clone());
+    assert_eq!(
+        VmState::decode(&pack(count + 1, &duplicate)),
+        Err(VmStateError::DuplicateTag(NESTED_STATE_TAG))
+    );
+    let mut out_of_order = sections.clone();
+    let last = out_of_order.len() - 1;
+    out_of_order.swap(last - 1, last);
+    assert_eq!(
+        VmState::decode(&pack(count, &out_of_order)),
+        Err(VmStateError::SectionOrder(XSAVE_RESTORE_BV_TAG))
+    );
+    for size in [0, 127, 128, 8319, 8321] {
+        let mut malformed = sections.clone();
+        malformed.last_mut().unwrap().1.resize(size, 0);
+        assert_eq!(
+            VmState::decode(&pack(count, &malformed)),
+            Err(VmStateError::InvalidField)
+        );
+    }
 }
 
 #[test]

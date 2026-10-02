@@ -55,7 +55,7 @@ also reports RAM pages that differ immediately after an outer restore. Hosted
 qualification retains the exact kernel, initramfs and OCI inputs with its logs
 so a failed continuation can be reproduced.
 
-The non-default `omit-nested-state` build discards captured VMX state only
+The non-default `harmony_omit_nested_state` compiler configuration discards captured VMX state only
 when publishing the outer snapshot. Uninterrupted and capture-only execution
 must still pass; its first restore must fail. VMX loses its live VMXON/VMCS
 state. Enabled SVM loses GIF; the matrix compares that control state immediately
@@ -71,7 +71,7 @@ NESTED_HOST_KERNEL=... NESTED_OCI_INITRAMFS=... NESTED_DRIVER_IMAGE=... \
   outer_nested_state_snapshot_matrix -- --ignored --exact --nocapture
 ```
 
-Repeat that command with `--features omit-nested-state` before `--test` for the
+Prefix that command with `RUSTFLAGS="--cfg harmony_omit_nested_state"` for the
 expected-failure control. Portable tests bind the complete nested payload into
 the codec and identities, reject mismatched contracts before mutation, and
 reject publication while L2 is active. Header-buffer bounds and the mock
@@ -107,7 +107,11 @@ The optional `host-search` feature supplies the `harmony search --package nested
 adapter. Actions select SDK entropy seeds. Outer SDK boundaries become sparse
 snapshots containing live inner KVM state; restoring a campaign parent imports
 that outer state and verifies its published creation/import counts before
-continuing. The adapter uses the standard campaign, archive, suffix draw and
+continuing. It also checks the outer control server's fallback counter after
+every branch and replay; restoring guest counters cannot hide an outer VMM
+recreation. A fallback becomes preserved outer-VMM failure evidence. The cold
+import and SDK smoke require zero fallbacks too. The adapter uses the standard
+campaign, archive, suffix draw and
 parent selector. Current snapshot count, fork depth and operation type form
 state cells; coverage is reported separately. The CLI writes the campaign
 stream, report and each failure with its level and input seeds. Replaying the

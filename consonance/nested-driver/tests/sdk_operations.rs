@@ -37,6 +37,11 @@ fn observation(session: &mut Session) -> Result<Vec<u64>, Box<dyn Error>> {
 fn advance(session: &mut Session, seed: u64) -> Result<Vec<u64>, Box<dyn Error>> {
     let (cut, at) = session.snapshot()?;
     session.branch_with_seed(cut, seed)?;
+    assert_eq!(
+        session.last_restore_stats().1,
+        0,
+        "outer branch recreated the VMM"
+    );
     session.run_to_snapshot(at)?;
     let observed = observation(session)?;
     session.drop_snapshot(cut)?;
@@ -76,6 +81,11 @@ fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     for _ in 0..2 {
         let imported = session.import_sparse_snapshot(&root)?;
         session.replay_snapshot(imported)?;
+        assert_eq!(
+            session.last_restore_stats().1,
+            0,
+            "cold root recreated the VMM"
+        );
         assert_eq!(observation(&mut session)?[0..2], [1, 0]);
         session.drop_snapshot(imported)?;
     }
@@ -98,6 +108,11 @@ fn outer_operation_sdk_smoke() -> Result<(), Box<dyn Error>> {
     advance(&mut session, 19)?;
     advance(&mut session, 20)?;
     session.replay_snapshot(cut)?;
+    assert_eq!(
+        session.last_restore_stats().1,
+        0,
+        "outer restore recreated the VMM"
+    );
     assert_eq!(
         observation(&mut session)?,
         captured,

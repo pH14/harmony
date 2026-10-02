@@ -565,7 +565,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             pvclock: self.pvclock_snapshot(),
         };
         s.devices = records::encode_device_blob(&dev);
-        if cfg!(feature = "omit-nested-state")
+        if cfg!(harmony_omit_nested_state)
             && let Some(contract) = &self.devices.nested_host
         {
             let format = contract.format();
