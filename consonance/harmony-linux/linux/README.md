@@ -148,6 +148,13 @@ The same named SVM path accepts the empty type-1 PCI bus after its address
 latch round-trip and skips physical AMD northbridge configuration and the
 FCH reset-status probe. The virtual platform has no northbridge register,
 FCH reset-reason register or type-2 configuration ports.
+Guest KVM invalidates the memory slot's cached shadow mappings after every
+automatic bitmap drain while the Harmony clock is active. Hosted Intel can
+otherwise omit the five pages written by a cold inner restore's readback step,
+leaving the next incremental restore with an empty page plan. Rebuilding the
+mappings rearms dirty tracking without replacing the inner VM or copying all
+RAM. This adds MMU faults inside the special guest kernel; manual dirty-log
+protection and stock-clock KVM behavior retain their existing semantics.
 `build-nested-host-fixture.sh OUTPUT` packages `nested-kvm-check.c` with a static
 `NESTED_HOST_BUSYBOX`; the check opens `/dev/kvm`, requires nested state and
 KVM-supported Intel VMX or AMD SVM with NPT, and creates one VM. The fixture

@@ -1177,12 +1177,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .and_then(|count| count.checked_mul(4096))
             .ok_or(())?;
         let vmm = self.vmm.as_mut().ok_or(())?;
-        if vmm.guest_memory().len() == 65536 {
-            eprintln!(
-                "RAM_RESTORE_TRACE from={from:?} to={store_id:?} dirty={dirty:?} pages={:?}",
-                pages.iter().map(|(gfn, _)| *gfn).collect::<Vec<_>>()
-            );
-        }
         vmm.write_guest_page_refs(&pages).map_err(|_| ())?;
         vmm.restore_vm_state(vm_state).map_err(|_| ())?;
         vmm.prepare_snapshot().map_err(|_| ())?;

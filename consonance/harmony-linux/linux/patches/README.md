@@ -32,6 +32,11 @@ empty type-1 PCI bus after its latch check and omit physical northbridge
 initialization and FCH reset-status diagnostics. They require AMD KVM, AMD
 identity, SVM and the Harmony clock;
 ordinary guest configurations compile them out.
+The KVM bitmap-drain extension invalidates the drained slot's shadow mappings
+after automatic protection while the Harmony clock is active. This prevents
+cached writable mappings from hiding later L2 writes on hosted Intel nesting.
+It uses the existing KVM slot invalidation API, keeps RAM and the VM allocated,
+and leaves manual-protection mode unchanged. Both VMX and SVM qualify it.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,
