@@ -88,7 +88,7 @@ impl Mm2Game {
             prefix_digest.update([chord.buttons, chord.hold_frames]);
         }
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:{}:prefix-sha256={:x};result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:{}:prefix-sha256={:x};result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,

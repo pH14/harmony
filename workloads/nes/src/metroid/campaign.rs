@@ -107,7 +107,7 @@ impl MetroidGame {
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
              genesis={genesis}:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
-             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v7;sha256={core_sha256}",
+             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v8;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -1135,9 +1135,7 @@ mod tests {
             boss_defeats: BossDefeats::default(),
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
-            changed_indices: Vec::new(),
             dead: false,
-            log_line: String::new(),
         };
         let action = MetroidCampaignActionResult {
             action: ButtonChord::new(0, 1),
@@ -1199,9 +1197,7 @@ mod tests {
             boss_defeats: BossDefeats::default(),
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
-            changed_indices: Vec::new(),
             dead: false,
-            log_line: String::new(),
         };
         let action_with = |observation: MetroidObservations, actions: usize| {
             (

@@ -96,6 +96,10 @@ Nova and Super Tilt Bro keep a live handle for the current state and export
 from it; SMB, Metroid and Mega Man 2 take a handle, export it and release it.
 The Consonance backend stores its own portable state through the same trait.
 
+A snapshot keeps the decoded observation it was taken at and no copy of work
+RAM. Observations carry no list of changed RAM addresses and no log line,
+because nothing reads them.
+
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.
@@ -139,11 +143,6 @@ current ARM result is claimed by this matrix.
 cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings
 ```
-
-Library unit tests use jemalloc through development dependencies so the
-thread-local allocation counters can measure temporary allocations. Search
-executables use the system allocator; these tests compare allocation requests
-and do not measure production allocator retention or resident memory.
 
 The [Nova](src/nova/README.md), [Mega Man 2](src/mm2/README.md), and
 [Metroid](src/metroid/README.md) READMEs document their input and observation maps. Campaign streams

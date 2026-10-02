@@ -40,8 +40,6 @@ path = "src/bin/nova-consonance-observation-oracle.rs"
 required-features = ["consonance"]
 
 [dev-dependencies]
-tikv-jemalloc-ctl = "=0.7.0"
-tikv-jemallocator = "=0.7.0"
 consonance-client = { path = "../../consonance/client", version = "=0.1.0", features = ["in-process"] }
 machine = { path = "../nes-machine", version = "=0.1.0", features = ["test-loopback"] }
 

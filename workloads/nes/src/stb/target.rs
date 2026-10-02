@@ -149,7 +149,6 @@ impl StbMechanicalState {
 pub struct StbObservations {
     pub frame_count: u64,
     pub decoded: StbMechanicalState,
-    pub changed_indices: Vec<u16>,
     #[serde(default)]
     pub player_a_ko: bool,
     #[serde(default)]
@@ -160,7 +159,6 @@ pub struct StbObservations {
     pub player_b_ko_count: u8,
     #[serde(default)]
     pub terminal: bool,
-    pub log_line: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -187,7 +185,6 @@ pub struct StbVideoMetadata {
 pub struct StbSnapshot {
     pub(crate) emulator_state: Vec<u8>,
     pub(crate) observation: StbObservations,
-    pub(crate) wram: Vec<u8>,
     pub(crate) failed: bool,
     #[serde(default)]
     pub(crate) last_valid_gameplay: Option<StbGameplayState>,
@@ -235,13 +232,11 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
         let observation = StbObservations {
             frame_count: 0,
             decoded: state,
-            changed_indices: Vec::new(),
             player_a_ko: false,
             player_b_ko: false,
             player_a_ko_count: 0,
             player_b_ko_count: 0,
             terminal: false,
-            log_line: "frame=0 changed=[]".to_owned(),
         };
         Ok(Self {
             machine,
@@ -493,36 +488,16 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
         &self,
         frame_count: u64,
         state: StbMechanicalState,
-        wram: &[u8; WRAM_SIZE],
-        prior_wram: &[u8; WRAM_SIZE],
         evidence: StbStockEvidence,
     ) -> StbObservations {
-        let changed_indices = wram
-            .iter()
-            .zip(prior_wram)
-            .enumerate()
-            .filter_map(|(index, (current, prior))| {
-                (current != prior)
-                    .then(|| u16::try_from(index).ok())
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
         StbObservations {
             frame_count,
             decoded: state,
-            changed_indices: changed_indices.clone(),
             player_a_ko: evidence.player_a_ko,
             player_b_ko: evidence.player_b_ko,
             player_a_ko_count: evidence.player_a_ko_count,
             player_b_ko_count: evidence.player_b_ko_count,
             terminal: state.match_over(),
-            log_line: format!(
-                "frame={frame_count} changed={changed_indices:?} ko_a={} ko_b={} count_a={} count_b={}",
-                evidence.player_a_ko,
-                evidence.player_b_ko,
-                evidence.player_a_ko_count,
-                evidence.player_b_ko_count,
-            ),
         }
     }
 
@@ -569,7 +544,6 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
             endpoint_wram,
             endpoint_state,
             emitted,
-            prior_wram,
             last_valid_gameplay,
             player_a_ko_count,
             player_b_ko_count,
@@ -588,7 +562,6 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
                     return;
                 }
             };
-            let mut prior_wram = initial_wram;
             let mut prior_state = initial_state;
             let mut emitted = false;
             let mut last_valid_gameplay = self.last_valid_gameplay;
@@ -643,8 +616,6 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
                     self.action_observations.push(self.make_observation(
                         frame_count,
                         state,
-                        wram,
-                        &prior_wram,
                         StbStockEvidence {
                             player_a_ko,
                             player_b_ko,
@@ -652,7 +623,6 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
                             player_b_ko_count,
                         },
                     ));
-                    prior_wram = *wram;
                     prior_state = state;
                     emitted = true;
                 }
@@ -661,7 +631,6 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
                 endpoint_wram,
                 endpoint_state,
                 emitted,
-                prior_wram,
                 last_valid_gameplay,
                 player_a_ko_count,
                 player_b_ko_count,
@@ -682,8 +651,6 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
             self.action_observations.push(self.make_observation(
                 endpoint_frame,
                 endpoint_state,
-                &endpoint_wram,
-                &prior_wram,
                 StbStockEvidence {
                     player_a_ko: endpoint_player_a_ko,
                     player_b_ko: endpoint_player_b_ko,
@@ -850,7 +817,6 @@ impl<M: NesBackend<Vec<u8>>> Target for StbTarget<M> {
         Some(StbSnapshot {
             emulator_state,
             observation: self.observation.clone(),
-            wram: self.current_wram.to_vec(),
             failed: self.failed,
             last_valid_gameplay: self.last_valid_gameplay,
             player_a_ko_count: self.player_a_ko_count,
@@ -859,65 +825,25 @@ impl<M: NesBackend<Vec<u8>>> Target for StbTarget<M> {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        let restored_wram: &[u8; WRAM_SIZE] = snapshot
-            .wram
-            .as_slice()
-            .try_into()
-            .map_err(|_| "STB snapshot work RAM has an invalid length")?;
-        if decode_state(restored_wram)?.ai_level != self.genesis_observation.decoded.ai_level {
+        if snapshot.observation.decoded.ai_level != self.genesis_observation.decoded.ai_level {
             return Err("STB snapshot belongs to a different AI workload".into());
         }
         let imported = self
             .machine
             .import_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
-        if let Err(error) = self.machine.replay(imported) {
-            self.failed = true;
-            let _ = self.machine.drop_snapshot(imported);
-            return Err(error.to_string().into());
-        }
-        if self.current != self.genesis
-            && let Err(error) = self.machine.drop_snapshot(self.current)
+        let restored_wram = match self
+            .machine
+            .replay(imported)
+            .and_then(|()| read_wram(&self.machine))
         {
-            self.failed = true;
-            let _ = self.machine.drop_snapshot(imported);
-            return Err(error.to_string().into());
-        }
-        self.current = imported;
-        self.snapshot_base = Some(snapshot.emulator_state.clone());
-        self.current_wram = *restored_wram;
-        self.observation = snapshot.observation.clone();
-        self.action_observations = vec![self.observation.clone()];
-        self.last_valid_gameplay = snapshot
-            .last_valid_gameplay
-            .or(self.observation.decoded.gameplay);
-        self.player_a_ko_count = snapshot.player_a_ko_count;
-        self.player_b_ko_count = snapshot.player_b_ko_count;
-        self.failed = snapshot.failed;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
-    fn restore_reference(&mut self, snapshot: &StbSnapshot) -> Result<(), Box<dyn Error>> {
-        let restored_wram: [u8; WRAM_SIZE] = snapshot
-            .wram
-            .clone()
-            .try_into()
-            .map_err(|_| "STB snapshot work RAM has an invalid length")?;
-        if decode_state(&restored_wram)?.ai_level != self.genesis_observation.decoded.ai_level {
-            return Err("STB snapshot belongs to a different AI workload".into());
-        }
-        let imported = self
-            .machine
-            .import_nes(&snapshot.emulator_state)
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = self.machine.replay(imported) {
-            self.failed = true;
-            let _ = self.machine.drop_snapshot(imported);
-            return Err(error.to_string().into());
-        }
+            Ok(wram) => wram,
+            Err(error) => {
+                self.failed = true;
+                let _ = self.machine.drop_snapshot(imported);
+                return Err(error.to_string().into());
+            }
+        };
         if self.current != self.genesis
             && let Err(error) = self.machine.drop_snapshot(self.current)
         {
@@ -1312,107 +1238,16 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_wram_restore_eliminates_the_temporary_allocation() {
-        let mut actual = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
-        let mut reference = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
-        let snapshot = actual.snapshot().unwrap();
-        assert_eq!(Some(snapshot.clone()), reference.snapshot());
-        let allocated = tikv_jemalloc_ctl::thread::allocatedp::read().unwrap();
-        let before = allocated.get();
-        reference
-            .restore_reference(std::hint::black_box(&snapshot))
-            .unwrap();
-        let baseline = allocated.get() - before;
-        let before = allocated.get();
-        actual.restore(std::hint::black_box(&snapshot)).unwrap();
-        let candidate = allocated.get() - before;
-        assert_eq!(
-            baseline - candidate,
-            WRAM_SIZE as u64,
-            "baseline={baseline} candidate={candidate}"
-        );
-        assert_eq!(actual.snapshot(), reference.snapshot());
-    }
-
-    #[test]
-    fn borrowed_wram_restore_matches_reference() {
-        for length in [0, WRAM_SIZE - 1, WRAM_SIZE, WRAM_SIZE + 1, WRAM_SIZE * 4] {
-            for fail_drop in [false, true] {
-                let mut actual =
-                    StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
-                let mut reference =
-                    StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
-                actual.apply(&ButtonChord::new(1, 1));
-                reference.apply(&ButtonChord::new(1, 1));
-                let mut snapshot = actual.snapshot().unwrap();
-                assert_eq!(Some(snapshot.clone()), reference.snapshot());
-                actual.apply(&ButtonChord::new(2, 1));
-                reference.apply(&ButtonChord::new(2, 1));
-                assert_ne!(snapshot.wram.as_slice(), actual.current_wram.as_slice());
-                assert_eq!(actual.current_wram, reference.current_wram);
-                snapshot.wram.resize(length, 7);
-                actual.machine.fail_drop = fail_drop;
-                reference.machine.fail_drop = fail_drop;
-                assert_eq!(
-                    actual.restore(&snapshot).map_err(|error| error.to_string()),
-                    reference
-                        .restore_reference(&snapshot)
-                        .map_err(|error| error.to_string())
-                );
-                assert_eq!(actual.current_wram, reference.current_wram);
-                assert_eq!(actual.observe(), reference.observe());
-                assert_eq!(actual.fingerprint(), reference.fingerprint());
-                assert_eq!(actual.exit_kind(), reference.exit_kind());
-                assert_eq!(actual.machine.snapshots, reference.machine.snapshots);
-                assert_eq!(actual.snapshot(), reference.snapshot());
-            }
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "Wall time is used only by the opt-in benchmark"
-    )]
-    fn borrowed_wram_restore_benchmark() {
-        use std::{hint::black_box, time::Instant};
-        if std::env::var_os("DISSONANCE_BENCHMARK_WRAM_RESTORE").is_none() {
-            return;
-        }
-        let mut source = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
-        let original = source.snapshot().unwrap();
-        for length in [WRAM_SIZE, WRAM_SIZE + 1] {
-            let mut snapshot = original.clone();
-            snapshot.wram.resize(length, 7);
-            let mut ratios = Vec::new();
-            for round in 0..80 {
-                let mut elapsed = [0_u128; 2];
-                for new in if round % 2 == 0 {
-                    [false, true, true, false]
-                } else {
-                    [true, false, false, true]
-                } {
-                    let mut target =
-                        StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
-                    let started = Instant::now();
-                    for _ in 0..128 {
-                        let result = if new {
-                            target.restore(black_box(&snapshot))
-                        } else {
-                            target.restore_reference(black_box(&snapshot))
-                        };
-                        black_box(result).ok();
-                    }
-                    elapsed[usize::from(new)] += started.elapsed().as_nanos();
-                }
-                ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
-            }
-            ratios.sort_by(f64::total_cmp);
-            eprintln!(
-                "stb mock restore length={length} new/old={:.3}",
-                ratios[ratios.len() / 2]
-            );
-        }
+    fn a_restore_reads_work_ram_from_the_restored_state() {
+        let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        target.apply(&ButtonChord::new(1, 1));
+        let snapshot = target.snapshot().unwrap();
+        let wram = target.current_wram;
+        target.apply(&ButtonChord::new(2, 1));
+        assert_ne!(target.current_wram, wram);
+        target.restore(&snapshot).unwrap();
+        assert_eq!(target.current_wram, wram);
+        assert_eq!(target.snapshot(), Some(snapshot));
     }
 
     #[test]
@@ -1470,8 +1305,8 @@ mod tests {
         let snapshot = target.snapshot().unwrap();
         let portable: FakeState = serde_json::from_slice(&snapshot.emulator_state).unwrap();
         assert_eq!(portable.cursor, 7);
-        assert_eq!(portable.wram, snapshot.wram);
-        assert_eq!(snapshot.wram, target.machine.state.wram);
+        assert_eq!(portable.wram, target.current_wram);
+        assert_eq!(target.current_wram.as_slice(), target.machine.state.wram);
         assert_eq!(snapshot.observation, observed);
         target.apply(&ButtonChord::new(2, 3));
         assert_eq!(target.observe(), observed);

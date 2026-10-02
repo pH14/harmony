@@ -70,7 +70,7 @@ impl StbGame {
     pub fn with_ai(rom: &[u8], core_path: &Path, core_sha256: &str, ai: StbAi) -> Self {
         let ai_level = ai.level();
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-semantic-postcard-1.1.3-sha256-hex-v5;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -598,13 +598,11 @@ impl Evaluation for StbGame {
         let observation = StbObservations {
             frame_count: 0,
             decoded: target.mechanical_state(),
-            changed_indices: Vec::new(),
             player_a_ko: false,
             player_b_ko: false,
             player_a_ko_count: 0,
             player_b_ko_count: 0,
             terminal: target.is_match_over(),
-            log_line: String::new(),
         };
         merge_progress_watermark(&mut evidence.watermark, &[observation]);
         Ok(())
@@ -771,13 +769,11 @@ mod tests {
         let observation = StbObservations {
             frame_count: 3,
             decoded: state,
-            changed_indices: vec![1, 2],
             player_a_ko: false,
             player_b_ko: false,
             player_a_ko_count: 0,
             player_b_ko_count: 0,
             terminal: false,
-            log_line: "frame=3 changed=[1, 2]".to_owned(),
         };
         let portable = serde_json::from_value(serde_json::json!(bytes))
             .expect("shared-state wire representation");
@@ -794,7 +790,6 @@ mod tests {
                     snapshot: StbSnapshot {
                         emulator_state: portable,
                         observation,
-                        wram: vec![0; 2_048],
                         failed: false,
                         last_valid_gameplay: state.gameplay,
                         player_a_ko_count: 0,
