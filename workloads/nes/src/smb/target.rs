@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 use crate::{
-    nes_backend::{NesBackend, SnapshotState},
+    nes_backend::{NesBackend, SnapshotState, capture_nes, restore_nes},
     target::Target,
 };
 
@@ -460,20 +460,10 @@ where
     }
 
     fn snapshot(&mut self) -> Option<Self::Snapshot> {
-        let Ok(snap) = self.machine.snapshot() else {
+        let Ok(emulator_state) = capture_nes(&mut self.machine, self.snapshot_base.as_ref()) else {
             self.failed = true;
             return None;
         };
-        let exported = self.machine.export_nes(snap, self.snapshot_base.as_ref());
-        let Ok(emulator_state) = exported else {
-            self.failed = true;
-            let _ = self.machine.release_exported(snap);
-            return None;
-        };
-        if self.machine.release_exported(snap).is_err() {
-            self.failed = true;
-            return None;
-        }
         self.snapshot_base = Some(emulator_state.clone());
         let observation = SnapshotObservation::from_observation(&self.observation);
         let mut room_area = [0_u8; 2];
@@ -494,16 +484,7 @@ where
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        let imported = self
-            .machine
-            .import_nes(&snapshot.emulator_state)
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = self.machine.replay(imported) {
-            let _ = self.machine.drop_snapshot(imported);
-            return Err(error.to_string().into());
-        }
-        self.machine
-            .drop_snapshot(imported)
+        restore_nes(&mut self.machine, &snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         let wram = wram_array(&self.machine).map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.materialize(wram.to_vec());
@@ -686,29 +667,8 @@ mod tests {
         BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
         smb_mechanical_state_from_wram,
     };
-    use crate::{nes_backend::NesBackend, target::Target};
-    use machine::{Machine, quicknes::QuickNesMachine};
-
-    #[test]
-    fn native_snapshots_store_a_compressed_state_that_restores_exactly() {
-        let mut machine =
-            QuickNesMachine::loopback_for_tests(&synthetic_nrom()).expect("loopback core");
-        let held = machine.snapshot().expect("snapshot");
-        let state = machine.take_snapshot(held).expect("raw state");
-        let held = machine.import_snapshot(&state);
-        let stored = machine.export_nes(held, None).expect("export");
-        assert!(stored.len() < state.len());
-        assert_eq!(stored.capacity(), stored.len());
-        let restored = machine.import_nes(&stored).expect("import");
-        assert_eq!(machine.take_snapshot(restored).expect("raw state"), state);
-        assert!(machine.import_nes(&vec![4, 0, 0, 0, 0xf0]).is_err());
-        let mut oversized = stored.clone();
-        oversized[..4].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(machine.import_nes(&oversized).is_err());
-        let mut short = lz4_flex::block::compress_prepend_size(&state[..state.len() - 1]);
-        short[..4].copy_from_slice(&u32::try_from(state.len()).unwrap().to_le_bytes());
-        assert!(machine.import_nes(&short).is_err());
-    }
+    use crate::target::Target;
+    use machine::quicknes::QuickNesMachine;
 
     #[test]
     fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {

@@ -704,6 +704,13 @@ impl QuickNesMachine {
             .ok_or(MachineError::UnknownSnapshot)
     }
 
+    pub fn snapshot_bytes(&self, snap: SnapId) -> Result<&[u8], MachineError> {
+        self.snapshots
+            .get(&snap.0)
+            .map(Vec::as_slice)
+            .ok_or(MachineError::UnknownSnapshot)
+    }
+
     #[must_use]
     pub fn snapshot_len(&self) -> usize {
         STATE_HEADER_LEN + self.state_len

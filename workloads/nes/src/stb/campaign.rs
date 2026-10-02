@@ -6,12 +6,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use machine::Machine;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
+    nes_backend::{NesBackend, SnapshotState},
     search::{
         archive::RetentionPolicy,
         campaign::{
@@ -41,7 +41,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v3";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v3";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v4";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -215,7 +215,7 @@ fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, 
         .ok_or_else(|| format!("Stb stream is missing {field}").into())
 }
 
-fn merge_action_milestones<M: Machine>(
+fn merge_action_milestones<M: NesBackend<Vec<u8>>>(
     aggregate: &mut StbMilestones,
     target: &StbTarget<M>,
 ) -> Result<(), Box<dyn Error>> {
@@ -228,7 +228,7 @@ fn merge_action_milestones<M: Machine>(
     Ok(())
 }
 
-pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
+pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
     target: &mut StbTarget<M>,
     parent_milestones: StbMilestones,
     suffix: &[ButtonChord],
@@ -472,7 +472,7 @@ impl TargetExecution for StbGame {
     }
 
     fn snapshot_memory_charge(snapshot: &StbSnapshot) -> usize {
-        machine::quicknes::QuickNesMachine::portable_memory_charge(&snapshot.emulator_state)
+        std::mem::size_of::<StbSnapshot>().saturating_add(snapshot.emulator_state.memory_charge())
     }
 
     fn new_target(&self) -> Result<StbTarget, String> {

@@ -9,7 +9,10 @@ use machine::{
 use serde::{Deserialize, Serialize};
 
 use super::progress::{BossDefeats, TourianEvents};
-use crate::target::{ExitKind, Target};
+use crate::{
+    nes_backend::{capture_nes, restore_nes, unpack_quicknes_state},
+    target::{ExitKind, Target},
+};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
@@ -734,8 +737,9 @@ impl MetroidTarget {
                 return Err("resource intervention changed another mechanical field".into());
             }
             let after = self.snapshot().ok_or("intervened snapshot failed")?;
-            if !only_resource_bytes_changed(&before.emulator_state, &after.emulator_state, &changes)
-            {
+            let before_state = unpack_quicknes_state(&self.machine, &before.emulator_state)?;
+            let after_state = unpack_quicknes_state(&self.machine, &after.emulator_state)?;
+            if !only_resource_bytes_changed(&before_state, &after_state, &changes) {
                 return Err("resource intervention changed unexpected serialized bytes".into());
             }
             self.current_wram = expected_wram;
@@ -884,11 +888,7 @@ impl Target for MetroidTarget {
         if self.failed {
             return None;
         }
-        let Ok(snap) = self.machine.snapshot() else {
-            self.failed = true;
-            return None;
-        };
-        let Ok(emulator_state) = self.machine.take_snapshot(snap) else {
+        let Ok(emulator_state) = capture_nes(&mut self.machine, None) else {
             self.failed = true;
             return None;
         };
@@ -900,8 +900,7 @@ impl Target for MetroidTarget {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        self.machine
-            .restore_bytes(&snapshot.emulator_state)
+        restore_nes(&mut self.machine, &snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         self.current_wram = self
             .machine
@@ -1227,9 +1226,13 @@ mod observation_tests {
     #[test]
     fn resource_snapshot_guard_rejects_extra_missing_or_malformed_bytes() {
         let mut target = resource_fixture();
-        let before = target.snapshot().unwrap().emulator_state;
+        let raw_state = |target: &mut MetroidTarget| {
+            let packed = target.snapshot().unwrap().emulator_state;
+            unpack_quicknes_state(&target.machine, &packed).unwrap()
+        };
+        let before = raw_state(&mut target);
         target.diagnostic_set_resources(1999, 0).unwrap();
-        let after = target.snapshot().unwrap().emulator_state;
+        let after = raw_state(&mut target);
         let changes = [(0x79, 0x99), (0, 0x19), (0, 0)];
         assert!(only_resource_bytes_changed(&before, &after, &changes));
         assert!(!only_resource_bytes_changed(&before, &before, &changes));

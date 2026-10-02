@@ -8,7 +8,10 @@ use machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::target::{ExitKind, Target};
+use crate::{
+    nes_backend::{NesBackend, SnapshotState},
+    target::{ExitKind, Target},
+};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
@@ -142,7 +145,7 @@ pub struct NovaVideoMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NovaSnapshot<P = machine::SharedState> {
+pub struct NovaSnapshot<P = Vec<u8>> {
     pub(crate) emulator_state: P,
     pub(crate) observation: NovaObservations,
     pub(crate) wram: Vec<u8>,
@@ -227,7 +230,11 @@ const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
 ];
 
 #[derive(Debug)]
-pub struct NovaTarget<M: Machine = QuickNesMachine> {
+pub struct NovaTarget<M = QuickNesMachine, P = Vec<u8>>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
     machine: M,
     genesis: SnapId,
     current: SnapId,
@@ -237,13 +244,17 @@ pub struct NovaTarget<M: Machine = QuickNesMachine> {
     observation: NovaObservations,
     action_observations: Vec<NovaObservations>,
     failed: bool,
-    snapshot_base: Option<M::Portable>,
+    snapshot_base: Option<P>,
     genesis_cleared: u8,
     halt_on_level_clear: bool,
     execution_work: u64,
 }
 
-impl<M: Machine> NovaTarget<M> {
+impl<M, P> NovaTarget<M, P>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
     pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
         for actions in [&BOOT_TO_MAIN_MENU[..], &MAIN_MENU_TO_GAMEPLAY[..]] {
             machine::nes::run_actions(&mut machine, actions)?;
@@ -344,7 +355,11 @@ impl NovaTarget<QuickNesMachine> {
     }
 }
 
-impl<M: Machine> NovaTarget<M> {
+impl<M, P> NovaTarget<M, P>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
     #[must_use]
     pub fn mechanical_state(&self) -> NovaMechanicalState {
         self.observation.decoded
@@ -626,7 +641,11 @@ impl NovaTarget<QuickNesMachine> {
     }
 }
 
-impl<M: Machine> NovaTarget<M> {
+impl<M, P> NovaTarget<M, P>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
     fn make_observation(
         &self,
         frame_count: u64,
@@ -654,10 +673,14 @@ impl<M: Machine> NovaTarget<M> {
     }
 }
 
-impl<M: Machine> Target for NovaTarget<M> {
+impl<M, P> Target for NovaTarget<M, P>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
     type Action = ButtonChord;
     type Observations = NovaObservations;
-    type Snapshot = NovaSnapshot<M::Portable>;
+    type Snapshot = NovaSnapshot<P>;
 
     fn reset(&mut self) {
         let mut handle_error = false;
@@ -820,7 +843,7 @@ impl<M: Machine> Target for NovaTarget<M> {
         }
         let emulator_state = match self
             .machine
-            .export(self.current, self.snapshot_base.as_ref())
+            .export_nes(self.current, self.snapshot_base.as_ref())
         {
             Ok(state) => state,
             Err(_) => {
@@ -845,7 +868,7 @@ impl<M: Machine> Target for NovaTarget<M> {
             .map_err(|_| "Nova snapshot work RAM has an invalid length")?;
         let imported = self
             .machine
-            .import(&snapshot.emulator_state)
+            .import_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         if let Err(error) = self.machine.replay(imported) {
             let _ = self.machine.drop_snapshot(imported);
@@ -870,11 +893,12 @@ impl<M: Machine> Target for NovaTarget<M> {
 }
 
 #[cfg(test)]
-impl<M: Machine> NovaTarget<M> {
-    fn restore_reference(
-        &mut self,
-        snapshot: &NovaSnapshot<M::Portable>,
-    ) -> Result<(), Box<dyn Error>> {
+impl<M, P> NovaTarget<M, P>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
+    fn restore_reference(&mut self, snapshot: &NovaSnapshot<P>) -> Result<(), Box<dyn Error>> {
         let restored_wram: [u8; WRAM_SIZE] = snapshot
             .wram
             .clone()
@@ -882,7 +906,7 @@ impl<M: Machine> NovaTarget<M> {
             .map_err(|_| "Nova snapshot work RAM has an invalid length")?;
         let imported = self
             .machine
-            .import(&snapshot.emulator_state)
+            .import_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         if let Err(error) = self.machine.replay(imported) {
             let _ = self.machine.drop_snapshot(imported);
@@ -906,7 +930,11 @@ impl<M: Machine> NovaTarget<M> {
     }
 }
 
-impl<M: Machine> Drop for NovaTarget<M> {
+impl<M, P> Drop for NovaTarget<M, P>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
     fn drop(&mut self) {
         if self.current != self.genesis {
             let _ = self.machine.drop_snapshot(self.current);
@@ -999,6 +1027,26 @@ mod tests {
 
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     struct FakePortable(Vec<u8>);
+
+    impl SnapshotState for FakePortable {
+        fn memory_charge(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    impl NesBackend<FakePortable> for FakeMachine {
+        fn export_nes(
+            &mut self,
+            snapshot: SnapId,
+            base: Option<&FakePortable>,
+        ) -> Result<FakePortable, MachineError> {
+            self.export(snapshot, base)
+        }
+
+        fn import_nes(&mut self, portable: &FakePortable) -> Result<SnapId, MachineError> {
+            self.import(portable)
+        }
+    }
 
     #[derive(Debug)]
     struct FakeMachine {

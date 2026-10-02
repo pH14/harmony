@@ -81,6 +81,21 @@ the tap button joins the chord before it for 2–7 frames, and the next chord
 drops the tap button and keeps the rest. The first chord of a game has nothing
 before it and is drawn whole: a tap alone, or a held chord at random.
 
+## Snapshots
+
+Every game stores its QuickNES snapshots through `NesBackend` in
+`src/nes_backend.rs`. A stored snapshot is the QuickNES state as an LZ4 block
+with its length in front. A restore checks the declared length against the
+core's state size before it decompresses. The archive charges the compressed
+length plus the snapshot record, so a memory budget keeps more snapshots
+resident and replays fewer evicted parents. The SMB state of 12,912 bytes
+compresses about seven times. The Metroid state of 21,118 bytes, which includes
+8 KiB of cartridge RAM, compresses to about 9 KB. Compression takes about 10 µs
+and decompression about 6 µs, against about 105 µs for one emulated frame.
+Nova and Super Tilt Bro keep a live handle for the current state and export
+from it; SMB, Metroid and Mega Man 2 take a handle, export it and release it.
+The Consonance backend stores its own portable state through the same trait.
+
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.
