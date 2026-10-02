@@ -86,9 +86,11 @@ A separate Rust oracle checks every step. Restore reads the saved registers
 and memory, runs L2 without writing new inputs, checks that readback, then
 restores the cut again. Run checks identical outputs from two executions of
 the same inputs. The second restore is read back immediately too, so retained
-RAM from the readback step fails at the restore boundary. The SDK smoke starts
-with the cold Run seed from the hosted Intel failure before warming the inner
-VM. Fork and portable import use production control operations.
+RAM from the readback step fails at the restore boundary. The SDK smoke imports
+and restores the cold outer root twice, then starts with the Run seed from the
+hosted Intel failure before warming the inner VM. It uses the campaign's
+512 MiB outer RAM configuration. Fork and portable import use production
+control operations.
 Any in-place fallback fails instead of recreating the inner VM.
 
 Four always assertions cover the L2 oracle, restore readback, operation errors
