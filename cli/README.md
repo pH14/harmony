@@ -54,7 +54,8 @@ command-line words, and `--wall-minutes` bounds a search in host time. `--replay
 runs a recorded action list, such as a search's own `bug-1.json`, instead of
 searching. Both modes write `report.json`.
 
-The nested package runs on Linux x86 with Intel nested VMX. It launches the
+The nested package uses the Consonance backend on Linux x86 with nested VMX
+or SVM. It launches the
 production inner VMM in L1 and chooses inner operations through SDK entropy.
 Supply the qualified nested-host kernel explicitly. It uses one search worker,
 one virtual CPU per level, a bounded snapshot archive, and standard Dissonance
