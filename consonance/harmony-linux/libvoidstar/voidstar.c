@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -40,28 +41,44 @@ struct harmony_coverage_state {
     uint32_t selected;
     uint64_t counter;
     uint64_t threshold;
-    bool exchanging;
 };
 
 static _Thread_local struct harmony_coverage_state harmony_coverage = {
-    0, 1, 0, 0, 1, false
+    0, 1, 0, 0, 1
 };
+static _Thread_local volatile sig_atomic_t harmony_device_held;
 static uint64_t harmony_next_edge;
 static const uint64_t harmony_lease_generation = 1;
 
+static int device_lock(void)
+{
+    harmony_device_held = 1;
+    if (pthread_mutex_lock(&harmony_device_lock) != 0) {
+        harmony_device_held = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void device_unlock(void)
+{
+    (void)pthread_mutex_unlock(&harmony_device_lock);
+    harmony_device_held = 0;
+}
+
 static void harmony_before_fork(void)
 {
-    (void)pthread_mutex_lock(&harmony_device_lock);
+    (void)device_lock();
 }
 
 static void harmony_after_fork(void)
 {
-    (void)pthread_mutex_unlock(&harmony_device_lock);
+    device_unlock();
 }
 
 static void harmony_child_after_fork(void)
 {
-    harmony_coverage = (struct harmony_coverage_state){0, 1, 0, 0, 1, false};
+    harmony_coverage = (struct harmony_coverage_state){0, 1, 0, 0, 1};
     harmony_after_fork();
 }
 
@@ -121,14 +138,14 @@ void fuzz_json_data(const char *data, size_t size)
 
     if ((data == NULL && size != 0) || size > (size_t)SSIZE_MAX)
         return;
-    if (pthread_mutex_lock(&harmony_device_lock) != 0)
+    if (device_lock() != 0)
         return;
     fd = HARMONY_OPEN(harmony_device_path, O_WRONLY | O_CLOEXEC);
     if (fd >= 0) {
         (void)write_all(fd, (const unsigned char *)data, size);
         (void)HARMONY_CLOSE(fd);
     }
-    (void)pthread_mutex_unlock(&harmony_device_lock);
+    device_unlock();
 }
 
 uint64_t fuzz_get_random(void)
@@ -139,7 +156,7 @@ uint64_t fuzz_get_random(void)
     int fd;
     size_t index;
 
-    if (pthread_mutex_lock(&harmony_device_lock) != 0)
+    if (device_lock() != 0)
         return 0;
     fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
     if (fd < 0)
@@ -153,7 +170,7 @@ uint64_t fuzz_get_random(void)
     for (index = 0; index < sizeof(bytes); index++)
         value |= (uint64_t)bytes[index] << (index * CHAR_BIT);
 out:
-    (void)pthread_mutex_unlock(&harmony_device_lock);
+    device_unlock();
     return value;
 }
 
@@ -268,13 +285,13 @@ uint64_t init_coverage_module(size_t edges, const char *symbols)
 {
     uint64_t offset;
     (void)symbols;
-    if (pthread_mutex_lock(&harmony_device_lock) != 0)
+    if (device_lock() != 0)
         return 0;
     offset = harmony_next_edge;
     if ((uint64_t)edges >= UINT64_MAX - offset)
         abort();
     harmony_next_edge += (uint64_t)edges + 1;
-    (void)pthread_mutex_unlock(&harmony_device_lock);
+    device_unlock();
     return offset;
 }
 
@@ -284,12 +301,12 @@ static void coverage_count(uint64_t hits)
         harmony_coverage.counter = UINT64_MAX;
     else
         harmony_coverage.counter += hits;
-    if (!harmony_coverage.exchanging &&
+    if (!harmony_device_held &&
         harmony_coverage.counter >= harmony_coverage.threshold) {
         int result;
-        harmony_coverage.exchanging = true;
+        harmony_device_held = 1;
         result = coverage_exchange(harmony_coverage.threshold);
-        harmony_coverage.exchanging = false;
+        harmony_device_held = 0;
         if (result < 0)
             abort();
         if (result > 0)
