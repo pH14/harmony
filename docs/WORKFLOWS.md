@@ -173,7 +173,7 @@ the job.
 ## Ignored tests
 
 The Guest Runtime Qualification workflow's manual `nested_host_only` run first
-requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its Ubuntu 22.04
+requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its selected Ubuntu
 x86 runner, then builds the separate
 nested-host kernel in the pinned Debian GCC 14 build container and boots L1
 under the named nested-host contract. The
@@ -209,7 +209,9 @@ KVM-supported CPUID. The matching kernel includes both backends. The state
 format and exposed vendor capabilities bind snapshot identity; snapshots cannot
 cross vendors. SVM restores also compare GIF immediately at the lifecycle cut.
 Manual runs can require `nested_vendor=vmx` or `nested_vendor=svm`; the default
-`auto` accepts either. A vendor mismatch fails before compilation. The early
+`auto` accepts either. `nested_runner` selects the standard x86 Ubuntu 22.04
+or 24.04 image; its label does not guarantee a CPU vendor. A vendor mismatch
+fails before compilation. The early
 `nested-host-preflight-RUN` artifact retains the CPU and KVM evidence while
 the build is still running, so a requested vendor is observable immediately.
 
