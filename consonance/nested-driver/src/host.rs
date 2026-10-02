@@ -285,7 +285,7 @@ pub struct NestedWorkload {
 
 impl NestedWorkload {
     fn new(kernel: &[u8], initramfs: &[u8], options: &Options) -> Self {
-        let config = SessionConfig {
+        let mut config = SessionConfig {
             ram_bytes: options.ram_mib as usize * (1 << 20),
             seed: options.seed,
             ..SessionConfig::default()
@@ -293,6 +293,7 @@ impl NestedWorkload {
         .with_nested_host()
         .with_deferred_virtual_time_checkpoint_hashes()
         .with_wall_limit(Duration::from_secs(20));
+        config.cmdline.push_str(" kvm_intel.dump_invalid_vmcs=1");
         Self {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
