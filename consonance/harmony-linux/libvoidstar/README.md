@@ -12,8 +12,9 @@ its coverage callbacks, keyed by its Linux thread ID, and exchanges with the VM
 when the count reaches its threshold. The first threshold is one callback; the
 VM supplies each later quantum. Each exchange is a VM exit, so virtual time
 advances and the guest scheduler can preempt a thread that never makes a system
-call. A callback made during an exchange, for example from a signal handler,
-only counts; the next callback at or past the threshold exchanges.
+call. A callback made while its thread holds the device lock, for example from
+a signal handler during an exchange or an entropy read, only counts; the next
+callback at or past the threshold exchanges.
 `harmony_coverage_configure` sets an explicit thread identity and runnable
 width. A forked child resets its counter and identity.
 

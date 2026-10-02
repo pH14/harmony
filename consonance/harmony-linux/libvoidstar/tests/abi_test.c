@@ -19,6 +19,7 @@ static size_t coverage_requests;
 static int coverage_requested;
 static int invalid_coverage_response;
 static int reenter_during_exchange;
+static int reenter_during_entropy;
 
 bool notify_coverage(size_t edge);
 
@@ -92,6 +93,12 @@ static ssize_t mock_read(int fd, void *data, size_t size)
     }
     assert(entropy_requested);
     assert(size == sizeof(entropy));
+    if (reenter_during_entropy) {
+        size_t before = coverage_requests;
+        reenter_during_entropy = 0;
+        assert(notify_coverage(6));
+        assert(coverage_requests == before);
+    }
     memcpy(data, entropy, sizeof(entropy));
     return (ssize_t)sizeof(entropy);
 }
@@ -158,23 +165,30 @@ int main(void)
     assert(harmony_coverage.counter == harmony_coverage.threshold);
     assert(notify_coverage(5));
     assert(coverage_requests == 11);
+    reenter_during_entropy = 1;
+    assert(fuzz_get_random() == UINT64_C(0x0102030405060708));
+    assert(coverage_requests == 11);
+    assert(harmony_coverage.counter >= harmony_coverage.threshold);
+    assert(notify_coverage(6));
+    assert(coverage_requests == 12);
     assert(harmony_coverage_configure(1, 0) == -1);
     assert(pthread_create(&thread, NULL, worker, NULL) == 0);
     assert(pthread_join(thread, NULL) == 0);
-    assert(coverage_requests == 13);
-    assert(harmony_coverage.counter == 10);
-    assert(harmony_coverage_add(0) == 1);
     assert(coverage_requests == 14);
+    assert(harmony_coverage.counter == 12);
     assert(harmony_coverage.threshold == 11);
+    assert(harmony_coverage_add(0) == 1);
+    assert(coverage_requests == 15);
+    assert(harmony_coverage.threshold == 12);
     assert(harmony_coverage_add(3) == 1);
-    assert(coverage_requests == 15);
-    assert(harmony_coverage.counter == 13);
+    assert(coverage_requests == 16);
+    assert(harmony_coverage.counter == 15);
     harmony_coverage.threshold = 20;
-    assert(harmony_coverage_add(2) == 5);
-    assert(coverage_requests == 15);
+    assert(harmony_coverage_add(2) == 3);
+    assert(coverage_requests == 16);
     assert(harmony_coverage_add(UINT64_MAX) == 1);
     assert(harmony_coverage.counter == UINT64_MAX);
-    assert(coverage_requests == 16);
+    assert(coverage_requests == 17);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
