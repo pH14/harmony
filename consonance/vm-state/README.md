@@ -98,3 +98,6 @@ validates the format against the named contract before restore.
 The generic property generators include absent, header-only, VMCS12/VMCB and
 full VMCS12-plus-shadow nested payloads. Strict-decoder fixtures contain tag 16
 and check its optionality, ordering, uniqueness, size field and truncation.
+Native tests and whole-crate Miri check every truncated prefix. The Miri PR
+smoke lane samples every section-header byte, each payload boundary and payload
+interiors so the full nested fixture fits the lane's 15-minute budget.
