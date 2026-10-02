@@ -14,7 +14,13 @@ progress order and an ordered list of state preferences; the generic
 archive uses only those and retains bounded representatives. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The window is the number of
-reservations in flight and is set apart from the worker count. One coordinator
+reservations in flight and is set apart from the worker count. Each job's
+planned finish is the planned finish of the last admission before its
+selection plus `action_cost` summed over its replay and suffix actions. Jobs
+are dispatched and admitted in planned-finish order, with ties broken by
+reservation, so a short job reserved after a long one does not wait for it.
+Job records carry their reservation, and replay checks that admissions follow
+planned-finish order and that reservations form a contiguous sequence. One coordinator
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed

@@ -189,8 +189,10 @@ This introduces three limits to parallelism:
 - **Coordinator occupancy.** With coordinator time t per job and execution
   time T per worker, the search saturates at T divided by t workers. The
   shorter an execution, the fewer workers one coordinator can feed.
-- **Admission order.** A result waits until every result before it in the
-  order is admitted. A slow execution delays the results behind it. Jobs
+- **Admission order.** Results are admitted in planned-finish order, which
+  sums each job's action costs. A result waits until every result with an
+  earlier planned finish is admitted, so an execution that runs slower than
+  its planned cost delays the results behind it. Jobs
   count against one bound from dispatch until admission, and an idle worker
   waits once that bound is full.
 - **Critical path.** Because a selection can depend on an earlier admitted
@@ -227,7 +229,7 @@ runs into one of these limits:
 | Coordinator occupancy | Execution time per worker divided by the worker count falls below coordinator time per job |
 | Memory bandwidth | Workers times bytes written per second, times about five, exceeds the chip's bandwidth |
 | Ready parents | Fewer parents are ready for selection than there are workers |
-| Admission order | Execution times spread widely and workers fill their result buffers |
+| Admission order | Execution times depart from planned costs and workers fill their result buffers |
 | Unshared retained states | Each worker re-runs prefixes that another worker already ran |
 
 The bandwidth estimate counts roughly five memory transfers for each guest

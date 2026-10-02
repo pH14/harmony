@@ -100,7 +100,7 @@ coordinator's time profile to standard error. The report on standard output
 holds the settings, the objective result, work, elapsed time, stream bytes,
 logical resident memory, live entries, selector counters, the fraction of
 worker time spent running jobs, and the fraction spent idle while finished
-results waited for admission in reservation order.
+results waited for admission in planned-finish order.
 
 ## Families and controls
 

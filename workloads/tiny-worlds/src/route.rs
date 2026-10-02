@@ -365,7 +365,7 @@ mod tests {
             before: w.initial(),
             after: w.step(w.initial(), w.route_action(0)),
         };
-        let mut record = serde_json::json!({"event":"job","sequence":1,"worker":0,"parent_id":0,
+        let mut record = serde_json::json!({"event":"job","sequence":1,"reservation":0,"worker":0,"parent_id":0,
             "mutation_seed":0,"execution_work":1,"result_sha256":"","decisions":[],
             "mixture_weight":0,"splice_weight":0,"selector":{"path":"tiers"}});
         assert!(
@@ -391,6 +391,7 @@ mod tests {
         };
         let mut stream = serde_json::to_vec(&record).unwrap();
         record["sequence"] = 2.into();
+        record["reservation"] = 1.into();
         record["parent_id"] = 1.into();
         stream.push(b'\n');
         stream.extend(serde_json::to_vec(&record).unwrap());
@@ -412,7 +413,7 @@ mod tests {
             before: w.initial(),
             after: w.initial(),
         };
-        let record = serde_json::json!({"event":"job","sequence":1,"worker":0,"parent_id":0,
+        let record = serde_json::json!({"event":"job","sequence":1,"reservation":0,"worker":0,"parent_id":0,
             "mutation_seed":0,"execution_work":1,"result_sha256":"",
             "decisions":[{"decision":"retained","id":1}],
             "mixture_weight":0,"splice_weight":0,"selector":{"path":"tiers"}});

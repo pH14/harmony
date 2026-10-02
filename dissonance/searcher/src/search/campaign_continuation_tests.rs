@@ -1007,7 +1007,8 @@ fn a_resume_refuses_a_changed_workload_policy() {
         ]),
         executions: 0,
         reserved: 0,
-        next_admission: 0,
+        admitted: 0,
+        planned_clock: 0,
     };
     let error = search_checkpoint_policy_changes(&header("a"), &header("b"))
         .expect_err("a changed key policy");

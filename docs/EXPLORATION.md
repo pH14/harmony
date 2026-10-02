@@ -37,7 +37,7 @@ For each job, the coordinator:
 4. restores the parent's snapshot and executes the suffix;
 5. gathers observations and candidate endpoints;
 6. applies the recorded admission and replacement rules;
-7. records the job and its decisions in reservation order.
+7. records the job and its decisions in admission order.
 
 The workload adapter owns action meaning, snapshot representation, state
 decoding, progress milestones, terminal conditions, and input-generation
@@ -110,7 +110,10 @@ affect campaign state:
 - each logical worker has a seed derived from the campaign seed and worker
   index;
 - selection and mutation occur in a deterministic reservation sequence;
-- completed jobs are admitted in reservation order;
+- each job has a planned finish: the planned finish of the last admission
+  before its selection plus the planned cost of its actions;
+- completed jobs are admitted in planned-finish order, with ties broken by
+  reservation;
 - host completion order changes waiting time, not the archive or recorded
   stream.
 
