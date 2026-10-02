@@ -242,7 +242,7 @@ its left subtree. A draw descends to the first key whose prefix sum exceeds the
 drawn value, which is the key a linear prefix scan over the sorted keys
 returns, so draws and RNG consumption match the linear draw. Count-decay
 weights are at most 2^32 and the archive holds at most 2^22 active entries, so
-every subtree sum stays below 2^54 and fits in a `u64`. Draws, weight
+every subtree sum is at most 2^54 and fits in a `u64`. Draws, weight
 updates, inserts at any position, and removals cost expected O(log n) in the
 number of cells or holders. Each cell also keeps its holders in one ordered set
 per preference, so finding, adding, or removing the best holder costs O(log n).
