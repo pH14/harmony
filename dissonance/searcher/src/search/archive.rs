@@ -1284,7 +1284,7 @@ where
     }
 
     fn release_keep(&mut self, entries: usize) {
-        self.keep_releases = self.keep_releases.saturating_add(entries);
+        self.keep_releases = self.keep_releases.wrapping_add(entries);
     }
 
     fn history_keep(&self) -> Vec<bool> {
@@ -1327,7 +1327,7 @@ where
             && let Some((releases, dropped)) = self.failed_compaction
             && self
                 .keep_releases
-                .saturating_sub(releases)
+                .wrapping_sub(releases)
                 .saturating_add(dropped)
                 < HISTORY_COMPACTION_MIN_DROPS
         {
@@ -6526,6 +6526,7 @@ mod tests {
     #[test]
     fn a_failed_compaction_skips_scans_until_enough_keeps_are_released() {
         let mut archive = archive_with_prunable_history();
+        archive.keep_releases = usize::MAX - 1;
         let history = archive.history_memory_bytes();
         archive.memory_limit = Some(history.saturating_mul(2));
         let ids = archive.entries[..HISTORY_COMPACTION_MIN_DROPS]
