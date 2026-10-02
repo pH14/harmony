@@ -124,7 +124,7 @@ impl DrawVersionSchedule {
 struct DrawTableVersion<A> {
     checkpoint: EmpiricalStepCheckpoint,
     history_len: usize,
-    history_counts: Rc<BTreeMap<A, usize>>,
+    history_ends: Rc<Vec<(A, usize)>>,
     recent: Rc<Vec<A>>,
     feedback: Rc<BTreeMap<u64, u64>>,
 }
@@ -331,10 +331,10 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
             return Err("recorded draw table hash does not match replay".into());
         }
         draw(DrawView {
-            steps: EmpiricalStepTableRef::from_counts(
+            steps: EmpiricalStepTableRef::new(
                 self.tables.parameters(),
                 &version.recent,
-                &version.history_counts,
+                &version.history_ends,
                 version.history_len,
             ),
             feedback: &version.feedback,
@@ -358,15 +358,15 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
         let recent = reusable
             .map(|(_, last)| Rc::clone(&last.recent))
             .unwrap_or_else(|| Rc::new(self.tables.recent().to_vec()));
-        let history_counts = reusable
-            .map(|(_, last)| Rc::clone(&last.history_counts))
-            .unwrap_or_else(|| Rc::new(self.tables.compact_history().clone()));
+        let history_ends = reusable
+            .map(|(_, last)| Rc::clone(&last.history_ends))
+            .unwrap_or_else(|| Rc::new(self.tables.history_ends().to_vec()));
         self.versions.insert(
             records,
             DrawTableVersion {
                 checkpoint,
                 history_len,
-                history_counts,
+                history_ends,
                 recent,
                 feedback: Rc::clone(&self.feedback),
             },
@@ -577,7 +577,7 @@ mod tests {
                     table_sha256: String::new(),
                 },
                 history_len: 0,
-                history_counts: Rc::new(BTreeMap::new()),
+                history_ends: Rc::new(Vec::new()),
                 recent: Rc::new(Vec::new()),
                 feedback: Rc::new(BTreeMap::new()),
             },
@@ -591,7 +591,7 @@ mod tests {
                     table_sha256: String::new(),
                 },
                 history_len: 0,
-                history_counts: Rc::new(BTreeMap::new()),
+                history_ends: Rc::new(Vec::new()),
                 recent: Rc::new(Vec::new()),
                 feedback: Rc::new(BTreeMap::new()),
             },
