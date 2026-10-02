@@ -1,50 +1,82 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::BTreeSet;
+use std::{cmp::Ordering, collections::BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 
+use super::rand::splitmix64;
+
+const NONE: usize = usize::MAX;
+
+#[derive(Clone, Debug)]
+struct Node<T> {
+    key: T,
+    weight: u64,
+    left_sum: u64,
+    sum: u64,
+    left: usize,
+    right: usize,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct WeightedSet<T> {
-    keys: Vec<T>,
-    live: Vec<bool>,
-    weights: Vec<u64>,
-    tree: Vec<u64>,
-    total: u64,
+    nodes: Vec<Node<T>>,
+    free: Vec<usize>,
+    root: usize,
     len: usize,
 }
 
 impl<T> Default for WeightedSet<T> {
     fn default() -> Self {
         Self {
-            keys: Vec::new(),
-            live: Vec::new(),
-            weights: Vec::new(),
-            tree: Vec::new(),
-            total: 0,
+            nodes: Vec::new(),
+            free: Vec::new(),
+            root: NONE,
             len: 0,
         }
     }
 }
 
-fn lowest_bit(index: usize) -> usize {
-    index & index.wrapping_neg()
+fn priority(slot: usize) -> u64 {
+    let mut state = slot as u64;
+    splitmix64(&mut state)
 }
 
 impl<T: Copy + Ord> WeightedSet<T> {
     pub(crate) fn from_sorted(entries: impl IntoIterator<Item = (T, u64)>) -> Self {
-        let (keys, weights): (Vec<T>, Vec<u64>) = entries.into_iter().unzip();
-        debug_assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
-        let len = keys.len();
-        let mut set = Self {
-            keys,
-            live: vec![true; len],
-            weights,
-            tree: Vec::new(),
-            total: 0,
-            len,
-        };
-        set.rebuild_tree();
+        let mut set = Self::default();
+        let mut spine = Vec::new();
+        for (key, weight) in entries {
+            let slot = set.nodes.len();
+            debug_assert!(slot == 0 || set.nodes[slot - 1].key < key);
+            set.nodes.push(Node {
+                key,
+                weight,
+                left_sum: 0,
+                sum: weight,
+                left: NONE,
+                right: NONE,
+            });
+            let mut below = NONE;
+            while let Some(&top) = spine.last() {
+                if priority(top) >= priority(slot) {
+                    break;
+                }
+                spine.pop();
+                set.update(top);
+                below = top;
+            }
+            set.nodes[slot].left = below;
+            if let Some(&top) = spine.last() {
+                set.nodes[top].right = slot;
+            }
+            spine.push(slot);
+        }
+        while let Some(top) = spine.pop() {
+            set.update(top);
+            set.root = top;
+        }
+        set.len = set.nodes.len();
         set
     }
 
@@ -57,14 +89,21 @@ impl<T: Copy + Ord> WeightedSet<T> {
     }
 
     pub(crate) fn total(&self) -> u64 {
-        self.total
+        self.sum(self.root)
     }
 
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = T> + '_ {
-        self.keys
-            .iter()
-            .zip(&self.live)
-            .filter_map(|(key, live)| live.then_some(*key))
+    pub(crate) fn iter(&self) -> impl Iterator<Item = T> + '_ {
+        let mut path = Vec::new();
+        let mut node = self.root;
+        std::iter::from_fn(move || {
+            while node != NONE {
+                path.push(node);
+                node = self.nodes[node].left;
+            }
+            let top = path.pop()?;
+            node = self.nodes[top].right;
+            Some(self.nodes[top].key)
+        })
     }
 
     #[cfg(test)]
@@ -73,137 +112,222 @@ impl<T: Copy + Ord> WeightedSet<T> {
     }
 
     pub(crate) fn weight(&self, key: &T) -> Option<u64> {
-        self.position(key).map(|position| self.weights[position])
+        self.position(key).map(|node| self.nodes[node].weight)
     }
 
     fn position(&self, key: &T) -> Option<usize> {
-        self.keys
-            .binary_search(key)
-            .ok()
-            .filter(|position| self.live[*position])
+        let mut node = self.root;
+        while node != NONE {
+            node = match key.cmp(&self.nodes[node].key) {
+                Ordering::Less => self.nodes[node].left,
+                Ordering::Greater => self.nodes[node].right,
+                Ordering::Equal => return Some(node),
+            };
+        }
+        None
     }
 
     pub(crate) fn insert(&mut self, key: T, weight: u64) -> bool {
-        match self.keys.binary_search(&key) {
-            Ok(position) if self.live[position] => false,
-            Ok(position) => {
-                self.live[position] = true;
-                self.len += 1;
-                self.set_at(position, weight);
-                true
-            }
-            Err(position) if position == self.keys.len() => {
-                let index = position + 1;
-                let covered = self
-                    .prefix(index - 1)
-                    .wrapping_sub(self.prefix(index - lowest_bit(index)));
-                self.keys.push(key);
-                self.live.push(true);
-                self.weights.push(weight);
-                self.tree.push(covered.wrapping_add(weight));
-                self.total = self.total.wrapping_add(weight);
-                self.len += 1;
-                true
-            }
-            Err(position) => {
-                self.keys.insert(position, key);
-                self.live.insert(position, true);
-                self.weights.insert(position, weight);
-                self.len += 1;
-                self.rebuild_tree();
-                true
-            }
+        if self.position(&key).is_some() {
+            return false;
         }
+        let node = Node {
+            key,
+            weight,
+            left_sum: 0,
+            sum: weight,
+            left: NONE,
+            right: NONE,
+        };
+        let slot = match self.free.pop() {
+            Some(slot) => {
+                self.nodes[slot] = node;
+                slot
+            }
+            None => {
+                self.nodes.push(node);
+                self.nodes.len() - 1
+            }
+        };
+        self.root = self.insert_at(self.root, slot);
+        self.len += 1;
+        true
     }
 
     pub(crate) fn remove(&mut self, key: &T) -> bool {
-        let Some(position) = self.position(key) else {
+        let (root, removed) = self.remove_at(self.root, key);
+        self.root = root;
+        let Some(slot) = removed else {
             return false;
         };
-        self.set_at(position, 0);
-        self.live[position] = false;
+        self.free.push(slot);
         self.len -= 1;
-        if self.keys.len() > 2 * self.len {
-            self.drop_removed();
-        }
         true
     }
 
     pub(crate) fn set_weight(&mut self, key: &T, weight: u64) -> bool {
-        let Some(position) = self.position(key) else {
+        let Some(target) = self.position(key) else {
             return false;
         };
-        self.set_at(position, weight);
+        let delta = weight.wrapping_sub(self.nodes[target].weight);
+        self.nodes[target].weight = weight;
+        let mut node = self.root;
+        while node != NONE {
+            let current = &mut self.nodes[node];
+            current.sum = current.sum.wrapping_add(delta);
+            node = match key.cmp(&current.key) {
+                Ordering::Less => {
+                    current.left_sum = current.left_sum.wrapping_add(delta);
+                    current.left
+                }
+                Ordering::Greater => current.right,
+                Ordering::Equal => NONE,
+            };
+        }
         true
     }
 
     pub(crate) fn find(&self, draw: u64) -> Option<T> {
-        let mut position = 0;
         let mut remaining = draw;
-        let mut step = self
-            .tree
-            .len()
-            .checked_ilog2()
-            .map_or(0, |bits| 1_usize << bits);
-        while step > 0 {
-            let next = position + step;
-            if next <= self.tree.len() && self.tree[next - 1] <= remaining {
-                position = next;
-                remaining -= self.tree[next - 1];
+        let mut node = self.root;
+        while node != NONE {
+            let current = &self.nodes[node];
+            if remaining < current.left_sum {
+                node = current.left;
+                continue;
             }
-            step >>= 1;
+            remaining -= current.left_sum;
+            if remaining < current.weight {
+                return Some(current.key);
+            }
+            remaining -= current.weight;
+            node = current.right;
         }
-        self.keys.get(position).copied()
+        None
     }
 
-    fn prefix(&self, mut index: usize) -> u64 {
-        let mut sum = 0_u64;
-        while index > 0 {
-            sum = sum.wrapping_add(self.tree[index - 1]);
-            index -= lowest_bit(index);
-        }
-        sum
-    }
-
-    fn set_at(&mut self, position: usize, weight: u64) {
-        let delta = weight.wrapping_sub(self.weights[position]);
-        self.weights[position] = weight;
-        self.total = self.total.wrapping_add(delta);
-        let mut index = position + 1;
-        while index <= self.tree.len() {
-            self.tree[index - 1] = self.tree[index - 1].wrapping_add(delta);
-            index += lowest_bit(index);
+    fn sum(&self, node: usize) -> u64 {
+        if node == NONE {
+            0
+        } else {
+            self.nodes[node].sum
         }
     }
 
-    fn drop_removed(&mut self) {
-        let mut kept = 0;
-        for position in 0..self.keys.len() {
-            if self.live[position] {
-                self.keys[kept] = self.keys[position];
-                self.weights[kept] = self.weights[position];
-                kept += 1;
+    fn update(&mut self, node: usize) {
+        let Node {
+            weight,
+            left,
+            right,
+            ..
+        } = self.nodes[node];
+        let left_sum = self.sum(left);
+        let sum = left_sum.wrapping_add(weight).wrapping_add(self.sum(right));
+        let current = &mut self.nodes[node];
+        current.left_sum = left_sum;
+        current.sum = sum;
+    }
+
+    fn insert_at(&mut self, node: usize, slot: usize) -> usize {
+        if node == NONE {
+            return slot;
+        }
+        if priority(slot) > priority(node) {
+            let (left, right) = self.split(node, self.nodes[slot].key);
+            self.nodes[slot].left = left;
+            self.nodes[slot].right = right;
+            self.update(slot);
+            return slot;
+        }
+        if self.nodes[slot].key < self.nodes[node].key {
+            let left = self.insert_at(self.nodes[node].left, slot);
+            self.nodes[node].left = left;
+        } else {
+            let right = self.insert_at(self.nodes[node].right, slot);
+            self.nodes[node].right = right;
+        }
+        self.update(node);
+        node
+    }
+
+    fn split(&mut self, node: usize, key: T) -> (usize, usize) {
+        if node == NONE {
+            return (NONE, NONE);
+        }
+        if self.nodes[node].key < key {
+            let (left, right) = self.split(self.nodes[node].right, key);
+            self.nodes[node].right = left;
+            self.update(node);
+            (node, right)
+        } else {
+            let (left, right) = self.split(self.nodes[node].left, key);
+            self.nodes[node].left = right;
+            self.update(node);
+            (left, node)
+        }
+    }
+
+    fn merge(&mut self, left: usize, right: usize) -> usize {
+        if left == NONE {
+            return right;
+        }
+        if right == NONE {
+            return left;
+        }
+        if priority(left) > priority(right) {
+            let merged = self.merge(self.nodes[left].right, right);
+            self.nodes[left].right = merged;
+            self.update(left);
+            left
+        } else {
+            let merged = self.merge(left, self.nodes[right].left);
+            self.nodes[right].left = merged;
+            self.update(right);
+            right
+        }
+    }
+
+    fn remove_at(&mut self, node: usize, key: &T) -> (usize, Option<usize>) {
+        if node == NONE {
+            return (NONE, None);
+        }
+        match key.cmp(&self.nodes[node].key) {
+            Ordering::Less => {
+                let (left, removed) = self.remove_at(self.nodes[node].left, key);
+                self.nodes[node].left = left;
+                if removed.is_some() {
+                    self.update(node);
+                }
+                (node, removed)
+            }
+            Ordering::Greater => {
+                let (right, removed) = self.remove_at(self.nodes[node].right, key);
+                self.nodes[node].right = right;
+                if removed.is_some() {
+                    self.update(node);
+                }
+                (node, removed)
+            }
+            Ordering::Equal => {
+                let merged = self.merge(self.nodes[node].left, self.nodes[node].right);
+                (merged, Some(node))
             }
         }
-        self.keys.truncate(kept);
-        self.weights.truncate(kept);
-        self.live.clear();
-        self.live.resize(kept, true);
-        self.rebuild_tree();
     }
 
-    fn rebuild_tree(&mut self) {
-        self.tree.clone_from(&self.weights);
-        for index in 1..=self.tree.len() {
-            let parent = index + lowest_bit(index);
-            if parent <= self.tree.len() {
-                self.tree[parent - 1] = self.tree[parent - 1].wrapping_add(self.tree[index - 1]);
+    #[cfg(test)]
+    fn depth(&self) -> usize {
+        let mut deepest = 0;
+        let mut pending = vec![(self.root, 0)];
+        while let Some((node, depth)) = pending.pop() {
+            if node == NONE {
+                continue;
             }
+            deepest = deepest.max(depth + 1);
+            pending.push((self.nodes[node].left, depth + 1));
+            pending.push((self.nodes[node].right, depth + 1));
         }
-        self.total = self
-            .weights
-            .iter()
-            .fold(0_u64, |sum, weight| sum.wrapping_add(*weight));
+        deepest
     }
 }
 
@@ -248,10 +372,6 @@ mod tests {
         assert_eq!(
             set.iter().collect::<Vec<_>>(),
             reference.keys().copied().collect::<Vec<_>>()
-        );
-        assert_eq!(
-            set.iter().rev().collect::<Vec<_>>(),
-            reference.keys().rev().copied().collect::<Vec<_>>()
         );
         let total = reference.values().sum::<u64>();
         assert_eq!(set.total(), total);
@@ -333,6 +453,38 @@ mod tests {
         }
         assert_matches(&built, &reference);
         assert_matches(&inserted, &reference);
+    }
+
+    #[test]
+    fn descending_and_ascending_inserts_keep_the_tree_shallow() {
+        let count = 100_000_u32;
+        let bound = 4 * usize::try_from(count.ilog2()).unwrap() + 8;
+        let mut descending = WeightedSet::default();
+        let mut ascending = WeightedSet::default();
+        for key in (0..count).rev() {
+            descending.insert(key, u64::from(key % 5));
+            ascending.insert(count - 1 - key, 1);
+        }
+        for key in (0..count).step_by(2) {
+            assert!(descending.remove(&key));
+        }
+        let built = WeightedSet::from_sorted((0..count).map(|key| (key, 1)));
+        for set in [&descending, &ascending, &built] {
+            assert!(set.depth() <= bound, "depth {}", set.depth());
+        }
+        let odd = (0..count).filter(|key| key % 2 == 1).collect::<Vec<_>>();
+        assert_eq!(descending.iter().collect::<Vec<_>>(), odd);
+        let mut cumulative = 0;
+        for key in odd {
+            let weight = u64::from(key % 5);
+            if weight > 0 {
+                assert_eq!(descending.find(cumulative), Some(key));
+                assert_eq!(descending.find(cumulative + weight - 1), Some(key));
+            }
+            cumulative += weight;
+        }
+        assert_eq!(descending.total(), cumulative);
+        assert_eq!(descending.find(cumulative), None);
     }
 
     #[test]
