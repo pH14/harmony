@@ -145,8 +145,9 @@ and SVM; configurations without AMD KVM compile it out. The fixed crystal
 frequency also initializes the local APIC period before the Harmony clock
 registers, avoiding a native-counter calibration loop during early boot.
 The same named SVM path accepts the empty type-1 PCI bus after its address
-latch round-trip and skips physical AMD northbridge configuration. The
-virtual platform has no northbridge register or type-2 configuration ports.
+latch round-trip and skips physical AMD northbridge configuration and the
+FCH reset-status probe. The virtual platform has no northbridge register,
+FCH reset-reason register or type-2 configuration ports.
 `build-nested-host-fixture.sh OUTPUT` packages `nested-kvm-check.c` with a static
 `NESTED_HOST_BUSYBOX`; the check opens `/dev/kvm`, requires nested state and
 KVM-supported Intel VMX or AMD SVM with NPT, and creates one VM. The fixture

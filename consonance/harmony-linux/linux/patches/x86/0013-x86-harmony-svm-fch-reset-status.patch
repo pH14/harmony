@@ -1,0 +1,37 @@
+From: Harmony Project
+Subject: x86/amd: omit the absent FCH reset-status probe on Harmony SVM
+
+Linux's Zen late initializer reads and clears the physical FCH reset-status
+register at 0xfed803c0. Harmony's virtual platform has no FCH or retained
+physical reset reasons. Skip that diagnostic probe for the named SVM profile.
+
+The extension requires compiled AMD KVM, the Harmony clock request, AMD
+identity and SVM. Ordinary configurations compile it out; stock AMD boots
+retain the existing reset-status probe.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/kernel/cpu/amd.c
++++ b/arch/x86/kernel/cpu/amd.c
+@@ -13,6 +13,7 @@
+ #include <asm/processor.h>
+ #include <asm/apic.h>
+ #include <asm/cacheinfo.h>
++#include <asm/harmony_pvclock.h>
+ #include <asm/cpu.h>
+ #include <asm/cpu_device_id.h>
+ #include <asm/spec-ctrl.h>
+@@ -1359,6 +1360,11 @@
+ 	u32 value;
+ 	int i;
+ 
++	if (IS_ENABLED(CONFIG_KVM_AMD) && harmony_pvclock_requested() &&
++	    boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
++	    boot_cpu_has(X86_FEATURE_SVM))
++		return 0;
++
+ 	if (!cpu_feature_enabled(X86_FEATURE_ZEN))
+ 		return 0;
+ 
