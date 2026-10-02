@@ -390,6 +390,9 @@ action is followed into its own file, so a script the workflow reaches only
 through an action counts too. The prompt carries a bounded excerpt of each of
 those files and the digest of the whole file, so a change anywhere in one
 reselects the workflow and invalidates its cached judgment.
+The standalone-program rule applies to Cargo binary entrypoints at
+`src/bin/NAME.rs` or `src/bin/NAME/main.rs`. Rust helper modules remain subject
+to the other content rules and are assessed as part of their binary's code.
 
 The subject file is judged in overlapping character ranges covering its entire
 content. A service token-budget rejection splits that range into smaller,
