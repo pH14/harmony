@@ -8,7 +8,10 @@ use machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::target::{ExitKind, Target};
+use crate::{
+    nes_backend::NesBackend,
+    target::{ExitKind, Target},
+};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
@@ -181,8 +184,8 @@ pub struct StbVideoMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StbSnapshot<P = machine::SharedState> {
-    pub(crate) emulator_state: P,
+pub struct StbSnapshot {
+    pub(crate) emulator_state: Vec<u8>,
     pub(crate) observation: StbObservations,
     pub(crate) wram: Vec<u8>,
     pub(crate) failed: bool,
@@ -194,7 +197,7 @@ pub struct StbSnapshot<P = machine::SharedState> {
     pub(crate) player_b_ko_count: u8,
 }
 
-impl<P> StbSnapshot<P> {
+impl StbSnapshot {
     #[must_use]
     pub fn state(&self) -> StbMechanicalState {
         self.observation.decoded
@@ -202,7 +205,7 @@ impl<P> StbSnapshot<P> {
 }
 
 #[derive(Debug)]
-pub struct StbTarget<M: Machine = QuickNesMachine> {
+pub struct StbTarget<M: NesBackend<Vec<u8>> = QuickNesMachine> {
     machine: M,
     genesis: SnapId,
     current: SnapId,
@@ -215,11 +218,11 @@ pub struct StbTarget<M: Machine = QuickNesMachine> {
     player_a_ko_count: u8,
     player_b_ko_count: u8,
     failed: bool,
-    snapshot_base: Option<M::Portable>,
+    snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
 }
 
-impl<M: Machine> StbTarget<M> {
+impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
     pub fn from_machine(machine: M) -> Result<Self, MachineError> {
         Self::from_machine_with_ai(machine, StbAi::Easy)
     }
@@ -485,7 +488,7 @@ impl StbTarget<QuickNesMachine> {
     }
 }
 
-impl<M: Machine> StbTarget<M> {
+impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
     fn make_observation(
         &self,
         frame_count: u64,
@@ -756,10 +759,10 @@ impl<M: Machine> StbTarget<M> {
     }
 }
 
-impl<M: Machine> Target for StbTarget<M> {
+impl<M: NesBackend<Vec<u8>>> Target for StbTarget<M> {
     type Action = ButtonChord;
     type Observations = StbObservations;
-    type Snapshot = StbSnapshot<M::Portable>;
+    type Snapshot = StbSnapshot;
 
     fn reset(&mut self) {
         let mut failed = false;
@@ -835,7 +838,7 @@ impl<M: Machine> Target for StbTarget<M> {
         }
         let emulator_state = match self
             .machine
-            .export(self.current, self.snapshot_base.as_ref())
+            .export_nes(self.current, self.snapshot_base.as_ref())
         {
             Ok(state) => state,
             Err(_) => {
@@ -866,7 +869,7 @@ impl<M: Machine> Target for StbTarget<M> {
         }
         let imported = self
             .machine
-            .import(&snapshot.emulator_state)
+            .import_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         if let Err(error) = self.machine.replay(imported) {
             self.failed = true;
@@ -896,11 +899,8 @@ impl<M: Machine> Target for StbTarget<M> {
 }
 
 #[cfg(test)]
-impl<M: Machine> StbTarget<M> {
-    fn restore_reference(
-        &mut self,
-        snapshot: &StbSnapshot<M::Portable>,
-    ) -> Result<(), Box<dyn Error>> {
+impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
+    fn restore_reference(&mut self, snapshot: &StbSnapshot) -> Result<(), Box<dyn Error>> {
         let restored_wram: [u8; WRAM_SIZE] = snapshot
             .wram
             .clone()
@@ -911,7 +911,7 @@ impl<M: Machine> StbTarget<M> {
         }
         let imported = self
             .machine
-            .import(&snapshot.emulator_state)
+            .import_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         if let Err(error) = self.machine.replay(imported) {
             self.failed = true;
@@ -940,7 +940,7 @@ impl<M: Machine> StbTarget<M> {
     }
 }
 
-impl<M: Machine> Drop for StbTarget<M> {
+impl<M: NesBackend<Vec<u8>>> Drop for StbTarget<M> {
     fn drop(&mut self) {
         if self.current != self.genesis {
             let _ = self.machine.drop_snapshot(self.current);
@@ -1208,7 +1208,7 @@ mod tests {
     }
 
     impl Machine for ScriptedMachine {
-        type Portable = machine::SharedState;
+        type Portable = Vec<u8>;
         fn snapshot(&mut self) -> Result<SnapId, MachineError> {
             Ok(self.save(self.state.clone()))
         }
@@ -1281,14 +1281,13 @@ mod tests {
                 .snapshots
                 .get(&id.0)
                 .ok_or(MachineError::UnknownSnapshot)?;
-            let bytes = serde_json::to_vec(state).unwrap();
-            Ok(serde_json::from_value(serde_json::json!(bytes)).unwrap())
+            Ok(serde_json::to_vec(state).unwrap())
         }
         fn import(&mut self, state: &Self::Portable) -> Result<SnapId, MachineError> {
-            Ok(self.save(decode_portable(state)))
+            Ok(self.save(serde_json::from_slice(state).unwrap()))
         }
         fn portable_memory_charge(state: &Self::Portable) -> usize {
-            QuickNesMachine::portable_memory_charge(state)
+            state.len()
         }
         fn now(&self) -> machine::Moment {
             machine::Moment(self.clock)
@@ -1298,9 +1297,18 @@ mod tests {
         }
     }
 
-    fn decode_portable(state: &machine::SharedState) -> FakeState {
-        let bytes: Vec<u8> = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+    impl NesBackend<Vec<u8>> for ScriptedMachine {
+        fn export_nes(
+            &mut self,
+            snapshot: SnapId,
+            base: Option<&Vec<u8>>,
+        ) -> Result<Vec<u8>, MachineError> {
+            self.export(snapshot, base)
+        }
+
+        fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
+            self.import(portable)
+        }
     }
 
     #[test]
@@ -1460,7 +1468,7 @@ mod tests {
                 .any(|o| o.decoded.gameplay.is_none() && !o.terminal)
         );
         let snapshot = target.snapshot().unwrap();
-        let portable = decode_portable(&snapshot.emulator_state);
+        let portable: FakeState = serde_json::from_slice(&snapshot.emulator_state).unwrap();
         assert_eq!(portable.cursor, 7);
         assert_eq!(portable.wram, snapshot.wram);
         assert_eq!(snapshot.wram, target.machine.state.wram);

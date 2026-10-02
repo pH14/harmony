@@ -195,7 +195,8 @@ intervention at that action count, so an input searched from an intervened root
 plays back as the searcher saw it. `MetroidTarget::diagnostic_set_resources`
 writes only the two health bytes and the missile count, at a paused live
 boundary, within the endpoint's own earned capacities. It verifies that no other
-RAM byte, mechanical field, serialized byte or the frame clock moved, and rolls
+RAM byte, mechanical field, byte of the decompressed emulator state or the
+frame clock moved, and rolls
 both regions back when any check fails. It is a standalone diagnostic, never a
 search action and never a generated witness, so a replay must record and repeat
 it. The intervention point is validated before any output file exists, and a run

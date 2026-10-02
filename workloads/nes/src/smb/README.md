@@ -55,7 +55,9 @@ scroll or Mario's position still belongs to the old area.
 ## Snapshots
 
 A native snapshot stores the QuickNES state as an LZ4 block with its length in
-front. The 12,912-byte state compresses about seven times, and the archive
+front, through the shared path in the
+[package README](../../README.md#snapshots). The 12,912-byte state compresses
+about seven times, and the archive
 charges the compressed length, so a memory budget keeps about seven times as
 many snapshots resident. A job whose parent snapshot was evicted replays from
 the nearest keyframe, and those replayed frames count against the frame budget,
