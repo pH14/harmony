@@ -52,6 +52,12 @@ this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
 a non-empty `*.sym.tsv`. An image without an attestation still runs the other
 fault actions.
 
+The scan catches entropy instructions that compilers and assemblers emit. It
+decodes each executable section from its start, and it requires an executable
+section inside every executable segment. A binary built to hide an instruction
+can still pass: for example, inside the operand bytes of another instruction,
+or in segment bytes outside the scanned sections.
+
 `harmony preflight --image IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete
 instrumented target.
