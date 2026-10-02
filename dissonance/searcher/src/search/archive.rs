@@ -495,7 +495,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(skip)]
     selector_weighted: bool,
     active_ids: ActiveIds,
-    tiers: BTreeMap<K::Progress, TierCells<K::Place>>,
+    tiers: BTreeMap<K::Progress, TierCells<K>>,
     #[serde(skip)]
     parent_index: Vec<usize>,
     preserve_inactive_snapshots: bool,
@@ -540,28 +540,63 @@ struct CellState {
     draws_total: u64,
 }
 
-#[derive(Default, Deserialize, Serialize)]
-struct CellMembers {
+#[derive(Clone, Copy, Debug)]
+struct HolderRank<K> {
+    key: K,
+    cost: u64,
+    entry: u64,
+    index: usize,
+    preference: usize,
+}
+
+impl<K: ArchiveKey> Ord for HolderRank<K> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key
+            .preference_cmp(self.preference, other.key)
+            .then_with(|| (other.cost, other.entry).cmp(&(self.cost, self.entry)))
+    }
+}
+
+impl<K: ArchiveKey> PartialOrd for HolderRank<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K: ArchiveKey> PartialEq for HolderRank<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl<K: ArchiveKey> Eq for HolderRank<K> {}
+
+#[derive(Deserialize, Serialize)]
+#[serde(bound = "")]
+struct CellMembers<K> {
     ids: WeightedSet<usize>,
     #[serde(skip)]
-    best: Vec<usize>,
+    ranked: Vec<BTreeSet<HolderRank<K>>>,
+}
+
+impl<K> Default for CellMembers<K> {
+    fn default() -> Self {
+        Self {
+            ids: WeightedSet::default(),
+            ranked: Vec::new(),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(
-    transparent,
-    bound(
-        serialize = "P: Copy + Ord + Serialize",
-        deserialize = "P: Copy + Ord + DeserializeOwned"
-    )
-)]
-struct TierCells<P> {
-    places: BTreeMap<P, CellMembers>,
+#[serde(transparent, bound = "K: ArchiveKey")]
+struct TierCells<K: ArchiveKey> {
+    places: BTreeMap<K::Place, CellMembers<K>>,
     #[serde(skip)]
-    weights: WeightedSet<P>,
+    weights: WeightedSet<K::Place>,
 }
 
-impl<P> Default for TierCells<P> {
+impl<K: ArchiveKey> Default for TierCells<K> {
     fn default() -> Self {
         Self {
             places: BTreeMap::new(),
@@ -1772,7 +1807,7 @@ where
                             place,
                             CellMembers {
                                 ids,
-                                best: Vec::new(),
+                                ranked: Vec::new(),
                             },
                         )
                     })
@@ -1888,70 +1923,39 @@ where
             return;
         }
         self.active_ids.remove(id);
-        let key = self.entries[id].key;
-        let (progress, place) = (key.progress(), key.place());
+        let rank = self.holder_rank(0, id);
+        let (progress, place) = (rank.key.progress(), rank.key.place());
         let Some(tier) = self.tiers.get_mut(&progress) else {
             return;
         };
-        let mut stale_best = false;
         if let Some(members) = tier.places.get_mut(&place) {
             members.ids.remove(&id);
+            for (preference, ranked) in members.ranked.iter_mut().enumerate() {
+                ranked.remove(&HolderRank { preference, ..rank });
+            }
             if members.ids.is_empty() {
                 tier.places.remove(&place);
                 tier.weights.remove(&place);
-            } else {
-                stale_best = members.best.contains(&id);
             }
         }
         if tier.places.is_empty() {
             self.tiers.remove(&progress);
         }
-        if stale_best {
-            let best = self
-                .tiers
-                .get(&progress)
-                .and_then(|tier| tier.places.get(&place))
-                .map(|members| self.cell_best(&members.ids));
-            if let (Some(best), Some(members)) = (
-                best,
-                self.tiers
-                    .get_mut(&progress)
-                    .and_then(|tier| tier.places.get_mut(&place)),
-            ) {
-                members.best = best;
-            }
-        }
     }
 
     fn insert_active_cell_member(&mut self, id: usize) {
-        let key = self.entries[id].key;
-        let (progress, place) = (key.progress(), key.place());
+        let rank = self.holder_rank(0, id);
+        let (progress, place) = (rank.key.progress(), rank.key.place());
         let place_weight = self.place_weight(progress, place);
         let holder_weight = count_decay(self.selected[id]);
-        let best = match self
-            .tiers
-            .get(&progress)
-            .and_then(|tier| tier.places.get(&place))
-        {
-            Some(members) if !members.ids.is_empty() => members
-                .best
-                .iter()
-                .enumerate()
-                .map(|(preference, holder)| {
-                    if self.holder_order(preference, id, *holder) == Ordering::Greater {
-                        id
-                    } else {
-                        *holder
-                    }
-                })
-                .collect(),
-            _ => vec![id; K::preferences()],
-        };
         let tier = self.tiers.entry(progress).or_default();
         tier.weights.insert(place, place_weight);
         let members = tier.places.entry(place).or_default();
         members.ids.insert(id, holder_weight);
-        members.best = best;
+        members.ranked.resize_with(K::preferences(), BTreeSet::new);
+        for (preference, ranked) in members.ranked.iter_mut().enumerate() {
+            ranked.insert(HolderRank { preference, ..rank });
+        }
     }
 
     fn place_weight(&self, progress: K::Progress, place: K::Place) -> u64 {
@@ -1986,6 +1990,26 @@ where
             .collect()
     }
 
+    fn holder_rank(&self, preference: usize, index: usize) -> HolderRank<K> {
+        HolderRank {
+            key: self.entries[index].key,
+            cost: self.cost_in_group[index],
+            entry: self.entries[index].id,
+            index,
+            preference,
+        }
+    }
+
+    fn cell_ranks(&self, ids: &WeightedSet<usize>) -> Vec<BTreeSet<HolderRank<K>>> {
+        (0..K::preferences())
+            .map(|preference| {
+                ids.iter()
+                    .map(|id| self.holder_rank(preference, id))
+                    .collect()
+            })
+            .collect()
+    }
+
     fn reweight_selector_index(&mut self) {
         let mut tiers = std::mem::take(&mut self.tiers);
         for (progress, tier) in &mut tiers {
@@ -2001,7 +2025,7 @@ where
                         .iter()
                         .map(|id| (id, count_decay(self.selected[id]))),
                 );
-                members.best = self.cell_best(&ids);
+                members.ranked = self.cell_ranks(&ids);
                 members.ids = ids;
             }
         }
@@ -2728,7 +2752,7 @@ where
         draw_member(rand, &tier.weights)
     }
 
-    fn tier_weights_current(&self, progress: K::Progress, tier: &TierCells<K::Place>) -> bool {
+    fn tier_weights_current(&self, progress: K::Progress, tier: &TierCells<K>) -> bool {
         tier.weights.len() == tier.places.len()
             && tier.places.iter().all(|(place, members)| {
                 tier.weights.weight(place) == Some(self.place_weight(progress, *place))
@@ -2737,7 +2761,27 @@ where
                         .ids
                         .iter()
                         .all(|id| members.ids.weight(&id) == Some(count_decay(self.selected[id])))
-                    && members.best == self.cell_best(&members.ids)
+                    && members.ranked.len() == K::preferences()
+                    && members
+                        .ranked
+                        .iter()
+                        .enumerate()
+                        .all(|(preference, ranked)| {
+                            ranked.len() == members.ids.len()
+                                && ranked.iter().all(|rank| {
+                                    members.ids.weight(&rank.index).is_some()
+                                        && rank.preference == preference
+                                        && rank.key == self.entries[rank.index].key
+                                        && rank.cost == self.cost_in_group[rank.index]
+                                        && rank.entry == self.entries[rank.index].id
+                                })
+                        })
+                    && members
+                        .ranked
+                        .iter()
+                        .map(|ranked| ranked.last().map(|rank| rank.index))
+                        .collect::<Option<Vec<_>>>()
+                        == Some(self.cell_best(&members.ids))
             })
     }
 
@@ -2754,14 +2798,14 @@ where
 
     fn best_holder(
         &self,
-        members: &CellMembers,
+        members: &CellMembers<K>,
         preference: usize,
     ) -> Result<usize, Box<dyn Error>> {
         members
-            .best
+            .ranked
             .get(preference)
-            .copied()
-            .filter(|_| !members.ids.is_empty())
+            .and_then(BTreeSet::last)
+            .map(|rank| rank.index)
             .ok_or_else(|| "cell draw chose an empty cell".into())
     }
 
