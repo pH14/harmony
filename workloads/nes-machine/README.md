@@ -26,6 +26,19 @@ frame, and a caller can also name a cartridge RAM range to record after every
 frame. Search runs with audio and video disabled. Replay-only callers can
 capture video and stereo PCM.
 
+`scripts/build-quicknes-core.sh` patches the pinned core to skip idle loops.
+NES games spend much of each frame in a loop that waits for the next
+interrupt. At a backward branch or jump, the patched CPU compares the target
+address, the registers, and a count of effects with the previous visit. Effects
+are memory writes, reads of the $2000-$7FFF register and cartridge range, and
+interrupt-flag changes. A match means the loop iteration had no effect and read
+only memory it did not change, so every later iteration repeats it until
+`clock_limit`, the next interrupt or frame end. The CPU then advances its clock
+by whole iterations up to that limit, so emulated state and timing match the
+unpatched core. Interrupts are taken between `run` calls, and each call starts
+with no recorded visit. The skip is 1.04x to 1.7x faster in search across the
+NES games.
+
 Snapshots contain a format marker, the QuickNES revision, core hash, fixed
 serialized-state length, and canonicalized core state. Restore rejects a
 different core build, state size, or non-canonical state. The adapter keeps
