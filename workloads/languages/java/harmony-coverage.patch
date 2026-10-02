@@ -128,10 +128,10 @@ index 6d56a37ea..1f2644539 100644
  
 diff --git a/src/java.base/share/classes/jdk/internal/misc/HarmonyRewriter.java b/src/java.base/share/classes/jdk/internal/misc/HarmonyRewriter.java
 new file mode 100644
-index 000000000..b23b4f028
+index 000000000..f06fd38ae
 --- /dev/null
 +++ b/src/java.base/share/classes/jdk/internal/misc/HarmonyRewriter.java
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,186 @@
 +// SPDX-License-Identifier: GPL-2.0-only WITH Classpath-exception-2.0
 +package jdk.internal.misc;
 +
@@ -140,6 +140,7 @@ index 000000000..b23b4f028
 +import java.nio.file.Files;
 +import java.nio.file.Path;
 +import java.util.ArrayList;
++import java.util.Arrays;
 +import java.util.Collections;
 +import java.util.HashSet;
 +import java.util.List;
@@ -159,11 +160,47 @@ index 000000000..b23b4f028
 +    }
 +
 +    public static byte[] rewrite(byte[] bytes, int offset, int length) {
++        if (bytes == null || offset < 0 || length < 0 || offset > bytes.length - length) {
++            return null;
++        }
 +        try {
-+            return rewriteStrict(bytes, offset, length, new long[1]);
++            byte[] original = Arrays.copyOfRange(bytes, offset, offset + length);
++            if (!framed(original)) {
++                return null;
++            }
++            return rewriteStrict(original, 0, original.length, new long[1]);
 +        } catch (RuntimeException | LinkageError e) {
 +            return null;
 +        }
++    }
++
++    private static boolean framed(byte[] bytes) {
++        ClassReader reader = new ClassReader(bytes);
++        if (reader.readInt(0) != 0xCAFEBABE) {
++            return false;
++        }
++        long at = reader.header + 6;
++        at += 2 + 2L * reader.readUnsignedShort((int) at);
++        for (int kind = 0; kind < 2; kind++) {
++            int count = reader.readUnsignedShort((int) at);
++            at += 2;
++            for (int member = 0; member < count; member++) {
++                at = skipAttributes(reader, at + 6, bytes.length);
++            }
++        }
++        return skipAttributes(reader, at, bytes.length) == bytes.length;
++    }
++
++    private static long skipAttributes(ClassReader reader, long at, int end) {
++        int count = reader.readUnsignedShort((int) at);
++        at += 2;
++        for (int attribute = 0; attribute < count; attribute++) {
++            at += 6 + (reader.readInt((int) at + 2) & 0xffffffffL);
++            if (at > end) {
++                throw new IllegalArgumentException();
++            }
++        }
++        return at;
 +    }
 +
 +    private static byte[] rewriteStrict(byte[] bytes, int offset, int length, long[] sites) {
