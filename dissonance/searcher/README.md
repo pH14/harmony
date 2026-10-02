@@ -241,10 +241,10 @@ count-decay weights, so a cell or holder draw costs O(log n) in the number of
 cells or holders. The tree search returns the same key as a linear prefix scan
 over the sorted keys, so draws and RNG consumption match the linear draw. A
 selection or a draw-count reset updates one weight. A new holder appends to its
-cell. A new cell that sorts before existing cells rebuilds its tier's tree, so
-that cost grows with the number of distinct places in a tier and stays fixed as
-the run grows. A removed key keeps a zero weight until removed keys outnumber
-live ones. Each cell also keeps its holders in one ordered set per preference,
+cell. A new cell that sorts before existing cells rebuilds its tier's tree in
+O(places in the tier), so discovering P places in one tier in descending order
+costs O(P²) in total. A removed key keeps a zero weight until removed keys
+outnumber live ones. Each cell also keeps its holders in one ordered set per preference,
 so finding, adding, or removing the best holder costs O(log n). This requires
 `ArchiveKey::preference_cmp` to be a total order among keys that share a place.
 Checkpoints store the same key sets as before, and the weights and ordered sets
