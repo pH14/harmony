@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Prepare the exact Consonance guest runtime
+description: >-
+  Reuse the x86_64 kernel, initramfs and runtime manifest built from this
+  source, or build them and publish them to the cache and as an artifact, so
+  later jobs that restore them with platform-runtime find them.
+inputs:
+  report:
+    description: Directory that receives provenance.json
+    default: exact-platform-runtime
+outputs:
+  built:
+    description: true when this job built the runtime
+    value: ${{ steps.runtime.outputs.scope != 'exact-input' }}
+runs:
+  using: composite
+  steps:
+    - name: Recover the exact runtime when available
+      id: runtime
+      uses: ./.github/actions/platform-runtime
+      with:
+        require-exact: 'false'
+        report: ${{ inputs.report }}
+    - if: steps.runtime.outputs.scope != 'exact-input'
+      uses: cachix/install-nix-action@v31
+    - name: Build the runtime from this source
+      if: steps.runtime.outputs.scope != 'exact-input'
+      shell: bash
+      run: |
+        set -euo pipefail
+        rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+        rustup default "$HARMONY_RUST_TOOLCHAIN"
+        rustup toolchain install "$HARMONY_GUEST_TOOLCHAIN" --profile minimal \
+          --component rust-src --target x86_64-unknown-linux-musl
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends build-essential cpio python3
+        rm -rf consonance/harmony-linux/build/x86_64 runtime-payloads nix-guest-output
+        consonance/harmony-linux/scripts/build-platform-runtime.sh --runtime-payloads "$PWD/runtime-payloads"
+        export HARMONY_NIX_RUNTIME_INIT="$PWD/runtime-payloads/init.sh"
+        export HARMONY_NIX_RUNTIME_SUPERVISOR="$PWD/runtime-payloads/harmony-supervisor"
+        export HARMONY_NIX_RUNTIME_MANIFEST="$PWD/runtime-payloads/runtime-payloads.json"
+        nix run .#guest-images -- --oci-runtime --output "$PWD/nix-guest-output"
+        consonance/harmony-linux/scripts/build-platform-runtime.sh --from-nix "$PWD/nix-guest-output"
+    - name: Verify exact source and artifact manifest
+      shell: bash
+      env:
+        REPORT: ${{ inputs.report }}
+      run: |
+        python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+          --artifacts consonance/harmony-linux/build/x86_64 --output "$REPORT/provenance.json"
+        python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["scope"] == "exact-input"' \
+          "$REPORT/provenance.json"
+    - name: Publish the runtime for later runs
+      if: steps.runtime.outputs.scope != 'exact-input'
+      uses: actions/upload-artifact@v4
+      with:
+        name: consonance-platform-v1-x86_64-${{ steps.runtime.outputs.source-key }}
+        path: consonance/harmony-linux/build/x86_64
+        if-no-files-found: error
+        retention-days: 30
+    - name: Cache the runtime for later jobs
+      if: steps.runtime.outputs.scope != 'exact-input'
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: consonance/harmony-linux/build/x86_64
+        key: consonance-platform-v1-x86_64-${{ steps.runtime.outputs.source-key }}

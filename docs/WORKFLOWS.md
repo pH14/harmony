@@ -35,7 +35,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance` | `consonance-checks.yml` | pull_request, push |
 | `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
-| `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | push, schedule, workflow_dispatch |
+| `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
 | `Checks / Consonance / UML` | `consonance-uml.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Dissonance` | `dissonance-checks.yml` | pull_request, push |
@@ -108,6 +108,15 @@ an image for a pull request. A manual Checks run with `rebuild_guest=true`
 exercises cold construction followed by bounded Nova validation instead of the
 full backend-equivalence job.
 
+`Checks / Consonance` and `Checks / Harmony Workloads / OCI` each start with an
+`Exact Runtime Artifacts` job. It runs the shared `exact-platform-runtime`
+action, which restores the guest runtime built from this source or builds it,
+then saves it to the cache and publishes it as an artifact. Every job that
+restores the runtime with `platform-runtime` and requires an exact match needs
+that job, so it never starts before the runtime exists. Guest Runtime
+Qualification uses the same action and adds the extended platform replay. The
+runtime handoff ignores artifacts from fork repositories.
+
 `Checks / Dissonance Workloads / Tiny Worlds` builds the standalone workload and
 runs mechanics, archive-retention, replay, work-accounting, formatting, and Clippy
 checks with one build worker and one test thread.
@@ -118,10 +127,11 @@ Every job declares a trigger class.
 
 - **`pr`** jobs run on pull requests and on pushes to main, and finish inside 15
   minutes. This bound holds for `pull_request`, `pull_request_target` and
-  `merge_group`. The sole artifact-build exception is `NES Guest Image` in
-  `Checks / Harmony Workloads / NES`, capped at 45 minutes for cold construction
-  of the exact runtime and ROM-free image. Its Nova validation consumer retains
-  the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` explicitly registers this
+  `merge_group`. Artifact-build prerequisites are the exceptions, each capped
+  at 45 minutes for a cold build: `NES Guest Image` builds the exact runtime and
+  ROM-free image, `UML Artifacts — <Architecture>` builds the UML kernels, and
+  `Exact Runtime Artifacts` builds the exact guest runtime. Their consumers
+  keep the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` registers each
   prerequisite; it does not permit full searches on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
   to main, and declare their own ceiling.

@@ -59,6 +59,8 @@ PR_BOUNDED_MINUTES = 15
 PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml", "NES Guest Image"): 45,
     (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
+    (f"{WORKFLOW_DIR}/consonance-checks.yml", "Exact Runtime Artifacts"): 45,
+    (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "Exact Runtime Artifacts"): 45,
 }
 
 
@@ -261,6 +263,9 @@ CONSONANCE_CHECKS = Workflow(
     owner="Consonance",
     triggers=("pull_request", "push"),
     jobs=(
+        Job("Exact Runtime Artifacts", "pr", 45,
+            exception="A cold build of the exact guest kernel and runtime exceeds "
+                      "the pull request check budget."),
         Job("Guest Memory", "pr", 15,
             crates=("guest-image", "oci-support", "vmm-core"),
             test_targets=("vmm-core:linux_loader_proptest",)),
@@ -385,7 +390,7 @@ CONSONANCE_RUNTIME = Workflow(
     path=f"{WORKFLOW_DIR}/consonance-runtime-qualification.yml",
     name="Checks / Consonance / Guest Runtime Qualification",
     owner="Consonance",
-    triggers=("push", "schedule", "workflow_dispatch"),
+    triggers=("schedule", "workflow_dispatch"),
     jobs=(
         Job("Exact Runtime Artifacts", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
     ),
@@ -533,6 +538,9 @@ HARMONY_OCI_CHECKS = Workflow(
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
+        Job("Exact Runtime Artifacts", "pr", 45,
+            exception="A cold build of the exact guest kernel and runtime exceeds "
+                      "the pull request check budget."),
         Job("Container Execution", "pr", 15,
             test_targets=("oci-support:platform", "oci-support:process_platform"),
             ignored_tests=OCI_PLATFORM_TESTS,

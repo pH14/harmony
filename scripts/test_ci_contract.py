@@ -37,16 +37,27 @@ class StructureTests(unittest.TestCase):
                     self.assertNotEqual(key.guest_digest(root), baseline)
                     path.write_text("baseline")
 
-    def test_runtime_qualification_runs_when_main_changes_its_source_key(self):
-        spec = importlib.util.spec_from_file_location(
-            "runtime_artifacts", ROOT / "consonance/harmony-linux/scripts/runtime-artifacts.py")
-        runtime = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(runtime)
-        text = (ROOT / ci_contract.CONSONANCE_RUNTIME.path).read_text()
-        block = re.search(r"^  push:\n    branches: \[main\]\n    paths:\n((?:      - .+\n)+)", text, re.M)
-        self.assertIsNotNone(block)
-        paths = {line.strip()[2:].removesuffix("/**") for line in block.group(1).splitlines()}
-        self.assertEqual(paths, set(runtime.INPUTS))
+    def test_exact_runtime_consumers_wait_for_its_build(self):
+        import yaml
+
+        restore = "./.github/actions/platform-runtime"
+        build = "./.github/actions/exact-platform-runtime"
+        for workflow in ci_contract.WORKFLOWS:
+            if "pull_request" not in workflow.triggers:
+                continue
+            jobs = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]
+            builders = {job_id for job_id, job in jobs.items()
+                        if any(step.get("uses") == build for step in job.get("steps", []))}
+            for job_id, job in jobs.items():
+                exact = [step for step in job.get("steps", []) if step.get("uses") == restore
+                         and str((step.get("with") or {}).get("require-exact", "true")) == "true"]
+                if not exact:
+                    continue
+                with self.subTest(workflow=workflow.name, job=job_id):
+                    needs = job.get("needs", [])
+                    needs = {needs} if isinstance(needs, str) else set(needs)
+                    self.assertTrue(needs & builders)
+                    self.assertIn("!cancelled()", str(job.get("if", "")))
 
     def test_paths_and_names_are_unique_and_present(self):
         paths = [workflow.path for workflow in ci_contract.WORKFLOWS]

@@ -28,14 +28,25 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
   HARMONY_PLATFORM_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage
   HARMONY_PLATFORM_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
   HARMONY_PLATFORM_FIXTURE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/fixture
 
 jobs:
+  exact-runtime-artifacts:
+    name: Exact Runtime Artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare the exact runtime
+        uses: ./.github/actions/exact-platform-runtime
+
   container-execution:
     name: Container Execution
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: exact-runtime-artifacts
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -84,7 +95,8 @@ jobs:
 
   postgresql:
     name: PostgreSQL
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: exact-runtime-artifacts
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -201,7 +213,8 @@ jobs:
 
   nested-runtime:
     name: ${{ matrix.name }}
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: exact-runtime-artifacts
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:

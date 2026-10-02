@@ -21,6 +21,7 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
 
 jobs:
   guest-memory:
@@ -163,8 +164,19 @@ jobs:
             device::performance_tests::qualify_delivery_cycle \
             -- --ignored --exact --nocapture --test-threads=1
 
+  exact-runtime-artifacts:
+    name: Exact Runtime Artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare the exact runtime
+        uses: ./.github/actions/exact-platform-runtime
+
   virtual-time:
     name: Virtual Time
+    needs: exact-runtime-artifacts
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
