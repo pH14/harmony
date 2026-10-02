@@ -41,6 +41,12 @@ jobs:
           for manifest in $(python3 scripts/ci_contract.py manifests); do
             cargo fmt --manifest-path "$manifest" --all -- --check
           done
+      - name: Lock files match every workspace and out-of-workspace manifest
+        run: |
+          set -euo pipefail
+          for manifest in $(python3 scripts/ci_contract.py manifests); do
+            cargo metadata --locked --format-version 1 --manifest-path "$manifest" >/dev/null
+          done
       - name: Deterministic repository lints
         run: |
           python3 -m pip install PyYAML==6.0.3
