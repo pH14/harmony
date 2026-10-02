@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::fmt;
+use std::{cell::RefCell, fmt};
 
 use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE, quicknes::QuickNesMachine};
 use serde::{Serialize, de::DeserializeOwned};
@@ -74,6 +74,28 @@ where
     }
 
     fn keep_run_capture(&mut self, _frames: usize) {}
+
+    fn capture_nes(&mut self, base: Option<&P>) -> Result<P, MachineError> {
+        let snapshot = self.snapshot()?;
+        let exported = self.export_nes(snapshot, base);
+        let released = self.release_exported(snapshot);
+        let state = exported?;
+        released?;
+        Ok(state)
+    }
+
+    fn restore_nes(&mut self, state: &P) -> Result<(), MachineError> {
+        let imported = self.import_nes(state)?;
+        let replayed = self.replay(imported);
+        let dropped = self.drop_snapshot(imported);
+        replayed?;
+        dropped
+    }
+}
+
+thread_local! {
+    static QUICKNES_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static QUICKNES_PACKED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 impl NesBackend<Vec<u8>> for QuickNesMachine {
@@ -82,9 +104,7 @@ impl NesBackend<Vec<u8>> for QuickNesMachine {
         snapshot: SnapId,
         _base: Option<&Vec<u8>>,
     ) -> Result<Vec<u8>, MachineError> {
-        let mut packed = lz4_flex::block::compress_prepend_size(self.snapshot_bytes(snapshot)?);
-        packed.shrink_to_fit();
-        Ok(packed)
+        pack_quicknes_state(self.snapshot_bytes(snapshot)?)
     }
 
     fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
@@ -95,12 +115,49 @@ impl NesBackend<Vec<u8>> for QuickNesMachine {
     fn keep_run_capture(&mut self, frames: usize) {
         QuickNesMachine::keep_run_capture(self, frames);
     }
+
+    fn capture_nes(&mut self, _base: Option<&Vec<u8>>) -> Result<Vec<u8>, MachineError> {
+        QUICKNES_STATE.with_borrow_mut(|state| {
+            self.capture_into(state)?;
+            pack_quicknes_state(state)
+        })
+    }
+
+    fn restore_nes(&mut self, portable: &Vec<u8>) -> Result<(), MachineError> {
+        QUICKNES_STATE.with_borrow_mut(|state| {
+            unpack_quicknes_state_into(self, portable, state)?;
+            self.restore_bytes(state)
+        })
+    }
+}
+
+fn pack_quicknes_state(state: &[u8]) -> Result<Vec<u8>, MachineError> {
+    let declared = u32::try_from(state.len())
+        .map_err(|_| MachineError::Backend("snapshot is too large to compress".to_owned()))?;
+    QUICKNES_PACKED.with_borrow_mut(|packed| {
+        packed.resize(4 + lz4_flex::block::get_maximum_output_size(state.len()), 0);
+        packed[..4].copy_from_slice(&declared.to_le_bytes());
+        let written = lz4_flex::block::compress_into(state, &mut packed[4..]).map_err(|error| {
+            MachineError::Backend(format!("snapshot does not compress: {error}"))
+        })?;
+        Ok(packed[..4 + written].to_vec())
+    })
 }
 
 pub fn unpack_quicknes_state(
     machine: &QuickNesMachine,
     packed: &[u8],
 ) -> Result<Vec<u8>, MachineError> {
+    let mut state = Vec::new();
+    unpack_quicknes_state_into(machine, packed, &mut state)?;
+    Ok(state)
+}
+
+fn unpack_quicknes_state_into(
+    machine: &QuickNesMachine,
+    packed: &[u8],
+    state: &mut Vec<u8>,
+) -> Result<(), MachineError> {
     let undecodable =
         |error| MachineError::Backend(format!("snapshot does not decompress: {error}"));
     let (declared, block) = lz4_flex::block::uncompressed_size(packed).map_err(undecodable)?;
@@ -110,39 +167,14 @@ pub fn unpack_quicknes_state(
             "snapshot declares {declared} bytes; this core's states are {expected}"
         )));
     }
-    let mut state = vec![0; expected];
-    let written = lz4_flex::block::decompress_into(block, &mut state).map_err(undecodable)?;
+    state.resize(expected, 0);
+    let written = lz4_flex::block::decompress_into(block, state).map_err(undecodable)?;
     if written != expected {
         return Err(MachineError::Backend(format!(
             "snapshot decompresses to {written} bytes; this core's states are {expected}"
         )));
     }
-    Ok(state)
-}
-
-pub fn capture_nes<M, P>(machine: &mut M, base: Option<&P>) -> Result<P, MachineError>
-where
-    M: NesBackend<P>,
-    P: SnapshotState,
-{
-    let snapshot = machine.snapshot()?;
-    let exported = machine.export_nes(snapshot, base);
-    let released = machine.release_exported(snapshot);
-    let state = exported?;
-    released?;
-    Ok(state)
-}
-
-pub fn restore_nes<M, P>(machine: &mut M, state: &P) -> Result<(), MachineError>
-where
-    M: NesBackend<P>,
-    P: SnapshotState,
-{
-    let imported = machine.import_nes(state)?;
-    let replayed = machine.replay(imported);
-    let dropped = machine.drop_snapshot(imported);
-    replayed?;
-    dropped
+    Ok(())
 }
 
 #[cfg(all(
@@ -192,7 +224,7 @@ impl NesBackend<machine::consonance::ConsonancePortable>
 mod tests {
     use machine::{Machine, quicknes::QuickNesMachine};
 
-    use super::{NesBackend, capture_nes, restore_nes};
+    use super::NesBackend;
 
     #[test]
     fn native_snapshots_store_a_compressed_state_that_restores_exactly() {
@@ -201,6 +233,7 @@ mod tests {
         let state = machine.take_snapshot(held).expect("raw state");
         let held = machine.import_snapshot(&state);
         let stored = machine.export_nes(held, None).expect("export");
+        assert_eq!(stored, lz4_flex::block::compress_prepend_size(&state));
         assert!(stored.len() < state.len());
         assert_eq!(stored.capacity(), stored.len());
         let restored = machine.import_nes(&stored).expect("import");
@@ -218,10 +251,15 @@ mod tests {
     fn a_captured_state_restores_the_machine_it_came_from() {
         let mut machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
         machine.poke_wram(0x10, 7);
-        let captured = capture_nes(&mut machine, None).expect("capture");
+        let captured = machine.capture_nes(None).expect("capture");
+        let held = machine.snapshot().expect("snapshot");
+        let raw = machine.take_snapshot(held).expect("raw state");
+        assert_eq!(captured, lz4_flex::block::compress_prepend_size(&raw));
         machine.poke_wram(0x10, 9);
-        restore_nes(&mut machine, &captured).expect("restore");
+        machine.restore_nes(&captured).expect("restore");
         assert_eq!(machine.read_wram().expect("wram")[0x10], 7);
-        assert_eq!(capture_nes(&mut machine, None).expect("capture"), captured);
+        assert_eq!(machine.capture_nes(None).expect("capture"), captured);
+        assert!(machine.restore_nes(&vec![4, 0, 0, 0, 0xf0]).is_err());
+        assert_eq!(machine.capture_nes(None).expect("capture"), captured);
     }
 }

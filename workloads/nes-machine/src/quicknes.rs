@@ -763,8 +763,15 @@ impl QuickNesMachine {
     }
 
     fn capture(&self) -> Result<Vec<u8>, MachineError> {
+        let mut bytes = Vec::new();
+        self.capture_into(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub fn capture_into(&self, bytes: &mut Vec<u8>) -> Result<(), MachineError> {
         self.api.activate();
-        let mut bytes = vec![0_u8; STATE_HEADER_LEN + self.state_len];
+        bytes.clear();
+        bytes.resize(STATE_HEADER_LEN + self.state_len, 0);
         bytes[..8].copy_from_slice(STATE_MAGIC);
         bytes[8..48].copy_from_slice(QUICKNES_REVISION.as_bytes());
         bytes[48..112].copy_from_slice(&self.core_sha256);
@@ -783,7 +790,7 @@ impl QuickNesMachine {
             ));
         }
         canonicalize_quicknes_state(&mut bytes[STATE_HEADER_LEN..])?;
-        Ok(bytes)
+        Ok(())
     }
 
     fn restore_core(&self, bytes: &[u8]) -> Result<(), MachineError> {

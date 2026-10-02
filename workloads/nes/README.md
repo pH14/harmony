@@ -93,8 +93,12 @@ compresses about seven times. The Metroid state of 21,118 bytes, which includes
 8 KiB of cartridge RAM, compresses to about 9 KB. Compression takes about 10 µs
 and decompression about 6 µs, against about 105 µs for one emulated frame.
 Nova and Super Tilt Bro keep a live handle for the current state and export
-from it; SMB, Metroid and Mega Man 2 take a handle, export it and release it.
-The Consonance backend stores its own portable state through the same trait.
+from it. SMB, Metroid and Mega Man 2 capture and restore through
+`NesBackend::capture_nes` and `NesBackend::restore_nes`. On QuickNES each worker
+thread serializes, compresses and decompresses in buffers it reuses, so a
+capture allocates only the stored block and a restore allocates nothing. With
+one malloc arena, every allocation takes a lock that all workers share. The
+Consonance backend stores its own portable state through the same trait.
 
 A snapshot keeps the decoded observation it was taken at. QuickNES serves
 reads right after a restore, so a game that needs work RAM after a restore
