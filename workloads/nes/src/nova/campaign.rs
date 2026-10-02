@@ -151,7 +151,7 @@ impl NovaGame<QuickNesMachine> {
     #[must_use]
     pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: NovaLevel) -> Self {
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -194,7 +194,7 @@ impl NovaGame<ConsonanceMachine, ConsonancePortable> {
             level: NovaLevel::default(),
             whole_game: false,
             identity: format!(
-                "{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3",
+                "{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v4",
                 consonance_identity(kernel, initramfs),
             ),
             runtime: ConsonanceConfiguration {
@@ -640,9 +640,7 @@ where
         let observation = NovaObservations {
             frame_count: 0,
             decoded: target.mechanical_state(),
-            changed_indices: Vec::new(),
             dead: target.is_dead(),
-            log_line: String::new(),
         };
         merge_progress_watermark(&mut evidence.watermark, &[observation]);
         Ok(())
@@ -857,9 +855,7 @@ mod tests {
         let observation = NovaObservations {
             frame_count: 3,
             decoded: state,
-            changed_indices: vec![1, 2],
             dead: false,
-            log_line: "frame=3 changed=[1, 2]".to_owned(),
         };
         CampaignJobResult {
             preparation_failure: None,
@@ -874,7 +870,6 @@ mod tests {
                     snapshot: NovaSnapshot {
                         emulator_state: bytes,
                         observation,
-                        wram: vec![0; 2_048],
                         failed: false,
                     },
                 }),
@@ -900,7 +895,7 @@ mod tests {
         assert_eq!(
             game.emulator_identity(),
             format!(
-                "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:17;result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3;sha256={}",
+                "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:17;result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v4;sha256={}",
                 machine::quicknes::QUICKNES_REVISION,
                 machine::quicknes::QUICKNES_BUILD,
                 machine::quicknes::QUICKNES_OPTIONS,
@@ -918,7 +913,7 @@ mod tests {
         let game = NovaGame::new(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64));
         let mut policies = game.policies(&NovaCampaignRun);
         let legacy_identity = format!(
-            "consonance-whole-vm-v1;kernel-sha256={:x};initramfs-sha256={:x};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v1;result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3",
+            "consonance-whole-vm-v1;kernel-sha256={:x};initramfs-sha256={:x};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v1;result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v4",
             Sha256::digest([1_u8, 2, 3]),
             Sha256::digest([4_u8, 5, 6]),
         );

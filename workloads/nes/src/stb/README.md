@@ -17,13 +17,10 @@ records a shortened hold at an interior ending and excludes phase-invalid
 endpoints from admission while preserving their observations. Scheduling,
 archive maintenance, recording, and replay remain owned by Dissonance.
 
-Snapshot restoration validates work RAM through a borrowed fixed-size view and
-copies it into the target only after machine restoration succeeds. It does not
-clone the RAM vector into a temporary heap buffer. The unit tests compare the
-original restore path and use jemalloc's thread-local counters to verify the
-2 KiB allocation saving per successful restore. Set
-`DISSONANCE_BENCHMARK_WRAM_RESTORE=1` to run paired mock-backend timings; these
-measure adapter restore calls, not whole-search throughput.
+A snapshot holds the emulator state, the last observation, the failure flag and
+the knockout counts. A restore reads work RAM back from the restored machine, so
+the snapshot does not carry a 2 KiB copy of it. It refuses a snapshot whose
+observed AI level differs from the target's.
 
 ## Declared workload
 

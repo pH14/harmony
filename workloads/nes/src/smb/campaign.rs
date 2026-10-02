@@ -116,7 +116,7 @@ enum SmbBackend {
 
 fn quicknes_identity(core_sha256: &str) -> String {
     format!(
-        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
+        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
         machine::quicknes::QUICKNES_REVISION,
         machine::quicknes::QUICKNES_BUILD,
         machine::quicknes::QUICKNES_OPTIONS,
@@ -237,7 +237,7 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
             core_path: PathBuf::new(),
             core_sha256: String::new(),
             identity: format!(
-                "{};result_digest=postcard-1.1.3-sha256-hex-v2",
+                "{};result_digest=postcard-1.1.3-sha256-hex-v3",
                 consonance_identity(kernel, initramfs),
             ),
             backend: SmbBackend::Consonance {
@@ -1060,9 +1060,7 @@ mod tests {
                     ..SmbMechanicalState::default()
                 },
                 milestones,
-                changed_indices: Vec::new(),
                 dead: false,
-                log_line: String::new(),
             }],
             milestones,
             outcome: Outcome::default(),

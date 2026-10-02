@@ -314,11 +314,9 @@ pub fn preference_tuple(state: Mm2MechanicalState) -> (u8, u8, u16) {
 pub struct Mm2Observations {
     pub frame_count: u64,
     pub decoded: Mm2MechanicalState,
-    pub changed_indices: Vec<u16>,
     pub dead: bool,
     #[serde(default)]
     pub fall_run: u16,
-    pub log_line: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -347,10 +345,8 @@ impl Mm2Snapshot {
             observation: Mm2Observations {
                 frame_count: 0,
                 decoded,
-                changed_indices: Vec::new(),
                 dead: false,
                 fall_run: 0,
-                log_line: String::new(),
             },
             failed: false,
         }
@@ -550,10 +546,8 @@ impl Mm2Target {
         let observation = Mm2Observations {
             frame_count: 0,
             decoded: state,
-            changed_indices: Vec::new(),
             dead: false,
             fall_run: 0,
-            log_line: "frame=0 changed=[]".to_owned(),
         };
         Ok(Self {
             machine,
@@ -791,30 +785,12 @@ impl Mm2Target {
         }
     }
 
-    fn make_observation(
-        &self,
-        frame_count: u64,
-        state: Mm2MechanicalState,
-        wram: &[u8; WRAM_SIZE],
-        prior_wram: &[u8; WRAM_SIZE],
-    ) -> Mm2Observations {
-        let changed_indices = wram
-            .iter()
-            .zip(prior_wram)
-            .enumerate()
-            .filter_map(|(index, (current, prior))| {
-                (current != prior)
-                    .then(|| u16::try_from(index).ok())
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
+    fn make_observation(&self, frame_count: u64, state: Mm2MechanicalState) -> Mm2Observations {
         Mm2Observations {
             frame_count,
             decoded: state,
-            changed_indices: changed_indices.clone(),
             dead: state.is_dead(),
             fall_run: 0,
-            log_line: format!("frame={frame_count} changed={changed_indices:?}"),
         }
     }
 
@@ -939,7 +915,7 @@ impl Target for Mm2Target {
                     .observation
                     .frame_count
                     .saturating_add(u64::try_from(offset).unwrap_or(u64::MAX).saturating_add(1));
-                let mut observation = self.make_observation(frame_count, state, wram, &prior_wram);
+                let mut observation = self.make_observation(frame_count, state);
                 observation.dead = dead;
                 observation.fall_run = fall_run;
                 observations.push(observation);
@@ -962,8 +938,7 @@ impl Target for Mm2Target {
                 self.failed = true;
                 return;
             };
-            let mut observation =
-                self.make_observation(endpoint_frame, endpoint_state, &endpoint_wram, &prior_wram);
+            let mut observation = self.make_observation(endpoint_frame, endpoint_state);
             observation.dead = died;
             observation.fall_run = fall_run;
             observations.push(observation);

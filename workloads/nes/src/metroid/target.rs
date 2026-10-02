@@ -375,9 +375,7 @@ pub struct MetroidObservations {
     pub boss_defeats: BossDefeats,
     pub mother_brain_status: u8,
     pub tourian_events: TourianEvents,
-    pub changed_indices: Vec<u16>,
     pub dead: bool,
-    pub log_line: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -399,9 +397,7 @@ impl MetroidSnapshot {
                 boss_defeats: BossDefeats::default(),
                 mother_brain_status: 0,
                 tourian_events: TourianEvents::default(),
-                changed_indices: Vec::new(),
                 dead: false,
-                log_line: String::new(),
             },
             failed: false,
         }
@@ -587,9 +583,7 @@ impl MetroidTarget {
             boss_defeats: decode_boss_defeats(&cartridge)?,
             mother_brain_status: read_byte(&wram, 0x98)?,
             tourian_events: TourianEvents::default(),
-            changed_indices: Vec::new(),
             dead: false,
-            log_line: "frame=0 changed=[]".to_owned(),
         };
         Ok(Self {
             machine,
@@ -772,20 +766,9 @@ impl MetroidTarget {
         state: MetroidMechanicalState,
         boss_health_seen: u16,
         wram: &[u8; WRAM_SIZE],
-        prior_wram: &[u8; WRAM_SIZE],
         boss_defeats: BossDefeats,
         tourian_events: TourianEvents,
     ) -> MetroidObservations {
-        let changed_indices = wram
-            .iter()
-            .zip(prior_wram)
-            .enumerate()
-            .filter_map(|(index, (current, prior))| {
-                (current != prior)
-                    .then(|| u16::try_from(index).ok())
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
         MetroidObservations {
             frame_count,
             decoded: state,
@@ -793,9 +776,7 @@ impl MetroidTarget {
             boss_defeats,
             mother_brain_status: wram[0x98],
             tourian_events,
-            changed_indices: changed_indices.clone(),
             dead: state.is_dead(),
-            log_line: format!("frame={frame_count} changed={changed_indices:?}"),
         }
     }
 
@@ -958,7 +939,6 @@ fn decode_action_observations(
                 state,
                 boss_health_seen,
                 wram,
-                &prior_wram,
                 boss_defeats,
                 tourian_events,
             );
@@ -1294,7 +1274,6 @@ mod observation_tests {
             decode_state(&start, &cartridge).unwrap(),
             0,
             &start,
-            &start,
             BossDefeats::default(),
             TourianEvents::default(),
         );
@@ -1355,7 +1334,6 @@ mod observation_tests {
                 decode_state(&wram, &cartridge).unwrap(),
                 0,
                 &wram,
-                &wram,
                 BossDefeats::default(),
                 TourianEvents::default(),
             );
@@ -1412,7 +1390,6 @@ mod observation_tests {
             0,
             decode_state(&entry, &cartridge).unwrap(),
             0,
-            &entry,
             &entry,
             BossDefeats::default(),
             TourianEvents::default(),
@@ -1540,7 +1517,6 @@ mod observation_tests {
             decode_state(&ridley, &cartridge).unwrap(),
             0x8c,
             &ridley,
-            &ridley,
             BossDefeats::default(),
             TourianEvents::default(),
         );
@@ -1587,7 +1563,6 @@ mod observation_tests {
             0,
             decode_state(&fight, &before).unwrap(),
             0,
-            &fight,
             &fight,
             BossDefeats::default(),
             TourianEvents::default(),
@@ -1727,7 +1702,6 @@ mod observation_tests {
             0,
             decode_state(&walking, &cartridge).unwrap(),
             0,
-            &walking,
             &walking,
             BossDefeats::default(),
             TourianEvents::default(),

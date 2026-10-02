@@ -237,9 +237,7 @@ mod tests {
             },
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
-            changed_indices: Vec::new(),
             dead: false,
-            log_line: String::new(),
         }
     }
 

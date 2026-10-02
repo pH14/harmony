@@ -37,10 +37,8 @@ pub struct SmbObservations {
     pub decoded: SmbMechanicalState,
     #[serde(default)]
     pub milestones: SmbMilestones,
-    pub changed_indices: Vec<u16>,
     #[serde(default)]
     pub dead: bool,
-    pub log_line: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -76,9 +74,7 @@ impl SnapshotObservation {
             wram,
             decoded: self.decoded,
             milestones: self.milestones,
-            changed_indices: Vec::new(),
             dead: self.dead,
-            log_line: format!("frame={} changed=[]", self.frame_count),
         }
     }
 }
@@ -185,9 +181,7 @@ where
             wram: wram.to_vec(),
             decoded: smb_mechanical_state_from_wram(&wram),
             milestones: smb_milestones_from_wram(&wram),
-            changed_indices: Vec::new(),
             dead: false,
-            log_line: "frame=0 changed=[]".to_owned(),
         };
         Ok(Self {
             machine,
@@ -313,28 +307,14 @@ where
         &self,
         wram: &[u8; WRAM_SIZE],
         frame_count: u64,
-        prior_wram: &[u8; WRAM_SIZE],
         dead: bool,
     ) -> SmbObservations {
-        let changed_indices = wram
-            .iter()
-            .zip(prior_wram)
-            .enumerate()
-            .filter_map(|(index, (current, prior))| {
-                (current != prior)
-                    .then(|| u16::try_from(index).ok())
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
-        let log_line = format!("frame={frame_count} changed={changed_indices:?}");
         SmbObservations {
             frame_count,
             wram: wram.to_vec(),
             decoded: smb_mechanical_state_from_wram(wram),
             milestones: smb_milestones_from_wram(wram),
-            changed_indices,
             dead,
-            log_line,
         }
     }
 }
@@ -364,7 +344,7 @@ where
         self.snapshot_base = None;
         self.dead = false;
         let wram = self.wram();
-        self.observation = self.observation_from(&wram, 0, &[0; WRAM_SIZE], false);
+        self.observation = self.observation_from(&wram, 0, false);
         self.action_observations = vec![self.observation.clone()];
     }
 
@@ -373,11 +353,11 @@ where
         if self.failed || self.dead || self.is_victory() {
             return;
         }
-        let Ok(mut prior_observed_wram) = wram_array(&self.machine) else {
+        let Ok(start_wram) = wram_array(&self.machine) else {
             self.failed = true;
             return;
         };
-        let mut prior_bucket = smb_scroll_bucket(&prior_observed_wram);
+        let mut prior_bucket = smb_scroll_bucket(&start_wram);
         let Ok(start) = self.machine.snapshot() else {
             self.failed = true;
             return;
@@ -413,10 +393,8 @@ where
                 let observation = self.observation_from(
                     &wram,
                     self.observation.frame_count.saturating_add(executed_frames),
-                    &prior_observed_wram,
                     self.dead,
                 );
-                prior_observed_wram = wram;
                 prior_bucket = current_bucket;
                 self.action_observations.push(observation);
             }
@@ -431,12 +409,8 @@ where
             .is_some_and(|observation| observation.frame_count == endpoint_frame);
         if !endpoint_already_recorded {
             let wram = self.wram();
-            self.action_observations.push(self.observation_from(
-                &wram,
-                endpoint_frame,
-                &prior_observed_wram,
-                self.dead,
-            ));
+            self.action_observations
+                .push(self.observation_from(&wram, endpoint_frame, self.dead));
         }
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
@@ -790,12 +764,7 @@ mod tests {
         let second_work = target.execution_work();
         assert!(second_work > first_work);
         target.restore(&saved).expect("restore after second action");
-        let restored = target.observe();
-        assert!(restored.changed_indices.is_empty());
-        assert_eq!(
-            restored.log_line,
-            format!("frame={} changed=[]", restored.frame_count)
-        );
+        assert_eq!(target.snapshot().expect("snapshot restored"), saved);
         assert_eq!(
             saved.resident_memory_charge(),
             size_of::<super::SmbSnapshot>() + saved.emulator_state_bytes_len()

@@ -66,7 +66,5 @@ about 8 µs and decompression about 5 µs, against about 105 µs for one emulate
 frame.
 
 A snapshot also keeps the last frame's count, decoded state, milestones and
-death flag. It leaves out the list of changed RAM addresses and the log line,
-which no consumer reads after a restore; a restored target reports no changed
-addresses, as a freshly booted one does. That cuts the stored size of a
-compressed snapshot from about 2.9 KB to about 1.8 KB.
+death flag, and reads work RAM back from the machine on restore. A compressed
+snapshot stores about 1.8 KB.

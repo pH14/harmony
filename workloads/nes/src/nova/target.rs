@@ -127,9 +127,7 @@ impl NovaMechanicalState {
 pub struct NovaObservations {
     pub frame_count: u64,
     pub decoded: NovaMechanicalState,
-    pub changed_indices: Vec<u16>,
     pub dead: bool,
-    pub log_line: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -148,7 +146,6 @@ pub struct NovaVideoMetadata {
 pub struct NovaSnapshot<P = Vec<u8>> {
     pub(crate) emulator_state: P,
     pub(crate) observation: NovaObservations,
-    pub(crate) wram: Vec<u8>,
     pub(crate) failed: bool,
 }
 
@@ -239,8 +236,6 @@ where
     genesis: SnapId,
     current: SnapId,
     genesis_observation: NovaObservations,
-    genesis_wram: [u8; WRAM_SIZE],
-    current_wram: [u8; WRAM_SIZE],
     observation: NovaObservations,
     action_observations: Vec<NovaObservations>,
     failed: bool,
@@ -274,17 +269,13 @@ where
         let observation = NovaObservations {
             frame_count: 0,
             decoded: state,
-            changed_indices: Vec::new(),
             dead: false,
-            log_line: "frame=0 changed=[]".to_owned(),
         };
         Ok(Self {
             machine,
             genesis: power_on,
             current: power_on,
             genesis_observation: observation.clone(),
-            genesis_wram: wram,
-            current_wram: wram,
             action_observations: vec![observation.clone()],
             observation,
             failed: false,
@@ -646,29 +637,11 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
-    fn make_observation(
-        &self,
-        frame_count: u64,
-        state: NovaMechanicalState,
-        wram: &[u8; WRAM_SIZE],
-        prior_wram: &[u8; WRAM_SIZE],
-    ) -> NovaObservations {
-        let changed_indices = wram
-            .iter()
-            .zip(prior_wram)
-            .enumerate()
-            .filter_map(|(index, (current, prior))| {
-                (current != prior)
-                    .then(|| u16::try_from(index).ok())
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
+    fn make_observation(&self, frame_count: u64, state: NovaMechanicalState) -> NovaObservations {
         NovaObservations {
             frame_count,
             decoded: state,
-            changed_indices: changed_indices.clone(),
             dead: state.health == 0,
-            log_line: format!("frame={frame_count} changed={changed_indices:?}"),
         }
     }
 }
@@ -695,7 +668,6 @@ where
         let replay_error = self.machine.replay(self.genesis).is_err();
         self.failed = handle_error || replay_error;
         self.snapshot_base = None;
-        self.current_wram = self.genesis_wram;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
     }
@@ -705,7 +677,6 @@ where
         if self.halted() {
             return;
         }
-        let prior_wram = self.current_wram;
         let prior_state = self.observation.decoded;
         let start = self.current;
         if self
@@ -748,7 +719,6 @@ where
             }
         };
         let frames = self.machine.frames();
-        let mut prior_wram = prior_wram;
         let mut prior_state = prior_state;
         let mut emitted = false;
         for (offset, wram) in frames.iter().enumerate() {
@@ -764,18 +734,16 @@ where
                     .observation
                     .frame_count
                     .saturating_add(u64::try_from(offset).unwrap_or(u64::MAX).saturating_add(1));
-                self.action_observations.push(self.make_observation(
-                    frame_count,
-                    state,
-                    wram,
-                    &prior_wram,
-                ));
-                prior_wram = *wram;
+                self.action_observations
+                    .push(self.make_observation(frame_count, state));
                 prior_state = state;
                 emitted = true;
             }
         }
-        let endpoint_wram = frames.last().copied().unwrap_or(prior_wram);
+        let Some(endpoint_wram) = frames.last().copied() else {
+            self.failed = true;
+            return;
+        };
         let endpoint_frame = self
             .observation
             .frame_count
@@ -791,17 +759,12 @@ where
                 self.failed = true;
                 return;
             };
-            self.action_observations.push(self.make_observation(
-                endpoint_frame,
-                endpoint_state,
-                &endpoint_wram,
-                &prior_wram,
-            ));
+            self.action_observations
+                .push(self.make_observation(endpoint_frame, endpoint_state));
         }
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
         }
-        self.current_wram = endpoint_wram;
         let next = match self.machine.snapshot() {
             Ok(next) => next,
             Err(_) => {
@@ -855,17 +818,11 @@ where
         Some(NovaSnapshot {
             emulator_state,
             observation: self.observation.clone(),
-            wram: self.current_wram.to_vec(),
             failed: self.failed,
         })
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        let restored_wram: &[u8; WRAM_SIZE] = snapshot
-            .wram
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Nova snapshot work RAM has an invalid length")?;
         let imported = self
             .machine
             .import_nes(&snapshot.emulator_state)
@@ -884,45 +841,6 @@ where
         }
         self.current = imported;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
-        self.current_wram = *restored_wram;
-        self.observation = snapshot.observation.clone();
-        self.action_observations = vec![self.observation.clone()];
-        self.failed = snapshot.failed;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-impl<M, P> NovaTarget<M, P>
-where
-    M: NesBackend<P>,
-    P: SnapshotState,
-{
-    fn restore_reference(&mut self, snapshot: &NovaSnapshot<P>) -> Result<(), Box<dyn Error>> {
-        let restored_wram: [u8; WRAM_SIZE] = snapshot
-            .wram
-            .clone()
-            .try_into()
-            .map_err(|_| "Nova snapshot work RAM has an invalid length")?;
-        let imported = self
-            .machine
-            .import_nes(&snapshot.emulator_state)
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = self.machine.replay(imported) {
-            let _ = self.machine.drop_snapshot(imported);
-            let _ = self.machine.replay(self.current);
-            return Err(error.to_string().into());
-        }
-        if self.current != self.genesis
-            && let Err(error) = self.machine.drop_snapshot(self.current)
-        {
-            let _ = self.machine.drop_snapshot(imported);
-            let _ = self.machine.replay(self.current);
-            return Err(error.to_string().into());
-        }
-        self.current = imported;
-        self.snapshot_base = Some(snapshot.emulator_state.clone());
-        self.current_wram = restored_wram;
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
@@ -1070,6 +988,8 @@ mod tests {
         append_sentinel: bool,
         zero_frames: bool,
         fail_next_drop: bool,
+        reads_need_a_run: bool,
+        stale_reads: bool,
         lifecycle: Vec<&'static str>,
     }
 
@@ -1102,6 +1022,8 @@ mod tests {
                 append_sentinel: false,
                 zero_frames: false,
                 fail_next_drop: false,
+                reads_need_a_run: false,
+                stale_reads: false,
                 lifecycle: Vec::new(),
             }
         }
@@ -1153,6 +1075,7 @@ mod tests {
 
         fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
             self.replay_calls = self.replay_calls.saturating_add(1);
+            self.stale_reads = self.reads_need_a_run;
             self.state = self
                 .snapshots
                 .get(&snap.0)
@@ -1169,6 +1092,7 @@ mod tests {
         ) -> Result<machine::StopReason, MachineError> {
             self.lifecycle.push("run");
             self.run_calls = self.run_calls.saturating_add(1);
+            self.stale_reads = false;
             self.frames.clear();
             let chord_count = self
                 .max_chords_per_run
@@ -1199,6 +1123,11 @@ mod tests {
 
         fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
             self.read_calls.set(self.read_calls.get().saturating_add(1));
+            if self.stale_reads {
+                return Err(MachineError::Backend(
+                    "no cached observation at the current stop".to_owned(),
+                ));
+            }
             let end = addr
                 .checked_add(u64::from(len))
                 .ok_or(MachineError::ReadOutOfBounds)?;
@@ -1251,104 +1180,21 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_wram_restore_eliminates_the_temporary_allocation() {
-        let mut actual = NovaTarget::from_machine(FakeMachine::new()).unwrap();
-        let mut reference = NovaTarget::from_machine(FakeMachine::new()).unwrap();
-        let snapshot = actual.snapshot().unwrap();
-        assert_eq!(Some(snapshot.clone()), reference.snapshot());
-        let allocated = tikv_jemalloc_ctl::thread::allocatedp::read().unwrap();
-        let before = allocated.get();
-        reference
-            .restore_reference(std::hint::black_box(&snapshot))
-            .unwrap();
-        let baseline = allocated.get() - before;
-        let before = allocated.get();
-        actual.restore(std::hint::black_box(&snapshot)).unwrap();
-        let candidate = allocated.get() - before;
+    fn a_restore_succeeds_on_a_machine_that_reads_only_after_a_run() {
+        let mut machine = FakeMachine::new();
+        machine.reads_need_a_run = true;
+        let mut target = NovaTarget::from_machine(machine).unwrap();
+        target.apply(&ButtonChord::new(1, 1));
+        let snapshot = target.snapshot().unwrap();
+        target.apply(&ButtonChord::new(2, 1));
+        target.restore(&snapshot).unwrap();
+        assert_eq!(target.snapshot(), Some(snapshot.clone()));
+        target.apply(&ButtonChord::new(2, 1));
+        assert!(!target.failed);
         assert_eq!(
-            baseline - candidate,
-            WRAM_SIZE as u64,
-            "baseline={baseline} candidate={candidate}"
+            target.observation.frame_count,
+            snapshot.observation.frame_count + 1
         );
-        assert_eq!(actual.snapshot(), reference.snapshot());
-    }
-
-    #[test]
-    fn borrowed_wram_restore_matches_reference() {
-        for length in [0, WRAM_SIZE - 1, WRAM_SIZE, WRAM_SIZE + 1, WRAM_SIZE * 4] {
-            for fail_drop in [false, true] {
-                let mut actual = NovaTarget::from_machine(FakeMachine::new()).unwrap();
-                let mut reference = NovaTarget::from_machine(FakeMachine::new()).unwrap();
-                actual.apply(&ButtonChord::new(1, 1));
-                reference.apply(&ButtonChord::new(1, 1));
-                let mut snapshot = actual.snapshot().unwrap();
-                assert_eq!(Some(snapshot.clone()), reference.snapshot());
-                actual.apply(&ButtonChord::new(2, 1));
-                reference.apply(&ButtonChord::new(2, 1));
-                assert_ne!(snapshot.wram.as_slice(), actual.current_wram.as_slice());
-                assert_eq!(actual.current_wram, reference.current_wram);
-                snapshot.wram.resize(length, 7);
-                actual.machine.fail_next_drop = fail_drop;
-                reference.machine.fail_next_drop = fail_drop;
-                assert_eq!(
-                    actual.restore(&snapshot).map_err(|error| error.to_string()),
-                    reference
-                        .restore_reference(&snapshot)
-                        .map_err(|error| error.to_string())
-                );
-                assert_eq!(actual.current_wram, reference.current_wram);
-                assert_eq!(actual.observe(), reference.observe());
-                assert_eq!(actual.fingerprint(), reference.fingerprint());
-                assert_eq!(actual.exit_kind(), reference.exit_kind());
-                assert_eq!(actual.machine.snapshots, reference.machine.snapshots);
-                assert_eq!(actual.snapshot(), reference.snapshot());
-            }
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "Wall time is used only by the opt-in benchmark"
-    )]
-    fn borrowed_wram_restore_benchmark() {
-        use std::{hint::black_box, time::Instant};
-        if std::env::var_os("DISSONANCE_BENCHMARK_WRAM_RESTORE").is_none() {
-            return;
-        }
-        let mut source = NovaTarget::from_machine(FakeMachine::new()).unwrap();
-        let original = source.snapshot().unwrap();
-        for length in [WRAM_SIZE, WRAM_SIZE + 1] {
-            let mut snapshot = original.clone();
-            snapshot.wram.resize(length, 7);
-            let mut ratios = Vec::new();
-            for round in 0..80 {
-                let mut elapsed = [0_u128; 2];
-                for new in if round % 2 == 0 {
-                    [false, true, true, false]
-                } else {
-                    [true, false, false, true]
-                } {
-                    let mut target = NovaTarget::from_machine(FakeMachine::new()).unwrap();
-                    let started = Instant::now();
-                    for _ in 0..128 {
-                        let result = if new {
-                            target.restore(black_box(&snapshot))
-                        } else {
-                            target.restore_reference(black_box(&snapshot))
-                        };
-                        black_box(result).ok();
-                    }
-                    elapsed[usize::from(new)] += started.elapsed().as_nanos();
-                }
-                ratios.push(elapsed[1] as f64 / elapsed[0] as f64);
-            }
-            ratios.sort_by(f64::total_cmp);
-            eprintln!(
-                "nova mock restore length={length} new/old={:.3}",
-                ratios[ratios.len() / 2]
-            );
-        }
     }
 
     #[test]
@@ -1377,7 +1223,6 @@ mod tests {
         assert_eq!(target.machine.drop_calls, 0);
         assert_eq!(target.machine.read_calls.get(), 3);
         assert_eq!(target.observe().frame_count, 3);
-        assert_eq!(target.observe().changed_indices, vec![0]);
 
         let before = (
             target.machine.branch_calls,

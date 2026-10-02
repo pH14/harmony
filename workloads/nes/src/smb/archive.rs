@@ -358,9 +358,7 @@ mod tests {
             wram: Vec::new(),
             decoded: Default::default(),
             milestones: Default::default(),
-            changed_indices: Vec::new(),
             dead: false,
-            log_line: String::new(),
         };
         first.decoded.world = 0;
         first.decoded.level = 2;

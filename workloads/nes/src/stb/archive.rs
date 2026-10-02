@@ -366,13 +366,11 @@ mod tests {
         let observation = StbObservations {
             frame_count: 9,
             decoded: terminal,
-            changed_indices: vec![],
             player_a_ko: false,
             player_b_ko: true,
             player_a_ko_count: 0,
             player_b_ko_count: 5,
             terminal: true,
-            log_line: String::new(),
         };
         let value = milestones_from_observation(&observation);
         assert_eq!(value.opponent_kos, 5);
