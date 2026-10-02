@@ -9,7 +9,7 @@ use machine::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    nes_backend::{capture_nes, restore_nes},
+    nes_backend::NesBackend,
     target::{ExitKind, Target},
 };
 
@@ -974,7 +974,7 @@ impl Target for Mm2Target {
         if self.failed {
             return None;
         }
-        let Ok(emulator_state) = capture_nes(&mut self.machine, None) else {
+        let Ok(emulator_state) = self.machine.capture_nes(None) else {
             self.failed = true;
             return None;
         };
@@ -986,7 +986,8 @@ impl Target for Mm2Target {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        restore_nes(&mut self.machine, &snapshot.emulator_state)
+        self.machine
+            .restore_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         self.current_wram = self
             .machine

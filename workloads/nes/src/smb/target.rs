@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 use crate::{
-    nes_backend::{NesBackend, SnapshotState, WorkRamCopy, capture_nes, restore_nes},
+    nes_backend::{NesBackend, SnapshotState, WorkRamCopy},
     target::Target,
 };
 
@@ -446,7 +446,7 @@ where
         if !self.rerun_to_stop() {
             return None;
         }
-        let Ok(emulator_state) = capture_nes(&mut self.machine, self.snapshot_base.as_ref()) else {
+        let Ok(emulator_state) = self.machine.capture_nes(self.snapshot_base.as_ref()) else {
             self.failed = true;
             return None;
         };
@@ -470,7 +470,8 @@ where
             .transpose()
             .map_err(|_| "SMB snapshot work RAM is not exactly 2 KiB")?;
         self.forget_stop();
-        restore_nes(&mut self.machine, &snapshot.emulator_state)
+        self.machine
+            .restore_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         let wram = match kept {
             Some(wram) => wram,
