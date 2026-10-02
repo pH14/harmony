@@ -72,6 +72,8 @@ where
     fn release_exported(&mut self, snapshot: SnapId) -> Result<(), MachineError> {
         self.drop_snapshot(snapshot)
     }
+
+    fn keep_run_capture(&mut self, _frames: usize) {}
 }
 
 impl NesBackend<Vec<u8>> for QuickNesMachine {
@@ -88,6 +90,10 @@ impl NesBackend<Vec<u8>> for QuickNesMachine {
     fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
         let state = unpack_quicknes_state(self, portable)?;
         Ok(self.import_snapshot(&state))
+    }
+
+    fn keep_run_capture(&mut self, frames: usize) {
+        QuickNesMachine::keep_run_capture(self, frames);
     }
 }
 

@@ -24,7 +24,8 @@ libretro QuickNES shared object, validates its revision and supplied SHA-256,
 and exposes the core's 2 KiB system RAM. Each run records system RAM after every
 frame, and a caller can also name a cartridge RAM range to record after every
 frame. Search runs with audio and video disabled. Replay-only callers can
-capture video and stereo PCM.
+capture video and stereo PCM. A caller that stops reading partway through a run
+can keep the video and audio of the run's first frames and drop the rest.
 
 Snapshots contain a format marker, the QuickNES revision, core hash, fixed
 serialized-state length, and canonicalized core state. Restore rejects a
