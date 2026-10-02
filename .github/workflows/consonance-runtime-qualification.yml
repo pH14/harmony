@@ -141,6 +141,13 @@ jobs:
               bash consonance/harmony-linux/linux/build-nested-host-fixture.sh consonance/harmony-linux/build/x86_64
             ' 2>&1 | tee nested-host-evidence/kernel-build.log
           sudo chown -R "$(id -u):$(id -g)" consonance/harmony-linux/build
+      - name: Refresh hardware access after runner setup
+        run: |
+          set -euo pipefail
+          stat -c '%n mode=%a owner=%U group=%G' /dev/kvm >nested-host-evidence/kvm-access-after-build.txt
+          sudo chmod a+rw /dev/kvm
+          /tmp/nested-kvm-check | tee nested-host-evidence/host-kvm-after-build.txt
+          cmp nested-host-evidence/host-kvm.txt nested-host-evidence/host-kvm-after-build.txt
       - name: L1 initializes its KVM vendor backend and creates a VM
         env:
           NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
