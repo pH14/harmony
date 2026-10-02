@@ -215,3 +215,9 @@ checkpoint/resume configuration, progress and resource phases, witness and
 milestone verification, and result export. `nes-eval` keeps the existing game
 dispatch and option validation. Dedicated workload binaries can reuse the same
 protocol and validation machinery without copying the evaluation loop.
+
+The `wasm` feature composes the portable package from `../nes-wasm` with the same
+NES machine adapter and campaign targets. Its identity binds the admitted module,
+ROM and shared payload/observation semantics. Each action stops on the SDK frame
+lifecycle, independently of hardware clock budgets. This feature remains a
+qualification build until the backend's host and performance checks pass.

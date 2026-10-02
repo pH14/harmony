@@ -1,0 +1,90 @@
+--- a/src/engine/code_map.rs
++++ b/src/engine/code_map.rs
+@@ -870,3 +870,29 @@
+         Ok(super::executor::InstructionPtr::new(instructions.as_ptr().wrapping_add(offset as usize)))
+     }
+ }
++
++impl EngineFunc {
++    pub(crate) fn harmony_index(self) -> u32 { self.0 }
++}
++impl CodeMap {
++    pub(crate) fn harmony_frame_bounds(&self, function: u32, offset: u32, start: usize, base: usize, values: &[u64]) -> Result<(usize, usize), Error> {
++        let guard = self.funcs.lock();
++        let compiled = guard.get(EngineFunc(function)).and_then(FuncEntity::get_compiled).ok_or_else(|| Error::new("unknown continuation function"))?;
++        let constants = compiled.consts();
++        let end = start.checked_add(usize::from(compiled.len_registers())).filter(|end| *end <= values.len()).ok_or_else(|| Error::new("continuation frame exceeds value stack"))?;
++        if start.checked_add(constants.len()) != Some(base) || base > end { return Err(Error::new("continuation base does not match compiled constants")); }
++        if values[start..base].iter().zip(constants).any(|(bits, constant)| *bits != constant.to_bits64()) { return Err(Error::new("continuation changed an immutable constant")); }
++        let instruction = compiled.instrs().get(offset as usize).ok_or_else(|| Error::new("continuation position exceeds compiled function"))?;
++        use crate::ir::Instruction as I;
++        if matches!(instruction,
++            I::TableIndex { .. } | I::MemoryIndex { .. } | I::DataIndex { .. } | I::ElemIndex { .. }
++            | I::Const32 { .. } | I::I64Const32 { .. } | I::F64Const32 { .. }
++            | I::BranchTableTarget { .. } | I::BranchTableTargetNonOverlapping { .. }
++            | I::Register { .. } | I::Register2 { .. } | I::Register3 { .. }
++            | I::RegisterAndImm32 { .. } | I::Imm16AndImm32 { .. } | I::RegisterSpan { .. }
++            | I::RegisterList { .. } | I::CallIndirectParams { .. } | I::CallIndirectParamsImm16 { .. }) {
++            return Err(Error::new("continuation position names an instruction operand"));
++        }
++        Ok((end, end - base))
++    }
++}
+--- a/src/instance/mod.rs
++++ b/src/instance/mod.rs
+@@ -358,3 +358,15 @@
+     }
+ }
+ 
++
++impl Instance {
++    pub(crate) fn harmony_function_results(&self, ctx: impl crate::AsContext) -> alloc::collections::BTreeMap<u32, usize> {
++        let ctx = ctx.as_context();
++        let entity = ctx.store.inner.resolve_instance(self);
++        entity.funcs.iter().filter_map(|func| {
++            let crate::func::FuncEntity::Wasm(body) = ctx.store.inner.resolve_func(func) else { return None; };
++            if body.instance() != self { return None; }
++            Some((body.func_body().harmony_index(), func.ty(&ctx).results().len()))
++        }).collect()
++    }
++}
+--- a/src/engine/resumable.rs
++++ b/src/engine/resumable.rs
+@@ -684,3 +684,37 @@
+         Ok(())
+     }
+ }
++
++impl ResumableCall {
++    pub fn harmony_validate<T>(engine: &Engine, ctx: impl crate::AsContext<Data = T>, instance: crate::Instance, root: Func, host: Func, snapshot: &HarmonyContinuation) -> Result<(), Error> {
++        let ctx = ctx.as_context();
++        let crate::func::FuncEntity::Wasm(root_body) = ctx.store.inner.resolve_func(&root) else { return Err(Error::new("continuation root is not a guest function")); };
++        if root_body.instance() != &instance { return Err(Error::new("continuation root belongs to another instance")); }
++        if snapshot.frames.is_empty() || snapshot.frames[0][0] != u64::from(root_body.func_body().harmony_index()) { return Err(Error::new("continuation root frame differs")); }
++        let results = root.ty(&ctx).results().len();
++        let functions = instance.harmony_function_results(&ctx);
++        let mut expected = results;
++        let mut parent_registers = results;
++        let mut top_registers = 0;
++        for (index, frame) in snapshot.frames.iter().enumerate() {
++            let function = u32::try_from(frame[0]).map_err(|_| Error::new("invalid continuation function"))?;
++            let offset = u32::try_from(frame[1]).map_err(|_| Error::new("invalid continuation position"))?;
++            let base = usize::try_from(frame[2]).map_err(|_| Error::new("invalid continuation base"))?;
++            let start = usize::try_from(frame[3]).map_err(|_| Error::new("invalid continuation frame"))?;
++            let output = usize::try_from(frame[4]).map_err(|_| Error::new("invalid continuation result"))?;
++            let count = *functions.get(&function).ok_or_else(|| Error::new("continuation function belongs to another module"))?;
++            if count > 1 || start != expected || output > i16::MAX as usize || (index == 0 && output != 0) || output.checked_add(count).is_none_or(|end| end > parent_registers) { return Err(Error::new("continuation frame allocation or result range differs")); }
++            let (end, registers) = engine.inner.code_map.harmony_frame_bounds(function, offset, start, base, &snapshot.values)?;
++            expected = end; parent_registers = registers; top_registers = registers;
++        }
++        if expected != snapshot.values.len() { return Err(Error::new("continuation has unowned value-stack entries")); }
++        match (snapshot.required_fuel, snapshot.caller_result) {
++            (Some(_), None) => {},
++            (None, Some(result)) if result >= 0 && (result as usize) < top_registers => {
++                if !matches!(host.ty(&ctx).results(), [crate::core::ValType::I32]) { return Err(Error::new("pending import must return one i32")); }
++            },
++            _ => return Err(Error::new("invalid continuation kind or pending result")),
++        }
++        Ok(())
++    }
++}

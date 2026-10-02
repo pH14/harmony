@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use thiserror::Error;
 
@@ -401,6 +401,11 @@ impl RecordedState {
         self.payloads.clone()
     }
 
+    #[must_use]
+    pub fn handler(&self) -> &HandlerSnapshot {
+        &self.handler
+    }
+
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         if bytes.len() > MAX_RECORDED_STATE_BYTES {
             return Err(ChannelError::TooLarge);
@@ -520,7 +525,7 @@ pub struct RecordedEnv<H: ServiceHandler> {
     stream_state: u64,
     overrides: BTreeMap<DecisionKey, Answer>,
     moment: Moment,
-    payloads: Option<Vec<Vec<u8>>>,
+    payloads: Option<Arc<Vec<Vec<u8>>>>,
     payload_cursor: usize,
     handler: H,
 }
@@ -612,7 +617,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
                 check_len(entry.len())?;
             }
         }
-        self.payloads = payloads;
+        self.payloads = payloads.map(Arc::new);
         self.payload_cursor = 0;
         Ok(())
     }
@@ -665,6 +670,10 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         Ok(response)
     }
 
+    pub fn replace_handler(&mut self, handler: H) {
+        self.handler = handler;
+    }
+
     pub fn handler(&self) -> &H {
         &self.handler
     }
@@ -680,7 +689,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     }
 
     fn restore_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) {
-        self.payloads = payloads;
+        self.payloads = payloads.map(Arc::new);
         self.payload_cursor = 0;
     }
 

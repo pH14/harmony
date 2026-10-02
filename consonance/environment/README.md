@@ -37,6 +37,11 @@ per-effect buffers while preserving field order, tags, and length framing.
 for a caller-bounded captured section, so a long input history may contain more
 than one transport message while every nested value remains bounded and ordered.
 
+`sdk` holds the SDK request rules every backend shares: the event classes,
+service questions and answers, payload pulls, and coverage requests and
+replies. The KVM and HVF VMM and the User-mode Linux bridge both call it, so a
+guest gets the same answers on either backend.
+
 The fault catalog and fault-selection policies live in
 [`workloads/fault-policy`](../../workloads/fault-policy/README.md). An ordinary
 Consonance execution uses the nominal handler and builds independently of that
@@ -46,3 +51,14 @@ package. Its dependency graph contains no workload package.
 cargo test -p environment
 cargo clippy -p environment --all-features --all-targets -- -D warnings
 ```
+
+`RecordedEnv::replace_handler` changes only the extension handler. Portable
+session branches use it after validating a factory's identity and configuration;
+core entropy, recorded overrides and payload cursor remain intact until the
+branch explicitly replaces them. Verbatim replay restores the captured handler
+state through the existing snapshot contract.
+
+Payload tapes are immutable shared vectors in `InputSpec` and `RecordedEnv`.
+Cloning an environment preserves the cursor while sharing tape bytes. Explicit
+replacement and snapshot decoding install a new tape; the wire encodings and
+length checks remain unchanged.

@@ -2,5 +2,6 @@
 
 pub mod channel;
 pub mod input_spec;
+pub mod sdk;
 
 pub type Moment = u64;

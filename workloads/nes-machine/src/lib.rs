@@ -2,7 +2,7 @@
 
 #[cfg(all(
     feature = "consonance",
-    target_os = "linux",
+    any(target_os = "linux", target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]

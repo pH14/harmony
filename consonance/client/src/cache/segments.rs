@@ -232,6 +232,7 @@ pub type Abandon = Box<dyn FnOnce(u64, usize, usize) + Send>;
 
 #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(feature = "in-process"), allow(dead_code))]
 pub(crate) struct SharedRange<'a> {
     pub fd: std::os::fd::BorrowedFd<'a>,
     pub offset: usize,
@@ -240,6 +241,7 @@ pub(crate) struct SharedRange<'a> {
 
 #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
 impl Segment {
+    #[cfg_attr(not(feature = "in-process"), allow(dead_code))]
     fn shared(&self, offset: usize, len: usize) -> SharedRange<'_> {
         use std::os::fd::AsFd;
         SharedRange {
@@ -303,6 +305,7 @@ impl WritableExtent {
     }
 
     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
+    #[cfg_attr(not(feature = "in-process"), allow(dead_code))]
     pub(crate) fn shared_range(&self) -> SharedRange<'_> {
         self.segment.shared(self.offset, self.len)
     }
@@ -351,6 +354,7 @@ impl CommittedExtent {
     }
 
     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(miri)))]
+    #[cfg_attr(not(feature = "in-process"), allow(dead_code))]
     pub(crate) fn shared_range(&self) -> SharedRange<'_> {
         self.segment.shared(self.offset, self.len)
     }

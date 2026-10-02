@@ -72,10 +72,15 @@ impl NesBackend<Vec<u8>> for machine::quicknes::QuickNesMachine {
 }
 
 #[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+    not(miri),
+    any(
+        feature = "wasm",
+        all(
+            feature = "consonance",
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
 ))]
 impl SnapshotState for machine::consonance::ConsonancePortable {
     fn memory_charge(&self) -> usize {
@@ -84,10 +89,15 @@ impl SnapshotState for machine::consonance::ConsonancePortable {
 }
 
 #[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+    not(miri),
+    any(
+        feature = "wasm",
+        all(
+            feature = "consonance",
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
 ))]
 impl NesBackend<machine::consonance::ConsonancePortable>
     for machine::consonance::ConsonanceMachine

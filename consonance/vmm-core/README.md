@@ -482,3 +482,8 @@ external events merely because the initial image matches.
 The published API regression remains required on AMD and Intel under supported
 core placement. A successful regression does not establish raw bitmap stability
 or support for arbitrary guest code.
+
+SDK request validation and service rules live in `environment::sdk`, coordinated
+with UML revision `8b273c921`. The VMM owns its transport and stopped-state
+transaction while sharing event classification, payload, coverage, and opaque
+service dispatch rules with the other execution backends.

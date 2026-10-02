@@ -18,6 +18,25 @@ from collections.abc import Iterable
 
 TARGETS = (
     {
+        "name": "consonance-wasm-validator",
+        "command": "--manifest-path consonance/wasm/Cargo.toml --lib continuation_validation_rejects_malformed_frames_and_operand_positions",
+        "whole_crate": "--manifest-path consonance/wasm/Cargo.toml --lib continuation_validation_rejects_malformed_frames_and_operand_positions",
+        "paths": ("consonance/wasm/**",),
+    },
+    {
+        "name": "consonance-wasm-imports",
+        "command": "--manifest-path consonance/wasm/Cargo.toml --test session cancellation_cannot_be_rewound_by_snapshot_or_branch",
+        "whole_crate": "--manifest-path consonance/wasm/Cargo.toml --test session decision_validation_replay_and_import_completion_are_atomic",
+        "paths": ("consonance/wasm/**", "consonance/environment/**"),
+    },
+    {
+        "name": "nes-wasm-guest",
+        "command": "--manifest-path workloads/nes-wasm/guest/Cargo.toml --lib",
+        "whole_crate": "--manifest-path workloads/nes-wasm/guest/Cargo.toml --lib",
+        "paths": ("workloads/nes-wasm/guest/**", "consonance/wasm/guest/**"),
+    },
+
+    {
         "name": "vmm-core",
         "command": "-p vmm-core --lib vendor::x86::bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping",
         "whole_crate": "-p vmm-core",

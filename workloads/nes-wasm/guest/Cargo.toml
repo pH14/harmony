@@ -1,0 +1,21 @@
+[package]
+name = "nes-wasm-play-agent"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace]
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+nes-agent = { path = "../../nes-agent", version = "=0.1.0" }
+consonance-wasm-guest = { path = "../../../consonance/wasm/guest", version = "=0.1.0" }
+harmony-sdk = { path = "../../../consonance/harmony-linux/sdk", version = "=0.1.0" }
+hypercall-proto = { path = "../../../consonance/hypercall-proto", version = "=0.1.0", default-features = false, features = ["guest"] }
+
+[profile.release]
+opt-level = 2
+panic = "abort"
+debug = 1

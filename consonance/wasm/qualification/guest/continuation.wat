@@ -1,0 +1,22 @@
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+(module
+  (import "harmony_v1" "decision" (func $decision (param i32) (result i32)))
+  (memory (export "memory") 4 4)
+  (global $g (export "g") (mut i32) (i32.const 7))
+  (global $float (export "float") (mut f64) (f64.const -0))
+  (table $table (export "table") 2 2 funcref)
+  (elem (i32.const 0) $nested $other)
+  (func $other (param i32) (result i32) (i32.add (local.get 0) (i32.const 19)))
+  (func $nested (param $x i32) (result i32) (local $i i32) (local $sum i32)
+    (local.set $sum (local.get $x))
+    (loop $loop
+      (local.set $sum (i32.add (local.get $sum) (local.get $i)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $loop (i32.lt_u (local.get $i) (i32.const 10000))))
+    (i32.add (local.get $sum) (call $decision (local.get $x))))
+  (func $run (export "run") (param $x i32) (result i32) (local $answer i32)
+    (global.set $g (i32.add (global.get $g) (i32.const 3)))
+    (global.set $float (f64.add (global.get $float) (f64.const nan:0x123)))
+    (local.set $answer (call_indirect (param i32) (result i32) (local.get $x) (i32.const 0)))
+    (i32.store (i32.const 0) (local.get $answer))
+    (i32.add (local.get $answer) (global.get $g))))

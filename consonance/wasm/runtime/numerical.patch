@@ -1,0 +1,127 @@
+--- a/src/engine/translator/mod.rs
++++ b/src/engine/translator/mod.rs
+@@ -1654,21 +1654,11 @@
+                     // Case: the custom logic applied its optimization and we can return.
+                     return Ok(());
+                 }
+-                if T::from(rhs).is_nan() {
+-                    // Optimization: non-canonicalized NaN propagation.
+-                    self.alloc.stack.push_const(rhs);
+-                    return Ok(());
+-                }
+                 self.push_binary_instr_imm(lhs, rhs, make_instr)
+             }
+             (TypedProvider::Const(lhs), TypedProvider::Register(rhs)) => {
+                 if make_instr_imm_reg_opt(self, T::from(lhs), rhs)? {
+                     // Case: the custom logic applied its optimization and we can return.
+-                    return Ok(());
+-                }
+-                if T::from(lhs).is_nan() {
+-                    // Optimization: non-canonicalized NaN propagation.
+-                    self.alloc.stack.push_const(lhs);
+                     return Ok(());
+                 }
+                 self.push_binary_instr_imm_rev(lhs, rhs, make_instr)
+@@ -1824,11 +1814,6 @@
+             | (TypedProvider::Const(imm_in), TypedProvider::Register(reg_in)) => {
+                 if make_instr_imm_opt(self, reg_in, T::from(imm_in))? {
+                     // Custom logic applied its optimization: return early.
+-                    return Ok(());
+-                }
+-                if T::from(imm_in).is_nan() {
+-                    // Optimization: non-canonicalized NaN propagation.
+-                    self.alloc.stack.push_const(T::from(imm_in));
+                     return Ok(());
+                 }
+                 self.push_binary_instr_imm(reg_in, imm_in, make_instr)
+@@ -2790,7 +2775,7 @@
+                         Instruction::register(register)
+                     }
+                 },
+-                ValType::F64 => match <Const32<f64>>::try_from(f64::from(immediate)) {
++                ValType::F64 => match harmony_f64_immediate(f64::from(immediate)) {
+                     Ok(value) => Instruction::f64const32(value),
+                     Err(_) => {
+                         let register = self.alloc.stack.provider2reg(&value)?;
+@@ -3057,3 +3042,8 @@
+         }
+     }
+ }
++
++fn harmony_f64_immediate(value: f64) -> Result<crate::ir::Const32<f64>, ()> {
++    if value.is_nan() { return Err(()); }
++    crate::ir::Const32::try_from(value).map_err(|_| ())
++}
+--- a/src/engine/translator/instr_encoder.rs
++++ b/src/engine/translator/instr_encoder.rs
+@@ -427,7 +427,7 @@
+                     Some(value) => Instruction::copy_i64imm32(result, value),
+                     None => copy_imm(stack, result, value)?,
+                 },
+-                ValType::F64 => match <Const32<f64>>::try_from(f64::from(value)).ok() {
++                ValType::F64 => match super::harmony_f64_immediate(f64::from(value)).ok() {
+                     Some(value) => Instruction::copy_f64imm32(result, value),
+                     None => copy_imm(stack, result, value)?,
+                 },
+@@ -597,7 +597,7 @@
+                     None => Instruction::return_reg(stack.alloc_const(*value)?),
+                 },
+                 ValType::F32 => Instruction::return_imm32(f32::from(*value)),
+-                ValType::F64 => match <Const32<f64>>::try_from(f64::from(*value)).ok() {
++                ValType::F64 => match super::harmony_f64_immediate(f64::from(*value)).ok() {
+                     Some(value) => Instruction::return_f64imm32(value),
+                     None => Instruction::return_reg(stack.alloc_const(*value)?),
+                 },
+--- a/src/engine/translator/visit.rs
++++ b/src/engine/translator/visit.rs
+@@ -14,7 +14,7 @@
+     TypedVal,
+ };
+ use crate::{
+-    core::{wasm, FuelCostsProvider, TrapCode, ValType, F32, F64},
++    core::{FuelCostsProvider, TrapCode, ValType, F32, F64},
+     engine::{
+         translator::{AcquiredTarget, Provider},
+         BlockType,
+@@ -33,6 +33,7 @@
+     FuncRef,
+     Mutability,
+ };
++use crate::harmony_wasm as wasm;
+ use core::num::{NonZeroI32, NonZeroI64, NonZeroU32, NonZeroU64};
+ use wasmparser::VisitOperator;
+ 
+--- a/src/engine/executor/instrs/binary.rs
++++ b/src/engine/executor/instrs/binary.rs
+@@ -1,9 +1,10 @@
+ use super::{Executor, UntypedValueExt};
+ use crate::{
+-    core::{wasm, TrapCode},
++    core::TrapCode,
+     ir::{Const16, Reg, ShiftAmount, Sign},
+     Error,
+ };
++use crate::harmony_wasm as wasm;
+ use core::num::{NonZeroI32, NonZeroI64, NonZeroU32, NonZeroU64};
+ 
+ #[cfg(doc)]
+--- a/src/engine/executor/instrs/unary.rs
++++ b/src/engine/executor/instrs/unary.rs
+@@ -1,5 +1,6 @@
+ use super::Executor;
+-use crate::{core::wasm, ir::Reg};
++use crate::harmony_wasm as wasm;
++use crate::{ir::Reg};
+ 
+ #[cfg(doc)]
+ use crate::ir::Instruction;
+--- a/src/engine/executor/instrs/conversion.rs
++++ b/src/engine/executor/instrs/conversion.rs
+@@ -1,5 +1,6 @@
+ use super::Executor;
+-use crate::{core::wasm, ir::Reg, Error};
++use crate::harmony_wasm as wasm;
++use crate::{ir::Reg, Error};
+ 
+ #[cfg(doc)]
+ use crate::ir::Instruction;

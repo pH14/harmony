@@ -231,6 +231,41 @@ pub fn search_native(
         ),
     }
 }
+#[cfg(all(feature = "wasm", not(miri)))]
+pub fn search_wasm(
+    rom: &[u8],
+    package: nes_wasm::Package,
+    options: &SearchOptions,
+) -> Result<(), Box<dyn Error>> {
+    validate_output(options)?;
+    record_identity(
+        rom,
+        ExecutionIdentity {
+            backend: "wasm".into(),
+            isa: "wasm32".into(),
+            core_contract: package.identity(rom)?,
+            artifacts: [("module".into(), package.manifest().module_sha256.clone())].into(),
+        },
+        options,
+    )?;
+    match RomKind::identify(rom)? {
+        RomKind::Smb => search(
+            SmbGame::new_wasm(rom, package, options.seed)?,
+            smb_run(),
+            SuffixShape::default(),
+            "wasm",
+            options,
+        ),
+        RomKind::Nova => search(
+            NovaGame::new_wasm(rom, package, options.seed)?,
+            NovaCampaignRun,
+            SuffixShape::OneToSixBounded,
+            "wasm",
+            options,
+        ),
+    }
+}
+
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",

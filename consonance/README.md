@@ -25,3 +25,7 @@ The architecture-neutral VMM engine lives in `vmm-core`, virtualization
 substrates live behind `vmm-backend`, and copy-on-write guest-memory snapshots
 live in `snapshot-store`. The other READMEs in this directory document the
 component boundaries.
+
+The native-hosted WebAssembly feasibility experiments live in
+[`wasm`](wasm/README.md). They are excluded from the product workspace until
+the portable session, deterministic services, and qualification checks pass.

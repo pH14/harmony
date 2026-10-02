@@ -13,19 +13,7 @@ pub unsafe fn initialize_save_ram(memory: *mut u8, length: usize) {
     unsafe { std::ptr::write_bytes(memory, 0xff, length) };
 }
 
-pub trait Core {
-    fn serialize_size(&mut self) -> usize;
-
-    fn serialize(&mut self, out: &mut [u8]) -> bool;
-
-    fn run_frame(&mut self, joypad: u8);
-
-    fn read_work_ram(&mut self, out: &mut [u8]) -> bool;
-
-    fn read_save_ram(&mut self, _out: &mut [u8]) -> Option<usize> {
-        None
-    }
-}
+pub use nes_agent::Core;
 
 #[derive(Clone, Debug)]
 pub struct MockCore {

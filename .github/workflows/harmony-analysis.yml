@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [machine, nes-guest]
+        name: [machine, nes-guest, nes-wasm-guest]
     env:
       HARMONY_MIRI_PR_SMOKE: "1"
     steps:
@@ -78,6 +78,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: nes-wasm-guest
+            command: --manifest-path workloads/nes-wasm/guest/Cargo.toml --lib
           - name: machine
             command: --manifest-path workloads/nes-machine/Cargo.toml
           - name: nes-guest

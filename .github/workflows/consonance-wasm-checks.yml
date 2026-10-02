@@ -1,0 +1,187 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Consonance / WASM
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: consonance-wasm-checks-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  package:
+    name: Portable Package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned build tools
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.0 --profile minimal --target wasm32-wasip1
+          sudo apt-get update -qq
+          sudo apt-get install -y cc65
+          curl -fL --retry 3 -o sdk.tar.gz https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-27/wasi-sdk-27.0-x86_64-linux.tar.gz
+          printf '%s  sdk.tar.gz\n' b7d4d944c88503e4f21d84af07ac293e3440b1b6210bfd7fe78e0afd92c23bc2 | sha256sum -c -
+          tar -xzf sdk.tar.gz
+          curl -fL --retry 3 -o wabt.tar.gz https://github.com/WebAssembly/wabt/releases/download/1.0.39/wabt-1.0.39-linux-x64.tar.gz
+          printf '%s  wabt.tar.gz\n' 1df1254b6639f5f1f89665907ee8cd0cd30114f40483515e583cccb86240840f | sha256sum -c -
+          tar -xzf wabt.tar.gz
+          git clone https://github.com/libretro/QuickNES_Core.git quicknes
+          git -C quicknes checkout 26bb785c9deddb66a17717b21bb4e328f03ade32
+          git clone https://github.com/WebAssembly/spec.git spec
+          git -C spec checkout 957c932e7158c5a6891be68ca424aaa0aa505f97
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            consonance/wasm -> target
+            workloads/nes-wasm/guest -> target
+      - name: Build one exact module and conformance bundle
+        run: |
+          set -euo pipefail
+          python3 workloads/nes-wasm/build.py --sdk wasi-sdk-27.0-x86_64-linux --quicknes quicknes --output qualification/package
+          workloads/nes/scripts/build-nova-rom.sh qualification/rom
+          python3 consonance/wasm/qualification/conformance.py --spec spec --wast2json wabt-1.0.39/bin/wast2json --output qualification/conformance
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package
+          path: qualification
+          if-no-files-found: error
+          retention-days: 14
+  execution:
+    name: Execution — ${{ matrix.host }}
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {host: Linux Intel, runner: ubuntu-24.04, key: linux-x86}
+          - {host: Linux Arm64, runner: ubuntu-24.04-arm, key: linux-arm}
+          - {host: macOS Intel, runner: macos-15-intel, key: macos-x86}
+          - {host: macOS Arm64, runner: macos-14, key: macos-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/wasm-qualification
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-${{ matrix.key }}
+          workspaces: |
+            . -> target/wasm-qualification
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-package
+          path: qualification
+      - name: Check the engine and portable CLI
+        run: |
+          set -euo pipefail
+          cargo +1.97.0 clippy --locked --manifest-path consonance/wasm/Cargo.toml --workspace --all-targets --features harmony-wasmi/wat -- -D warnings
+          cargo +1.97.0 test --locked --manifest-path consonance/wasm/Cargo.toml --workspace --features harmony-wasmi/wat
+          WASM_CONFORMANCE_DIR="$PWD/qualification/conformance" cargo +1.97.0 test --locked --manifest-path consonance/wasm/Cargo.toml -p consonance-wasm --features wasmi/wat --lib conformance::upstream_scalar_conformance -- --ignored --nocapture
+          cargo +1.97.0 test --locked --manifest-path workloads/nes-wasm/Cargo.toml --lib
+          cargo +1.97.0 test --locked -p harmony-cli --no-default-features --features wasm
+      - name: Execute and export complete continuations
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          WASM_TRANSFER_OUT="$PWD/results/generic" cargo +1.97.0 test --locked --manifest-path consonance/wasm/Cargo.toml --features wasmi/wat --test portable_matrix
+          cargo +1.97.0 build --locked --release --manifest-path workloads/nes-wasm/Cargo.toml --bin qualify
+          target/wasm-qualification/release/qualify run qualification/package qualification/rom/nova.nes results/nova.json none
+          target/wasm-qualification/release/qualify restore qualification/package results/nova.json-3.snapshot results/future.json none
+      - name: Enforce frozen production budgets
+        run: |
+          set -euo pipefail
+          cargo +1.97.0 build --locked --release --manifest-path workloads/nes-wasm/Cargo.toml --bin measure
+          python3 workloads/nes-wasm/qualification/measure.py --runner target/wasm-qualification/release/measure --package qualification/package --rom qualification/rom/nova.nes --output results/cycles.json
+          python3 workloads/nes-wasm/qualification/budgets.py results/cycles.json
+          cargo +1.97.0 test --locked --release --manifest-path consonance/wasm/Cargo.toml --test session measure_capture_restore_across_memory_sizes_and_history_lengths -- --ignored --nocapture > results/memory.log
+          python3 workloads/nes-wasm/qualification/budgets.py results/cycles.json results/memory.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wasm-states-${{ matrix.key }}
+          path: results
+          if-no-files-found: error
+          retention-days: 14
+  transfer:
+    name: Restore — ${{ matrix.host }}
+    needs: [package, execution]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {host: Linux Intel, runner: ubuntu-24.04, key: linux-x86}
+          - {host: Linux Arm64, runner: ubuntu-24.04-arm, key: linux-arm}
+          - {host: macOS Intel, runner: macos-15-intel, key: macos-x86}
+          - {host: macOS Arm64, runner: macos-14, key: macos-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/wasm-qualification
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-${{ matrix.key }}
+          workspaces: |
+            . -> target/wasm-qualification
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-package
+          path: qualification
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wasm-states-*
+          path: transfers
+      - name: Replay every producer on this consumer
+        run: |
+          set -euo pipefail
+          cargo +1.97.0 build --locked --release --manifest-path workloads/nes-wasm/Cargo.toml --bin qualify
+          python3 workloads/nes-wasm/qualification/transfer.py --package qualification/package --states transfers --output results --runner target/wasm-qualification/release/qualify
+          mkdir generic
+          for host in transfers/*; do cp -R "$host/generic" "generic/$(basename "$host")"; done
+          WASM_TRANSFER_IN="$PWD/generic" cargo +1.97.0 test --locked --release --manifest-path consonance/wasm/Cargo.toml --test portable_matrix
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wasm-transfer-${{ matrix.key }}
+          path: results
+          if-no-files-found: error
+          retention-days: 14
+  cli:
+    name: Product CLI — ${{ matrix.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {host: Linux Intel, runner: ubuntu-24.04, key: linux-x86}
+          - {host: Linux Arm64, runner: ubuntu-24.04-arm, key: linux-arm}
+          - {host: macOS Intel, runner: macos-15-intel, key: macos-x86}
+          - {host: macOS Arm64, runner: macos-14, key: macos-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-product-${{ matrix.key }}
+      - name: Build and test ordinary defaults
+        run: |
+          set -euo pipefail
+          cargo +1.97.0 build --locked -p harmony-cli
+          cargo +1.97.0 test --locked -p harmony-cli

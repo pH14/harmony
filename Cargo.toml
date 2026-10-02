@@ -11,6 +11,7 @@ resolver = "2"
 members = ["cli", "consonance/*"]
 # consonance/harmony-linux/ contains standalone Linux-side crates.
 exclude = [
+  "consonance/wasm",
   "consonance/harmony-linux",
   "dissonance",
   "workloads/nes",
@@ -18,6 +19,8 @@ exclude = [
   "workloads/nes-machine",
   "workloads/nes-protocol",
   "workloads/nes-guest",
+  "workloads/nes-agent",
+  "workloads/nes-wasm",
   "workloads/fault-policy",
   "workloads/faults",
 ]
@@ -31,6 +34,9 @@ all = { level = "deny", priority = -1 }
 
 [profile.release]
 debug = true
+
+[profile.release.package.harmony-wasmi]
+codegen-units = 1
 
 # Mutation builds inherit the test profile's assertions and panic behavior while
 # omitting debug information. Incremental compilation is enabled by the CI

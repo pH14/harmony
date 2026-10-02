@@ -121,15 +121,7 @@ impl NovaState {
     }
 }
 
-pub trait NovaChannel {
-    type Error;
-
-    fn payload_fetch(&mut self, out: &mut [u8; 2]) -> Result<(), Self::Error>;
-    fn state_set(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
-    fn state_max(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
-    fn reachable(&mut self, point: u32) -> Result<(), Self::Error>;
-    fn frame_complete(&mut self, frame_count: u64) -> Result<(), Self::Error>;
-}
+pub use nes_agent::Channel as NovaChannel;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum NovaError<E> {

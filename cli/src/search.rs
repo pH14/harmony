@@ -12,6 +12,8 @@ pub enum Package {
 pub enum Backend {
     Native,
     Consonance,
+    #[cfg(feature = "wasm")]
+    Wasm,
 }
 #[derive(clap::Args)]
 pub struct Args {
@@ -28,6 +30,8 @@ pub struct Args {
     out: PathBuf,
     #[arg(long)]
     core: Option<PathBuf>,
+    #[arg(long)]
+    wasm_package: Option<PathBuf>,
     #[arg(long)]
     kernel: Option<PathBuf>,
     #[arg(long)]
@@ -51,15 +55,20 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         Package::Faults => Backend::Consonance,
     });
     if matches!(backend, Backend::Consonance) {
-        require_supported_host(cfg!(any(
-            target_os = "linux",
-            all(target_os = "macos", target_arch = "aarch64")
-        )))?;
-        match crate::host::Hypervisor::detect() {
-            crate::host::Hypervisor::Kvm | crate::host::Hypervisor::Hvf => {}
-            crate::host::Hypervisor::Unavailable(reason)
-            | crate::host::Hypervisor::Unsupported(reason) => return Err(reason.into()),
+        #[cfg(feature = "hardware")]
+        {
+            require_supported_host(cfg!(any(
+                target_os = "linux",
+                all(target_os = "macos", target_arch = "aarch64")
+            )))?;
+            match crate::host::Hypervisor::detect() {
+                crate::host::Hypervisor::Kvm | crate::host::Hypervisor::Hvf => {}
+                crate::host::Hypervisor::Unavailable(reason)
+                | crate::host::Hypervisor::Unsupported(reason) => return Err(reason.into()),
+            }
         }
+        #[cfg(not(feature = "hardware"))]
+        return Err("this build does not include the hardware backend".into());
     }
     let output = args.out.clone();
     match (args.package, backend) {
@@ -71,6 +80,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
                 .ok_or("native NES search requires --core or HARMONY_QUICKNES_CORE")?;
             search_native(&std::fs::read(&args.input)?, &core, &options)?;
         }
+        #[cfg(feature = "hardware")]
         (Package::Nes, Backend::Consonance) => {
             let options = nes_options(&args)?;
             run_nes_consonance(
@@ -84,6 +94,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         (Package::Faults, Backend::Native) => {
             return Err("the faults package requires --backend consonance".into());
         }
+        #[cfg(feature = "hardware")]
         (Package::Faults, Backend::Consonance) => {
             let faults = faults_options(&args)?;
             let replay = read_replay(args.replay.as_deref())?;
@@ -96,11 +107,33 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
                 args.repeat,
             )?;
         }
+        #[cfg(not(feature = "hardware"))]
+        (_, Backend::Consonance) => {
+            return Err("this build does not include the hardware backend".into());
+        }
+        #[cfg(feature = "wasm")]
+        (Package::Nes, Backend::Wasm) => {
+            let options = nes_options(&args)?;
+            let package = args
+                .wasm_package
+                .as_deref()
+                .ok_or("WASM NES search requires --wasm-package")?;
+            nes_workload::package::search_wasm(
+                &std::fs::read(&args.input)?,
+                nes_wasm::Package::from_directory(package)?,
+                &options,
+            )?;
+        }
+        #[cfg(feature = "wasm")]
+        (Package::Faults, Backend::Wasm) => {
+            return Err("the WASM backend supports the NES package".into());
+        }
     }
     println!("artifacts   {}", output.display());
     Ok(ExitCode::SUCCESS)
 }
 
+#[cfg(feature = "hardware")]
 fn read_replay(
     path: Option<&std::path::Path>,
 ) -> Result<Option<Vec<faults_workload::FaultAction>>, Box<dyn Error>> {
@@ -120,6 +153,7 @@ fn nes_options(args: &Args) -> Result<SearchOptions, Box<dyn Error>> {
     })
 }
 
+#[cfg(feature = "hardware")]
 fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error>> {
     Ok(faults_workload::Options {
         seed: args.seed,
@@ -137,6 +171,7 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
     })
 }
 
+#[cfg(feature = "hardware")]
 fn require_supported_host(supported: bool) -> Result<(), Box<dyn Error>> {
     if !supported {
         return Err("Consonance search requires a Linux KVM or macOS arm64 host".into());
@@ -144,6 +179,7 @@ fn require_supported_host(supported: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(feature = "hardware")]
 fn run_nes_consonance(
     input: &std::path::Path,
     kernel: Option<PathBuf>,
@@ -190,8 +226,10 @@ fn run_nes_consonance(
     }
 }
 
+#[cfg(feature = "hardware")]
 const SESSION_WORKER: &str = "session-worker";
 
+#[cfg(feature = "hardware")]
 pub fn serve_session_worker() -> Result<ExitCode, Box<dyn Error>> {
     #[cfg(any(
         all(
@@ -219,6 +257,7 @@ pub fn serve_session_worker() -> Result<ExitCode, Box<dyn Error>> {
     }
 }
 
+#[cfg(feature = "hardware")]
 fn run_faults_consonance(
     input: &std::path::Path,
     kernel: Option<PathBuf>,
@@ -288,7 +327,7 @@ fn run_faults_consonance(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hardware"))]
 mod tests {
     use super::*;
 
@@ -310,6 +349,7 @@ mod tests {
             executions: 1,
             out: PathBuf::from("missing-output"),
             core: None,
+            wasm_package: None,
             kernel: None,
             base_initramfs: None,
             image: None,

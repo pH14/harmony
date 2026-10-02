@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Benchmarks / Consonance / WASM
+on:
+  schedule:
+    - cron: '17 5 * * 2'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: consonance-wasm-benchmarks-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  package:
+    name: Portable Package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned build tools
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.0 --profile minimal --target wasm32-wasip1
+          sudo apt-get update -qq
+          sudo apt-get install -y cc65
+          curl -fL --retry 3 -o sdk.tar.gz https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-27/wasi-sdk-27.0-x86_64-linux.tar.gz
+          printf '%s  sdk.tar.gz\n' b7d4d944c88503e4f21d84af07ac293e3440b1b6210bfd7fe78e0afd92c23bc2 | sha256sum -c -
+          tar -xzf sdk.tar.gz
+          curl -fL --retry 3 -o wabt.tar.gz https://github.com/WebAssembly/wabt/releases/download/1.0.39/wabt-1.0.39-linux-x64.tar.gz
+          printf '%s  wabt.tar.gz\n' 1df1254b6639f5f1f89665907ee8cd0cd30114f40483515e583cccb86240840f | sha256sum -c -
+          tar -xzf wabt.tar.gz
+          git clone https://github.com/libretro/QuickNES_Core.git quicknes
+          git -C quicknes checkout 26bb785c9deddb66a17717b21bb4e328f03ade32
+          git clone https://github.com/WebAssembly/spec.git spec
+          git -C spec checkout 957c932e7158c5a6891be68ca424aaa0aa505f97
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            consonance/wasm -> target
+            workloads/nes-wasm/guest -> target
+      - name: Build one exact module and conformance bundle
+        run: |
+          set -euo pipefail
+          python3 workloads/nes-wasm/build.py --sdk wasi-sdk-27.0-x86_64-linux --quicknes quicknes --output qualification/package
+          workloads/nes/scripts/build-nova-rom.sh qualification/rom
+          python3 consonance/wasm/qualification/conformance.py --spec spec --wast2json wabt-1.0.39/bin/wast2json --output qualification/conformance
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package
+          path: qualification
+          if-no-files-found: error
+          retention-days: 14
+  workload:
+    name: Workload Cycles — ${{ matrix.host }}
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {host: Linux Intel, runner: ubuntu-24.04, key: linux-x86}
+          - {host: Linux Arm64, runner: ubuntu-24.04-arm, key: linux-arm}
+          - {host: macOS Intel, runner: macos-15-intel, key: macos-x86}
+          - {host: macOS Arm64, runner: macos-14, key: macos-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            consonance/wasm -> target
+            workloads/nes-wasm -> target
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-package
+          path: qualification
+      - name: Measure complete cycles and memory scaling
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          cargo +1.97.0 build --locked --release --manifest-path workloads/nes-wasm/Cargo.toml --bin measure
+          python3 workloads/nes-wasm/qualification/measure.py --runner workloads/nes-wasm/target/release/measure --package qualification/package --rom qualification/rom/nova.nes --output results/cycles.json
+          python3 workloads/nes-wasm/qualification/budgets.py results/cycles.json
+          cargo +1.97.0 test --locked --release --manifest-path consonance/wasm/Cargo.toml --test session measure_capture_restore_across_memory_sizes_and_history_lengths -- --ignored --nocapture > results/memory.log
+          python3 workloads/nes-wasm/qualification/budgets.py results/cycles.json results/memory.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wasm-budgets-${{ matrix.key }}
+          path: results
+          if-no-files-found: error
+          retention-days: 14

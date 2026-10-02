@@ -43,7 +43,7 @@ CANONICAL_TERMS = (
     "macOS", "etcd", "K3s", "QuickNES", "PostgreSQL", "NES", "OCI", "API",
     "Arm64", "CLI", "KVM", "XSAVE", "HVF", "VM", "CPU", "RAM", "Miri", "Kani",
     "STB", "Nova", "Docker", "Linux", "Go", "Intel", "Harmony", "Consonance",
-    "Dissonance", "N6",
+    "Dissonance", "N6", "WASM",
 )
 
 # Words Title Case leaves lowercase unless they open or close a name.
@@ -139,6 +139,10 @@ MIRI_FLAGS_DEFAULT = "-Zmiri-permissive-provenance"
 # its members; the rest are standalone packages outside any workspace.
 CARGO_MANIFESTS = (
     "Cargo.toml",
+    "consonance/wasm/Cargo.toml",
+    "workloads/nes-agent/Cargo.toml",
+    "workloads/nes-wasm/Cargo.toml",
+    "workloads/nes-wasm/guest/Cargo.toml",
     "consonance/harmony-linux/sdk/Cargo.toml",
     "consonance/harmony-linux/supervisor/Cargo.toml",
     "consonance/harmony-linux/runtime-fixture/Cargo.toml",
@@ -599,10 +603,41 @@ RELEASE = Workflow(
     ),
 )
 
+CONSONANCE_WASM_CHECKS = Workflow(
+    path=f"{WORKFLOW_DIR}/consonance-wasm-checks.yml",
+    name="Checks / Consonance / WASM",
+    owner="Consonance",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(
+        Job("Portable Package", "pr", 15),
+        Job("Execution — <Host>", "pr", 15,
+            crates=("consonance-wasm", "consonance-wasm-guest", "harmony-wasmi"),
+            test_targets=("consonance-wasm:session", "consonance-wasm:portable_matrix"),
+            ignored_tests=("consonance-wasm conformance::upstream_scalar_conformance",
+                "consonance-wasm::session measure_capture_restore_across_memory_sizes_and_history_lengths",)),
+        Job("Restore — <Host>", "pr", 15),
+        Job("Product CLI — <Host>", "pr", 15),
+    ),
+)
+
+CONSONANCE_WASM_BENCHMARKS = Workflow(
+    path=f"{WORKFLOW_DIR}/consonance-wasm-benchmarks.yml",
+    name="Benchmarks / Consonance / WASM",
+    owner="Consonance",
+    triggers=("schedule", "workflow_dispatch"),
+    jobs=(
+        Job("Portable Package", "full", 30),
+        Job("Workload Cycles — <Host>", "full", 30,
+            ignored_tests=("consonance-wasm::session measure_capture_restore_across_memory_sizes_and_history_lengths",)),
+    ),
+)
+
 WORKFLOWS = (
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
     CONSONANCE_CHECKS,
+    CONSONANCE_WASM_CHECKS,
+    CONSONANCE_WASM_BENCHMARKS,
     CONSONANCE_ANALYSIS,
     CONSONANCE_HARDWARE,
     CONSONANCE_RUNTIME,
@@ -656,6 +691,9 @@ MEDIA_REQUIRED = {
 
 # Component ownership of the Miri targets declared in `miri_scope.py`.
 MIRI_OWNERS = {
+    "consonance-wasm-validator": "Consonance",
+    "consonance-wasm-imports": "Consonance",
+    "nes-wasm-guest": "Harmony",
     "vmm-core": "Consonance",
     "hypercall-doorbell": "Consonance",
     "hypercall-doorbell-round-trip": "Consonance",

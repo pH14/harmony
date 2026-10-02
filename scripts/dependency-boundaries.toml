@@ -21,6 +21,7 @@ execution_core = [
     "consonance/vmm-backend",
     "consonance/vmm-core",
     "consonance/vtime",
+    "consonance/wasm/runtime",
 ]
 platform_contracts = [
     "consonance/control-proto",
@@ -31,6 +32,7 @@ platform_contracts = [
 ]
 consonance_client = [
     "consonance/client",
+    "consonance/wasm",
     "consonance/hypercall-doorbell",
 ]
 workload_support = [
@@ -39,6 +41,8 @@ workload_support = [
     "consonance/oci",
     "workloads/nes-protocol",
     "workloads/nes-machine",
+    "workloads/nes-agent",
+    "consonance/wasm/guest",
 ]
 guest_linux_platform = [
     "consonance/harmony-linux/runtime-fixture",
@@ -46,6 +50,8 @@ guest_linux_platform = [
 ]
 workload_packages = [
     "workloads/nes-guest",
+    "workloads/nes-wasm",
+    "workloads/nes-wasm/guest",
     "workloads/fault-policy",
     "workloads/faults",
     "workloads/nes",
@@ -53,6 +59,7 @@ workload_packages = [
 ]
 composition_apps_tests = [
     "workloads/tools",
+    "workloads/nes-wasm/qualification/wasmi",
     "cli",
     "consonance/control-proto/fuzz",
     "consonance/telemetry",

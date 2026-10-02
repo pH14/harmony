@@ -1,0 +1,140 @@
+--- a/src/engine/translator/instr_encoder.rs
++++ b/src/engine/translator/instr_encoder.rs
+@@ -104,12 +104,16 @@
+ pub struct InstrSequence {
+     /// Already encoded [`Instruction`] words.
+     instrs: Vec<Instruction>,
++    harmony_positions: Vec<[u64; 2]>,
++    harmony_position: u64,
+ }
+ 
+ impl InstrSequence {
+     /// Resets the [`InstrSequence`].
+     pub fn reset(&mut self) {
+         self.instrs.clear();
++        self.harmony_positions.clear();
++        self.harmony_position = 0;
+     }
+ 
+     /// Returns the next [`Instr`].
+@@ -125,6 +129,7 @@
+     fn push(&mut self, instruction: Instruction) -> Result<Instr, Error> {
+         let instr = self.next_instr();
+         self.instrs.push(instruction);
++        self.harmony_positions.push([self.harmony_position; 2]);
+         Ok(instr)
+     }
+ 
+@@ -145,6 +150,7 @@
+     /// If there are too many instructions in the instruction sequence.
+     fn push_before(&mut self, instr: Instr, instruction: Instruction) -> Result<Instr, Error> {
+         self.instrs.insert(instr.into_usize(), instruction);
++        self.harmony_positions.insert(instr.into_usize(), [self.harmony_position; 2]);
+         let shifted_instr = instr
+             .into_u32()
+             .checked_add(1)
+@@ -168,6 +174,9 @@
+     ///
+     /// If no [`Instruction`] is associated to the [`Instr`] for this [`InstrSequence`].
+     fn get_mut(&mut self, instr: Instr) -> &mut Instruction {
++        let span = &mut self.harmony_positions[instr.into_usize()];
++        span[0] = span[0].min(self.harmony_position);
++        span[1] = span[1].max(self.harmony_position);
+         &mut self.instrs[instr.into_usize()]
+     }
+ 
+@@ -1308,3 +1317,12 @@
+         ));
+     }
+ }
++
++impl InstrEncoder {
++    pub(crate) fn harmony_update_pos(&mut self, position: usize) {
++        self.instrs.harmony_position = position as u64;
++    }
++    pub(crate) fn harmony_take_positions(&mut self) -> Vec<[u64; 2]> {
++        core::mem::take(&mut self.instrs.harmony_positions)
++    }
++}
+--- a/src/engine/translator/mod.rs
++++ b/src/engine/translator/mod.rs
+@@ -697,7 +697,7 @@
+         Ok(())
+     }
+ 
+-    fn update_pos(&mut self, _pos: usize) {}
++    fn update_pos(&mut self, pos: usize) { self.alloc.instr_encoder.harmony_update_pos(pos); }
+ 
+     fn finish(
+         mut self,
+@@ -726,8 +726,11 @@
+                 })?;
+         }
+         let func_consts = self.alloc.stack.func_local_consts();
++        let positions = self.alloc.instr_encoder.harmony_take_positions();
+         let instrs = self.alloc.instr_encoder.drain_instrs();
+-        finalize(CompiledFuncEntity::new(len_registers, instrs, func_consts));
++        let mut compiled = CompiledFuncEntity::new(len_registers, instrs, func_consts);
++        compiled.harmony_positions = positions.into_boxed_slice();
++        finalize(compiled);
+         Ok(self.into_allocations())
+     }
+ }
+--- a/src/engine/code_map.rs
++++ b/src/engine/code_map.rs
+@@ -756,6 +756,7 @@
+ /// Meta information about a [`EngineFunc`].
+ #[derive(Debug)]
+ pub struct CompiledFuncEntity {
++    pub(crate) harmony_positions: Box<[[u64; 2]]>,
+     /// The sequence of [`Instruction`] of the [`CompiledFuncEntity`].
+     instrs: Pin<Box<[Instruction]>>,
+     /// The constant values local to the [`EngineFunc`].
+@@ -797,6 +798,7 @@
+             instrs.len(),
+         );
+         Self {
++            harmony_positions: Box::default(),
+             instrs,
+             consts,
+             len_registers,
+@@ -896,3 +898,11 @@
+         Ok((end, end - base))
+     }
+ }
++
++impl CodeMap {
++    pub(crate) fn harmony_source_positions(&self, function: EngineFunc) -> Option<alloc::vec::Vec<[u64; 2]>> {
++        let guard = self.funcs.lock();
++        let FuncEntity::Compiled(compiled) = guard.get(function)? else { return None; };
++        Some(compiled.harmony_positions.to_vec())
++    }
++}
+--- a/src/func/mod.rs
++++ b/src/func/mod.rs
+@@ -522,3 +522,13 @@
+         TypedFunc::new(ctx, *self)
+     }
+ }
++
++impl Func {
++    pub fn harmony_source_positions<T>(&self, ctx: impl crate::AsContext<Data = T>) -> Option<(u32, alloc::vec::Vec<[u64; 2]>)> {
++        let ctx = ctx.as_context();
++        let FuncEntity::Wasm(body) = ctx.store.inner.resolve_func(self) else { return None; };
++        let function = body.func_body();
++        let positions = ctx.store.engine().harmony_source_positions(function)?;
++        Some((function.harmony_index(), positions))
++    }
++}
+--- a/src/engine/mod.rs
++++ b/src/engine/mod.rs
+@@ -743,3 +743,9 @@
+         self.stacks.lock().recycle(stack)
+     }
+ }
++
++impl Engine {
++    pub(crate) fn harmony_source_positions(&self, function: EngineFunc) -> Option<alloc::vec::Vec<[u64; 2]>> {
++        self.inner.code_map.harmony_source_positions(function)
++    }
++}

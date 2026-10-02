@@ -1,0 +1,27 @@
+[package]
+name = "harmony-wasmi"
+version = "0.46.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = ["std"]
+std = ["wasmi_core/std", "wasmi_collections/std", "spin/std", "arrayvec/std"]
+wat = ["dep:wat"]
+extra-checks = []
+prefer-btree-collections = ["wasmi_collections/prefer-btree-collections"]
+hash-collections = ["wasmi_collections/hash-collections"]
+
+[dependencies]
+wat = { version = "=1.236.0", optional = true }
+arrayvec = { version = "=0.7.8", default-features = false }
+multi-stash = "=0.2.0"
+smallvec = { version = "=1.16.2", features = ["union"] }
+spin = { version = "=0.9.9", default-features = false, features = ["mutex", "spin_mutex", "rwlock"] }
+wasmi_collections = { version = "=0.46.0", default-features = false }
+wasmi_core = { version = "=0.46.0", default-features = false }
+wasmi_ir = { version = "=0.46.0", default-features = false }
+wasmparser = { version = "=0.228.0", default-features = false, features = ["validate", "features"] }
+
+[lib]
+name = "wasmi"

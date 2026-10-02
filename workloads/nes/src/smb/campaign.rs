@@ -49,7 +49,19 @@ use machine::{Machine, quicknes::QuickNesMachine};
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-use machine::consonance::{ConsonanceMachine, ConsonancePortable, identity as consonance_identity};
+use machine::consonance::identity as consonance_identity;
+#[cfg(all(
+    not(miri),
+    any(
+        feature = "wasm",
+        all(
+            feature = "consonance",
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
+))]
+use machine::consonance::{ConsonanceMachine, ConsonancePortable};
 
 pub use crate::search::campaign::{
     CampaignAdmissionDecision as SmbCampaignAdmissionDecision,
@@ -112,6 +124,11 @@ enum SmbBackend {
         kernel: Vec<u8>,
         initramfs: Vec<u8>,
     },
+    #[cfg(feature = "wasm")]
+    Wasm {
+        package: std::sync::Arc<nes_wasm::Package>,
+        seed: u64,
+    },
 }
 
 fn quicknes_identity(core_sha256: &str) -> String {
@@ -153,21 +170,36 @@ impl SmbMachineKind<Vec<u8>> for QuickNesMachine {
             SmbBackend::Consonance { .. } => {
                 Err("SMB backend does not match the direct machine type".to_owned())
             }
+            #[cfg(feature = "wasm")]
+            SmbBackend::Wasm { .. } => {
+                Err("SMB backend does not match the direct machine type".into())
+            }
         }
     }
 }
 
 #[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+    not(miri),
+    any(
+        feature = "wasm",
+        all(
+            feature = "consonance",
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
 ))]
 impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
     fn new_smb_target(
         game: &SmbGame<Self, ConsonancePortable>,
     ) -> Result<SmbTarget<Self, ConsonancePortable>, String> {
         match &game.backend {
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
+                not(miri)
+            ))]
             SmbBackend::Consonance { kernel, initramfs } => {
                 let machine =
                     ConsonanceMachine::new(kernel, initramfs).map_err(|error| error.to_string())?;
@@ -179,6 +211,13 @@ impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
                 }
                 SmbTarget::from_machine(machine).map_err(|error| error.to_string())
             }
+            #[cfg(feature = "wasm")]
+            SmbBackend::Wasm { package, seed } => SmbTarget::from_machine(
+                package
+                    .machine(&game.rom, *seed)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string()),
             SmbBackend::QuickNes => Err("SMB backend does not match Consonance".to_owned()),
         }
     }
@@ -251,6 +290,32 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
     }
 }
 
+#[cfg(all(feature = "wasm", not(miri)))]
+impl SmbGame<ConsonanceMachine, ConsonancePortable> {
+    pub fn new_wasm(
+        rom: &[u8],
+        package: nes_wasm::Package,
+        seed: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            rom: rom.to_vec(),
+            core_path: PathBuf::new(),
+            core_sha256: String::new(),
+            identity: format!(
+                "{};result_digest=postcard-1.1.3-sha256-hex-v2",
+                package.identity(rom)?
+            ),
+            backend: SmbBackend::Wasm {
+                package: std::sync::Arc::new(package),
+                seed,
+            },
+            machine: PhantomData,
+            #[cfg(test)]
+            loopback: false,
+        })
+    }
+}
+
 impl<M, P> SmbGame<M, P> {
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
@@ -261,6 +326,8 @@ impl<M, P> SmbGame<M, P> {
     pub fn snapshot_checkpoint_format(&self) -> &'static str {
         match &self.backend {
             SmbBackend::QuickNes => SNAPSHOT_CHECKPOINT_FORMAT,
+            #[cfg(feature = "wasm")]
+            SmbBackend::Wasm { .. } => "smb-wasm-snapshot-checkpoint-v1",
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",

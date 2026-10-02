@@ -192,3 +192,22 @@ selection, and passes `LD_BIND_NOW=1` to PID 1 before its libc startup. Custom
 command lines used for XSAVE qualification must retain those settings. The
 kernel, pinned runtime re-execution, and admitted workload environment have
 separate checks; default boot arguments alone do not certify an arbitrary image.
+
+The portable `session::SearchSession` contract and snapshot types build without
+`in-process`, KVM, HVF, a kernel, or the worker launcher. Capabilities explicitly
+advertise stopped observations, machine effects, portable snapshots, and fresh
+process restore. `read_observation` reads registered ranges while stopped; hardware
+workers forward that read through their existing protocol. The workload adapter takes
+a `Box<dyn SearchSession>` through `from_session`; its hardware constructor is
+selected by the separate `machine/hardware` feature.
+
+The coordinated SDK extraction is byte-for-byte the rules from UML revision
+`8b273c921`. `environment::sdk` is shared by the VMM and UML bridge; the WASM
+backend consumes those same rules. The UML execution implementation is not included.
+
+`SharedState` exposes immutable chunk sharing for portable execution hosts.
+`appended` preserves complete prefix chunks and copies only the partial tail and
+new bytes; capture clones the shared root. Its incremental SHA-256 digest is
+independent of append partitioning. Sparse snapshot exports reuse matching
+chunks through their optional base, while host backends can place evidence
+chunks into cache page deltas to avoid copying full history at each checkpoint.

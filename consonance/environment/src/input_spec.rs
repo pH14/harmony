@@ -57,7 +57,7 @@ pub struct InputSpec {
     config: ServiceConfig,
     effects: BTreeMap<u64, Effect>,
     reseeds: BTreeMap<u64, u64>,
-    payloads: Option<Vec<Vec<u8>>>,
+    payloads: Option<Arc<Vec<Vec<u8>>>>,
     answers: BTreeMap<(u64, u16, u64), Answer>,
 }
 impl InputSpec {
@@ -88,10 +88,10 @@ impl InputSpec {
         &self.reseeds
     }
     pub fn payloads(&self) -> Option<&[Vec<u8>]> {
-        self.payloads.as_deref()
+        self.payloads.as_deref().map(Vec::as_slice)
     }
     pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) {
-        self.payloads = payloads;
+        self.payloads = payloads.map(Arc::new);
     }
     pub fn record_reseed(&mut self, at: u64, seed: u64) {
         self.reseeds.insert(at, seed);
@@ -131,7 +131,7 @@ impl InputSpec {
             ));
         }
         let mut env = RecordedEnv::new(self.seed, handler);
-        env.set_payloads(self.payloads.clone())?;
+        env.set_payloads(self.payloads.as_deref().cloned())?;
         for (&(at, service, request), answer) in &self.answers {
             env.record_service_request(at, service, request, answer.clone());
         }
@@ -157,7 +157,7 @@ impl InputSpec {
             Some(payloads) => {
                 out.push(1);
                 out.extend((payloads.len() as u32).to_le_bytes());
-                for p in payloads {
+                for p in payloads.iter() {
                     put(&mut out, p);
                 }
             }
@@ -222,7 +222,7 @@ impl InputSpec {
                 for _ in 0..count {
                     payloads.push(r.bytes()?.to_vec());
                 }
-                Some(payloads)
+                Some(Arc::new(payloads))
             }
             _ => return Err(ChannelError::Malformed),
         };
