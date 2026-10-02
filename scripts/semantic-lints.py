@@ -340,7 +340,11 @@ def _in_program_scope(path: str) -> bool:
         return False
     name = os.path.basename(path)
     if path.endswith(".rs"):
-        return "/src/bin/" in f"/{path}"
+        _, marker, entry = f"/{path}".partition("/src/bin/")
+        if not marker:
+            return False
+        parts = entry.split("/")
+        return len(parts) == 1 or (len(parts) == 2 and parts[1] == "main.rs")
     return path.endswith((".py", ".sh")) and not (
         name.startswith("test_") or ".test." in name)
 
