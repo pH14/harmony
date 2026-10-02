@@ -228,6 +228,10 @@ The nested-host job accepts Intel VMX or AMD SVM with NPT, selected from
 KVM-supported CPUID. The matching kernel includes both backends. The state
 format and exposed vendor capabilities bind snapshot identity; snapshots cannot
 cross vendors. SVM restores also compare GIF immediately at the lifecycle cut.
+Manual runs can require `nested_vendor=vmx` or `nested_vendor=svm`; the default
+`auto` accepts either. A vendor mismatch fails before compilation. The early
+`nested-host-preflight-RUN` artifact retains the CPU and KVM evidence while
+the build is still running, so a requested vendor is observable immediately.
 
 A test marked `#[ignore]` needs something a plain `cargo test` lacks, such as a
 hypervisor or a built guest image. Each one has a runner in
