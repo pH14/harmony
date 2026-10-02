@@ -399,7 +399,7 @@ failures remain in every row; milestone timings are censored at each run's budge
 register a **development diagnostic**
 using historical seeds 3, 4, and 5: four workers, 8 GiB logical archive,
 3 million executions, 400 million admitted frames, and
-`one_to_six`. Every arm uses the same current adapter and executable. Only the
+`one_doubling_while_in_place_up_to_64`. Every arm uses the same current adapter and executable. Only the
 mutation mixture differs. These restore the earlier
 work/memory scale. They do not reproduce the historical improvement-replay
 implementation, exact reservation schedule, platform, or action stream. These reused seeds are not

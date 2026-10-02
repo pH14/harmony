@@ -147,7 +147,7 @@
   "frames": 1000000000,
   "mixture": "energy_splice:6",
   "result_slots": 2,
-  "suffix": "one_to_six",
+  "suffix": "one_doubling_while_in_place_up_to_64",
   "verification": "witness",
   "wall_seconds": 14400,
   "window": 2
