@@ -2,18 +2,6 @@
 name: Checks / Consonance / Guest Runtime Qualification
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - flake.nix
-      - flake.lock
-      - consonance/harmony-linux/**
-      - consonance/hypercall-proto/**
-      - consonance/hypercall-doorbell/**
-      - consonance/execution-proto/**
-      - consonance/process-proto/**
   schedule:
     - cron: "11 5 * * *"
   workflow_dispatch:
@@ -39,37 +27,15 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Install pinned Rust toolchains
+      - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
-          rustup toolchain install "$HARMONY_GUEST_TOOLCHAIN" --profile minimal --component rust-src --target x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-      - name: Compute platform source key
-        id: source
-        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
-        id: runtime
+      - name: Prepare the exact runtime
+        uses: ./.github/actions/exact-platform-runtime
         with:
-          path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-      - name: Build exact platform artifacts
-        if: steps.runtime.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cpio python3
-          consonance/harmony-linux/scripts/build-platform-runtime.sh --runtime-payloads "$PWD/runtime-payloads"
-          export HARMONY_NIX_RUNTIME_INIT="$PWD/runtime-payloads/init.sh"
-          export HARMONY_NIX_RUNTIME_SUPERVISOR="$PWD/runtime-payloads/harmony-supervisor"
-          export HARMONY_NIX_RUNTIME_MANIFEST="$PWD/runtime-payloads/runtime-payloads.json"
-          nix run .#guest-images -- --oci-runtime --output "$PWD/nix-guest-output"
-          consonance/harmony-linux/scripts/build-platform-runtime.sh --from-nix "$PWD/nix-guest-output"
-      - name: Verify exact source and artifact manifest
-        run: |
-          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
-            --artifacts consonance/harmony-linux/build/x86_64 --output platform-smoke/provenance.json
-          python3 -c 'import json; assert json.load(open("platform-smoke/provenance.json"))["scope"] == "exact-input"'
+          report: platform-smoke
       - name: Enable hardware backend
         run: |
           test -c /dev/kvm
@@ -81,18 +47,6 @@ jobs:
             timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
               2>&1 | tee "platform-smoke/replay-$repetition.log"
           done
-      - name: Publish qualified exact artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-          path: consonance/harmony-linux/build/x86_64
-          if-no-files-found: error
-          retention-days: 30
-      - uses: actions/cache/save@v4
-        if: steps.runtime.outputs.cache-hit != 'true'
-        with:
-          path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
