@@ -20,7 +20,7 @@ Every target image meets three conditions:
 
 | Path | Contents |
 | --- | --- |
-| `c/`, `rust/`, `go/`, `python/` | One `Dockerfile` per language, with a `language-base` target |
+| `c/`, `rust/`, `go/`, `python/`, `java/` | One `Dockerfile` per language, with a `language-base` target |
 | `runtime/` | Shared build of libvoidstar, the fault runtime, the park launcher and the GCC fixture |
 | `compose.Dockerfile` | Copies the runtime into a language base image |
 | `vendor/` | The unmodified Antithesis C forwarding header |
