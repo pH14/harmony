@@ -214,6 +214,9 @@ or 24.04 image; its label does not guarantee a CPU vendor. A vendor mismatch
 fails before compilation. The early
 `nested-host-preflight-RUN` artifact retains the CPU and KVM evidence while
 the build is still running, so a requested vendor is observable immediately.
+After runner setup and compilation, the job records KVM device permissions,
+refreshes access, and repeats the capability probe before booting L1. Its
+result must match the early probe.
 
 A test marked `#[ignore]` needs something a plain `cargo test` lacks, such as a
 hypervisor or a built guest image. Each one has a runner in
