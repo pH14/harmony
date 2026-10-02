@@ -412,8 +412,19 @@ splice that opens nothing loses its share sooner than a short draw. The live
 progress line counts `splice_jobs`, `splice_actions` and `splice_cost` under
 `coordinator`.
 
-Splice preparation validates the donor's complete prefix without copying it,
-then walks the leaf's suffix and copies only the requested leading tail. Reaching the same prefix node after the declared
+The donor is the holder of the parent's slot whose deepest descendant ranks
+highest, read from the slot's active holders when the splice is prepared. Each
+admission records itself as the deepest descendant of its ancestors until an
+ancestor already holds a deeper one, and that walk follows parent positions
+stored beside the entries.
+
+The archive builds each entry's input node by extending its parent's node with
+the entry's suffix, so a donor that owns its input node has an intact prefix of
+its recorded length. Checkpoint restore checks that length once for every entry
+that owns its node, and splice preparation then trusts such a donor. A donor
+that does not own its node has its complete prefix validated without copying
+it. Preparation then walks the leaf's suffix and copies only the requested
+leading tail. Reaching the same prefix node after the declared
 suffix length reuses the donor validation. If prefix nodes differ, their actions
 are compared while validating the leaf prefix, so equivalent noncanonical paths
 and invalid-path error precedence retain their previous behavior. Preparation

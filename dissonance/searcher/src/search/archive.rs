@@ -493,7 +493,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selector_indexed: bool,
     active_ids: ActiveIds,
     tiers: BTreeMap<K::Progress, BTreeMap<K::Place, CellMembers>>,
-    donors: BTreeMap<Slot<K>, BTreeSet<DonorRank<K>>>,
+    #[serde(skip)]
+    parent_index: Vec<usize>,
     preserve_inactive_snapshots: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
@@ -535,46 +536,6 @@ struct CellState {
 #[derive(Default, Deserialize, Serialize)]
 struct CellMembers {
     ids: BTreeSet<usize>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(bound = "")]
-struct DonorRank<K: ArchiveKey> {
-    leaf_key: K,
-    leaf_id: usize,
-    donor_id: usize,
-}
-
-impl<K: ArchiveKey> Clone for DonorRank<K> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<K: ArchiveKey> Copy for DonorRank<K> {}
-
-impl<K: ArchiveKey> PartialEq for DonorRank<K> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl<K: ArchiveKey> Eq for DonorRank<K> {}
-
-impl<K: ArchiveKey> PartialOrd for DonorRank<K> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<K: ArchiveKey> Ord for DonorRank<K> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        leaf_order(
-            (self.leaf_key, self.leaf_id),
-            (other.leaf_key, other.leaf_id),
-        )
-        .then_with(|| self.donor_id.cmp(&other.donor_id))
-    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -710,15 +671,43 @@ impl<A: Clone + Ord> InputIndex<A> {
         node == 0
     }
 
+    fn depths(&self) -> Vec<Option<usize>> {
+        let mut known: Vec<Option<Option<usize>>> = vec![None; self.nodes.len()];
+        if let Some(root) = known.first_mut() {
+            *root = Some(Some(0));
+        }
+        let mut path = Vec::new();
+        for start in 0..self.nodes.len() {
+            let mut node = start;
+            let mut depth = loop {
+                if let Some(depth) = known[node] {
+                    break depth;
+                }
+                if path.len() >= self.nodes.len() {
+                    break None;
+                }
+                path.push(node);
+                match self.step_back(node) {
+                    Some((parent, _)) if parent < self.nodes.len() => node = parent,
+                    _ => break None,
+                }
+            };
+            while let Some(node) = path.pop() {
+                depth = depth.and_then(|depth| depth.checked_add(1));
+                known[node] = Some(depth);
+            }
+        }
+        known.into_iter().map(Option::flatten).collect()
+    }
+
     fn materialize_splice_tail(
         &self,
-        mut donor: usize,
-        donor_len: usize,
+        (mut donor, donor_len, donor_id): (usize, usize, u64),
         mut leaf: usize,
         leaf_len: usize,
         limit: usize,
     ) -> Result<Vec<A>, &'static str> {
-        if !self.prefix_is_available(donor, donor_len) {
+        if self.owner(donor) != Some(donor_id) && !self.prefix_is_available(donor, donor_len) {
             return Err("splice donor prefix is unavailable");
         }
         if leaf_len > self.nodes.len().saturating_sub(1) {
@@ -910,6 +899,10 @@ impl ActiveIds {
         self.ids.remove(&id)
     }
 
+    fn contains(&self, id: usize) -> bool {
+        self.ids.contains(&id)
+    }
+
     fn ids(&self) -> impl Iterator<Item = usize> + '_ {
         self.ids.iter().copied()
     }
@@ -960,7 +953,7 @@ where
             selector_indexed: false,
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
-            donors: BTreeMap::new(),
+            parent_index: Vec::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
@@ -1436,7 +1429,7 @@ where
         let selector_indexed = std::mem::take(&mut self.selector_indexed);
         self.active_ids = ActiveIds::default();
         self.tiers.clear();
-        self.donors.clear();
+        self.parent_index.clear();
         if selector_indexed {
             self.rebuild_selector_index();
         }
@@ -1681,7 +1674,6 @@ where
         self.selector_indexed = true;
         self.active_ids = ActiveIds::from_ids(self.active_ids());
         self.tiers.clear();
-        self.donors.clear();
         let active = self.active_ids.ids().collect::<Vec<_>>();
         for id in active {
             self.insert_active_cell_member(id);
@@ -1786,18 +1778,6 @@ where
         }
         self.active_ids.remove(id);
         let key = self.entries[id].key;
-        let deepest = self.deepest_leaf[id];
-        let slot = slot_of_key(key);
-        if let Some(donors) = self.donors.get_mut(&slot) {
-            donors.remove(&DonorRank {
-                leaf_key: deepest.0,
-                leaf_id: deepest.1,
-                donor_id: id,
-            });
-            if donors.is_empty() {
-                self.donors.remove(&slot);
-            }
-        }
         let Some(places) = self.tiers.get_mut(&key.progress()) else {
             return;
         };
@@ -1816,7 +1796,6 @@ where
 
     fn insert_active_cell_member(&mut self, id: usize) {
         let key = self.entries[id].key;
-        let deepest = self.deepest_leaf[id];
         self.tiers
             .entry(key.progress())
             .or_default()
@@ -1824,36 +1803,19 @@ where
             .or_default()
             .ids
             .insert(id);
-        self.donors
-            .entry(slot_of_key(key))
-            .or_default()
-            .insert(DonorRank {
-                leaf_key: deepest.0,
-                leaf_id: deepest.1,
-                donor_id: id,
-            });
     }
 
-    fn update_index_deepest_leaf(&mut self, id: usize, previous: (K, usize), current: (K, usize)) {
-        if !self.selector_indexed {
-            return;
+    fn sync_parent_index(&mut self) {
+        if self.parent_index.len() > self.entries.len() {
+            self.parent_index.clear();
         }
-        let key = self.entries[id].key;
-        let Some(donors) = self.donors.get_mut(&slot_of_key(key)) else {
-            return;
-        };
-        if !donors.remove(&DonorRank {
-            leaf_key: previous.0,
-            leaf_id: previous.1,
-            donor_id: id,
-        }) {
-            return;
+        for index in self.parent_index.len()..self.entries.len() {
+            let parent = self.entries[index]
+                .parent_id
+                .and_then(|parent| self.id_to_index.get(&parent).copied())
+                .unwrap_or(usize::MAX);
+            self.parent_index.push(parent);
         }
-        donors.insert(DonorRank {
-            leaf_key: current.0,
-            leaf_id: current.1,
-            donor_id: id,
-        });
     }
 
     #[must_use]
@@ -1910,6 +1872,18 @@ where
                 .index_of_id(id)
                 .ok_or("a checkpoint snapshot names a missing archive entry")?;
             self.entries[index].snapshot = Some(Arc::new(snapshot));
+        }
+        self.validate_owned_prefixes()
+    }
+
+    fn validate_owned_prefixes(&self) -> Result<(), &'static str> {
+        let depths = self.input_index.depths();
+        for entry in &self.entries {
+            if self.input_index.owner(entry.input_node) == Some(entry.id)
+                && depths.get(entry.input_node).copied().flatten() != Some(entry.input_len)
+            {
+                return Err("a checkpoint entry's input length does not match its stored prefix");
+            }
         }
         Ok(())
     }
@@ -2269,17 +2243,14 @@ where
         self.opened_cell.push(new_cell);
         self.opened_slot.push(new_slot);
         self.deepest_leaf.push((key, id));
-        let mut ancestor = parent_id;
-        while let Some(current) = ancestor {
-            let previous = self.deepest_leaf[current];
+        self.sync_parent_index();
+        let mut ancestor = parent_id.unwrap_or(usize::MAX);
+        while let Some(previous) = self.deepest_leaf.get(ancestor).copied() {
             if leaf_order(previous, (key, id)) != Ordering::Less {
                 break;
             }
-            self.update_index_deepest_leaf(current, previous, (key, id));
-            self.deepest_leaf[current] = (key, id);
-            ancestor = self.entries[current]
-                .parent_id
-                .and_then(|parent| self.id_to_index.get(&parent).copied());
+            self.deepest_leaf[ancestor] = (key, id);
+            ancestor = self.parent_index[ancestor];
         }
         self.activate_membership(id);
         let carried_in =
@@ -2331,11 +2302,15 @@ where
         self.ensure_selector_index();
         let parent_key = self.entries[parent].key;
         let donor_id = self
-            .donors
+            .slots
             .get(&slot_of_key(parent_key))?
             .iter()
-            .rev()
-            .find_map(|rank| (rank.donor_id != parent).then_some(rank.donor_id))?;
+            .copied()
+            .filter(|id| *id != parent && self.active_ids.contains(*id))
+            .max_by(|left, right| {
+                leaf_order(self.deepest_leaf[*left], self.deepest_leaf[*right])
+                    .then_with(|| left.cmp(right))
+            })?;
         let (leaf_key, leaf_id) = self.deepest_leaf[donor_id];
         if !leaf_advances((leaf_key, leaf_id), (parent_key, parent)) {
             return None;
@@ -2377,8 +2352,11 @@ where
             return Err("splice donor is outside the parent's selection cell");
         }
         let suffix = self.input_index.materialize_splice_tail(
-            donor_entry.input_node,
-            donor_entry.input_len,
+            (
+                donor_entry.input_node,
+                donor_entry.input_len,
+                donor_entry.id,
+            ),
             leaf_entry.input_node,
             leaf_entry.input_len,
             longest_tail,
@@ -3346,7 +3324,7 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState, DonorRank,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY,
         MAX_TIER_RANK_SHIFT, SelectorAccounting, SelectorDraw, SelectorPath,
         checked_tier_rank_shift, tier_weight,
@@ -6719,7 +6697,7 @@ mod tests {
         assert_eq!(archive.active_ids(), vec![0, 3]);
     }
     #[test]
-    fn live_donor_index_tracks_a_new_deepest_descendant() {
+    fn deepest_leaf_tracks_a_new_deepest_descendant() {
         let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         let root_key = FlatKey([1, 7, 9, 0]);
         let child_key = FlatKey([2, 7, 9, 0]);
@@ -6751,20 +6729,7 @@ mod tests {
             .expect("insert child")
             .expect("retain child");
 
-        let donors = archive
-            .donors
-            .get(&super::slot_of_key(root_key))
-            .expect("root slot donors");
-        assert!(donors.contains(&DonorRank {
-            leaf_key: child_key,
-            leaf_id: child,
-            donor_id: root,
-        }));
-        assert!(!donors.contains(&DonorRank {
-            leaf_key: root_key,
-            leaf_id: root,
-            donor_id: root,
-        }));
+        assert_eq!(archive.deepest_leaf[root], (child_key, child));
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -7136,6 +7101,16 @@ mod tests {
         splice_tail_fixture_with_actions(prefix, tail, |action| action)
     }
 
+    fn unowned_splice_tail_fixture(
+        prefix: usize,
+        tail: usize,
+    ) -> (Archive<u8, SpliceKey, (), ()>, [usize; 3]) {
+        let (mut archive, ids) = splice_tail_fixture(prefix, tail);
+        let donor_node = archive.entries[ids[1]].input_node;
+        archive.input_index.set_owner(donor_node, None);
+        (archive, ids)
+    }
+
     fn compaction_fixture(branches: u16, depth: usize, prune: bool) -> InputIndex<u16> {
         let mut index = InputIndex::default();
         let mut leaves = Vec::new();
@@ -7320,7 +7295,7 @@ mod tests {
     #[test]
     fn bounded_splice_tails_preserve_errors_and_validation_order() {
         for case in 0..12 {
-            let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
+            let (mut archive, [parent, donor, leaf]) = unowned_splice_tail_fixture(4, 6);
             let donor_node = archive.entries[donor].input_node;
             let leaf_node = archive.entries[leaf].input_node;
             match case {
@@ -7436,10 +7411,36 @@ mod tests {
     }
 
     #[test]
+    fn restore_rejects_an_owned_entry_whose_length_misses_its_prefix() {
+        let (archive, [_, donor, _]) = splice_tail_fixture(4, 6);
+        let bytes = postcard::to_stdvec(&archive).expect("encode archive");
+        let mut restored: Archive<u8, SpliceKey, (), ()> =
+            postcard::from_bytes(&bytes).expect("decode archive");
+        restored
+            .restore_runtime(|_| 1, None, Vec::new())
+            .expect("restore a consistent archive");
+        restored.entries[donor].input_len += 1;
+        assert_eq!(
+            restored.restore_runtime(|_| 1, None, Vec::new()),
+            Err("a checkpoint entry's input length does not match its stored prefix")
+        );
+        let donor_node = restored.entries[donor].input_node;
+        restored.entries[donor].input_len -= 1;
+        restored.input_index.nodes[donor_node]
+            .as_mut()
+            .unwrap()
+            .parent = Some(donor_node);
+        assert_eq!(
+            restored.restore_runtime(|_| 1, None, Vec::new()),
+            Err("a checkpoint entry's input length does not match its stored prefix")
+        );
+    }
+
+    #[test]
     fn bounded_splice_tails_validate_mixed_prefix_metadata() {
         let mut rand = RomuDuoJrRand::with_seed(423);
         for case in 0..512 {
-            let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
+            let (mut archive, [parent, donor, leaf]) = unowned_splice_tail_fixture(4, 6);
             let node_count = archive.input_index.nodes.len();
             let leaf_node = archive.entries[leaf].input_node;
             let node = archive.input_index.nodes[leaf_node].as_mut().unwrap();
@@ -7465,7 +7466,7 @@ mod tests {
 
     #[test]
     fn bounded_splice_validation_rejects_lengths_exceeding_stored_nodes() {
-        let (mut archive, [parent, donor, leaf]) = splice_tail_fixture(4, 6);
+        let (mut archive, [parent, donor, leaf]) = unowned_splice_tail_fixture(4, 6);
         let donor_node = archive.entries[donor].input_node;
         let donor_parent = archive.input_index.nodes[donor_node]
             .as_ref()
