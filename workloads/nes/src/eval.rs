@@ -4,7 +4,7 @@ use crate::{
     search::{
         archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering, Workload,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, Workload,
             replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
         },
         checkpoint::CheckpointPlan,
@@ -35,10 +35,6 @@ fn objective_within_budget(first_objective_frames: Option<u64>, budget: Option<u
     first_objective_frames.is_some_and(|frames| budget.is_none_or(|limit| frames <= limit))
 }
 
-fn default_result_slots() -> usize {
-    1
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -56,8 +52,6 @@ pub struct Request {
     pub frames: Option<u64>,
     pub memory_mib: usize,
     pub window: usize,
-    #[serde(default = "default_result_slots")]
-    pub result_slots: usize,
     pub wall_seconds: u64,
     pub suffix: String,
     pub mixture: String,
@@ -180,14 +174,9 @@ where
     {
         return Err("search limits must be positive".into());
     }
-    let result_buffering = match request.result_slots {
-        1 => ResultBuffering::OnePerWorker,
-        2 => ResultBuffering::TwoPerWorker,
-        _ => return Err("result_slots must be 1 or 2".into()),
-    };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v2", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
+        &json!({"format":"nes-eval-identity-v3", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -210,7 +199,6 @@ where
         Some(&mut progress),
         CampaignExecutionOptions {
             work_budget: request.frames,
-            result_buffering,
             checkpoints,
             placement: None,
         },

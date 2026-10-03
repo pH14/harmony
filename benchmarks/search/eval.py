@@ -22,7 +22,7 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
-ALLOWED_SEARCH = {'seed','workers','executions','frames','memory_mib','window','result_slots','wall_seconds','suffix','mixture','verification','checkpoint_every','checkpoint_on_progress'}
+ALLOWED_SEARCH = {'seed','workers','executions','frames','memory_mib','window','wall_seconds','suffix','mixture','verification','checkpoint_every','checkpoint_on_progress'}
 
 
 def valid_id(value):
@@ -149,7 +149,6 @@ def expand_suite(suite, selected=None):
                 val=request[field]
                 if type(val) is not int or val<0 or (field!='seed' and val==0): raise ValueError('invalid '+field)
             if request.get('frames') is not None and (type(request['frames']) is not int or request['frames'] <= 0): raise ValueError('invalid frames')
-            if type(request.get('result_slots',1)) is not int or request.get('result_slots',1) not in (1, 2): raise ValueError('result_slots must be 1 or 2')
             cell=f'{name}-s{seed}-w{workers}-m{memory}'
             jobs.append({'id':cell,'case':case,'request':request})
     if selected and set(selected)-names: raise ValueError('unknown selected case')
@@ -397,7 +396,6 @@ def compare(base, candidate):
             r = value['result'] or {}
             progress = value.get('last_progress', {})
             row[label] = {'solved': r.get('solved'), 'frames_to_victory': r.get('frames_to_first_victory'),
-                          'result_slots': value['search_request'].get('result_slots', 1),
                           'stream_sha256': r.get('stream_sha256'),
                           'frames': r.get('frames_emulated', progress.get('execution_work')),
                           'search_seconds': r.get('search_seconds'), 'frames_per_second': r.get('frames_per_second'),

@@ -187,7 +187,7 @@ def world_requests(world: str, count: int) -> list[dict]:
                 "work_budget": 2_000_000,
                 "search": {"suffix": "one_to_six_within_3_max_action_cost_full_hold",
                            "mixture": "energy_splice:6", "stop_on_objective": True},
-                "scale": {"workers": 1, "window": 2, "results_per_worker": 2,
+                "scale": {"workers": 1, "window": 2,
                           "memory_budget_mib": 8192, "archive_entries": 4096,
                           "action_cost_ns": 0, "action_sleep_ns": 0, "snapshot_bytes": 0},
             })

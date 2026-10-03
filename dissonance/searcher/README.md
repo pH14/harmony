@@ -60,18 +60,15 @@ every worker but the first builds its target, and the first worker builds its
 target after the bootstrap target is dropped, so a campaign never holds more
 targets than workers. The first worker's boot time includes that wait.
 
-Workers pull jobs from one shared queue, so an idle worker takes the next
-queued job while another worker is still busy. One bound limits the jobs that
-are queued, running or finished but not yet admitted: workers times
-`ResultBuffering::capacity()`: one per worker by default, and two or sixteen with
-`ResultBuffering::TwoPerWorker` or `ResultBuffering::SixteenPerWorker`. A job takes its place in the bound before it is
-dispatched and releases it at ordered admission, so completed snapshots cannot
-pile up behind a slow job. The logical window,
-selection order, snapshot pins and campaign bytes are the same at any bound. Memory held by finished
+Workers pull jobs from one shared queue ordered by planned finish, so an idle
+worker takes the queued job that admission reaches first while another worker
+is still busy. A short job reserved after longer ones runs before them,
+because admission needs its result first. The coordinator dispatches each job
+when it reserves it, so the admission window alone limits the jobs that are
+queued, running or finished but not yet admitted. Memory held by finished
 results is outside the archive's logical budget and must be measured in host
 RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
-Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
@@ -550,7 +547,12 @@ work, terminal endpoint and execution-failure totals, final totals, logical
 memory categories, and monotonic host time. With
 `HARMONY_COORDINATOR_PROFILE=1`, they also contain coordinator phase durations
 and dispatched replay/suffix action costs. Those costs are declared path cost,
-not measured execution work. Profiling values and clocks never enter
+not measured execution work. The same lines carry `host_times`: the coordinator
+thread's CPU and run-queue time from Linux scheduler statistics, and worker idle
+time split into waiting for admission order and waiting for a job, counted from
+the start of the search in this process. Phase durations are wall time and
+include time the coordinator thread waits for a CPU, so coordinator work per
+job is `coordinator_cpu_ns` over admissions. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
 The campaign report carries `telemetry`, the host measurements that explain
