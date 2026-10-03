@@ -49,7 +49,7 @@ historical_backend "${report_dir}/${CASE_ID}.search.denial.json"
 # failure even when it left a partial report behind.
 status=0
 timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
-    ${launcher[@]+"${launcher[@]}"} "${harmony}" search --package faults \
+    ${launcher[@]+"${launcher[@]}"} "${harmony}" search \
     "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci" \
     "${guest_arguments[@]}" \
     --base-initramfs "${base_initramfs}" \
@@ -57,7 +57,7 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     --executions "${EXECUTIONS}" \
     --ram-mib "${RAM_MIB}" \
     --knobs "${knobs}" \
-    --wall-minutes "${WALL_MINUTES}" \
+    --for "${WALL_MINUTES}m" \
     --out "${out}" >"${console}" 2>&1 || status=$?
 tail -n 80 "${console}" || true
 
@@ -136,7 +136,7 @@ done
 snapshots=$(historical_snapshots "${out}/campaign-summary.json")
 
 outcome=pass
-if (( status != 0 )); then
+if (( status > 2 || (status == 2 && (watchdog_cutoffs == 0 || execution_failures != watchdog_cutoffs)) )); then
     outcome="fail: infra-failure (CLI exit ${status})"
     verdict=1
 elif (( execution_failures > watchdog_cutoffs )); then
@@ -152,7 +152,7 @@ else
 fi
 
 execution_status=complete
-if (( status != 0 || execution_failures > watchdog_cutoffs )); then
+if (( status > 2 || (status == 2 && (watchdog_cutoffs == 0 || execution_failures != watchdog_cutoffs)) || execution_failures > watchdog_cutoffs )); then
     execution_status=infra_failure
 elif (( watchdog_cutoffs > 0 )); then
     execution_status=completed_with_watchdog_cutoffs

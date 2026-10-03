@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
+export BUILDAH_FORMAT=docker
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$repo"
 key=$(python3 - <<'PY'
@@ -15,5 +16,5 @@ print(value.hexdigest())
 PY
 )
 tag="harmony-language-runtime:$key"
-docker build --file workloads/languages/runtime/Dockerfile --tag "$tag" . >&2
+"${HARMONY_CONTAINER_TOOL:-docker}" build --file workloads/languages/runtime/Dockerfile --tag "$tag" . >&2
 printf '%s\n' "$tag"

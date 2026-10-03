@@ -156,10 +156,10 @@ jobs:
         if: steps.scope.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          timeout -k 10 300 taskset -c 0,1 target/release/harmony search --package nes --backend consonance \
+          timeout -k 10 300 taskset -c 0,1 target/release/harmony search --backend kvm \
             --kernel consonance/harmony-linux/build/x86_64/bzImage \
             --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-            --image consonance/harmony-linux/build/nes.oci \
+            --nes-image consonance/harmony-linux/build/nes.oci \
             --core "${NOVA_BUILD}/quicknes_libretro.so" \
             --seed 20260901 --executions 4 \
             --out harmony-nes-check/search "${NOVA_BUILD}/nova.nes" \
@@ -301,15 +301,15 @@ jobs:
           PACKAGE_EXECUTIONS: "8"
         run: |
           rm -rf package-native package-consonance
-          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --package nes --backend native \
+          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --backend native \
             --core "${NOVA_BUILD}/quicknes_libretro.so" \
             --seed "${PACKAGE_SEED}" \
             --executions "${PACKAGE_EXECUTIONS}" \
             --out package-native "${NOVA_BUILD}/nova.nes"
-          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --package nes --backend consonance \
+          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --backend kvm \
             --kernel consonance/harmony-linux/build/x86_64/bzImage \
             --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-            --image consonance/harmony-linux/build/nes.oci \
+            --nes-image consonance/harmony-linux/build/nes.oci \
             --seed "${PACKAGE_SEED}" \
             --executions "${PACKAGE_EXECUTIONS}" \
             --out package-consonance "${NOVA_BUILD}/nova.nes"

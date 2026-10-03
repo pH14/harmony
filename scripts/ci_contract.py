@@ -660,6 +660,8 @@ RELEASE = Workflow(
     jobs=(
         Job("CLI — <Platform>", "full", 60),
         Job("Guest Runtime — <Architecture>", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
+        Job("UML Runtime — <Architecture>", "full", 120),
+        Job("Language SDK", "full", 15),
         Job("Publish", "full", 30),
     ),
 )
@@ -726,7 +728,7 @@ NES_COMPOSITIONS = {
 # composition keeps at least one marker for the backend it is registered with.
 BACKEND_MARKERS = {
     "native": ("--backend native", "nes-eval"),
-    "consonance": ("--backend consonance", "--features consonance",
+    "consonance": ("--backend kvm", "--backend hvf", "--backend uml", "--backend consonance", "--features consonance",
                    "nova-consonance-campaign"),
 }
 

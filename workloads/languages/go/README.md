@@ -46,7 +46,7 @@ path. The selected and excluded lists are kept under `/symbols/stdlib`.
   callbacks. A loop there does not advance virtual time.
 - A garbage collection with 1,048,576 live heap pointers stops the world for
   about 1 ms in the guest. Larger heaps stop it longer. Run
-  `harmony oci run harmony-language-go:local --timeout 120 -- /opt/harmony/fixture gc`
+  `harmony run harmony-language-go:local --for 120s -- /opt/harmony/fixture gc`
   to measure it.
 - Each callback goes through cgo. On the etcd reference the callback path used
   about half of the server's CPU (about 140 ns per callback, natively). The

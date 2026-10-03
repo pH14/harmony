@@ -32,7 +32,7 @@ def verdict(report, summary, assertion, variant, budget, returncode):
     seen = summary.get("assertions", {}).get(assertion, {})
     failures = report.get("execution_failures", 0) or report.get("watchdog_cutoffs", 0)
     unexplained = any(assertion not in b.get("violations", []) for b in report.get("bugs", []))
-    if returncode or failures or unexplained or any(v != assertion for v in violations):
+    if returncode > 1 or failures or unexplained or any(v != assertion for v in violations):
         return "ERROR", violations
     if variant == "correct":
         passed = (not violations and not report.get("bugs") and not report.get("bug_found")
@@ -141,8 +141,8 @@ def main():
                 parser.error(f"missing image {image}; build it with --build")
             run = campaign / f"{case}-{variant}-n{noise}-s{seed}-{uuid.uuid4().hex[:6]}"
             prefix, assertion = CASES[case][1:]
-            command = [str(args.cli.resolve()), "search", "--package", "faults", str(image),
-                       "--backend", "consonance", "--kernel", str(args.kernel.resolve()),
+            command = [str(args.cli.resolve()), "search", str(image),
+                       "--backend", "kvm", "--kernel", str(args.kernel.resolve()),
                        "--base-initramfs", str(args.initramfs.resolve()), "--seed", str(seed),
                        "--executions", str(args.executions), "--ram-mib", str(args.ram_mib),
                        "--knobs", f"{prefix}.correct={int(variant == 'correct')} {prefix}.noise={noise}",

@@ -490,3 +490,9 @@ is separate from repository lint.
 The Guest Memory job includes the nested driver’s portable arithmetic and
 mapping checks. Its mapping composition runs in the bounded Consonance Miri
 matrix; the full matrix interprets the driver library.
+
+The release workflow publishes the CLI, a guest kernel and base initramfs,
+a pinned UML profile, and the source SDK for language preparation. Guest, UML
+and SDK archives carry SHA-256 sidecars. `harmony doctor` and `harmony prepare`
+fetch assets for the CLI version and host architecture into the user data
+cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR`.

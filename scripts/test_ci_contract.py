@@ -328,7 +328,7 @@ class HostCompatibilityTests(unittest.TestCase):
             with self.subTest(job=job["name"]):
                 self.assertIn("cargo nextest run --workspace", commands)
                 self.assertIn("scripts/check-portable-tests.sh", commands)
-                self.assertIn("preflight --json", commands)
+                self.assertIn("doctor --offline --json", commands)
 
     def test_a_host_job_claims_no_live_hypervisor(self):
         text = (ROOT / self.workflow.path).read_text()

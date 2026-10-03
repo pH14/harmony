@@ -51,7 +51,7 @@ input and launches:
 
 The platform runtime supplies `/init`, `/usr/lib/harmony/init`, and
 `/usr/lib/harmony/supervisor` in its own initramfs. Pass the `nes.oci` directory
-to `harmony search --image` or set `HARMONY_NES_IMAGE`.
+to `harmony search --nes-image` or set `nes_image` in `harmony.toml`.
 
 On Linux x86_64 and arm64 the guest SDK uses
 `hypercall_doorbell::linux::DeviceTransport` over the platform-owned

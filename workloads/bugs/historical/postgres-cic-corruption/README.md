@@ -72,7 +72,7 @@ table at fillfactor 10, the `churn` procedure, the `amcheck` extension and
 fillfactor leaves room for HOT versions and spreads the rows over about 2200
 pages, so a build's heap scans take longer than one churn cycle.
 
-`harmony search --package faults` takes the `docker save` tar and reads
+`harmony search` takes the `docker save` tar and reads
 `/etc/harmony/bundle` from its rootfs:
 
 | item | what it runs |
