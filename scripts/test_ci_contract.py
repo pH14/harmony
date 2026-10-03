@@ -119,6 +119,22 @@ class StructureTests(unittest.TestCase):
         for path in sorted(paths):
             with self.subTest(path=path):
                 self.assertTrue(any(covers(path, item) for item in required))
+    def test_uml_finding_replay_stays_with_its_recording_host(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.HARMONY_UML_CAMPAIGN.path).read_text())["jobs"]
+        replays = 0
+        for job in jobs.values():
+            steps = job.get("steps", [])
+            for index, step in enumerate(steps):
+                if "historical-replay.sh reproduce" not in step.get("run", ""):
+                    continue
+                replays += 1
+                earlier = steps[:index]
+                self.assertTrue(any("historical-search.sh" in entry.get("run", "") for entry in earlier))
+                self.assertFalse(any(entry.get("uses", "").startswith("actions/upload-artifact") for entry in earlier))
+                self.assertEqual(step["env"]["BACKEND"], "uml")
+        self.assertEqual(replays, 1)
 
     def test_paths_and_names_are_unique_and_present(self):
         paths = [workflow.path for workflow in ci_contract.WORKFLOWS]

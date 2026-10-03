@@ -197,6 +197,9 @@ when resuming. Checkpoints
 are saved periodically and at normal completion. Abrupt termination can retain
 an earlier checkpoint. A changed seed intentionally starts a new draw sequence.
 
+Seeds and search budgets must fit TOML’s signed 64-bit integer range (up to
+9,223,372,036,854,775,807); out-of-range values fail before creating a run.
+
 ## Saved evidence and exit status
 
 Each run keeps `manifest.json`, `resolved.toml`, immutable prepared artifacts and
@@ -211,7 +214,10 @@ digests, and (for UML) host identity. It uses saved kernel and assembled guest
 bytes without rebuilding or resolving the image tag. It compares the final
 execution digest, terminal condition, assertions, applied actions and recovery
 evidence with the original for supervised scenarios. Plain command replay
-compares the saved serial digest, exit codes and terminal record. A branch's no-recovery semantics survive subsequent
+compares exit codes and the terminal record. Hardware backends also compare the
+full serial digest. UML compares the application-output digest between startup
+and completion markers plus its bridge event digest; the full serial log and its
+digest remain available as diagnostics, including nondeterministic host boot paths. A branch's no-recovery semantics survive subsequent
 replays. Search continuations inherit execution configuration; only seed and
 search budgets may change.
 
@@ -228,3 +234,8 @@ TOML supervision, a logging intervention with observed completion and output,
 repeated prefix replay, checkpoint continuation, and artifact-tampering refusal.
 It needs a container builder and the local guest artifacts. The C language CI
 lane runs this bounded integration check.
+
+`bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS EVIDENCE_DIRECTORY`
+checks plain command replay and replay-of-replay on Linux without hardware
+virtualization, and rejects a planted application-output divergence. The language
+workflow runs it with the C fixture image and a pinned UML profile.

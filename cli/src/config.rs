@@ -224,6 +224,17 @@ impl Source {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("seed", self.seed),
+            ("executions", self.executions),
+            ("wall_seconds", self.wall_seconds.unwrap_or(0)),
+        ] {
+            if value > i64::MAX as u64 {
+                return Err(
+                    format!("{name} exceeds TOML's maximum integer (9223372036854775807)").into(),
+                );
+            }
+        }
         if self.image.is_some() && self.rom.is_some() {
             return Err("choose image or rom, not both".into());
         }

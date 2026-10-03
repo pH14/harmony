@@ -25,15 +25,17 @@ pub fn execute(
             runner::StreamMode::Container
         },
     };
+    let mut uml_events = None;
     let outcome = if c.backend == Backend::Uml {
         let profile = uml::Profile::load(c.uml_profile.as_ref().ok_or("missing UML profile")?)?;
         let mut launch = uml::Launch::new(out.join("uml-work"));
+        fs::create_dir_all(&launch.work_parent)?;
         launch.memory_mib = c.ram_mib;
         launch.bridge = Some(uml::Bridge::new(c.seed));
         launch.wall_limit = spec.wall_budget;
         launch.console_tail_bytes = 16 << 20;
         launch.console_limit_bytes = 16 << 20;
-        launch.kernel_arguments = vec!["rdinit=/init".into()];
+        launch.kernel_arguments = vec!["rdinit=/usr/lib/harmony/init".into()];
         launch.kernel_arguments.extend(c.knobs.iter().cloned());
         let temp = tempfile::NamedTempFile::new()?;
         fs::write(temp.path(), initramfs)?;
@@ -48,6 +50,7 @@ pub fn execute(
             )
             .into());
         }
+        uml_events = Some(uml::event_hash(&exit.events));
         runner::Outcome {
             serial: exit.console,
             steps: exit.events.len() as u64,
@@ -66,14 +69,61 @@ pub fn execute(
     };
     fs::write(out.join("serial.log"), &outcome.serial)?;
     let rc = parse_container_rc(&outcome.serial);
-    let record = serde_json::json!({ "container_rc": rc, "supervisor_failure_rc": parse_supervisor_failure_rc(&outcome.serial),
+    let mut record = serde_json::json!({ "container_rc": rc, "supervisor_failure_rc": parse_supervisor_failure_rc(&outcome.serial),
         "runtime_rc": parse_runtime_rc(&outcome.serial), "startup_rc": parse_startup_rc(&outcome.serial),
         "serial_sha256": crate::runtime::digest(&outcome.serial), "steps": outcome.steps, "terminal": outcome.reason });
+    if let Some(events) = uml_events {
+        record["uml_events_sha256"] = events.into();
+        record["application_sha256"] =
+            crate::runtime::digest(application_output(&outcome.serial)?).into();
+    }
     fs::write(out.join("run.json"), serde_json::to_vec_pretty(&record)?)?;
     if rc.is_none() || parse_supervisor_failure_rc(&outcome.serial).is_some() {
         return Err(format!("guest application did not start or its supervisor failed; inspect {}/serial.log (startup {:?}, supervisor {:?})", out.display(), parse_startup_rc(&outcome.serial), parse_supervisor_failure_rc(&outcome.serial)).into());
     }
     Ok(rc == Some(0))
+}
+
+fn application_output(serial: &[u8]) -> Result<&[u8]> {
+    let start_marker = b"HARMONY_OCI: startup";
+    let end_marker = b"\nHARMONY_OCI_EXIT rc=";
+    let start = serial
+        .windows(start_marker.len())
+        .position(|v| v == start_marker)
+        .ok_or("UML console has no application startup marker")?
+        + start_marker.len();
+    let start = start
+        + serial[start..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .ok_or("incomplete UML startup marker")?
+        + 1;
+    let output = &serial[start..];
+    let end = output
+        .windows(end_marker.len())
+        .rposition(|v| v == end_marker)
+        .ok_or("UML console has no application completion marker")?;
+    Ok(&output[..end])
+}
+
+pub fn equivalent_record(
+    mut expected: serde_json::Value,
+    mut actual: serde_json::Value,
+    backend: Backend,
+) -> bool {
+    if backend == Backend::Uml {
+        for record in [&mut expected, &mut actual] {
+            if !record["application_sha256"].is_string() || !record["uml_events_sha256"].is_string()
+            {
+                return false;
+            }
+            let Some(object) = record.as_object_mut() else {
+                return false;
+            };
+            object.remove("serial_sha256");
+        }
+    }
+    expected == actual
 }
 
 fn parse_container_rc(serial: &[u8]) -> Option<i32> {
@@ -102,6 +152,45 @@ fn parse_marker(serial: &[u8], marker: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uml_replay_checks_application_bytes_and_events_without_host_boot_noise() {
+        let first = b"initrd=/tmp/one uml_dir=/tmp/host-one\nHARMONY_OCI: startup\nhello\nHARMONY_OCI_APP_EXIT rc=0\nHARMONY_OCI_EXIT rc=0\nhost shutdown one\n";
+        let second = b"initrd=/tmp/two uml_dir=/tmp/host-two\nHARMONY_OCI: startup\nhello\nHARMONY_OCI_APP_EXIT rc=0\nHARMONY_OCI_EXIT rc=0\nhost shutdown two\n";
+        assert_eq!(
+            super::application_output(first).unwrap(),
+            super::application_output(second).unwrap()
+        );
+        assert!(super::application_output(b"missing protocol").is_err());
+        assert!(super::application_output(b"HARMONY_OCI: startup\nunfinished").is_err());
+        let expected = serde_json::json!({"serial_sha256": crate::runtime::digest(first), "application_sha256": crate::runtime::digest(super::application_output(first).unwrap()), "uml_events_sha256": "events", "container_rc": 0});
+        let mut actual = expected.clone();
+        actual["serial_sha256"] = crate::runtime::digest(second).into();
+        assert!(super::equivalent_record(
+            expected.clone(),
+            actual.clone(),
+            crate::config::Backend::Uml
+        ));
+        assert!(!super::equivalent_record(
+            expected.clone(),
+            actual.clone(),
+            crate::config::Backend::Kvm
+        ));
+        for field in ["application_sha256", "uml_events_sha256", "container_rc"] {
+            let mut changed = actual.clone();
+            changed[field] = "changed".into();
+            assert!(!super::equivalent_record(
+                expected.clone(),
+                changed,
+                crate::config::Backend::Uml
+            ));
+        }
+        actual.as_object_mut().unwrap().remove("application_sha256");
+        assert!(!super::equivalent_record(
+            expected,
+            actual,
+            crate::config::Backend::Uml
+        ));
+    }
     #[test]
     fn container_rc_parses_last_marker() {
         let serial = b"noise\nHARMONY_OCI_APP_EXIT rc=3\ntail\nHARMONY_OCI_APP_EXIT rc=0\n";

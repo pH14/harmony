@@ -160,17 +160,20 @@ pub fn search(
                 &parent, &original, bug,
             )?)
         };
-        let out = destination.create()?;
-        let mut manifest = original.inherit(&parent, &out, "search")?;
+        let mut config = original.config.clone();
         if let Some(v) = source.seed {
-            manifest.config.seed = v;
+            config.seed = v;
         }
         if let Some(v) = source.executions {
-            manifest.config.executions = v;
+            config.executions = v;
         }
         if let Some(v) = source.wall_seconds {
-            manifest.config.wall_seconds = Some(v);
+            config.wall_seconds = Some(v);
         }
+        config.validate()?;
+        let out = destination.create()?;
+        let mut manifest = original.inherit(&parent, &out, "search")?;
+        manifest.config = config;
         manifest.actions.clear();
         manifest.settle = true;
         manifest.save(&out)?;

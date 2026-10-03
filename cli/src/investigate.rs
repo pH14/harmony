@@ -113,7 +113,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
             let old: serde_json::Value =
                 serde_json::from_slice(&fs::read(source.join("run.json"))?)?;
             let new: serde_json::Value = serde_json::from_slice(&fs::read(out.join("run.json"))?)?;
-            if old != new {
+            if !crate::oci::equivalent_record(old, new, manifest.config.backend) {
                 Err("replay diverged from the recorded command execution".into())
             } else {
                 Ok(0)

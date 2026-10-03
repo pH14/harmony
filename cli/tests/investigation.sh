@@ -46,6 +46,11 @@ PY
 status=0
 "$binary" search --from prefix --executions 4 --for 30s --name neighborhood || status=$?
 test "$status" -le 1
+status=0
+"$binary" search --resume neighborhood --seed 9223372036854775808 --name invalid-seed > invalid-seed.txt 2>&1 || status=$?
+test "$status" -eq 2
+grep -q 'maximum integer' invalid-seed.txt
+test ! -e .harmony/runs/invalid-seed
 printf '{"file":' >> .harmony/runs/neighborhood/checkpoints/checkpoints.jsonl
 status=0
 "$binary" search --resume neighborhood --executions 8 --for 30s --name extended || status=$?
