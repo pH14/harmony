@@ -27,14 +27,16 @@ assert log.count("HARMONY_LANGUAGE_MARKER ") == 20
 PY
 
 if [[ $image == *language-java* ]]; then
+    compiled=(-Xcomp -XX:-TieredCompilation -XX:CompileCommand=quiet
+        '-XX:CompileCommand=compileonly,Fixture::*' '-XX:CompileCommand=compileonly,java.lang.invoke.*::*')
     for boot in 1 2; do
         "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 300 --out "$evidence/xcomp-$boot" \
-            -- /opt/java/bin/java -Xcomp -cp /opt/harmony/java Fixture
+            -- /opt/java/bin/java "${compiled[@]}" -cp /opt/harmony/java Fixture
     done
     python3 "$(dirname "$0")/verify-runs.py" "$evidence/xcomp-1" "$evidence/xcomp-2" \
         --output "$evidence/xcomp-determinism.json"
     "$binary" oci run "$image" --seed "$seed" --ram-mib "$ram" --timeout 300 --out "$evidence/generated" \
-        -- /opt/java/bin/java -Xcomp -cp /opt/harmony/java Fixture generated
+        -- /opt/java/bin/java "${compiled[@]}" -cp /opt/harmony/java Fixture generated
     python3 - "$evidence/generated" <<'PY'
 import json
 import sys
