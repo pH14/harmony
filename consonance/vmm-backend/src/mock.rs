@@ -76,6 +76,7 @@ pub struct MockBackend {
     defer_accept: bool,
     completions: Vec<Completion>,
     dirty_pending: Option<Vec<u64>>,
+    dirty_failure: bool,
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
@@ -102,6 +103,7 @@ impl MockBackend {
             defer_accept: false,
             completions: Vec::new(),
             dirty_pending: None,
+            dirty_failure: false,
             cancellation: None,
         }
     }
@@ -177,6 +179,10 @@ impl MockBackend {
     pub fn enable_dirty_tracking(&mut self) -> &mut Self {
         self.dirty_pending.get_or_insert_with(Vec::new);
         self
+    }
+
+    pub fn fail_next_dirty_drain(&mut self) {
+        self.dirty_failure = true;
     }
 
     pub fn push_dirty_gfns(&mut self, gfns: Vec<u64>) -> &mut Self {
@@ -260,6 +266,9 @@ impl Backend for MockBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        if std::mem::take(&mut self.dirty_failure) {
+            return Err(BackendError::Internal("injected dirty-log failure"));
+        }
         match self.dirty_pending.as_mut() {
             None => Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (mock dirty tracking not enabled)",

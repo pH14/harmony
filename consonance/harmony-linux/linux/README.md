@@ -121,8 +121,54 @@ KVM host. These checks supplement the endpoint oracle; they do not replace it.
 
 ## Direct platform fixtures
 
+The experimental `NESTED_HOST_PROFILE=1` kernel merges
+`x86-nested-host-config-fragment`, builds `KVM`, `KVM_INTEL`, and `KVM_AMD` into the kernel,
+and publishes `bzImage-nested-host` separately after the instruction audit.
+Built-in initialization preserves the no-modules boundary. It is mutually
+exclusive with the traps-off and task-park profiles and requires a matching
+nested-host VMM contract. The instruction baseline must qualify the newly
+compiled KVM paths before publication; a failed audit is a qualification
+failure, not permission to extend the allowlist without reviewing those paths.
+The guest KVM reads its host TSC through `RDMSR(IA32_TSC)`, which the outer
+Consonance MSR filter completes from virtual time. Its ordered counter accessor
+keeps explicit memory fences. The optional VMX hardware preemption timer is
+disabled by default, and the fixture verifies that it remains disabled;
+hardware countdowns cannot use Harmony virtual counter deadlines. Nested-host
+counter baselines are separate from the ordinary kernel's baselines, with
+toolchain-specific selections through `HARMONY_RDTSC_ALLOWLIST` and
+`HARMONY_RDRAND_ALLOWLIST`.
+`HARMONY_BUILD_JOBS` bounds compiler parallelism for small shared-host proofs.
+For a Harmony AMD SVM host, the kernel consumes the contract's frozen CPUID
+TSC/crystal ratio and processor frequency before PIT or APIC calibration.
+This path requires built-in AMD KVM, the Harmony clock request, AMD identity
+and SVM; configurations without AMD KVM compile it out. The fixed crystal
+frequency also initializes the local APIC period before the Harmony clock
+registers, avoiding a native-counter calibration loop during early boot.
+The same named SVM path accepts the empty type-1 PCI bus after its address
+latch round-trip and skips physical AMD northbridge configuration and the
+FCH reset-status probe. The virtual platform has no northbridge register,
+FCH reset-reason register or type-2 configuration ports.
+Guest KVM invalidates the memory slot's cached shadow mappings after every
+automatic bitmap drain while the Harmony clock is active. Hosted Intel can
+otherwise omit the five pages written by a cold inner restore's readback step,
+leaving the next incremental restore with an empty page plan. Rebuilding the
+mappings rearms dirty tracking without replacing the inner VM or copying all
+RAM. This adds MMU faults inside the special guest kernel; manual dirty-log
+protection and stock-clock KVM behavior retain their existing semantics.
+`build-nested-host-fixture.sh OUTPUT` packages `nested-kvm-check.c` with a static
+`NESTED_HOST_BUSYBOX`; the check opens `/dev/kvm`, requires nested state and
+KVM-supported Intel VMX or AMD SVM with NPT, and creates one VM. The fixture
+checks the disabled hardware preemption timer on Intel and reports it as
+inapplicable on AMD. AMD SEV is disabled; this profile hosts ordinary nested
+VMs without memory encryption. The manual Guest Runtime Qualification job builds and boots
+these exact inputs on an x86 runner.
+
 These targets remain direct substrate checks and are independent of the OCI
 runtime assembly:
+
+The OCI runtime assembler accepts `HARMONY_RUNTIME_KERNEL` to identify an
+explicit kernel profile in its manifest, including `bzImage-nested-host`.
+The platform init and supervisor remain explicit, workload-free inputs.
 
 ```sh
 make -C consonance/harmony-linux/linux image
@@ -144,3 +190,10 @@ arm64 musl source, the runc source, and the Go arm64 bootstrap archive.
 
 The reproducibility manifest records the patch series, configuration inputs,
 and generated artifact hashes. Build transcripts are evidence, not inputs.
+
+The nested-host GitHub qualification job uses Ubuntu 22.04 with an explicit
+KVM-supported VMX/SVM and nested-state capacity check before building. Its pinned
+Debian compiler container builds the matching GCC 14 kernel and fixture using
+the nested profile's reviewed instruction baselines. The ordinary guest kernel
+keeps its existing toolchain profiles. Compilation and instruction audits finish
+before the job attempts to boot L1 or run the inner VMM.

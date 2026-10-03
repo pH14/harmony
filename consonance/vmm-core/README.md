@@ -38,8 +38,12 @@ fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor
 fingerprint encodings cover the complete state records used for restore, while
 the complete portable artifact digest covers the same persisted bytes. The
-VMST uses the current version 6 wire format; a present `xsave_restore_bv`
+VMST uses the current version 7 wire format; a present `xsave_restore_bv`
 intentionally changes the VCPU identity.
+Dirty-page drains and resets distinguish unsupported tracking from backend
+errors. Unsupported tracking permits a full capture; an operational error
+retires the live VMM and fails the snapshot instead of publishing partial state.
+
 Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page
 contents. The control server holds a store reference on the image the VM last
@@ -85,10 +89,10 @@ SDK reentry state in the current VM-state container. A terminal restore does not
 enter the guest again.
 
 X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
-flags, in the current VM-state v6 records. Cached PDPTRs are distinct from the
+flags, in the current VM-state records. Cached PDPTRs are distinct from the
 current PDPT contents in guest RAM and must survive restore without reloading
 them from that memory. Every standard-format XSAVE capture retains the original
-`XSTATE_BV` in the v6 tag-15 record, whether or not canonicalization changes the
+`XSTATE_BV` in the tag-15 record, whether or not canonicalization changes the
 x87/SSE init-state bits. The value is validated before restore. It is included in
 both the vCPU identity and the complete VMST identity through the logical
 projection described below. Short or compacted images may omit that optional
@@ -111,11 +115,46 @@ board devices, policy, and records. The arm64 vendor is also used to exercise
 the additive architecture seam on portable mocks and QEMU.
 
 Boot does not require a particular host CPU model, stepping, or microcode.
-Each architecture supplies one guest machine policy; the backend supplies the
+Each architecture supplies a guest machine policy; the backend supplies the
 required virtualization capabilities. The x86 runtime boots controlled Linux on stock KVM; instruction interception
 patches, Multiboot payloads, and the legacy acceptance runner have been retired.
 The x86 policy and snapshot compatibility
 rules are documented in [contracts/x86](contracts/x86/README.md).
+
+`boot_linux_nested_host_virtual_time` composes the separate experimental x86
+nested-host contract with production `KvmBackend`. It selects KVM-supported
+Intel VMX or AMD SVM and binds the vendor's exposed capabilities into snapshot
+contract identity. SVM presents AuthenticAMD, revision 1, the supported ASID
+count and only NPT, NRIPS, VMCB clean bits, flush-by-ASID and decode assists.
+VM_CR and VM_HSAVE_PA use native KVM handling and are saved with all other
+stateful MSRs. HWCR reads return the fixed P0-frequency bit for Linux's
+invariant-TSC check. SYSCFG reads return zero for AMD's fixed-MTRR boot check,
+with DRAM-range modification and memory encryption disabled; writes to either
+fixed MSR are rejected. The matching kernel includes both
+vendor backends. Nested state is carried through CPU records,
+VMST tag 16, raw and component identities, whole-state hashes, and portable
+artifacts. Publication requires L1 outside L2 guest mode; the inner VM remains
+allocated and VMX remains enabled. `nested-driver` qualifies repeated and cold
+outer restores at SDK lifecycle boundaries after inner KVM_RUN has returned.
+The boxed bringup entry point uses the same composition and capability capture
+for the client's dynamically dispatched session backend.
+
+`portable_snapshot::logical_x86_sparse_sidecar` produces a non-mutating identity
+projection for recorded nested campaigns. It validates the complete sidecar and
+CPU records and applies the existing logical XSAVE restore-bitmap rule: presence
+bits for init-valued x87/SSE components normalize, while active components remain
+bound. Every other sidecar field remains encoded. The original portable bytes
+retain the host restore bitmap and remain the input used for restore.
+
+The non-default `harmony_omit_nested_state` compiler configuration is the qualification negative
+control. Snapshot publication replaces captured VMX state with a valid inactive
+header; for enabled SVM it discards the saved GIF flag. Raw CPU observations
+still capture the real state. Uninterrupted and capture-only cases must pass.
+The first restored VMX continuation or SVM control-state readback must fail.
+Production builds, including `--all-features`, retain the complete state.
+The control requires the explicit compiler flag
+`RUSTFLAGS="--cfg harmony_omit_nested_state"`; it is not a Cargo feature.
+A portable live-payload publication test fails under that configuration.
 
 ## Checks
 

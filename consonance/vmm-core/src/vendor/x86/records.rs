@@ -213,6 +213,7 @@ pub(crate) fn vcpu_state_from(s: &VmState) -> vmm_backend::VcpuState {
         msrs: s.msrs.0.clone(),
         xsave: s.xsave.0.clone(),
         xsave_restore_bv: s.xsave_restore_bv,
+        nested_state: s.nested_state.clone(),
     }
 }
 
@@ -226,6 +227,7 @@ pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
     out.msrs = MsrBlock(s.msrs.clone());
     out.xsave = XsaveImage(s.xsave.clone());
     out.xsave_restore_bv = s.xsave_restore_bv;
+    out.nested_state = s.nested_state.clone();
     out.timers = TimerQueueState::default();
 }
 
@@ -879,6 +881,7 @@ mod tests {
             msrs,
             xsave: (0u16..600).map(|i| i as u8).collect(),
             xsave_restore_bv: None,
+            nested_state: None,
         }
     }
 

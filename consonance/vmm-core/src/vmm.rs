@@ -2358,11 +2358,15 @@ where
         self.host_dirty.extend(first..=last);
     }
 
-    pub fn drain_dirty_pages(&mut self) -> Option<Vec<u64>> {
+    pub fn drain_dirty_pages(&mut self) -> Result<Option<Vec<u64>>, VmmError> {
         if self.host_dirty_wholesale {
-            return None;
+            return Ok(None);
         }
-        let mut gfns = self.backend.drain_dirty_pages().ok()?;
+        let mut gfns = match self.backend.drain_dirty_pages() {
+            Ok(gfns) => gfns,
+            Err(vmm_backend::BackendError::Unsupported { .. }) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
         gfns.extend(self.host_dirty.iter().copied());
         self.host_dirty.clear();
         let base = self.ram_base_gpa / 4096;
@@ -2373,13 +2377,18 @@ where
             .collect();
         rel.sort_unstable();
         rel.dedup();
-        Some(rel)
+        Ok(Some(rel))
     }
 
-    pub fn reset_dirty_tracking(&mut self) -> bool {
+    pub fn reset_dirty_tracking(&mut self) -> Result<bool, VmmError> {
+        let tracked = match self.backend.drain_dirty_pages() {
+            Ok(_) => true,
+            Err(vmm_backend::BackendError::Unsupported { .. }) => false,
+            Err(error) => return Err(error.into()),
+        };
         self.host_dirty.clear();
         self.host_dirty_wholesale = false;
-        self.backend.drain_dirty_pages().is_ok()
+        Ok(tracked)
     }
 
     pub(crate) fn on_idle(&mut self) -> Result<Step, VmmError> {
@@ -3163,8 +3172,8 @@ mod tests {
             bytes: vec![0xff; 8],
         })
         .unwrap();
-        assert_eq!(vmm.drain_dirty_pages(), Some(vec![3, 5, 6, 7]));
-        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![3, 5, 6, 7]));
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![]));
     }
 
     #[test]
@@ -3174,7 +3183,7 @@ mod tests {
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         vmm.write_doorbell_response(&[0xAB; 16]).unwrap();
         assert_eq!(
-            vmm.drain_dirty_pages(),
+            vmm.drain_dirty_pages().unwrap(),
             Some(vec![(RESP_GPA as u64) / 4096])
         );
     }
@@ -3186,7 +3195,7 @@ mod tests {
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         vmm.ram_base_gpa = 0x4000_0000;
 
-        let dirty = vmm.drain_dirty_pages().unwrap();
+        let dirty = vmm.drain_dirty_pages().unwrap().unwrap();
         assert_eq!(
             dirty,
             vec![1, 3],
@@ -3205,17 +3214,24 @@ mod tests {
         m.enable_dirty_tracking();
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         vmm.restore_guest_memory(&vec![7u8; TEST_RAM]).unwrap();
-        assert_eq!(vmm.drain_dirty_pages(), None, "untrackable ⇒ no dirty set");
-        assert!(vmm.reset_dirty_tracking(), "re-arm at the new baseline");
-        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
+        assert_eq!(
+            vmm.drain_dirty_pages().unwrap(),
+            None,
+            "untrackable ⇒ no dirty set"
+        );
+        assert!(
+            vmm.reset_dirty_tracking().unwrap(),
+            "re-arm at the new baseline"
+        );
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![]));
     }
 
     #[test]
     fn drain_declines_without_backend_tracking() {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.write_doorbell_response(&[1]).unwrap();
-        assert_eq!(vmm.drain_dirty_pages(), None);
-        assert!(!vmm.reset_dirty_tracking());
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), None);
+        assert!(!vmm.reset_dirty_tracking().unwrap());
     }
 
     #[test]
@@ -3229,9 +3245,9 @@ mod tests {
         vmm.write_guest_pages(&[(2, page_a), (5, page_b)]).unwrap();
         assert_eq!(&vmm.guest_memory()[2 * 4096..3 * 4096], &page_a);
         assert_eq!(&vmm.guest_memory()[5 * 4096..6 * 4096], &page_b);
-        assert_eq!(vmm.drain_dirty_pages(), None);
-        assert!(vmm.reset_dirty_tracking());
-        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), None);
+        assert!(vmm.reset_dirty_tracking().unwrap());
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![]));
     }
 
     #[test]
@@ -3245,7 +3261,7 @@ mod tests {
 
         assert_eq!(vmm.guest_memory(), &before);
         assert!(!vmm.host_dirty_wholesale);
-        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
+        assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![]));
     }
 
     #[test]

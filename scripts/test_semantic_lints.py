@@ -812,15 +812,35 @@ class OneOffProgramTests(RequiresApiKey):
 
     def test_the_question_is_asked_only_of_standalone_programs(self):
         for path in ("consonance/vmm-backend/src/bin/x86_kvm_probe.rs",
+                     "consonance/uml/src/bin/harmony-uml-qualify/main.rs",
                      "scripts/ci_contract.py", "consonance/harmony-linux/linux/build-kernel.sh"):
             with self.subTest(path=path):
                 self.assertIn("one_off_program", LINTS.questions_for(path))
         for path in ("scripts/test_ci_contract.py", "harmony-cli/src/main.rs",
                      "workloads/nes/src/bin/smb-probe.rs", "workloads/nes/tools/fm2_to_prefix.py",
                      "consonance/vmm-backend/tests/hvf_smoke.rs",
+                     "consonance/uml/src/bin/harmony-uml-qualify/boot.rs",
+                     "consonance/uml/src/bin/harmony-uml-qualify/linux/mod.rs",
                      "consonance/vmm-backend/src/hvf.rs", "docs/TESTING.md"):
             with self.subTest(path=path):
                 self.assertNotIn("one_off_program", LINTS.questions_for(path))
+
+    def test_removed_module_names_do_not_select_rust_helpers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            for key, value in [("user.name", "Test"), ("user.email", "test@example.com"),
+                               ("commit.gpgsign", "false")]:
+                subprocess.run(["git", "config", key, value], cwd=root, check=True)
+            self.plant(root, "tool/src/bin/qualify/main.rs", "mod boot;\nfn main() { boot::run(); }\n")
+            self.plant(root, "tool/src/bin/qualify/boot.rs", "pub fn run() {}\n")
+            self.plant(root, "README.md", "The boot module checks startup.\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+            self.plant(root, "README.md", "Startup checks use the qualification suite.\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "update docs"], cwd=root, check=True)
+            self.assertEqual(LINTS.programs_losing_a_caller(root, "HEAD~1"), [])
 
     def test_the_context_lists_every_other_line_that_names_the_program(self):
         with tempfile.TemporaryDirectory() as directory:

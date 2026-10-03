@@ -12,6 +12,7 @@ use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, TerminalReason, Vmm, VmmError};
 
 pub struct X86Devices {
+    pub(crate) nested_host: Option<contract::NestedHostContract>,
     pub(crate) uart: Uart8250,
     pub(crate) lapic: Option<lapic::Lapic>,
     pub(crate) legacy: Option<LegacyPlatform>,
@@ -20,6 +21,7 @@ pub struct X86Devices {
 impl X86Devices {
     pub(crate) fn new() -> Self {
         Self {
+            nested_host: None,
             uart: Uart8250::new(),
             lapic: None,
             legacy: None,
@@ -368,7 +370,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_rdmsr(&mut self, index: u32) -> Result<Step, VmmError> {
-        let disp = contract::rdmsr_disposition(index);
+        let disp = self
+            .devices
+            .nested_host
+            .as_ref()
+            .and_then(|contract| contract.rdmsr_disposition(index))
+            .unwrap_or_else(|| contract::rdmsr_disposition(index));
         self.advance_virtual_time_for_msr(&disp)?;
         loud_msr(
             MsrDir::Read,
@@ -430,7 +437,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
             )?;
         }
         let state = self.backend.save()?;
-        let base = lookup_cpuid(leaf, subleaf);
+        let mut base = lookup_cpuid(leaf, subleaf);
+        if let Some(contract) = &self.devices.nested_host {
+            base = lookup_cpuid_in_model(&contract.cpuid_model(), leaf, subleaf);
+        }
         let resolved = contract::resolve_cpuid(base, state.sregs.cr4, state.xcr0);
         self.backend.complete_arch(X86Completion::Cpuid {
             eax: resolved.eax,
@@ -555,12 +565,26 @@ impl<B: Backend<A = X86>> Vmm<B> {
             pvclock: self.pvclock_snapshot(),
         };
         s.devices = records::encode_device_blob(&dev);
+        if cfg!(harmony_omit_nested_state)
+            && let Some(contract) = &self.devices.nested_host
+        {
+            let format = contract.format();
+            let mut bytes = vmm_backend::arch::x86::inactive_nested_state(format);
+            if format == vmm_backend::arch::x86::NestedFormat::Svm && s.sregs.efer & (1 << 12) != 0
+            {
+                bytes[..2].fill(0);
+            }
+            s.nested_state = Some(bytes);
+        }
         s.contract_hash = self.snapshot_contract_hash_x86();
         s
     }
 
     fn snapshot_contract_hash_x86(&self) -> [u8; 32] {
-        contract::contract_hash()
+        self.devices
+            .nested_host
+            .as_ref()
+            .map_or_else(contract::contract_hash, contract::NestedHostContract::hash)
     }
 
     pub(crate) fn validate_restore_x86(
@@ -569,6 +593,17 @@ impl<B: Backend<A = X86>> Vmm<B> {
     ) -> Result<(VcpuState, u64, X86RestorePrep), VmmError> {
         if s.contract_hash != self.snapshot_contract_hash_x86() {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
+        }
+        match (self.devices.nested_host.as_ref(), &s.nested_state) {
+            (Some(contract), Some(bytes)) => contract
+                .format()
+                .validate(bytes, contract.format().maximum_len())?,
+            (None, None) => {}
+            _ => {
+                return Err(VmmError::ContractViolation(
+                    "nested state does not match the snapshot contract".into(),
+                ));
+            }
         }
         vmm_backend::restore_xsave_image(&s.xsave.0, s.xsave_restore_bv).map_err(|error| {
             VmmError::ContractViolation(format!(
@@ -679,7 +714,14 @@ fn loud_msr(
 }
 
 pub(crate) fn lookup_cpuid(leaf: u32, subleaf: u32) -> vmm_backend::CpuidEntry {
-    let model = contract::cpuid_model();
+    lookup_cpuid_in_model(&contract::cpuid_model(), leaf, subleaf)
+}
+
+fn lookup_cpuid_in_model(
+    model: &vmm_backend::CpuidModel,
+    leaf: u32,
+    subleaf: u32,
+) -> vmm_backend::CpuidEntry {
     let mut leaf_only = None;
     for e in &model.entries {
         if e.leaf == leaf {
@@ -789,6 +831,11 @@ pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
     if let Some(restore_bv) = s.xsave_restore_bv {
         v.extend_from_slice(b"XSRB");
         v.extend_from_slice(&restore_bv.to_le_bytes());
+    }
+    if let Some(bytes) = &s.nested_state {
+        v.extend_from_slice(b"NEST");
+        v.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        v.extend_from_slice(bytes);
     }
     v
 }
@@ -976,6 +1023,9 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
     if let Some(value) = s.xsave_restore_bv {
         out.push(("xsave-restore-bv", dig(&value.to_le_bytes())));
     }
+    if let Some(bytes) = &s.nested_state {
+        out.push(("nested-vmx", dig(bytes)));
+    }
     out.push(("xsave-extended", part(576, xs.len())));
 }
 
@@ -1016,5 +1066,41 @@ mod tests {
         assert_ne!(with_zero, with_two);
         assert_ne!(with_zero, with_three);
         assert_ne!(with_three, with_two);
+    }
+
+    #[test]
+    fn nested_state_binds_raw_and_snapshot_identity_and_requires_the_contract() {
+        let mut state = xsave_state(None);
+        let ordinary = encode_vcpu_state(&state);
+        let mut bytes = vec![0; 128];
+        bytes[4..8].copy_from_slice(&128_u32.to_le_bytes());
+        bytes[8..24].fill(0xff);
+        state.nested_state = Some(bytes.clone());
+        let encoded = encode_vcpu_state(&state);
+        assert!(encoded.starts_with(&ordinary));
+        assert_ne!(encoded, ordinary);
+        state.nested_state.as_mut().unwrap()[8] ^= 1;
+        assert_ne!(encode_vcpu_state(&state), encoded);
+        let mut components = Vec::new();
+        vcpu_components(&state, &mut components);
+        assert!(components.iter().any(|(name, _)| *name == "nested-vmx"));
+
+        let mut backend = vmm_backend::MockBackend::new();
+        backend.set_state(state);
+        let mut vmm = Vmm::new(backend, crate::vmm::GuestRam::new(0x1000).unwrap());
+        let snapshot = vmm.save_vm_state().unwrap();
+        assert_eq!(
+            vm_state::VmState::decode(&snapshot.encode().unwrap()).unwrap(),
+            snapshot
+        );
+        let before = vmm.state_hash().unwrap();
+        assert!(vmm.restore_vm_state(&snapshot).is_err());
+        assert_eq!(before, vmm.state_hash().unwrap());
+        bytes[0] = 1;
+        vmm.backend_mut().set_state(VcpuState {
+            nested_state: Some(bytes),
+            ..Default::default()
+        });
+        assert!(vmm.save_vm_state().is_err());
     }
 }

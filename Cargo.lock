@@ -401,6 +401,7 @@ dependencies = [
  "consonance-client",
  "faults-workload",
  "nes-workload",
+ "nested-driver",
  "oci-support",
  "serde",
  "serde_json",
@@ -409,6 +410,13 @@ dependencies = [
  "thiserror",
  "vmm-backend",
  "vmm-core",
+]
+
+[[package]]
+name = "harmony-sdk"
+version = "0.1.0"
+dependencies = [
+ "hypercall-proto",
 ]
 
 [[package]]
@@ -542,6 +550,25 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "nested-driver"
+version = "0.1.0"
+dependencies = [
+ "consonance-client",
+ "control-proto",
+ "environment",
+ "harmony-sdk",
+ "hypercall-doorbell",
+ "oci-support",
+ "searcher",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "vmm-backend",
+ "vmm-core",
 ]
 
 [[package]]

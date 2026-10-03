@@ -123,6 +123,7 @@ pub fn long_mode_entry(
         msrs: Default::default(),
         xsave: Vec::new(),
         xsave_restore_bv: None,
+        nested_state: None,
     }
 }
 

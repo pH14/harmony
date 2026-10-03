@@ -15,7 +15,9 @@ use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
 #[cfg(test)]
 use crate::arch::x86::X86Exit;
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
+use crate::arch::x86::{
+    CpuidEntry, CpuidModel, MsrFilter, NestedFormat, X86, X86Caps, X86Completion, X86Policy,
+};
 use crate::arch::x86::{
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
 };
@@ -40,6 +42,8 @@ const KVM_X86_SET_MSR_FILTER: u64 = ioc(1, 0xAE, 0xC6, size_of::<kvm_msr_filter>
 const KVM_GET_SREGS2: u64 = ioc(2, 0xAE, 0xCC, size_of::<kvm_sregs2>() as u64);
 const KVM_SET_SREGS2: u64 = ioc(1, 0xAE, 0xCD, size_of::<kvm_sregs2>() as u64);
 const KVM_GET_XSAVE2: u64 = ioc(2, 0xAE, 0xCF, size_of::<kvm_xsave>() as u64);
+const KVM_GET_NESTED_STATE: u64 = ioc(3, 0xAE, 0xBE, 128);
+const KVM_SET_NESTED_STATE: u64 = ioc(1, 0xAE, 0xBF, 128);
 const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
 
 pub struct KvmBackend {
@@ -48,10 +52,13 @@ pub struct KvmBackend {
     run: *mut kvm_run,
     mmap_size: usize,
     xsave2_size: Option<usize>,
+    nested_state_config: Option<(NestedFormat, usize)>,
+    nested_state_guard: crate::arch::x86::NestedStateGuard,
     regions: MemRegions,
     mem_slot_count: u32,
     dirty_log: bool,
     dirty_slots: Vec<(u32, u64, u64)>,
+    mapped_slots: Vec<kvm_userspace_memory_region>,
     unlogged_slot: bool,
     msr_filter: Option<MsrFilter>,
     cpuid_installed: bool,
@@ -100,10 +107,13 @@ impl KvmBackend {
             run,
             mmap_size,
             xsave2_size,
+            nested_state_config: None,
+            nested_state_guard: Default::default(),
             regions: MemRegions::new(),
             mem_slot_count: 0,
             dirty_log: true,
             dirty_slots: Vec::new(),
+            mapped_slots: Vec::new(),
             unlogged_slot: false,
             msr_filter: None,
             cpuid_installed: false,
@@ -127,6 +137,104 @@ impl KvmBackend {
         self.dirty_log = enabled;
     }
 
+    pub fn nested_capabilities(&self) -> Result<(NestedFormat, Option<CpuidEntry>)> {
+        let kvm = Kvm::new().map_err(kvm_err)?;
+        let supported = kvm
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err)?;
+        let vmx = supported
+            .as_slice()
+            .iter()
+            .any(|e| e.function == 1 && e.ecx & (1 << 5) != 0);
+        let svm = supported
+            .as_slice()
+            .iter()
+            .any(|e| e.function == 0x8000_0001 && e.ecx & (1 << 2) != 0);
+        match (vmx, svm) {
+            (true, false) => Ok((NestedFormat::Vmx, None)),
+            (false, true) => {
+                let entry = supported
+                    .as_slice()
+                    .iter()
+                    .find(|e| e.function == 0x8000_000a)
+                    .ok_or(BackendError::Capability {
+                        cap: "SVM CPUID capabilities",
+                    })?;
+                Ok((
+                    NestedFormat::Svm,
+                    Some(CpuidEntry {
+                        leaf: entry.function,
+                        subleaf: entry.index,
+                        subleaf_significant: false,
+                        eax: entry.eax,
+                        ebx: entry.ebx,
+                        ecx: entry.ecx,
+                        edx: entry.edx,
+                    }),
+                ))
+            }
+            _ => Err(BackendError::Capability {
+                cap: "one supported nested x86 vendor",
+            }),
+        }
+    }
+
+    pub fn initialize_nested(
+        &mut self,
+        format: NestedFormat,
+        cpuid: &CpuidModel,
+        indices: &[u32],
+        feature_control: u64,
+    ) -> Result<BTreeMap<u32, u64>> {
+        if self.cpuid_installed || self.msr_filter_installed {
+            return Err(BackendError::Internal(
+                "nested initialization requires a fresh vCPU",
+            ));
+        }
+        let kvm = Kvm::new().map_err(kvm_err)?;
+        let nested_size = kvm.check_extension_int(Cap::NestedState);
+        if nested_size < 128 || nested_size as usize > format.maximum_len() {
+            return Err(BackendError::Capability {
+                cap: "KVM_CAP_NESTED_STATE",
+            });
+        }
+        if self.nested_capabilities()?.0 != format {
+            return Err(BackendError::Capability {
+                cap: "nested x86 vendor mismatch",
+            });
+        }
+        if format == NestedFormat::Svm && !indices.is_empty() {
+            return Err(BackendError::Internal("SVM cannot use VMX capability MSRs"));
+        }
+        self.install_cpuid(cpuid)?;
+        let mut capabilities = BTreeMap::new();
+        if format == NestedFormat::Vmx {
+            let entries: Vec<_> = indices
+                .iter()
+                .map(|&index| kvm_msr_entry {
+                    index,
+                    ..Default::default()
+                })
+                .collect();
+            let mut msrs = Msrs::from_entries(&entries)
+                .map_err(|_| BackendError::Internal("VMX MSR list too large"))?;
+            let got = self.vcpu.get_msrs(&mut msrs).map_err(kvm_err)?;
+            capabilities = saved_msrs(msrs.as_slice(), got, indices.len())?;
+            let feature_control = Msrs::from_entries(&[kvm_msr_entry {
+                index: 0x3a,
+                data: feature_control,
+                ..Default::default()
+            }])
+            .map_err(|_| BackendError::Internal("feature-control MSR list too large"))?;
+            if self.vcpu.set_msrs(&feature_control).map_err(kvm_err)? != 1 {
+                return Err(BackendError::Internal("KVM rejected IA32_FEATURE_CONTROL"));
+            }
+        }
+        crate::arch::x86::nested_probe(nested_size as usize)?;
+        self.nested_state_config = Some((format, nested_size as usize));
+        Ok(capabilities)
+    }
+
     pub fn write_guest(&mut self, gpa: Gpa, bytes: &[u8]) -> Result<()> {
         self.regions.write(gpa.0, bytes)
     }
@@ -139,6 +247,20 @@ impl KvmBackend {
         self.cpuid_installed && self.msr_filter_installed
     }
 
+    fn reload_nested_memory_slots(&self) -> Result<()> {
+        crate::arch::x86::reload_nested_memory_slots(
+            &self.mapped_slots,
+            |region| kvm_userspace_memory_region {
+                memory_size: 0,
+                ..region
+            },
+            |region| {
+                // SAFETY: the owned vCPU is stopped; each nonempty slot describes the same fixed-address owned RAM, deletion does not free that RAM, and no guest entry occurs between deletion and replacement.
+                unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err)
+            },
+        )
+    }
+
     fn run_page(&self) -> RunPage {
         // SAFETY: `self.run` is the live `mmap` of `self.mmap_size` bytes, owned
         // by this backend and not aliased by any live reference.
@@ -146,6 +268,7 @@ impl KvmBackend {
     }
 
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        self.nested_state_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
         let next = finish_staged_completion(page, &mut self.pending, &mut self.completion, || {
@@ -184,6 +307,7 @@ impl KvmBackend {
     }
 
     fn enter_guest(&mut self) -> Result<Exit<X86>> {
+        self.nested_state_guard.ensure_healthy()?;
         loop {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
@@ -335,7 +459,7 @@ unsafe fn mmap_kvm_run(_fd: std::os::fd::RawFd, _len: usize) -> Result<*mut kvm_
 #[cfg(not(miri))]
 unsafe fn raw_kvm_run(fd: std::os::fd::RawFd) -> libc::c_int {
     // SAFETY: `KVM_RUN` takes no argument; the kernel uses the mapped `kvm_run`.
-    unsafe { libc::ioctl(fd, KVM_RUN as libc::c_ulong, 0) }
+    unsafe { libc::ioctl(fd, KVM_RUN as _, 0) }
 }
 
 #[cfg(miri)]
@@ -353,7 +477,7 @@ unsafe fn raw_set_msr_filter(fd: std::os::fd::RawFd, filter: &kvm_msr_filter) ->
     let rc = unsafe {
         libc::ioctl(
             fd,
-            KVM_X86_SET_MSR_FILTER as libc::c_ulong,
+            KVM_X86_SET_MSR_FILTER as _,
             filter as *const kvm_msr_filter,
         )
     };
@@ -375,13 +499,7 @@ unsafe fn raw_interrupt(fd: std::os::fd::RawFd, vector: u32) -> Result<()> {
     let irq = kvm_interrupt { irq: vector };
     // SAFETY: the ioctl reads a `kvm_interrupt` from `&irq` (valid for the call)
     // and copies it into the kernel.
-    let rc = unsafe {
-        libc::ioctl(
-            fd,
-            KVM_INTERRUPT as libc::c_ulong,
-            &irq as *const kvm_interrupt,
-        )
-    };
+    let rc = unsafe { libc::ioctl(fd, KVM_INTERRUPT as _, &irq as *const kvm_interrupt) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -399,13 +517,7 @@ unsafe fn raw_interrupt(_fd: std::os::fd::RawFd, _vector: u32) -> Result<()> {
 unsafe fn raw_get_sregs2(fd: std::os::fd::RawFd) -> Result<kvm_sregs2> {
     let mut sregs2 = kvm_sregs2::default();
     // SAFETY: the ioctl writes a full `kvm_sregs2` into our out-param.
-    let rc = unsafe {
-        libc::ioctl(
-            fd,
-            KVM_GET_SREGS2 as libc::c_ulong,
-            &mut sregs2 as *mut kvm_sregs2,
-        )
-    };
+    let rc = unsafe { libc::ioctl(fd, KVM_GET_SREGS2 as _, &mut sregs2 as *mut kvm_sregs2) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -422,13 +534,7 @@ unsafe fn raw_get_sregs2(_fd: std::os::fd::RawFd) -> Result<kvm_sregs2> {
 #[cfg(not(miri))]
 unsafe fn raw_set_sregs2(fd: std::os::fd::RawFd, sregs2: &kvm_sregs2) -> Result<()> {
     // SAFETY: the ioctl reads a full `kvm_sregs2` from `sregs2`.
-    let rc = unsafe {
-        libc::ioctl(
-            fd,
-            KVM_SET_SREGS2 as libc::c_ulong,
-            sregs2 as *const kvm_sregs2,
-        )
-    };
+    let rc = unsafe { libc::ioctl(fd, KVM_SET_SREGS2 as _, sregs2 as *const kvm_sregs2) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -447,7 +553,7 @@ unsafe fn raw_set_sregs2(_fd: std::os::fd::RawFd, _sregs2: &kvm_sregs2) -> Resul
 unsafe fn raw_get_xsave2(fd: std::os::fd::RawFd, len: usize) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     // SAFETY: the ioctl writes exactly `len` bytes into `buf` (its capacity).
-    let rc = unsafe { libc::ioctl(fd, KVM_GET_XSAVE2 as libc::c_ulong, buf.as_mut_ptr()) };
+    let rc = unsafe { libc::ioctl(fd, KVM_GET_XSAVE2 as _, buf.as_mut_ptr()) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -466,7 +572,7 @@ unsafe fn raw_get_xsave2(_fd: std::os::fd::RawFd, len: usize) -> Result<Vec<u8>>
 unsafe fn raw_set_xsave(fd: std::os::fd::RawFd, bytes: &[u8]) -> Result<()> {
     // SAFETY: the ioctl reads the host XSAVE size from `bytes` (its length is the
     // validated `KVM_CAP_XSAVE2` size).
-    let rc = unsafe { libc::ioctl(fd, KVM_SET_XSAVE as libc::c_ulong, bytes.as_ptr()) };
+    let rc = unsafe { libc::ioctl(fd, KVM_SET_XSAVE as _, bytes.as_ptr()) };
     if rc < 0 {
         return Err(BackendError::Io(std::io::Error::last_os_error()));
     }
@@ -487,6 +593,37 @@ impl Drop for KvmBackend {
             libc::munmap(self.run.cast::<libc::c_void>(), self.mmap_size);
         }
     }
+}
+
+#[cfg(not(miri))]
+unsafe fn raw_get_nested_state(fd: std::os::fd::RawFd, maximum: usize) -> Result<Vec<u8>> {
+    let mut bytes = crate::arch::x86::nested_probe(maximum)?;
+    // SAFETY: the initialized buffer advertises its complete allocated capacity in the ABI header; KVM writes at most that many bytes to this writable pointer.
+    let result = unsafe { libc::ioctl(fd, KVM_GET_NESTED_STATE as _, bytes.as_mut_ptr()) };
+    if result < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    crate::arch::x86::finish_nested_probe(bytes)
+}
+
+#[cfg(miri)]
+unsafe fn raw_get_nested_state(_fd: std::os::fd::RawFd, _maximum: usize) -> Result<Vec<u8>> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+#[cfg(not(miri))]
+unsafe fn raw_set_nested_state(fd: std::os::fd::RawFd, bytes: &[u8]) -> Result<()> {
+    // SAFETY: the caller has validated that the ABI size equals this initialized slice length; KVM copies those bytes from this pointer while the slice remains live.
+    let result = unsafe { libc::ioctl(fd, KVM_SET_NESTED_STATE as _, bytes.as_ptr()) };
+    if result < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(miri)]
+unsafe fn raw_set_nested_state(_fd: std::os::fd::RawFd, _bytes: &[u8]) -> Result<()> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
 }
 
 impl KvmBackend {
@@ -546,6 +683,7 @@ impl KvmBackend {
     }
 
     fn run_guarded_entry(&mut self) -> Result<()> {
+        self.nested_state_guard.ensure_healthy()?;
         self.check_completion_clear()?;
         // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
         let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
@@ -598,6 +736,7 @@ impl Backend for KvmBackend {
         let base_slot = self.mem_slot_count;
         let mut registered = 0u32;
         let dirty_slots_before = self.dirty_slots.len();
+        let mapped_slots_before = self.mapped_slots.len();
         let flags = if self.dirty_log {
             kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES
         } else {
@@ -616,6 +755,7 @@ impl Backend for KvmBackend {
             if let Err(e) = unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err) {
                 self.regions.rollback_last();
                 self.dirty_slots.truncate(dirty_slots_before);
+                self.mapped_slots.truncate(mapped_slots_before);
                 for j in 0..registered {
                     let undo = kvm_userspace_memory_region {
                         slot: base_slot + j,
@@ -632,6 +772,7 @@ impl Backend for KvmBackend {
                 self.dirty_slots
                     .push((base_slot + i as u32, part.gpa, part.size));
             }
+            self.mapped_slots.push(region);
             registered += 1;
         }
         self.mem_slot_count += registered;
@@ -642,6 +783,7 @@ impl Backend for KvmBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.nested_state_guard.ensure_healthy()?;
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (dirty logging disabled)",
@@ -652,14 +794,37 @@ impl Backend for KvmBackend {
                 what: "drain_dirty_pages (a RAM slot was mapped without dirty logging)",
             });
         }
-        let mut gfns = Vec::new();
-        for &(slot, gpa, size) in &self.dirty_slots {
-            let bitmap = self
-                .vm
-                .get_dirty_log(slot, size as usize)
-                .map_err(kvm_err)?;
-            crate::region::decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns);
-        }
+        let fd = self.vcpu.as_raw_fd();
+        let drain = || {
+            crate::arch::x86::drain_dirty_pages_with_nested_reprotection(
+                self.nested_state_config,
+                |maximum| {
+                    // SAFETY: the exclusively borrowed owned vCPU is stopped; the adapter receives a capability-sized initialized buffer and bounds every returned byte.
+                    unsafe { raw_get_nested_state(fd, maximum) }
+                },
+                || {
+                    let mut gfns = Vec::new();
+                    for &(slot, gpa, size) in &self.dirty_slots {
+                        let bitmap = self
+                            .vm
+                            .get_dirty_log(slot, size as usize)
+                            .map_err(kvm_err)?;
+                        crate::region::decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns);
+                    }
+                    Ok(gfns)
+                },
+                |bytes| {
+                    self.reload_nested_memory_slots()?;
+                    // SAFETY: the owned vCPU remains stopped outside nested guest mode; the helper validated the entire initialized current-state payload before clearing dirty bits and reinstalling it.
+                    unsafe { raw_set_nested_state(fd, bytes) }
+                },
+            )
+        };
+        let mut gfns = if self.nested_state_config.is_some() {
+            self.nested_state_guard.mutate(drain)?
+        } else {
+            drain()?
+        };
         gfns.sort_unstable();
         gfns.dedup();
         Ok(gfns)
@@ -780,6 +945,7 @@ impl Backend for KvmBackend {
     }
 
     fn save(&mut self) -> Result<VcpuState> {
+        self.nested_state_guard.ensure_healthy()?;
         self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
@@ -806,12 +972,36 @@ impl Backend for KvmBackend {
             msrs,
             xsave,
             xsave_restore_bv,
+            nested_state: match self.nested_state_config {
+                Some((format, size)) => {
+                    // SAFETY: this owned stopped vCPU receives a capability-sized initialized buffer; the adapter bounds the returned size before retaining its bytes.
+                    let mut bytes = unsafe { raw_get_nested_state(self.vcpu.as_raw_fd(), size)? };
+                    if NestedFormat::from_state(&bytes)? != format {
+                        return Err(BackendError::Internal(
+                            "KVM returned the wrong nested vendor",
+                        ));
+                    }
+                    crate::arch::x86::canonicalize_nested_metadata(&mut bytes)?;
+                    Some(bytes)
+                }
+                None => None,
+            },
         })
     }
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
+        self.nested_state_guard.ensure_healthy()?;
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        match (self.nested_state_config, &state.nested_state) {
+            (Some((format, maximum)), Some(bytes)) => format.validate(bytes, maximum)?,
+            (None, None) => {}
+            _ => {
+                return Err(BackendError::Internal(
+                    "nested state does not match the configured contract",
+                ));
+            }
+        }
         restore_xsave_image(&state.xsave, state.xsave_restore_bv).map(|_| ())
     }
 
@@ -821,29 +1011,44 @@ impl Backend for KvmBackend {
         self.validate_restore_state(state)?;
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
-        self.vcpu
-            .set_regs(&to_kvm_regs(&state.regs))
-            .map_err(kvm_err)?;
-        restore_sregs2_with_flush(&state.sregs, |sregs| {
-            // SAFETY: the owned vCPU is stopped and `sregs` is a complete live
-            // kvm_sregs2 value, including saved flags/PDPTRs. No KVM_RUN occurs
-            // between the transient WP write and exact target write. Pure
-            // sequencing is Miri-tested; the ioctl runs in hardware acceptance.
-            unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), sregs) }
-        })?;
-        self.vcpu
-            .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
-            .map_err(kvm_err)?;
-        self.vcpu
-            .set_vcpu_events(&to_kvm_restore_events(&state.events))
-            .map_err(kvm_err)?;
-        let mp = kvm_mp_state {
-            mp_state: mp_to_kvm(state.mp_state),
+        let restore = || {
+            if self.nested_state_config.is_some() {
+                self.reload_nested_memory_slots()?;
+            }
+
+            restore_sregs2_with_flush(&state.sregs, |sregs| {
+                // SAFETY: the owned vCPU is stopped and the adapter reads a complete SREGS2 value; no guest entry occurs between the flush and exact target write.
+                unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), sregs) }
+            })?;
+            self.restore_msrs(state)?;
+            self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
+            self.restore_xsave(&xsave)?;
+            self.vcpu
+                .set_mp_state(kvm_mp_state {
+                    mp_state: mp_to_kvm(state.mp_state),
+                })
+                .map_err(kvm_err)?;
+            self.vcpu
+                .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
+                .map_err(kvm_err)?;
+            self.vcpu
+                .set_regs(&to_kvm_regs(&state.regs))
+                .map_err(kvm_err)?;
+            self.vcpu
+                .set_vcpu_events(&to_kvm_restore_events(&state.events))
+                .map_err(kvm_err)?;
+            if let Some(bytes) = &state.nested_state {
+                // SAFETY: contract and capability preflight validated the full initialized ABI byte slice, including its declared size; the owned vCPU is stopped for the ioctl.
+                unsafe { raw_set_nested_state(self.vcpu.as_raw_fd(), bytes)? };
+            }
+
+            Ok(())
         };
-        self.vcpu.set_mp_state(mp).map_err(kvm_err)?;
-        self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
-        self.restore_xsave(&xsave)?;
-        self.restore_msrs(state)?;
+        if self.nested_state_config.is_some() {
+            self.nested_state_guard.mutate(restore)?;
+        } else {
+            restore()?;
+        }
 
         self.run_page().set_cr8(state.sregs.cr8);
         self.pending_irq = None;
@@ -1101,13 +1306,7 @@ mod xsave_diagnostic {
         while range.size != 0 {
             let remaining = range.size;
             // SAFETY: the live vCPU fd receives the matching ioctl's initialized, writable ABI struct, which remains valid for the call.
-            let result = unsafe {
-                libc::ioctl(
-                    backend.vcpu.as_raw_fd(),
-                    request as libc::c_ulong,
-                    &mut range,
-                )
-            };
+            let result = unsafe { libc::ioctl(backend.vcpu.as_raw_fd(), request as _, &mut range) };
             if result < 0 {
                 let error = std::io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::EINTR) {

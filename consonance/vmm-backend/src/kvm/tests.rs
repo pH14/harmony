@@ -261,7 +261,6 @@ fn decode_terminal_and_control_exits() {
 fn decode_error_and_unknown_exits_fail_closed() {
     for (reason, msg) in [
         (KVM_EXIT_INTERNAL_ERROR, "KVM_EXIT_INTERNAL_ERROR"),
-        (KVM_EXIT_FAIL_ENTRY, "KVM_EXIT_FAIL_ENTRY"),
         (0xDEAD_BEEF, "unhandled KVM exit reason"),
     ] {
         let s = SynRun::new();
@@ -270,6 +269,28 @@ fn decode_error_and_unknown_exits_fail_closed() {
             Err(BackendError::Internal(got)) => assert_eq!(got, msg),
             other => panic!("expected Internal({msg:?}), got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn decode_entry_failure_preserves_hardware_reason_and_cpu() {
+    for (hardware_reason, cpu) in [(0, 0), (0x8000_0021, 17), (u64::MAX, u32::MAX)] {
+        let s = SynRun::new();
+        set_reason(&s, KVM_EXIT_FAIL_ENTRY);
+        // SAFETY: the owned, aligned, zeroed kvm_run has exit reason KVM_EXIT_FAIL_ENTRY; these writes initialize its active union member.
+        unsafe {
+            let entry = &mut (*s.run()).__bindgen_anon_1.fail_entry;
+            entry.hardware_entry_failure_reason = hardware_reason;
+            entry.cpu = cpu;
+        }
+        let error = decode_exit(s.page()).unwrap_err();
+        assert!(matches!(error, BackendError::KvmEntryFailure {
+            hardware_reason: got_reason, cpu: got_cpu,
+        } if got_reason == hardware_reason && got_cpu == cpu));
+        assert_eq!(
+            error.to_string(),
+            format!("KVM_EXIT_FAIL_ENTRY: hardware reason {hardware_reason:#018x}, CPU {cpu}")
+        );
     }
 }
 

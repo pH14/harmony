@@ -9,11 +9,11 @@ hypervisor dependencies.
 
 ## Format
 
-Version 6 is a little-endian TLV container: a 10-byte header (magic, version,
+Version 7 is a little-endian TLV container: a 10-byte header (magic, version,
 architecture tag, and section count) followed by sections in ascending tag
 order. X86 records always use the current SREGS and DEBUGREGS layouts with the
 captured CPU fields (`flags` and `pdptrs`). The engine-state and
-`xsave_restore_bv` sections are optional within this current format. ARM uses
+`xsave_restore_bv` and nested-state sections are optional within this current format. ARM uses
 the same current version and retains its complete architecture-specific record
 set. Older output versions are rejected rather than decoded or re-emitted.
 Fixed-layout records use zerocopy wire types; variable sections are
@@ -41,6 +41,11 @@ are written directly into that output, without temporary section buffers.
 rest of the blob. `VM_STATE_VERSION` identifies the only writer and reader
 format. The restore-bits section is validated for wire shape here; vmm-core owns
 any backend-specific validation of the captured XSAVE image.
+
+X86 tag 16 carries the entire variable-length KVM nested-state header and
+payload. The codec checks the declared size and the supported 128–8320 byte
+bound, and preserves every byte for identity and portable export. The backend
+and VMM validate VMX format, host capability, contract, and capture boundary.
 
 ## Ownership boundaries
 
@@ -83,3 +88,16 @@ wired; it does not measure guest execution or hypervisor calls. The executable's
 SHA-256 binds both arms to one build. Update the frozen encoding routines when
 intentionally changing the wire format, keeping them independent of the optimized
 implementation.
+
+Nested state tag 16 retains the complete KVM vendor header and payload. VMX
+uses format 0 and SVM format 1. SVM outside L2 carries a 128-byte header with
+GIF; active L2 state can also include the 4 KiB VMCB. EFER and the native SVM
+host-save/control MSRs remain in their architectural fields. The owning VMM
+validates the format against the named contract before restore.
+
+The generic property generators include absent, header-only, VMCS12/VMCB and
+full VMCS12-plus-shadow nested payloads. Strict-decoder fixtures contain tag 16
+and check its optionality, ordering, uniqueness, size field and truncation.
+Native tests and whole-crate Miri check every truncated prefix. The Miri PR
+smoke lane samples every section-header byte, each payload boundary and payload
+interiors so the full nested fixture fits the lane's 15-minute budget.

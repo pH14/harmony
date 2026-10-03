@@ -183,6 +183,59 @@ the job.
 
 ## Ignored tests
 
+The Guest Runtime Qualification workflow's manual `nested_host_only` run first
+requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its selected Ubuntu
+x86 runner, then builds the separate
+nested-host kernel in the pinned Debian GCC 14 build container and boots L1
+under the named nested-host contract. The
+`Nested Host` job runs `x86_kvm_nested_host::l1_creates_kvm_vm`, builds the
+static inner driver and matching OCI runtime, then runs
+`nested-driver::live::inner_consonance_runs_inner_guest` and
+`nested-driver::nested_restore::outer_nested_state_snapshot_matrix`. The latter
+runs `cold_snapshot_child` as a capture process that is killed while holding
+its live VM, then imports its artifact in a new process. It compares eight
+detour restores and cold continuation with uninterrupted and capture-only
+execution. Its sparse detour capture and every restored RAM page must match
+the live source or captured cut, respectively, with no in-place fallback.
+A separate `harmony_omit_nested_state` compiler configuration must pass those two controls
+and fail its first restore. VMX fails its continuation; SVM fails immediate
+GIF readback before another nested entry can change it. Missing nested
+VMX/SVM or a guest that cannot create a KVM VM fails the job. Kernel publication
+still requires the instruction audit to pass.
+If a compiled kernel fails qualification, the evidence artifact retains its
+unpublished `vmlinux`, matching boot components, configuration, alternatives and
+KVM disassembly for review.
+The job also runs `inner_operation_api_smoke` and
+`sdk_operations::outer_operation_sdk_smoke`, then runs the standard
+`harmony search --package nested` with 100 executions and a five-minute wall
+budget, followed by a replay of its recorded campaign. Evidence includes the
+36 ordered operation-pair coverage mask, assertion failures and their layers,
+the campaign stream, and the replay report. The final evidence check requires
+nonzero executed work, a valid 36-bit pair mask, no failures, and matching
+execution counts, work, stream digest and coverage/failure evidence on replay.
+It writes `qualification.json` with the tested commit and measured budget use;
+archive-entry lists may differ because replay materializes final artifacts.
+The nested-host job accepts Intel VMX or AMD SVM with NPT, selected from
+KVM-supported CPUID. The matching kernel includes both backends. The state
+format and exposed vendor capabilities bind snapshot identity; snapshots cannot
+cross vendors. SVM restores also compare GIF immediately at the lifecycle cut.
+`nested_history_run` optionally reuses a prior run's retained kernel, base and
+OCI image, rebuilds that run's source, and generates a new campaign with its own
+recorded replay. The historical arm must reproduce the original failure's layer,
+assertion and action lineage before the current-source qualification proceeds.
+It retains both binaries' input provenance, the historical source, host KVM
+parameters, kernel logs and nested-entry trace events. This is a rebuild control,
+not a replay claim about the original unretained outer binary.
+Manual runs can require `nested_vendor=vmx` or `nested_vendor=svm`; the default
+`auto` accepts either. `nested_runner` selects the standard x86 Ubuntu 22.04
+or 24.04 image; its label does not guarantee a CPU vendor. A vendor mismatch
+fails before compilation. The early
+`nested-host-preflight-RUN` artifact retains the CPU and KVM evidence while
+the build is still running, so a requested vendor is observable immediately.
+After runner setup and compilation, the job records KVM device permissions,
+refreshes access, and repeats the capability probe before booting L1. Its
+result must match the early probe.
+
 A test marked `#[ignore]` needs something a plain `cargo test` lacks, such as a
 hypervisor or a built guest image. Each one has a runner in
 `scripts/ci_contract.py`, named as `<binary-id> <test>` the way
@@ -340,6 +393,9 @@ action is followed into its own file, so a script the workflow reaches only
 through an action counts too. The prompt carries a bounded excerpt of each of
 those files and the digest of the whole file, so a change anywhere in one
 reselects the workflow and invalidates its cached judgment.
+The standalone-program rule applies to Cargo binary entrypoints at
+`src/bin/NAME.rs` or `src/bin/NAME/main.rs`. Rust helper modules remain subject
+to the other content rules and are assessed as part of their binary's code.
 
 The subject file is judged in overlapping character ranges covering its entire
 content. A service token-budget rejection splits that range into smaller,
@@ -388,3 +444,7 @@ arbitrary script, prove a change selector correct, or see GitHub's retained
 registry of branch-only workflows. Inspect `gh workflow list --all` before
 disabling an obsolete registry entry; disabling one preserves its old runs and
 is separate from repository lint.
+
+The Guest Memory job includes the nested driver’s portable arithmetic and
+mapping checks. Its mapping composition runs in the bounded Consonance Miri
+matrix; the full matrix interprets the driver library.

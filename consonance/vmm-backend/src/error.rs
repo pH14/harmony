@@ -40,6 +40,9 @@ pub enum BackendError {
     #[error("backend internal error: {0}")]
     Internal(&'static str),
 
+    #[error("KVM_EXIT_FAIL_ENTRY: hardware reason {hardware_reason:#018x}, CPU {cpu}")]
+    KvmEntryFailure { hardware_reason: u64, cpu: u32 },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

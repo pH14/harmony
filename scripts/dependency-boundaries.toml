@@ -53,6 +53,7 @@ workload_packages = [
     "workloads/tiny-worlds",
 ]
 composition_apps_tests = [
+    "consonance/nested-driver",
     "workloads/tools",
     "cli",
     "consonance/control-proto/fuzz",

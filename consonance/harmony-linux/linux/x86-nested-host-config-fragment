@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+CONFIG_VIRTUALIZATION=y
+CONFIG_KVM=y
+CONFIG_KVM_INTEL=y
+CONFIG_KVM_AMD=y
+# CONFIG_KVM_AMD_SEV is not set
+# CONFIG_KVM_XEN is not set
+# CONFIG_KVM_HYPERV is not set
+# CONFIG_KVM_SMM is not set

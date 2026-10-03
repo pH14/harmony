@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod config;
+mod nested;
 mod state;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+pub(crate) use nested::finish_nested_probe;
+pub use nested::{
+    NestedFormat, SVM_GIF_SET, SVM_NESTED_MAX_LEN, VMX_NESTED_MAX_LEN, inactive_nested_state,
+    validate_nested_state,
+};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use nested::{
+    NestedStateGuard, canonicalize_nested_metadata, drain_dirty_pages_with_nested_reprotection,
+    nested_probe, reload_nested_memory_slots,
+};
 
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 pub use state::{

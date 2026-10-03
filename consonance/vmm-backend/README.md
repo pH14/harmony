@@ -16,6 +16,40 @@ an ISA-specific exit enum.
 - `Arm64KvmBackend` and `HvfBackend` implement the arm64 KVM and macOS
   Hypervisor.framework paths where their platform APIs are available.
 
+An x86 KVM entry failure retains the hardware failure reason and CPU reported by
+`KVM_EXIT_FAIL_ENTRY`. The structured error reaches the caller and workload
+failure trace, distinguishing invalid guest state from other entry failures.
+
+Before the first policy is installed, `KvmBackend::nested_capabilities` selects
+KVM-supported VMX or SVM. `initialize_nested` checks `KVM_CAP_NESTED_STATE` and
+installs the requested vendor's CPUID model. VMX reads the declared capability
+MSRs and sets IA32_FEATURE_CONTROL; SVM uses its supported CPUID capability leaf
+and retains VM_CR and VM_HSAVE_PA through the native MSR filter and snapshot
+MSR block. Partial MSR operations fail. The VMM's named nested-host policy binds
+vendor and every exposed capability into contract identity.
+
+Nested state is captured in a capability-sized initialized buffer. The complete
+returned payload is retained with the inactive VMCS12 metadata normalization
+described below. SVM uses KVM's format 1 and retains its GIF flag unchanged.
+Outside L2 guest mode, SVM returns the 128-byte header; its VMCB is in guest RAM,
+and EFER.SVME and the host-save MSR remain architectural state. Raw observations
+can include an active L2 payload, but publication and restore require L1 outside
+guest mode without a pending nested entry. The validator rejects unknown flags,
+malformed vendor layouts and cross-vendor restore before mutation. Ordinary
+backends neither capture nor accept nested state.
+
+X86 restore uses the host Linux 7.1
+[KVM selftest](https://github.com/torvalds/linux/blob/v7.1/tools/testing/selftests/kvm/lib/x86/processor.c)
+dependency order: special
+registers, MSRs, XCRs, XSAVE, MP state, debug registers, general registers,
+events, then nested state. Event restoration follows general registers because
+KVM_SET_REGS clears the exception queue. The selftest's earlier event write
+loses pending #PF and #GP under the enabled exception-payload API; the existing
+live exception-payload and serviced-MSR regressions exercise that difference.
+The complete nested payload is installed after all architectural
+state. Invalid format, size, mode flags, or contract presence fails preflight
+before any restore ioctl.
+
 `Backend::drain_dirty_pages` returns the guest pages written since the last
 drain, so snapshots copy and restores reload only those pages. The KVM backends
 read the kernel's dirty log. `HvfBackend` maps guest RAM without write
@@ -25,6 +59,26 @@ reruns the store without surfacing an exit. A drain removes write access again
 and reports each recorded page as four 4 KiB guest pages. Hypervisor.framework
 reports these aborts with a translation fault status, so the backend treats any
 lower-EL abort inside mapped RAM as a tracked write.
+
+Nested-host dirty drains capture and validate the current nested payload before
+clearing dirty bits, then remove and reinstall each outer RAM slot at the same
+address and size before reloading the unchanged nested state. Outer restore also
+reloads those slots after restoring RAM and before installing CPU state. This
+invalidates cached nested mappings, including shadow pages that can survive
+a nested-state reload, and starts a fresh dirty bitmap after consuming the old
+one. The stopped vCPU never enters between slot removal and replacement.
+Without that invalidation, incremental capture can omit L2 writes and restored
+L2 execution can read stale translations despite exact outer RAM restoration.
+The inner process and VM remain allocated. Ordinary guests use the kernel
+bitmap directly. Portable tests and Miri cover payload and mapping preservation,
+preflight before mutation, operation order and stopping on errors. The live
+matrix checks all RAM bytes, while recorded search exercises longer histories.
+Any error during a nested dirty drain, including its read/validation prefix,
+or during CPU-state mutation poisons that backend. A drain may already have
+cleared part of the dirty log when a later operation fails.
+Further entry, preparation, capture and restore fail; a deleted slot cannot
+be reused after an incomplete reload. Portable fault injection exercises each
+slot-removal/replacement error and the final nested-state installation boundary.
 
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
@@ -397,3 +451,19 @@ purity remains required. The XSAVE negative checks changed XMM output; the
 XRSTOR negative supplies non-init MXCSR and checks the guest's saved MXCSR value,
 without relying on an unrelated RAM mutation. This fixture distinction does not
 change production snapshot identity or restore semantics.
+
+The x86 raw ioctl adapters infer the libc request type so the same 32-bit KVM
+request encodings compile under both glibc (unsigned long) and musl (int). This
+allows the production backend to be linked into the static inner driver.
+
+Nested capture canonicalizes inactive VMCS12 exit interrupt information. Linux
+VMCS12 revision `0x11e57ed0` fixes this field at byte 816 of the VMCS payload.
+When its valid bit is clear, the vector/type and error-code bytes have no active
+architectural meaning and can retain a physical host interrupt vector. Capture
+zeros that inactive information, and zeros an error code when its delivery bit
+is clear. Valid interrupt information and all other payload bytes are preserved.
+The revision and field bounds are checked before mutation; an unknown layout
+fails capture. Snapshots, hashes and portable exports retain the complete
+canonical payload. Dirty-log reprotection still reloads the unchanged raw
+current payload. Portable tests cover inactive/valid cases, preservation of the
+remaining bytes, and rejection without mutation, including under Miri.
