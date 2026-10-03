@@ -3742,6 +3742,27 @@ where
             if !completed.is_empty() || !schedule.is_empty() {
                 return Err("campaign reorder window ended with an admission gap".into());
             }
+            if let Some(checkpoints) = checkpoints.as_mut() {
+                write_search_checkpoint(
+                    workload,
+                    config,
+                    checkpoints,
+                    "final",
+                    &core,
+                    &draw_state,
+                    &duration_policies,
+                    &rand,
+                    &counters,
+                    &coordinator_profile,
+                    reserved,
+                    admitted,
+                    planned_clock,
+                    &schedule,
+                    &pending,
+                    &completed,
+                    &spec_records,
+                )?;
+            }
             pool.close();
             Ok(())
         },

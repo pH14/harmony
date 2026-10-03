@@ -216,3 +216,8 @@ selection, and passes `LD_BIND_NOW=1` to PID 1 before its libc startup. Custom
 command lines used for XSAVE qualification must retain those settings. The
 kernel, pinned runtime re-execution, and admitted workload environment have
 separate checks; default boot arguments alone do not certify an arbitrary image.
+
+Session console diagnostics return the most recent 64 KiB. The VM reader pages
+from the tail offset reported by the guest, so long boot output does not hide
+later failure evidence. UML uses the same bounded-tail contract. Repeated reads
+are snapshots and may overlap; reading diagnostics does not advance execution.

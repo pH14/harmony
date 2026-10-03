@@ -777,7 +777,8 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
         })
         .collect::<Vec<_>>();
     kept.sort();
-    assert_eq!(kept.len(), 2, "kept {kept:?}");
+    assert_eq!(kept.len(), 3, "kept {kept:?}");
+    assert!(kept.last().unwrap().ends_with("000000000800-final.ckpt"));
     for path in kept {
         let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
             .parse()
@@ -799,6 +800,51 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
         }
     }
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
+    let directory = checkpoint_directory("short-final");
+    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.execution_budget = 7;
+    config.stop_campaign_on_objective = false;
+    let (first, _) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(100),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    let files = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ckpt")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 1);
+    assert!(
+        files[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with("-final.ckpt")
+    );
+    config.execution_budget = 20;
+    let origin = CampaignOrigin::SearchCheckpoint {
+        path: files[0].clone(),
+    };
+    let (second, _) = run_with_checkpoints(&config, &origin, None);
+    let (repeated, _) = run_with_checkpoints(&config, &origin, None);
+    assert!(second.0.executions_completed > first.0.executions_completed);
+    assert_eq!(second.0.archive, repeated.0.archive);
+    assert_eq!(second.0.execution_work, repeated.0.execution_work);
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
