@@ -15,14 +15,6 @@ use std::time::Duration;
 ))]
 use std::time::Instant;
 
-pub const HOST_SUPPORTED: bool = cfg!(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "aarch64"),
-));
-
-pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM), Linux/arm64 (KVM)";
-
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
     #[cfg(any(
@@ -389,18 +381,6 @@ mod tests {
             ],
         );
         assert_eq!(out, b"abc\n");
-    }
-
-    #[test]
-    fn host_supported_matches_the_compiled_drive_loop() {
-        let wired = cfg!(any(
-            all(target_os = "macos", target_arch = "aarch64"),
-            all(target_os = "linux", target_arch = "x86_64"),
-            all(target_os = "linux", target_arch = "aarch64"),
-        ));
-        assert_eq!(super::HOST_SUPPORTED, wired);
-        assert!(super::SUPPORTED_HOSTS.contains("Linux/x86-64"));
-        assert!(super::SUPPORTED_HOSTS.contains("Linux/arm64"));
     }
 
     #[test]

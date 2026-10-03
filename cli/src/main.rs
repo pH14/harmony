@@ -2,14 +2,24 @@
 
 mod config;
 mod host;
-mod preflight;
-mod search;
+mod investigate;
+mod oci;
+mod prepare;
+mod runs;
+mod runtime;
+mod workflow;
 
 use clap::{Parser, Subcommand};
-use std::process::ExitCode;
+use config::{Language, Source};
+use runs::Destination;
+use std::{path::PathBuf, process::ExitCode};
 
 #[derive(Parser)]
-#[command(name = "harmony", version, about = "Deterministic hypervisor testing")]
+#[command(
+    name = "harmony",
+    version = runtime::RELEASE,
+    about = "Prepare applications, explore failures, and investigate their histories"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -17,145 +27,266 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Search(search::Args),
-    Preflight {
-        #[arg(long)]
-        json: bool,
+    #[command(about = "Create a TOML application recipe")]
+    Init {
+        #[arg(long, default_value = "harmony.toml")]
+        config: PathBuf,
+        #[arg(long, value_enum)]
+        language: Option<Language>,
         #[arg(long)]
         image: Option<String>,
     },
-    #[command(subcommand)]
-    Oci(OciCommand),
+    #[command(about = "Check backend, fetch runtime artifacts, and inspect image admission")]
+    Doctor {
+        #[command(flatten)]
+        source: Source,
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Build and instrument an application or inspect an existing image")]
+    Prepare {
+        #[command(flatten)]
+        source: Source,
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Explore failures, continue a search, or search from a recorded point")]
+    Search {
+        #[command(flatten)]
+        source: Source,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long, conflicts_with = "resume")]
+        from: Option<String>,
+        #[arg(long, conflicts_with = "from")]
+        resume: Option<String>,
+        #[arg(long, requires = "from")]
+        bug: Option<usize>,
+        #[arg(long)]
+        offline: bool,
+    },
+    #[command(about = "Run a command or an explicit supervised action sequence")]
+    Run {
+        #[command(flatten)]
+        source: Source,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long)]
+        actions: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        repeat: u32,
+        #[arg(long)]
+        console: bool,
+        #[arg(long)]
+        offline: bool,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    #[command(about = "Verify a saved execution in a fresh guest")]
+    Replay {
+        #[command(flatten)]
+        selection: investigate::Selection,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long, default_value_t = 1)]
+        repeat: u32,
+    },
+    #[command(
+        about = "Rewind a saved input, inject interventions, and optionally follow its suffix"
+    )]
+    Branch {
+        #[command(flatten)]
+        selection: investigate::Selection,
+        #[command(flatten)]
+        destination: Destination,
+        #[arg(long, conflicts_with = "before")]
+        at_step: Option<usize>,
+        #[arg(long, conflicts_with = "at_step")]
+        before: Option<String>,
+        #[arg(long)]
+        inject: Vec<String>,
+        #[arg(long)]
+        actions: Option<PathBuf>,
+        #[arg(long)]
+        follow: bool,
+    },
+    #[command(about = "Summarize a saved run or finding")]
+    Inspect {
+        #[command(flatten)]
+        selection: investigate::Selection,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Show recorded actions, virtual time, and assertions")]
+    Timeline {
+        #[command(flatten)]
+        selection: investigate::Selection,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Read console evidence from a saved execution")]
+    Logs {
+        #[command(flatten)]
+        selection: investigate::Selection,
+        #[arg(long)]
+        at_step: Option<u64>,
+        #[arg(long)]
+        contains: Option<String>,
+    },
+    #[command(about = "Compare configurations, actions, and outcomes")]
+    Diff { left: String, right: String },
     #[command(hide = true)]
     SessionWorker,
 }
 
-#[derive(Subcommand)]
-enum OciCommand {
-    Run(oci::RunArgs),
+fn execute(command: Command) -> config::Result<u8> {
+    match command {
+        Command::Init {
+            config,
+            language,
+            image,
+        } => {
+            prepare::init(&config, language, image)?;
+            println!("created {}", config.display());
+            Ok(0)
+        }
+        Command::Doctor {
+            source,
+            offline,
+            json,
+        } => workflow::doctor(source.load()?, offline, json),
+        Command::Prepare {
+            source,
+            offline,
+            json,
+        } => {
+            let report = prepare::run(&mut source.load()?, offline)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "prepared {}\nnext: harmony doctor, then harmony search",
+                    report["image"]
+                );
+            }
+            Ok(0)
+        }
+        Command::Search {
+            source,
+            destination,
+            from,
+            resume,
+            bug,
+            offline,
+        } => workflow::search(source, destination, from, resume, bug, offline),
+        Command::Run {
+            source,
+            destination,
+            actions,
+            repeat,
+            console,
+            offline,
+            command,
+        } => workflow::run(
+            source,
+            destination,
+            actions,
+            repeat,
+            console,
+            offline,
+            command,
+        ),
+        Command::Replay {
+            selection,
+            destination,
+            repeat,
+        } => investigate::replay(selection, destination, repeat),
+        Command::Branch {
+            selection,
+            destination,
+            at_step,
+            before,
+            inject,
+            actions,
+            follow,
+        } => investigate::branch(
+            selection,
+            destination,
+            at_step,
+            before,
+            inject,
+            actions,
+            follow,
+        ),
+        Command::Inspect { selection, json } => investigate::inspect(selection, json),
+        Command::Timeline { selection, json } => investigate::timeline(selection, json),
+        Command::Logs {
+            selection,
+            at_step,
+            contains,
+        } => investigate::logs(selection, at_step, contains),
+        Command::Diff { left, right } => investigate::diff(&left, &right),
+        Command::SessionWorker => {
+            use faults_workload::consonance::{SESSION_SERVICE, service_factory};
+            consonance_client::session::serve_inherited(|service| {
+                (service == SESSION_SERVICE).then(service_factory)
+            })?;
+            Ok(0)
+        }
+    }
 }
 
-mod oci;
-
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let result = match cli.command {
-        Command::Search(args) => {
-            nes_workload::allocator::use_one_malloc_arena();
-            search::run(args)
-        }
-        Command::Preflight { json, image } => preflight::run(json, image.as_deref()),
-        Command::Oci(OciCommand::Run(args)) => oci::run(args),
-        Command::SessionWorker => {
-            nes_workload::allocator::use_one_malloc_arena();
-            search::serve_session_worker()
-        }
-    };
-    match result {
-        Ok(code) => code,
-        Err(err) => {
-            eprintln!("error: {err}");
-            ExitCode::FAILURE
+    nes_workload::allocator::use_one_malloc_arena();
+    match execute(Cli::parse().command) {
+        Ok(code) => ExitCode::from(code),
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
         }
     }
 }
 
 #[cfg(test)]
-mod search_cli_tests {
+mod tests {
     use super::*;
     #[test]
-    fn package_search_examples_parse() {
+    fn public_commands_use_inputs_configurations_and_named_runs() {
         for args in [
-            vec!["harmony", "search", "--package", "nes", "smb.nes"],
+            vec!["harmony", "search", "game.nes"],
+            vec!["harmony", "search", "image:tag"],
             vec![
                 "harmony",
                 "search",
-                "--package",
-                "nes",
-                "--backend",
-                "native",
-                "smb.nes",
+                "--config-toml",
+                "image='app'",
+                "--for",
+                "30s",
             ],
+            vec!["harmony", "replay", "overnight", "--bug", "1"],
             vec![
                 "harmony",
-                "search",
-                "--package",
-                "nes",
-                "--backend",
-                "consonance",
-                "smb.nes",
-            ],
-            vec!["harmony", "search", "--package", "faults", "foo.oci"],
-            vec![
-                "harmony",
-                "search",
-                "--package",
-                "faults",
-                "--backend",
-                "consonance",
-                "--kernel",
-                "vmlinux",
-                "--seed",
+                "branch",
+                "overnight",
+                "--bug",
                 "1",
-                "--executions",
-                "1000",
-                "--ram-mib",
-                "1024",
-                "--knobs",
-                "faultlab.puts=20",
-                "--wall-minutes",
-                "30",
-                "--out",
-                "run",
-                "foo.oci",
+                "--before",
+                "5steps",
             ],
-            vec![
-                "harmony",
-                "search",
-                "--package",
-                "faults",
-                "--kernel",
-                "vmlinux",
-                "--replay",
-                "run/bug-1.json",
-                "--repeat",
-                "10",
-                "--out",
-                "confirm",
-                "foo.oci",
-            ],
+            vec!["harmony", "run", "alpine:3", "--", "/bin/echo", "hello"],
         ] {
-            assert!(matches!(
-                Cli::try_parse_from(args).unwrap().command,
-                Command::Search(_)
-            ));
+            Cli::try_parse_from(args).unwrap();
         }
-        assert!(Cli::try_parse_from(["harmony", "search", "smb.nes"]).is_err());
-        assert!(
-            Cli::try_parse_from([
-                "harmony",
-                "search",
-                "--package",
-                "nes",
-                "--backend",
-                "unknown",
-                "smb.nes"
-            ])
-            .is_err()
-        );
-        for removed in ["--workers", "--snapshot-cache-mib"] {
-            assert!(
-                Cli::try_parse_from([
-                    "harmony",
-                    "search",
-                    "--package",
-                    "faults",
-                    removed,
-                    "4",
-                    "foo.oci"
-                ])
-                .is_err()
-            );
+        for args in [
+            vec!["harmony", "preflight"],
+            vec!["harmony", "oci", "run", "x"],
+            vec!["harmony", "search", "--package", "faults", "x"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
         }
     }
 }

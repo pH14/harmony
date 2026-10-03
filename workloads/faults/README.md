@@ -58,7 +58,7 @@ section inside every executable segment. A binary built to hide an instruction
 can still pass: for example, inside the operand bytes of another instruction,
 or in segment bytes outside the scanned sections.
 
-`harmony preflight --image IMAGE` prints the scan, the attestation, and the
+`harmony prepare IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete
 instrumented target.
 
@@ -221,14 +221,12 @@ worker's store fills its budget faster than under KVM.
 ## Running it
 
 ```
-harmony search --package faults IMAGE.oci --backend consonance \
+harmony search IMAGE.oci --backend kvm \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --seed 1 --executions 100000 \
     --ram-mib 1024 --out run/
-harmony search --package faults IMAGE.oci --backend consonance \
-    --kernel vmlinux --base-initramfs initramfs.cpio.gz \
-    --replay run/bug-1.json --repeat 10 --out confirm/
-harmony search --package faults IMAGE.oci --backend uml \
+harmony replay run/ --bug 1 --repeat 10 --out confirm/
+harmony search IMAGE.oci --backend uml \
     --uml-profile profile --base-initramfs initramfs.cpio.gz \
     --seed 1 --executions 20000 --ram-mib 1024 --out run/
 ```
@@ -323,3 +321,24 @@ hooks instead.
 Replay summaries count event-kill and event-park fires, which shows whether a
 recorded input's event actions ran. The settlement wait after an input keeps
 the last action's coverage quantum.
+
+## CLI investigations
+
+The CLI supplies an optional supervisor bundle generated from TOML. Preparation
+mounts it as a read-only external input at `/etc/harmony/cli.bundle`; it never
+rewrites the source image. The prepared initramfs is retained by the CLI along
+with the kernel, vocabulary and execution configuration.
+
+`package::SearchStart` selects genesis, a recorded action prefix, or a whole
+search checkpoint. Prefix origins replay before capturing a root. Findings
+retain that prefix, so confirmation still executes the complete history from
+boot. Search checkpoints persist workload evidence as well as the generic
+coordinator state. The package writes periodic checkpoints every 100 admissions
+and a final checkpoint at shutdown.
+
+Fresh scenario executions retain `ReplaySummary::timeline`: the observation,
+recorded action including coverage quantum, and console evidence at each action
+boundary. Recovery-check waits are labeled separately. Both guest backends return a bounded 64 KiB console tail, which can
+overlap adjacent captures. Console evidence is diagnostic and does not enter
+archive identity or scheduling. Branch previews stop at their exact action
+prefix without adding settlement actions.
