@@ -31,8 +31,8 @@ def graph(nodes: int, places: int, levels: int) -> dict:
 
 
 def scale(workers: int, memory_mib: int, cost_ns: int, snapshot_bytes: int, reservations: int = 2,
-          results: int = 1, sleep_ns: int = 0) -> dict:
-    return {"workers": workers, "window": workers * reservations, "results_per_worker": results,
+          sleep_ns: int = 0) -> dict:
+    return {"workers": workers, "window": workers * reservations,
             "memory_budget_mib": memory_mib, "archive_entries": 4_194_304, "action_cost_ns": cost_ns,
             "action_sleep_ns": sleep_ns,
             "snapshot_bytes": snapshot_bytes}
@@ -171,7 +171,7 @@ def cores(args: argparse.Namespace) -> None:
           f"cost {args.cost_ns:,} ns and sleep {args.sleep_ns:,} ns per transition, "
           f"work {args.work:,} transitions"
           f"{'' if args.total_work else ' per worker'}, {args.reservations} reservations "
-          f"and {args.results} results per worker")
+          f"per worker")
     print(f"{'workers':>7}  {'executions/s':>12}  {'speedup':>7}  {'coordinator busy':>16}  "
           f"{'transitions per try':>19}  {'worker ms per try':>17}  {'workers busy':>12}  "
           f"{'admission idle':>14}")
@@ -180,8 +180,7 @@ def cores(args: argparse.Namespace) -> None:
         rates, busy, transitions, working, waiting = [], [], [], [], []
         for _ in range(args.repeats):
             work = args.work if args.total_work else args.work * workers
-            settings = scale(workers, 16_384, args.cost_ns, 0, args.reservations, args.results,
-                             args.sleep_ns)
+            settings = scale(workers, 16_384, args.cost_ns, 0, args.reservations, args.sleep_ns)
             run = launch(args.binary[0], config, settings, work, args.sample_seconds, seed)
             rate, share = search_interval(run)
             rates.append(rate)
@@ -269,7 +268,6 @@ def main() -> int:
     core.add_argument("--work", type=positive, default=6_000_000, help="transitions per worker per run")
     core.add_argument("--total-work", action="store_true", help="give every worker count the same --work")
     core.add_argument("--reservations", type=positive, default=2, help="reservations per worker")
-    core.add_argument("--results", type=positive, default=1, help="results per worker")
     core.add_argument("--repeats", type=positive, default=1, help="timing repeats per worker count")
 
     mem = modes.add_parser("memory", parents=[common], help="goal and memory under a budget")

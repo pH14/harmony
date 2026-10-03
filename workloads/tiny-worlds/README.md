@@ -82,7 +82,6 @@ field is required:
 | --- | --- | --- |
 | `workers` | 1–64 | Worker threads. |
 | `window` | 1–512 | Reservations in flight. The stream depends on the window and not on the worker count. |
-| `results_per_worker` | 1–2 | Finished results a worker may hold before admission: `ResultBuffering::OnePerWorker` or `TwoPerWorker`. |
 | `memory_budget_mib` | 1–16,384 | The searcher's logical memory budget. |
 | `archive_entries` | 1–4,194,304 | Archive entry limit. |
 | `action_cost_ns` | 0–10,000,000 | Thread CPU time each transition spins on its worker thread, so a descheduled worker takes longer, as a real target would. |
@@ -553,7 +552,7 @@ progress line.
 | Mode | Runs | Prints |
 | --- | --- | --- |
 | `slowdown` | One long campaign per `--binary` on a 4,194,304-node graph with 1,024 places, a 16 GiB budget, and no snapshot payload. | Executions per second and coordinator CPU milliseconds per 1,000 executions, as medians over sampling windows grouped into `--bin` active entries. The final window is dropped because it includes the final report. |
-| `cores` | The same graph at each of `--workers-list`, with `--work` transitions per worker, or in total with `--total-work`, and with `--reservations` and `--results` per worker. `--sleep-ns` makes each transition sleep instead of spin, so worker counts above the core count still measure scheduling. | Median executions per second over `--repeats`, timed between the first and last progress lines of the search so setup and the final report are excluded, speedup over the first count, coordinator busy share, transitions per try, worker milliseconds per try, the share of worker time running jobs, and the share idle while results waited for admission. |
+| `cores` | The same graph at each of `--workers-list`, with `--work` transitions per worker, or in total with `--total-work`, and with `--reservations` per worker. `--sleep-ns` makes each transition sleep instead of spin, so worker counts above the core count still measure scheduling. | Median executions per second over `--repeats`, timed between the first and last progress lines of the search so setup and the final report are excluded, speedup over the first count, coordinator busy share, transitions per try, worker milliseconds per try, the share of worker time running jobs, and the share idle while results waited for admission. |
 | `memory` | `--seeds` campaigns on a 65,536-node graph under `--budget-mib`, plus one control at 16 GiB, with `--snapshot-bytes` payloads. | Whether each run reached the goal, peak logical memory, progress lines over the budget, peak RSS, snapshot evictions, history compactions, and dropped entries. |
 
 ## Checks

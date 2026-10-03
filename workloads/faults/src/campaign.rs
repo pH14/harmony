@@ -18,9 +18,8 @@ use searcher::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
             CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, ResultBuffering, SnapshotCheckpoint, TargetExecution, ThreadPlacement,
-            WorkloadPolicies, default_window, postcard_result_sha256,
-            run_campaign_checkpointed_with_options,
+            Reporting, SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
+            default_window, postcard_result_sha256, run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
@@ -885,7 +884,6 @@ pub fn run_fault_campaign_checkpointed(
         progress,
         CampaignExecutionOptions {
             placement: config.placement.clone(),
-            result_buffering: ResultBuffering::SixteenPerWorker,
             ..CampaignExecutionOptions::default()
         },
     )?;

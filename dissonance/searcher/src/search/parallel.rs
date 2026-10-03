@@ -12,45 +12,6 @@ use crate::search::telemetry::{
     TargetCounters, WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
-pub(crate) struct ResultBound {
-    limit: usize,
-    outstanding: usize,
-}
-
-impl ResultBound {
-    pub(crate) fn new(limit: usize) -> Self {
-        assert!(limit > 0, "a result bound holds at least one job");
-        Self {
-            limit,
-            outstanding: 0,
-        }
-    }
-
-    pub(crate) fn reserve(&mut self) -> bool {
-        let reserved = self.outstanding < self.limit;
-        if reserved {
-            self.outstanding += 1;
-        }
-        reserved
-    }
-
-    pub(crate) fn admit(&mut self) -> Result<(), &'static str> {
-        self.outstanding = self
-            .outstanding
-            .checked_sub(1)
-            .ok_or("admitted result has no reserved result capacity")?;
-        Ok(())
-    }
-
-    pub(crate) fn available(&self) -> usize {
-        self.limit - self.outstanding
-    }
-
-    pub(crate) fn limit(&self) -> usize {
-        self.limit
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct WorkerReply<Output> {
     pub(crate) worker: u32,
@@ -289,24 +250,8 @@ where
 mod tests {
     use std::{cell::Cell, rc::Rc, sync::mpsc};
 
-    use super::{ResultBound, WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+    use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
     use crate::search::telemetry::TargetCounters;
-
-    #[test]
-    fn the_result_bound_counts_every_job_from_dispatch_to_admission() {
-        let mut bound = ResultBound::new(3);
-        assert!((0..3).all(|_| bound.reserve()));
-        assert!(!bound.reserve());
-        assert_eq!(bound.available(), 0);
-        bound.admit().unwrap();
-        assert_eq!(bound.available(), 1);
-        assert!(bound.reserve());
-        for _ in 0..3 {
-            bound.admit().unwrap();
-        }
-        assert!(bound.admit().is_err());
-        assert_eq!((bound.available(), bound.limit()), (3, 3));
-    }
 
     #[test]
     fn idle_workers_take_queued_jobs_while_one_worker_is_blocked() {

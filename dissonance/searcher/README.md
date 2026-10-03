@@ -63,17 +63,12 @@ targets than workers. The first worker's boot time includes that wait.
 Workers pull jobs from one shared queue ordered by planned finish, so an idle
 worker takes the queued job that admission reaches first while another worker
 is still busy. A short job reserved after longer ones runs before them,
-because admission needs its result first. One bound limits the jobs that
-are queued, running or finished but not yet admitted: workers times
-`ResultBuffering::capacity()`: one per worker by default, and two or sixteen with
-`ResultBuffering::TwoPerWorker` or `ResultBuffering::SixteenPerWorker`. A job takes its place in the bound before it is
-dispatched and releases it at ordered admission, so completed snapshots cannot
-pile up behind a slow job. The logical window,
-selection order, snapshot pins and campaign bytes are the same at any bound. Memory held by finished
+because admission needs its result first. The coordinator dispatches each job
+when it reserves it, so the admission window alone limits the jobs that are
+queued, running or finished but not yet admitted. Memory held by finished
 results is outside the archive's logical budget and must be measured in host
 RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
-Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
