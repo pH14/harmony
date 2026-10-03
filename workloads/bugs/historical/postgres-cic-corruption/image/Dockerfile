@@ -62,7 +62,8 @@ RUN curl --fail --silent --show-error --location --retry 3 \
     && test -x /usr/lib/postgresql/bin/postgres \
     && test -x /usr/lib/postgresql/bin/pg_amcheck
 
-COPY postgresql.conf.append seed.sql /build/
+COPY postgresql.conf.append seed.sql loopback-up.c /build/
+RUN cc -O2 -Wall -Werror -o /usr/local/bin/loopback-up /build/loopback-up.c
 
 # initdb runs here, not in the guest: the cluster system identifier it mints
 # from time, pid and random bytes is snapshotted into the image, so no
@@ -126,18 +127,15 @@ LABEL org.opencontainers.image.version="${PG_VERSION}"
 
 SHELL ["/bin/sh", "-euxc"]
 
-# iproute2 is the one addition to the base: the setup script brings loopback up
-# so the PostgreSQL 14 statistics collector gets its socket.
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends iproute2 \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid "${PG_UID}" postgres \
+RUN groupadd --system --gid "${PG_UID}" postgres \
     && useradd --system --uid "${PG_UID}" --gid "${PG_UID}" \
         --home-dir /var/lib/postgresql --shell /bin/sh postgres
 
 COPY --from=build /usr/lib/postgresql /usr/lib/postgresql
 COPY --from=build /var/lib/postgresql /var/lib/postgresql
 COPY bundle /etc/harmony/bundle
+COPY reviewed-x86_64.txt /etc/harmony/instruction-allowlist
+COPY --from=build /usr/local/bin/loopback-up /opt/harmony/loopback-up
 COPY setup.sh node.sh ready.sh hooks.sh /opt/harmony/
 
 RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh \

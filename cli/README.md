@@ -3,6 +3,10 @@
 
 Build from the repository with `cargo build --release -p harmony-cli`.
 Run `target/release/harmony preflight` to inspect host support and guest artifacts.
+`harmony preflight --image IMAGE` checks one image without a hypervisor. It
+prints the instruction scan, the instrumentation attestation, and the
+instrumented files, and exits nonzero on any failure. `--json` prints the same
+report as JSON.
 See the [harmony-linux README](../consonance/harmony-linux/README.md) for guest image builds. Set `HARMONY_GUEST_DIR`
 to the artifact directory when using an external build.
 
@@ -76,7 +80,9 @@ harmony oci run alpine:3 --seed 7 --timeout 60 --out run-7 -- /bin/echo hello
 ```
 
 `oci run` accepts a registry image, OCI layout, or Docker image archive. It writes
-`serial.log` and `run.json` on completion. `--console` streams the full boot log.
+`serial.log` and `run.json` on completion. It serves coverage exchanges from
+instrumented programs, so a busy loop still lets guest timers fire.
+`--console` streams the full boot log.
 On timeout it preserves the partial serial log and returns an error without a
 successful run digest. `run.json` records separate application, supervisor, and
 runtime exit statuses: an application status is present only after the

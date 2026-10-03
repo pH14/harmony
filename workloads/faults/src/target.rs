@@ -14,6 +14,7 @@ use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
+const NOMINAL_COVERAGE_QUANTUM: NonZeroU16 = NonZeroU16::new(1024).unwrap();
 const NS_SHIFT: u32 = 24;
 const JSON_EVENT_ID: u32 = 0;
 const NS_ASSERT: u8 = 1;
@@ -26,7 +27,7 @@ const ASSERT_PAYLOAD_LEN: usize = 3;
 const STATE_PAYLOAD_LEN: usize = 9;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub enum FaultAction {
+pub enum FaultOperation {
     Wait(NonZeroU16),
     Kill(u16, NonZeroU16),
     EventKill {
@@ -51,7 +52,7 @@ pub enum FaultAction {
     Hook(u32, NonZeroU16),
 }
 
-impl FaultAction {
+impl FaultOperation {
     #[must_use]
     pub fn ticks(&self) -> u64 {
         match *self {
@@ -98,12 +99,12 @@ impl FaultAction {
     }
 }
 
-pub const ACTION_KEY_WIDTH: usize = 32;
+const OPERATION_KEY_WIDTH: usize = 32;
 
-impl FaultAction {
+impl FaultOperation {
     #[must_use]
-    pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
-        let mut out = [0u8; ACTION_KEY_WIDTH];
+    pub fn key_bytes(&self) -> [u8; OPERATION_KEY_WIDTH] {
+        let mut out = [0u8; OPERATION_KEY_WIDTH];
         let mut at = 0;
         let mut put = |field: &[u8]| {
             out[at..at + field.len()].copy_from_slice(field);
@@ -164,6 +165,47 @@ impl FaultAction {
             }
         }
         out
+    }
+}
+
+pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct FaultAction {
+    pub operation: FaultOperation,
+    pub coverage_quantum: NonZeroU16,
+}
+
+impl FaultAction {
+    pub fn new(operation: FaultOperation, coverage_quantum: NonZeroU16) -> Self {
+        Self {
+            operation,
+            coverage_quantum,
+        }
+    }
+
+    pub fn ticks(&self) -> u64 {
+        self.operation.ticks()
+    }
+
+    pub fn with_ticks(self, ticks: NonZeroU16) -> Self {
+        Self {
+            operation: self.operation.with_ticks(ticks),
+            ..self
+        }
+    }
+
+    pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
+        let mut bytes = [0; ACTION_KEY_WIDTH];
+        bytes[..OPERATION_KEY_WIDTH].copy_from_slice(&self.operation.key_bytes());
+        bytes[OPERATION_KEY_WIDTH..].copy_from_slice(&self.coverage_quantum.get().to_le_bytes());
+        bytes
+    }
+}
+
+impl From<FaultOperation> for FaultAction {
+    fn from(operation: FaultOperation) -> Self {
+        Self::new(operation, NOMINAL_COVERAGE_QUANTUM)
     }
 }
 
@@ -260,15 +302,15 @@ fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
 pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     let (start, end) = window;
     let horizon = end.saturating_sub(start);
-    match action {
-        FaultAction::Wait(_) => ActionDelta::default(),
-        FaultAction::EventKill { node, rarity, .. } => ActionDelta {
+    match action.operation {
+        FaultOperation::Wait(_) => ActionDelta::default(),
+        FaultOperation::EventKill { node, rarity, .. } => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
                 (start, u64::MAX),
             )),
         },
-        FaultAction::EventPark {
+        FaultOperation::EventPark {
             node,
             edges,
             hold_us,
@@ -287,19 +329,19 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 (start, end),
             )),
         },
-        FaultAction::Kill(node, _) => ActionDelta {
+        FaultOperation::Kill(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
                 (start, end),
             )),
         },
-        FaultAction::Pause(node, _) => ActionDelta {
+        FaultOperation::Pause(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcPause(Span(horizon))),
                 (start, end),
             )),
         },
-        FaultAction::Restart(node, _) => ActionDelta {
+        FaultOperation::Restart(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcRestart),
                 (
@@ -310,7 +352,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 ),
             )),
         },
-        FaultAction::Hook(id, _) => ActionDelta {
+        FaultOperation::Hook(id, _) => ActionDelta {
             standing: Some(standing(
                 process_target(0, &Fault::RunHook(id)),
                 (start, end),
@@ -656,7 +698,7 @@ mod tests {
     }
 
     fn kills(count: usize) -> Vec<FaultAction> {
-        vec![FaultAction::Kill(0, ticks(50)); count]
+        vec![FaultOperation::Kill(0, ticks(50)).into(); count]
     }
 
     fn assert_event(point: u32, disposition: u8) -> (u64, u32, Vec<u8>) {
@@ -683,10 +725,11 @@ mod tests {
         assert_eq!(start, ROOT + 150 * TICK);
         assert_eq!(end, start + 50 * TICK);
         let mixed = [
-            FaultAction::Kill(0, ticks(3)),
-            FaultAction::Hook(1, ticks(7)),
-            FaultAction::Pause(0, ticks(2)),
-        ];
+            FaultOperation::Kill(0, ticks(3)),
+            FaultOperation::Hook(1, ticks(7)),
+            FaultOperation::Pause(0, ticks(2)),
+        ]
+        .map(FaultAction::from);
         assert_eq!(
             WINDOWS.window(&mixed, 2).unwrap(),
             (ROOT + 10 * TICK, ROOT + 12 * TICK)
@@ -694,26 +737,48 @@ mod tests {
     }
 
     #[test]
+    fn coverage_quantum_is_keyed_serialized_and_preserved_when_duration_changes() {
+        let operation = FaultOperation::Wait(ticks(4));
+        let action = FaultAction::new(operation, ticks(64));
+        assert_ne!(
+            action.key_bytes(),
+            FaultAction::new(operation, ticks(1)).key_bytes()
+        );
+        assert_eq!(action.with_ticks(ticks(9)).coverage_quantum, ticks(64));
+        let encoded = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            serde_json::from_str::<FaultAction>(&encoded).unwrap(),
+            action
+        );
+        assert!(
+            serde_json::from_str::<FaultAction>(r#"{"operation":{"Wait":4},"coverage_quantum":0}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<FaultAction>(r#"{"operation":{"Wait":4}}"#).is_err());
+    }
+
+    #[test]
     fn every_action_takes_a_recorded_duration() {
         let actions = [
-            FaultAction::Wait(ticks(9)),
-            FaultAction::Kill(1, ticks(9)),
-            FaultAction::EventKill {
+            FaultOperation::Wait(ticks(9)),
+            FaultOperation::Kill(1, ticks(9)),
+            FaultOperation::EventKill {
                 node: 1,
                 rarity: 3,
                 ticks: ticks(9),
             },
-            FaultAction::EventPark {
+            FaultOperation::EventPark {
                 node: 1,
                 edges: 5,
                 hold_us: 1,
                 ticks: ticks(9),
                 target: ParkTarget::new(8, 16),
             },
-            FaultAction::Pause(1, ticks(9)),
-            FaultAction::Restart(1, ticks(9)),
-            FaultAction::Hook(4, ticks(9)),
-        ];
+            FaultOperation::Pause(1, ticks(9)),
+            FaultOperation::Restart(1, ticks(9)),
+            FaultOperation::Hook(4, ticks(9)),
+        ]
+        .map(FaultAction::from);
         for action in actions {
             let adapted = action.with_ticks(ticks(12));
             assert_eq!(adapted.ticks(), 12);
@@ -723,7 +788,7 @@ mod tests {
 
     #[test]
     fn a_shorter_window_shortens_an_event_park_hold_to_fit() {
-        let park = FaultAction::EventPark {
+        let park = FaultOperation::EventPark {
             node: 0,
             edges: 1,
             hold_us: 90_000,
@@ -732,7 +797,7 @@ mod tests {
         };
         assert_eq!(
             park.with_ticks(ticks(4)),
-            FaultAction::EventPark {
+            FaultOperation::EventPark {
                 node: 0,
                 edges: 1,
                 hold_us: 40_000,
@@ -742,7 +807,7 @@ mod tests {
         );
         assert_eq!(
             park.with_ticks(ticks(12)),
-            FaultAction::EventPark {
+            FaultOperation::EventPark {
                 node: 0,
                 edges: 1,
                 hold_us: 90_000,
@@ -767,11 +832,12 @@ mod tests {
     #[test]
     fn short_and_long_waits_shift_later_faults_by_the_recorded_duration() {
         let actions = [
-            FaultAction::Wait(ticks(8)),
-            FaultAction::Kill(0, ticks(50)),
-            FaultAction::Wait(ticks(8192)),
-            FaultAction::Hook(1, ticks(50)),
-        ];
+            FaultOperation::Wait(ticks(8)),
+            FaultOperation::Kill(0, ticks(50)),
+            FaultOperation::Wait(ticks(8192)),
+            FaultOperation::Hook(1, ticks(50)),
+        ]
+        .map(FaultAction::from);
         assert_eq!(WINDOWS.window(&actions, 1).unwrap().0, ROOT + 8 * TICK);
         assert_eq!(WINDOWS.window(&actions, 3).unwrap().0, ROOT + 8250 * TICK);
         let encoded = serde_json::to_string(&actions).unwrap();
@@ -784,15 +850,15 @@ mod tests {
 
     #[test]
     fn an_event_park_stands_for_its_window_with_its_own_hold() {
-        let action = FaultAction::EventPark {
+        let action = FaultOperation::EventPark {
             node: 2,
             edges: 4_096,
             hold_us: 2_000_000,
             ticks: ticks(500),
             target: None,
         };
-        let window = WINDOWS.window(&[action], 0).unwrap();
-        let fault = action_delta(action, window).standing.unwrap();
+        let window = WINDOWS.window(&[action.into()], 0).unwrap();
+        let fault = action_delta(action.into(), window).standing.unwrap();
         assert_eq!(fault.start, ROOT);
         assert_eq!(fault.end, ROOT + 500 * TICK);
         assert_eq!(
@@ -806,14 +872,14 @@ mod tests {
                 }
             ))
         );
-        let aimed = FaultAction::EventPark {
+        let aimed = FaultOperation::EventPark {
             node: 2,
             edges: 4_096,
             hold_us: 2_000_000,
             ticks: ticks(500),
             target: ParkTarget::new(0x1000, 0x1004),
         };
-        let fault = action_delta(aimed, window).standing.unwrap();
+        let fault = action_delta(aimed.into(), window).standing.unwrap();
         assert_eq!(
             decode_process_target(&fault.target),
             Some((
@@ -829,17 +895,17 @@ mod tests {
 
     #[test]
     fn an_event_park_target_is_a_nonempty_range_in_json() {
-        let untargeted = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1}}"#;
+        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1}},"coverage_quantum":1}"#;
         let action: FaultAction = serde_json::from_str(untargeted).unwrap();
         assert_eq!(serde_json::to_string(&action).unwrap(), untargeted);
-        let targeted = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}}"#;
+        let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1}"#;
         let action: FaultAction = serde_json::from_str(targeted).unwrap();
         assert!(matches!(
-            action,
-            FaultAction::EventPark { target: Some(target), .. } if target == ParkTarget::new(8, 16).unwrap()
+            action.operation,
+            FaultOperation::EventPark { target: Some(target), .. } if target == ParkTarget::new(8, 16).unwrap()
         ));
         assert_eq!(serde_json::to_string(&action).unwrap(), targeted);
-        let empty = r#"{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":8}}}"#;
+        let empty = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":8}}},"coverage_quantum":1}"#;
         assert!(serde_json::from_str::<FaultAction>(empty).is_err());
     }
 
@@ -847,7 +913,7 @@ mod tests {
     fn wait_installs_nothing() {
         assert_eq!(
             action_delta(
-                FaultAction::Wait(NonZeroU16::MIN),
+                FaultOperation::Wait(NonZeroU16::MIN).into(),
                 WINDOWS.window(&kills(4), 0).unwrap()
             ),
             ActionDelta::default()
@@ -856,8 +922,8 @@ mod tests {
             standing_windows(
                 WINDOWS,
                 &[
-                    FaultAction::Wait(NonZeroU16::MIN),
-                    FaultAction::Wait(NonZeroU16::MIN)
+                    FaultOperation::Wait(NonZeroU16::MIN).into(),
+                    FaultOperation::Wait(NonZeroU16::MIN).into()
                 ]
             )
             .unwrap()
@@ -868,7 +934,7 @@ mod tests {
     #[test]
     fn kill_holds_its_whole_window_for_its_node() {
         let window = WINDOWS.window(&kills(4), 1).unwrap();
-        let delta = action_delta(FaultAction::Kill(2, ticks(50)), window);
+        let delta = action_delta(FaultOperation::Kill(2, ticks(50)).into(), window);
         let fault = delta.standing.expect("kill installs a standing fault");
         assert_eq!(fault.class, DecisionClass::Process.as_u16());
         assert_eq!(
@@ -881,7 +947,7 @@ mod tests {
     #[test]
     fn pause_holds_its_node_for_its_recorded_duration() {
         for duration in [1_u16, 7, 1_024] {
-            let actions = [FaultAction::Pause(1, ticks(duration))];
+            let actions = [FaultAction::from(FaultOperation::Pause(1, ticks(duration)))];
             let (start, end) = WINDOWS.window(&actions, 0).unwrap();
             let fault = action_delta(actions[0], (start, end))
                 .standing
@@ -897,7 +963,10 @@ mod tests {
     #[test]
     fn restart_brings_the_node_back_inside_its_window() {
         for duration in [1_u16, 4, 50, 1_024] {
-            let actions = [FaultAction::Restart(0, ticks(duration))];
+            let actions = [FaultAction::from(FaultOperation::Restart(
+                0,
+                ticks(duration),
+            ))];
             let (start, end) = WINDOWS.window(&actions, 0).unwrap();
             let fault = action_delta(actions[0], (start, end))
                 .standing
@@ -917,7 +986,7 @@ mod tests {
     #[test]
     fn hook_targets_the_supervisor_rather_than_a_node() {
         let fault = action_delta(
-            FaultAction::Hook(9, ticks(50)),
+            FaultOperation::Hook(9, ticks(50)).into(),
             WINDOWS.window(&kills(4), 0).unwrap(),
         )
         .standing
@@ -931,10 +1000,11 @@ mod tests {
     #[test]
     fn an_input_installs_one_standing_fault_per_faulting_action() {
         let actions = [
-            FaultAction::Hook(1, ticks(50)),
-            FaultAction::Wait(NonZeroU16::MIN),
-            FaultAction::Kill(0, ticks(50)),
-        ];
+            FaultOperation::Hook(1, ticks(50)),
+            FaultOperation::Wait(NonZeroU16::MIN),
+            FaultOperation::Kill(0, ticks(50)),
+        ]
+        .map(FaultAction::from);
         let faults = standing_windows(WINDOWS, &actions).unwrap();
         assert_eq!(faults.len(), 2);
         assert_eq!(
@@ -955,9 +1025,10 @@ mod tests {
     #[test]
     fn the_window_list_round_trips_through_the_shared_codec() {
         let actions = [
-            FaultAction::Kill(1, ticks(50)),
-            FaultAction::Hook(2, ticks(50)),
-        ];
+            FaultOperation::Kill(1, ticks(50)),
+            FaultOperation::Hook(2, ticks(50)),
+        ]
+        .map(FaultAction::from);
         let windows = standing_windows(WINDOWS, &actions).unwrap();
         let bytes = fault_policy::encode_windows(&windows).expect("encode");
         assert_eq!(
@@ -969,9 +1040,10 @@ mod tests {
     #[test]
     fn the_window_list_is_a_function_of_the_actions_and_the_tiling() {
         let actions = [
-            FaultAction::Restart(3, ticks(50)),
-            FaultAction::Wait(NonZeroU16::MIN),
-        ];
+            FaultOperation::Restart(3, ticks(50)),
+            FaultOperation::Wait(NonZeroU16::MIN),
+        ]
+        .map(FaultAction::from);
         assert_eq!(
             standing_windows(WINDOWS, &actions),
             standing_windows(WINDOWS, &actions)
@@ -982,9 +1054,10 @@ mod tests {
             standing_windows(moved, &actions)
         );
         let shorter = [
-            FaultAction::Restart(3, ticks(10)),
-            FaultAction::Wait(NonZeroU16::MIN),
-        ];
+            FaultOperation::Restart(3, ticks(10)),
+            FaultOperation::Wait(NonZeroU16::MIN),
+        ]
+        .map(FaultAction::from);
         assert_ne!(
             standing_windows(WINDOWS, &actions),
             standing_windows(WINDOWS, &shorter)

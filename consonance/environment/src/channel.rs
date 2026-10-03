@@ -15,6 +15,8 @@ const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
 pub const SERVICE_ENTROPY: u16 = 1;
 pub const SERVICE_PAYLOAD: u16 = 2;
 pub const SERVICE_SCHEDULER: u16 = 3;
+pub const SERVICE_COVERAGE_QUANTUM: u16 = 4;
+pub const DEFAULT_COVERAGE_QUANTUM: u64 = 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Question {

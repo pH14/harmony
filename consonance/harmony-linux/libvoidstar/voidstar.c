@@ -4,9 +4,15 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
 #ifndef HARMONY_OPEN
 #define HARMONY_OPEN(path, flags) open((path), (flags))
@@ -38,9 +44,60 @@ struct harmony_coverage_state {
 };
 
 static _Thread_local struct harmony_coverage_state harmony_coverage = {
-    0, 1, 0, 0, UINT64_MAX
+    0, 1, 0, 0, 1
 };
-static uint32_t harmony_next_guard = 1;
+static _Thread_local volatile sig_atomic_t harmony_device_held;
+static uint64_t harmony_next_edge;
+static const uint64_t harmony_lease_generation = 1;
+
+static int device_lock(void)
+{
+    harmony_device_held = 1;
+    if (pthread_mutex_lock(&harmony_device_lock) != 0) {
+        harmony_device_held = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void device_unlock(void)
+{
+    (void)pthread_mutex_unlock(&harmony_device_lock);
+    harmony_device_held = 0;
+}
+
+static void harmony_before_fork(void)
+{
+    (void)device_lock();
+}
+
+static void harmony_after_fork(void)
+{
+    device_unlock();
+}
+
+static void harmony_child_after_fork(void)
+{
+    harmony_coverage = (struct harmony_coverage_state){0, 1, 0, 0, 1};
+    harmony_after_fork();
+}
+
+__attribute__((constructor)) static void harmony_initialize(void)
+{
+    (void)pthread_atfork(harmony_before_fork, harmony_after_fork,
+                         harmony_child_after_fork);
+}
+
+static uint32_t harmony_thread_id(void)
+{
+#ifdef __linux__
+    return (uint32_t)syscall(SYS_gettid);
+#else
+    uint64_t thread = 0;
+    (void)pthread_threadid_np(NULL, &thread);
+    return (uint32_t)thread;
+#endif
+}
 
 /* The R-L3 transport ruling fixes the device path; it is not configurable. */
 static const char harmony_device_path[] = "/dev/harmony";
@@ -81,14 +138,14 @@ void fuzz_json_data(const char *data, size_t size)
 
     if ((data == NULL && size != 0) || size > (size_t)SSIZE_MAX)
         return;
-    if (pthread_mutex_lock(&harmony_device_lock) != 0)
+    if (device_lock() != 0)
         return;
     fd = HARMONY_OPEN(harmony_device_path, O_WRONLY | O_CLOEXEC);
     if (fd >= 0) {
         (void)write_all(fd, (const unsigned char *)data, size);
         (void)HARMONY_CLOSE(fd);
     }
-    (void)pthread_mutex_unlock(&harmony_device_lock);
+    device_unlock();
 }
 
 uint64_t fuzz_get_random(void)
@@ -99,7 +156,7 @@ uint64_t fuzz_get_random(void)
     int fd;
     size_t index;
 
-    if (pthread_mutex_lock(&harmony_device_lock) != 0)
+    if (device_lock() != 0)
         return 0;
     fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
     if (fd < 0)
@@ -113,7 +170,7 @@ uint64_t fuzz_get_random(void)
     for (index = 0; index < sizeof(bytes); index++)
         value |= (uint64_t)bytes[index] << (index * CHAR_BIT);
 out:
-    (void)pthread_mutex_unlock(&harmony_device_lock);
+    device_unlock();
     return value;
 }
 
@@ -199,8 +256,11 @@ static int coverage_exchange(uint64_t observed)
     if (pthread_mutex_lock(&harmony_device_lock) != 0)
         return -1;
     fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
-    if (fd < 0)
-        goto fail_locked;
+    if (fd < 0) {
+        int unavailable = errno == ENOENT;
+        (void)pthread_mutex_unlock(&harmony_device_lock);
+        return unavailable ? 1 : -1;
+    }
     if (write_all(fd, request, sizeof(request)) != 0 ||
         read_all(fd, response, sizeof(response)) != 0) {
         (void)HARMONY_CLOSE(fd);
@@ -221,34 +281,82 @@ fail_locked:
     return -1;
 }
 
-void init_coverage_module(const void *module, size_t size)
+uint64_t init_coverage_module(size_t edges, const char *symbols)
 {
-    (void)module;
-    (void)size;
+    uint64_t offset;
+    (void)symbols;
+    if (device_lock() != 0)
+        return 0;
+    offset = harmony_next_edge;
+    if ((uint64_t)edges >= UINT64_MAX - offset)
+        abort();
+    harmony_next_edge += (uint64_t)edges + 1;
+    device_unlock();
+    return offset;
 }
 
-void notify_coverage(uint64_t edge)
+static void coverage_count(uint64_t hits)
 {
+    if (hits > UINT64_MAX - harmony_coverage.counter)
+        harmony_coverage.counter = UINT64_MAX;
+    else
+        harmony_coverage.counter += hits;
+    if (!harmony_device_held &&
+        harmony_coverage.counter >= harmony_coverage.threshold) {
+        int result;
+        harmony_device_held = 1;
+        result = coverage_exchange(harmony_coverage.threshold);
+        harmony_device_held = 0;
+        if (result < 0)
+            abort();
+        if (result > 0)
+            harmony_coverage.threshold = UINT64_MAX;
+    }
+}
+
+bool notify_coverage(size_t edge)
+{
+    if (harmony_coverage.thread == 0)
+        harmony_coverage.thread = harmony_thread_id();
     harmony_instrumentation_event(edge);
-    if (harmony_coverage.counter != UINT64_MAX)
-        harmony_coverage.counter++;
-    if (harmony_coverage.counter == harmony_coverage.threshold &&
-        coverage_exchange(harmony_coverage.counter) != 0)
-        harmony_coverage.threshold = UINT64_MAX;
+    coverage_count(1);
+    return true;
+}
+
+uint64_t harmony_coverage_add(uint64_t hits)
+{
+    if (harmony_coverage.thread == 0)
+        harmony_coverage.thread = harmony_thread_id();
+    coverage_count(hits);
+    if (harmony_coverage.counter >= harmony_coverage.threshold)
+        return 1;
+    return harmony_coverage.threshold - harmony_coverage.counter;
+}
+
+uint64_t notify_coverage_v2(size_t edge, uint64_t hits)
+{
+    (void)hits;
+    (void)notify_coverage(edge);
+    return harmony_lease_generation << 40;
+}
+
+const uint64_t *coverage_lease_generation_addr(void)
+{
+    return &harmony_lease_generation;
+}
+
+uint64_t instrumentation_request_abi_version(uint64_t requested)
+{
+    return requested < 2 ? requested : 2;
 }
 
 void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop)
 {
-    if (pthread_mutex_lock(&harmony_device_lock) != 0)
-        return;
     while (start != NULL && stop != NULL && start < stop) {
-        if (*start == 0 && harmony_next_guard != 0) {
-            *start = harmony_next_guard;
-            harmony_next_guard++;
-        }
+        if (*start == 0)
+            *start = 1;
         start++;
     }
-    (void)pthread_mutex_unlock(&harmony_device_lock);
 }
 
 void __sanitizer_cov_trace_pc_guard_internal(uint32_t *guard, uint64_t site)
@@ -260,5 +368,10 @@ void __sanitizer_cov_trace_pc_guard_internal(uint32_t *guard, uint64_t site)
 void __sanitizer_cov_trace_pc_guard(uint32_t *guard)
 {
     if (guard != NULL && *guard != 0)
-        notify_coverage((uint64_t)*guard);
+        (void)notify_coverage((size_t)__builtin_return_address(0));
+}
+
+void __sanitizer_cov_trace_pc(void)
+{
+    (void)notify_coverage((size_t)__builtin_return_address(0));
 }

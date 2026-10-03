@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Harmony Workloads"
+  short_description: "Instrument and admit deterministic workload images"
+  default_prompt: "Use $preparing-workloads to prepare this workload image for Harmony."

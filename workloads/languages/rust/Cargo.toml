@@ -1,0 +1,13 @@
+[package]
+name = "harmony-rust-language-fixture"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+antithesis-instrumentation = "=0.1.0"
+
+[[bin]]
+name = "harmony-rust-language-fixture"
+path = "../../faults/runtime/tests/language_fixture.rs"

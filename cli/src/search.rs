@@ -431,8 +431,8 @@ mod tests {
     fn a_replay_input_is_a_recorded_action_list_or_a_bug_report() {
         let ticks = std::num::NonZeroU16::new(50).unwrap();
         let actions = vec![
-            faults_workload::FaultAction::Hook(1, ticks),
-            faults_workload::FaultAction::Kill(0, ticks),
+            faults_workload::FaultOperation::Hook(1, ticks).into(),
+            faults_workload::FaultOperation::Kill(0, ticks).into(),
         ];
         let file = tempfile::NamedTempFile::new().expect("temp file");
         std::fs::write(

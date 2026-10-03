@@ -34,12 +34,44 @@ operate with some nodes down. Already-running hooks continue reporting their
 assertions across restarts; readiness only checks new launches. Bundles without
 a readiness command keep immediate hook launches.
 
+## Image admission
+
+Preparation scans every executable and shared library in the staged rootfs
+before it builds the guest image ([`admission`](src/admission.rs)). It rejects:
+
+- a writable executable segment or an executable stack;
+- an ELF file that is not 64-bit little-endian x86-64 or arm64;
+- a hardware entropy instruction (RDRAND, RDSEED, RNDR, RNDRRS) without a
+  review in `/etc/harmony/instruction-allowlist`
+  ([format](../languages/reviewed/README.md));
+- a review entry that matches no instruction in the image.
+
+Each line of `/symbols/harmony-instrumented-events` holds a SHA-256 and an
+absolute image path, and must match that file. Event actions are enabled when
+this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
+a non-empty `*.sym.tsv`. An image without an attestation still runs the other
+fault actions.
+
+The scan catches entropy instructions that compilers and assemblers emit. It
+decodes each executable section from its start, and it requires an executable
+section inside every executable segment. A binary built to hide an instruction
+can still pass: for example, inside the operand bytes of another instruction,
+or in segment bytes outside the scanned sections.
+
+`harmony preflight --image IMAGE` prints the scan, the attestation, and the
+instrumented files, and exits nonzero unless the image is a complete
+instrumented target.
+
 ## Actions
 
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
 10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
 search draws one duration per suffix from the adaptive duration policy, and
-every action in the suffix takes it:
+every action in the suffix takes it. Each action also records a coverage
+quantum: the number of coverage callbacks an instrumented thread makes between
+VM exits during the action's window. It is drawn log-uniform over powers of two
+from 1 through 32768, and it is part of the action's archive key. Replay serves
+the same quantum, so busy-loop scheduling replays along with fault timing:
 
 | action | effect |
 |---|---|
@@ -287,3 +319,7 @@ Assertions passed anywhere else remain exploration evidence and cannot establish
 this recovery condition.
 Bundles that use drawn hooks have `check: null`; their evidence comes from those
 hooks instead.
+
+Replay summaries count event-kill and event-park fires, which shows whether a
+recorded input's event actions ran. The settlement wait after an input keeps
+the last action's coverage quantum.

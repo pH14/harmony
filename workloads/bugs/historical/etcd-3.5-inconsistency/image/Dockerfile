@@ -2,6 +2,7 @@
 ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 ARG GO_IMAGE=golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
+ARG HARMONY_RUNTIME_IMAGE=harmony-language-runtime:local
 FROM ${GO_IMAGE} AS workload-writer-build
 
 ARG TARGETARCH
@@ -37,6 +38,7 @@ ARG ETCD_VERSION=3.5.2
 ARG ETCD_SOURCE_SHA256=ecb4d2bc76e48ae504d9a00b50bcc906503c4d0324acf9dee79d97d16f7282ad
 ARG ANTITHESIS_SDK_VERSION=0.8.0
 ARG ETCD_SOURCE_BASE=https://github.com/etcd-io/etcd/archive/refs/tags
+ENV CGO_ENABLED=1 GOFLAGS=-trimpath
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 
@@ -69,6 +71,8 @@ RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-to
 
 COPY workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch \
      /build/antithesis-sdk-go-v0.8.0-linux-arm64.patch
+COPY workloads/languages/go/antithesis-go-toolexec-v0.8.0-stdlib.patch /build/stdlib.patch
+COPY workloads/languages/go/configure-stdlib.sh /build/configure-stdlib.sh
 
 RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && test -d "${sdk_cache_dir}" \
@@ -77,13 +81,20 @@ RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-g
     && chmod -R u+w /build/antithesis-sdk-go \
     && patch --batch --forward --fuzz=0 -d /build/antithesis-sdk-go -p1 \
        < /build/antithesis-sdk-go-v0.8.0-linux-arm64.patch \
+    && patch --batch --forward --fuzz=0 -d /build/antithesis-sdk-go -p1 < /build/stdlib.patch \
+    && (cd /build/antithesis-sdk-go \
+        && gofmt -w tools/antithesis-go-toolexec/config.go tools/antithesis-go-toolexec/policy.go tools/antithesis-go-toolexec/harmony_std_test.go \
+        && go test ./tools/antithesis-go-toolexec && go install ./tools/antithesis-go-toolexec) \
     && grep -F -q 'linux && (amd64 || arm64) && cgo' \
        /build/antithesis-sdk-go/internal/voidstar_handler.go
 
-RUN mkdir -p /out/etcd /out/symbols \
+RUN mkdir -p /out/etcd /out/symbols /out/stdlib \
     && sdk_dir=/build/antithesis-sdk-go \
     && test -d "${sdk_dir}" \
     && (cd /build/etcd/server \
+        && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
+           bash /build/configure-stdlib.sh "${sdk_dir}" go.etcd.io/etcd /out/stdlib > /out/stdlib/instrumentation.env \
+        && source /out/stdlib/instrumentation.env \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
@@ -103,32 +114,31 @@ RUN mkdir -p /out/etcd /out/symbols \
     && cp /build/etcd/LICENSE /out/ETCD-LICENSE \
     && cp "${sdk_dir}/LICENSE" /out/ANTITHESIS-SDK-GO-LICENSE
 
-COPY consonance/harmony-linux/libvoidstar /build/libvoidstar
-COPY workloads/faults/runtime/Makefile \
-     workloads/faults/runtime/fault_runtime.c \
-     workloads/faults/runtime/fault_runtime.h \
-     workloads/faults/runtime/fault_runtime_shim.c /build/fault-runtime/
-RUN make -C /build/fault-runtime \
-       CORE_DIR=/build/libvoidstar \
-       BUILD_DIR=/build/fault-runtime-build all \
-    && cp /build/fault-runtime-build/libvoidstar.so /out/
+FROM ${HARMONY_RUNTIME_IMAGE} AS voidstar
 
-FROM ${DEBIAN_IMAGE}
-
-ARG ETCD_VERSION=3.5.2
-
+FROM ${DEBIAN_IMAGE} AS certificates
 SHELL ["/bin/sh", "-euxc"]
-
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+FROM ${DEBIAN_IMAGE}
+ARG ETCD_VERSION=3.5.2
+SHELL ["/bin/sh", "-euxc"]
+COPY --from=certificates /etc/ssl/certs /etc/ssl/certs
+COPY --from=certificates /usr/share/ca-certificates /usr/share/ca-certificates
+COPY workloads/languages/reviewed/bookworm-x86_64.txt /tmp/harmony-base-review
+RUN if [ "$(uname -m)" = x86_64 ]; then \
+        mkdir -p /etc/harmony && cp /tmp/harmony-base-review /etc/harmony/instruction-allowlist; \
+    fi && rm /tmp/harmony-base-review
 
 COPY --from=instrumented-build /out/etcd/etcd /opt/etcd/etcd
 COPY --from=instrumented-build /out/etcd/etcdctl /opt/etcd/etcdctl
 COPY --from=workload-writer-build /out/etcd-writer /opt/harmony/etcd-writer
 COPY --from=workload-writer-build /out/etcd-oracle /opt/harmony/etcd-oracle
-COPY --from=instrumented-build /out/libvoidstar.so /usr/lib/libvoidstar.so
+COPY --from=voidstar /out/libvoidstar.so /usr/lib/libvoidstar.so
 COPY --from=instrumented-build /out/symbols/*.sym.tsv /symbols/
+COPY --from=instrumented-build /out/stdlib /symbols/stdlib
 COPY --from=instrumented-build /out/harmony-instrumented-events /symbols/harmony-instrumented-events
 COPY --from=instrumented-build /out/ETCD-LICENSE /licenses/etcd.txt
 COPY --from=instrumented-build /out/ANTITHESIS-SDK-GO-LICENSE /licenses/antithesis-sdk-go.txt

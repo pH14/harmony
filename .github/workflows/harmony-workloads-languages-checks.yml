@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Each language fixture boots twice with a fixed seed and once under the park
+# launcher. Language layers are cached by their own recipe inputs; the shared
+# runtime is composed onto them in every run.
+name: Checks / Harmony Workloads / Languages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      rebuild_images:
+        description: Rebuild every language layer without cached build steps
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: harmony-languages-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
+  HARMONY_GUEST_DIR: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64
+  HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+  HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
+
+jobs:
+  guest:
+    name: Language Guest Runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - name: Prepare the exact guest runtime
+        if: steps.scope.outputs.enabled == 'true'
+        uses: ./.github/actions/exact-platform-runtime
+        with:
+          report: language-guest-evidence
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+          if-no-files-found: error
+          retention-days: 14
+      - if: always() && steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-guest-evidence
+          path: language-guest-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  images:
+    name: Language Image — ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: C, id: c }
+          - { name: Rust, id: rust }
+          - { name: Go, id: go }
+          - { name: Python, id: python }
+          - { name: Java, id: java }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - id: key
+        if: steps.scope.outputs.enabled == 'true'
+        run: echo "key=language-base-v2-${{ matrix.id }}-$(python3 workloads/languages/image-key.py ${{ matrix.id }})" >>"$GITHUB_OUTPUT"
+      - id: cache
+        if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: language-base/base.tar
+          key: ${{ steps.key.outputs.key }}
+      - name: Build or restore the language layer and compose the current runtime
+        if: steps.scope.outputs.enabled == 'true'
+        env:
+          REBUILD_IMAGES: ${{ github.event_name == 'schedule' || inputs.rebuild_images }}
+        run: bash workloads/languages/prepare-ci-image.sh ${{ matrix.id }}
+      - if: steps.scope.outputs.enabled == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: language-base/base.tar
+          key: ${{ steps.key.outputs.key }}
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-image-${{ matrix.id }}
+          path: language-image/${{ matrix.id }}.tar
+          if-no-files-found: error
+          retention-days: 14
+
+  check:
+    name: Check — ${{ matrix.name }}
+    needs: [guest, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: C, id: c }
+          - { name: Rust, id: rust }
+          - { name: Go, id: go }
+          - { name: Python, id: python }
+          - { name: Java, id: java }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-image-${{ matrix.id }}
+          path: language-image
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-language-cli
+      - name: Build the CLI and enable KVM
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          cargo build --locked --release -p harmony-cli
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          docker load --input language-image/${{ matrix.id }}.tar
+      - name: Check admission, timer progress, park progress and replay identity
+        if: steps.scope.outputs.enabled == 'true'
+        run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-${{ matrix.id }}:local language-evidence
+      - if: always() && steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-evidence-${{ matrix.id }}
+          path: language-evidence
+          if-no-files-found: error
+          retention-days: 14

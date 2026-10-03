@@ -72,3 +72,13 @@ startup, scheduler/goroutine/channel activity, fixed-content computation,
 `time.Sleep`, timers, and the amd64 `cputicks` path. It does not establish
 correctness for arbitrary Go programs, the Go standard library as a whole, or
 another long-running service.
+
+## Instrumented language fixture
+
+`cmd/language-fixture` is the Go fixture for the
+[language checks](../../../../workloads/languages/README.md). One goroutine
+spins on an atomic flag, and the main goroutine sleeps 10 ms and prints twenty
+markers. Its image is built by `workloads/languages/go/Dockerfile` with the
+Antithesis compiler wrapper. The `/init` clock probe above stays uninstrumented.
+`language-fixture gc` runs five collections over 1,048,576 live heap pointers
+and prints how long each one stopped the world.

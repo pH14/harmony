@@ -86,3 +86,16 @@ mismatch is a regression in the test machinery, not a request to tune the worklo
 
 Performance experiments may add separate profiles later, but they cannot alter the correctness or
 portability contract of this case.
+
+## Shared instrumentation runtime
+
+The image copies libvoidstar and the fault runtime from the shared runtime
+build. Build it first and pass its tag to the case's Docker build:
+
+```sh
+runtime=$(bash workloads/languages/build-runtime.sh)
+docker build --build-arg "HARMONY_RUNTIME_IMAGE=$runtime" ...
+```
+
+The historical-image workflow passes this argument itself. Run
+`harmony preflight --image IMAGE` on a newly built image before searching it.

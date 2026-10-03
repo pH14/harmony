@@ -8,7 +8,8 @@
 # files, and a bundle that starts the fork's two writer processes. The build
 # context is the repository root.
 
-ARG DEBIAN_IMAGE=debian:trixie-slim@sha256:1caf1c703c8f7e15dcf2e7769b35000c764e6f50e4d7401c355fb0248f3ddfdb
+ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+ARG HARMONY_RUNTIME_IMAGE=harmony-language-runtime:local
 ARG SQLITE_REPO=https://github.com/antithesishq/sqlite.git
 ARG WORKLOAD_SHA256=0bc70aa4c180904b3ba7f4b1d7a77fe5f11fe422cd8f34f6fdc4b68b70db433e
 
@@ -48,29 +49,19 @@ RUN mkdir -p /out/symbols \
        > /out/symbols/harmony-instrumented-events \
     && cp LICENSE.md /out/SQLITE-LICENSE.md
 
-FROM ${DEBIAN_IMAGE} AS voidstar
-SHELL ["/bin/sh", "-euxc"]
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends clang make \
-    && rm -rf /var/lib/apt/lists/*
-COPY consonance/harmony-linux/libvoidstar /build/libvoidstar
-COPY workloads/faults/runtime/Makefile \
-     workloads/faults/runtime/fault_runtime.c \
-     workloads/faults/runtime/fault_runtime.h \
-     workloads/faults/runtime/fault_runtime_shim.c /build/fault-runtime/
-RUN make -C /build/fault-runtime \
-        CORE_DIR=/build/libvoidstar \
-        BUILD_DIR=/build/fault-runtime-build all \
-    && cp /build/fault-runtime-build/libvoidstar.so /out-libvoidstar.so
+FROM ${HARMONY_RUNTIME_IMAGE} AS voidstar
 
 FROM ${DEBIAN_IMAGE}
 SHELL ["/bin/sh", "-euxc"]
 COPY --from=fork-build /out/sqlite-workload /usr/local/bin/sqlite-workload
 COPY --from=fork-build /out/symbols /symbols
 COPY --from=fork-build /out/SQLITE-LICENSE.md /licenses/sqlite.md
-COPY --from=voidstar /out-libvoidstar.so /usr/lib/libvoidstar.so
+COPY --from=voidstar /out/libvoidstar.so /usr/lib/libvoidstar.so
 COPY workloads/bugs/historical/sqlite-wal-reset/image/bundle /etc/harmony/bundle
-RUN chmod 0755 /usr/local/bin/sqlite-workload /usr/lib/libvoidstar.so \
+COPY workloads/languages/reviewed/bookworm-x86_64.txt /tmp/harmony-base-review
+RUN if [ "$(uname -m)" = x86_64 ]; then cp /tmp/harmony-base-review /etc/harmony/instruction-allowlist; fi \
+    && rm /tmp/harmony-base-review \
+    && chmod 0755 /usr/local/bin/sqlite-workload /usr/lib/libvoidstar.so \
     && mkdir -p /data \
     && test -s /symbols/harmony-instrumented-events
 CMD ["/usr/local/bin/sqlite-workload"]

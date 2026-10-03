@@ -209,6 +209,7 @@ impl Drop for Chain {
 
 #[cfg(test)]
 mod tests {
+    use crate::target::FaultOperation;
     use std::num::NonZeroU16;
 
     use consonance_client::cache::{
@@ -220,7 +221,7 @@ mod tests {
     use super::*;
 
     fn wait(ticks: u16) -> FaultAction {
-        FaultAction::Wait(NonZeroU16::new(ticks).unwrap())
+        FaultOperation::Wait(NonZeroU16::new(ticks).unwrap()).into()
     }
 
     fn point(snap: u64) -> Point {
@@ -254,7 +255,7 @@ mod tests {
     #[test]
     fn action_keys_are_fixed_width_and_distinct() {
         let tick = NonZeroU16::new(9).unwrap();
-        let park = FaultAction::EventPark {
+        let park = FaultOperation::EventPark {
             node: 3,
             edges: 1,
             hold_us: 9,
@@ -263,23 +264,25 @@ mod tests {
         };
         let actions = [
             wait(3),
-            FaultAction::Kill(3, tick),
-            FaultAction::EventKill {
+            FaultOperation::Kill(3, tick).into(),
+            FaultOperation::EventKill {
                 node: 3,
                 rarity: 1,
                 ticks: tick,
-            },
-            park,
-            FaultAction::EventPark {
+            }
+            .into(),
+            park.into(),
+            FaultOperation::EventPark {
                 node: 3,
                 edges: 1,
                 hold_us: 9,
                 ticks: tick,
                 target: ParkTarget::new(u64::MAX - 1, u64::MAX),
-            },
-            FaultAction::Pause(3, tick),
-            FaultAction::Restart(3, tick),
-            FaultAction::Hook(3, tick),
+            }
+            .into(),
+            FaultOperation::Pause(3, tick).into(),
+            FaultOperation::Restart(3, tick).into(),
+            FaultOperation::Hook(3, tick).into(),
         ];
         let keys: std::collections::BTreeSet<_> =
             actions.iter().map(FaultAction::key_bytes).collect();

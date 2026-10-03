@@ -130,7 +130,10 @@ fn blockers(
     blockers
 }
 
-pub fn run(json: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
+pub fn run(json: bool, image: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    if let Some(image) = image {
+        return image_preflight(json, image);
+    }
     let host = HostReport::detect();
     let guest = GuestArtifacts::locate(host.isa);
     let base_initramfs = crate::oci::select_base_initramfs(&guest.initramfs).cloned();
@@ -162,6 +165,56 @@ pub fn run(json: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
         print_text(&report);
     }
     Ok(if report.ready {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn image_preflight(json: bool, image: &str) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let report = faults_workload::admission::inspect_image(image)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("image       {image}");
+        println!(
+            "scan        {} ({} ELF files)",
+            if report.scan_passed() {
+                "passed"
+            } else {
+                "FAILED"
+            },
+            report.executables.len()
+        );
+        println!(
+            "attestation {}",
+            if report.attestation_passed() {
+                "passed"
+            } else {
+                "FAILED"
+            }
+        );
+        println!(
+            "runtime     {}",
+            if report.runtime {
+                "/usr/lib/libvoidstar.so"
+            } else {
+                "MISSING"
+            }
+        );
+        println!(
+            "symbols     {}",
+            if report.symbols { "present" } else { "MISSING" }
+        );
+        for executable in &report.instrumented {
+            println!("instrumented {}  {}", executable.digest, executable.path);
+        }
+        for error in report.scan_errors.iter().chain(&report.attestation_errors) {
+            println!("            - {error}");
+        }
+        println!("ready       {}", if report.passed() { "yes" } else { "no" });
+    }
+    Ok(if report.passed() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

@@ -20,4 +20,4 @@ chmod 1777 /tmp /run /dev/shm
 
 # The PostgreSQL 14 statistics collector opens a UDP socket on loopback and
 # logs a failure when it cannot; bringing lo up keeps that line off the serial.
-ip link set lo up
+/opt/harmony/loopback-up

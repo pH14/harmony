@@ -86,6 +86,7 @@ struct harmony_fault_event_state {
     uint32_t initialized;
     uint64_t coverage_crossings;
     uint64_t coverage_digest;
+    uint64_t coverage_callbacks;
     struct harmony_fault_crossing *deferred;
     size_t deferred_count;
     size_t deferred_capacity;
@@ -501,6 +502,7 @@ static void *harmony_fault_event_control(void *arg)
             put_u64(response, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
             put_u64(response + 8, harmony_fault_events.coverage_crossings);
             put_u64(response + 16, harmony_fault_events.coverage_digest);
+            put_u64(response + 24, harmony_fault_events.coverage_callbacks);
         } else {
             valid = 0;
         }
@@ -992,6 +994,8 @@ void harmony_fault_runtime_event(uint64_t site)
         (void)pthread_mutex_unlock(&harmony_fault_events.lock);
         return;
     }
+    if (harmony_fault_events.coverage_callbacks != UINT64_MAX)
+        harmony_fault_events.coverage_callbacks++;
     before = harmony_fault_event_site_before(site, &crossed);
     if (harmony_fault_events.kill_armed != 0 &&
         harmony_fault_event_rarity_allows(before,
