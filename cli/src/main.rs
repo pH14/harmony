@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod config;
 mod host;
 mod preflight;
 mod search;
