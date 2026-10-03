@@ -88,8 +88,8 @@ oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`.
-A fault search keeps sixteen reservations per worker in its admission window
-and lets each worker hold sixteen finished results. Each action draws its own
+A fault search keeps sixteen reservations per worker in its admission window.
+Each action draws its own
 duration, so one execution can run a hundred times longer than the median, and
 the other workers keep running the jobs behind it until it is admitted.
 Each worker reports its time through the campaign `telemetry`: boot, new

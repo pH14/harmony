@@ -7,9 +7,8 @@ use searcher::search::{
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignExecutionOptions,
         CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting,
-        ResultBuffering, TargetExecution, WorkloadPolicies, postcard_result_sha256,
-        postcard_value_sha256, replay_campaign_checkpointed,
-        run_campaign_checkpointed_with_options,
+        TargetExecution, WorkloadPolicies, postcard_result_sha256, postcard_value_sha256,
+        replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
     },
     draw::{DrawMixture, MixtureDraw, SuffixShape},
     draw_tables::DrawTables,
@@ -504,7 +503,6 @@ fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
         None,
         CampaignExecutionOptions {
             work_budget: Some(4_096),
-            result_buffering: ResultBuffering::TwoPerWorker,
             checkpoints: None,
             placement: None,
         },
@@ -530,7 +528,6 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
         None,
         CampaignExecutionOptions {
             work_budget: Some(4_096),
-            result_buffering: ResultBuffering::TwoPerWorker,
             checkpoints: None,
             placement: None,
         },
@@ -668,7 +665,6 @@ fn failed_duration_actions_do_not_train_the_policy() {
         None,
         CampaignExecutionOptions {
             work_budget: Some(4_096),
-            result_buffering: ResultBuffering::TwoPerWorker,
             checkpoints: None,
             placement: None,
         },
@@ -706,7 +702,6 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
         None,
         CampaignExecutionOptions {
             work_budget: Some(4_096),
-            result_buffering: ResultBuffering::TwoPerWorker,
             checkpoints: None,
             placement: None,
         },
