@@ -2648,7 +2648,7 @@ where
         if rand.below(NonZeroUsize::new(2).unwrap()) != 0 {
             return Ok(None);
         }
-        let places: BTreeSet<_> = self
+        let places: BTreeMap<_, _> = self
             .active_ids
             .ids
             .iter()
@@ -2656,22 +2656,18 @@ where
             .take(256)
             .filter_map(|id| {
                 let key = self.entries[*id].key;
+                if key.progress() != progress {
+                    return None;
+                }
                 let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
-                (key.progress() == progress && draws < 32).then_some(key.place())
+                (draws < 32).then_some((key.place(), draws))
             })
             .collect();
         if places.is_empty() {
             return Ok(None);
         }
-        let weights = places.iter().map(|place| {
-            count_decay(
-                self.cells
-                    .get(&(progress, *place))
-                    .map_or(0, |cell| cell.draws),
-            )
-        });
-        let index = draw_weighted(rand, weights)?;
-        Ok(places.into_iter().nth(index))
+        let index = draw_weighted(rand, places.values().map(|draws| count_decay(*draws)))?;
+        Ok(places.into_keys().nth(index))
     }
 
     fn tier_runs(&self, progress: K::Progress) -> TierRuns {
