@@ -176,16 +176,18 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          status=0
           timeout -k 10 180 taskset -c 0,1 \
-            target/release/harmony search --package faults \
-              oci-images/pgcic-14.3.oci --backend consonance \
+            target/release/harmony search \
+              oci-images/pgcic-14.3.oci --backend kvm \
               --kernel consonance/harmony-linux/build/x86_64/bzImage \
               --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
               --seed 1 --executions 4 \
               --ram-mib 1024 \
               --knobs 'faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=20' \
-              --wall-minutes 1 --out pg-check/search \
-            2>&1 | tee pg-check/console.txt
+              --for 1m --out pg-check/search \
+            2>&1 | tee pg-check/console.txt || status=$?
+          test "$status" -le 1
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -236,7 +238,6 @@ jobs:
               K8S49: CNI pod IPs:
               K8S49: result rc=0 (client workload completed over the CNI)
     env:
-      HARMONY_GUEST_DIR: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64
       WORKLOAD: ${{ matrix.id }}
     steps:
       - uses: actions/checkout@v4
@@ -315,8 +316,8 @@ jobs:
           sudo chmod a+rw /dev/kvm
           stat -c '%n mode=%a owner=%U group=%G' /dev/kvm | tee nested-runtime-report/kvm.txt
           grep -m1 'model name' /proc/cpuinfo | tee nested-runtime-report/runner.txt
-      - name: Verify CLI host and guest preflight
-        run: target/release/harmony preflight --json | tee nested-runtime-report/preflight.json
+      - name: Verify CLI host and guest doctor
+        run: target/release/harmony doctor --offline --json | tee nested-runtime-report/doctor.json
       - name: Run the workload twice through the canonical runtime
         env:
           MARKERS: ${{ matrix.markers }}
@@ -329,8 +330,8 @@ jobs:
             rm -rf "$out"
             # The shell watchdog outlives the CLI budget so a timed-out run can
             # still persist its partial serial log.
-            timeout -k 10 1260 target/release/harmony oci run "$image" \
-              --seed 20260901 --ram-mib 2048 --timeout 1200 --console --out "$out" \
+            timeout -k 10 1260 target/release/harmony run "$image" \
+              --seed 20260901 --ram-mib 2048 --for 1200s --console --out "$out" \
               2>&1 | tee "$report/console/${WORKLOAD}-${repetition}.txt"
             test -s "$out/serial.log"
             test -s "$out/run.json"

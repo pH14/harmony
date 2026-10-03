@@ -93,12 +93,12 @@ docker build -f workloads/languages/python/Dockerfile --target compiled \
   -t harmony-python-reference-build:local .
 docker build -f workloads/languages/python/postgres.Dockerfile \
   -t harmony-python-postgres:local .
-harmony search --package faults harmony-python-postgres:local --backend consonance \
+harmony search harmony-python-postgres:local --backend kvm \
   --kernel GUEST_KERNEL --base-initramfs BASE_INITRAMFS \
-  --executions 64 --wall-minutes 5 --out evidence/python-postgres
-harmony search --package faults harmony-python-postgres:local --backend consonance \
+  --executions 64 --for 5m --out evidence/python-postgres
+harmony run harmony-python-postgres:local --backend kvm \
   --kernel GUEST_KERNEL --base-initramfs BASE_INITRAMFS \
-  --replay workloads/languages/python/reference-events.json --repeat 2 \
+  --actions workloads/languages/python/reference-events.json --repeat 2 \
   --out evidence/python-postgres-replay
 ```
 

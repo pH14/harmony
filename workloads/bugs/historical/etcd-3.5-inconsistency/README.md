@@ -98,4 +98,4 @@ docker build --build-arg "HARMONY_RUNTIME_IMAGE=$runtime" ...
 ```
 
 The historical-image workflow passes this argument itself. Run
-`harmony preflight --image IMAGE` on a newly built image before searching it.
+`harmony prepare IMAGE` on a newly built image before searching it.

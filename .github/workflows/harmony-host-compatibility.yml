@@ -88,13 +88,13 @@ jobs:
           # a hosted runner has no nested hypervisor. This job checks that the CLI
           # runs and identifies the host, so the readiness verdict is reported.
           status=0
-          cargo run -q -p harmony-cli -- preflight --json >preflight.json || status=$?
-          cat preflight.json
-          test "$(jq -r .os preflight.json)" = macos
-          test "$(jq -r .isa preflight.json)" = arm64
-          jq -e 'has("ready") and has("blockers")' preflight.json >/dev/null
-          jq -r '"hypervisor state: \(.hypervisor.state); ready: \(.ready)"' preflight.json
-          echo "preflight exit: ${status}"
+          cargo run -q -p harmony-cli -- doctor --offline --json >doctor.json || status=$?
+          cat doctor.json
+          test "$(jq -r .os doctor.json)" = macos
+          test "$(jq -r .architecture doctor.json)" = aarch64
+          jq -e 'has("ready") and has("blockers")' doctor.json >/dev/null
+          jq -r '"backend: \(.backend); ready: \(.ready)"' doctor.json
+          echo "doctor exit: ${status}"
 
   linux-arm64:
     name: Linux Arm64
@@ -151,10 +151,10 @@ jobs:
           # a hosted runner has no usable /dev/kvm. This job checks that the CLI
           # runs and identifies the host, so the readiness verdict is reported.
           status=0
-          cargo run -q -p harmony-cli -- preflight --json >preflight.json || status=$?
-          cat preflight.json
-          test "$(jq -r .os preflight.json)" = linux
-          test "$(jq -r .isa preflight.json)" = arm64
-          jq -e 'has("ready") and has("blockers")' preflight.json >/dev/null
-          jq -r '"hypervisor state: \(.hypervisor.state); ready: \(.ready)"' preflight.json
-          echo "preflight exit: ${status}"
+          cargo run -q -p harmony-cli -- doctor --offline --json >doctor.json || status=$?
+          cat doctor.json
+          test "$(jq -r .os doctor.json)" = linux
+          test "$(jq -r .architecture doctor.json)" = aarch64
+          jq -e 'has("ready") and has("blockers")' doctor.json >/dev/null
+          jq -r '"backend: \(.backend); ready: \(.ready)"' doctor.json
+          echo "doctor exit: ${status}"

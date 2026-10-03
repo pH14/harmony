@@ -1,5 +1,5 @@
 # Release artifacts for the brew tap (pH14/homebrew-harmony): per-platform
-# `harmony` binaries plus per-ISA guest artifact tarballs (kernel + initramfs).
+# `harmony` binaries, pinned guest and UML runtimes, and language recipe SDKs.
 # Runs on version tags. The tap formula pins these assets by sha256.
 name: Release / Harmony
 on:
@@ -29,6 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --release -p harmony-cli
+        env:
+          HARMONY_RELEASE_VERSION: ${{ github.ref_name }}
       - run: tar -C target/release -czf harmony-${{ github.ref_name }}-${{ matrix.triple }}.tar.gz harmony
       - uses: actions/upload-artifact@v4
         with:
@@ -84,21 +86,69 @@ jobs:
             export HARMONY_PLATFORM_KERNEL="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/bzImage"
           fi
           timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture
-      - run: tar -C consonance/harmony-linux/build -czf harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
+      - name: Package the runtime and checksum
+        run: |
+          isa=${{ matrix.isa }}
+          kernel=bzImage
+          if [[ "$isa" == aarch64 ]]; then kernel=Image; fi
+          tar -C consonance/harmony-linux/build -czf harmony-guest-${{ github.ref_name }}-$isa.tar.gz "$isa/$kernel" "$isa/initramfs-oci.cpio.gz"
+          sha256sum harmony-guest-*.tar.gz > harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: guest-${{ matrix.isa }}
-          path: harmony-guest-*.tar.gz
+          path: harmony-guest-*.tar.gz*
+
+  uml:
+    name: UML Runtime — ${{ matrix.isa }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            isa: x86_64
+          - runner: ubuntu-24.04-arm
+            isa: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build and package the pinned UML profile
+        run: |
+          nix run .#uml-images -- --output "$RUNNER_TEMP/profile/${{ matrix.isa }}"
+          tar -C "$RUNNER_TEMP/profile" -czf harmony-uml-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
+          sha256sum harmony-uml-*.tar.gz > harmony-uml-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uml-${{ matrix.isa }}
+          path: harmony-uml-*.tar.gz*
+
+  sdk:
+    name: Language SDK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package the exact release source for language preparation
+        run: |
+          for isa in x86_64 aarch64; do
+            asset="harmony-sdk-${{ github.ref_name }}-$isa.tar.gz"
+            git archive --format=tar --prefix=sdk/ HEAD workloads/languages workloads/faults/runtime consonance/harmony-linux/libvoidstar consonance/harmony-linux/linux/go-runtime-guest workloads/bugs/historical/etcd-3.5-inconsistency/image/patches | gzip -n > "$asset"
+            sha256sum "$asset" > "$asset.sha256"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: language-sdk
+          path: harmony-sdk-*.tar.gz*
 
   publish:
     name: Publish
-    needs: [cli, guest]
+    needs: [cli, guest, uml, sdk]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes harmony-*.tar.gz
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes harmony-*.tar.gz harmony-*.sha256
         env:
           GH_TOKEN: ${{ github.token }}

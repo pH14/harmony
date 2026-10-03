@@ -78,15 +78,15 @@ guest_arguments=()
 # shellcheck source=historical-backend.sh disable=SC1091
 . "$(dirname "$0")/historical-backend.sh"
 historical_backend "reports/${CASE_ID}.${label}.denial.json"
-timeout -k 30 "${timeout_seconds}" ${launcher[@]+"${launcher[@]}"} "${harmony}" search --package faults \
-    "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci" \
-    "${guest_arguments[@]}" \
-    --base-initramfs "${base_initramfs}" \
-    --replay "${input}" \
-    --repeat "${repeats}" \
-    --ram-mib "${RAM_MIB}" \
-    --knobs "${knobs}" \
-    --out "${out}" >"${console}" 2>&1 || status=$?
+if [[ "$mode" == reproduce ]]; then
+    arguments=(replay "$(dirname "$input")" --bug 1 --repeat "$repeats")
+else
+    arguments=(run "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci"
+        "${guest_arguments[@]}" --base-initramfs "$base_initramfs"
+        --actions "$input" --repeat "$repeats" --ram-mib "$RAM_MIB" --knobs "$knobs")
+fi
+timeout -k 30 "$timeout_seconds" ${launcher[@]+"${launcher[@]}"} "$harmony" \
+    "${arguments[@]}" --out "$out" >"$console" 2>&1 || status=$?
 tail -n 40 "${console}" || true
 
 report="${out}/report.json"
@@ -96,7 +96,7 @@ if [[ ! -s "${report}" ]]; then
     hash_count=0
 else
     ok=pass
-    if (( status != 0 )); then
+    if (( status > 1 )); then
         ok="fail: infra-failure (CLI exit ${status})"
         verdict=1
     elif ! ok=$("${oracle}" "${mode}" "${report}" "${repeats}" "${actions}"); then

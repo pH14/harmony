@@ -12,7 +12,7 @@ historical_backend() {
     case "${BACKEND:-consonance}" in
         consonance)
             test -s "${PWD}/guest/bzImage"
-            guest_arguments=(--backend consonance --kernel "${PWD}/guest/bzImage")
+            guest_arguments=(--backend kvm --kernel "${PWD}/guest/bzImage")
             ;;
         uml)
             local profile=${PWD}/guest/uml

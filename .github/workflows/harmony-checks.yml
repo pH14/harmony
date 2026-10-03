@@ -40,7 +40,7 @@ jobs:
           tool: cargo-nextest
       - name: Lint the assembled CLI
         run: cargo clippy -p harmony-cli --all-features --all-targets -- -D warnings
-      - name: Argument admission, preflight and staging
+      - name: Configuration and investigation
         run: cargo nextest run --all-features -p harmony-cli
 
   nes-adapter:
