@@ -564,6 +564,15 @@ impl FaultTarget {
         })
     }
 
+    pub fn console_evidence(&self) -> Result<String, String> {
+        with_live(&self.config, |live| {
+            live.session
+                .console_tail()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .map_err(|e| e.to_string())
+        })
+    }
+
     #[must_use]
     pub fn actions(&self) -> &[FaultAction] {
         &self.actions

@@ -29,7 +29,7 @@ Read the reference for the language:
 
 Install the composed runtime at `/usr/lib/libvoidstar.so` with `workloads/languages/compose.Dockerfile`. Keep the SDK forwarding code unchanged. Write the SHA-256 and absolute path of each instrumented file to `/symbols/harmony-instrumented-events`. Keep unstripped binaries under `/symbols`, each with a nonempty `*.sym.tsv` from the language's own tool.
 
-Run `harmony preflight --image IMAGE` before booting a VM. For each rejected instruction, disassemble the reported executable at the reported address. Accept a site only when the runtime cannot reach it under Harmony's fixed CPUID. Record the executable digest, address, instruction, and reason in `/etc/harmony/instruction-allowlist`, as `workloads/languages/reviewed/` does. A rebuilt binary has a new digest and needs a new review.
+Run `harmony prepare IMAGE` before booting a VM. For each rejected instruction, disassemble the reported executable at the reported address. Accept a site only when the runtime cannot reach it under Harmony's fixed CPUID. Record the executable digest, address, instruction, and reason in `/etc/harmony/instruction-allowlist`, as `workloads/languages/reviewed/` does. A rebuilt binary has a new digest and needs a new review.
 
 Acceptance needs four results:
 
@@ -45,5 +45,5 @@ The service table follows Antithesis's Apache-2.0 [setup skill](https://github.c
 Finish preparation with:
 
 ```sh
-harmony preflight --image IMAGE
+harmony prepare IMAGE
 ```

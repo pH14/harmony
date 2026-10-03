@@ -661,12 +661,16 @@ where
         if chunk.is_empty() {
             break;
         }
+        if offset == 0 && total as usize > MAX_CONSOLE_DIAGNOSTIC {
+            offset = total - MAX_CONSOLE_DIAGNOSTIC as u32;
+            continue;
+        }
         let remaining = MAX_CONSOLE_DIAGNOSTIC.saturating_sub(console.len());
         console.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
         if console.len() == MAX_CONSOLE_DIAGNOSTIC {
             break;
         }
-        offset = console.len() as u32;
+        offset = offset.saturating_add(chunk.len().min(remaining) as u32);
         if offset >= total {
             break;
         }
@@ -1117,23 +1121,23 @@ mod tests {
     }
 
     #[test]
-    fn console_pages_are_bounded() {
-        const EXPECTED_CAP: usize = 64 * 1024;
-        let mut calls = 0;
-        let bounded = drain_console_pages(|_| {
-            calls += 1;
-            if calls == 1 {
-                Ok(Reply::Console {
-                    total: u32::MAX,
-                    chunk: vec![b'x'; EXPECTED_CAP],
-                })
-            } else {
-                Err(std::io::Error::other("unexpected second console page").into())
-            }
+    fn console_pages_keep_the_recent_bounded_tail() {
+        const CAP: usize = 64 * 1024;
+        let serial = [vec![b'x'; CAP], vec![b'y'; CAP], b"late failure".to_vec()].concat();
+        let mut offsets = Vec::new();
+        let bounded = drain_console_pages(|offset| {
+            offsets.push(offset);
+            let start = offset as usize;
+            let end = (start + 8192).min(serial.len());
+            Ok(Reply::Console {
+                total: serial.len() as u32,
+                chunk: serial[start..end].to_vec(),
+            })
         })
         .expect("bounded console");
-        assert_eq!(bounded.len(), EXPECTED_CAP);
-        assert_eq!(calls, 1);
+        assert_eq!(bounded, serial[serial.len() - CAP..]);
+        assert_eq!(offsets[1] as usize, serial.len() - CAP);
+        assert!(bounded.ends_with(b"late failure"));
     }
 
     #[test]

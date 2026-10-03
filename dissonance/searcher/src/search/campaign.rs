@@ -3766,6 +3766,25 @@ where
             if !queued_specs.is_empty() {
                 return Err("campaign reorder window ended with queued jobs".into());
             }
+            if let Some(checkpoints) = checkpoints.as_mut() {
+                write_search_checkpoint(
+                    workload,
+                    config,
+                    checkpoints,
+                    "final",
+                    &core,
+                    &draw_state,
+                    &duration_policies,
+                    &rand,
+                    &counters,
+                    &coordinator_profile,
+                    reserved,
+                    next_admission,
+                    &pending,
+                    &completed,
+                    &spec_records,
+                )?;
+            }
             pool.close();
             Ok(())
         },

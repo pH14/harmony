@@ -10,7 +10,8 @@ Harmony is composed of two halves that work together to reach resolution on your
 
 * `consonance`: a deterministic Linux environment that runs your code reproducibly every time. It is built with
 hardware portability in mind, allowing Harmony to run on Intel, AMD, and ARM chips across Linux (KVM) and macOS (HVF),
-including within nested virtualization.
+including within nested virtualization. User-mode Linux also runs in ordinary Linux
+containers without hardware virtualization.
 
 * `dissonance`: a chaotic exploration tool that takes your code through adversarial conditions trying to find bugs.
 
@@ -37,22 +38,27 @@ technical scope and is built as a passion project that fits within the quiet gap
 
 ```sh
 cargo build --release -p harmony-cli
-./target/release/harmony preflight
+./target/release/harmony doctor
 ```
 
-Search selects a workload package and, when needed, its execution backend:
+Prepare a language project or point directly at an OCI image:
 
 ```sh
-harmony search --package nes smb.nes
-harmony search --package nes --backend consonance smb.nes
-harmony search --package faults foo.oci
+harmony init --language rust
+harmony prepare
+harmony search --name baseline --for 10m
+harmony inspect baseline
+harmony replay baseline --bug 1 --repeat 3
+harmony branch baseline --bug 1 --before 1steps --name earlier
+harmony search --from earlier --name neighborhood
 ```
 
-NES defaults to the native QuickNES backend. Packages resolve their input and
-record workload, execution, and search identities in campaign artifacts.
-
-The CLI also runs OCI workloads with `harmony oci run IMAGE -- COMMAND`.
-See [CLI documentation](cli/README.md) for prerequisites and run artifacts.
+`harmony.toml` describes services, readiness, test traffic, assertions and control
+hooks. Inline TOML and direct image inputs work too. The CLI chooses KVM, HVF or
+UML and keeps prepared artifacts for exact replay. NES files select the native
+game package: `harmony search game.nes --core quicknes_libretro.so`.
+See [CLI documentation](cli/README.md) for preparation, runtime provisioning,
+logging, interventions and whole-search continuation.
 
 ## Documentation
 

@@ -69,7 +69,7 @@ docker build --build-arg "HARMONY_RUNTIME_IMAGE=$runtime" ...
 ```
 
 The historical-image workflow passes this argument itself. Run
-`harmony preflight --image IMAGE` on a newly built image before searching it.
+`harmony prepare IMAGE` on a newly built image before searching it.
 
 The image uses the pinned Bookworm base that the language images use, so it
 shares their reviewed entropy sites. Trixie's coreutils pulls in OpenSSL, which

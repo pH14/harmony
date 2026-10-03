@@ -122,8 +122,9 @@ impl FaultWorkload {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct FaultCampaignEvidence {
+    root_actions: Vec<FaultAction>,
     aggregate: FaultMilestones,
     watermark: FaultProgressWatermark,
     watchdog_cutoffs: u64,
@@ -317,6 +318,14 @@ impl CampaignTypes for FaultWorkload {
 }
 
 impl Reporting for FaultWorkload {
+    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(serde_json::to_vec(evidence)?)
+    }
+
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+
     fn stream_format(&self) -> &'static str {
         if self.config.uml().is_some() {
             UML_CAMPAIGN_STREAM_FORMAT
@@ -748,6 +757,7 @@ impl Evaluation for FaultWorkload {
             std::slice::from_ref(target.observation()),
         );
         evidence.assertions.merge(&target.observation().assertions);
+        evidence.root_actions = target.actions().to_vec();
         Ok(())
     }
 
@@ -831,7 +841,10 @@ impl Evaluation for FaultWorkload {
             > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
         if bug.is_some() || champion.is_some() {
-            let input = input()?;
+            let mut input = input()?;
+            input
+                .actions
+                .splice(0..0, evidence.root_actions.iter().copied());
             if let Some(observations) = bug {
                 evidence.bugs.push(FaultBugRecord {
                     execution: sequence,
@@ -877,14 +890,31 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
+    run_fault_campaign_with_plan(game, config, origin, stream, progress, None)
+}
+
+pub fn run_fault_campaign_with_plan(
+    game: &FaultWorkload,
+    config: &FaultCampaignConfig,
+    origin: &FaultCampaignOrigin,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    checkpoints: Option<searcher::search::checkpoint::CheckpointPlan>,
+) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
+    let mut generic = config.generic();
+    if let CampaignOrigin::SearchCheckpoint { path } = origin {
+        generic.window = searcher::search::checkpoint::read_header(path)?.window;
+        generic.stop_campaign_on_objective = false;
+    }
     let (report, snapshot) = run_campaign_checkpointed_with_options(
         game,
-        &config.generic(),
+        &generic,
         origin,
         stream,
         progress,
         CampaignExecutionOptions {
             placement: config.placement.clone(),
+            checkpoints,
             result_buffering: ResultBuffering::SixteenPerWorker,
             ..CampaignExecutionOptions::default()
         },

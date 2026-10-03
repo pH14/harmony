@@ -18,7 +18,7 @@ docker build --tag harmony-pgcic:14.3 .
 docker save --output pgcic-14.3.oci harmony-pgcic:14.3
 ```
 
-`harmony search --package faults` takes the `docker save` tar directly.
+`harmony search` takes the `docker save` tar directly.
 
 The images are `linux/amd64` whatever the builder is, because the guest kernel
 is x86_64. On an arm64 host the build runs under emulation and takes far

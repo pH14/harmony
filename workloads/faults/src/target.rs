@@ -40,11 +40,7 @@ pub enum FaultOperation {
         edges: u32,
         hold_us: u32,
         ticks: NonZeroU16,
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            with = "park_target_serde"
-        )]
+        #[serde(default, with = "park_target_serde")]
         target: Option<ParkTarget>,
     },
     Pause(u16, NonZeroU16),
@@ -895,7 +891,7 @@ mod tests {
 
     #[test]
     fn an_event_park_target_is_a_nonempty_range_in_json() {
-        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1}},"coverage_quantum":1}"#;
+        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":null}},"coverage_quantum":1}"#;
         let action: FaultAction = serde_json::from_str(untargeted).unwrap();
         assert_eq!(serde_json::to_string(&action).unwrap(), untargeted);
         let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1}"#;
@@ -907,6 +903,30 @@ mod tests {
         assert_eq!(serde_json::to_string(&action).unwrap(), targeted);
         let empty = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":8}}},"coverage_quantum":1}"#;
         assert!(serde_json::from_str::<FaultAction>(empty).is_err());
+    }
+
+    #[test]
+    fn event_park_snapshots_round_trip_in_binary_checkpoints() {
+        for target in [None, ParkTarget::new(8, 16)] {
+            let snapshot = FaultSnapshot {
+                actions: vec![FaultAction::new(
+                    FaultOperation::EventPark {
+                        node: 1,
+                        edges: 4096,
+                        hold_us: 1000,
+                        ticks: NonZeroU16::new(10).unwrap(),
+                        target,
+                    },
+                    NonZeroU16::new(256).unwrap(),
+                )],
+                ..FaultSnapshot::default()
+            };
+            let bytes = postcard::to_allocvec(&snapshot).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<FaultSnapshot>(&bytes).unwrap(),
+                snapshot
+            );
+        }
     }
 
     #[test]

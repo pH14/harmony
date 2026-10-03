@@ -9,14 +9,14 @@ OCI image through `oci-support`, injects the caller's ROM at `/game.nes`, and
 delegates process startup to the platform supervisor.
 
 The `smb-*`, `nova-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
-points. Set `HARMONY_QUICKNES_CORE` to the pinned QuickNES shared library for
+points. Set `--core` in the CLI or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
 native execution. SMB and Nova support native QuickNES and whole-VM Consonance execution.
 Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
 not implemented for them.
 The Consonance backend uses the `consonance` feature and requires Linux/KVM
-and matching guest artifacts; `harmony search --package nes --backend
-consonance ROM` selects it through the shared CLI.
+and matching guest artifacts; `harmony search --backend
+kvm ROM` selects it through the shared CLI.
 
 The campaign binaries, `nes-eval` and `harmony search` limit glibc to one
 malloc arena on Linux. They call `mallopt(M_ARENA_MAX, 1)` first in `main`,
