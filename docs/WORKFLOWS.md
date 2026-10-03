@@ -397,3 +397,9 @@ arbitrary script, prove a change selector correct, or see GitHub's retained
 registry of branch-only workflows. Inspect `gh workflow list --all` before
 disabling an obsolete registry entry; disabling one preserves its old runs and
 is separate from repository lint.
+
+The release workflow publishes the CLI, a guest kernel and base initramfs,
+a pinned UML profile, and the source SDK for language preparation. Guest, UML
+and SDK archives carry SHA-256 sidecars. `harmony doctor` and `harmony prepare`
+fetch assets for the CLI version and host architecture into the user data
+cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR`.

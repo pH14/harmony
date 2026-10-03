@@ -210,13 +210,8 @@ exclude_re = [
     # `< CAP`→`<= CAP` changes only whether the saturated log contains 4096 or
     # 4097 entries; it cannot affect page bytes, guest state, or any hash.
     "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*pvclock_stamp",
-    # (k) `harmony-cli` host probes: `detect_kvm`/`detect_hvf`/`detect_nested`
-    #     read live host state (/dev/kvm open, sysctl, /proc/cpuinfo) that the
-    #     mutation runner's host fixes to one value, and `Isa::current` reads
-    #     the compile-target arch, so the other arm can never be entered. The
-    #     pure classification they feed (`classify`, `guest_dir_name`,
-    #     `Hypervisor::available`, Display) is unit-tested and stays guarded.
-    "cli/src/host\\.rs.*(detect_kvm|detect_hvf|detect_nested|Isa::current)",
+    # Host probes require the operating system's hypervisor facilities.
+    "cli/src/host\\.rs.*(detect_kvm|detect_hvf)",
     # `oci::runner`'s `execute` variants are the per-cell hypervisor
     # composition roots (same category as `boot_hvf`/`boot_linux_selected`
     # above) and `drive` is their step loop over a live vCPU: neither can run
@@ -224,12 +219,8 @@ exclude_re = [
     # by the `oci-smoke` CI lane's real seed-0/seed-0/seed-7 runs. The stream
     # filtering and cmdline policy they use are unit-tested and stay guarded.
     "cli/src/oci/runner\\.rs.*(execute|drive)",
-    # `oci::run` is the verb's end-to-end pipeline (host check → docker stage
-    # → boot → artifact write) and `rootfs_segment_for` its docker-backed
-    # cache orchestration; both need a container tool and a hypervisor the
-    # oracle host does not guarantee. Covered by the `oci-smoke` lane; the
-    # pure pieces (`hex`, `parse_container_rc`, bundle/cache/cpio) stay guarded.
-    "cli/src/oci/mod\\.rs.*(in run|rootfs_segment_for)",
+    # Guest execution is exercised by the OCI and language integration lanes.
+    "cli/src/oci/mod\\.rs.*in execute",
     # docker/podman subprocess glue: probe for an installed tool, inspect the
     # local image store, pull, save. The oracle host's container-tool state is
     # not controllable from a unit test. The parsing these feed
@@ -239,10 +230,6 @@ exclude_re = [
     # `cache::key` is the image-ID lookup through docker/podman — same
     # category; the store/load/atomic-write logic it keys is unit-tested.
     "consonance/oci/src/cache\\.rs.*replace key ->",
-    # `preflight::run` composes the live host probes above, and `print_text`
-    # is println-only reporting with no test-observable return (same category
-    # as the loud-log entries in (c)).
-    "cli/src/preflight\\.rs.*(print_text|in run)",
     # In `tree`'s skip guard, `meta.rdev() != 0` is true only for device
     # nodes, which an unprivileged test cannot create (mknod needs root); the
     # fifo/socket halves of the guard ARE killed by the tree test's fifo and

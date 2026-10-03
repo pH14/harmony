@@ -105,22 +105,7 @@ def replay_command(case: dict) -> str:
     """Show the command shape for a reproducer from the current run."""
     if case.get("ci", {}).get("status", "runnable") != "runnable":
         return "—"
-    version = case.get("workload", {}).get("version", "?")
-    run = case.get("run", {})
-    knobs = " ".join(f"{key}={value}" for key, value in run.get("knobs", {}).items())
-    command = [
-        "harmony search --package faults",
-        f"IMAGE-{version}.oci",
-        "--backend consonance",
-        f"--kernel bzImage-{case.get('kernel_profile', '?')}",
-        "--base-initramfs initramfs.cpio.gz",
-        "--replay OUT/first-bug-input.json --repeat 1",
-        f"--ram-mib {run.get('ram_mib', '?')}",
-    ]
-    if knobs:
-        command.append(f'--knobs "{knobs}"')
-    command.append("--out OUT")
-    return f"`{' '.join(command)}`"
+    return "`harmony replay RUN --bug 1 --repeat 1 --out REPLAY`"
 
 
 def render(cases: list[dict], reports: dict) -> str:

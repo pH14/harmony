@@ -57,7 +57,7 @@ docker save -o lost-update.oci harmony-lost-update
 Search it like any faults image:
 
 ```sh
-harmony search --package faults lost-update.oci --backend consonance \
+harmony search lost-update.oci --backend kvm \
   --kernel Image --base-initramfs initramfs-oci.cpio.gz \
   --seed 1 --executions 100000 --ram-mib 256 --out run/
 ```
