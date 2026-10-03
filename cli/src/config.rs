@@ -114,10 +114,11 @@ impl Default for Config {
 
 #[derive(Clone, Debug, Default, clap::Args)]
 pub struct Source {
+    #[arg(help = "OCI image/archive or .nes ROM; otherwise read harmony.toml")]
     pub input: Option<String>,
     #[arg(long, conflicts_with = "config_toml")]
     pub config: Option<PathBuf>,
-    #[arg(long, conflicts_with = "config")]
+    #[arg(long, conflicts_with = "config", help = "Inline TOML recipe")]
     pub config_toml: Option<String>,
     #[arg(long, value_enum)]
     pub backend: Option<Backend>,
@@ -174,10 +175,9 @@ impl Source {
         } else if let Some(path) = path {
             let mut c: Config = toml::from_str(&std::fs::read_to_string(path)?)?;
             c.resolve_paths(
-                &std::fs::canonicalize(path)?
+                std::fs::canonicalize(path)?
                     .parent()
-                    .ok_or("config has no parent")?
-                    .to_path_buf(),
+                    .ok_or("config has no parent")?,
             );
             c
         } else {
@@ -232,6 +232,11 @@ impl Config {
         }
         if self.rom.is_some() && (!self.nodes.is_empty() || self.build.language.is_some()) {
             return Err("nodes and language preparation require an application image".into());
+        }
+        if self.rom.is_some() && self.wall_seconds.is_some() {
+            return Err(
+                "NES searches use --executions; --for currently bounds application searches".into(),
+            );
         }
         if self.uml_profile.is_some() && !matches!(self.backend, Backend::Auto | Backend::Uml) {
             return Err("uml_profile requires backend = 'uml' or 'auto'".into());

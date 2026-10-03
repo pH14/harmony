@@ -597,7 +597,8 @@ yet admitted. A checkpoint is written after an admission and the selection that
 follows it, so resuming re-executes the unadmitted jobs and admits them in the
 same order. `CheckpointPlan` writes one at a fixed execution interval, at each
 new workload milestone (`Reporting::checkpoint_marks`), and at each new top
-archive tier. Milestone and tier checkpoints are kept; only the last two
+archive tier. A final checkpoint is also written after the reservation queue drains, including
+for runs shorter than the periodic interval. Milestone and tier checkpoints are kept; only the last two
 interval checkpoints are kept. The snapshot store keeps every snapshot any
 checkpoint listed.
 
@@ -634,3 +635,7 @@ On native ARM64 Linux and macOS, SHA-256 uses runtime-detected CPU acceleration,
 including when this component is built independently. Other targets and Miri
 retain the existing backend selection. Hash inputs and outputs are unchanged.
 The [host SHA qualification](../../scripts/qualification/README.md) checks independent builds and compares real consumers with software hashing.
+
+`checkpoint::read_header` exposes the recorded scheduling window to adapters
+that resume on a different worker count. Reusing that window preserves admission
+ordering; the checkpoint reader still validates execution identity and policies.

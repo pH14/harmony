@@ -14,7 +14,7 @@ pub struct Options {
     pub executions: u64,
     pub ram_mib: u32,
     pub knobs: Vec<String>,
-    pub wall_minutes: Option<u64>,
+    pub wall_seconds: Option<u64>,
     pub output: PathBuf,
     pub uml_profile: Option<PathBuf>,
 }
@@ -27,7 +27,15 @@ impl Options {
         if self.ram_mib == 0 {
             return Err("--ram-mib must be positive".into());
         }
-        if self.output.exists() && fs::read_dir(&self.output)?.next().is_some() {
+        if [
+            "report.json",
+            "stream.jsonl",
+            "progress.jsonl",
+            "campaign-summary.json",
+        ]
+        .iter()
+        .any(|name| self.output.join(name).exists())
+        {
             return Err("search output directory must be empty; choose a new --out path".into());
         }
         Ok(())
@@ -57,6 +65,15 @@ pub enum StateHashEncoding {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReplayStep {
+    pub step: u64,
+    pub action: Option<FaultAction>,
+    pub observation: FaultObservations,
+    pub console: String,
+    pub settlement: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ReplaySummary {
     pub run: u32,
     pub bug: bool,
@@ -73,6 +90,7 @@ pub struct ReplaySummary {
     pub event_kill_fires: u64,
     pub event_park_fires: u64,
     pub check: Option<crate::target::CheckEvidence>,
+    pub timeline: Vec<ReplayStep>,
 }
 
 #[cfg(any(
@@ -137,6 +155,7 @@ impl ReplaySummary {
             event_kill_fires: observation.event_kill_fires,
             event_park_fires: observation.event_park_fires,
             check: observation.check.clone(),
+            timeline: Vec::new(),
         }
     }
 }
@@ -222,6 +241,14 @@ impl Report {
         serde_json::to_writer_pretty(fs::File::create(directory.join("report.json"))?, self)?;
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum SearchStart {
+    #[default]
+    Genesis,
+    Actions(Vec<FaultAction>),
+    Checkpoint(PathBuf),
 }
 
 pub struct Artifacts {
@@ -313,7 +340,7 @@ mod live {
     };
     use crate::{
         bundle::FaultVocabulary,
-        campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_checkpointed},
+        campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_with_plan},
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         report::{BugReport, write_bug_reports},
         target::{ActionWindows, FaultAction, FaultOperation},
@@ -369,10 +396,9 @@ mod live {
     fn config(options: &Options) -> Result<FaultConfig, String> {
         let backend = match &options.uml_profile {
             None => GuestBackend::Vm,
-            Some(profile) => GuestBackend::Uml(UmlGuest::load(
-                profile,
-                std::env::temp_dir().join("harmony-uml"),
-            )?),
+            Some(profile) => {
+                GuestBackend::Uml(UmlGuest::load(profile, options.output.join("uml-work"))?)
+            }
         };
         Ok(FaultConfig {
             knobs: options.knobs.clone(),
@@ -387,6 +413,7 @@ mod live {
         options: &Options,
         resources: &Resources,
         session_worker: Option<WorkerLauncher>,
+        start: &super::SearchStart,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let workers = u32::try_from(resources.placement.workers.len())?;
@@ -405,9 +432,7 @@ mod live {
             workers,
             execution_budget: options.executions,
             host: hostname(),
-            wall_budget: options
-                .wall_minutes
-                .map(|minutes| std::time::Duration::from_secs(minutes.saturating_mul(60))),
+            wall_budget: options.wall_seconds.map(std::time::Duration::from_secs),
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
             memory_budget_mib: Some(MEMORY_BUDGET_MIB),
             materialize_final_artifacts: true,
@@ -422,18 +447,64 @@ mod live {
         let mut stream =
             BufWriter::new(std::fs::File::create(options.output.join("stream.jsonl"))?);
         let mut progress = std::fs::File::create(options.output.join("progress.jsonl"))?;
-        let (campaign_report, _checkpoint) = run_fault_campaign_checkpointed(
+        use searcher::search::campaign::{
+            CampaignCheckpoint, Reporting, SnapshotCheckpoint, SnapshotCheckpointEntry,
+        };
+        let origin = match start {
+            super::SearchStart::Genesis => CampaignOrigin::Genesis,
+            super::SearchStart::Checkpoint(path) => {
+                CampaignOrigin::SearchCheckpoint { path: path.clone() }
+            }
+            super::SearchStart::Actions(actions) => {
+                let mut target =
+                    FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, &config)?;
+                for action in actions {
+                    target.apply_replayed(*action);
+                }
+                if target.actions().len() != actions.len() {
+                    return Err("branch prefix terminated before its selected point".into());
+                }
+                let snapshot = target
+                    .snapshot()
+                    .ok_or("cannot search from a terminal point; rewind further")?;
+                let snapshots = SnapshotCheckpoint {
+                    format: game.checkpoint_format().into(),
+                    entries: vec![SnapshotCheckpointEntry { id: 0, snapshot }],
+                };
+                let digest = super::sha256_hex(&snapshots.to_bytes()?);
+                CampaignOrigin::SnapshotRoot {
+                    checkpoint: CampaignCheckpoint {
+                        path: "branch-input".into(),
+                        file_sha256: digest,
+                        snapshots,
+                    },
+                }
+            }
+        };
+        let (campaign_report, _checkpoint) = run_fault_campaign_with_plan(
             &game,
             &campaign,
-            &CampaignOrigin::Genesis,
+            &origin,
             &mut stream,
             Some(&mut progress),
+            Some(searcher::search::checkpoint::CheckpointPlan {
+                directory: options.output.join("checkpoints"),
+                every: std::num::NonZeroU64::new(100),
+                on_marks: false,
+                on_top_progress: false,
+            }),
         )?;
         let archive = &campaign_report.campaign.archive;
         let windows = ActionWindows {
             root_seal: archive.root_seal,
         };
         let written = write_bug_reports(windows, &archive.bugs, &options.output)?;
+        if let Some(first) = written.first() {
+            std::fs::write(
+                options.output.join("first-bug-input.json"),
+                serde_json::to_vec_pretty(&first.actions)?,
+            )?;
+        }
         let summary = json!({
             "mode": "faultlab_campaign",
             "image": game.image_identity(),
@@ -477,7 +548,7 @@ mod live {
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
             let violations: Vec<String> = bug.observations.violations().into_iter().collect();
-            let witness = match replay_once(artifacts, &config, &bug.actions) {
+            let witness = match replay_once(artifacts, &config, &bug.actions, true) {
                 Ok(summary) => Some(summary),
                 Err(error) => {
                     eprintln!("bug {} did not replay: {error}", bug.bug);
@@ -527,6 +598,16 @@ mod live {
         repeat: u32,
         options: &Options,
     ) -> Result<Report, Box<dyn Error>> {
+        execute_actions(artifacts, actions, repeat, options, true)
+    }
+
+    pub fn execute_actions(
+        artifacts: &Artifacts,
+        actions: &[FaultAction],
+        repeat: u32,
+        options: &Options,
+        settle: bool,
+    ) -> Result<Report, Box<dyn Error>> {
         if repeat == 0 {
             return Err("--repeat must be positive".into());
         }
@@ -536,7 +617,7 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions)?;
+            let mut summary = replay_once(artifacts, &config, actions, settle)?;
             summary.run = run;
             report.execution_ticks = report.execution_ticks.saturating_add(
                 actions
@@ -558,25 +639,51 @@ mod live {
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
+        settle: bool,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
-        for action in actions {
-            target.apply(*action);
+        let mut timeline = vec![super::ReplayStep {
+            step: 0,
+            action: None,
+            observation: target.observation().clone(),
+            console: target.console_evidence()?,
+            settlement: false,
+        }];
+        for (index, action) in actions.iter().enumerate() {
+            target.apply_replayed(*action);
+            timeline.push(super::ReplayStep {
+                step: index as u64 + 1,
+                action: Some(*action),
+                observation: target.observation().clone(),
+                console: target.console_evidence()?,
+                settlement: false,
+            });
+            if target.actions().len() != index + 1 {
+                break;
+            }
         }
         let actions_applied = target.actions().len() as u64;
         let mut settle_actions = 0_u64;
         let mut settle_ticks = 0_u64;
-        for ticks in REPLAY_SETTLE_TICKS {
+        for ticks in REPLAY_SETTLE_TICKS.into_iter().filter(|_| settle) {
             if target.failed() || !replay_needs_settle(target.observation()) {
                 break;
             }
             let before = target.actions().len();
-            target.apply(FaultAction::new(
+            let action = FaultAction::new(
                 FaultOperation::Wait(std::num::NonZeroU16::new(ticks).expect("settle duration")),
                 actions
                     .last()
                     .map_or(std::num::NonZeroU16::MIN, |action| action.coverage_quantum),
-            ));
+            );
+            target.apply_replayed(action);
+            timeline.push(super::ReplayStep {
+                step: target.actions().len() as u64,
+                action: Some(action),
+                observation: target.observation().clone(),
+                console: target.console_evidence()?,
+                settlement: true,
+            });
             if target.actions().len() == before {
                 break;
             }
@@ -597,6 +704,7 @@ mod live {
             actions_applied,
             target.guest_horizons_run(),
         );
+        summary.timeline = timeline;
         summary.settle_actions = settle_actions;
         summary.settle_ticks = settle_ticks;
         Ok(summary)
@@ -618,7 +726,7 @@ mod live {
     ),
     not(miri)
 ))]
-pub use live::{Resources, replay, resources, search};
+pub use live::{Resources, execute_actions, replay, resources, search};
 
 #[cfg(test)]
 mod tests {
@@ -630,7 +738,7 @@ mod tests {
             executions: 10,
             ram_mib: 1024,
             knobs: Vec::new(),
-            wall_minutes: None,
+            wall_seconds: None,
             output: PathBuf::from("unused"),
             uml_profile: None,
         }
@@ -773,6 +881,7 @@ mod tests {
     fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {
         ReplaySummary {
             check: None,
+            timeline: Vec::new(),
             run: 1,
             bug,
             stop,

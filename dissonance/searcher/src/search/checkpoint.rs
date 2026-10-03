@@ -217,6 +217,10 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
     }
 }
 
+pub fn read_header(path: &Path) -> Result<CheckpointHeader, Box<dyn Error>> {
+    Ok(CheckpointReader::open(path)?.header)
+}
+
 pub(crate) struct CheckpointReader {
     pub(crate) header: CheckpointHeader,
     pub(crate) file_sha256: String,

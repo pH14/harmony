@@ -1,110 +1,230 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # Harmony CLI
 
-Build from the repository with `cargo build --release -p harmony-cli`.
-Run `target/release/harmony preflight` to inspect host support and guest artifacts.
-`harmony preflight --image IMAGE` checks one image without a hypervisor. It
-prints the instruction scan, the instrumentation attestation, and the
-instrumented files, and exits nonzero on any failure. `--json` prints the same
-report as JSON.
-See the [harmony-linux README](../consonance/harmony-linux/README.md) for guest image builds. Set `HARMONY_GUEST_DIR`
-to the artifact directory when using an external build.
+`harmony` prepares applications, searches their behavior, and investigates saved
+executions. An OCI image is an application input; a `.nes` file is a game input.
+The CLI owns these conveniences and configuration. The execution engine and
+searcher remain independent of OCI and TOML.
 
-## Search packages
+## Start an application
 
 ```sh
-harmony search --package nes smb.nes --core quicknes_libretro.so
-harmony search --package nes --backend native smb.nes --core quicknes_libretro.so
-harmony search --package nes --backend consonance smb.nes \
-  --kernel bzImage --base-initramfs initramfs-oci.cpio.gz \
-  --image nes.oci
-harmony search --package faults foo.oci --kernel bzImage \
-  --base-initramfs initramfs.cpio.gz --out run
+harmony init --language c
+harmony prepare
+harmony doctor
+harmony search --name baseline --for 10m
+harmony inspect baseline
+harmony inspect baseline --bug 1
+harmony timeline baseline --bug 1
+harmony logs baseline --bug 1 --contains ERROR
+harmony replay baseline --bug 1 --repeat 3 --name confirmed
 ```
 
-NES identifies SMB or Nova by ROM hash and defaults to `native`. Supply the
-pinned host QuickNES library with `--core` or `HARMONY_QUICKNES_CORE`. Consonance
-execution uses a controlled kernel, the platform runtime initramfs, and an OCI
-image containing the static play-agent and QuickNES core. Preparation adds the
-ROM as a validated read-only external input and launches the generic payload
-through the platform supervisor. Pass the image with `--image` or
-`HARMONY_NES_IMAGE`; it requires a supported Linux KVM host.
+`init` creates `harmony.toml` without overwriting a file. For an existing image
+with a Harmony supervisor bundle, `harmony search my-app:local` is sufficient.
+`prepare IMAGE` performs image admission without requiring guest artifacts or a
+hypervisor. `run IMAGE -- /bin/program ARG` runs a plain command and saves its
+serial log and exit record. `run` with configured nodes runs one supervised
+scenario; `run --actions input.json --repeat 2` runs an explicit recorded action
+sequence. Search discovers sequences itself.
 
-The faults package defaults to `consonance`. Its OCI image supplies
-`/etc/harmony/bundle`, which names the workload's nodes, hooks, setup and
-readiness commands in the platform supervisor's bundle format, plus the
-executables those lines run. Every node and hook execute inside one VM on one
-virtual CPU. Supply the controlled kernel with `--kernel` and the Linux base
-image with `--base-initramfs`. The platform runtime provides the supervisor and
-its SDK devices; installed kernel and base-image artifacts are discovered
-through `HARMONY_GUEST_DIR`.
+Commands read `harmony.toml` when no positional input is supplied. Use `--config
+PATH` to select another file, or `--config-toml 'image = "my-app:local"'` for inline
+TOML. CLI flags override the selected configuration. Paths in a file are relative
+to that file; inline paths and flag paths are relative to the working directory.
+Unknown TOML fields are errors. Durations on `--for` accept `s`, `m`, or `h`.
 
-`--backend uml --uml-profile DIR` runs the faults package on the
-User-mode Linux profile directory built by
-[`consonance/harmony-linux/uml`](../consonance/harmony-linux/uml/README.md)
-on any Linux host as an ordinary user. The profile's kernel replaces
-`--kernel`. Each flag requires the other, and UML runs on Linux only.
+## Application configuration
 
-Wait durations adapt automatically to campaign feedback and are recorded in each
-input for replay. `--ram-mib` sets guest RAM. `--knobs "k=v k=v"` adds guest
-command-line words, and `--wall-minutes` bounds a search in host time. `--replay INPUT.json --repeat N`
-runs a recorded action list, such as a search's own `bug-1.json`, instead of
-searching. Both modes write `report.json`.
+```toml
+image = "my-app:local"
+backend = "auto"
+seed = 0
+executions = 1000
+wall_seconds = 600
+ram_mib = 1024
+knobs = ["app.scenario=contention"]
+setup = ["/app/setup"]
+ready = ["/app/ready"]
+workload = ["/app/client"]
+check = ["/app/check"]
 
-`--seed` and `--executions` bound the campaign's logical work. `--out` selects a fresh output directory. Every package writes
-`stream.jsonl` and `report.json`, retaining campaign choices and results; NES
-adds `prepared.json` and `checkpoint.json`, and faults adds
-`campaign-summary.json`, `progress.jsonl`, `first-bug-input.json`, and one
-`bug-N.json` per bug. An explicit backend selection is checked before
-execution.
+[build]
+language = "rust"
+context = "."
 
-A search takes its worker count and memory from the limits the process runs
-under. The core pool is the fastest core type within the process's CPU
-affinity, cut to the whole cores of its cgroup's `cpu.max` quota; an NES search
-runs one worker per pool core but one. A faults search also keeps one core for
-the coordinator and pins each worker to its own core, then lowers the worker
-count until every guest and its setup snapshot fit the free memory (the
-cgroup's `memory.max` minus usage, or `MemAvailable` outside a limit) with a
-1 GiB reserve. `taskset`, `systemd-run -p AllowedCPUs=` or `-p CPUQuota=`, and
-`-p MemoryMax=` therefore set the size of a run. On macOS the pool is the
-performance cores, threads are left unpinned, and a faults search runs at most
-four workers, because more concurrent Hypervisor.framework VMs have crashed
-macOS hosts. Each worker's VM runs in its
-own child process, the same `harmony` binary started with the hidden
-`session-worker` command, so it carries the binary's HVF entitlement.
+[nodes.database]
+command = ["/opt/harmony/application", "server"]
 
-## OCI execution
+[nodes.worker]
+command = ["/opt/harmony/application", "worker"]
 
-```
-harmony oci run alpine:3 --seed 7 --timeout 60 --out run-7 -- /bin/echo hello
+[hooks]
+debug = ["/app/control", "log-level", "debug"]
+partition = ["/app/control", "partition"]
 ```
 
-`oci run` accepts a registry image, OCI layout, or Docker image archive. It writes
-`serial.log` and `run.json` on completion. It serves coverage exchanges from
-instrumented programs, so a busy loop still lets guest timers fire.
-`--console` streams the full boot log.
-On timeout it preserves the partial serial log and returns an error without a
-successful run digest. `run.json` records separate application, supervisor, and
-runtime exit statuses: an application status is present only after the
-supervisor has observed the application process return, while a runtime status
-also covers a `runc` startup failure.
+Commands are argument arrays. Use an explicit shell for shell syntax. Node and
+hook names use letters, digits, underscores and hyphens. Names are sorted for
+stable node indices and hook IDs. Nodes, setup, readiness, workload, checks and
+hooks are compiled into a supervisor bundle and installed into the assembled
+guest image. Omit these fields to use the image's own bundle. Services share the
+image's filesystem; package all service executables in that image. Lifecycle
+behavior follows the [supervisor contract](../consonance/harmony-linux/supervisor/README.md).
 
-On Linux x86 and arm64, the timeout watchdog sets a host cancellation latch and
-interrupts the owning KVM thread with reserved SIGUSR1. It repeats the interrupt
-after expiry until the driver returns, covering a signal arriving just before
-KVM_RUN. It sends no signals before expiry; canceled executions are abandoned.
-The timeout is a host resource limit, not guest virtual time or replay state. The
-mechanism itself lives in [`consonance-client`](../consonance/client/README.md),
-which the neutral session also uses for its own host bound.
+`check` and application SDK assertions define correctness. `Sometimes` assertions
+track reachability. Admission checks executable files and instrumentation
+attestations; successful admission does not prove application coverage or
+correctness. The search enables event faults only when the image supplies the
+required instrumentation and symbols.
 
-The CLI enables `harmony_pvclock` so the kernel uses virtual timing for entropy
-mixing as well as timekeeping. The stock x86 virtual-time boot supplies Linux's `SETUP_RNG_SEED` record from the
-VM's seeded entropy stream. This makes the CRNG ready without waiting for timing
-jitter that cannot advance inside a non-exiting guest loop. The boot consumes 64
-bytes from that same stream before guest execution. Hardware RNG instructions stay
-hidden. The pinned Linux kernel must trust bootloader randomness (its default);
-`random.trust_bootloader=off` disables this readiness mechanism.
+## Language preparation
 
-The OCI CI check reads `/dev/urandom` and checks byte-identical serial logs and
-digests for repeated seeds, distinct output for different seeds, and cancellation
-of a guest loop that performs no I/O.
+`prepare` builds a configured application, composes the current libvoidstar
+runtime, retains symbols and attestations, and checks image admission. `search`
+and `run` also prepare when a build is configured. Docker or Podman is required.
+Builds may fetch pinned toolchains and dependencies. `--offline` prevents Harmony
+release downloads; it does not change container-builder networking.
+
+| Language | Default application input | Preparation |
+|---|---|---|
+| C | `main.c` | Clang coverage callbacks and the SDK forwarding object |
+| Rust | one Cargo package with `src/main.rs` | pinned Rust, SDK dependency, coverage passes |
+| Go | one main package with `go.mod` | SDK and patched compiler wrapper, selected standard library coverage |
+| Python | `main.py` and its sources | instrumented CPython interpreter, source coverage catalog and precompiled bytecode |
+| Java | prebuilt `app.jar` | instrumented HotSpot and automatic bytecode back-edge callbacks |
+
+These are starter recipes. Rust workspaces, multiple binaries, native Python
+extensions, and additional Java modules need a custom `build.dockerfile`.
+C/Rust/Go can instead set `build.command` to an argument array that produces
+`/out/application` inside the language builder. With no language or Dockerfile,
+`build.command` runs on the host to produce the configured image. Application
+source is copied into the builder; preparation does not edit the source tree.
+Language recipes exclude `.git` and `.harmony` from their build context and
+honor the project’s `.dockerignore`. Use it to exclude other build outputs.
+
+The [language references](../workloads/languages/README.md) describe callback
+coverage and runtime limits. Runtime callbacks on instrumented threads advance
+virtual time; per-action coverage quanta are preserved in recordings. Python's
+minimal interpreter omits some standard native modules and rejects ctypes
+callbacks. Java's default image contains `java.base`. Preparation cannot infer
+readiness, test traffic, application invariants, or logging controls: configure
+those explicitly.
+
+Release builds embed their tag as `HARMONY_RELEASE_VERSION` and display it in
+`harmony --version`. An installed CLI fetches that release’s source SDK. Development checkouts use
+local recipes, or `HARMONY_SDK_DIR` can select a checkout. The first build of a
+language runtime can be substantial; the container builder caches its layers.
+
+## Runtime and doctor
+
+Applications select KVM, then HVF, then UML as available. UML runs on Linux
+without hardware virtualization, including ordinary containers. `--backend`
+overrides selection; an explicit UML profile selects UML. Every execution prints
+its selected backend. NES defaults to native QuickNES:
+
+```sh
+harmony search game.nes --core quicknes_libretro.so --name game
+harmony search game.nes --backend kvm --nes-image nes.oci --name guest-game
+```
+
+The shared NES dispatcher currently supports SMB and Nova. Other games and NES
+continuation/replay use the [game campaign tools](../workloads/nes/README.md).
+
+`doctor` checks backend availability, resolves runtime artifacts, and optionally
+checks image admission. It does not boot the application. Missing kernel, base
+initramfs, or UML profiles are downloaded from the CLI version's release assets,
+verified against SHA-256 sidecars, and cached in the user data directory. Releases
+also publish the language SDK. `doctor --offline --json` reports missing artifacts
+without downloading them. A development build needs local artifacts until its
+version is released.
+
+Set `kernel`, `base_initramfs`, `uml_profile`, `core`, or `nes_image` in TOML (or
+the corresponding flags) for explicit inputs. Guest artifacts are also discovered
+in `consonance/harmony-linux/build/ARCH` and an installation's
+`share/harmony/guest/ARCH`. The cache uses `HARMONY_DATA_DIR`, otherwise
+`XDG_DATA_HOME/harmony`, macOS `~/Library/Application Support/Harmony`, or Linux
+`~/.local/share/harmony`. `HARMONY_GUEST_DIR` is no longer used.
+
+## Investigate and branch
+
+Run names resolve beneath `.harmony/runs`; every command also accepts a run
+directory. `--out DIRECTORY` selects a fresh output directory. Existing runs are
+never overwritten. `inspect --json` and `timeline --json` expose structured data;
+human inspection lists findings and their next commands.
+
+```sh
+harmony branch baseline --bug 1 --before 1steps --name before-failure
+harmony branch baseline --bug 1 --at-step 3 \
+  --inject 'pause database 100ms' --follow --name delayed
+harmony branch baseline --bug 1 --before 1s \
+  --inject 'hook debug 1s' --follow --name verbose
+harmony logs verbose
+harmony diff confirmed delayed
+harmony search --from before-failure --executions 2000 --name neighborhood
+harmony search --resume baseline --executions 10000 --name extended
+```
+
+A branch replays the recorded prefix from the saved prepared guest. Step 0 is
+post-setup; action boundaries are the available rewind points. A time rewind
+rounds down to a recorded boundary and prints its resolved offset. With no point,
+a branch stops one action before the end of the selected input. Branching without
+`--follow` stops after the prefix and interventions. `--follow` appends the saved
+suffix and runs recovery checks. This is a new experiment: an intervention can
+change the timing and the outcome.
+
+Interventions are `kill NODE DURATION`, `pause NODE DURATION`, `restart NODE
+DURATION`, `wait DURATION`, or `hook NAME DURATION`. The default duration is one
+second. Durations must fit whole 10ms ticks. Hooks can implement partitions or
+change a running application's logging level. `--actions FILE` appends the full
+[recorded action format](../workloads/faults/README.md), including targeted event
+parks and kills. The timeline shows operation, coverage quantum, virtual tick,
+assertions and recovery evidence.
+
+Logging changes require an application control hook. Rebuilding with different
+logging creates a different execution identity; it cannot be passed off as an
+exact replay. `logs --at-step N` displays console evidence captured at a boundary.
+Console captures retain a bounded 64 KiB tail on both guest backends. Adjacent
+steps can overlap and old console output can be truncated. Hooks and faults may
+not fire within a short window; inspect the timeline’s observed hook and event
+counters as well as the requested action.
+
+`search --from` explores a new neighborhood from a recorded prefix, with fresh
+search history. Findings include that full prefix. `search --resume` restores
+the search corpus, snapshots, scheduler and evidence from its latest whole-search
+checkpoint. Fresh searches stop at the first objective; resuming explores past existing
+findings up to the requested budget. `--executions` is the total campaign budget
+when resuming. Checkpoints
+are saved periodically and at normal completion. Abrupt termination can retain
+an earlier checkpoint. A changed seed intentionally starts a new draw sequence.
+
+## Saved evidence and exit status
+
+Each run keeps `manifest.json`, `resolved.toml`, immutable prepared artifacts and
+a report. Searches also retain their campaign stream, summary, checkpoints and
+finding action sequences. Replays and branches retain observations and console
+evidence for each action and recovery check. Plain command runs retain
+`serial.log` and `run.json`. Large guest images and checkpoints consume disk
+space; removing a run directory removes its evidence.
+
+Replay verifies the exact CLI executable, host architecture, recorded artifact
+digests, and (for UML) host identity. It uses saved kernel and assembled guest
+bytes without rebuilding or resolving the image tag. It compares the final
+execution digest, terminal condition, assertions, applied actions and recovery
+evidence with the original for supervised scenarios. Plain command replay
+compares the saved serial digest, exit codes and terminal record. A branch's no-recovery semantics survive subsequent
+replays. Search continuations inherit execution configuration; only seed and
+search budgets may change.
+
+Exit status 0 means success, 1 means a finding, unmet reachability assertion or
+application command failure, and 2 means invalid configuration, infrastructure
+failure or replay divergence. A verified replay exits 0 even when it reproduces
+a bug. Watchdog cutoffs remain visible as execution failures in the report.
+
+## Verification
+
+Run `cargo test -p harmony-cli`, the faults package tests, and the searcher tests.
+`bash cli/tests/investigation.sh EVIDENCE_DIRECTORY` exercises preparation,
+TOML supervision, a logging intervention with observed completion and output,
+repeated prefix replay, checkpoint continuation, and artifact-tampering refusal.
+It needs a container builder and the local guest artifacts. The C language CI
+lane runs this bounded integration check.
