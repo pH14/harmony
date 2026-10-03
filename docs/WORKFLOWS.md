@@ -208,6 +208,13 @@ The nested-host job accepts Intel VMX or AMD SVM with NPT, selected from
 KVM-supported CPUID. The matching kernel includes both backends. The state
 format and exposed vendor capabilities bind snapshot identity; snapshots cannot
 cross vendors. SVM restores also compare GIF immediately at the lifecycle cut.
+`nested_history_run` optionally reuses a prior run's retained kernel, base and
+OCI image, rebuilds that run's source, and generates a new campaign with its own
+recorded replay. The historical arm must reproduce the original failure's layer,
+assertion and action lineage before the current-source qualification proceeds.
+It retains both binaries' input provenance, the historical source, host KVM
+parameters, kernel logs and nested-entry trace events. This is a rebuild control,
+not a replay claim about the original unretained outer binary.
 Manual runs can require `nested_vendor=vmx` or `nested_vendor=svm`; the default
 `auto` accepts either. `nested_runner` selects the standard x86 Ubuntu 22.04
 or 24.04 image; its label does not guarantee a CPU vendor. A vendor mismatch
