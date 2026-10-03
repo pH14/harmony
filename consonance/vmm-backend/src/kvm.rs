@@ -72,6 +72,13 @@ impl RunPage {
         (m.index, m.data)
     }
 
+    fn fail_entry(&self) -> (u64, u32) {
+        // SAFETY: read only for KVM_EXIT_FAIL_ENTRY, which initializes the active
+        // fail_entry union member in this valid, exclusively owned kvm_run.
+        let entry = unsafe { (*self.run).__bindgen_anon_1.fail_entry };
+        (entry.hardware_entry_failure_reason, entry.cpu)
+    }
+
     fn read_pio(&self, data_offset: u64, size: u8) -> Result<u32> {
         let n = (size as usize).min(4);
         // SAFETY: `run`/`len` describe a live buffer; `RunBuf` bound-checks the
@@ -201,7 +208,13 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit<X86>, Pending)>>
         KVM_EXIT_HLT => Ok(Some((Exit::Common(CommonExit::Idle), Pending::None))),
         KVM_EXIT_SHUTDOWN => Ok(Some((Exit::Common(CommonExit::Shutdown), Pending::None))),
         KVM_EXIT_INTERNAL_ERROR => Err(BackendError::Internal("KVM_EXIT_INTERNAL_ERROR")),
-        KVM_EXIT_FAIL_ENTRY => Err(BackendError::Internal("KVM_EXIT_FAIL_ENTRY")),
+        KVM_EXIT_FAIL_ENTRY => {
+            let (hardware_reason, cpu) = page.fail_entry();
+            Err(BackendError::KvmEntryFailure {
+                hardware_reason,
+                cpu,
+            })
+        }
         KVM_EXIT_IRQ_WINDOW_OPEN => Ok(None),
         _ => Err(BackendError::Internal("unhandled KVM exit reason")),
     }
