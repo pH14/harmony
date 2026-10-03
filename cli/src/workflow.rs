@@ -172,6 +172,7 @@ pub fn search(
             manifest.config.wall_seconds = Some(v);
         }
         manifest.actions.clear();
+        manifest.settle = true;
         manifest.save(&out)?;
         let result = search_faults(&out, &manifest, &start);
         return finish(&out, &mut manifest, result);
@@ -218,8 +219,12 @@ fn latest_checkpoint(path: &Path) -> Result<PathBuf> {
     let text = fs::read_to_string(directory.join("checkpoints.jsonl")).map_err(
         |_| "this run has no whole-search checkpoint yet (written periodically and when a search completes)",
     )?;
-    for line in text.lines().rev() {
-        let record: serde_json::Value = serde_json::from_str(line)?;
+    for (index, line) in text.lines().rev().enumerate() {
+        let record: serde_json::Value = match serde_json::from_str(line) {
+            Ok(record) => record,
+            Err(error) if index == 0 && !text.ends_with('\n') && error.is_eof() => continue,
+            Err(error) => return Err(error.into()),
+        };
         if let Some(file) = record["file"].as_str() {
             let candidate = directory.join(
                 Path::new(file)
@@ -353,4 +358,31 @@ pub fn run(
     let result = crate::oci::execute(&manifest.config, &kernel, &initramfs, &out, console)
         .map(|passed| if passed { 0 } else { 1 });
     finish(&out, &mut manifest, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_checkpoint_append_preserves_the_previous_checkpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let checkpoint = directory.join("checkpoint.bin");
+        fs::write(&checkpoint, b"checkpoint").unwrap();
+        let journal = directory.join("checkpoints.jsonl");
+        for suffix in ["", "{", "{\"file\":", "{\"file\":\"next"] {
+            fs::write(
+                &journal,
+                format!("{{\"file\":\"checkpoint.bin\"}}\n{suffix}"),
+            )
+            .unwrap();
+            assert_eq!(latest_checkpoint(root.path()).unwrap(), checkpoint);
+        }
+        fs::write(&journal, "{\"file\":\"checkpoint.bin\"}\n{\"file\":broken}").unwrap();
+        assert!(latest_checkpoint(root.path()).is_err());
+        fs::write(&journal, "{\"file\":\"checkpoint.bin\"}\n{\n").unwrap();
+        assert!(latest_checkpoint(root.path()).is_err());
+    }
 }

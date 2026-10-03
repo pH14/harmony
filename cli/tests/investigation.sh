@@ -46,6 +46,7 @@ PY
 status=0
 "$binary" search --from prefix --executions 4 --for 30s --name neighborhood || status=$?
 test "$status" -le 1
+printf '{"file":' >> .harmony/runs/neighborhood/checkpoints/checkpoints.jsonl
 status=0
 "$binary" search --resume neighborhood --executions 8 --for 30s --name extended || status=$?
 test "$status" -le 1
@@ -56,6 +57,9 @@ runs = Path('.harmony/runs')
 a = json.loads((runs / 'neighborhood/report.json').read_text())
 b = json.loads((runs / 'extended/report.json').read_text())
 assert b['executions'] > a['executions']
+assert json.loads((runs / 'prefix/manifest.json').read_text())['settle'] is False
+for name in ('neighborhood', 'extended'):
+    assert json.loads((runs / name / 'manifest.json').read_text())['settle'] is True
 PY
 cp -R .harmony/runs/prefix .harmony/runs/tampered
 printf corruption >> .harmony/runs/tampered/artifacts/kernel
