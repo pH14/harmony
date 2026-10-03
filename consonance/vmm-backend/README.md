@@ -16,6 +16,10 @@ an ISA-specific exit enum.
 - `Arm64KvmBackend` and `HvfBackend` implement the arm64 KVM and macOS
   Hypervisor.framework paths where their platform APIs are available.
 
+An x86 KVM entry failure retains the hardware failure reason and CPU reported by
+`KVM_EXIT_FAIL_ENTRY`. The structured error reaches the caller and workload
+failure trace, distinguishing invalid guest state from other entry failures.
+
 Before the first policy is installed, `KvmBackend::nested_capabilities` selects
 KVM-supported VMX or SVM. `initialize_nested` checks `KVM_CAP_NESTED_STATE` and
 installs the requested vendor's CPUID model. VMX reads the declared capability
