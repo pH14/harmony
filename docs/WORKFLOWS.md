@@ -361,9 +361,14 @@ default, on the User-mode Linux profile when an operator dispatches it.
 `BACKEND=uml`, which runs the CLI through `harmony-uml-qualify exec`: the
 runner's ordinary UID with ptrace and KVM ioctls denied, with the credentials
 and denial recorded beside the report. The search fails when the campaign
-captured no snapshot or restored none. `Reproducer` then replays the search's
-`first-bug-input.json` from genesis in fresh processes; every replay must
+captured no snapshot or restored none. The same job then replays the search's
+`first-bug-input.json` from genesis in fresh processes, before uploading the run.
+This preserves the recorded UML host identity and executable artifact modes. Every replay must
 violate the case's assertion with its evidence and reach one state digest.
+
+The language workflow also builds a pinned UML profile for `UML Command Replay`.
+That bounded check runs a plain OCI command and fresh replays as an ordinary
+user, compares application and bridge evidence, and rejects a planted divergence.
 
 ## Naming
 

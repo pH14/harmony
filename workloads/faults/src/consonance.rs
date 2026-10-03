@@ -100,7 +100,7 @@ impl UmlGuest {
 
     fn kernel_arguments(knobs: &[String]) -> Vec<String> {
         let mut arguments = knobs.to_vec();
-        arguments.push("rdinit=/init".to_owned());
+        arguments.push("rdinit=/usr/lib/harmony/init".to_owned());
         arguments
     }
 }

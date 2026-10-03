@@ -62,6 +62,7 @@ PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/consonance-checks.yml", "Exact Runtime Artifacts"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "Exact Runtime Artifacts"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Guest Runtime"): 45,
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language UML Profile"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Image — <Language>"): 45,
 }
 
@@ -569,6 +570,10 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="A language layer missing from the cache is built from source, including CPython and OpenJDK.",
             scope="harmony_languages"),
         Job("Check — <Language>", "pr", 15, scope="harmony_languages"),
+        Job("Language UML Profile", "pr", 45,
+            exception="The pinned UML runtime is built before its bounded command replay consumer.",
+            scope="harmony_languages"),
+        Job("UML Command Replay", "pr", 15, scope="harmony_languages"),
     ),
 )
 
@@ -648,7 +653,6 @@ HARMONY_UML_CAMPAIGN = Workflow(
         Job("Harmony", "full", 60),
         Job("Workload Image", "full", 90),
         Job("<Scenario>", "full", 360),
-        Job("Reproducer", "full", 60),
     ),
 )
 

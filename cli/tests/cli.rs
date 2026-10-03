@@ -38,3 +38,30 @@ fn malformed_inline_configuration_fails_before_runtime_provisioning() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown field"));
 }
+
+#[test]
+fn unrepresentable_numeric_inputs_fail_before_creating_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    for (flag, value) in [
+        ("--seed", "9223372036854775808"),
+        ("--executions", "9223372036854775808"),
+        ("--for", "9223372036854775808s"),
+    ] {
+        let out = harmony()
+            .current_dir(dir.path())
+            .args([
+                "search",
+                "example:local",
+                flag,
+                value,
+                "--name",
+                "invalid",
+                "--offline",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("maximum integer"));
+        assert!(!dir.path().join(".harmony").exists());
+    }
+}

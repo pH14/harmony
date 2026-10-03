@@ -342,3 +342,7 @@ boundary. Recovery-check waits are labeled separately. Both guest backends retur
 overlap adjacent captures. Console evidence is diagnostic and does not enter
 archive identity or scheduling. Branch previews stop at their exact action
 prefix without adding settlement actions.
+
+UML boots the shared `/usr/lib/harmony/init` entrypoint directly. This keeps
+application output on UML’s console instead of passing through the hardware
+arm64 MMIO console wrapper.

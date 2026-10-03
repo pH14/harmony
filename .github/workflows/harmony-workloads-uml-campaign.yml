@@ -166,7 +166,8 @@ jobs:
           version=$(jq -er '.workload.version' "${case_json}")
           mapfile -t build_args < <(jq -r \
             '.image.build_args // {} | to_entries[] | "\(.key)=\(.value)"' "${case_json}")
-          args=()
+          runtime=$(bash workloads/languages/build-runtime.sh)
+          args=(--build-arg "HARMONY_RUNTIME_IMAGE=$runtime")
           for build_arg in "${build_args[@]}"; do
             args+=(--build-arg "${build_arg}")
           done
@@ -224,47 +225,11 @@ jobs:
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
         run: scripts/historical-search.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: uml-campaign-search-${{ github.run_id }}
-          path: reports
-          if-no-files-found: error
-          retention-days: 30
-
-  replay:
-    name: Reproducer
-    needs: [manifest, guest, profile, tools, image, search]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: uml-campaign-guest-${{ github.run_id }}
-          path: guest
-      - uses: actions/download-artifact@v4
-        with:
-          name: uml-campaign-profile-${{ github.run_id }}
-          path: guest/uml
-      - uses: actions/download-artifact@v4
-        with:
-          name: uml-campaign-tools-${{ github.run_id }}
-          path: tools
-      - uses: actions/download-artifact@v4
-        with:
-          name: uml-campaign-image-${{ github.run_id }}
-          path: oci-images
-      - uses: actions/download-artifact@v4
-        with:
-          name: uml-campaign-search-${{ github.run_id }}
-          path: search
       - name: Replay the reproducer from genesis in fresh processes
         env:
           BACKEND: uml
           CASE_ID: ${{ matrix.id }}
+          RUN_KEY: ${{ matrix.run_key }}
           SOFTWARE_NAME: ${{ matrix.software }}
           WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
@@ -275,11 +240,14 @@ jobs:
           REPLAY_REPEATS: ${{ inputs.repeats }}
           MAX_REPLAY_SESSIONS: ${{ inputs.repeats }}
           REPLAY_TIMEOUT_SECONDS: 3000
-        run: scripts/historical-replay.sh reproduce "search/${CASE_ID}.search/first-bug-input.json"
+        run: |
+          report_dir=reports
+          if [[ "$RUN_KEY" != "$CASE_ID" ]]; then report_dir="reports/$RUN_KEY"; fi
+          scripts/historical-replay.sh reproduce "$report_dir/${CASE_ID}.search/first-bug-input.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: uml-campaign-replay-${{ github.run_id }}
+          name: uml-campaign-search-${{ github.run_id }}
           path: reports
           if-no-files-found: error
           retention-days: 30
