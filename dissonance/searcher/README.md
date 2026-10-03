@@ -550,7 +550,12 @@ work, terminal endpoint and execution-failure totals, final totals, logical
 memory categories, and monotonic host time. With
 `HARMONY_COORDINATOR_PROFILE=1`, they also contain coordinator phase durations
 and dispatched replay/suffix action costs. Those costs are declared path cost,
-not measured execution work. Profiling values and clocks never enter
+not measured execution work. The same lines carry `host_times`: the coordinator
+thread's CPU and run-queue time from Linux scheduler statistics, and worker idle
+time split into waiting for admission order and waiting for a job, counted from
+the start of the search in this process. Phase durations are wall time and
+include time the coordinator thread waits for a CPU, so coordinator work per
+job is `coordinator_cpu_ns` over admissions. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
 The campaign report carries `telemetry`, the host measurements that explain

@@ -78,6 +78,33 @@ pub(crate) fn thread_schedstat() -> Option<(u64, u64)> {
     Some((cpu, wait))
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HostTimes {
+    pub coordinator_cpu_ns: u64,
+    pub coordinator_run_wait_ns: u64,
+    pub idle_admission_order_ns: u64,
+    pub idle_no_job_ns: u64,
+}
+
+impl HostTimes {
+    pub(crate) fn measure(coordinator_start: Option<(u64, u64)>, idle: (u64, u64)) -> Self {
+        let (coordinator_cpu_ns, coordinator_run_wait_ns) = coordinator_start
+            .zip(thread_schedstat())
+            .map_or((0, 0), |((cpu_before, wait_before), (cpu, wait))| {
+                (
+                    cpu.saturating_sub(cpu_before),
+                    wait.saturating_sub(wait_before),
+                )
+            });
+        Self {
+            coordinator_cpu_ns,
+            coordinator_run_wait_ns,
+            idle_admission_order_ns: idle.0,
+            idle_no_job_ns: idle.1,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IdleReason {
     AdmissionOrder,
@@ -106,16 +133,25 @@ impl IdleClock {
     }
 
     pub(crate) fn update(&mut self, outstanding: usize, reason: IdleReason) {
-        let idle = u64::try_from(self.workers.saturating_sub(self.busy)).unwrap_or(u64::MAX);
-        let charged = nanos_since(self.since).saturating_mul(idle);
-        let total = match self.reason {
-            IdleReason::AdmissionOrder => &mut self.admission_order_ns,
-            IdleReason::NoJob => &mut self.no_job_ns,
-        };
-        *total = total.saturating_add(charged);
+        (self.admission_order_ns, self.no_job_ns) = self.totals();
         self.since = now();
         self.busy = outstanding.min(self.workers);
         self.reason = reason;
+    }
+
+    pub(crate) fn totals(&self) -> (u64, u64) {
+        let idle = u64::try_from(self.workers.saturating_sub(self.busy)).unwrap_or(u64::MAX);
+        let charged = nanos_since(self.since).saturating_mul(idle);
+        match self.reason {
+            IdleReason::AdmissionOrder => (
+                self.admission_order_ns.saturating_add(charged),
+                self.no_job_ns,
+            ),
+            IdleReason::NoJob => (
+                self.admission_order_ns,
+                self.no_job_ns.saturating_add(charged),
+            ),
+        }
     }
 
     pub(crate) fn finish(mut self, waits: &mut AdmissionWaits) {
@@ -162,5 +198,18 @@ mod tests {
         clock.finish(&mut waits);
         assert!(waits.idle_admission_order_ns >= 4_000_000);
         assert!(waits.idle_no_job_ns < waits.idle_admission_order_ns);
+    }
+
+    #[test]
+    fn live_idle_totals_include_the_interval_still_open() {
+        let mut clock = IdleClock::new(2);
+        clock.update(0, IdleReason::AdmissionOrder);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let (admission_order, no_job) = clock.totals();
+        assert!(admission_order >= 4_000_000);
+        assert_eq!(no_job, clock.no_job_ns);
+        let mut waits = AdmissionWaits::default();
+        clock.finish(&mut waits);
+        assert!(waits.idle_admission_order_ns >= admission_order);
     }
 }
