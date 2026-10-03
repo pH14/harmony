@@ -7,6 +7,8 @@ import importlib.util
 import tempfile
 import tomllib
 import re
+import os
+import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -135,6 +137,28 @@ class StructureTests(unittest.TestCase):
                 self.assertFalse(any(entry.get("uses", "").startswith("actions/upload-artifact") for entry in earlier))
                 self.assertEqual(step["env"]["BACKEND"], "uml")
         self.assertEqual(replays, 1)
+
+    def test_uml_campaign_reserves_time_for_recorded_finding_replay(self):
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ci_contract.HARMONY_UML_CAMPAIGN.path).read_text())
+        jobs = workflow["jobs"]
+        step = next(step for step in jobs["manifest"]["steps"] if step.get("id") == "read")
+        replay = next(step for step in jobs["search"]["steps"]
+                      if "historical-replay.sh reproduce" in step.get("run", ""))
+        replay_minutes = (int(replay["env"]["REPLAY_TIMEOUT_SECONDS"]) + 59) // 60
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            environment = dict(os.environ, CASE="etcd-3.5-inconsistency", GITHUB_OUTPUT=str(output))
+            environment.update({key: str(value) for key, value in workflow["env"].items()})
+            subprocess.run(["bash", "-euc", step["run"]], cwd=ROOT, env=environment,
+                           check=True, capture_output=True, text=True)
+            matrix = json.loads(output.read_text().strip().removeprefix("matrix="))
+        for case in matrix["include"]:
+            self.assertGreater(case["wall_minutes"], 0)
+            self.assertLessEqual(case["wall_minutes"] + 20 + replay_minutes + 10,
+                                 jobs["search"]["timeout-minutes"])
+        self.assertLessEqual(jobs["search"]["timeout-minutes"], 360)
 
     def test_paths_and_names_are_unique_and_present(self):
         paths = [workflow.path for workflow in ci_contract.WORKFLOWS]
