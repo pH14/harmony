@@ -1807,21 +1807,26 @@ mod tests {
         run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign");
         let text = std::str::from_utf8(&stream).expect("stream is utf-8");
-        let prefix_lines = text.lines().take(9).collect::<Vec<_>>();
-        let expected_executions = u64::try_from(
-            prefix_lines
-                .iter()
-                .skip(1)
-                .filter(|line| {
-                    matches!(
-                        serde_json::from_str::<SmbCampaignStreamRecord>(line)
-                            .expect("decode prefix record"),
-                        SmbCampaignStreamRecord::Job(_)
-                    )
-                })
-                .count(),
-        )
-        .expect("short prefix count fits u64");
+        let lines = text.lines().collect::<Vec<_>>();
+        let mut reservations = BTreeSet::new();
+        let end = (1..lines.len())
+            .find(|&index| {
+                if let SmbCampaignStreamRecord::Job(job) =
+                    serde_json::from_str::<SmbCampaignStreamRecord>(lines[index])
+                        .expect("decode prefix record")
+                {
+                    reservations.insert(job.reservation);
+                }
+                index >= 8
+                    && reservations
+                        .iter()
+                        .copied()
+                        .eq(0..reservations.len() as u64)
+            })
+            .expect("a prefix admits every reservation below its last");
+        let prefix_lines = &lines[..=end];
+        let expected_executions =
+            u64::try_from(reservations.len()).expect("short prefix count fits u64");
         let prefix = format!("{}\n", prefix_lines.join("\n"));
         let (rebuilt, checkpoint) =
             replay_smb_campaign_checkpointed(&rom, prefix.as_bytes(), None, None)

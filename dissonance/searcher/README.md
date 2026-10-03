@@ -463,14 +463,19 @@ The suffix shape `one_doubling_while_in_place_up_to_64` sets the length of each
 drawn suffix from its parent's earlier jobs. A stretch where a key's place and
 preferences stay fixed can only be crossed by a single job, because every state
 inside it ties with or loses to the state that arrived there first. A parent's
-first job runs one action. A job that kept no state, never left the parent's
-place and did not end in a terminal state doubles the parent's next length, up
-to 64 actions. A job that kept a state or left the place resets it to one
-action. A job that ended in a terminal state without either leaves it
-unchanged. The archive holds the length per entry, so checkpoints carry it and
-compaction drops it with its entry. Splices and continuations run their
-recorded tails and leave it unchanged. The coordinator reads the length when it
-dispatches the job and records it as `suffix_limit` in the job or skip record.
+first job runs one action. After a job that kept no state, never left the
+parent's place and did not end in a terminal state, the parent's next length is
+twice the longest such job since the last reset, up to 64 actions. A job that
+kept a state or left the place resets it to one action. A job that
+ended in a terminal state without either leaves it unchanged. The archive holds
+the length per entry, so checkpoints carry it and compaction drops it with its
+entry. Splices and continuations run their recorded tails and leave it
+unchanged. The coordinator reads the length when it dispatches the job and
+records it as `suffix_limit` in the job or skip record. While a job of that
+length or longer from the same parent is still in flight, the next job runs one
+action instead. The job in flight already tests that length, and admission in
+planned-finish order returns long jobs late, so more jobs of that length would
+repeat the same test.
 Replay cuts the redrawn suffix to the recorded limit and rejects a record whose
 limit does not fit the shape. It is the default shape; a workload that names
 another shape keeps that one.

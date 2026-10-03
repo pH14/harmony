@@ -3242,7 +3242,7 @@ where
         if kept || left_place {
             *length = 0;
         } else if !terminal {
-            *length = u8::try_from(actions).unwrap_or(u8::MAX);
+            *length = (*length).max(u8::try_from(actions).unwrap_or(u8::MAX));
         }
     }
 
@@ -5809,6 +5809,8 @@ mod tests {
         archive.record_suffix_outcome(parent, 64, false, true, false);
         assert_eq!(archive.suffix_limit(parent), 1);
         archive.record_suffix_outcome(parent, 3, false, false, false);
+        assert_eq!(archive.suffix_limit(parent), 6);
+        archive.record_suffix_outcome(parent, 1, false, false, false);
         assert_eq!(archive.suffix_limit(parent), 6);
         archive.record_suffix_outcome(parent, 6, true, false, false);
         assert_eq!(archive.suffix_limit(parent), 1);

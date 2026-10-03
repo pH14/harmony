@@ -1341,6 +1341,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     sequence: u64,
     probe_refused: u64,
     pub(crate) mixture_energy: MixtureEnergy,
+    suffix_jobs_in_flight: BTreeMap<(u64, u8), u32>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1377,6 +1378,41 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             sequence: 0,
             probe_refused: 0,
             mixture_energy: MixtureEnergy::default(),
+            suffix_jobs_in_flight: BTreeMap::new(),
+        }
+    }
+
+    fn suffix_limit(&self, parent_id: u64, parent_index: usize) -> u8 {
+        let limit = self.archive.suffix_limit(parent_index);
+        if self
+            .suffix_jobs_in_flight
+            .range((parent_id, limit)..=(parent_id, u8::MAX))
+            .next()
+            .is_some()
+        {
+            1
+        } else {
+            limit
+        }
+    }
+
+    fn start_suffix_job(&mut self, parent_id: u64, limit: Option<u8>) {
+        if let Some(limit) = limit {
+            *self
+                .suffix_jobs_in_flight
+                .entry((parent_id, limit))
+                .or_insert(0) += 1;
+        }
+    }
+
+    fn finish_suffix_job(&mut self, parent_id: u64, limit: Option<u8>) {
+        if let Some(limit) = limit
+            && let Some(count) = self.suffix_jobs_in_flight.get_mut(&(parent_id, limit))
+        {
+            *count -= 1;
+            if *count == 0 {
+                self.suffix_jobs_in_flight.remove(&(parent_id, limit));
+            }
         }
     }
 
@@ -3197,7 +3233,7 @@ where
                     let previous = core.archive.last_action(parent_index);
                     let suffix_limit = (spliced.is_none()
                         && config.suffix == SuffixShape::DoubleWhileInPlace)
-                        .then(|| core.archive.suffix_limit(parent_index));
+                        .then(|| core.suffix_limit(parent_id, parent_index));
                     let mut suffix = match (spliced, duration_draw) {
                         (Some(tail), _) => tail,
                         (None, Some(draw)) => workload.expand_suffix_duration(
@@ -3268,6 +3304,7 @@ where
                         continue;
                     }
                     *reserved = reserved.saturating_add(1);
+                    core.start_suffix_job(parent_id, suffix_limit);
                     core.archive.pin_metadata(parent_id)?;
                     let (snapshot, replay, snapshot_id) =
                         core.archive.pin_job_origin(parent_index)?;
@@ -3317,6 +3354,7 @@ where
                     .snapshot
                     .clone()
                     .ok_or("search checkpoint in-flight job has no stored snapshot")?;
+                core.start_suffix_job(job.pending.parent_id, job.pending.suffix_limit);
                 let key = (job.pending.planned_finish, job.reservation);
                 schedule.insert(key);
                 pool.dispatch(
@@ -3476,6 +3514,7 @@ where
                     let admission_started = profile_now();
                     core.archive
                         .set_admission_wave(pending_job.continuation_wave);
+                    core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
                     let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                         workload,
                         pending_job.parent_id,
@@ -6145,6 +6184,30 @@ mod tests {
         core.admit_job_tracking(&workload, 0, refused(home.wrapping_add(1)), true, |_| false)
             .expect("admit a refused state in another place");
         assert_eq!(core.archive.suffix_limit(0), 1);
+    }
+
+    #[test]
+    fn a_parent_with_a_job_in_flight_at_its_suffix_limit_draws_one_action() {
+        let (_workload, _run, mut core, _target) = test_core();
+        let parent = core.archive.stable_id(0).expect("the root has an id");
+        core.archive
+            .record_suffix_outcome(0, 1, false, false, false);
+        assert_eq!(core.suffix_limit(parent, 0), 2);
+        core.start_suffix_job(parent, Some(1));
+        assert_eq!(core.suffix_limit(parent, 0), 2);
+        core.start_suffix_job(parent, Some(2));
+        assert_eq!(core.suffix_limit(parent, 0), 1);
+        core.archive
+            .record_suffix_outcome(0, 2, false, false, false);
+        assert_eq!(core.suffix_limit(parent, 0), 4);
+        core.start_suffix_job(parent, Some(4));
+        core.start_suffix_job(parent, Some(4));
+        core.finish_suffix_job(parent, Some(4));
+        assert_eq!(core.suffix_limit(parent, 0), 1);
+        core.finish_suffix_job(parent, Some(4));
+        assert_eq!(core.suffix_limit(parent, 0), 4);
+        core.start_suffix_job(parent, None);
+        assert_eq!(core.suffix_limit(parent, 0), 4);
     }
 
     #[test]
