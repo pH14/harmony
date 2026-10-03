@@ -76,11 +76,15 @@ plus 1000 virtual threads waiting on a latch. All loops are rewritten.
 | OS threads for 1000 waiting virtual threads, native | 1000 | 28 |
 
 Without rewriting, the fixture prints its ready line and then hangs until the
-timeout, because the C2-compiled spin loop never exits to the VM. With
-`-Xcomp`, two boots with the same seed produce identical serial logs and run
-records. `Fixture generated` spins in a `MethodHandles.whileLoop`, whose loop
-exists only in bytecode the JDK generates at runtime; it prints all twenty
-markers under `-Xcomp`.
+timeout, because the C2-compiled spin loop never exits to the VM. The check runs
+the fixture with `-Xcomp -XX:-TieredCompilation`, limited to `Fixture` and
+`java.lang.invoke`. C2 then compiles the spin loop before it runs. Tier 3 code
+would call into `libjvm.so` from its profiling counters, which reaches
+libvoidstar and hides a loop without callbacks. Two such boots with the same
+seed produce identical serial logs and run records. `Fixture generated` spins in
+a `MethodHandles.whileLoop`, whose loop exists only in bytecode the JDK
+generates at runtime. It prints all twenty markers, and hangs on a JDK that
+does not rewrite classes at definition time.
 
 ## Known limits
 
