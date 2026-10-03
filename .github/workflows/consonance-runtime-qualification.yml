@@ -20,6 +20,10 @@ on:
         type: choice
         options: [ubuntu-22.04, ubuntu-24.04]
         default: ubuntu-22.04
+      nested_history_run:
+        description: Optional prior run whose retained inputs and source should be reproduced first
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -81,6 +85,7 @@ jobs:
       - name: Check outer host nested VMX or SVM before building
         env:
           REQUIRED_NESTED_VENDOR: ${{ inputs.nested_vendor }}
+          HISTORY_RUN: ${{ inputs.nested_history_run }}
         run: |
           set -euo pipefail
           mkdir -p nested-host-evidence
@@ -93,6 +98,16 @@ jobs:
           /tmp/nested-kvm-check | tee nested-host-evidence/host-kvm.txt
           if [[ "$REQUIRED_NESTED_VENDOR" != auto ]]; then
             grep -Fq "vendor=$REQUIRED_NESTED_VENDOR " nested-host-evidence/host-kvm.txt
+          fi
+          sudo dmesg >nested-host-evidence/host-dmesg-before.txt
+          if [[ -n "$HISTORY_RUN" && -d /sys/module/kvm_intel ]]; then
+            trace=/sys/kernel/tracing
+            sudo sh -c 'printf 0 > /sys/kernel/tracing/tracing_on; printf 4096 > /sys/kernel/tracing/buffer_size_kb; printf "" > /sys/kernel/tracing/trace'
+            for event in kvm_nested_vmenter_failed kvm_nested_vmexit_inject; do
+              printf 1 | sudo tee "$trace/events/kvm/$event/enable" >/dev/null
+            done
+            printf 1 | sudo tee "$trace/tracing_on" >/dev/null
+            printf Y | sudo tee /sys/module/kvm_intel/parameters/dump_invalid_vmcs >/dev/null
           fi
       - uses: actions/upload-artifact@v4
         if: always()
@@ -108,7 +123,81 @@ jobs:
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@v2
+      - name: Reproduce a retained historical nested campaign
+        if: inputs.nested_history_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HISTORY_RUN: ${{ inputs.nested_history_run }}
+        run: |
+          set -euo pipefail
+          [[ "$HISTORY_RUN" =~ ^[0-9]+$ ]]
+          history="$PWD/nested-host-evidence/historical"
+          inputs="$PWD/consonance/harmony-linux/build/x86_64"
+          mkdir -p "$history/original" "$inputs" "$history/source"
+          retain_history_diagnostics() {
+            local result=$?
+            set +e
+            if [[ -e /sys/kernel/tracing/events/kvm/kvm_nested_vmenter_failed/enable ]]; then
+              printf 0 | sudo tee /sys/kernel/tracing/tracing_on >/dev/null
+              sudo cat /sys/kernel/tracing/trace >"$history/host-nested-trace.txt"
+            fi
+            sudo dmesg >"$history/host-dmesg.txt"
+            exit "$result"
+          }
+          trap retain_history_diagnostics EXIT
+          gh run download "$HISTORY_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "nested-host-$HISTORY_RUN" --dir "$history/original"
+          gh run download "$HISTORY_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "nested-host-inputs-$HISTORY_RUN" --dir "$inputs"
+          commit=$(cat "$history/original/source-commit.txt")
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --depth 1 origin "$commit"
+          git archive "$commit" | tar -x -C "$history/source"
+          cp "$inputs/nested-driver.oci" "$history/nested-driver.oci"
+          printf '%s\n' "$commit" >"$history/rebuilt-source-commit.txt"
+          CARGO_TARGET_DIR="$PWD/target" cargo build --locked --release \
+            --manifest-path "$history/source/Cargo.toml" -p harmony-cli
+          cp target/release/harmony "$history/harmony"
+          sha256sum "$history/harmony" "$history/nested-driver.oci" \
+            "$inputs/bzImage-nested-host" "$inputs/initramfs-oci.cpio.gz" \
+            >"$history/provenance.sha256"
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          common=(search "$history/nested-driver.oci" --package nested
+            --kernel "$inputs/bzImage-nested-host" --base-initramfs "$inputs/initramfs-oci.cpio.gz"
+            --ram-mib 512 --seed 42)
+          set +e
+          timeout -k 10 360 taskset -c "$cpu" "$history/harmony" "${common[@]}" \
+            --executions 100 --wall-minutes 5 --out "$history/search" \
+            2>&1 | tee "$history/search.log"
+          search_result=${PIPESTATUS[0]}
+          timeout -k 10 360 taskset -c "$cpu" "$history/harmony" "${common[@]}" \
+            --replay "$history/search/stream.jsonl" --out "$history/replay" \
+            2>&1 | tee "$history/replay.log"
+          replay_result=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$search_result" >"$history/search-exit-code.txt"
+          printf '%s\n' "$replay_result" >"$history/replay-exit-code.txt"
+          test "$search_result" -eq 1
+          test "$replay_result" -eq 1
+          python3 - "$history" <<'PY'
+          import json, sys
+          from pathlib import Path
+          history = Path(sys.argv[1])
+          search = json.loads((history / "search/report.json").read_text())
+          replay = json.loads((history / "replay/report.json").read_text())
+          assert search["stream_sha256"] == replay["stream_sha256"]
+          assert search["executions_completed"] == replay["executions_completed"]
+          assert search["archive"]["evidence"] == replay["archive"]["evidence"]
+          original = json.loads((history / "original/search/report.json").read_text())
+          expected = original["archive"]["evidence"]["failures"]
+          failures = search["archive"]["evidence"]["failures"]
+          assert expected and failures
+          assert [(f["layer"], f["assertion"], f["actions"]) for f in failures] == [
+              (f["layer"], f["assertion"], f["actions"]) for f in expected]
+          print("HISTORICAL_REBUILD reproduced retained failure; its own replay matches")
+          PY
       - name: Build the matching nested-host kernel and fixture
+        if: inputs.nested_history_run == ''
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD:$PWD" -w "$PWD" \
@@ -223,6 +312,12 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           cargo build --locked --release -p harmony-cli
+          cp target/release/harmony nested-host-evidence/harmony
+          sha256sum target/release/harmony \
+            consonance/harmony-linux/build/x86_64/bzImage-nested-host \
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+            consonance/harmony-linux/build/x86_64/nested-driver.oci \
+            >nested-host-evidence/current-provenance.sha256
           common=(search consonance/harmony-linux/build/x86_64/nested-driver.oci --package nested
             --kernel consonance/harmony-linux/build/x86_64/bzImage-nested-host
             --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
@@ -277,6 +372,21 @@ jobs:
           (evidence / "qualification.json").write_text(json.dumps(summary, indent=2) + "\n")
           print(json.dumps(summary, indent=2))
           PY
+      - name: Retain host KVM diagnostics
+        if: always()
+        run: |
+          mkdir -p nested-host-evidence
+          sudo dmesg >nested-host-evidence/host-dmesg-after.txt
+          if [[ -d /sys/module/kvm_intel ]]; then
+            for parameter in /sys/module/kvm_intel/parameters/*; do
+              printf '%s=' "${parameter##*/}"
+              sudo cat "$parameter"
+            done >nested-host-evidence/host-kvm-intel-parameters.txt
+          fi
+          if [[ -e /sys/kernel/tracing/events/kvm/kvm_nested_vmenter_failed/enable ]]; then
+            printf 0 | sudo tee /sys/kernel/tracing/tracing_on >/dev/null
+            sudo cat /sys/kernel/tracing/trace >nested-host-evidence/host-nested-trace.txt
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
