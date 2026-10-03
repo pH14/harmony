@@ -59,7 +59,7 @@ jobs:
           python3 scripts/historical-manifest.py --check
           matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case "${CASE}" --seeds "")
           jq -e '.include | length == 1' <<<"${matrix}" >/dev/null
-          matrix=$(jq --argjson limit "$UML_SEARCH_WALL_LIMIT" '.include |= map(.wall_minutes = ([.wall_minutes, $limit] | min))' <<<"$matrix")
+          matrix=$(jq -c --argjson limit "$UML_SEARCH_WALL_LIMIT" '.include |= map(.wall_minutes = ([.wall_minutes, $limit] | min))' <<<"$matrix")
           printf 'matrix=%s\n' "${matrix}" >>"${GITHUB_OUTPUT}"
 
   guest:

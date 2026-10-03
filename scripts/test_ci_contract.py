@@ -153,7 +153,10 @@ class StructureTests(unittest.TestCase):
             environment.update({key: str(value) for key, value in workflow["env"].items()})
             subprocess.run(["bash", "-euc", step["run"]], cwd=ROOT, env=environment,
                            check=True, capture_output=True, text=True)
-            matrix = json.loads(output.read_text().strip().removeprefix("matrix="))
+            lines = output.read_text().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertTrue(lines[0].startswith("matrix="))
+            matrix = json.loads(lines[0].removeprefix("matrix="))
         for case in matrix["include"]:
             self.assertGreater(case["wall_minutes"], 0)
             self.assertLessEqual(case["wall_minutes"] + 20 + replay_minutes + 10,
