@@ -39,6 +39,7 @@ defaults:
 
 env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
+  UML_SEARCH_WALL_LIMIT: 280
 
 jobs:
   manifest:
@@ -58,6 +59,7 @@ jobs:
           python3 scripts/historical-manifest.py --check
           matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case "${CASE}" --seeds "")
           jq -e '.include | length == 1' <<<"${matrix}" >/dev/null
+          matrix=$(jq --argjson limit "$UML_SEARCH_WALL_LIMIT" '.include |= map(.wall_minutes = ([.wall_minutes, $limit] | min))' <<<"$matrix")
           printf 'matrix=%s\n' "${matrix}" >>"${GITHUB_OUTPUT}"
 
   guest:
@@ -187,7 +189,7 @@ jobs:
     name: ${{ matrix.display_name }}
     needs: [manifest, guest, profile, tools, image]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.job_timeout_minutes }}
+    timeout-minutes: 360
     strategy:
       matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
     steps:
