@@ -199,12 +199,13 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           git fetch --depth 1 origin "$commit"
           git archive "$commit" | tar -x -C "$history/source"
-          cp "$inputs/nested-driver.oci" "$history/nested-driver.oci"
+          cp -a "$inputs/nested-driver.oci" "$history/nested-driver.oci"
           printf '%s\n' "$commit" >"$history/rebuilt-source-commit.txt"
           CARGO_TARGET_DIR="$PWD/target" cargo build --locked --release \
             --manifest-path "$history/source/Cargo.toml" -p harmony-cli
           cp target/release/harmony "$history/harmony"
-          sha256sum "$history/harmony" "$history/nested-driver.oci" \
+          sha256sum "$history/harmony" "$history/nested-driver.oci/index.json" \
+            "$history/nested-driver.oci/oci-layout" "$history/nested-driver.oci"/blobs/sha256/* \
             "$inputs/bzImage-nested-host" "$inputs/initramfs-oci.cpio.gz" \
             >"$history/provenance.sha256"
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
@@ -362,7 +363,9 @@ jobs:
           sha256sum target/release/harmony \
             consonance/harmony-linux/build/x86_64/bzImage-nested-host \
             consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-            consonance/harmony-linux/build/x86_64/nested-driver.oci \
+            consonance/harmony-linux/build/x86_64/nested-driver.oci/index.json \
+            consonance/harmony-linux/build/x86_64/nested-driver.oci/oci-layout \
+            consonance/harmony-linux/build/x86_64/nested-driver.oci/blobs/sha256/* \
             >nested-host-evidence/current-provenance.sha256
           common=(search consonance/harmony-linux/build/x86_64/nested-driver.oci --package nested
             --kernel consonance/harmony-linux/build/x86_64/bzImage-nested-host
