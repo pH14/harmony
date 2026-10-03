@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Condvar, Mutex, mpsc},
     thread,
 };
 
@@ -59,6 +60,7 @@ pub(crate) struct WorkerReply<Output> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkerPoolError {
     QueueClosed,
+    DuplicateJob,
     WorkersExited,
     RepliesClosed,
 }
@@ -67,6 +69,7 @@ impl fmt::Display for WorkerPoolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::QueueClosed => "campaign job queue is already closed",
+            Self::DuplicateJob => "campaign job queue already holds a job with this order key",
             Self::WorkersExited => "every campaign worker exited before taking the next job",
             Self::RepliesClosed => "every campaign worker exited while a reply was expected",
         })
@@ -75,22 +78,86 @@ impl fmt::Display for WorkerPoolError {
 
 impl Error for WorkerPoolError {}
 
-pub(crate) struct WorkerPool<Job, Output> {
-    jobs: Option<mpsc::Sender<Job>>,
+struct JobQueue<Key, Job> {
+    jobs: BTreeMap<Key, Job>,
+    open: bool,
+    workers: usize,
+}
+
+struct SharedJobs<Key, Job> {
+    queue: Mutex<JobQueue<Key, Job>>,
+    ready: Condvar,
+}
+
+impl<Key: Ord, Job> SharedJobs<Key, Job> {
+    fn new(workers: usize) -> Self {
+        Self {
+            queue: Mutex::new(JobQueue {
+                jobs: BTreeMap::new(),
+                open: true,
+                workers,
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn next(&self) -> Option<Job> {
+        let mut queue = self.queue.lock().ok()?;
+        loop {
+            if let Some((_, job)) = queue.jobs.pop_first() {
+                return Some(job);
+            }
+            if !queue.open {
+                return None;
+            }
+            queue = self.ready.wait(queue).ok()?;
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.open = false;
+        }
+        self.ready.notify_all();
+    }
+}
+
+struct WorkerExit<'a, Key, Job>(&'a SharedJobs<Key, Job>);
+
+impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
+    fn drop(&mut self) {
+        if let Ok(mut queue) = self.0.queue.lock() {
+            queue.workers = queue.workers.saturating_sub(1);
+        }
+    }
+}
+
+pub(crate) struct WorkerPool<Key: Ord, Job, Output> {
+    jobs: Option<Arc<SharedJobs<Key, Job>>>,
     reply_receiver: mpsc::Receiver<WorkerReply<Output>>,
 }
 
-impl<Job, Output> WorkerPool<Job, Output> {
-    pub(crate) fn send(&self, job: Job) -> Result<(), WorkerPoolError> {
-        self.jobs
-            .as_ref()
-            .ok_or(WorkerPoolError::QueueClosed)?
-            .send(job)
-            .map_err(|_| WorkerPoolError::WorkersExited)
+impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
+    pub(crate) fn send(&self, key: Key, job: Job) -> Result<(), WorkerPoolError> {
+        let shared = self.jobs.as_ref().ok_or(WorkerPoolError::QueueClosed)?;
+        let mut queue = shared
+            .queue
+            .lock()
+            .map_err(|_| WorkerPoolError::WorkersExited)?;
+        if queue.workers == 0 {
+            return Err(WorkerPoolError::WorkersExited);
+        }
+        if queue.jobs.contains_key(&key) {
+            return Err(WorkerPoolError::DuplicateJob);
+        }
+        queue.jobs.insert(key, job);
+        drop(queue);
+        shared.ready.notify_one();
+        Ok(())
     }
 
-    pub(crate) fn dispatch(&self, job: Job) -> Result<(), Box<dyn Error>> {
-        match self.send(job) {
+    pub(crate) fn dispatch(&self, key: Key, job: Job) -> Result<(), Box<dyn Error>> {
+        match self.send(key, job) {
             Err(WorkerPoolError::WorkersExited) => Err(self
                 .reply_receiver
                 .try_iter()
@@ -101,7 +168,9 @@ impl<Job, Output> WorkerPool<Job, Output> {
     }
 
     pub(crate) fn close(&mut self) {
-        self.jobs = None;
+        if let Some(shared) = self.jobs.take() {
+            shared.close();
+        }
     }
 
     pub(crate) fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
@@ -119,30 +188,37 @@ impl<Job, Output> WorkerPool<Job, Output> {
     }
 }
 
-pub(crate) fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError>(
+impl<Key: Ord, Job, Output> Drop for WorkerPool<Key, Job, Output> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+pub(crate) fn with_worker_pool<State, Key, Job, Output, ResultValue, CoordinatorError>(
     workers: u32,
     initialize: impl Fn(u32) -> Result<State, String> + Sync,
     execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,
     finish: impl Fn(&State) -> TargetCounters + Sync,
-    coordinate: impl FnOnce(&mut WorkerPool<Job, Output>) -> Result<ResultValue, CoordinatorError>,
+    coordinate: impl FnOnce(&mut WorkerPool<Key, Job, Output>) -> Result<ResultValue, CoordinatorError>,
 ) -> Result<(ResultValue, Vec<WorkerTelemetry>), CoordinatorError>
 where
+    Key: Ord + Send,
     Job: Send,
     Output: Send,
     CoordinatorError: From<String>,
 {
     thread::scope(|scope| {
         let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Output>>();
-        let (job_sender, job_receiver) = mpsc::channel::<Job>();
-        let job_receiver = Arc::new(Mutex::new(job_receiver));
+        let jobs = Arc::new(SharedJobs::<Key, Job>::new(workers as usize));
         let mut handles = Vec::with_capacity(workers as usize);
         for worker in 0..workers {
             let reply_sender = reply_sender.clone();
-            let job_receiver = Arc::clone(&job_receiver);
+            let jobs = Arc::clone(&jobs);
             let initialize = &initialize;
             let execute = &execute;
             let finish = &finish;
             handles.push(scope.spawn(move || {
+                let _exit = WorkerExit(&jobs);
                 let schedstat_before = thread_schedstat();
                 let booted = now();
                 let mut telemetry = WorkerTelemetry::default();
@@ -159,11 +235,7 @@ where
                 telemetry.boot_ns = nanos_since(booted);
                 loop {
                     let waiting = now();
-                    let next = match job_receiver.lock() {
-                        Ok(receiver) => receiver.recv(),
-                        Err(_) => break,
-                    };
-                    let Ok(job) = next else {
+                    let Some(job) = jobs.next() else {
                         break;
                     };
                     telemetry.idle_ns = telemetry.idle_ns.saturating_add(nanos_since(waiting));
@@ -187,9 +259,8 @@ where
             }));
         }
         drop(reply_sender);
-        drop(job_receiver);
         let mut pool = WorkerPool {
-            jobs: Some(job_sender),
+            jobs: Some(jobs),
             reply_receiver,
         };
         let result = coordinate(&mut pool);
@@ -251,9 +322,9 @@ mod tests {
             },
             |_| TargetCounters::new(),
             move |pool| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-                pool.send((Some(blocked), 0))?;
+                pool.send(0, (Some(blocked), 0))?;
                 for value in 1..=6 {
-                    pool.send((None, value))?;
+                    pool.send(value, (None, value))?;
                 }
                 let mut values = (0..6)
                     .map(|_| Ok(pool.receive()?.outcome?))
@@ -271,9 +342,43 @@ mod tests {
     }
 
     #[test]
+    fn a_free_worker_takes_the_queued_job_with_the_smallest_key() {
+        let (release, blocked) = mpsc::channel();
+        let replies = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_, (release, value): (Option<mpsc::Receiver<()>>, u8)| {
+                if let Some(release) = release {
+                    release.recv().map_err(|e| e.to_string())?;
+                }
+                Ok::<_, String>(value)
+            },
+            |_| TargetCounters::new(),
+            move |pool| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+                pool.send(0, (Some(blocked), 0))?;
+                for value in [30, 10, 20] {
+                    pool.send(value, (None, value))?;
+                }
+                assert_eq!(
+                    pool.send(10, (None, 10)),
+                    Err(WorkerPoolError::DuplicateJob)
+                );
+                release.send(())?;
+                let values = (0..4)
+                    .map(|_| Ok(pool.receive()?.outcome?))
+                    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                pool.close();
+                Ok(values)
+            },
+        )
+        .expect("a single worker runs queued jobs in key order");
+        assert_eq!(replies.0, vec![0, 10, 20, 30]);
+    }
+
+    #[test]
     fn try_receive_distinguishes_ready_empty_and_disconnected() {
         let (sender, receiver) = mpsc::channel();
-        let pool = WorkerPool::<(), u64> {
+        let pool = WorkerPool::<u8, (), u64> {
             jobs: None,
             reply_receiver: receiver,
         };
@@ -298,7 +403,7 @@ mod tests {
             pool.try_receive(),
             Err(WorkerPoolError::RepliesClosed)
         ));
-        assert_eq!(pool.send(()), Err(WorkerPoolError::QueueClosed));
+        assert_eq!(pool.send(0, ()), Err(WorkerPoolError::QueueClosed));
     }
 
     #[test]
@@ -309,7 +414,7 @@ mod tests {
             |state, job: u64| Ok::<_, String>(*state + job),
             |state| TargetCounters::from([("state".to_owned(), *state)]),
             |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
-                pool.send(7)?;
+                pool.send(0, 7)?;
                 let reply = pool.receive()?;
                 pool.close();
                 Ok(vec![(reply.worker, reply.outcome?)])
@@ -334,7 +439,7 @@ mod tests {
             },
             |_| TargetCounters::new(),
             |pool| -> Result<u64, Box<dyn std::error::Error>> {
-                pool.send(3)?;
+                pool.send(0, 3)?;
                 Ok(pool.receive()?.outcome?)
             },
         )
@@ -351,10 +456,12 @@ mod tests {
             |(), job: u64| Ok::<_, String>(job),
             |()| TargetCounters::new(),
             |pool| -> Result<(), Box<dyn std::error::Error>> {
-                while pool.dispatch(1).is_ok() {
+                let mut key = 0_u64;
+                while pool.dispatch(key, 1).is_ok() {
+                    key += 1;
                     std::thread::yield_now();
                 }
-                pool.dispatch(1)
+                pool.dispatch(key + 1, 1)
             },
         )
         .unwrap_err();
@@ -384,7 +491,7 @@ mod tests {
             |(), job: u64| Ok::<_, String>(job),
             |()| TargetCounters::new(),
             |pool| -> Result<u64, Box<dyn std::error::Error>> {
-                pool.send(5)?;
+                pool.send(0, 5)?;
                 let value = pool.receive()?.outcome?;
                 started.send(()).unwrap();
                 Ok(value)

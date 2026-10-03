@@ -60,8 +60,10 @@ every worker but the first builds its target, and the first worker builds its
 target after the bootstrap target is dropped, so a campaign never holds more
 targets than workers. The first worker's boot time includes that wait.
 
-Workers pull jobs from one shared queue, so an idle worker takes the next
-queued job while another worker is still busy. One bound limits the jobs that
+Workers pull jobs from one shared queue ordered by planned finish, so an idle
+worker takes the queued job that admission reaches first while another worker
+is still busy. A short job reserved after longer ones runs before them,
+because admission needs its result first. One bound limits the jobs that
 are queued, running or finished but not yet admitted: workers times
 `ResultBuffering::capacity()`: one per worker by default, and two or sixteen with
 `ResultBuffering::TwoPerWorker` or `ResultBuffering::SixteenPerWorker`. A job takes its place in the bound before it is

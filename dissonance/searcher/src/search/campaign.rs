@@ -3398,10 +3398,10 @@ where
             let mut running = 0_usize;
             let mut result_bound = ResultBound::new(workers.saturating_mul(result_limit));
             while !queued_specs.is_empty() && result_bound.reserve() {
-                let (_, spec) = queued_specs
+                let (key, spec) = queued_specs
                     .pop_first()
                     .ok_or("campaign prefill lost queued job")?;
-                pool.dispatch(spec)?;
+                pool.dispatch(key, spec)?;
                 running += 1;
             }
             idle_clock.update(running, IdleReason::NoJob);
@@ -3758,10 +3758,10 @@ where
                     }
 
                     while !queued_specs.is_empty() && result_bound.reserve() {
-                        let (_, spec) = queued_specs
+                        let (key, spec) = queued_specs
                             .pop_first()
                             .ok_or("campaign queued-job count changed while dispatching")?;
-                        pool.dispatch(spec)?;
+                        pool.dispatch(key, spec)?;
                         running += 1;
                     }
                     idle_clock.update(
@@ -3801,10 +3801,10 @@ where
                     }
                 }
                 while !queued_specs.is_empty() && result_bound.reserve() {
-                    let (_, spec) = queued_specs
+                    let (key, spec) = queued_specs
                         .pop_first()
                         .ok_or("campaign queued-job count changed while dispatching")?;
-                    pool.dispatch(spec)?;
+                    pool.dispatch(key, spec)?;
                     running += 1;
                 }
                 idle_clock.update(
