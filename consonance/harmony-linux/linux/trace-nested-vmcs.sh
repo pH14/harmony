@@ -20,7 +20,7 @@ filter() {
     fi
 }
 
-case ${1:?usage: trace-nested-vmcs12.sh start|stop [TRACEFS_INSTANCE]} in
+case ${1:?usage: trace-nested-vmcs.sh start|stop [TRACEFS_INSTANCE]} in
 start)
     nested=$(offset vcpu_vmx nested)
     field() { echo $((nested + $(offset nested_vmx "$1"))); }

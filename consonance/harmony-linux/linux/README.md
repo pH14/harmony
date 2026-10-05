@@ -170,7 +170,7 @@ through step five, and checks that direct restore preserves every nested-state
 byte. This helper isolates host VMCS synchronization; the OCI milestone checks
 continue to use the production inner Consonance driver.
 
-`trace-nested-vmcs12.sh start` adds host kprobes on Intel nested VM entry.
+`trace-nested-vmcs.sh start` adds host kprobes on Intel nested VM entry.
 Each `vmcs12_enter` event records the first 1 KiB of the vCPU's cached VMCS12
 and the host's VMCS12 dirty, rare-field sync, and VMCS02 initialization flags.
 Each `vmcs02_run` event records the loaded VMCS page and the host's queued
@@ -183,7 +183,7 @@ offsets from the `kvm_intel` BTF with `pahole`. A failed nested entry reflected
 to L1 is not dumped by `dump_invalid_vmcs`, so these events are the only record
 of the state on both sides of that entry. The `kvm_nested_vmexit_inject`
 tracepoint records each exit reason between entries.
-`trace-nested-vmcs12.sh stop` removes the probes.
+`trace-nested-vmcs.sh stop` removes the probes.
 
 These targets remain direct substrate checks and are independent of the OCI
 runtime assembly:
