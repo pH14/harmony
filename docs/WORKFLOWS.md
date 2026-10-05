@@ -192,7 +192,10 @@ the job.
 
 ## Ignored tests
 
-The Guest Runtime Qualification workflow's manual `nested_host_only` run first
+The Guest Runtime Qualification workflow's `Nested Host` job runs on its
+schedule, on path-filtered pushes to main, and on a manual `nested_host_only`
+dispatch. Scheduled and push runs accept whichever nested vendor the runner
+provides; a dispatch can require VMX or SVM. The job first
 requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its selected Ubuntu
 x86 runner, then builds the separate
 nested-host kernel in the pinned Debian GCC 14 build container and boots L1

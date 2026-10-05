@@ -77,14 +77,14 @@ jobs:
 
   nested-host:
     name: Nested Host
-    if: github.event_name == 'workflow_dispatch' && inputs.nested_host_only
-    runs-on: ${{ inputs.nested_runner }}
+    if: github.event_name != 'workflow_dispatch' || inputs.nested_host_only
+    runs-on: ${{ inputs.nested_runner || 'ubuntu-22.04' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Check outer host nested VMX or SVM before building
         env:
-          REQUIRED_NESTED_VENDOR: ${{ inputs.nested_vendor }}
+          REQUIRED_NESTED_VENDOR: ${{ inputs.nested_vendor || 'auto' }}
           HISTORY_RUN: ${{ inputs.nested_history_run }}
         run: |
           set -euo pipefail
