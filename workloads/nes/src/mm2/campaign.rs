@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -19,9 +19,10 @@ use crate::{
             REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
             merge_progress_watermark, milestone_key, milestones, progress_watermark,
         },
+        progress::{FirstSeen, NamedProgress, is_route_milestone},
         target::{
-            ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
-            power_on_walk, preference_tuple, walk_to_stage_select,
+            ButtonChord, Mm2Input, Mm2Observations, Mm2Route, Mm2Snapshot, Mm2Stage, Mm2Target,
+            Mm2Tier, ROBOT_MASTER_ORDER, power_on_walk, preference_tuple, walk_to_stage_select,
         },
     },
     search::{
@@ -41,8 +42,8 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -51,12 +52,13 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_start_taps_no_select_v2";
-const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_first_boss_defeated";
+const STAGE_TERMINAL_POLICY_IDENTIFIER: &str = "death_or_first_boss_defeated";
+const WHOLE_GAME_TERMINAL_POLICY_IDENTIFIER: &str = "death_or_ending";
 
 const VIABILITY_PROBE_MASKS: [u8; 4] = [0, 0x01, 0x80, 0x81];
 const VIABILITY_PROBE_FRAMES: u16 = 60;
 
-type Mm2Preference = (u8, u8, u16);
+type Mm2Preference = (Mm2Tier, u8, u16);
 type Mm2ChampionKey = (Mm2ProgressWatermark, Mm2Preference);
 
 pub struct Mm2Game {
@@ -64,9 +66,27 @@ pub struct Mm2Game {
     core_path: PathBuf,
     core_sha256: String,
     prefix: Vec<ButtonChord>,
-    stage: Mm2Stage,
+    route: Mm2Route,
     identity: String,
     champion_input_path: Option<PathBuf>,
+    milestone_input_dir: Option<PathBuf>,
+}
+
+fn chords_sha256(chords: &[ButtonChord]) -> String {
+    let mut digest = Sha256::new();
+    for chord in chords {
+        digest.update([chord.buttons, chord.hold_frames]);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn emulator_identity(genesis: &str, core_sha256: &str) -> String {
+    format!(
+        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
+        machine::quicknes::QUICKNES_REVISION,
+        machine::quicknes::QUICKNES_BUILD,
+        machine::quicknes::QUICKNES_OPTIONS,
+    )
 }
 
 impl Mm2Game {
@@ -83,27 +103,83 @@ impl Mm2Game {
         prefix: Vec<ButtonChord>,
         stage: Mm2Stage,
     ) -> Self {
-        let mut prefix_digest = Sha256::new();
-        for chord in &prefix {
-            prefix_digest.update([chord.buttons, chord.hold_frames]);
-        }
-        let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:{}:prefix-sha256={:x};result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
-            stage.number(),
-            prefix_digest.finalize(),
+        let identity = emulator_identity(
+            &format!(
+                "mm2-stage-select-v2:{}:prefix-sha256={}",
+                stage.number(),
+                chords_sha256(&prefix)
+            ),
+            core_sha256,
         );
         Self {
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
             prefix,
-            stage,
+            route: Mm2Route::Stage(stage),
             identity,
             champion_input_path: None,
+            milestone_input_dir: None,
         }
+    }
+
+    #[must_use]
+    pub fn new_whole_game(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        root: Vec<ButtonChord>,
+    ) -> Self {
+        let order = ROBOT_MASTER_ORDER
+            .iter()
+            .map(|stage| stage.name())
+            .collect::<Vec<_>>()
+            .join(",");
+        let identity = emulator_identity(
+            &format!(
+                "mm2-whole-game-v1:order={order}:root-sha256={}",
+                chords_sha256(&root)
+            ),
+            core_sha256,
+        );
+        Self {
+            rom: rom.to_vec(),
+            core_path: core_path.to_path_buf(),
+            core_sha256: core_sha256.to_owned(),
+            prefix: root,
+            route: Mm2Route::WholeGame,
+            identity,
+            champion_input_path: None,
+            milestone_input_dir: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
+        self.milestone_input_dir = Some(directory);
+        self
+    }
+
+    fn publish_inputs(
+        &self,
+        files: impl IntoIterator<Item = String>,
+        input: &Mm2Input,
+    ) -> Result<(), Box<dyn Error>> {
+        let Some(directory) = &self.milestone_input_dir else {
+            return Ok(());
+        };
+        let mut bytes = None;
+        for file in files {
+            std::fs::create_dir_all(directory)?;
+            let path = directory.join(format!("{file}.json"));
+            let temporary = path.with_extension("json.tmp");
+            if bytes.is_none() {
+                bytes = Some(serde_json::to_vec(input)?);
+            }
+            std::fs::write(&temporary, bytes.as_deref().unwrap_or_default())?;
+            std::fs::rename(temporary, path)?;
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -142,8 +218,8 @@ impl Mm2Game {
     }
 
     #[must_use]
-    pub fn stage(&self) -> Mm2Stage {
-        self.stage
+    pub fn route(&self) -> Mm2Route {
+        self.route
     }
 }
 
@@ -152,6 +228,7 @@ pub struct Mm2CampaignRun;
 
 #[derive(Clone, Default)]
 pub struct Mm2CampaignEvidence {
+    named_progress: NamedProgress,
     aggregate: Mm2Milestones,
     watermark: Mm2ProgressWatermark,
     first_reached: Mm2MilestoneTimes,
@@ -160,6 +237,84 @@ pub struct Mm2CampaignEvidence {
     champion_milestones: Mm2Milestones,
     champion_key: Option<Mm2ChampionKey>,
     genesis_screen: Option<u8>,
+    best_health: BTreeMap<String, (u8, u16)>,
+    best_energy: BTreeMap<String, (u16, u8)>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Mm2EvidenceCheckpoint {
+    first_seen: Vec<(String, Option<FirstSeen>)>,
+    aggregate: Mm2Milestones,
+    watermark: Mm2ProgressWatermark,
+    first_reached: Mm2MilestoneTimes,
+    first_inputs: Mm2MilestoneInputs,
+    champion_input: Mm2Input,
+    champion_milestones: Mm2Milestones,
+    champion_key: Option<Mm2ChampionKey>,
+    genesis_screen: Option<u8>,
+    best_health: Vec<(String, (u8, u16))>,
+    best_energy: Vec<(String, (u16, u8))>,
+}
+
+impl Mm2CampaignEvidence {
+    fn to_checkpoint(&self) -> Mm2EvidenceCheckpoint {
+        Mm2EvidenceCheckpoint {
+            first_seen: self.named_progress.first_seen.clone().into_iter().collect(),
+            aggregate: self.aggregate,
+            watermark: self.watermark,
+            first_reached: self.first_reached,
+            first_inputs: self.first_inputs.clone(),
+            champion_input: self.champion_input.clone(),
+            champion_milestones: self.champion_milestones,
+            champion_key: self.champion_key,
+            genesis_screen: self.genesis_screen,
+            best_health: self.best_health.clone().into_iter().collect(),
+            best_energy: self.best_energy.clone().into_iter().collect(),
+        }
+    }
+
+    fn from_checkpoint(checkpoint: Mm2EvidenceCheckpoint) -> Result<Self, Box<dyn Error>> {
+        let mut named_progress = NamedProgress::default();
+        named_progress.restore(checkpoint.first_seen)?;
+        Ok(Self {
+            named_progress,
+            aggregate: checkpoint.aggregate,
+            watermark: checkpoint.watermark,
+            first_reached: checkpoint.first_reached,
+            first_inputs: checkpoint.first_inputs,
+            champion_input: checkpoint.champion_input,
+            champion_milestones: checkpoint.champion_milestones,
+            champion_key: checkpoint.champion_key,
+            genesis_screen: checkpoint.genesis_screen,
+            best_health: checkpoint.best_health.into_iter().collect(),
+            best_energy: checkpoint.best_energy.into_iter().collect(),
+        })
+    }
+
+    fn stock(&mut self, observation: &Mm2Observations) -> Vec<String> {
+        let state = observation.decoded;
+        let mut improved = Vec::new();
+        for name in NamedProgress::reached(observation) {
+            if !is_route_milestone(&name)
+                || name == "ending"
+                || name.ends_with("_defeated")
+                || name.ends_with("_refight")
+            {
+                continue;
+            }
+            let by_health = (state.health, state.weapon_energy);
+            if self.best_health.get(&name).is_none_or(|best| by_health > *best) {
+                self.best_health.insert(name.clone(), by_health);
+                improved.push(format!("{name}-health"));
+            }
+            let by_energy = (state.weapon_energy, state.health);
+            if self.best_energy.get(&name).is_none_or(|best| by_energy > *best) {
+                self.best_energy.insert(name.clone(), by_energy);
+                improved.push(format!("{name}-energy"));
+            }
+        }
+        improved
+    }
 }
 
 pub type Mm2CampaignOrigin = CampaignOrigin<Mm2Game>;
@@ -293,10 +448,10 @@ fn execute_suffix(
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
-        objective_reached: target.exit_kind() == ExitKind::Ok && target.defeated_a_boss(),
+        objective_reached: target.exit_kind() == ExitKind::Ok && target.objective_reached(),
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
+        } else if target.is_terminal() {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -317,12 +472,12 @@ fn execute_suffix(
         } else {
             target.last_action_observations().to_vec()
         };
-        let raw_objective = target.exit_kind() == ExitKind::Ok && target.defeated_a_boss();
+        let raw_objective = target.exit_kind() == ExitKind::Ok && target.objective_reached();
         let objective_reached = raw_objective && !objective_seen;
         objective_seen |= raw_objective;
         let disposition = if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
+        } else if target.is_terminal() {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -410,16 +565,42 @@ impl CampaignTypes for Mm2Game {
 }
 
 impl Reporting for Mm2Game {
+    fn evidence_checkpoint(evidence: &Mm2CampaignEvidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(postcard::to_allocvec(&evidence.to_checkpoint())?)
+    }
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Mm2CampaignEvidence, Box<dyn Error>> {
+        Mm2CampaignEvidence::from_checkpoint(postcard::from_bytes(bytes)?)
+    }
+    fn checkpoint_marks(evidence: &Mm2CampaignEvidence) -> usize {
+        evidence
+            .named_progress
+            .first_seen
+            .iter()
+            .filter(|(name, seen)| seen.is_some() && is_route_milestone(name))
+            .count()
+    }
+    fn diagnostics(evidence: &Mm2CampaignEvidence) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "named_progress": evidence.named_progress }))
+    }
+    fn merge_witness_diagnostics(
+        evidence: &mut Mm2CampaignEvidence,
+        observations: &[Mm2Observations],
+        sequence: u64,
+    ) {
+        let action_end = observations.last().map_or(0, |obs| obs.frame_count);
+        for observation in observations {
+            evidence
+                .named_progress
+                .observe(observation, sequence, action_end);
+        }
+    }
     fn retained_diagnostics<'a>(
         snapshots: impl Iterator<Item = (Option<&'a Mm2Snapshot>, u64)>,
     ) -> Option<serde_json::Value> {
         let (mut active, mut missing) = (0_u64, 0_u64);
-        let (mut weapons, mut stage, mut screen) = (0, 0, 0);
-        let mut health = vec![0_u8; 256];
-        let mut energy = vec![0_u16; 256];
-        let mut entries = vec![0_u64; 256];
-        let mut selected = vec![0_u64; 256];
-        let mut rows = BTreeMap::<(u8, u8), [u64; 2]>::new();
+        let mut top = Mm2Tier::default();
+        let mut screens = BTreeMap::<(u8, u8), [u64; 4]>::new();
+        let mut rows = BTreeMap::<(u8, u8, u8), [u64; 2]>::new();
         for (snapshot, selections) in snapshots {
             active += 1;
             let Some(snapshot) = snapshot else {
@@ -427,47 +608,33 @@ impl Reporting for Mm2Game {
                 continue;
             };
             let state = snapshot.state();
-            weapons |= state.weapons_obtained;
-            stage = stage.max(state.stage);
-            screen = screen.max(state.screen);
-            let here = usize::from(state.screen);
-            health[here] = health[here].max(state.health);
-            energy[here] = energy[here].max(state.weapon_energy);
-            entries[here] += 1;
-            selected[here] = selected[here].saturating_add(selections);
-            let row = rows.entry((state.screen, state.y / 16)).or_default();
+            top = top.max(state.tier());
+            let screen = screens.entry((state.stage, state.screen)).or_default();
+            *screen = [
+                screen[0] + 1,
+                screen[1].max(u64::from(state.health)),
+                screen[2].max(u64::from(state.weapon_energy)),
+                screen[3].saturating_add(selections),
+            ];
+            let row = rows
+                .entry((state.stage, state.screen, state.y / 16))
+                .or_default();
             *row = [row[0] + 1, row[1].saturating_add(selections)];
         }
-        let deepest = usize::from(screen);
         Some(serde_json::json!({
             "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
             "active_entries": active, "missing_snapshots": missing,
-            "weapons_union": weapons, "max_stage": stage, "max_screen": screen,
-            "deepest_screen_max_health": health[deepest],
-            "deepest_screen_max_weapon_energy": energy[deepest],
-            "live_entries_by_screen": entries
+            "top_tier": top,
+            "live_entries_by_screen": screens
                 .iter()
-                .enumerate()
-                .filter(|(_, count)| **count > 0)
-                .map(|(here, count)| {
-                    (
-                        here.to_string(),
-                        [
-                            *count,
-                            u64::from(health[here]),
-                            u64::from(energy[here]),
-                            selected[here],
-                        ],
-                    )
-                })
+                .map(|((stage, screen), best)| (format!("{stage}:{screen}"), *best))
                 .collect::<BTreeMap<_, _>>(),
-            "live_entries_by_screen_format": "screen -> [entries, max health, max summed energy, selections]",
+            "live_entries_by_screen_format": "stage:screen -> [entries, max health, max summed energy, selections]",
             "live_entries_by_screen_row": rows
                 .iter()
-                .map(|((here, row), best)| (format!("{here}:{row}"), *best))
+                .map(|((stage, screen, row), best)| (format!("{stage}:{screen}:{row}"), *best))
                 .collect::<BTreeMap<_, _>>(),
-            "live_entries_by_screen_row_format": "screen:16-pixel row from the top -> [entries, selections]",
-            "temporary_screen_table_bytes": 256 * 4
+            "live_entries_by_screen_row_format": "stage:screen:16-pixel row from the top -> [entries, selections]"
         }))
     }
     fn stream_format(&self) -> &'static str {
@@ -528,7 +695,13 @@ impl InputPolicy for Mm2Game {
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (
+                TERMINAL_POLICY_FIELD,
+                match self.route {
+                    Mm2Route::Stage(_) => STAGE_TERMINAL_POLICY_IDENTIFIER,
+                    Mm2Route::WholeGame => WHOLE_GAME_TERMINAL_POLICY_IDENTIFIER,
+                },
+            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -577,13 +750,18 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
-        Mm2Target::from_rom_bytes_after(
-            &self.rom,
-            &self.core_path,
-            &self.core_sha256,
-            &self.prefix,
-            self.stage,
-        )
+        match self.route {
+            Mm2Route::Stage(stage) => Mm2Target::from_rom_bytes_after(
+                &self.rom,
+                &self.core_path,
+                &self.core_sha256,
+                &self.prefix,
+                stage,
+            ),
+            Mm2Route::WholeGame => {
+                Mm2Target::whole_game(&self.rom, &self.core_path, &self.core_sha256, &self.prefix)
+            }
+        }
         .map_err(|error| error.to_string())
     }
 
@@ -654,7 +832,7 @@ impl Evaluation for Mm2Game {
     fn execution_disposition(&self, target: &Mm2Target) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
+        } else if target.is_terminal() {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -666,7 +844,7 @@ impl Evaluation for Mm2Game {
         _run: &Mm2CampaignRun,
         target: &Mm2Target,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(target.exit_kind() == ExitKind::Ok && target.defeated_a_boss())
+        Ok(target.exit_kind() == ExitKind::Ok && target.objective_reached())
     }
 
     fn current_key(&self, target: &Mm2Target) -> Result<Mm2ArchiveKey, Box<dyn Error>> {
@@ -705,6 +883,10 @@ impl Evaluation for Mm2Game {
         let state = target.mechanical_state();
         evidence.watermark = evidence.watermark.max(progress_watermark(state));
         evidence.genesis_screen.get_or_insert(state.screen);
+        let observation = target.observe();
+        evidence
+            .named_progress
+            .observe(&observation, 0, observation.frame_count);
         Ok(())
     }
 
@@ -742,6 +924,21 @@ impl Evaluation for Mm2Game {
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
+        let action_end_frame = action.observations.last().map_or(0, |obs| obs.frame_count);
+        let mut discoveries = Vec::new();
+        let mut improved = Vec::new();
+        for observation in &action.observations {
+            discoveries.extend(
+                evidence
+                    .named_progress
+                    .observe(observation, sequence, action_end_frame)
+                    .into_iter()
+                    .filter(|name| is_route_milestone(name)),
+            );
+        }
+        if let Some(last) = action.observations.last() {
+            improved = evidence.stock(last);
+        }
         let genesis_screen = evidence.genesis_screen.unwrap_or(0);
         let first_input_needed = (action.milestones.max_screen > genesis_screen
             && evidence.first_inputs.first_new_screen.is_none())
@@ -749,8 +946,10 @@ impl Evaluation for Mm2Game {
             || (action.milestones.defeated_boss && evidence.first_inputs.first_clear.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
+        if first_input_needed || champion.is_some() || !discoveries.is_empty() || !improved.is_empty()
+        {
             let input = input()?;
+            self.publish_inputs(discoveries.into_iter().chain(improved), &input)?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,
@@ -819,15 +1018,20 @@ mod tests {
     fn the_census_reports_where_the_live_archive_sits_and_what_the_selector_drew() {
         use crate::mm2::target::Mm2MechanicalState;
 
-        let at = |screen, y, health| Mm2MechanicalState {
-            stage: 8,
+        let at = |stage, screen, y, health| Mm2MechanicalState {
+            stage,
             screen,
             y,
             health,
             ..Mm2MechanicalState::default()
         };
-        let cached = [(at(4, 10, 28), 3), (at(4, 200, 8), 0), (at(2, 10, 20), 11)]
-            .map(|(state, selections)| (Mm2Snapshot::for_census_tests(state), selections));
+        let cached = [
+            (at(8, 4, 10, 28), 3),
+            (at(8, 4, 200, 8), 0),
+            (at(8, 2, 10, 20), 11),
+            (at(2, 4, 10, 5), 1),
+        ]
+        .map(|(state, selections)| (Mm2Snapshot::for_census_tests(state), selections));
         let census = Mm2Game::retained_diagnostics(
             cached
                 .iter()
@@ -836,16 +1040,16 @@ mod tests {
         )
         .expect("census");
 
-        assert_eq!(census["active_entries"], 4);
+        assert_eq!(census["active_entries"], 5);
         assert_eq!(census["missing_snapshots"], 1);
-        assert_eq!(census["max_screen"], 4);
-        assert_eq!(census["deepest_screen_max_health"], 28);
+        assert_eq!(census["top_tier"]["castles"], 0);
         let screens = &census["live_entries_by_screen"];
-        assert_eq!(screens["4"], serde_json::json!([2, 28, 0, 3]));
-        assert_eq!(screens["2"], serde_json::json!([1, 20, 0, 11]));
+        assert_eq!(screens["8:4"], serde_json::json!([2, 28, 0, 3]));
+        assert_eq!(screens["8:2"], serde_json::json!([1, 20, 0, 11]));
+        assert_eq!(screens["2:4"], serde_json::json!([1, 5, 0, 1]));
         let rows = &census["live_entries_by_screen_row"];
-        assert_eq!(rows["4:0"], serde_json::json!([1, 3]));
-        assert_eq!(rows["4:12"], serde_json::json!([1, 0]));
+        assert_eq!(rows["8:4:0"], serde_json::json!([1, 3]));
+        assert_eq!(rows["8:4:12"], serde_json::json!([1, 0]));
     }
 
     #[test]
@@ -867,7 +1071,7 @@ mod tests {
     fn selected_stage_is_part_of_recorded_machine_identity() {
         let stage = Mm2Stage::from_number(3).expect("stage");
         let game = Mm2Game::new_at_stage(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64), stage);
-        assert_eq!(game.stage(), stage);
+        assert_eq!(game.route(), Mm2Route::Stage(stage));
         assert!(
             game.emulator_identity()
                 .contains("genesis=mm2-stage-select-v2:3:prefix-sha256=")
