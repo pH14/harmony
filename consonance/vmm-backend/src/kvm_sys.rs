@@ -53,6 +53,7 @@ pub struct KvmBackend {
     mmap_size: usize,
     xsave2_size: Option<usize>,
     nested_state_config: Option<(NestedFormat, usize)>,
+    nested_physical_bits: u32,
     nested_state_guard: crate::arch::x86::NestedStateGuard,
     regions: MemRegions,
     mem_slot_count: u32,
@@ -108,6 +109,7 @@ impl KvmBackend {
             mmap_size,
             xsave2_size,
             nested_state_config: None,
+            nested_physical_bits: 0,
             nested_state_guard: Default::default(),
             regions: MemRegions::new(),
             mem_slot_count: 0,
@@ -231,6 +233,7 @@ impl KvmBackend {
             }
         }
         crate::arch::x86::nested_probe(nested_size as usize)?;
+        self.nested_physical_bits = crate::arch::x86::guest_physical_bits(cpuid);
         self.nested_state_config = Some((format, nested_size as usize));
         Ok(capabilities)
     }
@@ -1010,7 +1013,10 @@ impl Backend for KvmBackend {
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
         match (self.nested_state_config, &state.nested_state) {
-            (Some((format, maximum)), Some(bytes)) => format.validate(bytes, maximum)?,
+            (Some((format, maximum)), Some(bytes)) => {
+                format.validate(bytes, maximum)?;
+                crate::arch::x86::validate_nested_addresses(bytes, self.nested_physical_bits)?;
+            }
             (None, None) => {}
             _ => {
                 return Err(BackendError::Internal(

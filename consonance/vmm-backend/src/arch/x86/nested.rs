@@ -184,6 +184,39 @@ pub fn nested_guest_mode(bytes: &[u8]) -> Result<bool> {
     Ok(u16::from_le_bytes(bytes[..2].try_into().unwrap()) & 1 != 0)
 }
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+pub(crate) fn guest_physical_bits(cpuid: &super::CpuidModel) -> u32 {
+    let eax = |leaf| {
+        cpuid
+            .entries
+            .iter()
+            .find(|entry| entry.leaf == leaf)
+            .map(|entry| entry.eax)
+    };
+    match (eax(0x8000_0000), eax(0x8000_0008)) {
+        (Some(maximum), Some(eax)) if maximum >= 0x8000_0008 => eax & 0xff,
+        _ => 36,
+    }
+}
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+pub(crate) fn validate_nested_addresses(bytes: &[u8], physical_bits: u32) -> Result<()> {
+    if NestedFormat::from_state(bytes)? == NestedFormat::Svm {
+        return Ok(());
+    }
+    let fits = |at: usize| {
+        let address = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        address == u64::MAX || address.checked_shr(physical_bits).unwrap_or(0) == 0
+    };
+    if fits(8) && fits(16) {
+        Ok(())
+    } else {
+        Err(BackendError::Internal(
+            "nested VMX address exceeds the guest physical address width",
+        ))
+    }
+}
+
 pub fn inactive_nested_state(format: NestedFormat) -> Vec<u8> {
     let mut bytes = vec![0; NESTED_HEADER_LEN];
     bytes[4..8].copy_from_slice(&(NESTED_HEADER_LEN as u32).to_le_bytes());
@@ -369,6 +402,44 @@ mod tests {
                 .copy_from_slice(&0x11e5_7ed0_u32.to_le_bytes());
         }
         bytes
+    }
+
+    #[test]
+    fn vmx_addresses_must_fit_the_guest_physical_width() {
+        use super::super::{CpuidEntry, CpuidModel};
+        let entry = |leaf, eax| CpuidEntry {
+            leaf,
+            eax,
+            ..Default::default()
+        };
+        let bits = |entries| guest_physical_bits(&CpuidModel { entries });
+        assert_eq!(bits(vec![]), 36);
+        assert_eq!(
+            bits(vec![
+                entry(0x8000_0000, 0x8000_0007),
+                entry(0x8000_0008, 0x3027)
+            ]),
+            36
+        );
+        assert_eq!(
+            bits(vec![
+                entry(0x8000_0000, 0x8000_0008),
+                entry(0x8000_0008, 0x3027)
+            ]),
+            39
+        );
+        let inactive = inactive_nested_state(NestedFormat::Vmx);
+        validate_nested_addresses(&inactive, 39).unwrap();
+        let loaded = loaded_vmx(NESTED_HEADER_LEN + 4096, 0);
+        validate_nested_addresses(&loaded, 39).unwrap();
+        for (at, address) in [(8, 1_u64 << 39), (16, 1 << 39), (8, 1 << 60)] {
+            let mut bytes = loaded.clone();
+            bytes[at..at + 8].copy_from_slice(&address.to_le_bytes());
+            validate_nested_shape(&bytes, VMX_NESTED_MAX_LEN).unwrap();
+            assert!(validate_nested_addresses(&bytes, 39).is_err());
+            validate_nested_addresses(&bytes, 64).unwrap();
+        }
+        validate_nested_addresses(&inactive_nested_state(NestedFormat::Svm), 0).unwrap();
     }
 
     #[test]
