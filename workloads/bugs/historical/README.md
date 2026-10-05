@@ -60,8 +60,8 @@ reports and uploads the result, so the committed table lags the last CI run.
 <!-- render-historical-bugs:begin -->
 | bug | searched version | upstream fix | status | CI | discovery | latest sample replay | executions to first hit | replay command |
 |---|---|---|---|---|---|---|---|---|
-| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 | 3.5.3 | reproduced | runnable | guided | — | — | `harmony replay RUN --bug 1 --repeat 1 --out REPLAY` |
-| [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 | 14.4 | reproduced | runnable | guided | — | — | `harmony replay RUN --bug 1 --repeat 1 --out REPLAY` |
+| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 | 3.5.3 | reproduced | runnable | guided | — | — | `harmony replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 | 14.4 | reproduced | runnable | guided | — | — | `harmony replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [sqlite-wal-reset](sqlite-wal-reset/README.md) | 3.51.2 | 3.51.3 | reproduced | deferred: the image is built and searched on arm64 hosts; the hosted workflow builds x86_64 images | guided | — | — | — |
 <!-- render-historical-bugs:end -->
 
