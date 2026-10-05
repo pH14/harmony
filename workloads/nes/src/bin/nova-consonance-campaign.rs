@@ -260,7 +260,7 @@ mod real {
             memory_budget_mib: Some(memory_budget.archive_memory_budget_mib),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::Unprobed,
-            suffix: SuffixShape::OneToSix,
+            suffix: SuffixShape::default(),
             mixture: DrawMixture::AlphabetOnly,
             victory_input_path: Some(args.output.join("victory-input.json")),
         };

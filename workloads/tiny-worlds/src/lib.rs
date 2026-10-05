@@ -30,7 +30,7 @@ pub struct SearchSettings {
 impl Default for SearchSettings {
     fn default() -> Self {
         Self {
-            suffix: SuffixShape::OneOrTwo,
+            suffix: SuffixShape::default(),
             mixture: None,
             stop_on_objective: None,
         }
@@ -1228,7 +1228,7 @@ fn campaign_config<const CAPACITY_TWO: bool>(
         memory_budget_mib: Some(scale.memory_budget_mib),
         materialize_final_artifacts: workload.scale.is_none(),
         run: (),
-        suffix: SuffixShape::OneOrTwo,
+        suffix: SuffixShape::default(),
         mixture: workload.config.mixture(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
