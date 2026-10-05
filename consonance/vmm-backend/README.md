@@ -64,7 +64,9 @@ operation by loading VMCS12 host state or switching to VMCB01. Doing that
 first keeps it from overwriting the restored registers, and lets a snapshot
 taken before VMXON clear CR4.VMXE. The complete nested payload is installed
 after all architectural state. Invalid format, size, mode flags, or contract
-presence fails preflight before any restore ioctl.
+presence fails preflight before any restore ioctl. So does a VMXON or VMCS12
+address beyond the guest's physical address width, which KVM derives from
+CPUID leaf 0x80000008 and rejects only after the architectural state is written.
 
 `Backend::drain_dirty_pages` returns the guest pages written since the last
 drain, so snapshots copy and restores reload only those pages. The KVM backends
