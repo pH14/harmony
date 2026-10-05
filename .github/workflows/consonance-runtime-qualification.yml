@@ -153,7 +153,7 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           git fetch --depth 1 origin "$commit"
           git archive "$commit" | tar -x -C "$history/source"
-          cp -a "$inputs/nested-driver.oci" "$history/nested-driver.oci"
+          mv "$inputs/nested-driver.oci" "$history/nested-driver.oci"
           printf '%s\n' "$commit" >"$history/rebuilt-source-commit.txt"
           CARGO_TARGET_DIR="$PWD/target" cargo build --locked --release \
             --manifest-path "$history/source/Cargo.toml" -p harmony-cli
