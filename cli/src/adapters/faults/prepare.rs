@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::config::{Config, Language, Result};
+use super::config::{Config, Language, Result};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -20,9 +20,6 @@ pub fn sdk(offline: bool) -> Result<PathBuf> {
 
 pub fn run(c: &mut Config, offline: bool) -> Result<serde_json::Value> {
     c.validate()?;
-    if c.rom.is_some() {
-        return Err("NES inputs use a core directly and need no language preparation".into());
-    }
     let image = c
         .image
         .clone()
@@ -180,8 +177,45 @@ pub fn init(path: &Path, language: Option<Language>, image: Option<String>) -> R
         "image = {}\nexecutions = 1000\nram_mib = 1024\n{language}\n[nodes.app]\ncommand = {app_command}\n",
         toml::Value::String(image)
     );
+    let legacy: Config = toml::from_str(&text)?;
+    let mut shared = legacy.shared()?;
+    shared.workload.options.retain(|_, value| match value {
+        toml::Value::Array(values) => !values.is_empty(),
+        toml::Value::Table(values) => !values.is_empty(),
+        _ => true,
+    });
+    let text = toml::to_string_pretty(&shared)?;
     file.write_all(text.as_bytes())?;
     Ok(())
+}
+
+pub fn language(explicit: Option<String>, directory: &Path) -> Result<Option<Language>> {
+    if let Some(value) = explicit {
+        return Ok(Some(toml::Value::String(value).try_into()?));
+    }
+    let candidates = [
+        ("Cargo.toml", Language::Rust),
+        ("go.mod", Language::Go),
+        ("main.py", Language::Python),
+        ("pyproject.toml", Language::Python),
+        ("app.jar", Language::Java),
+        ("pom.xml", Language::Java),
+        ("build.gradle", Language::Java),
+        ("main.c", Language::C),
+    ];
+    let mut found = Vec::new();
+    for (file, language) in candidates {
+        if directory.join(file).exists()
+            && !found.iter().any(|l: &Language| l.name() == language.name())
+        {
+            found.push(language);
+        }
+    }
+    match found.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(*one)),
+        _ => Err("multiple application languages detected; choose --language".into()),
+    }
 }
 
 #[cfg(test)]
@@ -192,7 +226,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("harmony.toml");
         init(&path, Some(Language::C), None).unwrap();
-        let config: Config = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let config: crate::config::Config =
+            toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         config.validate().unwrap();
         assert!(init(&path, None, None).is_err());
     }

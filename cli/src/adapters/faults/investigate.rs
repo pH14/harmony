@@ -1,25 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{
-    config::Result,
-    runs::{Destination, Manifest},
-};
+use super::runs::Manifest;
+use crate::{config::Result, runs::Destination};
 use faults_workload::{
     FaultAction, FaultOperation,
     package::{self, ReplaySummary, Report},
 };
-use std::{
-    fs,
-    num::NonZeroU16,
-    path::{Path, PathBuf},
-};
+use std::{fs, num::NonZeroU16, path::Path};
 
-#[derive(Clone, Debug, clap::Args)]
-pub struct Selection {
-    pub run: String,
-    #[arg(long)]
-    pub bug: Option<usize>,
-}
+pub use crate::selection::Selection;
+use crate::selection::{Point, millis};
 
 fn report(path: &Path) -> Result<Report> {
     Ok(serde_json::from_slice(&fs::read(
@@ -45,7 +35,7 @@ pub fn selected_actions(
             .clone())
     } else if manifest.mode == "search" {
         Err(
-            "select a finding with --bug NUMBER; use search --resume to continue the whole search"
+            "select a finding with --finding NUMBER; use resume RUN to continue the whole search"
                 .into(),
         )
     } else {
@@ -65,7 +55,7 @@ fn witness(path: &Path, bug: Option<usize>) -> Result<ReplaySummary> {
             .replays
             .first()
             .cloned()
-            .ok_or_else(|| "select a finding with --bug NUMBER".into())
+            .ok_or_else(|| "select a finding with --finding NUMBER".into())
     }
 }
 
@@ -90,26 +80,37 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
     let source = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&source)?;
     original.verify(&source)?;
-    if original.config.rom.is_some() {
-        return Err(
-            "NES replay uses its game-specific replay tool; application replay is supported here"
-                .into(),
-        );
-    }
+    let recorded = if original.bundle.is_some() {
+        Some((
+            selected_actions(&source, &original, selection.finding)?,
+            witness(&source, selection.finding)?,
+        ))
+    } else {
+        if selection.finding.is_some() || repeat != 1 {
+            return Err("command runs have no finding selector and replay once".into());
+        }
+        None
+    };
     let out = destination.create()?;
     let mut manifest = original.inherit(&source, &out, "replay")?;
     let result = (|| -> Result<u8> {
         if original.bundle.is_none() {
-            if selection.bug.is_some() || repeat != 1 {
-                return Err("command runs have no bug selector and replay once".into());
-            }
             manifest.save(&out)?;
             let mut c = manifest.config.clone();
             if manifest.uml_host.is_some() {
                 c.uml_profile = Some(out.join("artifacts/uml"));
             }
             let artifacts = manifest.fault_artifacts(&out)?;
-            crate::oci::execute(&c, &artifacts.kernel, &artifacts.initramfs, &out, false)?;
+            crate::oci::execute(
+                &c.runtime(),
+                c.seed,
+                &c.knobs,
+                c.wall_seconds,
+                &artifacts.kernel,
+                &artifacts.initramfs,
+                &out,
+                false,
+            )?;
             let old: serde_json::Value =
                 serde_json::from_slice(&fs::read(source.join("run.json"))?)?;
             let new: serde_json::Value = serde_json::from_slice(&fs::read(out.join("run.json"))?)?;
@@ -119,8 +120,8 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 Ok(0)
             }
         } else {
-            manifest.actions = selected_actions(&source, &original, selection.bug)?;
-            let expected = witness(&source, selection.bug)?;
+            let (actions, expected) = recorded.ok_or("missing recorded execution")?;
+            manifest.actions = actions;
             manifest.save(&out)?;
             let artifacts = manifest.fault_artifacts(&out)?;
             let replay = package::execute_actions(
@@ -142,44 +143,41 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
             }
         }
     })();
-    crate::workflow::finish(&out, &mut manifest, result)
+    super::workflow::finish(&out, &mut manifest, result)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn branch(
-    selection: Selection,
-    destination: Destination,
-    at_step: Option<usize>,
-    before: Option<String>,
-    inject: Vec<String>,
-    extra: Option<PathBuf>,
-    follow: bool,
-) -> Result<u8> {
+pub fn branch(request: crate::adapters::Request) -> Result<u8> {
+    let selection = request.selection.ok_or("select a run")?;
     let source = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&source)?;
     original.verify(&source)?;
     if original.bundle.is_none() {
         return Err("branching requires a supervised application scenario".into());
     }
-    let actions = selected_actions(&source, &original, selection.bug)?;
-    let recorded = witness(&source, selection.bug)?;
-    let boundaries = recorded
-        .timeline
-        .iter()
-        .filter(|step| !step.settlement)
-        .map(|step| (step.step as usize, step.observation.moment))
-        .collect::<Vec<_>>();
-    let cut = if let Some(duration) = before.as_deref().filter(|s| !s.ends_with("steps")) {
-        rewind_time(&boundaries, millis(duration)?)?
-    } else {
-        cut(&actions, at_step, before.as_deref())?
-    };
+    let recorded = witness(&source, selection.finding)?;
+    let (actions, boundaries, anchor) = trajectory(&recorded, selection.finding.is_some());
+    let cut = request.point.resolve(&boundaries, anchor)?;
+    if cut > actions.len() {
+        return Err("selected boundary has no reproducible input prefix".into());
+    }
     let quantum = actions
         .get(cut.saturating_sub(1))
         .or(actions.first())
         .map_or(NonZeroU16::MIN, |action| action.coverage_quantum);
     let mut continuation = actions[..cut].to_vec();
-    for injection in &inject {
+    let mut injections = Vec::new();
+    for name in &request.interventions {
+        injections.extend(original.config.interventions.get(name).ok_or_else(|| format!("unknown intervention {name:?}; define workload.options.interventions.{name}"))?.clone());
+    }
+    if let Some(text) = &request.intervention_toml {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Plan {
+            actions: Vec<super::config::Intervention>,
+        }
+        injections.extend(toml::from_str::<Plan>(text)?.actions);
+    }
+    for injection in &injections {
         continuation.push(injection_action(
             injection,
             original.bundle.as_deref().unwrap_or_default(),
@@ -187,17 +185,18 @@ pub fn branch(
             quantum,
         )?);
     }
-    if let Some(path) = extra {
+    if let Some(path) = request.actions {
         continuation
             .extend(faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions);
     }
-    if follow {
+    if !request.stop {
         continuation.extend_from_slice(&actions[cut..]);
     }
-    let out = destination.create()?;
-    let mut manifest = original.inherit(&source, &out, if follow { "run" } else { "branch" })?;
+    let out = request.destination.create()?;
+    let mut manifest =
+        original.inherit(&source, &out, if !request.stop { "run" } else { "branch" })?;
     manifest.actions = continuation;
-    manifest.settle = follow;
+    manifest.settle = !request.stop;
     manifest.save(&out)?;
     println!(
         "branch point: after action {cut}; virtual offset {} ms from setup",
@@ -214,71 +213,76 @@ pub fn branch(
         &manifest.actions,
         1,
         &manifest.options(&out),
-        follow,
+        !request.stop,
     )
-    .map(|report| crate::workflow::report_code(&report));
-    crate::workflow::finish(&out, &mut manifest, result)
+    .map(|report| super::workflow::report_code(&report));
+    super::workflow::finish(&out, &mut manifest, result)
 }
 
-fn cut(actions: &[FaultAction], at: Option<usize>, before: Option<&str>) -> Result<usize> {
-    if let Some(at) = at {
-        if at <= actions.len() {
-            return Ok(at);
+pub fn trajectory(
+    recorded: &ReplaySummary,
+    finding: bool,
+) -> (Vec<FaultAction>, Vec<(usize, u64)>, usize) {
+    let applied = recorded.actions_applied + recorded.settle_actions;
+    let mut actions = Vec::new();
+    let mut boundaries = Vec::new();
+    for step in &recorded.timeline {
+        if step.step > applied
+            || boundaries
+                .last()
+                .is_some_and(|(n, _)| *n == step.step as usize)
+        {
+            continue;
         }
-        return Err("selected step is past the recorded input".into());
+        boundaries.push((step.step as usize, step.observation.moment));
+        if let Some(action) = step.action {
+            actions.push(action);
+        }
     }
-    let Some(before) = before else {
-        return Ok(actions.len().saturating_sub(1));
-    };
-    if let Some(steps) = before.strip_suffix("steps") {
-        return actions
-            .len()
-            .checked_sub(steps.parse::<usize>()?)
-            .ok_or_else(|| "rewind precedes setup".into());
-    }
-    Err("time rewinds require recorded observations".into())
-}
-
-fn rewind_time(boundaries: &[(usize, u64)], millis: u64) -> Result<usize> {
-    let end = boundaries.last().ok_or("no recorded action boundaries")?.1;
-    let nanos = millis
-        .checked_mul(1_000_000)
-        .ok_or("rewind duration overflow")?;
-    let target = end.checked_sub(nanos).ok_or("rewind precedes setup")?;
-    boundaries
-        .iter()
-        .rev()
-        .find(|(_, moment)| *moment <= target)
-        .map(|(step, _)| *step)
-        .ok_or_else(|| "rewind precedes setup".into())
-}
-
-fn millis(text: &str) -> Result<u64> {
-    let value = if let Some(ms) = text.strip_suffix("ms") {
-        ms.parse()?
+    let end = boundaries.last().map_or(0, |(n, _)| *n);
+    let anchor = if finding {
+        recorded
+            .timeline
+            .iter()
+            .find(|step| step.step <= applied && step.observation.is_bug())
+            .map_or(end, |step| step.step as usize)
     } else {
-        crate::config::duration(text)?
-            .checked_mul(1000)
-            .ok_or("duration overflow")?
+        end
     };
-    if value == 0 {
-        return Err("duration must be positive".into());
+    (actions, boundaries, anchor)
+}
+pub fn prefix(
+    path: &Path,
+    manifest: &Manifest,
+    selection: &Selection,
+    point: &Point,
+) -> Result<Vec<FaultAction>> {
+    if !point.specified() && selection.finding.is_none() {
+        return selected_actions(path, manifest, None);
     }
-    Ok(value)
+    let recorded = witness(path, selection.finding)?;
+    let (actions, boundaries, anchor) = trajectory(&recorded, selection.finding.is_some());
+    let cut = point.resolve(&boundaries, anchor)?;
+    if cut > actions.len() {
+        return Err("point has no reproducible input prefix".into());
+    }
+    eprintln!("selected step {cut}");
+    Ok(actions[..cut].to_vec())
 }
 
 fn injection_action(
-    text: &str,
+    action: &super::config::Intervention,
     bundle: &str,
     manifest: &Manifest,
     quantum: NonZeroU16,
 ) -> Result<FaultAction> {
-    let words: Vec<_> = text.split_whitespace().collect();
-    let (kind, target, duration) = match words.as_slice() {
-        ["wait", duration] => ("wait", "", *duration),
-        [kind, target] => (*kind, *target, "1s"),
-        [kind, target, duration] => (*kind, *target, *duration),
-        _ => return Err("use --inject 'kill NODE 1s', 'pause NODE 100ms', 'restart NODE 1s', 'hook NAME 1s' or 'wait 1s'; use --actions for event-site faults".into()),
+    use super::config::Intervention;
+    let (kind, target, duration) = match action {
+        Intervention::Kill { node, duration } => ("kill", node.as_str(), duration.as_str()),
+        Intervention::Pause { node, duration } => ("pause", node.as_str(), duration.as_str()),
+        Intervention::Restart { node, duration } => ("restart", node.as_str(), duration.as_str()),
+        Intervention::Wait { duration } => ("wait", "", duration.as_str()),
+        Intervention::Hook { name, duration } => ("hook", name.as_str(), duration.as_str()),
     };
     let ms = millis(duration)?;
     if ms % 10 != 0 {
@@ -339,7 +343,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     } else {
         serde_json::Value::Null
     };
-    let selected = if let Some(bug) = selection.bug {
+    let selected = if let Some(bug) = selection.finding {
         let bugs = report["bugs"]
             .as_array()
             .ok_or("this run has no findings")?;
@@ -362,7 +366,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
             manifest.mode,
             manifest.config.backend
         );
-        if let Some(error) = manifest.error {
+        if let Some(error) = &manifest.error {
             println!("error: {error}");
         }
         let show_replay = |replay: &serde_json::Value| {
@@ -377,14 +381,14 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
                 println!("  violation: {}", violation.as_str().unwrap_or_default());
             }
         };
-        if let Some(bug) = selection.bug {
+        if let Some(bug) = selection.finding {
             println!(
                 "finding {bug}: confirmed={}; execution={}",
                 selected["confirmed"], selected["execution"]
             );
             show_replay(&selected["replay"]);
             println!(
-                "timeline: harmony timeline {} --bug {bug}\nreplay: harmony replay {} --bug {bug}",
+                "timeline: harmony timeline {} --finding {bug}\nreplay: harmony replay {} --finding {bug}",
                 path.display(),
                 path.display()
             );
@@ -412,7 +416,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
             }
             if !bugs.is_empty() {
                 println!(
-                    "inspect a finding: harmony inspect {} --bug 1",
+                    "inspect a finding: harmony inspect {} --finding 1",
                     path.display()
                 );
             }
@@ -428,9 +432,14 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     Ok(0)
 }
 
-pub fn timeline(selection: Selection, json: bool) -> Result<u8> {
+pub fn timeline(selection: Selection, point: Point, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
-    let witness = witness(&path, selection.bug)?;
+    let mut witness = witness(&path, selection.finding)?;
+    if point.specified() {
+        let (_, boundaries, anchor) = trajectory(&witness, selection.finding.is_some());
+        let step = point.resolve(&boundaries, anchor)?;
+        witness.timeline.retain(|entry| entry.step as usize == step);
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&witness.timeline)?);
     } else {
@@ -463,7 +472,7 @@ pub fn timeline(selection: Selection, json: bool) -> Result<u8> {
     Ok(0)
 }
 
-pub fn logs(selection: Selection, at: Option<u64>, contains: Option<String>) -> Result<u8> {
+pub fn logs(selection: Selection, point: Point, contains: Option<String>) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let filter = |text: &str| {
         for line in text.lines() {
@@ -472,13 +481,19 @@ pub fn logs(selection: Selection, at: Option<u64>, contains: Option<String>) -> 
             }
         }
     };
-    if path.join("serial.log").is_file() && selection.bug.is_none() {
-        if at.is_some() {
-            return Err("command logs have no action boundaries; omit --at-step".into());
+    if path.join("serial.log").is_file() && selection.finding.is_none() {
+        if point.specified() {
+            return Err("command logs have no action boundaries; omit point selectors".into());
         }
         filter(&fs::read_to_string(path.join("serial.log"))?);
     } else {
-        let witness = witness(&path, selection.bug)?;
+        let witness = witness(&path, selection.finding)?;
+        let at = if point.specified() {
+            let (_, boundaries, anchor) = trajectory(&witness, selection.finding.is_some());
+            Some(point.resolve(&boundaries, anchor)? as u64)
+        } else {
+            None
+        };
         for step in witness
             .timeline
             .into_iter()
@@ -494,118 +509,96 @@ pub fn logs(selection: Selection, at: Option<u64>, contains: Option<String>) -> 
     Ok(0)
 }
 
-pub fn diff(left: &str, right: &str) -> Result<u8> {
-    let left = crate::runs::locate(left)?;
-    let right = crate::runs::locate(right)?;
-    let a = Manifest::read(&left)?;
-    let b = Manifest::read(&right)?;
-    let mut differences = serde_json::Map::new();
-    for (name, a, b) in [
-        (
-            "configuration",
-            serde_json::to_value(a.config)?,
-            serde_json::to_value(b.config)?,
-        ),
-        (
-            "actions",
-            serde_json::to_value(a.actions)?,
-            serde_json::to_value(b.actions)?,
-        ),
-        (
-            "artifacts",
-            serde_json::to_value(a.artifacts)?,
-            serde_json::to_value(b.artifacts)?,
-        ),
-    ] {
-        if a != b {
-            differences.insert(name.into(), serde_json::json!({"left": a, "right": b}));
-        }
-    }
-    for name in ["report.json", "run.json"] {
-        let read = |path: &Path| -> Result<serde_json::Value> {
-            Ok(if path.exists() {
-                serde_json::from_slice(&fs::read(path)?)?
-            } else {
-                serde_json::Value::Null
-            })
-        };
-        let a = read(&left.join(name))?;
-        let b = read(&right.join(name))?;
-        for key in [
-            "executions",
-            "bug_found",
-            "never_satisfied",
-            "execution_failures",
-            "watchdog_cutoffs",
-            "container_rc",
-            "serial_sha256",
-            "terminal",
-        ] {
-            if a[key] != b[key] {
-                differences.insert(
-                    key.into(),
-                    serde_json::json!({"left": a[key], "right": b[key]}),
-                );
-            }
-        }
-        let outcomes = |value: &serde_json::Value| {
-            ["replays", "bugs"].into_iter().flat_map(|field| value[field].as_array().into_iter().flatten())
-                .map(|entry| serde_json::json!({"state_hash": entry["state_hash"], "stop": entry["stop"], "violations": entry["violations"], "confirmed": entry["confirmed"]}))
-                .collect::<Vec<_>>()
-        };
-        if outcomes(&a) != outcomes(&b) {
-            differences.insert(
-                "outcomes".into(),
-                serde_json::json!({"left": outcomes(&a), "right": outcomes(&b)}),
+pub fn findings(selection: Selection, json: bool) -> Result<u8> {
+    let path = crate::runs::locate(&selection.run)?;
+    let report = report(&path)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report.bugs)?);
+    } else {
+        for (index, bug) in report.bugs.iter().enumerate() {
+            println!(
+                "finding {}: confirmed={} stop={:?} assertions={:?}",
+                index + 1,
+                bug.confirmed,
+                bug.stop,
+                bug.violations
             );
         }
     }
-    println!("{}", serde_json::to_string_pretty(&differences)?);
     Ok(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn action(ticks: u16) -> FaultAction {
-        FaultAction::new(
-            FaultOperation::Wait(NonZeroU16::new(ticks).unwrap()),
-            NonZeroU16::new(32).unwrap(),
-        )
-    }
     #[test]
-    fn rewinds_resolve_to_recorded_boundaries_without_changing_actions() {
-        let actions = vec![action(50), action(100), action(25)];
-        assert_eq!(cut(&actions, None, Some("1steps")).unwrap(), 2);
-        let boundaries = [
-            (0, 100_000_000),
-            (1, 600_000_000),
-            (2, 1_600_000_000),
-            (3, 1_700_000_000),
-        ];
-        assert_eq!(rewind_time(&boundaries, 1000).unwrap(), 1);
-        assert_eq!(rewind_time(&boundaries, 100).unwrap(), 2);
-        assert!(rewind_time(&boundaries, 1700).is_err());
-        assert!(cut(&actions, None, Some("4steps")).is_err());
-        assert!(cut(&actions, Some(4), None).is_err());
-    }
-    #[test]
-    fn injected_faults_resolve_node_names_and_keep_the_recorded_quantum() {
-        let manifest = Manifest::new(crate::config::Config::default(), "branch", None).unwrap();
-        let bundle = "node alpha /app\nnode beta /app\nhook 3 /debug\n";
-        let action = injection_action(
-            "kill beta 100ms",
-            bundle,
-            &manifest,
-            NonZeroU16::new(64).unwrap(),
-        )
-        .unwrap();
+    fn finding_anchor_includes_recovery_and_precedes_later_recorded_actions() {
+        use faults_workload::{
+            package::ReplayStep,
+            target::{FaultObservations, FaultStop},
+        };
+        let mut replay =
+            ReplaySummary::from_observation(&FaultObservations::default(), [0; 32], 1, 0);
+        replay.settle_actions = 2;
+        replay.timeline = (0..=3)
+            .map(|step| ReplayStep {
+                step,
+                action: (step != 0).then(|| {
+                    FaultAction::new(FaultOperation::Wait(NonZeroU16::MIN), NonZeroU16::MIN)
+                }),
+                observation: FaultObservations {
+                    moment: step * 1_000_000,
+                    stop: if step >= 2 {
+                        FaultStop::Crash
+                    } else {
+                        FaultStop::default()
+                    },
+                    ..Default::default()
+                },
+                console: String::new(),
+                settlement: step > 1,
+            })
+            .collect();
+        let (actions, boundaries, anchor) = trajectory(&replay, true);
+        assert_eq!(anchor, 2);
+        assert_eq!(actions.len(), 3);
         assert_eq!(
-            action.operation,
+            Point {
+                rewind: Some(1),
+                ..Default::default()
+            }
+            .resolve(&boundaries, anchor)
+            .unwrap(),
+            1
+        );
+    }
+    #[test]
+    fn typed_interventions_resolve_names_and_reject_unrepresentable_durations() {
+        let manifest =
+            Manifest::new(super::super::config::Config::default(), "branch", None).unwrap();
+        let bundle = "node alpha /app\nnode beta /app\n";
+        let action = super::super::config::Intervention::Kill {
+            node: "beta".into(),
+            duration: "100ms".into(),
+        };
+        let result =
+            injection_action(&action, bundle, &manifest, NonZeroU16::new(64).unwrap()).unwrap();
+        assert_eq!(
+            result.operation,
             FaultOperation::Kill(1, NonZeroU16::new(10).unwrap())
         );
-        assert_eq!(action.coverage_quantum.get(), 64);
-        assert!(injection_action("kill unknown", bundle, &manifest, NonZeroU16::MIN).is_err());
-        assert!(injection_action("pause beta 1ms", bundle, &manifest, NonZeroU16::MIN).is_err());
+        assert_eq!(result.coverage_quantum.get(), 64);
+        assert!(
+            injection_action(
+                &super::super::config::Intervention::Pause {
+                    node: "beta".into(),
+                    duration: "1ms".into()
+                },
+                bundle,
+                &manifest,
+                NonZeroU16::MIN
+            )
+            .is_err()
+        );
     }
 }

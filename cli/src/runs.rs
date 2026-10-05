@@ -2,7 +2,6 @@
 
 use crate::config::{Config, Result};
 use crate::runtime::digest;
-use faults_workload::target::FaultAction;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -29,11 +28,9 @@ pub struct Manifest {
     pub error: Option<String>,
     pub config: Config,
     pub parent: Option<PathBuf>,
-    pub bundle: Option<String>,
     pub artifacts: BTreeMap<String, String>,
-    pub actions: Vec<FaultAction>,
-    pub settle: bool,
-    pub uml_host: Option<serde_json::Value>,
+    pub payload: serde_json::Value,
+    pub runner_identity: serde_json::Value,
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -84,14 +81,10 @@ pub fn locate(name: &str) -> Result<PathBuf> {
 }
 
 impl Manifest {
-    pub fn new(config: Config, mode: &str, bundle: Option<String>) -> Result<Self> {
-        let uml_host = if config.backend == crate::config::Backend::Uml {
-            Some(serde_json::to_value(uml::HostIdentity::current()?)?)
-        } else {
-            None
-        };
+    pub fn new(config: Config, mode: &str) -> Result<Self> {
+        let runner_identity = crate::runners::identity(&config.runner)?;
         Ok(Self {
-            format: "harmony-run-v1".into(),
+            format: "harmony-run-v2".into(),
             binary_sha256: file_digest(&std::env::current_exe()?)?,
             architecture: std::env::consts::ARCH.into(),
             mode: mode.into(),
@@ -99,17 +92,15 @@ impl Manifest {
             error: None,
             config,
             parent: None,
-            bundle,
             artifacts: BTreeMap::new(),
-            actions: Vec::new(),
-            settle: true,
-            uml_host,
+            payload: serde_json::Value::Null,
+            runner_identity,
         })
     }
 
     pub fn read(path: &Path) -> Result<Self> {
         let manifest: Self = serde_json::from_slice(&fs::read(path.join("manifest.json"))?)?;
-        if manifest.format != "harmony-run-v1" {
+        if manifest.format != "harmony-run-v2" {
             return Err("unsupported run format".into());
         }
         Ok(manifest)
@@ -141,12 +132,7 @@ impl Manifest {
         if self.binary_sha256 != file_digest(&std::env::current_exe()?)? {
             return Err("this run requires the exact Harmony executable that recorded it".into());
         }
-        crate::runtime::choose(&self.config)?;
-        if let Some(expected) = &self.uml_host
-            && *expected != serde_json::to_value(uml::HostIdentity::current()?)?
-        {
-            return Err("UML host identity differs from the recorded run".into());
-        }
+        crate::runners::verify(&self.config.runner, &self.runner_identity)?;
         for (name, expected) in &self.artifacts {
             let relative = Path::new(name);
             if relative
@@ -179,25 +165,6 @@ impl Manifest {
             )?;
         }
         Ok(child)
-    }
-
-    pub fn options(&self, path: &Path) -> faults_workload::Options {
-        faults_workload::Options {
-            seed: self.config.seed,
-            executions: self.config.executions,
-            ram_mib: self.config.ram_mib,
-            knobs: self.config.knobs.clone(),
-            wall_seconds: self.config.wall_seconds,
-            output: path.to_path_buf(),
-            uml_profile: self.uml_host.as_ref().map(|_| path.join("artifacts/uml")),
-        }
-    }
-
-    pub fn fault_artifacts(&self, path: &Path) -> Result<faults_workload::Artifacts> {
-        Ok(faults_workload::Artifacts {
-            kernel: fs::read(path.join("artifacts/kernel"))?,
-            initramfs: fs::read(path.join("artifacts/initramfs"))?,
-        })
     }
 }
 
@@ -264,20 +231,74 @@ mod tests {
     #[test]
     fn tampered_artifacts_fail_before_execution() {
         let dir = tempfile::tempdir().unwrap();
-        let c = Config {
-            backend: crate::config::Backend::Native,
-            rom: Some("game.nes".into()),
-            ..Config::default()
-        };
-        let mut m = Manifest::new(c, "search", None).unwrap();
-        m.store(dir.path(), "rom", b"original").unwrap();
+        let mut c = Config::default();
+        c.runner.kind = "test".into();
+        let mut m = Manifest::new(c, "search").unwrap();
+        m.store(dir.path(), "input", b"original").unwrap();
         m.verify(dir.path()).unwrap();
-        fs::write(dir.path().join("artifacts/rom"), b"changed").unwrap();
+        fs::write(dir.path().join("artifacts/input"), b"changed").unwrap();
         assert!(
             m.verify(dir.path())
                 .unwrap_err()
                 .to_string()
                 .contains("changed")
         );
+    }
+}
+
+pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
+    let directory = path.join("checkpoints");
+    let text = fs::read_to_string(directory.join("checkpoints.jsonl")).map_err(
+        |_| "this run has no whole-search checkpoint yet (written periodically and when a search completes)",
+    )?;
+    for (index, line) in text.lines().rev().enumerate() {
+        let record: serde_json::Value = match serde_json::from_str(line) {
+            Ok(record) => record,
+            Err(error) if index == 0 && !text.ends_with('\n') && error.is_eof() => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(file) = record["file"].as_str() {
+            let candidate = directory.join(
+                Path::new(file)
+                    .file_name()
+                    .ok_or("invalid checkpoint filename")?,
+            );
+            if candidate.is_file() {
+                return Ok((
+                    candidate,
+                    record["executions"]
+                        .as_u64()
+                        .ok_or("checkpoint journal has no execution count")?,
+                ));
+            }
+        }
+    }
+    Err("no retained search checkpoint exists".into())
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_checkpoint_append_preserves_the_previous_checkpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let checkpoint = directory.join("checkpoint.bin");
+        fs::write(&checkpoint, b"checkpoint").unwrap();
+        let journal = directory.join("checkpoints.jsonl");
+        for suffix in ["", "{", "{\"file\":", "{\"file\":\"next"] {
+            fs::write(
+                &journal,
+                format!("{{\"file\":\"checkpoint.bin\",\"executions\":4}}\n{suffix}"),
+            )
+            .unwrap();
+            assert_eq!(checkpoint_record(root.path()).unwrap().0, checkpoint);
+        }
+        fs::write(&journal, "{\"file\":\"checkpoint.bin\"}\n{\"file\":broken}").unwrap();
+        assert!(checkpoint_record(root.path()).is_err());
+        fs::write(&journal, "{\"file\":\"checkpoint.bin\"}\n{\n").unwrap();
+        assert!(checkpoint_record(root.path()).is_err());
     }
 }

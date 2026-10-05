@@ -278,7 +278,7 @@ pub struct SmbCampaignRun {
     pub terminal: Option<SmbTerminalPredicate>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SmbCampaignEvidence {
     aggregate: SmbMilestones,
     watermark: SmbProgressWatermark,
@@ -497,6 +497,12 @@ where
     M: SmbMachineKind<P>,
     P: SnapshotState,
 {
+    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(serde_json::to_vec(evidence)?)
+    }
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -2197,5 +2203,30 @@ mod tests {
             replay_smb_campaign(&rom, &with, None).expect("sidecar run replays byte-exact");
         assert_eq!(replayed.stream_sha256, observed.stream_sha256);
         assert_eq!(replayed.archive, observed.archive);
+    }
+}
+
+#[cfg(test)]
+mod evidence_checkpoint_tests {
+    use super::*;
+    #[test]
+    fn evidence_round_trip_preserves_all_serialized_fields_and_rejects_truncation() {
+        let mut evidence = SmbCampaignEvidence::default();
+        evidence.aggregate.reached_1_2 = true;
+        evidence.first_reached.level_1_2 = Some(23);
+        evidence.champion_input.actions.push(ButtonChord {
+            buttons: 1,
+            hold_frames: 2,
+        });
+        evidence.champion_milestones = evidence.aggregate;
+        let bytes = <SmbGame as Reporting>::evidence_checkpoint(&evidence).unwrap();
+        let restored = <SmbGame as Reporting>::evidence_from_checkpoint(&bytes).unwrap();
+        assert_eq!(
+            serde_json::to_value(&evidence).unwrap(),
+            serde_json::to_value(&restored).unwrap()
+        );
+        assert!(
+            <SmbGame as Reporting>::evidence_from_checkpoint(&bytes[..bytes.len() - 1]).is_err()
+        );
     }
 }

@@ -1,241 +1,244 @@
 # Harmony CLI
 
-`harmony` prepares applications, searches their behavior, and investigates saved
-executions. An OCI image is an application input; a `.nes` file is a game input.
-The CLI owns these conveniences and configuration. The execution engine and
-searcher remain independent of OCI and TOML.
+`harmony` prepares workloads, searches their behavior, and investigates saved
+executions. Workload packages own their inputs, actions, observations and
+interventions. Runners own execution and runtime artifacts. The CLI owns recipes,
+search budgets, named runs and command dispatch.
 
 ## Start an application
 
 ```sh
-harmony init --language c
-harmony prepare
-harmony doctor
+harmony init
 harmony search --name baseline --for 10m
-harmony inspect baseline
-harmony inspect baseline --bug 1
-harmony timeline baseline --bug 1
-harmony logs baseline --bug 1 --contains ERROR
-harmony replay baseline --bug 1 --repeat 3 --name confirmed
+harmony runs
+harmony findings baseline
+harmony inspect baseline --finding 1
+harmony timeline baseline --finding 1
+harmony logs baseline --finding 1 --contains ERROR
+harmony replay baseline --finding 1 --repeat 3 --name confirmed
 ```
 
-`init` creates `harmony.toml` without overwriting a file. For an existing image
-with a Harmony supervisor bundle, `harmony search my-app:local` is sufficient.
-`prepare IMAGE` performs image admission without requiring guest artifacts or a
-hypervisor. `run IMAGE -- /bin/program ARG` runs a plain command and saves its
-serial log and exit record. `run` with configured nodes runs one supervised
-scenario; `run --actions input.json --repeat 2` runs an explicit recorded action
-sequence. Search discovers sequences itself.
+`init` infers a language from recognized project files when unambiguous. Use
+`--language c|rust|go|python|java` when needed. It never overwrites a recipe.
+`init IMAGE` sets the application image name. `search` and `run` prepare configured
+builds automatically. `prepare` builds and validates without executing; `doctor`
+checks runner availability, provisions runtime artifacts and reports admission.
+Neither command infers application readiness or correctness.
 
-Commands read `harmony.toml` when no positional input is supplied. Use `--config
-PATH` to select another file, or `--config-toml 'image = "my-app:local"'` for inline
-TOML. CLI flags override the selected configuration. Paths in a file are relative
-to that file; inline paths and flag paths are relative to the working directory.
-Unknown TOML fields are errors. Durations on `--for` accept `s`, `m`, or `h`.
+An OCI image selects the faults workload. A `.nes` input selects the NES workload.
+Use `--package` to override inference. This is convenience dispatch owned by the
+registered packages; the shared configuration does not contain ROM or image fields.
 
-## Application configuration
+Commands read `harmony.toml` when no positional input is supplied. `--config PATH`
+selects a file; `--config-toml TEXT` accepts the same TOML inline. Explicit flags
+win over configuration. File paths are relative to the configuration directory;
+inline paths are relative to the current directory. Unknown fields are errors.
+
+## Recipe ownership
 
 ```toml
-image = "my-app:local"
-backend = "auto"
-seed = 0
-executions = 1000
-wall_seconds = 600
-ram_mib = 1024
-knobs = ["app.scenario=contention"]
-setup = ["/app/setup"]
-ready = ["/app/ready"]
-workload = ["/app/client"]
-check = ["/app/check"]
+[workload]
+package = "faults"
+input = "my-app:local"
 
-[build]
+[workload.options.build]
 language = "rust"
 context = "."
 
-[nodes.database]
+[workload.options.nodes.database]
 command = ["/opt/harmony/application", "server"]
 
-[nodes.worker]
+[workload.options.nodes.worker]
 command = ["/opt/harmony/application", "worker"]
 
-[hooks]
+[workload.options.hooks]
 debug = ["/app/control", "log-level", "debug"]
 partition = ["/app/control", "partition"]
+
+[[workload.options.interventions.verbose]]
+kind = "hook"
+name = "debug"
+for = "1s"
+
+[[workload.options.interventions.delayed]]
+kind = "pause"
+node = "database"
+for = "100ms"
+
+[runner]
+kind = "consonance"
+backend = "auto"
+
+[runner.options]
+ram_mib = 1024
+
+[search]
+seed = 0
+executions = 1000
+wall_seconds = 600
 ```
 
-Commands are argument arrays. Use an explicit shell for shell syntax. Node and
-hook names use letters, digits, underscores and hyphens. Names are sorted for
-stable node indices and hook IDs. Nodes, setup, readiness, workload, checks and
-hooks are compiled into a supervisor bundle and installed into the assembled
-guest image. Omit these fields to use the image's own bundle. Services share the
-image's filesystem; package all service executables in that image. Lifecycle
-behavior follows the [supervisor contract](../consonance/harmony-linux/supervisor/README.md).
+The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`
+and `knobs` in `workload.options`. Lifecycle commands and node/hook commands are
+argument arrays; an explicit shell is required for shell syntax. Nodes, lifecycle
+commands and hooks compile into a supervisor bundle. Omit them to use the image's
+bundle. Services share the image filesystem. See the
+[supervisor contract](../consonance/harmony-linux/supervisor/README.md).
 
-`check` and application SDK assertions define correctness. `Sometimes` assertions
-track reachability. Admission checks executable files and instrumentation
-attestations; successful admission does not prove application coverage or
-correctness. The search enables event faults only when the image supplies the
-required instrumentation and symbols.
+`check` and SDK assertions define correctness. `Sometimes` assertions measure
+reachability. Admission validates executable files and instrumentation attestations;
+it does not prove complete instrumentation. Event faults require the corresponding
+instrumentation and symbols.
 
 ## Language preparation
 
-`prepare` builds a configured application, composes the current libvoidstar
-runtime, retains symbols and attestations, and checks image admission. `search`
-and `run` also prepare when a build is configured. Docker or Podman is required.
-Builds may fetch pinned toolchains and dependencies. `--offline` prevents Harmony
-release downloads; it does not change container-builder networking.
-
-| Language | Default application input | Preparation |
+| Language | Default input | Preparation |
 |---|---|---|
-| C | `main.c` | Clang coverage callbacks and the SDK forwarding object |
+| C | `main.c` | Clang callbacks and SDK forwarding object |
 | Rust | one Cargo package with `src/main.rs` | pinned Rust, SDK dependency, coverage passes |
-| Go | one main package with `go.mod` | SDK and patched compiler wrapper, selected standard library coverage |
-| Python | `main.py` and its sources | instrumented CPython interpreter, source coverage catalog and precompiled bytecode |
-| Java | prebuilt `app.jar` | instrumented HotSpot and automatic bytecode back-edge callbacks |
+| Go | one main package with `go.mod` | SDK and patched compiler wrapper |
+| Python | `main.py` and sources | instrumented CPython, source coverage catalog, precompiled bytecode |
+| Java | prebuilt `app.jar` | instrumented HotSpot with automatic loop callbacks |
 
-These are starter recipes. Rust workspaces, multiple binaries, native Python
-extensions, and additional Java modules need a custom `build.dockerfile`.
-C/Rust/Go can instead set `build.command` to an argument array that produces
-`/out/application` inside the language builder. With no language or Dockerfile,
-`build.command` runs on the host to produce the configured image. Application
-source is copied into the builder; preparation does not edit the source tree.
-Language recipes exclude `.git` and `.harmony` from their build context and
-honor the project’s `.dockerignore`. Use it to exclude other build outputs.
+These are starter recipes. Rust workspaces, native Python extensions and additional
+Java modules may need `workload.options.build.dockerfile`. C/Rust/Go can instead use
+`build.command`, an argument array producing `/out/application` inside the builder.
+With no language or Dockerfile, it runs on the host to produce the configured image.
+Preparation preserves symbols and attestations and composes the current runtime.
+It copies sources without editing them, honors `.dockerignore`, and excludes `.git`
+and `.harmony`. Docker or Podman is required.
 
-The [language references](../workloads/languages/README.md) describe callback
-coverage and runtime limits. Runtime callbacks on instrumented threads advance
-virtual time; per-action coverage quanta are preserved in recordings. Python's
-minimal interpreter omits some standard native modules and rejects ctypes
-callbacks. Java's default image contains `java.base`. Preparation cannot infer
-readiness, test traffic, application invariants, or logging controls: configure
-those explicitly.
+Installed releases fetch their pinned source SDK; development checkouts use local
+recipes, or `HARMONY_SDK_DIR`. First builds can be substantial. `--offline` prevents
+Harmony release downloads, not container-builder network access. See the
+[language recipes](../workloads/languages/README.md) for callback coverage and limits.
 
-Release builds embed their tag as `HARMONY_RELEASE_VERSION` and display it in
-`harmony --version`. An installed CLI fetches that release’s source SDK. Development checkouts use
-local recipes, or `HARMONY_SDK_DIR` can select a checkout. The first build of a
-language runtime can be substantial; the container builder caches its layers.
+## Runners and artifacts
 
-## Runtime and doctor
+Consonance chooses KVM, then HVF, then UML according to host availability.
+`--runner` selects an execution implementation; `--backend` constrains its backend.
+UML runs on Linux without hardware virtualization, including ordinary containers.
+An explicit UML profile selects UML when the backend is automatic.
 
-Applications select KVM, then HVF, then UML as available. UML runs on Linux
-without hardware virtualization, including ordinary containers. `--backend`
-overrides selection; an explicit UML profile selects UML. Every execution prints
-its selected backend. NES defaults to native QuickNES:
+Consonance artifact overrides are `kernel`, `base_initramfs` and `uml_profile`
+inside `runner.options`. `doctor` provisions checksummed versioned artifacts.
+Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`,
+and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
+`HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
+`~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
+New release assets become available when their release is published.
 
-```sh
-harmony search game.nes --core quicknes_libretro.so --name game
-harmony search game.nes --backend kvm --nes-image nes.oci --name guest-game
+NES defaults to the QuickNES runner:
+
+```toml
+[workload]
+package = "nes"
+input = "game.nes"
+
+[runner]
+kind = "quicknes"
+
+[runner.options]
+core = "quicknes_libretro.so"
 ```
 
-The shared NES dispatcher currently supports SMB and Nova. Other games and NES
-continuation/replay use the [game campaign tools](../workloads/nes/README.md).
+For guest execution, use `runner.kind = "consonance"` and set
+`workload.options.guest_image` to the NES guest OCI image. This adapter currently
+supports Linux KVM. These requirements belong to the adapter, not shared CLI
+flags. The current NES package recognizes SMB and Nova. It supports search,
+recorded-input execution, replay, branching, rooted search and continuation.
+NES controller recordings use `--actions FILE`; console logs and virtual-time
+rewinds are not available for these recordings.
 
-`doctor` checks backend availability, resolves runtime artifacts, and optionally
-checks image admission. It does not boot the application. Missing kernel, base
-initramfs, or UML profiles are downloaded from the CLI version's release assets,
-verified against SHA-256 sidecars, and cached in the user data directory. Releases
-also publish the language SDK. `doctor --offline --json` reports missing artifacts
-without downloading them. A development build needs local artifacts until its
-version is released.
-
-Set `kernel`, `base_initramfs`, `uml_profile`, `core`, or `nes_image` in TOML (or
-the corresponding flags) for explicit inputs. Guest artifacts are also discovered
-in `consonance/harmony-linux/build/ARCH` and an installation's
-`share/harmony/guest/ARCH`. The cache uses `HARMONY_DATA_DIR`, otherwise
-`XDG_DATA_HOME/harmony`, macOS `~/Library/Application Support/Harmony`, or Linux
-`~/.local/share/harmony`. `HARMONY_GUEST_DIR` is no longer used.
-
-## Investigate and branch
-
-Run names resolve beneath `.harmony/runs`; every command also accepts a run
-directory. `--out DIRECTORY` selects a fresh output directory. Existing runs are
-never overwritten. `inspect --json` and `timeline --json` expose structured data;
-human inspection lists findings and their next commands.
+## Execution and investigation
 
 ```sh
-harmony branch baseline --bug 1 --before 1steps --name before-failure
-harmony branch baseline --bug 1 --at-step 3 \
-  --inject 'pause database 100ms' --follow --name delayed
-harmony branch baseline --bug 1 --before 1s \
-  --inject 'hook debug 1s' --follow --name verbose
-harmony logs verbose
-harmony diff confirmed delayed
-harmony search --from before-failure --executions 2000 --name neighborhood
-harmony search --resume baseline --executions 10000 --name extended
+harmony run my-app:local -- /bin/program argument
+harmony run --actions input.json --repeat 2
+harmony branch baseline --finding 1 --rewind 10 --do verbose --name debug
+harmony branch baseline --finding 1 --step 120 --do delayed --name delayed
+harmony branch baseline --finding 1 --rewind-time 2s --stop --name earlier
+harmony search --from earlier --executions 2000 --name neighborhood
+harmony search --from baseline --finding 1 --rewind 10 --name neighborhood-2
+harmony resume baseline --executions 5000 --name extended
+harmony resume extended --for 10m --name longer
+harmony diff confirmed debug
 ```
 
-A branch replays the recorded prefix from the saved prepared guest. Step 0 is
-post-setup; action boundaries are the available rewind points. A time rewind
-rounds down to a recorded boundary and prints its resolved offset. With no point,
-a branch stops one action before the end of the selected input. Branching without
-`--follow` stops after the prefix and interventions. `--follow` appends the saved
-suffix and runs recovery checks. This is a new experiment: an intervention can
-change the timing and the outcome.
+`--step N` selects the boundary after N recorded actions; step 0 is the prepared
+initial state. `--rewind N` moves back N steps from the selected finding's first
+observed failure, or the execution endpoint. Recovery actions are included when
+the failure was observed during recovery. `--rewind-time` uses virtual time and
+rounds down to an available boundary. Branch output states the resolved step and
+time. The same selectors work with `timeline`, `logs` and `search --from`.
 
-Interventions are `kill NODE DURATION`, `pause NODE DURATION`, `restart NODE
-DURATION`, `wait DURATION`, or `hook NAME DURATION`. The default duration is one
-second. Durations must fit whole 10ms ticks. Hooks can implement partitions or
-change a running application's logging level. `--actions FILE` appends the full
-[recorded action format](../workloads/faults/README.md), including targeted event
-parks and kills. The timeline shows operation, coverage quantum, virtual tick,
-assertions and recovery evidence.
+A branch requires an explicit point. It reconstructs the prefix, applies
+interventions in order, and executes the recorded suffix. `--stop` omits the
+suffix and automatic recovery, leaving a prefix for another search. Branching is
+a new experiment: interventions can change timing and outcomes. Exact replay
+uses the unchanged saved inputs and artifacts.
 
-Logging changes require an application control hook. Rebuilding with different
-logging creates a different execution identity; it cannot be passed off as an
-exact replay. `logs --at-step N` displays console evidence captured at a boundary.
-Console captures retain a bounded 64 KiB tail on both guest backends. Adjacent
-steps can overlap and old console output can be truncated. Hooks and faults may
-not fire within a short window; inspect the timeline’s observed hook and event
-counters as well as the requested action.
+`--do NAME` selects a named intervention from the saved recipe. The faults package
+accepts `kill`, `pause`, `restart`, `wait` and `hook` actions, with an explicit
+`for` duration. Node operations take `node`; hooks take `name`. Hook durations are
+execution windows, not promises of completion: timeline counters show observed
+hook starts and completions. Windows must fit whole 10ms ticks. The same typed
+plan is available inline:
 
-`search --from` explores a new neighborhood from a recorded prefix, with fresh
-search history. Findings include that full prefix. `search --resume` restores
-the search corpus, snapshots, scheduler and evidence from its latest whole-search
-checkpoint. Fresh searches stop at the first objective; resuming explores past existing
-findings up to the requested budget. `--executions` is the total campaign budget
-when resuming. Checkpoints
-are saved periodically and at normal completion. Abrupt termination can retain
-an earlier checkpoint. A changed seed intentionally starts a new draw sequence.
+```sh
+harmony branch baseline --finding 1 --rewind 10 \
+  --intervention-toml 'actions = [{kind = "hook", name = "debug", for = "1s"}]'
+```
 
-Seeds and search budgets must fit TOML’s signed 64-bit integer range (up to
-9,223,372,036,854,775,807); out-of-range values fail before creating a run.
+`--actions FILE` supplies package-specific recorded actions, including targeted
+fault event parks and kills. Logging changes require an application control hook.
+Rebuilding with another logging configuration creates a different execution
+identity and is not exact replay.
 
-## Saved evidence and exit status
+`search --from` starts fresh search history at the selected prefix. `resume`
+restores the existing corpus, snapshots, scheduler and evidence from the latest
+retained whole-search checkpoint. Its budgets are additional: `--executions 5000`
+permits 5,000 more executions from that checkpoint, while `--for 10m` grants a new
+10-minute wall window. With neither, it adds 1,000 executions. A time-only resume
+removes the previous execution ceiling. Checkpoints are written periodically and
+at completion; an interrupted run can retain an earlier checkpoint. A new seed
+intentionally changes the draw sequence.
 
-Each run keeps `manifest.json`, `resolved.toml`, immutable prepared artifacts and
-a report. Searches also retain their campaign stream, summary, checkpoints and
-finding action sequences. Replays and branches retain observations and console
-evidence for each action and recovery check. Plain command runs retain
-`serial.log` and `run.json`. Large guest images and checkpoints consume disk
-space; removing a run directory removes its evidence.
+Run names resolve beneath `.harmony/runs`; saved-run commands also accept a run
+directory. `--out DIRECTORY` creates a fresh output directory. Existing runs are
+never overwritten. `runs`, `findings`, `inspect` and `timeline` support `--json`.
+Console evidence retains a bounded 64 KiB tail; adjacent observations can overlap.
 
-Replay verifies the exact CLI executable, host architecture, recorded artifact
-digests, and (for UML) host identity. It uses saved kernel and assembled guest
-bytes without rebuilding or resolving the image tag. It compares the final
-execution digest, terminal condition, assertions, applied actions and recovery
-evidence with the original for supervised scenarios. Plain command replay
-compares exit codes and the terminal record. Hardware backends also compare the
-full serial digest. UML compares the application-output digest between startup
-and completion markers plus its bridge event digest; the full serial log and its
-digest remain available as diagnostics, including nondeterministic host boot paths. A branch's no-recovery semantics survive subsequent
-replays. Search continuations inherit execution configuration; only seed and
-search budgets may change.
+## Storage and boundaries
 
-Exit status 0 means success, 1 means a finding, unmet reachability assertion or
-application command failure, and 2 means invalid configuration, infrastructure
-failure or replay divergence. A verified replay exits 0 even when it reproduces
-a bug. Watchdog cutoffs remain visible as execution failures in the report.
+The v2 manifest contains the resolved workload and runner identities, artifact
+hashes, parent run and a package-owned payload. Shared run storage never decodes
+fault actions or controller inputs. Package adapters own payload schemas and
+operation capabilities. Runtime identity checks belong to runners. Saved replay
+never repeats automatic runner selection or resolves a mutable image tag.
+
+Replay verifies the exact CLI executable, architecture and saved artifact hashes;
+UML also pins host identity. Application replay compares final state, assertions,
+actions and recovery evidence. Plain UML replay compares application output and
+bridge events while retaining raw boot logs as diagnostics. Hardware command
+replay also compares the full serial digest. NES replay compares its typed witness
+and snapshot digest. Removing a run directory removes its saved evidence.
+
+Exit 0 means successful operation, including verified reproduction of a finding.
+Application search exits 1 for findings or unmet reachability assertions; a failed
+application command also exits 1. Exit 2 denotes invalid input, infrastructure
+failure or replay divergence. Search budgets and seeds must fit TOML's signed
+64-bit integer range.
 
 ## Verification
 
-Run `cargo test -p harmony-cli`, the faults package tests, and the searcher tests.
-`bash cli/tests/investigation.sh EVIDENCE_DIRECTORY` exercises preparation,
-TOML supervision, a logging intervention with observed completion and output,
-repeated prefix replay, checkpoint continuation, and artifact-tampering refusal.
-It needs a container builder and the local guest artifacts. The C language CI
-lane runs this bounded integration check.
+Run the CLI tests, package tests, Clippy and registered CI checks. The test-only
+counter package exercises preparation, search, replay and branching through the
+same dispatch and storage interfaces without application or NES types.
 
-`bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS EVIDENCE_DIRECTORY`
-checks plain command replay and replay-of-replay on Linux without hardware
-virtualization, and rejects a planted application-output divergence. The language
-workflow runs it with the C fixture image and a pinned UML profile.
+- `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, logging hooks,
+  exact replay, prefix branching, additional-budget continuation and tamper refusal.
+- `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY` exercises plain
+  command replay as an unprivileged UML user and rejects planted output divergence.
+- `bash cli/tests/nes.sh ROM CORE DIRECTORY` exercises native NES search, replay,
+  prefix branching, rooted search, continuation and tamper refusal.
