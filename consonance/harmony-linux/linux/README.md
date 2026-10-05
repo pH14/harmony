@@ -162,6 +162,13 @@ checks the disabled hardware preemption timer on Intel and reports it as
 inapplicable on AMD. AMD SEV is disabled; this profile hosts ordinary nested
 VMs without memory encryption. The manual Guest Runtime Qualification job builds and boots
 these exact inputs on an x86 runner.
+The fixture also includes `nested-kvm-cache-check.c`. With
+`harmony_nested_cache_check` on the kernel command line, it runs a minimal L2
+through twelve port exits and prints each completed step without reading L2
+segment state. The outer cache regression captures after step three, detours
+through step five, and checks that direct restore preserves every nested-state
+byte. This helper isolates host VMCS synchronization; the OCI milestone checks
+continue to use the production inner Consonance driver.
 
 These targets remain direct substrate checks and are independent of the OCI
 runtime assembly:

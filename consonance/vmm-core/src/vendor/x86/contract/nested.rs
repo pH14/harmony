@@ -156,6 +156,71 @@ impl NestedHostContract {
 mod tests {
     use super::*;
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+    #[test]
+    #[ignore = "requires nested VMX or SVM and NESTED_HOST_KERNEL / NESTED_HOST_INITRAMFS"]
+    fn nested_restore_preserves_unsynchronized_vmcs_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let read = |name| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            Ok(std::fs::read(std::env::var(name)?)?)
+        };
+        let kernel = read("NESTED_HOST_KERNEL")?;
+        let initramfs = read("NESTED_HOST_INITRAMFS")?;
+        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
+        let mut vmm = crate::vendor::x86::bringup::boot_linux_nested_host_virtual_time(
+            &kernel,
+            &initramfs,
+            256 << 20,
+            cmdline,
+            42,
+        )?;
+        vmm.defer_virtual_time_checkpoint_hashes()?;
+        let advance = |vmm: &mut crate::vmm::Vmm<vmm_backend::KvmBackend>,
+                       step|
+         -> Result<(), Box<dyn std::error::Error>> {
+            let marker = format!("NESTED_CACHE_STEP={step}\r\n");
+            for _ in 0..5_000_000 {
+                let progress = vmm.step()?;
+                if vmm.serial().ends_with(marker.as_bytes()) {
+                    return Ok(());
+                }
+                if progress != crate::vmm::Step::Continued {
+                    return Err(format!("cache fixture stopped: {progress:?}").into());
+                }
+            }
+            Err("cache fixture exceeded step budget".into())
+        };
+        advance(&mut vmm, 3)?;
+        let state = vmm.save_vm_state()?;
+        let memory = vmm.guest_memory().to_vec();
+        let saved = state
+            .nested_state
+            .as_deref()
+            .ok_or("nested state missing")?;
+        if vmm_backend::arch::x86::NestedFormat::from_state(saved)?
+            == vmm_backend::arch::x86::NestedFormat::Vmx
+        {
+            assert!(saved.len() > 128, "fixture has no loaded VMCS");
+        }
+        advance(&mut vmm, 5)?;
+        vmm.retire_pending_completion()?;
+        vmm.restore_snapshot(&memory, &state)?;
+        let cpu = vmm.vcpu_record()?;
+        let restored = cpu
+            .nested_state
+            .as_deref()
+            .ok_or("restored nested state missing")?;
+        if saved != restored {
+            let first = saved.iter().zip(restored).position(|(a, b)| a != b);
+            return Err(format!(
+                "nested restore corrupted VMCS fields: saved={} restored={} first_difference={first:?}",
+                saved.len(), restored.len()
+            ).into());
+        }
+        println!("NESTED_CACHE_RESTORE vmcs_fields=pass");
+        Ok(())
+    }
+
     #[test]
     fn nested_snapshot_publication_retains_every_live_backend_byte() {
         use crate::vmm::{GuestRam, Vmm};
