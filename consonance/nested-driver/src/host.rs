@@ -2,7 +2,7 @@
 
 use consonance_client::{
     catalog::StateCatalog,
-    session::{Session, SessionConfig, SparseSnapshot},
+    session::{Session, SessionConfig, SessionError, SparseSnapshot},
 };
 use control_proto::SnapId;
 use harmony_sdk::wire;
@@ -141,6 +141,13 @@ fn read_observation(session: &mut Session) -> Result<Observation, Box<dyn Error>
     })
 }
 
+fn host_bound_stopped(error: &(dyn Error + 'static)) -> bool {
+    matches!(
+        error.downcast_ref::<SessionError>(),
+        Some(SessionError::Hung(_) | SessionError::Abandoned)
+    )
+}
+
 fn require_in_place_restore(fallbacks: u64) -> Result<(), Box<dyn Error>> {
     if fallbacks != 0 {
         return Err(format!("outer restore recreated the VMM ({fallbacks} fallbacks)").into());
@@ -157,6 +164,7 @@ pub struct Target {
     observation: Observation,
     work: u64,
     export_base: Option<SparseSnapshot>,
+    hung: Option<String>,
 }
 
 impl Target {
@@ -184,10 +192,15 @@ impl Target {
             observation,
             work: 0,
             export_base: Some(state),
+            hung: None,
         })
     }
 
-    fn fail(&mut self, layer: &str, error: impl std::fmt::Display) {
+    fn fail(&mut self, layer: &str, error: Box<dyn Error>) {
+        if host_bound_stopped(error.as_ref()) {
+            self.hung = Some(error.to_string());
+            return;
+        }
         let detail = error.to_string();
         let assertion = self.session.sdk_events().ok().and_then(|events| {
             events.into_iter().rev().find_map(|(_, id, bytes)| {
@@ -229,7 +242,7 @@ impl Target {
     }
 
     fn apply(&mut self, seed: u64) {
-        if self.observation.failure.is_some() {
+        if self.observation.failure.is_some() || self.hung.is_some() {
             return;
         }
         self.actions.push(seed);
@@ -263,7 +276,7 @@ impl Target {
     }
 
     fn restore(&mut self, snapshot: &Snapshot) {
-        if !self.observation.prepare_restore(&snapshot.observation) {
+        if self.hung.is_some() || !self.observation.prepare_restore(&snapshot.observation) {
             return;
         }
         self.actions.clone_from(&snapshot.actions);
@@ -293,7 +306,7 @@ pub struct NestedWorkload {
 }
 
 impl NestedWorkload {
-    fn new(kernel: &[u8], initramfs: &[u8], options: &Options) -> Self {
+    fn new(kernel: &[u8], initramfs: &[u8], options: &Options, contract: [u8; 32]) -> Self {
         let mut config = SessionConfig {
             ram_bytes: options.ram_mib as usize * (1 << 20),
             seed: options.seed,
@@ -306,7 +319,14 @@ impl NestedWorkload {
         Self {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
-            identity: Session::identity_with_config(kernel, initramfs, &config),
+            identity: format!(
+                "{};nested-contract-sha256={}",
+                Session::identity_with_config(kernel, initramfs, &config),
+                contract
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ),
             config,
         }
     }
@@ -405,6 +425,9 @@ impl Evaluation for NestedWorkload {
         target.observation.disposition()
     }
     fn objective_reached(&self, _: &(), target: &Target) -> Result<bool, Box<dyn Error>> {
+        if let Some(hung) = &target.hung {
+            return Err(format!("nested search stopped without a result: {hung}").into());
+        }
         Ok(target.observation.failure.is_some())
     }
     fn current_key(&self, target: &Target) -> Result<Key, Box<dyn Error>> {
@@ -538,7 +561,8 @@ pub fn run(
     ])
     .with_kvm();
     let initramfs = oci_support::bundle::prepare(&image, &request)?.initramfs(base);
-    let workload = NestedWorkload::new(kernel, &initramfs, options);
+    let contract = vmm_core::vendor::x86::bringup::nested_host_contract_hash()?;
+    let workload = NestedWorkload::new(kernel, &initramfs, options, contract);
     fs::create_dir_all(&options.output)?;
     let (report, _) = match replay {
         Some(path) => {
@@ -641,6 +665,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_a_host_time_bound_stops_the_search_without_a_failure() {
+        let hung: Box<dyn Error> = Box::new(SessionError::Hung(Duration::from_secs(20)));
+        let abandoned: Box<dyn Error> = Box::new(SessionError::Abandoned);
+        let control: Box<dyn Error> = Box::new(SessionError::Control("restore".into()));
+        let other: Box<dyn Error> = "outer restore changed the inner counts".into();
+        assert!(host_bound_stopped(hung.as_ref()));
+        assert!(host_bound_stopped(abandoned.as_ref()));
+        assert!(!host_bound_stopped(control.as_ref()));
+        assert!(!host_bound_stopped(other.as_ref()));
+    }
+
     fn failed_observation() -> Observation {
         let mut registers = [0; 11];
         registers[10] = (1 << 35) | 1;
@@ -678,6 +714,7 @@ mod tests {
                 wall_minutes: None,
                 output: PathBuf::new(),
             },
+            [0; 32],
         );
         let mut evidence = Evidence::default();
         workload

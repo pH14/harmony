@@ -240,6 +240,11 @@ pub fn boot_linux_nested_host_virtual_time_boxed(
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn nested_host_contract_hash() -> Result<[u8; 32], VmmError> {
+    Ok(nested_host_backend()?.1.hash())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) fn nested_host_backend()
 -> Result<(vmm_backend::KvmBackend, contract::NestedHostContract), VmmError> {
     let mut backend = vmm_backend::KvmBackend::new()?;
