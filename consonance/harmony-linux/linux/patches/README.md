@@ -36,7 +36,8 @@ The KVM bitmap-drain extension invalidates the drained slot's shadow mappings
 after automatic protection while the Harmony clock is active. This prevents
 cached writable mappings from hiding later L2 writes on hosted Intel nesting.
 It uses the existing KVM slot invalidation API, keeps RAM and the VM allocated,
-and leaves manual-protection mode unchanged. Both VMX and SVM qualify it.
+and leaves manual-protection mode unchanged. The Nested Host job qualifies it
+on the vendor its runner provides, VMX or SVM.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,

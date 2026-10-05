@@ -21,11 +21,11 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
-`SessionConfig::with_nested_host()` selects the named Intel nested-host contract
-on Linux x86. The choice travels through worker configuration and changes image
+`SessionConfig::with_nested_host()` selects the named nested-host contract on
+Linux x86, using VMX or SVM according to host KVM support. The choice travels through worker configuration and changes image
 identity even with an identity tag, so ordinary and nested snapshots cannot
 share a cache domain. It requires the matching KVM-enabled guest kernel and
-host nested VMX. `Session::branch_with_seed` restores a held snapshot and selects
+host nested VMX or SVM. `Session::branch_with_seed` restores a held snapshot and selects
 the SDK entropy stream for its continuation; the nested search adapter records
 that seed as its action.
 
