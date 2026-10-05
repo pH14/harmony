@@ -80,16 +80,23 @@ fn compose_program<B: Backend<A = X86>>(
     // SAFETY: Vmm owns the page-aligned fixed-address RAM until after its backend
     // is dropped. Its exclusive run loop prevents RAM access during guest entry.
     unsafe { backend.map_memory(Gpa(0), ram.as_mut_bytes())? };
-    let mut state = backend.save()?;
-    state.sregs.cs.base = 0;
-    state.sregs.cs.selector = 0;
-    state.regs.rip = 0x1000;
-    state.regs.rsp = 0x7000;
-    state.regs.rflags = 2;
-    state.regs.rbx = u64::from(oracle.registers[0]);
-    state.regs.rsi = u64::from(oracle.registers[1]);
-    state.regs.rdi = u64::from(oracle.registers[2]);
-    backend.restore(&state)?;
+    let start = |backend: &mut B| -> Result<(), VmmError> {
+        let mut state = backend.save()?;
+        state.sregs.cs.base = 0;
+        state.sregs.cs.selector = 0;
+        state.regs.rip = 0x1000;
+        state.regs.rsp = 0x7000;
+        state.regs.rflags = 2;
+        state.regs.rbx = u64::from(oracle.registers[0]);
+        state.regs.rsi = u64::from(oracle.registers[1]);
+        state.regs.rdi = u64::from(oracle.registers[2]);
+        backend.restore(&state)?;
+        Ok(())
+    };
+    if let Err(error) = start(&mut backend) {
+        drop(backend);
+        return Err(error);
+    }
     Ok(Vmm::new(backend, ram))
 }
 

@@ -10,7 +10,7 @@ use vmm_core::{
     vmm::{Vmm, VmmError, VtimeWiring},
 };
 
-pub const ENTROPY_BYTES: usize = 20;
+pub const ENTROPY_BYTES: usize = 28;
 pub const SNAPSHOT_LIMIT: usize = 8;
 pub const ORACLE_ASSERTION: u32 = 1;
 pub const RESTORE_ASSERTION: u32 = 2;
@@ -172,7 +172,7 @@ pub fn choose(bytes: &[u8; ENTROPY_BYTES], live: usize) -> Result<Choice, Failur
             .take(steps)
             .map(|word| u16::from_le_bytes(word.try_into().unwrap()))
             .collect(),
-        branch_seed: u64::from_le_bytes(bytes[12..20].try_into().unwrap()),
+        branch_seed: u64::from_le_bytes(bytes[20..28].try_into().unwrap()),
     })
 }
 
@@ -363,7 +363,7 @@ impl<B: Backend<A = X86>> Engine<B> {
         self.check_restored(cut)
     }
 
-    fn run_inputs(&mut self, inputs: &[u16]) -> Result<Vec<LongOracle>, Failure> {
+    fn run_inputs(&mut self, inputs: &[u16], check: bool) -> Result<Vec<LongOracle>, Failure> {
         let mut outputs = Vec::new();
         for &input in inputs {
             let vmm = self.vmm()?;
@@ -374,7 +374,7 @@ impl<B: Backend<A = X86>> Engine<B> {
             checked(crate::step(vmm))?;
             self.oracle.advance(input);
             let actual = checked(observe(self.vmm()?))?;
-            if actual != self.oracle {
+            if check && actual != self.oracle {
                 return Err(Failure::new(
                     ORACLE_ASSERTION,
                     format!("L2 output {actual:?} != {:?}", self.oracle),
@@ -403,9 +403,9 @@ impl<B: Backend<A = X86>> Engine<B> {
         match choice.operation {
             Operation::Run => {
                 let start = self.capture()?;
-                let first = self.run_inputs(&choice.inputs)?;
+                let first = self.run_inputs(&choice.inputs, true)?;
                 self.restore(start)?;
-                let second = self.run_inputs(&choice.inputs)?;
+                let second = self.run_inputs(&choice.inputs, false)?;
                 if first != second {
                     return Err(Failure::new(
                         REPLAY_ASSERTION,
@@ -486,6 +486,11 @@ mod tests {
             }
         }
         assert_eq!(reached, [true; 6]);
+        let mut bytes = [0; ENTROPY_BYTES];
+        bytes[20..28].copy_from_slice(&7u64.to_le_bytes());
+        let choice = choose(&bytes, 1).unwrap();
+        assert_eq!(choice.branch_seed, 7);
+        assert!(choice.inputs.iter().all(|&input| input == 0));
         assert!(choose(&[0; ENTROPY_BYTES], 0).is_err());
         assert!(choose(&[0; ENTROPY_BYTES], SNAPSHOT_LIMIT + 1).is_err());
     }

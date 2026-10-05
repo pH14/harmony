@@ -29,7 +29,7 @@ fn inner_operation_api_smoke() -> Result<(), Box<dyn std::error::Error>> {
         Operation::ExportImport,
         Operation::Drop,
     ] {
-        let mut entropy = [0x5a; 20];
+        let mut entropy = [0x5a; nested_driver::operations::ENTROPY_BYTES];
         entropy[0] = operation as u8;
         entropy[1] = 1;
         entropy[2] = 7;

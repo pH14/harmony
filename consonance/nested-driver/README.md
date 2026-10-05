@@ -77,15 +77,17 @@ the codec and identities, reject mismatched contracts before mutation, and
 reject publication while L2 is active. Header-buffer bounds and the mock
 snapshot path also run under Miri. The live ioctls are checked on KVM.
 
-`--sdk --search` selects the operation workload. Twenty SDK entropy bytes choose
-Run, Snapshot, Restore, Fork, Drop, or ExportImport, a held snapshot, one to
-eight input words, and a branch seed. A bank of one to eight snapshots keeps
+`--sdk --search` selects the operation workload. Twenty-eight SDK entropy bytes
+choose Run, Snapshot, Restore, Fork, Drop, or ExportImport, a held snapshot, one
+to eight input words, and a branch seed drawn from bytes the input words never
+use. A bank of one to eight snapshots keeps
 every choice valid. The longer real-mode program reads its previous registers,
 four memory words, a round counter and its input before producing each output.
 A separate Rust oracle checks every step. Restore reads the saved registers
 and memory, runs L2 without writing new inputs, checks that readback, then
-restores the cut again. Run checks identical outputs from two executions of
-the same inputs. The second restore is read back immediately too, so retained
+restores the cut again. Run checks its first execution against the oracle,
+restores the start, and requires the second execution to produce identical
+outputs. The second restore is read back immediately too, so retained
 RAM from the readback step fails at the restore boundary. The SDK smoke imports
 and restores the cold outer root twice, then starts with the Run seed from the
 hosted Intel failure before warming the inner VM. It uses the campaign's
@@ -115,7 +117,12 @@ campaign, archive, suffix draw and
 parent selector. Current snapshot count, fork depth and operation type form
 state cells; coverage is reported separately. The CLI writes the campaign
 stream, report and each failure with its level and input seeds. Replaying the
-stream reproduces the complete outer restore sequence.
+stream reproduces the complete outer restore sequence. The workload identity
+includes the host's nested-host contract hash, so a stream recorded on a host
+with different VMX or SVM capabilities is rejected before replay starts. A run
+that makes no virtual-time progress within the session's 20-second host bound
+stops the campaign with an error and records no failure, because the state at
+that point depends on host timing.
 
 Campaign format v2 hashes the complete job result after applying the VMM's
 existing logical XSAVE identity projection to copied sidecars. Init-valued
