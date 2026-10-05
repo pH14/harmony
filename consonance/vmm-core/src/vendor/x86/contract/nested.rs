@@ -498,7 +498,7 @@ mod tests {
         let reported = serial
             .matches("Spurious APIC interrupt (vector 0xFF)")
             .count();
-        if delivered.get() == 0 || reported == 0 || reported > delivered.get() {
+        if delivered.get() == 0 || reported > delivered.get() || reported + 1 < delivered.get() {
             return Err(format!(
                 "nested host saw {reported} of {} interrupts:\n{tail}",
                 delivered.get()

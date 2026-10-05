@@ -44,6 +44,11 @@ L1's VMLAUNCH, VMRESUME or VMRUN is still pending, even though L1 had
 interrupts disabled. Before queuing a vector, the backend reads the nested
 state's guest-mode flag. In guest mode the vector stays pending and the window
 request is cleared, so a later exit from L1 outside guest mode delivers it.
+That delay has no fixed bound. KVM marks a `KVM_INTERRUPT` vector as already
+injected, so it re-injects the vector into L2 and never turns it into an exit
+to L1. A window request kept in guest mode would arm interrupt-window exiting
+in the L2 control state, and an L2 with interrupts enabled would then exit
+before every instruction.
 
 X86 restore uses the host Linux 7.1
 [KVM selftest](https://github.com/torvalds/linux/blob/v7.1/tools/testing/selftests/kvm/lib/x86/processor.c)
