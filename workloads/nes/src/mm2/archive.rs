@@ -10,7 +10,7 @@ use crate::{
     },
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, preference_tuple,
+        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Tier, preference_tuple,
     },
     search::archive::{
         Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_bosses_tiers_location_boss_damage_enemy_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v20";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v21";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -27,7 +27,7 @@ pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snap
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {
-    pub bosses: u8,
+    pub tier: Mm2Tier,
     pub stage: u8,
     pub screen: u8,
     pub room: u8,
@@ -41,30 +41,39 @@ pub struct Mm2ArchiveKey {
     pub menu: u8,
     pub health: u8,
     pub energy: u16,
+    pub refights: u8,
+    pub refight_boss: u8,
+    pub boobeam_targets: u16,
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool);
-    type Progress = u8;
+    type Place = (
+        (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool),
+        (u8, u8, u16),
+    );
+    type Progress = Mm2Tier;
     type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
         (
-            self.stage,
-            self.screen,
-            self.room,
-            self.boss_damage,
-            self.enemy_damage,
-            self.x / 2,
-            self.y / 2,
-            self.posture,
-            self.platforms,
-            self.menu != MENU_CLOSED,
+            (
+                self.stage,
+                self.screen,
+                self.room,
+                self.boss_damage,
+                self.enemy_damage,
+                self.x / 2,
+                self.y / 2,
+                self.posture,
+                self.platforms,
+                self.menu != MENU_CLOSED,
+            ),
+            (self.refights, self.refight_boss, self.boobeam_targets),
         )
     }
 
     fn progress(self) -> Self::Progress {
-        self.bosses
+        self.tier
     }
 
     fn identity(self) -> Self::Identity {
@@ -91,18 +100,21 @@ impl ArchiveKey for Mm2ArchiveKey {
 }
 
 impl Mm2ArchiveKey {
-    fn preference(self) -> (u8, u8, u16) {
-        (self.bosses, self.health, self.energy)
+    fn preference(self) -> (Mm2Tier, u8, u16) {
+        (self.tier, self.health, self.energy)
     }
 }
 
 #[must_use]
 pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
-    let (bosses, health, energy) = preference_tuple(state);
+    let (tier, health, energy) = preference_tuple(state);
     Mm2ArchiveKey {
-        bosses,
+        tier,
         health,
         energy,
+        refights: state.refights,
+        refight_boss: state.refight_boss(),
+        boobeam_targets: state.boobeam_targets,
         stage: state.stage,
         screen: state.screen,
         room: state.room,
@@ -140,7 +152,7 @@ pub struct Mm2MilestoneInputs {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ProgressWatermark {
-    pub bosses: u8,
+    pub tier: Mm2Tier,
     pub stage: u8,
     pub screen: u8,
     pub room: u8,
@@ -176,7 +188,7 @@ pub struct Mm2ArchiveReport {
 pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Milestones {
     Mm2Milestones {
         max_screen: state.screen,
-        reached_boss: state.boss_health != 0,
+        reached_boss: state.boss_fight_underway() && state.boss_health != 0,
         defeated_boss: state.weapons_obtained & !genesis_weapons != 0
             || state.boss_phase >= BOSS_PHASE_DEFEATED,
     }
@@ -196,7 +208,7 @@ pub fn milestone_key(value: Mm2Milestones) -> (bool, bool, u8) {
 #[must_use]
 pub fn progress_watermark(state: Mm2MechanicalState) -> Mm2ProgressWatermark {
     Mm2ProgressWatermark {
-        bosses: state.bosses_beaten(),
+        tier: state.tier(),
         stage: state.stage,
         screen: state.screen,
         room: state.room,
@@ -292,7 +304,10 @@ mod tests {
             stage: 1,
             screen: 10,
             room: 4,
-            bosses: 2,
+            tier: Mm2Tier {
+                robot_masters: 2,
+                ..Mm2Tier::default()
+            },
             boss_damage: 1,
             ..Default::default()
         };
@@ -309,7 +324,34 @@ mod tests {
         };
         assert_eq!(hurt.progress(), first.progress());
         assert_ne!(hurt.place(), first.place());
-        assert!(Mm2ArchiveKey { bosses: 3, ..first }.progress() > first.progress());
+        let more = Mm2Tier {
+            robot_masters: 3,
+            ..first.tier
+        };
+        assert!(Mm2ArchiveKey { tier: more, ..first }.progress() > first.progress());
+    }
+
+    #[test]
+    fn each_castle_clear_refight_and_shell_break_rises_one_tier() {
+        let mut wily = state(100, 28, u8::MAX);
+        wily.stage = 8;
+        let first_castle = archive_key(wily).progress();
+        assert!(first_castle > archive_key(state(100, 28, 0x7f)).progress());
+        wily.stage = 12;
+        let hub = archive_key(wily).progress();
+        assert!(hub > first_castle);
+        wily.refights = 0x01;
+        let refought = archive_key(wily).progress();
+        assert!(refought > hub);
+        wily.refights = u8::MAX;
+        wily.current_boss = 12;
+        wily.boss_phase = 5;
+        let shell = archive_key(wily).progress();
+        assert!(shell.machine_shell && shell > refought);
+        wily.stage = 13;
+        wily.refights = 0;
+        wily.boss_phase = 0;
+        assert!(archive_key(wily).progress() > shell);
     }
 
     #[test]

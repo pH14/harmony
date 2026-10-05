@@ -8,7 +8,7 @@ use nes_workload::{
     },
     mm2::{
         campaign::{Mm2CampaignRun, Mm2Game},
-        target::Mm2Stage,
+        target::{Mm2Input, Mm2Stage},
     },
     nova::{
         campaign::{NovaCampaignRun, NovaGame},
@@ -50,6 +50,12 @@ fn metroid_game(
     ))
 }
 
+fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Result<Option<I>> {
+    root_input
+        .map(|path| Ok(serde_json::from_reader(BufReader::new(fs::File::open(path)?))?))
+        .transpose()
+}
+
 fn main() -> Result<()> {
     nes_workload::allocator::use_one_malloc_arena();
     run_cli(|request, rom, out, started| {
@@ -72,8 +78,15 @@ fn main() -> Result<()> {
                     .into(),
             );
             }
-            "mm2" if request.level.is_some() || request.ai.is_some() || request.whole_game => {
-                return Err("MM2 evaluation currently supports independent stages only".into());
+            "mm2"
+                if request.level.is_some()
+                    || request.ai.is_some()
+                    || (request.whole_game && request.stage.is_some())
+                    || (!request.whole_game && request.root_input.is_some()) =>
+            {
+                return Err(
+                    "MM2 takes a stage, or whole_game with an optional root_input".into(),
+                );
             }
             "stb" if request.level.is_some() || request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
@@ -112,6 +125,21 @@ fn main() -> Result<()> {
                     started,
                 )
             }
+            "mm2" if request.whole_game => evaluate(
+                Mm2Game::new_whole_game(
+                    &rom,
+                    p,
+                    h,
+                    root_actions::<Mm2Input>(request.root_input.as_deref())?
+                        .map(|input| input.actions)
+                        .unwrap_or_default(),
+                )
+                .with_milestone_input_dir(out.join("milestone-inputs")),
+                Mm2CampaignRun,
+                &request,
+                &out,
+                started,
+            ),
             "mm2" => evaluate(
                 Mm2Game::new_at_stage(
                     &rom,

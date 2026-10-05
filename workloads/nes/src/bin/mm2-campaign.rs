@@ -210,7 +210,7 @@ fn run_marketing_soak(
         let genesis_prefix = game.new_target()?.genesis_prefix().to_vec();
         let mut next = genesis_prefix.clone();
         next.extend(victory.actions.iter().copied());
-        if !game.stage().is_wily() {
+        if game.route().stage().is_some_and(|stage| !stage.is_wily()) {
             next.extend(game.walk_to_stage_select(&next)?);
         }
         fs::write(
@@ -232,7 +232,7 @@ fn run_marketing_soak(
         },
         "fixed_execution_soak": config.continue_after_victory,
         "verification": "champion_endpoint_reported",
-        "stage": game.stage().number(),
+        "stage": game.route().stage().map(Mm2Stage::number),
         "campaign_seed": live.campaign_seed,
         "workers": live.telemetry.workers.len(),
         "execution_budget": live.execution_budget,
@@ -341,7 +341,7 @@ fn run_qualified_campaign(
         },
         "fixed_execution_soak": config.continue_after_victory,
         "replay_verified": replay_verified,
-        "stage": game.stage().number(),
+        "stage": game.route().stage().map(Mm2Stage::number),
         "stream_sha256": live.stream_sha256,
         "report_sha256": sha256(&report_bytes),
         "checkpoint_sha256": sha256(&checkpoint_bytes),

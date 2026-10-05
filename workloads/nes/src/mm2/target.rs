@@ -20,23 +20,38 @@ const CAMERA_STATE_SCROLLING: u8 = 0x80;
 const FALL_STEP_LIMIT: u8 = 64;
 const FALL_RUN_LIMIT: u16 = 256;
 const ENEMY_HEALTH_TABLE_START: usize = 0x6d0;
-const ENEMY_HEALTH_TABLE_END: usize = 0x6e0;
-const ENEMY_HEALTH_IDLE: u8 = 0x14;
 const ENEMY_HIT_CAP: u8 = 4;
 const ENEMY_DAMAGE_CAP: u8 = 24;
+const ENEMY_INDEX_TABLE: usize = 0x100;
+const ENEMY_HIT_TABLE: usize = 0x110;
+const ENEMY_SLOTS: usize = 16;
+const ENEMY_KILLED_ID: u8 = 0x06;
 const STAGE: usize = 0x2a;
 const PLAYER_STATE: usize = 0x2c;
 const WEAPONS_OBTAINED: usize = 0x9a;
 const LIVES: usize = 0xa8;
 const PLAYER_SCREEN: usize = 0x440;
 const LEVEL_ROOM: usize = 0x20;
-const GAME_MODE: usize = 0x04;
+const CURRENT_BANK: usize = 0x29;
+const MENU_BANK: u8 = 0x0d;
+const GAMEPLAY_BANK: u8 = 0x0e;
 const SELECTED_WEAPON: usize = 0xa9;
 const MENU_CURSOR: usize = 0xfd;
 const MENU_PAGE: usize = 0xfe;
-const GAME_MODE_MENU: u8 = 0x03;
-const MENU_ROWS: u8 = 8;
+const MENU_ROWS: [u8; 2] = [8, 7];
+const MENU_PAGE_ROWS: u8 = 8;
 pub const MENU_CLOSED: u8 = 0xff;
+const MENU_UNKNOWN: u8 = 0xfe;
+const CURRENT_BOSS: usize = 0xb3;
+const REFIGHTS: usize = 0xbc;
+const WILY_MACHINE: u8 = 12;
+pub const NO_REFIGHT_BOSS: u8 = 0xff;
+const BOOBEAM_STAGE: u8 = 11;
+const WILY5_STAGE: u8 = 12;
+const FINAL_STAGE: u8 = 14;
+const BOOBEAM_SLOTS: std::ops::RangeInclusive<usize> = 20..=29;
+const BOOBEAM_TRAP_ID: u8 = 0x6d;
+const BOOBEAM_BARRIER_ID: u8 = 0x57;
 const DYING_FRAMES: u32 = 30;
 const PLAYER_X: usize = 0x460;
 const PLAYER_Y: usize = 0x4a0;
@@ -54,7 +69,9 @@ const BOSS_PHASE: usize = 0xb1;
 
 const BOSS_PHASE_FIGHTING: u8 = 0x02;
 const BOSS_PHASE_NONE: u8 = 0x00;
+const BOSS_PHASE_REFILL: u8 = 0x04;
 pub const BOSS_PHASE_DEFEATED: u8 = 0xfe;
+const BOSS_PHASE_CLEARED: u8 = 0xff;
 pub const FULL_BOSS_HEALTH: u8 = 28;
 
 const PLAYER_STATE_STANDING: u8 = 0x03;
@@ -62,6 +79,7 @@ const PLAYER_STATE_HIT: u8 = 0x02;
 const PLAYER_STATE_AIRBORNE: u8 = 0x06;
 const PLAYER_STATE_LADDER: u8 = 0x09;
 const PLAYER_STATE_LADDER_TOP: u8 = 0x0a;
+const PLAYER_STATE_TELEPORTING: u8 = 0x0b;
 pub const POSTURE_GROUNDED: u8 = 0;
 pub const POSTURE_AIRBORNE: u8 = 1;
 pub const POSTURE_LADDER: u8 = 2;
@@ -156,6 +174,25 @@ impl Default for Mm2Stage {
     }
 }
 
+pub const ROBOT_MASTER_ORDER: [Mm2Stage; 8] = [
+    Mm2Stage(7),
+    Mm2Stage(5),
+    Mm2Stage(6),
+    Mm2Stage(1),
+    Mm2Stage(3),
+    Mm2Stage(0),
+    Mm2Stage(2),
+    Mm2Stage(4),
+];
+
+#[must_use]
+pub fn next_stage_after(weapons_obtained: u8) -> Mm2Stage {
+    ROBOT_MASTER_ORDER
+        .into_iter()
+        .find(|stage| weapons_obtained & (1 << stage.number()) == 0)
+        .unwrap_or(Mm2Stage(MM2_FIRST_WILY_STAGE))
+}
+
 pub type Mm2Input = crate::search::archive::Input<ButtonChord>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -178,6 +215,18 @@ pub struct Mm2MechanicalState {
     pub boss_phase: u8,
     pub camera_state: u8,
     pub enemy_damage: u8,
+    pub bank: u8,
+    pub current_boss: u8,
+    pub refights: u8,
+    pub boobeam_targets: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct Mm2Tier {
+    pub robot_masters: u8,
+    pub castles: u8,
+    pub refights: u8,
+    pub machine_shell: bool,
 }
 
 impl Mm2MechanicalState {
@@ -187,6 +236,39 @@ impl Mm2MechanicalState {
             .count_ones()
             .try_into()
             .unwrap_or(u8::MAX)
+    }
+
+    #[must_use]
+    pub fn tier(self) -> Mm2Tier {
+        let castles = if (MM2_FIRST_WILY_STAGE..=MM2_LAST_WILY_STAGE).contains(&self.stage) {
+            self.stage - MM2_FIRST_WILY_STAGE
+        } else {
+            0
+        };
+        Mm2Tier {
+            robot_masters: self.bosses_beaten(),
+            castles,
+            refights: self.refights.count_ones().try_into().unwrap_or(u8::MAX),
+            machine_shell: self.machine_shell_broken(),
+        }
+    }
+
+    #[must_use]
+    pub fn machine_shell_broken(self) -> bool {
+        self.stage == WILY5_STAGE
+            && self.current_boss == WILY_MACHINE
+            && (BOSS_PHASE_REFILL..BOSS_PHASE_DEFEATED).contains(&self.boss_phase)
+    }
+
+    #[must_use]
+    pub fn refight_boss(self) -> u8 {
+        if self.stage == WILY5_STAGE
+            && (BOSS_PHASE_FIGHTING..BOSS_PHASE_DEFEATED).contains(&self.boss_phase)
+        {
+            self.current_boss
+        } else {
+            NO_REFIGHT_BOSS
+        }
     }
 
     #[must_use]
@@ -200,7 +282,9 @@ impl Mm2MechanicalState {
 
     #[must_use]
     pub fn boss_damage(self) -> u8 {
-        if self.boss_phase >= BOSS_PHASE_DEFEATED {
+        if self.machine_shell_broken() && self.boss_phase == BOSS_PHASE_REFILL {
+            0
+        } else if self.boss_phase >= BOSS_PHASE_DEFEATED {
             FULL_BOSS_HEALTH
         } else if self.boss_phase >= BOSS_PHASE_FIGHTING && self.boss_health > 0 {
             FULL_BOSS_HEALTH.saturating_sub(self.boss_health)
@@ -215,6 +299,13 @@ impl Mm2MechanicalState {
     }
 
     #[must_use]
+    pub fn playable(self) -> bool {
+        self.bank == GAMEPLAY_BANK
+            && self.health > 0
+            && (PLAYER_STATE_HIT..=PLAYER_STATE_LADDER_TOP).contains(&self.player_state)
+    }
+
+    #[must_use]
     pub fn is_dead(self) -> bool {
         self.health == 0
             || (self.player_state == PLAYER_STATE_FALLEN && self.y >= BELOW_PLAY_AREA_Y)
@@ -224,11 +315,56 @@ impl Mm2MechanicalState {
     pub fn is_dying(self) -> bool {
         self.player_state == PLAYER_STATE_DYING
     }
+
+    fn arrived_at(self, stage: Mm2Stage) -> bool {
+        self.stage == stage.number()
+            && self.bank == GAMEPLAY_BANK
+            && self.player_state == PLAYER_STATE_STANDING
+            && self.health == FULL_HEALTH
+    }
+
+    fn final_stage_cleared(self) -> bool {
+        self.stage == FINAL_STAGE
+            && self.boss_phase == BOSS_PHASE_CLEARED
+            && self.weapons_obtained == u8::MAX
+    }
 }
 
 pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
+    decode_state_after(wram, None)
+}
+
+fn decode_state_after(
+    wram: &[u8],
+    previous_stage: Option<u8>,
+) -> Result<Mm2MechanicalState, MachineError> {
+    let raw_stage = read_byte(wram, STAGE)?;
+    let player_state = read_byte(wram, PLAYER_STATE)?;
+    let boss_phase = read_byte(wram, BOSS_PHASE)?;
+    let stage = if previous_stage == Some(WILY5_STAGE)
+        && raw_stage < MM2_FIRST_WILY_STAGE
+        && player_state == PLAYER_STATE_TELEPORTING
+        && boss_phase == BOSS_PHASE_NONE
+    {
+        WILY5_STAGE
+    } else {
+        raw_stage
+    };
+    let bank = read_byte(wram, CURRENT_BANK)?;
+    let page = read_byte(wram, MENU_PAGE)?;
+    let cursor = read_byte(wram, MENU_CURSOR)?;
+    let menu = if bank != MENU_BANK {
+        MENU_CLOSED
+    } else {
+        match MENU_ROWS.get(usize::from(page)) {
+            Some(rows) if cursor < *rows => page * MENU_PAGE_ROWS + cursor,
+            _ => MENU_UNKNOWN,
+        }
+    };
+    let weapon = read_byte(wram, SELECTED_WEAPON)?;
+    let fighting = (BOSS_PHASE_FIGHTING..BOSS_PHASE_DEFEATED).contains(&boss_phase);
     Ok(Mm2MechanicalState {
-        stage: read_byte(wram, STAGE)?,
+        stage,
         screen: read_byte(wram, PLAYER_SCREEN)?,
         room: read_byte(wram, LEVEL_ROOM)?,
         x: read_byte(wram, PLAYER_X)?,
@@ -237,35 +373,60 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
         weapon_energy: (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
             .map(|index| read_byte(wram, index).map(u16::from))
             .sum::<Result<u16, MachineError>>()?,
-        equipped_energy: match read_byte(wram, SELECTED_WEAPON)? {
-            0 => 0,
-            weapon => read_byte(wram, WEAPON_ENERGY + usize::from(weapon) - 1)?,
+        equipped_energy: match usize::from(weapon) {
+            index @ 1..=WEAPON_ENERGY_BYTES => read_byte(wram, WEAPON_ENERGY + index - 1)?,
+            _ => 0,
         },
         platforms: live_platforms(wram)?,
         lives: read_byte(wram, LIVES)?,
-        player_state: read_byte(wram, PLAYER_STATE)?,
-        weapon: read_byte(wram, SELECTED_WEAPON)?,
-        menu: if read_byte(wram, GAME_MODE)? == GAME_MODE_MENU {
-            read_byte(wram, MENU_PAGE)?
-                .wrapping_mul(MENU_ROWS)
-                .wrapping_add(read_byte(wram, MENU_CURSOR)?)
-        } else {
-            MENU_CLOSED
-        },
+        player_state,
+        weapon,
+        menu,
         weapons_obtained: read_byte(wram, WEAPONS_OBTAINED)?,
         boss_health: read_byte(wram, BOSS_HEALTH)?,
-        boss_phase: read_byte(wram, BOSS_PHASE)?,
+        boss_phase,
         camera_state: read_byte(wram, CAMERA_STATE)?,
         enemy_damage: 0,
+        bank,
+        current_boss: read_byte(wram, CURRENT_BOSS)?,
+        refights: if stage == WILY5_STAGE {
+            read_byte(wram, REFIGHTS)?
+        } else {
+            0
+        },
+        boobeam_targets: if stage == BOOBEAM_STAGE && fighting {
+            boobeam_targets(wram)?
+        } else {
+            0
+        },
     })
 }
 
+fn boobeam_targets(wram: &[u8]) -> Result<u16, MachineError> {
+    let mut targets = 0_u16;
+    for (bit, slot) in BOOBEAM_SLOTS.enumerate() {
+        let id = read_byte(wram, OBJECT_ID_TABLE + slot)?;
+        let flags = read_byte(wram, OBJECT_FLAG_TABLE + slot)?;
+        if flags & OBJECT_ACTIVE != 0 && (id == BOOBEAM_TRAP_ID || id == BOOBEAM_BARRIER_ID) {
+            targets |= 1 << bit;
+        }
+    }
+    Ok(targets)
+}
+
 fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
-    (ENEMY_HEALTH_TABLE_START..ENEMY_HEALTH_TABLE_END)
-        .filter_map(|slot| {
-            let before = *prior.get(slot)?;
-            let after = *current.get(slot)?;
-            (before != ENEMY_HEALTH_IDLE && after < before)
+    (0..ENEMY_SLOTS)
+        .filter_map(|enemy| {
+            let object = OBJECT_SLOTS - ENEMY_SLOTS + enemy;
+            let before = *prior.get(ENEMY_HEALTH_TABLE_START + enemy)?;
+            let after = *current.get(ENEMY_HEALTH_TABLE_START + enemy)?;
+            let active = prior.get(OBJECT_FLAG_TABLE + object)? & OBJECT_ACTIVE != 0;
+            let hit = *current.get(ENEMY_HIT_TABLE + enemy)? != 0;
+            let id = *current.get(OBJECT_ID_TABLE + object)?;
+            let same = *prior.get(OBJECT_ID_TABLE + object)? == id
+                && prior.get(ENEMY_INDEX_TABLE + enemy)? == current.get(ENEMY_INDEX_TABLE + enemy)?;
+            let killed = after == 0 && id == ENEMY_KILLED_ID;
+            (active && hit && (same || killed) && after < before)
                 .then(|| before.saturating_sub(after).min(ENEMY_HIT_CAP))
         })
         .fold(0_u8, u8::saturating_add)
@@ -306,17 +467,58 @@ pub const ENEMY_DAMAGE_BUCKET: u8 = 2;
 pub const BOSS_DAMAGE_BUCKET: u8 = 2;
 
 #[must_use]
-pub fn preference_tuple(state: Mm2MechanicalState) -> (u8, u8, u16) {
-    (state.bosses_beaten(), state.health, state.weapon_energy)
+pub fn preference_tuple(state: Mm2MechanicalState) -> (Mm2Tier, u8, u16) {
+    (state.tier(), state.health, state.weapon_energy)
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[must_use]
+pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u16) {
+    (state.refights, state.refight_boss(), state.boobeam_targets)
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2Observations {
     pub frame_count: u64,
     pub decoded: Mm2MechanicalState,
     pub dead: bool,
-    #[serde(default)]
     pub fall_run: u16,
+    pub dying_run: u32,
+    pub arrived: bool,
+    pub ending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mm2Route {
+    Stage(Mm2Stage),
+    WholeGame,
+}
+
+impl Mm2Route {
+    #[must_use]
+    pub fn stage(self) -> Option<Mm2Stage> {
+        match self {
+            Self::Stage(stage) => Some(stage),
+            Self::WholeGame => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Transition {
+    RobotMaster(u8),
+    Castle(u8),
+}
+
+fn transition(state: Mm2MechanicalState) -> Option<Transition> {
+    if state.stage < MM2_FIRST_WILY_STAGE && state.boss_phase >= BOSS_PHASE_DEFEATED {
+        return Some(Transition::RobotMaster(state.stage));
+    }
+    let last_castle_boss = state.stage != WILY5_STAGE
+        || (state.refights == u8::MAX && state.current_boss == WILY_MACHINE);
+    ((MM2_FIRST_WILY_STAGE..MM2_LAST_WILY_STAGE).contains(&state.stage)
+        && state.boss_phase == BOSS_PHASE_CLEARED
+        && last_castle_boss)
+        .then_some(Transition::Castle(state.stage))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -343,10 +545,8 @@ impl Mm2Snapshot {
         Self {
             emulator_state: Vec::new(),
             observation: Mm2Observations {
-                frame_count: 0,
                 decoded,
-                dead: false,
-                fall_run: 0,
+                ..Mm2Observations::default()
             },
             failed: false,
         }
@@ -396,6 +596,7 @@ pub struct Mm2Target {
     genesis_weapons: u8,
     genesis_prefix: Vec<ButtonChord>,
     execution_work: u64,
+    route: Mm2Route,
 }
 
 fn idle_chords(frames: u32) -> Vec<ButtonChord> {
@@ -462,6 +663,42 @@ pub fn walk_to_stage_select(
     ))
 }
 
+pub fn target_from_args<'a>(
+    args: &'a [String],
+    rom: &[u8],
+    core_path: &Path,
+    core_sha256: &str,
+) -> Result<(Mm2Target, &'a [String]), Box<dyn Error>> {
+    let read = |path: &String| -> Result<Mm2Input, Box<dyn Error>> {
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    };
+    match args {
+        [mode, option, path, rest @ ..] if mode == "whole-game" && option == "--root" => Ok((
+            Mm2Target::whole_game(rom, core_path, core_sha256, &read(path)?.actions)?,
+            rest,
+        )),
+        [mode, option, path, rest @ ..] if mode == "whole-game" && option == "--tape" => Ok((
+            Mm2Target::whole_game_after_tape(rom, core_path, core_sha256, &read(path)?.actions)?,
+            rest,
+        )),
+        [mode, rest @ ..] if mode == "whole-game" => Ok((
+            Mm2Target::whole_game(rom, core_path, core_sha256, &[])?,
+            rest,
+        )),
+        [stage, prefix, rest @ ..] => Ok((
+            Mm2Target::from_rom_bytes_after(
+                rom,
+                core_path,
+                core_sha256,
+                &read(prefix)?.actions,
+                Mm2Stage::parse(stage)?,
+            )?,
+            rest,
+        )),
+        _ => Err("expected <stage> <chain-prefix.json> or whole-game".into()),
+    }
+}
+
 fn run_chords(machine: &mut QuickNesMachine, chords: &[ButtonChord]) -> Result<(), MachineError> {
     let here = machine.snapshot()?;
     machine.branch(here, &nes::reproducer(chords))?;
@@ -490,13 +727,73 @@ impl Mm2Target {
             QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
             prefix,
             stage,
+            Mm2Route::Stage(stage),
         )
+    }
+
+    pub fn whole_game(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        root: &[ButtonChord],
+    ) -> Result<Self, MachineError> {
+        let mut target = Self::from_machine(
+            QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
+            &power_on_walk(),
+            ROBOT_MASTER_ORDER[0],
+            Mm2Route::WholeGame,
+        )?;
+        for (index, action) in root.iter().enumerate() {
+            target.apply(action);
+            if target.failed || target.is_terminal() {
+                return Err(MachineError::Backend(format!(
+                    "Mega Man 2 root input ends its run at action {index}"
+                )));
+            }
+        }
+        target.rebase_genesis()?;
+        Ok(target)
+    }
+
+    pub fn whole_game_after_tape(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        tape: &[ButtonChord],
+    ) -> Result<Self, MachineError> {
+        let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+        for chunk in tape.chunks(64) {
+            run_chords(&mut machine, chunk)?;
+        }
+        let wram = machine.read_wram()?;
+        let state = decode_state(&wram)?;
+        if !state.playable() {
+            return Err(MachineError::Backend(format!(
+                "Mega Man 2 tape does not end in play: {state:?}"
+            )));
+        }
+        Self::at_genesis(machine, wram, tape.to_vec(), Mm2Route::WholeGame)
+    }
+
+    fn rebase_genesis(&mut self) -> Result<(), MachineError> {
+        self.machine.drop_snapshot(self.genesis)?;
+        self.genesis = self.machine.snapshot()?;
+        self.genesis_wram = self.current_wram;
+        self.genesis_observation = Mm2Observations {
+            frame_count: 0,
+            ..self.observation.clone()
+        };
+        self.observation = self.genesis_observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+        self.genesis_weapons = self.observation.decoded.weapons_obtained;
+        Ok(())
     }
 
     fn from_machine(
         mut machine: QuickNesMachine,
         prefix: &[ButtonChord],
         stage: Mm2Stage,
+        route: Mm2Route,
     ) -> Result<Self, MachineError> {
         let mut genesis_prefix = prefix.to_vec();
         for chunk in prefix.chunks(64) {
@@ -520,10 +817,7 @@ impl Mm2Target {
         let mut wram = machine.read_wram()?;
         loop {
             let state = decode_state(&wram)?;
-            if state.stage == stage.number()
-                && state.player_state == PLAYER_STATE_STANDING
-                && state.health == FULL_HEALTH
-            {
+            if state.arrived_at(stage) {
                 break;
             }
             if waited >= wait_limit {
@@ -541,13 +835,21 @@ impl Mm2Target {
             wram = machine.read_wram()?;
         }
         genesis_prefix.extend(idle_chords(waited));
+        Self::at_genesis(machine, wram, genesis_prefix, route)
+    }
+
+    fn at_genesis(
+        mut machine: QuickNesMachine,
+        wram: [u8; WRAM_SIZE],
+        genesis_prefix: Vec<ButtonChord>,
+        route: Mm2Route,
+    ) -> Result<Self, MachineError> {
         let state = decode_state(&wram)?;
         let genesis = machine.snapshot()?;
         let observation = Mm2Observations {
-            frame_count: 0,
             decoded: state,
-            dead: false,
-            fall_run: 0,
+            arrived: true,
+            ..Mm2Observations::default()
         };
         Ok(Self {
             machine,
@@ -561,6 +863,7 @@ impl Mm2Target {
             genesis_weapons: state.weapons_obtained,
             genesis_prefix,
             execution_work: 0,
+            route,
         })
     }
 
@@ -580,10 +883,29 @@ impl Mm2Target {
     }
 
     #[must_use]
+    pub fn route(&self) -> Mm2Route {
+        self.route
+    }
+
+    #[must_use]
     pub fn defeated_a_boss(&self) -> bool {
         let state = self.observation.decoded;
-        state.weapons_obtained & !self.genesis_weapons != 0
-            || state.stage > self.genesis_observation.decoded.stage
+        matches!(self.route, Mm2Route::Stage(_))
+            && (state.weapons_obtained & !self.genesis_weapons != 0
+                || state.stage > self.genesis_observation.decoded.stage)
+    }
+
+    #[must_use]
+    pub fn objective_reached(&self) -> bool {
+        match self.route {
+            Mm2Route::Stage(_) => self.defeated_a_boss(),
+            Mm2Route::WholeGame => self.observation.ending,
+        }
+    }
+
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.is_dead() || self.objective_reached()
     }
 
     pub fn start_capturing(&mut self) {
@@ -627,7 +949,7 @@ impl Mm2Target {
     }
 
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-        if self.failed || self.is_dead() || self.defeated_a_boss() || frames == 0 {
+        if self.failed || self.is_terminal() || frames == 0 {
             return false;
         }
         let mut actions = Vec::new();
@@ -790,7 +1112,7 @@ impl Mm2Target {
             frame_count,
             decoded: state,
             dead: state.is_dead(),
-            fall_run: 0,
+            ..Mm2Observations::default()
         }
     }
 
@@ -811,6 +1133,75 @@ impl Mm2Target {
             .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
         (!frames.is_empty()).then_some(frames)
     }
+
+    fn advance(&mut self, chords: &[ButtonChord]) -> Option<u64> {
+        let mut frames = 0_u64;
+        for chord in chords {
+            frames += u64::try_from(self.run_action(chord)?.len()).ok()?;
+        }
+        Some(frames)
+    }
+
+    fn wram_state(&self) -> Option<Mm2MechanicalState> {
+        decode_state(&self.machine.read_wram().ok()?).ok()
+    }
+
+    fn wait_for_arrival(&mut self, stage: Mm2Stage, limit: u32) -> Option<u64> {
+        let mut waited = 0_u64;
+        while !self.wram_state()?.arrived_at(stage) {
+            if waited >= u64::from(limit) {
+                return None;
+            }
+            waited += self.advance(&[ButtonChord::new(0, 1)])?;
+        }
+        Some(waited)
+    }
+
+    fn drive_after_robot_master(&mut self, stage: u8) -> Option<u64> {
+        let mut frames = 0_u64;
+        let award = 1_u8 << stage;
+        while self.wram_state()?.weapons_obtained & award == 0 {
+            if frames >= u64::from(2 * AWARD_SETTLE_FRAMES) {
+                return None;
+            }
+            frames += self.advance(&[ButtonChord::new(0, MAX_HOLD_FRAMES)])?;
+        }
+        frames += self.advance(&idle_chords(AWARD_SETTLE_FRAMES))?;
+        for _ in 0..STAGE_SELECT_WALK_ROUNDS {
+            if at_stage_select(&self.machine.read_wram().ok()?) {
+                break;
+            }
+            frames += self.advance(&[
+                ButtonChord::new(JOYPAD_DOWN, 4),
+                ButtonChord::new(0, 30),
+                ButtonChord::new(JOYPAD_START, 4),
+            ])?;
+            frames += self.advance(&idle_chords(MENU_SETTLE_FRAMES))?;
+        }
+        if !at_stage_select(&self.machine.read_wram().ok()?) {
+            return None;
+        }
+        let next = next_stage_after(self.wram_state()?.weapons_obtained);
+        for direction in next.select_path() {
+            frames += self.advance(&[ButtonChord::new(*direction, 4), ButtonChord::new(0, 30)])?;
+        }
+        frames += self.advance(&[ButtonChord::new(JOYPAD_START, 4)])?;
+        let limit = if next.is_wily() {
+            WILY_STAGE_START_WAIT_FRAMES
+        } else {
+            STAGE_START_WAIT_FRAMES
+        };
+        Some(frames + self.wait_for_arrival(next, limit)?)
+    }
+
+    fn drive(&mut self, transition: Transition) -> Option<u64> {
+        match transition {
+            Transition::RobotMaster(stage) => self.drive_after_robot_master(stage),
+            Transition::Castle(stage) => {
+                self.wait_for_arrival(Mm2Stage(stage + 1), WILY_STAGE_START_WAIT_FRAMES)
+            }
+        }
+    }
 }
 
 impl Target for Mm2Target {
@@ -827,15 +1218,17 @@ impl Target for Mm2Target {
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
-        if self.failed || self.is_dead() || self.defeated_a_boss() {
+        if self.failed || self.is_terminal() {
             return;
         }
         let Some(mut frames) = self.run_action(action) else {
             self.failed = true;
             return;
         };
+        let whole_game = self.route == Mm2Route::WholeGame;
         let mut waited = 0;
-        while waited < AWARD_SETTLE_FRAMES
+        while !whole_game
+            && waited < AWARD_SETTLE_FRAMES
             && frames.last().is_some_and(|wram| {
                 decode_state(wram).is_ok_and(|state| {
                     state.boss_phase >= BOSS_PHASE_DEFEATED
@@ -859,16 +1252,16 @@ impl Target for Mm2Target {
         let mut observations = Vec::new();
         let genesis = self.genesis_observation.decoded;
         let mut died = self.observation.dead;
-        let mut dying_frames = 0_u32;
+        let mut dying_run = self.observation.dying_run;
         let mut fall_run = self.observation.fall_run;
         let mut enemy_damage = self.observation.decoded.enemy_damage;
         let mut prior_frame = self.current_wram;
-        let Ok(mut previous) = decode_state(&prior_frame) else {
-            self.failed = true;
-            return;
-        };
+        let mut previous = self.observation.decoded;
+        let mut pending = None;
+        let mut ending = false;
+        let mut decoded_frames = frames.len();
         for (offset, wram) in frames.iter().enumerate() {
-            let Ok(mut state) = decode_state(wram) else {
+            let Ok(mut state) = decode_state_after(wram, Some(previous.stage)) else {
                 self.failed = true;
                 return;
             };
@@ -882,6 +1275,12 @@ impl Target for Mm2Target {
                 0
             };
             let fell_out = fall_run > FALL_RUN_LIMIT;
+            let lost_life = if whole_game {
+                state.lives < previous.lives
+            } else {
+                state.lives < genesis.lives || state.stage < genesis.stage
+            };
+            ending = whole_game && previous.stage == MM2_LAST_WILY_STAGE && state.final_stage_cleared();
             previous = state;
             if state.screen != prior_state.screen || state.stage != prior_state.stage {
                 enemy_damage = 0;
@@ -894,21 +1293,26 @@ impl Target for Mm2Target {
             let escaped = prior_state.boss_phase >= BOSS_PHASE_FIGHTING
                 && prior_state.boss_phase < BOSS_PHASE_DEFEATED
                 && state.screen != prior_state.screen;
-            dying_frames = if state.is_dying() {
-                dying_frames.saturating_add(1)
+            dying_run = if state.is_dying() {
+                dying_run.saturating_add(1)
             } else {
                 0
             };
             let dead = died
                 || state.is_dead()
-                || dying_frames >= DYING_FRAMES
-                || state.lives < genesis.lives
-                || state.stage < genesis.stage
+                || dying_run >= DYING_FRAMES
+                || lost_life
                 || escaped
                 || fell_out;
+            if whole_game && !dead {
+                pending = transition(state);
+            }
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
-                || dead != died;
+                || encounter(state) != encounter(prior_state)
+                || dead != died
+                || ending
+                || pending.is_some();
             died = dead;
             if boundary {
                 let frame_count = self
@@ -918,29 +1322,72 @@ impl Target for Mm2Target {
                 let mut observation = self.make_observation(frame_count, state);
                 observation.dead = dead;
                 observation.fall_run = fall_run;
+                observation.dying_run = dying_run;
+                observation.ending = ending;
                 observations.push(observation);
                 prior_wram = *wram;
                 prior_state = state;
                 emitted = true;
             }
+            if ending || pending.is_some() {
+                decoded_frames = offset + 1;
+                break;
+            }
         }
-        let endpoint_wram = frames.last().copied().unwrap_or(prior_wram);
-        let endpoint_frame = self
+        let action_frames = self
             .observation
             .frame_count
             .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
+        if let Some(transition) = pending {
+            let Some(driven) = self.drive(transition) else {
+                self.failed = true;
+                return;
+            };
+            let Ok(wram) = self.machine.read_wram() else {
+                self.failed = true;
+                return;
+            };
+            let Ok(state) = decode_state(&wram) else {
+                self.failed = true;
+                return;
+            };
+            observations.push(Mm2Observations {
+                frame_count: action_frames.saturating_add(driven),
+                decoded: state,
+                arrived: true,
+                ..Mm2Observations::default()
+            });
+            self.action_observations = observations;
+            self.observation = self.action_observations.last().cloned().unwrap_or_default();
+            self.current_wram = wram;
+            return;
+        }
+        let endpoint_wram = frames
+            .get(decoded_frames.saturating_sub(1))
+            .copied()
+            .unwrap_or(prior_wram);
+        let endpoint_frame = if ending {
+            self.observation
+                .frame_count
+                .saturating_add(u64::try_from(decoded_frames).unwrap_or(u64::MAX))
+        } else {
+            action_frames
+        };
         if !emitted
             || !observations
                 .last()
                 .is_some_and(|observation| observation.frame_count == endpoint_frame)
         {
-            let Ok(endpoint_state) = decode_state(&endpoint_wram) else {
+            let Ok(mut endpoint_state) = decode_state_after(&endpoint_wram, Some(previous.stage))
+            else {
                 self.failed = true;
                 return;
             };
+            endpoint_state.enemy_damage = enemy_damage;
             let mut observation = self.make_observation(endpoint_frame, endpoint_state);
             observation.dead = died;
             observation.fall_run = fall_run;
+            observation.dying_run = dying_run;
             observations.push(observation);
         }
         self.action_observations = observations;
@@ -1063,18 +1510,117 @@ mod tests {
     }
 
     #[test]
-    fn enemy_damage_counts_hits_on_live_slots_only() {
-        let mut prior = vec![ENEMY_HEALTH_IDLE; WRAM_SIZE];
+    fn enemy_damage_counts_confirmed_hits_on_active_enemies_only() {
+        let mut prior = vec![0_u8; WRAM_SIZE];
+        prior[0x10f] = 61;
+        prior[0x41f] = 78;
+        prior[0x43f] = 0xc3;
+        prior[0x6df] = 20;
         let mut current = prior.clone();
-        current[0x6dc] = 0x10;
+        current[0x6df] = 18;
         assert_eq!(enemy_damage_between(&prior, &current), 0);
-        prior[0x6dc] = 0x12;
+        current[0x11f] = 1;
         assert_eq!(enemy_damage_between(&prior, &current), 2);
-        current[0x6dc] = 0;
+        current[0x41f] = 79;
+        assert_eq!(enemy_damage_between(&prior, &current), 0);
+        current[0x41f] = ENEMY_KILLED_ID;
+        current[0x6df] = 0;
         assert_eq!(enemy_damage_between(&prior, &current), ENEMY_HIT_CAP);
-        prior[0x6d1] = 0x10;
-        current[0x6d1] = ENEMY_HEALTH_IDLE;
-        assert_eq!(enemy_damage_between(&prior, &current), ENEMY_HIT_CAP);
+        prior[0x43f] = 0;
+        assert_eq!(enemy_damage_between(&prior, &current), 0);
+    }
+
+    #[test]
+    fn the_menu_is_open_only_in_the_menu_bank_with_a_cursor_on_the_page() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[0x04] = 3;
+        wram[0x29] = 0x0e;
+        wram[0xfd] = 10;
+        wram[0xfe] = 2;
+        assert_eq!(decode_state(&wram).expect("decode").menu, MENU_CLOSED);
+        wram[0x29] = 0x0d;
+        assert_eq!(decode_state(&wram).expect("decode").menu, MENU_UNKNOWN);
+        wram[0xfd] = 6;
+        wram[0xfe] = 0;
+        assert_eq!(decode_state(&wram).expect("decode").menu, 6);
+        wram[0xfd] = 6;
+        wram[0xfe] = 1;
+        assert_eq!(decode_state(&wram).expect("decode").menu, 14);
+        wram[0xfd] = 7;
+        assert_eq!(decode_state(&wram).expect("decode").menu, MENU_UNKNOWN);
+    }
+
+    #[test]
+    fn a_wily5_teleport_keeps_the_castle_stage_while_the_portal_borrows_the_byte() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[0x2a] = 4;
+        wram[0x2c] = PLAYER_STATE_TELEPORTING;
+        wram[0xbc] = 0x80;
+        let borrowed = decode_state_after(&wram, Some(WILY5_STAGE)).expect("decode");
+        assert_eq!((borrowed.stage, borrowed.refights), (WILY5_STAGE, 0x80));
+        assert_eq!(decode_state(&wram).expect("decode").stage, 4);
+        wram[0x2c] = PLAYER_STATE_STANDING;
+        assert_eq!(decode_state_after(&wram, Some(WILY5_STAGE)).expect("decode").stage, 4);
+    }
+
+    #[test]
+    fn the_machine_refill_after_its_shell_breaks_is_not_damage() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[0x2a] = WILY5_STAGE;
+        wram[0xb1] = BOSS_PHASE_REFILL;
+        wram[0xb3] = WILY_MACHINE;
+        wram[0xbc] = u8::MAX;
+        wram[0x6c1] = 1;
+        let state = decode_state(&wram).expect("decode");
+        assert!(state.machine_shell_broken());
+        assert_eq!(state.boss_damage(), 0);
+        assert!(state.tier().machine_shell);
+    }
+
+    #[test]
+    fn boobeam_targets_and_barriers_are_read_only_during_the_wily4_fight() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[0x2a] = BOOBEAM_STAGE;
+        wram[0xb1] = BOSS_PHASE_FIGHTING;
+        wram[0x414] = BOOBEAM_TRAP_ID;
+        wram[0x434] = 0xc3;
+        wram[0x419] = BOOBEAM_BARRIER_ID;
+        wram[0x439] = 0x92;
+        wram[0x41a] = BOOBEAM_BARRIER_ID;
+        assert_eq!(decode_state(&wram).expect("decode").boobeam_targets, 0b10_0001);
+        wram[0xb1] = BOSS_PHASE_NONE;
+        assert_eq!(decode_state(&wram).expect("decode").boobeam_targets, 0);
+    }
+
+    #[test]
+    fn the_route_takes_the_next_unbeaten_robot_master_then_wily() {
+        assert_eq!(next_stage_after(0).name(), "crash");
+        assert_eq!(next_stage_after(0x80).name(), "flash");
+        assert_eq!(next_stage_after(0xe0).name(), "air");
+        assert_eq!(next_stage_after(0xef).name(), "quick");
+        assert_eq!(next_stage_after(u8::MAX).name(), "wily1");
+    }
+
+    #[test]
+    fn transitions_start_at_a_robot_master_kill_or_a_castle_clear() {
+        let mut state = Mm2MechanicalState {
+            stage: 7,
+            boss_phase: BOSS_PHASE_DEFEATED,
+            ..Mm2MechanicalState::default()
+        };
+        assert_eq!(transition(state), Some(Transition::RobotMaster(7)));
+        state.stage = 9;
+        assert_eq!(transition(state), None);
+        state.boss_phase = BOSS_PHASE_CLEARED;
+        assert_eq!(transition(state), Some(Transition::Castle(9)));
+        state.stage = WILY5_STAGE;
+        state.refights = 0x7f;
+        assert_eq!(transition(state), None);
+        state.refights = u8::MAX;
+        state.current_boss = WILY_MACHINE;
+        assert_eq!(transition(state), Some(Transition::Castle(WILY5_STAGE)));
+        state.stage = MM2_LAST_WILY_STAGE;
+        assert_eq!(transition(state), None);
     }
 
     #[test]

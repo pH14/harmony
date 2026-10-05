@@ -2,63 +2,83 @@
 
 # Mega Man 2 workload
 
-This package carries the native Mega Man 2 adapter onto the refactored campaign
-contracts. The generic engine receives opaque keys, typed actions, observations,
-and snapshots. This module owns every RAM address and game interpretation.
+This module owns every Mega Man 2 RAM address and game interpretation. The
+generic engine receives opaque keys, typed actions, observations and
+snapshots. The decoder documents RAM addresses beside their definitions in
+`target.rs`.
 
-Registered cases start from power-on menus selecting one of the eight ordinary
-Robot Master stages. A stage clear is reported as an independent stage result;
-these runs do not constitute a continuous whole-game solution. The adapter also
-preserves the earlier probe/campaign tools for examining recorded discoveries.
-No gameplay route, weapon choice, obstacle target, or boss weakness is injected.
+## Modes
 
-The decoder documents RAM addresses alongside their definitions in `target.rs`.
-It observes stage/screen/room, position and posture, health, weapon/menu state,
-weapon energy, boss/enemy damage, active platforms, and terminal events. It
-corrects wrapped coordinates and transition states that caused false deaths in
-the earlier experiments. Controller sampling covers nine directions times four
-A/B combinations plus ordinary Start taps; Start is necessary to operate the
-weapon menu. The v2 controller identifier corrects the prototype's stale
-`no_start` label. No control is selected based on a named situation. The
-adapter supplies that vocabulary, with Start as the tap button, to the shared
-NES chord draw in the [package README](../../README.md#chord-draw); the
-searcher owns the suffix draw and the retained-input table.
+A whole-game search starts at Crash Man's first playable frame after the
+power-on menus and ends at the ending scene or a lost life. The Robot Master
+order is fixed: Crash, Flash, Metal, Air, Bubble, Heat, Wood, Quick, then the
+six Wily castles. When a boss falls, the target drives the menus to the next
+stage inside the same action: it waits for the weapon award, presses through
+the password screens to stage select, moves the cursor to the next stage in
+the order and presses Start. A castle clear waits for the next castle to load.
+The action's observations end with an arrival at the new stage, so a search
+action spans the whole transition. A rooted run applies its root input after
+that genesis and starts from where the root ends.
 
-The v20 key buckets position at 16 pixels. Health and weapon energy are
-same-slot preferences: they choose which endpoint holds a slot and add no
-slots. It removes the prototype's
-rooms-visited lineage reward: returning to the same endpoint has the same key,
-regardless of the number of rooms visited. Stage, room and screen bytes identify
-locations; the progress relation uses boss clears and current boss damage.
-Boss damage is zero until the boss loads its health, so a Wily boss that spawns
-for its approach with an empty meter reads as no damage rather than a full bar,
-and it is full once the phase byte reports the boss dead. A Wily boss grants no
-weapon, so a cleared boss is a granted weapon or that same defeated phase byte.
-Boss clears are the progress tier. The place is the stage, screen, room, boss
-damage, enemy damage, the 32-pixel position bucket, posture, platforms and
-whether the menu is open. The holder identity is the 16-pixel position bucket,
-the weapon and the menu state.
-Summed energy remains a documented resource-preference tradeoff, not dominance.
-The v17 prototype is preserved in the preceding commit and benchmark build;
-replay rejects a different recorded policy instead of silently reinterpreting it.
+A stage search starts from the power-on menus selecting one Robot Master stage
+and ends when that boss falls or Mega Man dies. Its result is an independent
+stage clear.
+
+Gameplay inside a stage is searched. No route, weapon choice, obstacle target
+or boss weakness is injected.
+
+## Reading the game
+
+The decoder reads stage, screen, room, position, posture, health, the equipped
+weapon and its energy, boss and enemy damage, active platforms and the weapon
+menu. Some bytes need context:
+
+- The bank byte at `$29` says whether a menu or gameplay is running.
+- The Wily 5 teleporter rooms borrow the stage byte for a Robot Master number
+  for a few frames. The decoder keeps the previous stage through that borrow.
+- Wily 5 tracks its refights in a bitmask at `$bc`. The Wily Machine refills
+  its meter between its two forms, so boss damage reads zero during the refill.
+- Boobeam Trap's targets count while that fight is underway.
+- Enemy damage counts only on an active object that the hit flag at `$110`
+  confirms, because enemy slots are reused.
+
+## Archive key
+
+The progress tier is the Robot Master clears, the castle clears, the Wily 5
+refights and whether the Wily Machine's first form is broken. The place is the
+stage, screen, room, boss damage, enemy damage, the 32-pixel position bucket,
+posture, platforms and whether the menu is open, plus the Wily 5 refights,
+the refight boss in play and the Boobeam targets left. The holder identity is
+the 16-pixel position bucket, the weapon and the menu state. Health and summed
+weapon energy choose which arrival holds a slot and add no slots.
+
+## Milestones and evidence
+
+A whole-game run reports `named_progress` with the first try that saw each
+route milestone: every stage entry, every boss fight start, every boss clear,
+each Wily 5 refight, both Wily Machine forms and the ending. Rooms report as
+`<stage>_room_<n>` so a stall has a named place; they do not trigger
+checkpoints. Each route milestone writes its first arrival to
+`campaign/milestone-inputs/<name>.json`, and the best health and best weapon
+energy at that milestone to `<name>-health.json` and `<name>-energy.json`.
+Every tape replays during verification.
 
 `retained_diagnostics` carries the end-of-run census of the live archive.
-`live_entries_by_screen` maps a screen to
+`live_entries_by_screen` maps `stage:screen` to
 `[entries, max health, max summed energy, selections]`, and
-`live_entries_by_screen_row` maps `screen:16-pixel row from the top` to
-`[entries, selections]`. The maxima alone hide a stall: a screen holding one
-healthy endpoint and a screen holding a hundred thousand spent ones report the
-same band, and a screen count cannot say which end of a shaft the archive sits
-at or which end the selector draws. Both read only cached active endpoints, so
-they are lower bounds where snapshots are missing.
+`live_entries_by_screen_row` maps `stage:screen:row` to
+`[entries, selections]`, where a row is 16 pixels from the top. Both read
+only cached active endpoints, so they are lower bounds where snapshots are
+missing.
 
-`mm2-film` replays a stage prefix and a searched tape to video, starting the
-capture at stage genesis: the capture buffers are bounded, and a chain prefix
-long enough to reach a castle stage would overflow them during construction.
-`mm2-energy-probe` prints the twelve weapon-energy bytes at each action
-endpoint, the last of which is the energy-tank count rather than a meter. The
-decoded state keeps only their sum, which cannot say whether the one weapon a
-wall needs still has ammunition. Both stop once a boss is down, because the
-target refuses actions from there.
+## Tools
+
+`mm2-film` replays an input to video. `mm2-energy-probe` prints the decoded
+state and the twelve weapon-energy bytes at each action endpoint; the last
+byte is the energy-tank count. Both take the target first, as
+`<stage> <chain-prefix.json>` or `whole-game [--root ROOT.json | --tape TAPE.json]`.
+`--root` applies a root input after genesis like a rooted run. `--tape`
+replays a raw input from power-on and starts wherever it ends in play. Both
+tools stop once the target is terminal.
 
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
