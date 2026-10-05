@@ -402,6 +402,7 @@ CONSONANCE_RUNTIME = Workflow(
             ignored_tests=("vmm-core::x86_kvm_nested_host l1_creates_kvm_vm",
                            "vmm-core vendor::x86::contract::nested::tests::nested_restore_preserves_unsynchronized_vmcs_fields",
                            "vmm-core vendor::x86::contract::nested::tests::interrupt_raised_before_nested_entry_reaches_the_nested_host",
+                           "vmm-core vendor::x86::contract::nested::tests::restore_before_nested_operation_onto_a_nested_host",
                            "nested-driver::live inner_consonance_runs_inner_guest",
                            "nested-driver::live inner_operation_api_smoke",
                            "nested-driver::sdk_operations outer_operation_sdk_smoke",

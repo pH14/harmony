@@ -222,6 +222,99 @@ mod tests {
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+    #[test]
+    #[ignore = "requires nested VMX or SVM and NESTED_HOST_KERNEL / NESTED_HOST_INITRAMFS"]
+    fn restore_before_nested_operation_onto_a_nested_host() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let read = |name| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            Ok(std::fs::read(std::env::var(name)?)?)
+        };
+        let kernel = read("NESTED_HOST_KERNEL")?;
+        let initramfs = read("NESTED_HOST_INITRAMFS")?;
+        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
+        let mut vmm = crate::vendor::x86::bringup::boot_linux_nested_host_virtual_time(
+            &kernel,
+            &initramfs,
+            256 << 20,
+            cmdline,
+            42,
+        )?;
+        vmm.defer_virtual_time_checkpoint_hashes()?;
+        let advance = |vmm: &mut crate::vmm::Vmm<vmm_backend::KvmBackend>,
+                       marker: &str|
+         -> Result<(), Box<dyn std::error::Error>> {
+            for _ in 0..20_000_000 {
+                let progress = vmm.step()?;
+                if vmm
+                    .serial()
+                    .windows(marker.len())
+                    .any(|w| w == marker.as_bytes())
+                {
+                    return Ok(());
+                }
+                if progress != crate::vmm::Step::Continued {
+                    return Err(format!("fixture stopped before {marker}: {progress:?}").into());
+                }
+            }
+            Err(format!("fixture exceeded step budget before {marker}").into())
+        };
+        let nested_enabled =
+            |cpu: &vmm_backend::VcpuState| -> Result<bool, Box<dyn std::error::Error>> {
+                let bytes = cpu.nested_state.as_deref().ok_or("nested state missing")?;
+                Ok(
+                    match vmm_backend::arch::x86::NestedFormat::from_state(bytes)? {
+                        vmm_backend::arch::x86::NestedFormat::Vmx => cpu.sregs.cr4 & (1 << 13) != 0,
+                        vmm_backend::arch::x86::NestedFormat::Svm => {
+                            cpu.sregs.efer & (1 << 12) != 0
+                        }
+                    },
+                )
+            };
+        advance(&mut vmm, "Linux version")?;
+        let state = vmm.save_vm_state()?;
+        let memory = vmm.guest_memory().to_vec();
+        if nested_enabled(&vmm.vcpu_record()?)? {
+            return Err("early cut already enables nested operation".into());
+        }
+        advance(&mut vmm, "NESTED_CACHE_STEP=3\r\n")?;
+        if !nested_enabled(&vmm.vcpu_record()?)? {
+            return Err("fixture did not enable nested operation".into());
+        }
+        vmm.retire_pending_completion()?;
+        vmm.restore_snapshot(&memory, &state)?;
+        let cpu = vmm.vcpu_record()?;
+        let restored = (
+            cpu.regs.rip,
+            cpu.regs.rsp,
+            cpu.regs.rflags,
+            cpu.sregs.cr0,
+            cpu.sregs.cr3,
+            cpu.sregs.cr4,
+            cpu.sregs.efer,
+            cpu.nested_state.as_deref(),
+        );
+        let saved = (
+            state.regs.rip,
+            state.regs.rsp,
+            state.regs.rflags,
+            state.sregs.cr0,
+            state.sregs.cr3,
+            state.sregs.cr4,
+            state.sregs.efer,
+            state.nested_state.as_deref(),
+        );
+        if restored != saved {
+            return Err(format!(
+                "restore changed CPU state: saved={saved:x?} restored={restored:x?}"
+            )
+            .into());
+        }
+        advance(&mut vmm, "NESTED_CACHE_STEP=12\r\n")?;
+        println!("NESTED_RESTORE_BEFORE_NESTED_OPERATION pass");
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
     struct InterruptBeforeNestedEntry {
         inner: vmm_backend::KvmBackend,
         armed: std::rc::Rc<std::cell::Cell<bool>>,

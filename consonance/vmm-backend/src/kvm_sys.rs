@@ -1028,8 +1028,11 @@ impl Backend for KvmBackend {
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
         let restore = || {
-            if self.nested_state_config.is_some() {
+            if let Some((format, _)) = self.nested_state_config {
                 self.reload_nested_memory_slots()?;
+                let inactive = crate::arch::x86::inactive_nested_state(format);
+                // SAFETY: the inactive header is a complete initialized ABI value whose declared size equals the slice length; the owned vCPU is stopped for the ioctl.
+                unsafe { raw_set_nested_state(self.vcpu.as_raw_fd(), &inactive)? };
             }
 
             restore_sregs2_with_flush(&state.sregs, |sregs| {

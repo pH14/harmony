@@ -146,6 +146,9 @@ runs the same fixture and raises vector 0xFF each time L1 reads DEBUGCTL with
 interrupts disabled before it enters L2. KVM can report an open interrupt
 window while that entry is pending; the backend must hold the vector until L1
 leaves guest mode, so L1 receives it and L2 never does.
+The ignored `restore_before_nested_operation_onto_a_nested_host` test restores
+a cut taken before L1 enabled VMX or SVM onto the same vCPU after it did, then
+runs the restored guest through the fixture again.
 The boxed bringup entry point uses the same composition and capability capture
 for the client's dynamically dispatched session backend.
 
