@@ -158,7 +158,7 @@ fn run_nested_consonance(args: &Args) -> Result<(), Box<dyn Error>> {
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
         let _ = args;
-        Err("nested search requires Linux x86 KVM with Intel nested VMX".into())
+        Err("nested search requires Linux x86 KVM with nested VMX or SVM".into())
     }
 }
 
