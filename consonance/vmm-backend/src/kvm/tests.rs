@@ -947,13 +947,41 @@ impl SynRun {
     }
 }
 
+fn unreachable_guest_mode() -> Result<bool> {
+    panic!("guest mode is read only before queuing a vector")
+}
+
+#[test]
+fn plan_irq_entry_defers_while_l1_is_in_nested_guest_mode() {
+    let s = SynRun::new();
+    s.set_ready(true);
+    s.set_request_window(true);
+    assert_eq!(
+        plan_irq_entry(s.page(), Some(0x40), true, || Ok(true)).unwrap(),
+        IrqEntry::Run
+    );
+    assert_eq!(s.request_window(), 0);
+}
+
+#[test]
+fn plan_irq_entry_reports_a_failed_guest_mode_read() {
+    let s = SynRun::new();
+    s.set_ready(true);
+    assert!(
+        plan_irq_entry(s.page(), Some(0x40), true, || Err(
+            BackendError::InvalidState
+        ))
+        .is_err()
+    );
+}
+
 #[test]
 fn plan_irq_entry_queues_when_ready() {
     let s = SynRun::new();
     s.set_ready(true);
     s.set_request_window(true);
     assert_eq!(
-        plan_irq_entry(s.page(), Some(0x40), true),
+        plan_irq_entry(s.page(), Some(0x40), true, || Ok(false)).unwrap(),
         IrqEntry::Queue(0x40)
     );
     assert_eq!(s.request_window(), 0, "window request cleared when queuing");
@@ -963,9 +991,15 @@ fn plan_irq_entry_queues_when_ready() {
 fn plan_irq_entry_requests_window_when_readiness_is_stale() {
     let s = SynRun::new();
     s.set_ready(true);
-    assert_eq!(plan_irq_entry(s.page(), Some(0x40), false), IrqEntry::Run);
+    assert_eq!(
+        plan_irq_entry(s.page(), Some(0x40), false, unreachable_guest_mode).unwrap(),
+        IrqEntry::Run
+    );
     assert_eq!(s.request_window(), 1, "window armed until the next exit");
-    assert_eq!(plan_irq_entry(s.page(), None, false), IrqEntry::Run);
+    assert_eq!(
+        plan_irq_entry(s.page(), None, false, unreachable_guest_mode).unwrap(),
+        IrqEntry::Run
+    );
     assert_eq!(s.request_window(), 0);
 }
 
@@ -973,7 +1007,10 @@ fn plan_irq_entry_requests_window_when_readiness_is_stale() {
 fn plan_irq_entry_requests_window_when_not_ready() {
     let s = SynRun::new();
     s.set_ready(false);
-    assert_eq!(plan_irq_entry(s.page(), Some(0x40), true), IrqEntry::Run);
+    assert_eq!(
+        plan_irq_entry(s.page(), Some(0x40), true, unreachable_guest_mode).unwrap(),
+        IrqEntry::Run
+    );
     assert_eq!(s.request_window(), 1, "window armed when not injectable");
 }
 
@@ -982,13 +1019,19 @@ fn plan_irq_entry_clears_window_when_nothing_pending() {
     let s = SynRun::new();
     s.set_ready(true);
     s.set_request_window(true);
-    assert_eq!(plan_irq_entry(s.page(), None, true), IrqEntry::Run);
+    assert_eq!(
+        plan_irq_entry(s.page(), None, true, unreachable_guest_mode).unwrap(),
+        IrqEntry::Run
+    );
     assert_eq!(s.request_window(), 0, "stale window request cleared");
 
     let s = SynRun::new();
     s.set_ready(false);
     s.set_request_window(true);
-    assert_eq!(plan_irq_entry(s.page(), None, true), IrqEntry::Run);
+    assert_eq!(
+        plan_irq_entry(s.page(), None, true, unreachable_guest_mode).unwrap(),
+        IrqEntry::Run
+    );
     assert_eq!(s.request_window(), 0);
 }
 

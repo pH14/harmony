@@ -139,6 +139,11 @@ pub(crate) fn finish_nested_probe(mut bytes: Vec<u8>) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+pub fn nested_guest_mode(bytes: &[u8]) -> Result<bool> {
+    validate_nested_shape(bytes, VMX_NESTED_MAX_LEN)?;
+    Ok(u16::from_le_bytes(bytes[..2].try_into().unwrap()) & 1 != 0)
+}
+
 pub fn inactive_nested_state(format: NestedFormat) -> Vec<u8> {
     let mut bytes = vec![0; NESTED_HEADER_LEN];
     bytes[4..8].copy_from_slice(&(NESTED_HEADER_LEN as u32).to_le_bytes());
@@ -338,6 +343,25 @@ mod tests {
             invalid[offset] = value;
             assert!(validate_nested_state(&invalid, VMX_NESTED_MAX_LEN).is_err());
         }
+    }
+
+    #[test]
+    fn guest_mode_reads_the_vendor_guest_mode_flag() {
+        let vmx = inactive_nested_state(NestedFormat::Vmx);
+        assert!(!nested_guest_mode(&vmx).unwrap());
+        let mut entered = vmx.clone();
+        entered[0] = 1;
+        assert!(nested_guest_mode(&entered).unwrap());
+        entered[0] = 3;
+        assert!(nested_guest_mode(&entered).unwrap());
+        let svm = inactive_nested_state(NestedFormat::Svm);
+        assert!(!nested_guest_mode(&svm).unwrap());
+        let mut entered = vec![0; SVM_NESTED_MAX_LEN];
+        entered[..2].copy_from_slice(&(SVM_GIF_SET | 1).to_le_bytes());
+        entered[2..4].copy_from_slice(&(NestedFormat::Svm as u16).to_le_bytes());
+        entered[4..8].copy_from_slice(&(SVM_NESTED_MAX_LEN as u32).to_le_bytes());
+        assert!(nested_guest_mode(&entered).unwrap());
+        assert!(nested_guest_mode(&vmx[..NESTED_HEADER_LEN - 1]).is_err());
     }
 
     #[test]

@@ -8,7 +8,7 @@ mod state;
 pub(crate) use nested::finish_nested_probe;
 pub use nested::{
     NestedFormat, SVM_GIF_SET, SVM_NESTED_MAX_LEN, VMX_NESTED_MAX_LEN, inactive_nested_state,
-    validate_nested_state,
+    nested_guest_mode, validate_nested_state,
 };
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use nested::{

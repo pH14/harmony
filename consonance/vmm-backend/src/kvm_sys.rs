@@ -312,7 +312,12 @@ impl KvmBackend {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
             }
-            match plan_irq_entry(self.run_page(), self.pending_irq, self.readiness_current) {
+            match plan_irq_entry(
+                self.run_page(),
+                self.pending_irq,
+                self.readiness_current,
+                || self.nested_guest_mode(),
+            )? {
                 IrqEntry::Queue(vector) => {
                     unsafe { raw_interrupt(self.vcpu.as_raw_fd(), u32::from(vector))? };
                     self.pending_irq = None;
@@ -627,6 +632,17 @@ unsafe fn raw_set_nested_state(_fd: std::os::fd::RawFd, _bytes: &[u8]) -> Result
 }
 
 impl KvmBackend {
+    fn nested_guest_mode(&self) -> Result<bool> {
+        match self.nested_state_config {
+            Some((_, size)) => {
+                // SAFETY: this owned stopped vCPU receives a capability-sized initialized buffer; the adapter bounds the returned size before the flags are read.
+                let bytes = unsafe { raw_get_nested_state(self.vcpu.as_raw_fd(), size)? };
+                crate::arch::x86::nested_guest_mode(&bytes)
+            }
+            None => Ok(false),
+        }
+    }
+
     fn install_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
         let entries = cpuid_entries(model);
         let cpuid = CpuId::from_entries(&entries)
@@ -1054,7 +1070,7 @@ impl Backend for KvmBackend {
         self.pending_irq = None;
         self.accepted_irq.clear();
         self.readiness_current = false;
-        let _ = plan_irq_entry(self.run_page(), None, false);
+        plan_irq_entry(self.run_page(), None, false, || Ok(false))?;
         Ok(())
     }
 
