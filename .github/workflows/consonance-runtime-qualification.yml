@@ -142,7 +142,7 @@ jobs:
               sudo cat /sys/kernel/tracing/trace >"$history/host-nested-trace.txt"
             fi
             if sudo test -e /sys/kernel/tracing/events/harmony_nested/enable; then
-              sudo bash consonance/harmony-linux/linux/trace-nested-vmcs12.sh stop
+              sudo bash consonance/harmony-linux/linux/trace-nested-vmcs.sh stop
               printf "" | sudo tee /sys/kernel/tracing/trace >/dev/null
               printf 1 | sudo tee /sys/kernel/tracing/tracing_on >/dev/null
             fi
@@ -151,7 +151,7 @@ jobs:
           }
           trap retain_history_diagnostics EXIT
           if [[ -d /sys/module/kvm_intel ]]; then
-            sudo bash consonance/harmony-linux/linux/trace-nested-vmcs12.sh start ||
+            sudo bash consonance/harmony-linux/linux/trace-nested-vmcs.sh start ||
               echo "VMCS12 entry probes unavailable on this host"
           fi
           gh run download "$HISTORY_RUN" --repo "$GITHUB_REPOSITORY" \
