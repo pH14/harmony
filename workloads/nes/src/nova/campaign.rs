@@ -239,7 +239,7 @@ where
 #[derive(Clone, Copy, Debug)]
 pub struct NovaCampaignRun;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct NovaCampaignEvidence {
     aggregate: NovaMilestones,
     watermark: NovaProgressWatermark,
@@ -435,6 +435,12 @@ where
     M: NovaMachineKind<P>,
     P: SnapshotState,
 {
+    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(serde_json::to_vec(evidence)?)
+    }
+    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -935,6 +941,33 @@ mod tests {
         assert_ne!(
             nova_result_sha256(&first).expect("first digest"),
             nova_result_sha256(&second).expect("changed digest"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod evidence_checkpoint_tests {
+    use super::*;
+    #[test]
+    fn evidence_round_trip_preserves_all_serialized_fields_and_rejects_truncation() {
+        let mut evidence = NovaCampaignEvidence::default();
+        evidence.aggregate.cleared = 1;
+        evidence.watermark.x = 123;
+        evidence.first_reached.first_clear = Some(17);
+        evidence.champion_key = Some((evidence.watermark, (1, 2, 3, true, 4, 5)));
+        evidence.champion_input.actions.push(ButtonChord {
+            buttons: 1,
+            hold_frames: 2,
+        });
+        evidence.champion_milestones = evidence.aggregate;
+        let bytes = <NovaGame as Reporting>::evidence_checkpoint(&evidence).unwrap();
+        let restored = <NovaGame as Reporting>::evidence_from_checkpoint(&bytes).unwrap();
+        assert_eq!(
+            serde_json::to_value(&evidence).unwrap(),
+            serde_json::to_value(&restored).unwrap()
+        );
+        assert!(
+            <NovaGame as Reporting>::evidence_from_checkpoint(&bytes[..bytes.len() - 1]).is_err()
         );
     }
 }

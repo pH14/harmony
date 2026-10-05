@@ -7,7 +7,9 @@ use crate::{
 };
 use searcher::search::{
     archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
-    campaign::{CampaignConfig, CampaignOrigin, default_window, run_campaign_checkpointed},
+    campaign::{
+        CampaignConfig, CampaignOrigin, default_window, run_campaign_checkpointed_with_options,
+    },
     draw::DrawMixture,
 };
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,14 @@ pub struct SearchOptions {
     pub workers: u32,
     pub executions: u64,
     pub output: PathBuf,
+    pub wall_seconds: Option<u64>,
+}
+#[derive(Clone, Debug, Default)]
+pub enum SearchStart {
+    #[default]
+    Genesis,
+    Actions(serde_json::Value),
+    Checkpoint(PathBuf),
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SearchIdentity {
@@ -123,6 +133,7 @@ fn search<G: Endpointed>(
     run: G::Run,
     backend: &str,
     options: &SearchOptions,
+    start: &SearchStart,
 ) -> Result<(), Box<dyn Error>>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
@@ -134,9 +145,9 @@ where
         workers: options.workers,
         execution_budget: options.executions,
         host: "harmony-search".into(),
-        wall_budget: None,
+        wall_budget: options.wall_seconds.map(std::time::Duration::from_secs),
         stop_rollout_on_objective: true,
-        stop_campaign_on_objective: true,
+        stop_campaign_on_objective: !matches!(start, SearchStart::Checkpoint(_)),
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         window: default_window(options.workers),
         memory_budget_mib: None,
@@ -146,8 +157,80 @@ where
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: Some(options.output.join("victory.json")),
     };
-    let (report, checkpoint) =
-        run_campaign_checkpointed(&game, &config, &CampaignOrigin::Genesis, &mut stream, None)?;
+    use searcher::search::campaign::{
+        CampaignCheckpoint, SnapshotCheckpoint, SnapshotCheckpointEntry,
+    };
+    let prefix: searcher::search::archive::Input<G::Action> = match start {
+        SearchStart::Genesis => Default::default(),
+        SearchStart::Actions(value) => serde_json::from_value(value.clone())?,
+        SearchStart::Checkpoint(path) => serde_json::from_slice(&fs::read(
+            path.parent()
+                .and_then(Path::parent)
+                .ok_or("checkpoint has no run directory")?
+                .join("origin-input.json"),
+        )?)?,
+    };
+    fs::write(
+        options.output.join("origin-input.json"),
+        serde_json::to_vec_pretty(&prefix)?,
+    )?;
+    let origin = match start {
+        SearchStart::Genesis => CampaignOrigin::Genesis,
+        SearchStart::Checkpoint(path) => CampaignOrigin::SearchCheckpoint { path: path.clone() },
+        SearchStart::Actions(value) => {
+            let input: searcher::search::archive::Input<G::Action> =
+                serde_json::from_value(value.clone())?;
+            let mut target = game.new_target()?;
+            let initial = game.snapshot(&mut target)?;
+            let result = game.execute_job(
+                &config.run,
+                &mut target,
+                &initial,
+                &[],
+                G::Milestones::default(),
+                &input.actions,
+                RetentionPolicy::Unprobed,
+                true,
+            )?;
+            if result.actions.len() != input.actions.len()
+                || game.execution_disposition(&target).is_terminal()
+            {
+                return Err(
+                    "cannot search from a terminal or incomplete execution; rewind further".into(),
+                );
+            }
+            let snapshots = SnapshotCheckpoint {
+                format: game.checkpoint_format().into(),
+                entries: vec![SnapshotCheckpointEntry {
+                    id: 0,
+                    snapshot: game.snapshot(&mut target)?,
+                }],
+            };
+            CampaignOrigin::SnapshotRoot {
+                checkpoint: CampaignCheckpoint {
+                    path: "branch-input".into(),
+                    file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes()?)),
+                    snapshots,
+                },
+            }
+        }
+    };
+    let (report, checkpoint) = run_campaign_checkpointed_with_options(
+        &game,
+        &config,
+        &origin,
+        &mut stream,
+        None,
+        searcher::search::campaign::CampaignExecutionOptions {
+            checkpoints: Some(searcher::search::checkpoint::CheckpointPlan {
+                directory: options.output.join("checkpoints"),
+                every: std::num::NonZeroU64::new(100),
+                on_marks: false,
+                on_top_progress: false,
+            }),
+            ..Default::default()
+        },
+    )?;
     serde_json::to_writer_pretty(
         fs::File::create(options.output.join("report.json"))?,
         &report,
@@ -156,7 +239,7 @@ where
         fs::File::create(options.output.join("checkpoint.json"))?,
         &checkpoint,
     )?;
-    let best = match report.objective_witness.clone() {
+    let mut best = match report.objective_witness.clone() {
         Some(input) => input,
         None => serde_json::from_value(
             serde_json::to_value(&report.archive)?
@@ -165,6 +248,15 @@ where
                 .ok_or("the campaign retained no champion input to replay")?,
         )?,
     };
+    let mut actions = prefix.actions;
+    actions.extend(best.actions);
+    best.actions = actions;
+    if report.objective_witness.is_some() {
+        fs::write(
+            options.output.join("victory.json"),
+            serde_json::to_vec_pretty(&best)?,
+        )?;
+    }
     serde_json::to_writer_pretty(
         fs::File::create(options.output.join("witness-input.json"))?,
         &best,
@@ -193,6 +285,7 @@ pub fn search_native(
     rom: &[u8],
     core: &Path,
     options: &SearchOptions,
+    start: &SearchStart,
 ) -> Result<(), Box<dyn Error>> {
     validate_output(options)?;
     let kind = RomKind::identify(rom)?;
@@ -218,12 +311,14 @@ pub fn search_native(
             smb_run(),
             "native",
             options,
+            start,
         ),
         RomKind::Nova => search(
             NovaGame::new(rom, core, &core_hash),
             NovaCampaignRun,
             "native",
             options,
+            start,
         ),
     }
 }
@@ -239,6 +334,7 @@ pub fn search_consonance(
     prepared: &oci_support::PreparedExecution,
     platform_initramfs: &[u8],
     options: &SearchOptions,
+    start: &SearchStart,
 ) -> Result<(), Box<dyn Error>> {
     validate_output(options)?;
     let initramfs = prepared.initramfs(platform_initramfs);
@@ -277,12 +373,91 @@ pub fn search_consonance(
             smb_run(),
             "consonance",
             options,
+            start,
         ),
         RomKind::Nova => search(
             NovaGame::new_consonance(rom, kernel, &initramfs),
             NovaCampaignRun,
             "consonance",
             options,
+            start,
+        ),
+    }
+}
+
+pub fn replay_native(
+    rom: &[u8],
+    core: &Path,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let hash = format!("{:x}", Sha256::digest(fs::read(core)?));
+    match RomKind::identify(rom)? {
+        RomKind::Smb => replay_witness(
+            &SmbGame::new(rom, core, &hash),
+            &smb_run(),
+            &serde_json::from_value(input)?,
+        ),
+        RomKind::Nova => replay_witness(
+            &NovaGame::new(rom, core, &hash),
+            &NovaCampaignRun,
+            &serde_json::from_value(input)?,
+        ),
+    }
+}
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+pub fn replay_consonance(
+    rom: &[u8],
+    kernel: &[u8],
+    initramfs: &[u8],
+    input: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    match RomKind::identify(rom)? {
+        RomKind::Smb => replay_witness(
+            &SmbGame::new_consonance(rom, kernel, initramfs),
+            &smb_run(),
+            &serde_json::from_value(input)?,
+        ),
+        RomKind::Nova => replay_witness(
+            &NovaGame::new_consonance(rom, kernel, initramfs),
+            &NovaCampaignRun,
+            &serde_json::from_value(input)?,
+        ),
+    }
+}
+
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+pub fn search_saved_guest(
+    rom: &[u8],
+    kernel: &[u8],
+    initramfs: &[u8],
+    options: &SearchOptions,
+    start: &SearchStart,
+) -> Result<(), Box<dyn Error>> {
+    validate_output(options)?;
+    match RomKind::identify(rom)? {
+        RomKind::Smb => search(
+            SmbGame::new_consonance(rom, kernel, initramfs),
+            smb_run(),
+            "consonance",
+            options,
+            start,
+        ),
+        RomKind::Nova => search(
+            NovaGame::new_consonance(rom, kernel, initramfs),
+            NovaCampaignRun,
+            "consonance",
+            options,
+            start,
         ),
     }
 }

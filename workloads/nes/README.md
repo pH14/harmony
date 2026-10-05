@@ -9,7 +9,7 @@ OCI image through `oci-support`, injects the caller's ROM at `/game.nes`, and
 delegates process startup to the platform supervisor.
 
 The `smb-*`, `nova-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
-points. Set `--core` in the CLI or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
+points. Set `runner.options.core` in the CLI recipe or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
 native execution. SMB and Nova support native QuickNES and whole-VM Consonance execution.
 Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
@@ -19,7 +19,7 @@ and matching guest artifacts; `harmony search --backend
 kvm ROM` selects it through the shared CLI.
 
 The campaign binaries, `nes-eval` and `harmony search` limit glibc to one
-malloc arena on Linux. They call `mallopt(M_ARENA_MAX, 1)` first in `main`,
+malloc arena on Linux. They call `mallopt(M_ARENA_MAX, 1)` before NES execution,
 which has the same effect as `MALLOC_ARENA_MAX=1` and does not depend on the
 environment. A search resumed from a checkpoint restores its snapshots on the
 main thread before the workers start. With several arenas, the memory those
@@ -254,3 +254,17 @@ checkpoint/resume configuration, progress and resource phases, witness and
 milestone verification, and result export. `nes-eval` keeps the existing game
 dispatch and option validation. Dedicated workload binaries can reuse the same
 protocol and validation machinery without copying the evaluation loop.
+
+## Product CLI adapter
+
+The CLI's NES adapter owns ROM identification and guest-image preparation. The
+shared CLI sees a workload input, package identity and runner, not ROM/core/image
+flags. QuickNES is a runner; Consonance supplies a separate runner with KVM for
+this adapter. Runner libraries live in `runner.options.core`, and the guest OCI
+image in `workload.options.guest_image`.
+
+`package` exposes typed search and replay for native and prepared guest execution.
+Search origins include genesis, a recorded input prefix and a retained whole-search
+checkpoint. The package uses existing searcher snapshot-root and checkpoint APIs,
+retains final checkpoints and preserves native/controller action types internally.
+See the [CLI README](../../cli/README.md) for named runs and investigation.

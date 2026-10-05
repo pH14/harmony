@@ -1,6 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::config::{Backend, Config, Result};
+use crate::config::{Backend, Result};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Consonance {
+    pub backend: Backend,
+    pub ram_mib: u32,
+    pub kernel: Option<PathBuf>,
+    pub base_initramfs: Option<PathBuf>,
+    pub uml_profile: Option<PathBuf>,
+}
+impl Default for Consonance {
+    fn default() -> Self {
+        Self {
+            backend: Backend::Auto,
+            ram_mib: 1024,
+            kernel: None,
+            base_initramfs: None,
+            uml_profile: None,
+        }
+    }
+}
 use crate::host::Hypervisor;
 use sha2::{Digest, Sha256};
 use std::{
@@ -33,15 +55,13 @@ pub fn data_dir() -> Result<PathBuf> {
     }))
 }
 
-pub fn choose(c: &Config) -> Result<Backend> {
+pub fn choose(c: &Consonance) -> Result<Backend> {
     choose_for(c, &Hypervisor::detect(), cfg!(target_os = "linux"))
 }
 
-fn choose_for(c: &Config, host: &Hypervisor, linux: bool) -> Result<Backend> {
+fn choose_for(c: &Consonance, host: &Hypervisor, linux: bool) -> Result<Backend> {
     let selected = if c.backend != Backend::Auto {
         c.backend
-    } else if c.rom.is_some() {
-        Backend::Native
     } else if c.uml_profile.is_some() {
         Backend::Uml
     } else {
@@ -53,23 +73,16 @@ fn choose_for(c: &Config, host: &Hypervisor, linux: bool) -> Result<Backend> {
         }
     };
     match selected {
-        Backend::Native if c.rom.is_some() => Ok(selected),
         Backend::Kvm if matches!(host, Hypervisor::Kvm) => Ok(selected),
-        Backend::Hvf if matches!(host, Hypervisor::Hvf) && c.rom.is_none() => Ok(selected),
-        Backend::Uml if linux && c.rom.is_none() => Ok(selected),
+        Backend::Hvf if matches!(host, Hypervisor::Hvf) => Ok(selected),
+        Backend::Uml if linux => Ok(selected),
         _ => Err(format!("backend {selected:?} is unavailable for this input on this host").into()),
     }
 }
 
-pub fn resolve(c: &mut Config, offline: bool) -> Result<()> {
+pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     c.backend = choose(c)?;
     eprintln!("backend: {:?}", c.backend);
-    if c.backend == Backend::Native {
-        if c.core.is_none() {
-            return Err("NES execution requires core in TOML or --core PATH".into());
-        }
-        return Ok(());
-    }
     let isa = std::env::consts::ARCH;
     let root = data_dir()?.join("runtime").join(RELEASE);
     let guest = root.join("guest").join(isa);
@@ -216,7 +229,7 @@ mod tests {
     use super::*;
     #[test]
     fn selection_uses_input_and_actual_host_capabilities() {
-        let mut c = Config::default();
+        let mut c = Consonance::default();
         let absent = Hypervisor::Unavailable("no device".into());
         assert_eq!(choose_for(&c, &absent, true).unwrap(), Backend::Uml);
         assert_eq!(
@@ -227,12 +240,7 @@ mod tests {
             choose_for(&c, &Hypervisor::Hvf, false).unwrap(),
             Backend::Hvf
         );
-        c.rom = Some("game.nes".into());
-        assert_eq!(
-            choose_for(&c, &Hypervisor::Kvm, true).unwrap(),
-            Backend::Native
-        );
-        c.backend = Backend::Uml;
+        c.backend = Backend::Hvf;
         assert!(choose_for(&c, &absent, true).is_err());
     }
     #[test]

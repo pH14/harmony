@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod runner;
-use crate::config::{Backend, Config, Result};
+use crate::config::{Backend, Result};
 use std::{fs, path::Path, time::Duration};
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
-    c: &Config,
+    c: &crate::runtime::Consonance,
+    seed: u64,
+    knobs: &[String],
+    wall_seconds: Option<u64>,
     kernel: &[u8],
     initramfs: &[u8],
     out: &Path,
     console: bool,
 ) -> Result<bool> {
-    let cmdline = format!("{} {}", runner::cmdline(), c.knobs.join(" "));
+    let cmdline = format!("{} {}", runner::cmdline(), knobs.join(" "));
     let spec = runner::RunSpec {
         kernel,
         initramfs,
         cmdline: &cmdline,
         guest_ram_len: (c.ram_mib as usize) << 20,
-        seed: c.seed,
-        wall_budget: Duration::from_secs(c.wall_seconds.unwrap_or(900)),
+        seed,
+        wall_budget: Duration::from_secs(wall_seconds.unwrap_or(900)),
         stream: if console {
             runner::StreamMode::Full
         } else {
@@ -31,12 +35,12 @@ pub fn execute(
         let mut launch = uml::Launch::new(out.join("uml-work"));
         fs::create_dir_all(&launch.work_parent)?;
         launch.memory_mib = c.ram_mib;
-        launch.bridge = Some(uml::Bridge::new(c.seed));
+        launch.bridge = Some(uml::Bridge::new(seed));
         launch.wall_limit = spec.wall_budget;
         launch.console_tail_bytes = 16 << 20;
         launch.console_limit_bytes = 16 << 20;
         launch.kernel_arguments = vec!["rdinit=/usr/lib/harmony/init".into()];
-        launch.kernel_arguments.extend(c.knobs.iter().cloned());
+        launch.kernel_arguments.extend(knobs.iter().cloned());
         let temp = tempfile::NamedTempFile::new()?;
         fs::write(temp.path(), initramfs)?;
         launch.initramfs = Some(temp.path().to_path_buf());

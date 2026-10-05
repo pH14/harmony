@@ -12,6 +12,22 @@ not need to know how the searcher evaluates a state. The
 [control protocol](PROTOCOL.md) defines the operations shared across this
 boundary.
 
+## Product CLI composition
+
+The CLI registers workload packages and runners at its composition boundary.
+Its shared recipe has workload identity/options, runner identity/options and
+search budgets. Workload adapters interpret and validate their options, prepare
+inputs and own typed recordings, observations and interventions. Runners resolve
+runtime artifacts and verify execution compatibility. Backend selection belongs
+to the runner; it does not inspect workload input extensions.
+
+Shared commands select runs, findings and recorded boundaries and dispatch through
+the package interface. The run manifest stores artifact hashes, lineage, resolved
+identities and a package-owned payload. Search continuation and replay retain the
+recorded runner instead of re-resolving defaults. Workload-specific configuration
+and action types stay inside adapters. Unsupported operations fail before creating
+a destination. A test-only third package exercises the shared lifecycle boundary.
+
 ## Execution flow
 
 1. A machine is created from fixed workload bytes and deterministic
