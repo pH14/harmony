@@ -22,7 +22,7 @@ use nes_workload::{
     search::{
         archive::RetentionPolicy,
         campaign::TargetExecution,
-        draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
+        draw::{DrawMixture, draw_mixture_from_identifier},
     },
     target::{ExitKind, Target},
 };
@@ -176,7 +176,6 @@ fn campaign_config(args: &Args) -> Mm2CampaignConfig {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        suffix: SuffixShape::OneToSix,
         mixture: args.mixture,
         victory_input_path: Some(args.output.join("victory-input.json")),
     }

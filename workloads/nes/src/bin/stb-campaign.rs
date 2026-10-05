@@ -16,7 +16,7 @@ use nes_workload::{
     search::{
         archive::RetentionPolicy,
         campaign::{Reporting, TargetExecution},
-        draw::{DrawMixture, SuffixShape},
+        draw::DrawMixture,
     },
     stb::{
         archive::MAX_ARCHIVE_ENTRIES,
@@ -159,7 +159,6 @@ fn campaign_config(args: &Args) -> StbCampaignConfig {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        suffix: SuffixShape::default(),
         mixture: DrawMixture::AlphabetOnly,
         victory_input_path: Some(args.output.join("victory-input.json")),
     }

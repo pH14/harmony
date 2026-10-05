@@ -418,7 +418,7 @@ class EvaluationTests(unittest.TestCase):
         item['search_request'].update({
             'game': 'mm2', 'seed': 7, 'executions': 123,
             'frames': 789, 'wall_seconds': 42, 'workers': 2, 'memory_mib': 64,
-            'selector': 'selector-v1', 'suffix': 'suffix-v1', 'mixture': 'mixture-v1',
+            'selector': 'selector-v1', 'mixture': 'mixture-v1',
             'verification': 'witness'})
         item['result'].update({
             'progress': {'stage_clear': 1}, 'verification': 'witness',

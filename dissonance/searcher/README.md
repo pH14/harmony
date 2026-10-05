@@ -159,9 +159,9 @@ A complete adapter receives the aggregate `Workload` implementation automaticall
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
 
-`InputPolicy` requires three things of a workload: the action cost ceiling,
-the policy identifiers a recording must match, and
-`sample_alphabet`, which draws one action from the workload's vocabulary. The
+`InputPolicy` requires two things of a workload: the policy identifiers a
+recording must match, and `sample_alphabet`, which draws one action from the
+workload's vocabulary. The
 draw receives the action just before it: the previous action of the suffix, or
 the parent's last action for the first one, so a workload can draw a change to
 what the input already holds. The searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
@@ -201,7 +201,7 @@ returning, including adapter caches and pending input.
 starts at the workload's search genesis after setup, survives reset and
 snapshot restore, and excludes probe work. The campaign records this measured
 work separately from the declared per-action cost used by archive paths and
-suffix bounds. Each workload declares both unit labels; the stream header and
+planned finishes. Each workload declares both unit labels; the stream header and
 report carry them, and replay rejects a workload whose identity or units do not
 match. A work budget stops new admissions after the measured total reaches the
 budget; already reserved jobs drain and can overshoot it. Physical cache or
@@ -459,8 +459,8 @@ benchmark with:
 DISSONANCE_BENCHMARK_SPLICE_TAIL=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib bounded_splice -- --nocapture --test-threads=1
 ```
 
-The suffix shape `one_doubling_while_in_place_up_to_64` sets the length of each
-drawn suffix from its parent's earlier jobs. A stretch where a key's place and
+Each drawn suffix takes its length from its parent's earlier jobs. A stretch
+where a key's place and
 preferences stay fixed can only be crossed by a single job, because every state
 inside it ties with or loses to the state that arrived there first. A parent's
 first job runs one action. After a job that kept no state, never left the
@@ -476,9 +476,9 @@ length or longer from the same parent is still in flight, the next job runs one
 action instead. The job in flight already tests that length, and admission in
 planned-finish order returns long jobs late, so more jobs of that length would
 repeat the same test.
-Replay cuts the redrawn suffix to the recorded limit and rejects a record whose
-limit does not fit the shape. It is the default shape; a workload that names
-another shape keeps that one.
+Replay cuts the redrawn suffix to the recorded limit. It rejects a drawn job
+whose limit is missing or outside 1 to 64, and a spliced or continued job that
+records a limit.
 
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
@@ -635,7 +635,7 @@ added there, such as `tier_runs`, reads as empty from a checkpoint written
 before the counter existed.
 `CampaignOrigin::SearchCheckpoint` resumes one. The admission
 window, limits, workload identity and the workload policies that give stored
-inputs and keys their meaning must match. The suffix, mixture and retention
+inputs and keys their meaning must match. The mixture and retention
 policies, the selector, the continuation policy and the objective stop may
 change, so a search can continue under a revised algorithm. The draw table
 policy, the preference portfolio and a workload's `preference_policy` may also

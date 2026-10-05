@@ -20,26 +20,14 @@ use worlds::{State, World};
 
 pub const STAGE_PLACES: u16 = 1024;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SearchSettings {
-    pub suffix: SuffixShape,
     pub mixture: Option<searcher::search::draw::DrawMixture>,
     pub stop_on_objective: Option<bool>,
 }
 
-impl Default for SearchSettings {
-    fn default() -> Self {
-        Self {
-            suffix: SuffixShape::default(),
-            mixture: None,
-            stop_on_objective: None,
-        }
-    }
-}
-
 impl SearchSettings {
     fn apply<const CAPACITY_TWO: bool>(self, config: &mut CampaignConfig<Workload<CAPACITY_TWO>>) {
-        config.suffix = self.suffix;
         if let Some(mixture) = self.mixture {
             config.mixture = mixture;
         }
@@ -118,7 +106,6 @@ use searcher::search::{
         WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
-    draw::SuffixShape,
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
 };
@@ -426,9 +413,6 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
     }
 }
 impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
-    fn max_action_cost(&self) -> u64 {
-        self.config.maximum_action_cost()
-    }
     fn policies(&self, _: &()) -> WorkloadPolicies {
         [(
             "tiny_actions".into(),
@@ -940,7 +924,6 @@ pub fn run_scaled(
             "exit_actions": report.archive.evidence.crossing_actions,
             "pool_actions": report.archive.evidence.crossing_pool_actions,
         })),
-        "suffix_policy": report.suffix_policy,
         "mixture_policy": report.mixture_policy,
         "stop_on_objective": report.stop_campaign_on_objective,
         "success": report.work_to_first_objective.is_some_and(|w| w <= budget),
@@ -1187,7 +1170,7 @@ fn campaign<const CAPACITY_TWO: bool>(
     Ok(serde_json::json!({"seed":seed,"broken":workload.broken,
         "config":workload.config,"work_budget":budget,"work":work,"work_overshoot":work.saturating_sub(budget),
         "work_unit":workload.config.work_unit(),
-        "suffix_policy":report.suffix_policy,"mixture_policy":report.mixture_policy,
+        "mixture_policy":report.mixture_policy,
         "stop_on_objective":report.stop_campaign_on_objective,
         "executions":executions,"first_objective_execution":first_objective_execution,
         "chain_parent_selections":report.archive.evidence.chain_parent_selections,
@@ -1228,7 +1211,6 @@ fn campaign_config<const CAPACITY_TWO: bool>(
         memory_budget_mib: Some(scale.memory_budget_mib),
         materialize_final_artifacts: workload.scale.is_none(),
         run: (),
-        suffix: SuffixShape::default(),
         mixture: workload.config.mixture(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,

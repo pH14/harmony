@@ -26,7 +26,7 @@ use crate::{
         Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_result_sha256,
         replay_campaign_checkpointed, run_campaign_checkpointed,
     },
-    search::draw::{DrawMixture, SuffixShape},
+    search::draw::DrawMixture,
     search::draw_tables::DrawTableHeader,
     search::empirical_steps::EmpiricalStepCheckpoint,
     search::rand::RomuDuoJrRand,
@@ -312,7 +312,6 @@ pub struct SmbCampaignConfig {
     pub vocabulary: SmbButtonVocabulary,
     pub terminal: SmbTerminalPredicate,
     pub retention: RetentionPolicy,
-    pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub victory_input_path: Option<std::path::PathBuf>,
 }
@@ -324,7 +323,6 @@ impl SmbCampaignConfig {
         P: SnapshotState,
     {
         GenericCampaignConfig {
-            suffix: self.suffix,
             mixture: self.mixture,
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -611,10 +609,6 @@ where
         rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
         run.vocabulary.chords().draw(rand, previous)
-    }
-
-    fn max_action_cost(&self) -> u64 {
-        u64::from(LONG_HOLD_FRAMES.1)
     }
 }
 
@@ -932,7 +926,7 @@ mod tests {
         DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignOrigin, SmbCampaignProgressRecord,
         SmbCampaignRun, SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint,
-        SmbSnapshotCheckpointEntry, SmbTerminalPredicate, SuffixShape, derive_selection_seed,
+        SmbSnapshotCheckpointEntry, SmbTerminalPredicate, derive_selection_seed,
     };
     use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution, default_window};
     use crate::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables};
@@ -1034,7 +1028,6 @@ mod tests {
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-            suffix: SuffixShape::default(),
             mixture: DrawMixture::BiasedHalf,
             victory_input_path: None,
         }
@@ -1225,7 +1218,6 @@ mod tests {
                     terminal: None,
                 },
                 &tables,
-                SuffixShape::OneOrTwo,
                 crate::search::draw::MixtureDraw {
                     mixture: DrawMixture::BiasedHalf,
                     weight: 128,
@@ -1697,7 +1689,6 @@ mod tests {
             "whole_tree",
             "nes_pressable_36",
             "frozen_area_span",
-            "one_doubling_while_in_place_up_to_64",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");

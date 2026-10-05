@@ -362,7 +362,7 @@ Licensed-ROM qualification runs locally. CI also builds Nova and STB from pinned
 sources and exercises the common binary, runner, full campaign replay and compact
 export; its short qualification budgets do not claim whole-game completion.
 
-For comparisons across different suffix lengths, set `search.frames` to a
+When compared arms run jobs of different lengths, set `search.frames` to a
 positive NES-frame work budget as well as an execution ceiling and wall limit.
 Selection stops when measured work reaches the threshold and drains the
 existing reservation window. Total work can therefore exceed the threshold;
@@ -389,8 +389,8 @@ failures remain in every row; milestone timings are censored at each run's budge
 `metroid-long-horizon.json` and `metroid-long-horizon-energy-splice.json`
 register a **development diagnostic**
 using historical seeds 3, 4, and 5: four workers, 8 GiB logical archive,
-3 million executions, 400 million admitted frames, and
-`one_doubling_while_in_place_up_to_64`. Every arm uses the same current adapter and executable. Only the
+3 million executions and 400 million admitted frames. Every arm uses the same
+current adapter and executable. Only the
 mutation mixture differs. These restore the earlier
 work/memory scale. They do not reproduce the historical improvement-replay
 implementation, exact reservation schedule, platform, or action stream. These reused seeds are not

@@ -25,9 +25,8 @@ use crate::search::checkpoint::{
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
-    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixShape,
+    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
-    suffix_shape_from_identifier, suffix_shape_identifier,
 };
 use crate::search::draw_tables::{
     DEFAULT_DRAW_TABLE_PARAMETERS, DRAW_TABLE_POLICY_FIELD, DrawTableHeader, DrawTables,
@@ -218,7 +217,6 @@ pub trait Reporting: CampaignTypes {
 }
 
 pub trait InputPolicy: CampaignTypes {
-    fn max_action_cost(&self) -> u64;
     fn policies(&self, run: &Self::Run) -> WorkloadPolicies;
     fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>>;
     fn sample_alphabet(
@@ -248,12 +246,10 @@ pub trait InputPolicy: CampaignTypes {
         let _ = (run, parent, remaining_work);
         None
     }
-    #[allow(clippy::too_many_arguments)]
     fn expand_suffix_duration(
         &self,
         run: &Self::Run,
         state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
         previous: Option<&Self::Action>,
@@ -262,7 +258,6 @@ pub trait InputPolicy: CampaignTypes {
         self.expand_duration_recorded_or_live(
             run,
             state,
-            shape,
             mixture,
             None,
             mutation_seed,
@@ -276,7 +271,6 @@ pub trait InputPolicy: CampaignTypes {
         &self,
         run: &Self::Run,
         state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
@@ -287,7 +281,6 @@ pub trait InputPolicy: CampaignTypes {
             Some(draw) => self.expand_duration_recorded_or_live(
                 run,
                 state,
-                shape,
                 mixture,
                 before,
                 mutation_seed,
@@ -295,15 +288,9 @@ pub trait InputPolicy: CampaignTypes {
                 draw,
                 true,
             ),
-            None => self.expand_suffix_recorded(
-                run,
-                state,
-                shape,
-                mixture,
-                before,
-                mutation_seed,
-                previous,
-            ),
+            None => {
+                self.expand_suffix_recorded(run, state, mixture, before, mutation_seed, previous)
+            }
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -311,7 +298,6 @@ pub trait InputPolicy: CampaignTypes {
         &self,
         run: &Self::Run,
         state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
@@ -320,16 +306,7 @@ pub trait InputPolicy: CampaignTypes {
         replay: bool,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         let _ = draw;
-        self.expand_recorded_or_live(
-            run,
-            state,
-            shape,
-            mixture,
-            before,
-            mutation_seed,
-            previous,
-            replay,
-        )
+        self.expand_recorded_or_live(run, state, mixture, before, mutation_seed, previous, replay)
     }
     fn duration_of_action(&self, run: &Self::Run, action: &Self::Action) -> Option<NonZeroU64> {
         let _ = (run, action);
@@ -348,50 +325,28 @@ pub trait InputPolicy: CampaignTypes {
         &self,
         run: &Self::Run,
         state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
         previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        self.expand_recorded_or_live(
-            run,
-            state,
-            shape,
-            mixture,
-            None,
-            mutation_seed,
-            previous,
-            false,
-        )
+        self.expand_recorded_or_live(run, state, mixture, None, mutation_seed, previous, false)
     }
-    #[allow(clippy::too_many_arguments)]
     fn expand_suffix_recorded(
         &self,
         run: &Self::Run,
         state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        self.expand_recorded_or_live(
-            run,
-            state,
-            shape,
-            mixture,
-            before,
-            mutation_seed,
-            previous,
-            true,
-        )
+        self.expand_recorded_or_live(run, state, mixture, before, mutation_seed, previous, true)
     }
     #[allow(clippy::too_many_arguments)]
     fn expand_recorded_or_live(
         &self,
         run: &Self::Run,
         state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
@@ -400,7 +355,6 @@ pub trait InputPolicy: CampaignTypes {
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         state.draw(before, replay, |view| {
             draw_suffix(
-                shape,
                 mixture.mixture,
                 mixture.weight,
                 mutation_seed,
@@ -644,7 +598,6 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub run: G::Run,
-    pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub retention: RetentionPolicy,
     pub objective_witness_path: Option<PathBuf>,
@@ -680,7 +633,6 @@ pub struct CampaignStreamHeader<T> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_budget_mib: Option<usize>,
     pub resume_policy: String,
-    pub suffix_policy: String,
     pub mixture_policy: String,
     #[serde(flatten)]
     pub workload_policies: WorkloadPolicies,
@@ -819,8 +771,7 @@ pub const PREFERENCE_POLICY_FIELD: &str = "preference_policy";
 
 const PREFERENCE_PORTFOLIO_FIELD: &str = "preference_portfolio";
 
-const RESUMABLE_POLICY_FIELDS: [&str; 10] = [
-    "suffix_policy",
+const RESUMABLE_POLICY_FIELDS: [&str; 9] = [
     "mixture_policy",
     "retention_policy",
     "parent_scheduler",
@@ -854,7 +805,6 @@ pub struct CampaignModeReport<A: Ord, R> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_budget_mib: Option<usize>,
     pub resume_policy: String,
-    pub suffix_policy: String,
     pub mixture_policy: String,
     #[serde(flatten)]
     pub workload_policies: WorkloadPolicies,
@@ -956,9 +906,6 @@ struct ContinuationReservation<G: Workload + ?Sized> {
 fn take_continuation<G: Workload + ?Sized>(
     core: &mut CoordinatorCore<G>,
     from_highest_preference: bool,
-    suffix: SuffixShape,
-    action_cost: fn(&G::Action) -> u64,
-    max_action_cost: u64,
 ) -> Option<ContinuationReservation<G>> {
     let mut examined = 0_usize;
     let mut gaining_fallback = None;
@@ -981,8 +928,7 @@ fn take_continuation<G: Workload + ?Sized>(
         if !outranks && (!gaining || gaining_fallback.is_some()) {
             continue;
         }
-        let mut actions = continuation.actions;
-        suffix.bound_cost(&mut actions, action_cost, max_action_cost);
+        let actions = continuation.actions;
         if core.all_prefixes_archived(parent_index, &actions) {
             continue;
         }
@@ -1012,9 +958,6 @@ fn continuation_attempt<G: Workload + ?Sized>(
     core: &mut CoordinatorCore<G>,
     campaign_seed: u64,
     reservation: u64,
-    suffix: SuffixShape,
-    action_cost: fn(&G::Action) -> u64,
-    max_action_cost: u64,
 ) -> (Option<u16>, Option<ContinuationReservation<G>>) {
     if core.archive.continuation_pending() == 0 {
         return (None, None);
@@ -1025,13 +968,7 @@ fn continuation_attempt<G: Workload + ?Sized>(
     let taken = takes
         .then(|| {
             let from_highest_preference = draws_highest_preference(campaign_seed, reservation);
-            take_continuation(
-                core,
-                from_highest_preference,
-                suffix,
-                action_cost,
-                max_action_cost,
-            )
+            take_continuation(core, from_highest_preference)
         })
         .flatten();
     (Some(energy), taken)
@@ -2040,7 +1977,6 @@ fn stream_header<G: Workload>(
         } else {
             RESUME_IDENTIFIER.to_owned()
         },
-        suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
         mixture_policy: draw_mixture_identifier(config.mixture),
         workload_policies: recorded_policies(workload, &config.run),
         draw_header,
@@ -2394,7 +2330,6 @@ fn build_report<G: Workload>(
         archive_entry_limit: header.archive_entry_limit,
         memory_budget_mib: header.memory_budget_mib,
         resume_policy: header.resume_policy.clone(),
-        suffix_policy: header.suffix_policy.clone(),
         mixture_policy: header.mixture_policy.clone(),
         workload_policies: header.workload_policies.clone(),
         retention_policy: header.retention_policy.clone(),
@@ -2587,15 +2522,11 @@ struct CompletedJob<G: Workload + ?Sized> {
     result_sha256: String,
 }
 
-fn replay_suffix_limit(
-    shape: SuffixShape,
-    drawn: bool,
-    recorded: Option<u8>,
-) -> Result<Option<u8>, Box<dyn Error>> {
-    match (drawn && shape == SuffixShape::DoubleWhileInPlace, recorded) {
+fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
+    match (drawn, recorded) {
         (true, Some(limit)) if (1..=SUFFIX_DOUBLING_LIMIT).contains(&limit) => Ok(Some(limit)),
         (false, None) => Ok(None),
-        _ => Err("recorded suffix limit does not match the suffix shape".into()),
+        _ => Err("recorded suffix limit does not match the drawn suffix".into()),
     }
 }
 
@@ -2942,7 +2873,6 @@ where
     let first_worker_start = Mutex::new(first_worker_start);
     let mut spec_records = BTreeMap::<usize, JobSpecRecord<G>>::new();
     let action_cost = workload.action_cost_fn();
-    let max_action_cost = workload.max_action_cost();
 
     let retention = config.retention;
     let mut admission = telemetry.admission.clone();
@@ -3080,14 +3010,8 @@ where
                     return Ok(None);
                 }
                 let mut consecutive_skips = 0_u64;
-                let (continuation_energy, continuation) = continuation_attempt(
-                    core,
-                    config.campaign_seed,
-                    *reserved,
-                    config.suffix,
-                    action_cost,
-                    max_action_cost,
-                );
+                let (continuation_energy, continuation) =
+                    continuation_attempt(core, config.campaign_seed, *reserved);
                 if let Some(continuation) = continuation {
                     let parent_index = continuation.parent_index;
                     let suffix = continuation.suffix;
@@ -3231,15 +3155,14 @@ where
                     let duration_remaining_work = duration_draw.and(remaining_work);
                     let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
                     let previous = core.archive.last_action(parent_index);
-                    let suffix_limit = (spliced.is_none()
-                        && config.suffix == SuffixShape::DoubleWhileInPlace)
+                    let suffix_limit = spliced
+                        .is_none()
                         .then(|| core.suffix_limit(parent_id, parent_index));
                     let mut suffix = match (spliced, duration_draw) {
                         (Some(tail), _) => tail,
                         (None, Some(draw)) => workload.expand_suffix_duration(
                             &config.run,
                             draw_state,
-                            config.suffix,
                             MixtureDraw {
                                 mixture: config.mixture,
                                 weight: mixture_weight,
@@ -3252,7 +3175,6 @@ where
                         (None, None) => workload.expand_suffix(
                             &config.run,
                             draw_state,
-                            config.suffix,
                             MixtureDraw {
                                 mixture: config.mixture,
                                 weight: mixture_weight,
@@ -3262,9 +3184,6 @@ where
                             previous,
                         )?,
                     };
-                    config
-                        .suffix
-                        .bound_cost(&mut suffix, action_cost, max_action_cost);
                     if let Some(limit) = suffix_limit {
                         suffix.truncate(usize::from(limit));
                     }
@@ -3878,7 +3797,7 @@ fn bootstrap_campaign<G: Workload>(
     counters: &mut CampaignCounters,
 ) -> Result<(), Box<dyn Error>> {
     core.archive
-        .enable_continuations(config.suffix.longest_draw());
+        .enable_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
     })?;
@@ -3918,10 +3837,6 @@ fn search_checkpoint_header<G: Workload>(
     let mut policies = recorded_policies(workload, &config.run);
     for (field, value) in [
         ("schedule_policy", schedule_policy_identifier(config.window)),
-        (
-            "suffix_policy",
-            suffix_shape_identifier(config.suffix).to_owned(),
-        ),
         ("mixture_policy", draw_mixture_identifier(config.mixture)),
         (
             "retention_policy",
@@ -4042,7 +3957,7 @@ fn restore_search_checkpoint<G: Workload>(
         core.archive.rerank_slot_holders();
     }
     core.archive
-        .resume_continuations(config.suffix.longest_draw());
+        .resume_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
     core.evidence = G::evidence_from_checkpoint(&evidence)?;
     *draw_state = if changes.contains_key(DRAW_TABLE_POLICY_FIELD) {
         let parameters = workload.draw_table_parameters(&config.run);
@@ -4403,11 +4318,9 @@ where
     if header.resume_policy != expected_resume {
         return Err("campaign stream resume policy is not recognized".into());
     }
-    let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = resolve_recorded_policies(workload, &header.workload_policies)?;
     let action_cost = workload.action_cost_fn();
-    let max_action_cost = workload.max_action_cost();
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
@@ -4457,7 +4370,7 @@ where
     core.record_progress = true;
     core.bounded_progress_curve = true;
     core.archive
-        .enable_continuations(replay_suffix.longest_draw());
+        .enable_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
     let mut counters = CampaignCounters::new();
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -4525,14 +4438,8 @@ where
         .take(replay_window_depth)
         .enumerate()
     {
-        let (energy, continuation) = continuation_attempt(
-            &mut core,
-            header.campaign_seed,
-            u64::try_from(job_slot)?,
-            replay_suffix,
-            action_cost,
-            max_action_cost,
-        );
+        let (energy, continuation) =
+            continuation_attempt(&mut core, header.campaign_seed, u64::try_from(job_slot)?);
         replay_continuation_energy.insert(job_slot, energy);
         if let Some(continuation) = continuation {
             replay_continuations.insert(job_slot, continuation);
@@ -4629,14 +4536,12 @@ where
                 if duration_checkpoint_before != skip.duration_checkpoint_before {
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
-                let suffix_limit =
-                    replay_suffix_limit(replay_suffix, spliced.is_none(), skip.suffix_limit)?;
+                let suffix_limit = replay_suffix_limit(spliced.is_none(), skip.suffix_limit)?;
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
                         &replay_run,
                         &draw_state,
-                        replay_suffix,
                         MixtureDraw {
                             mixture: replay_mixture,
                             weight: skip.mixture_weight,
@@ -4648,7 +4553,6 @@ where
                         draw,
                     )?,
                 };
-                replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 if let Some(limit) = suffix_limit {
                     suffix.truncate(usize::from(limit));
                 }
@@ -4783,14 +4687,12 @@ where
                 if duration_checkpoint_before != job.duration_checkpoint_before {
                     return Err("replayed job duration state diverged before expansion".into());
                 }
-                let suffix_limit =
-                    replay_suffix_limit(replay_suffix, spliced.is_none(), job.suffix_limit)?;
+                let suffix_limit = replay_suffix_limit(spliced.is_none(), job.suffix_limit)?;
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
                         &replay_run,
                         &draw_state,
-                        replay_suffix,
                         MixtureDraw {
                             mixture: replay_mixture,
                             weight: job.mixture_weight,
@@ -4802,7 +4704,6 @@ where
                         draw,
                     )?,
                 };
-                replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 if let Some(limit) = suffix_limit {
                     suffix.truncate(usize::from(limit));
                 }
@@ -4977,9 +4878,6 @@ where
                         &mut core,
                         header.campaign_seed,
                         u64::try_from(next_slot)?,
-                        replay_suffix,
-                        action_cost,
-                        max_action_cost,
                     );
                     replay_continuation_energy.insert(next_slot, energy);
                     if let Some(continuation) = continuation {
@@ -5088,7 +4986,7 @@ mod tests {
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
         SelectorPath, entries_by_suffix,
     };
-    use crate::search::draw::{DrawMixture, MixtureDraw, MixtureEnergy, SuffixShape};
+    use crate::search::draw::{DrawMixture, MixtureDraw, MixtureEnergy};
     use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
@@ -5263,29 +5161,27 @@ mod tests {
             &self,
             _run: &Self::Run,
             _state: &DrawTables<Self::Action>,
-            _shape: SuffixShape,
             _mixture: MixtureDraw,
             mutation_seed: u64,
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-            let length = 1 + usize::from(mutation_seed >> 32 & 1 == 1);
-            Ok(vec![TestAction::new(mutation_seed as u8, 1); length])
+            let long = mutation_seed >> 32 & 1 == 1;
+            let length = 1 + usize::from(long);
+            Ok(vec![
+                TestAction::new(mutation_seed as u8, 1 + u8::from(long));
+                length
+            ])
         }
         fn expand_suffix_recorded(
             &self,
             run: &Self::Run,
             state: &DrawTables<Self::Action>,
-            shape: SuffixShape,
             mixture: MixtureDraw,
             _before: Option<&EmpiricalStepCheckpoint>,
             mutation_seed: u64,
             previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-            self.expand_suffix(run, state, shape, mixture, mutation_seed, previous)
-        }
-
-        fn max_action_cost(&self) -> u64 {
-            2
+            self.expand_suffix(run, state, mixture, mutation_seed, previous)
         }
     }
 
@@ -5869,7 +5765,6 @@ mod tests {
                 memory_budget_mib: None,
                 materialize_final_artifacts: true,
                 run: (),
-                suffix: SuffixShape::OneOrTwo,
                 mixture: DrawMixture::AlphabetOnly,
                 retention: RetentionPolicy::Unprobed,
                 objective_witness_path: Some(witness_path.clone()),
@@ -5916,7 +5811,7 @@ mod tests {
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
 "archive_entry_limit":128,"action_vocabulary":"test_inputs",
-"key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
+"key_policy":"test_key","duration_policy":"stratified",
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
 "parent_scheduler":"tier_pace_yield_cell_recent_count_decay_v1","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
@@ -6571,7 +6466,6 @@ mod tests {
             "mechanical_watermark_bounded_1024_v2"
         );
         assert_eq!(header.mixture_policy, "biased_half");
-        assert_eq!(header.suffix_policy, "one_or_two");
         assert_eq!(header.resume_policy, "whole_tree");
         assert_eq!(header.schema_version, super::CAMPAIGN_SCHEMA_VERSION);
         assert_eq!(header.draw_header, None);
@@ -6773,7 +6667,6 @@ mod tests {
             memory_budget_mib: Some(8),
             materialize_final_artifacts: true,
             run: (),
-            suffix: SuffixShape::OneOrTwo,
             mixture: DrawMixture::EnergySplice { scale: 6 },
             retention: RetentionPolicy::Unprobed,
             objective_witness_path: None,
@@ -7073,7 +6966,6 @@ mod tests {
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             run: (),
-            suffix: SuffixShape::OneOrTwo,
             mixture: DrawMixture::AlphabetOnly,
             retention: RetentionPolicy::Unprobed,
             objective_witness_path: None,

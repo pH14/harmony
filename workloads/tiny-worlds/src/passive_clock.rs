@@ -133,7 +133,6 @@ impl Config {
 mod tests {
     use super::{Config, HoldBand, State};
     use crate::{Keep, SearchSettings, Workload, run_kept, worlds::World};
-    use searcher::search::draw::SuffixShape;
 
     fn config() -> Config {
         Config {
@@ -181,51 +180,31 @@ mod tests {
     }
 
     #[test]
-    fn bounded_suffix_cannot_cross_hidden_clock_but_full_suffix_replays() {
+    fn a_suffix_crosses_the_hidden_clock_and_replays() {
         let workload = Workload {
             config: World::PassiveClock(config()),
             broken: false,
             scale: None,
         };
         for _ in 0..3 {
-            let seed = crate::test_seed();
-            let bounded = run_kept(
+            let report = run_kept(
                 &workload,
                 Keep::Portfolio,
-                seed,
+                crate::test_seed(),
                 12_000,
                 true,
                 1,
-                SearchSettings {
-                    suffix: SuffixShape::OneToSixBounded,
-                    ..SearchSettings::default()
-                },
+                SearchSettings::default(),
             )
             .unwrap();
-            assert_eq!(bounded["success"], false);
-            assert_eq!(bounded["live_entries"], 1);
-            assert!(bounded["evidence"]["passive_clock"]["first_event_work"][0].is_null());
-            let full = run_kept(
-                &workload,
-                Keep::Portfolio,
-                seed,
-                12_000,
-                true,
-                1,
-                SearchSettings {
-                    suffix: SuffixShape::OneToSix,
-                    ..SearchSettings::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(full["success"], true);
-            assert_eq!(full["work"].as_u64().unwrap() % 8, 0);
-            assert!(full["first_objective_execution"].as_u64().unwrap() > 0);
+            assert_eq!(report["success"], true);
+            assert_eq!(report["work"].as_u64().unwrap() % 8, 0);
+            assert!(report["first_objective_execution"].as_u64().unwrap() > 0);
             assert!(
-                full["evidence"]["passive_clock"]["first_event_execution"][0]
+                report["evidence"]["passive_clock"]["first_event_execution"][0]
                     .as_u64()
                     .unwrap()
-                    <= full["first_objective_execution"].as_u64().unwrap()
+                    <= report["first_objective_execution"].as_u64().unwrap()
             );
         }
     }
@@ -299,33 +278,6 @@ mod tests {
             crate::worlds::State::PassiveClock(State { elapsed: 16 })
         );
         assert_eq!(workload.execution_work(&target), 24);
-    }
-
-    #[test]
-    fn visible_clock_removes_the_bounded_suffix_loss() {
-        let mut w = config();
-        w.events = vec![8, 16, 24, 32, 40, 41];
-        let workload = Workload {
-            config: World::PassiveClock(w),
-            broken: false,
-            scale: None,
-        };
-        for _ in 0..3 {
-            let report = run_kept(
-                &workload,
-                Keep::Portfolio,
-                crate::test_seed(),
-                12_000,
-                true,
-                1,
-                SearchSettings {
-                    suffix: SuffixShape::OneToSixBounded,
-                    ..SearchSettings::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(report["success"], true);
-        }
     }
 
     #[test]

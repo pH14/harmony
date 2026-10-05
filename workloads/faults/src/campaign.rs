@@ -21,7 +21,7 @@ use searcher::{
             Reporting, SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
             default_window, postcard_result_sha256, run_campaign_checkpointed_with_options,
         },
-        draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
         duration::{DurationDraw, DurationRequest},
         empirical_steps::EmpiricalStepCheckpoint,
@@ -175,7 +175,6 @@ pub struct FaultCampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub objective_witness_path: Option<PathBuf>,
     pub placement: Option<ThreadPlacement>,
@@ -198,7 +197,6 @@ impl FaultCampaignConfig {
             run: FaultCampaignRun {
                 vocabulary: self.vocabulary.clone(),
             },
-            suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
             objective_witness_path: self.objective_witness_path.clone(),
@@ -385,10 +383,6 @@ impl Reporting for FaultWorkload {
 }
 
 impl InputPolicy for FaultWorkload {
-    fn max_action_cost(&self) -> u64 {
-        u64::from(u16::MAX)
-    }
-
     fn policies(&self, run: &FaultCampaignRun) -> WorkloadPolicies {
         [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
@@ -466,7 +460,6 @@ impl InputPolicy for FaultWorkload {
         &self,
         run: &FaultCampaignRun,
         state: &DrawTables<FaultAction>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
@@ -476,7 +469,6 @@ impl InputPolicy for FaultWorkload {
         self.expand_duration_recorded_or_live(
             run,
             state,
-            shape,
             mixture,
             before,
             mutation_seed,
@@ -491,7 +483,6 @@ impl InputPolicy for FaultWorkload {
         &self,
         run: &FaultCampaignRun,
         state: &DrawTables<FaultAction>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
@@ -499,16 +490,7 @@ impl InputPolicy for FaultWorkload {
         draw: DurationDraw<FaultArchiveKey>,
         replay: bool,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        held_suffix(
-            run,
-            state,
-            shape,
-            mixture,
-            before,
-            mutation_seed,
-            replay,
-            draw,
-        )
+        held_suffix(run, state, mixture, before, mutation_seed, replay, draw)
     }
 
     fn duration_of_action(
@@ -571,11 +553,9 @@ fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn held_suffix(
     run: &FaultCampaignRun,
     state: &DrawTables<FaultAction>,
-    shape: SuffixShape,
     mixture: MixtureDraw,
     before: Option<&EmpiricalStepCheckpoint>,
     mutation_seed: u64,
@@ -588,7 +568,6 @@ fn held_suffix(
     let mut suffix =
         state.draw(before, replay, |view| {
             draw_suffix(
-                shape,
                 mixture.mixture,
                 mixture.weight,
                 mutation_seed,
@@ -1067,21 +1046,12 @@ mod tests {
         let mut event_parks = 0;
         for seed in 0..128 {
             let suffix = game
-                .expand_suffix_duration(
-                    &run,
-                    &tables,
-                    SuffixShape::OneOrTwo,
-                    mixture,
-                    seed,
-                    None,
-                    draw,
-                )
+                .expand_suffix_duration(&run, &tables, mixture, seed, None, draw)
                 .unwrap();
             let replay = game
                 .expand_suffix_recorded_duration(
                     &run,
                     &tables,
-                    SuffixShape::OneOrTwo,
                     mixture,
                     Some(&checkpoint),
                     seed,
@@ -1113,7 +1083,6 @@ mod tests {
             game.expand_suffix_recorded_duration(
                 &run,
                 &tables,
-                SuffixShape::OneOrTwo,
                 mixture,
                 Some(&checkpoint),
                 1,
@@ -1127,16 +1096,8 @@ mod tests {
             ..draw
         };
         assert!(
-            game.expand_suffix_duration(
-                &run,
-                &tables,
-                SuffixShape::OneOrTwo,
-                mixture,
-                1,
-                None,
-                out_of_range
-            )
-            .is_err()
+            game.expand_suffix_duration(&run, &tables, mixture, 1, None, out_of_range)
+                .is_err()
         );
     }
 

@@ -21,8 +21,7 @@ chord from that starting state up to the stop frame, so the snapshot holds the
 state Mario died or won in. A viability probe runs its frames the same way and
 then returns the machine to the state it started from.
 
-A job's length comes from its parent's earlier jobs, through the searcher's
-`one_doubling_while_in_place_up_to_64` suffix shape. A parent's first job runs
+A job's length comes from its parent's earlier jobs. A parent's first job runs
 one chord, and each job that keeps no state and stays in the parent's place
 doubles the next one, up to 64 chords. SMB has stretches where the key does not
 change: the flag tally lasts about 257 frames and the castle's Toad scene 378.

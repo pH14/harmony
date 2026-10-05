@@ -10,7 +10,7 @@ use searcher::search::{
         TargetExecution, WorkloadPolicies, postcard_result_sha256, postcard_value_sha256,
         replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
     },
-    draw::{DrawMixture, MixtureDraw, SuffixShape},
+    draw::{DrawMixture, MixtureDraw},
     draw_tables::DrawTables,
     duration::{DurationDraw, DurationRequest},
     empirical_steps::EmpiricalStepCheckpoint,
@@ -131,10 +131,6 @@ impl Reporting for TimingWorkload {
 }
 
 impl InputPolicy for TimingWorkload {
-    fn max_action_cost(&self) -> u64 {
-        64
-    }
-
     fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
         [("duration_policy".to_owned(), "fixture-v1".to_owned())]
             .into_iter()
@@ -176,7 +172,6 @@ impl InputPolicy for TimingWorkload {
         &self,
         _run: &Self::Run,
         _state: &DrawTables<Self::Action>,
-        _shape: SuffixShape,
         _mixture: MixtureDraw,
         _mutation_seed: u64,
         _previous: Option<&Self::Action>,
@@ -191,13 +186,12 @@ impl InputPolicy for TimingWorkload {
         &self,
         run: &Self::Run,
         state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
         mixture: MixtureDraw,
         _before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         previous: Option<&Self::Action>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        self.expand_suffix(run, state, shape, mixture, mutation_seed, previous)
+        self.expand_suffix(run, state, mixture, mutation_seed, previous)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -205,7 +199,6 @@ impl InputPolicy for TimingWorkload {
         &self,
         _run: &Self::Run,
         _state: &DrawTables<Self::Action>,
-        _shape: SuffixShape,
         _mixture: MixtureDraw,
         _before: Option<&EmpiricalStepCheckpoint>,
         draw_seed: u64,
@@ -215,16 +208,10 @@ impl InputPolicy for TimingWorkload {
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         let _ = draw_seed;
         if self.fail_timed_action {
-            return Ok(vec![
-                TimedAction {
-                    context: 2,
-                    duration: NonZeroU64::MIN,
-                },
-                TimedAction {
-                    context: 3,
-                    duration: draw.duration,
-                },
-            ]);
+            return Ok(vec![TimedAction {
+                context: 3,
+                duration: draw.duration,
+            }]);
         }
         Ok(vec![TimedAction {
             context: draw.context.0,
@@ -412,7 +399,6 @@ fn fixture_config() -> CampaignConfig<TimingWorkload> {
         memory_budget_mib: None,
         materialize_final_artifacts: true,
         run: (),
-        suffix: SuffixShape::OneOrTwo,
         mixture: DrawMixture::AlphabetOnly,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,

@@ -21,7 +21,7 @@ use crate::{
             SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
-        draw::{DrawMixture, SuffixShape},
+        draw::DrawMixture,
         draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
@@ -180,7 +180,6 @@ pub struct StbCampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub victory_input_path: Option<PathBuf>,
 }
@@ -200,7 +199,6 @@ impl StbCampaignConfig {
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: StbCampaignRun,
-            suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
             objective_witness_path: self.victory_input_path.clone(),
@@ -415,10 +413,6 @@ impl Reporting for StbGame {
 }
 
 impl InputPolicy for StbGame {
-    fn max_action_cost(&self) -> u64 {
-        u64::from(crate::stb::archive::LONGEST_HOLD_FRAMES)
-    }
-
     fn policies(&self, _run: &StbCampaignRun) -> WorkloadPolicies {
         [
             (

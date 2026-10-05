@@ -19,11 +19,7 @@ use nes_workload::{
         },
         target::{NovaInput, NovaLevel, NovaMechanicalState, NovaVideoMetadata},
     },
-    search::{
-        archive::RetentionPolicy,
-        campaign::TargetExecution,
-        draw::{DrawMixture, SuffixShape},
-    },
+    search::{archive::RetentionPolicy, campaign::TargetExecution, draw::DrawMixture},
     target::{ExitKind, Target},
 };
 use serde_json::json;
@@ -154,7 +150,6 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        suffix: SuffixShape::default(),
         mixture: DrawMixture::AlphabetOnly,
         victory_input_path: Some(args.output.join("victory-input.json")),
     }

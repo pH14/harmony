@@ -45,11 +45,9 @@ preferences: charge first and health first. `capacity_two` keeps two holders
 per slot under the charge-first preference alone.
 
 An optional `search` object selects existing campaign policies without changing
-the world: `suffix` accepts `one_or_two`, `one_to_six`,
-`one_to_six_within_3_max_action_cost_full_hold`, or
-`one_doubling_while_in_place_up_to_64`; `mixture` accepts the identifiers
-documented in the searcher README, including `energy_splice:6`; and
-`stop_on_objective` overrides campaign stopping. Omitted fields retain the
+the world: `mixture` accepts the identifiers documented in the searcher
+README, including `energy_splice:6`, and `stop_on_objective` overrides campaign
+stopping. Omitted fields retain the
 world's normal settings. Ordinary runs stop at their first objective by default;
 scaled runs normally continue to their work budget. Calibration can set
 `stop_on_objective=true` in a scaled run and compare first-objective tries and
@@ -151,8 +149,8 @@ costs use the four-symbol transition alphabet.
 For this family, an action is its held duration and both declared cost units are
 `clock_ticks`; other families retain unit-cost `transitions`. A hold is charged
 in full even if its endpoint passes the final clock reading. Ordinary and scaled
-reports give first-objective executions beside work and the resolved suffix,
-mixture and stopping policies. `passive_clock` evidence
+reports give first-objective executions beside work and the resolved mixture
+and stopping policies. `passive_clock` evidence
 counts admitted hold durations, jobs by the parent's actual event phase, the
 maximum selected clock in each phase, and the first work/execution for each
 event. These bounded aggregates remain available in scaled calibration runs.
@@ -170,8 +168,8 @@ Long holds consume that budget in relatively few suffixes. It detects changes
 that cross the hidden gap within this short horizon; an improvement that still
 needs hundreds of thousands of executions can remain censored in both arms.
 Equal misses and an equal budget-capped total-work ratio do not establish equal
-performance. The gaps exceed the ordinary 720-tick suffix bound, but a miss at
-this budget alone is not a rate estimate or evidence of predictive accuracy.
+performance. A miss at this budget alone is not a rate estimate or evidence of
+predictive accuracy.
 Use longer scaled runs and prospective game forecasts to qualify such gains.
 
 When both arms miss, the panel cannot estimate the `wait entry to goal` leg.
@@ -348,8 +346,8 @@ the first objective, or total work for an unfinished campaign.
 `held-world` compares controller chord draws on a side-scrolling course of
 ground and pits. It reads one JSON request with `course` (`ground_px` 16–1,024
 and one to 32 `pits_px`, each 1–120 pixels), `seed`, `work_budget` in frames
-(up to 400 million, or 20 million with `verify`), `workers`, `suffix`,
-`mixture`, and the optional `chords` and `verify`.
+(up to 400 million, or 20 million with `verify`), `workers`, `mixture`, and
+the optional `chords` and `verify`.
 
 B raises the top speed from walking to running. Holding A lengthens a jump, and
 a new jump needs a new press. A running jump clears pits that a walking jump
@@ -380,7 +378,7 @@ first upgraded position/lane arrivals, acquisition, alignment, and continuation
 transfers that advance an upgraded state. Donor and leaf states come from
 historical admissions. A `non_upgraded_donor` label describes their recorded
 phase. Job-end work includes replay overhead. The action mixture draws random
-one- or two-action suffixes and supports continuation dispatch.
+suffixes and supports continuation dispatch.
 
 ## Searcher panel
 
@@ -445,7 +443,7 @@ layouts.
 | Fresh crossing | Same transitions, rooted at the exit entrance | Control for crossing difficulty without the competing archive | To crossing entry (zero) |
 | Rare flat archive crossing | 256 places, eight exit steps, useful-action denominator 1,024 | Mega Man 2: difficult local retries compete with a populated flat-tier archive | To crossing entry, in tries |
 | Rare fresh crossing | Same transitions, rooted at the exit entrance | Control for retry difficulty without the competing archive | To crossing entry, in tries (zero) |
-| Passive clock hidden gap | 960–1,230 hidden clock ticks after two visible events; weighted holds, existing full-six suffix | Automatic equipment messages can advance without a retained cell change | To wait entry |
+| Passive clock hidden gap | 960–1,230 hidden clock ticks after two visible events; weighted holds | Automatic equipment messages can advance without a retained cell change | To wait entry |
 | Passive clock visible progress | Same hold distribution and gap range, with an event every 40 ticks | Cause-removal control exposing the waiting progress | As above |
 | Farm loop | `inner` 20, 4 farms | Refills away from the next item draw the search back | To the item, out of the item region |
 | Whole-map re-walk | `inner` 4, 9 items | Each item sends a new tier back across the map | To the last item |
@@ -600,13 +598,10 @@ The existing uniform-four crossing makes local retries much easier than the
 recorded game leg. Increasing the denominator permits calibration to its
 retry rate before an allocation forecast. A pool gap alone does not qualify
 that calibration or show that action sampling caused the native gap.
-Hiding four consecutive steps with a unit-cost, three-action bounded suffix
-prevents reaching the exit; censored equality in that control is not an
-allocation null result.
 
 The comparison panel includes `rare flat archive crossing` and `rare fresh
-crossing`: 256 pool places, eight visible exit steps, denominator 1,024, the
-bounded one-to-six suffix and `energy_splice:6`. They use a 2,000,000-action
+crossing`: 256 pool places, eight visible exit steps, denominator 1,024 and
+`energy_splice:6`. They use a 2,000,000-action
 budget, stop at the goal, and run through the scaled low-memory reporting path.
 The fresh world isolates local retries. The flat world measures the same exit
 with a populated flat-tier pool. Its entry-to-goal leg counts executions;

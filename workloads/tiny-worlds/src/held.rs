@@ -14,7 +14,7 @@ use searcher::search::{
         WorkloadPolicies, default_window, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
-    draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
+    draw::draw_mixture_from_identifier,
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
 };
@@ -35,7 +35,6 @@ const DIRECTION_BITS: u8 = 0xf0;
 const DIRECTIONS: [u8; 9] = [0x00, 0x80, 0x40, 0x10, 0x20, 0x90, 0xa0, 0x50, 0x60];
 const SHORT_HOLD: (u8, u8) = (2, 12);
 const LONG_HOLD: (u8, u8) = (96, 120);
-const MAX_HOLD: u8 = 120;
 const BAND_PX: i32 = 128;
 const COLUMN_PX: i32 = 16;
 const HEIGHT_PX: i32 = 16;
@@ -340,9 +339,6 @@ impl Reporting for HeldWorkload {
 }
 
 impl InputPolicy for HeldWorkload {
-    fn max_action_cost(&self) -> u64 {
-        u64::from(MAX_HOLD)
-    }
     fn policies(&self, _: &()) -> WorkloadPolicies {
         [
             ("held_chord_draw", self.chord_identifier()),
@@ -553,7 +549,6 @@ pub struct Request {
     pub seed: u64,
     pub work_budget: u64,
     pub workers: u32,
-    pub suffix: String,
     pub mixture: String,
     #[serde(default)]
     pub chords: ChordDraw,
@@ -655,7 +650,6 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
         memory_budget_mib: Some(256),
         materialize_final_artifacts: true,
         run: (),
-        suffix: suffix_shape_from_identifier(&request.suffix)?,
         mixture: draw_mixture_from_identifier(&request.mixture)?,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
@@ -705,7 +699,6 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
     let per_thousand = |count: u64| count as f64 * 1000.0 / report.execution_work.max(1) as f64;
     Ok(serde_json::json!({
         "seed": request.seed,
-        "suffix": request.suffix,
         "mixture": request.mixture,
         "chords": request.chords,
         "work_budget": request.work_budget,
@@ -818,7 +811,6 @@ mod tests {
                 seed: 11,
                 work_budget: 200_000,
                 workers: 2,
-                suffix: "one_to_six_within_3_max_action_cost_full_hold".into(),
                 mixture: "energy_splice:6".into(),
                 chords,
                 verify: true,

@@ -16,7 +16,6 @@
     "executions": 3000000,
     "window": 2,
     "wall_seconds": 7200,
-    "suffix": "one_doubling_while_in_place_up_to_64",
     "mixture": "alphabet_only",
     "verification": "witness",
     "frames": 400000000

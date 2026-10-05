@@ -195,12 +195,6 @@ impl World {
             "transitions"
         }
     }
-    pub fn maximum_action_cost(&self) -> u64 {
-        match self {
-            Self::PassiveClock(w) => w.maximum_hold(),
-            _ => 1,
-        }
-    }
     pub fn action_cost_fn(&self) -> fn(&u8) -> u64 {
         if matches!(self, Self::PassiveClock(_)) {
             |a| u64::from(*a)

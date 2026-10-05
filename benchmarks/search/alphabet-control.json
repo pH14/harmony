@@ -16,7 +16,6 @@
     "executions": 400000,
     "window": 2,
     "wall_seconds": 900,
-    "suffix": "one_doubling_while_in_place_up_to_64",
     "mixture": "alphabet_only",
     "verification": "witness",
     "frames": 60000000
@@ -28,7 +27,6 @@
       "origin": "power-on gameplay genesis",
       "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
       "search": {
-        "suffix": "one_doubling_while_in_place_up_to_64",
         "frames": 80000000,
         "executions": 600000
       }
@@ -58,7 +56,6 @@
       "origin": "power-on new-game genesis",
       "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
       "search": {
-        "suffix": "one_doubling_while_in_place_up_to_64",
         "executions": 500000
       }
     },

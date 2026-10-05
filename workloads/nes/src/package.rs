@@ -8,7 +8,7 @@ use crate::{
 use searcher::search::{
     archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
     campaign::{CampaignConfig, CampaignOrigin, default_window, run_campaign_checkpointed},
-    draw::{DrawMixture, SuffixShape},
+    draw::DrawMixture,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -121,7 +121,6 @@ fn record_identity(
 fn search<G: Endpointed>(
     game: G,
     run: G::Run,
-    suffix: SuffixShape,
     backend: &str,
     options: &SearchOptions,
 ) -> Result<(), Box<dyn Error>>
@@ -143,7 +142,6 @@ where
         memory_budget_mib: None,
         materialize_final_artifacts: true,
         run,
-        suffix,
         mixture: DrawMixture::default(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: Some(options.output.join("victory.json")),
@@ -218,14 +216,12 @@ pub fn search_native(
         RomKind::Smb => search(
             SmbGame::new(rom, core, &core_hash),
             smb_run(),
-            SuffixShape::default(),
             "native",
             options,
         ),
         RomKind::Nova => search(
             NovaGame::new(rom, core, &core_hash),
             NovaCampaignRun,
-            SuffixShape::default(),
             "native",
             options,
         ),
@@ -279,14 +275,12 @@ pub fn search_consonance(
         RomKind::Smb => search(
             SmbGame::new_consonance(rom, kernel, &initramfs),
             smb_run(),
-            SuffixShape::default(),
             "consonance",
             options,
         ),
         RomKind::Nova => search(
             NovaGame::new_consonance(rom, kernel, &initramfs),
             NovaCampaignRun,
-            SuffixShape::default(),
             "consonance",
             options,
         ),

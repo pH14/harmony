@@ -157,8 +157,8 @@ short holds of 2--12 frames or long holds of 48--120 frames. The adapter
 supplies that vocabulary, with no tap button, to the shared NES chord draw in
 the [package README](../../README.md#chord-draw); the searcher owns the suffix
 draw and the retained-input table. The primary campaign uses ordinary `Unprobed`
-admission, `OneToSix` suffixes, and the game-neutral `AlphabetOnly` draw
-mixture, which never consults the table. The repaired survival helper is
+admission and the game-neutral `AlphabetOnly` draw mixture, which never
+consults the table. The repaired survival helper is
 standalone probe code; `ProbeAtAdmission` is explicitly rejected because
 the primary mode has no demonstrated admission problem.
 
