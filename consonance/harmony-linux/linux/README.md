@@ -170,14 +170,20 @@ through step five, and checks that direct restore preserves every nested-state
 byte. This helper isolates host VMCS synchronization; the OCI milestone checks
 continue to use the production inner Consonance driver.
 
-`trace-nested-vmcs12.sh start` adds a host kprobe on Intel nested VM entry.
-Each event records the first 1 KiB of the vCPU's cached VMCS12 and the
-host's VMCS12 dirty, rare-field sync, and VMCS02 initialization flags. It finds
-their offsets from the `kvm_intel` BTF with `pahole`. A failed nested entry
-reflected to L1 is not dumped by `dump_invalid_vmcs`, so these events are the
-only record of the guest state L1 asked the host to enter. The
-`kvm_nested_vmexit_inject` tracepoint records each exit reason between entries.
-`trace-nested-vmcs12.sh stop` removes the probe.
+`trace-nested-vmcs12.sh start` adds host kprobes on Intel nested VM entry.
+Each `vmcs12_enter` event records the first 1 KiB of the vCPU's cached VMCS12
+and the host's VMCS12 dirty, rare-field sync, and VMCS02 initialization flags.
+Each `vmcs02_run` event records the loaded VMCS page and the host's queued
+interrupt, exception, and NMI state before the host enters L2. A host that uses
+Hyper-V enlightened VMCS keeps that page in its documented memory layout, so
+the event holds the guest state the host asked the hypervisor to enter.
+`vmcs02_exit` records the same state when an L2 entry fails, and the
+`inject_*` events record each event the host injects into L2. The script finds
+offsets from the `kvm_intel` BTF with `pahole`. A failed nested entry reflected
+to L1 is not dumped by `dump_invalid_vmcs`, so these events are the only record
+of the state on both sides of that entry. The `kvm_nested_vmexit_inject`
+tracepoint records each exit reason between entries.
+`trace-nested-vmcs12.sh stop` removes the probes.
 
 These targets remain direct substrate checks and are independent of the OCI
 runtime assembly:
