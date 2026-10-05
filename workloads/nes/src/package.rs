@@ -225,7 +225,7 @@ pub fn search_native(
         RomKind::Nova => search(
             NovaGame::new(rom, core, &core_hash),
             NovaCampaignRun,
-            SuffixShape::OneToSixBounded,
+            SuffixShape::default(),
             "native",
             options,
         ),
@@ -286,7 +286,7 @@ pub fn search_consonance(
         RomKind::Nova => search(
             NovaGame::new_consonance(rom, kernel, &initramfs),
             NovaCampaignRun,
-            SuffixShape::OneToSixBounded,
+            SuffixShape::default(),
             "consonance",
             options,
         ),

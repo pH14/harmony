@@ -176,7 +176,7 @@ def world_requests(world: str, count: int) -> list[dict]:
                     {"minimum": 2, "maximum": 7, "weight": 2},
                     {"minimum": 2, "maximum": 12, "weight": 11},
                     {"minimum": 48, "maximum": 120, "weight": 11}]}}
-            search = {"suffix": "one_to_six", "mixture": "energy_splice:6"}
+            search = {"mixture": "energy_splice:6"}
         row = {"arm": world, "request": {"config": config, "seed": secrets.randbits(64),
                                           "work_budget": BUDGETS.get(world, WORLD_BUDGET), "broken": False,
                                           "verify": False, "keep": "portfolio"}}
@@ -185,8 +185,7 @@ def world_requests(world: str, count: int) -> list[dict]:
         if "action_denominator" in fields:
             row["request"].update({
                 "work_budget": 2_000_000,
-                "search": {"suffix": "one_to_six_within_3_max_action_cost_full_hold",
-                           "mixture": "energy_splice:6", "stop_on_objective": True},
+                "search": {"mixture": "energy_splice:6", "stop_on_objective": True},
                 "scale": {"workers": 1, "window": 2,
                           "memory_budget_mib": 8192, "archive_entries": 4096,
                           "action_cost_ns": 0, "action_sleep_ns": 0, "snapshot_bytes": 0},

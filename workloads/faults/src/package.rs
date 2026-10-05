@@ -412,7 +412,7 @@ mod live {
             memory_budget_mib: Some(MEMORY_BUDGET_MIB),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::Unprobed,
-            suffix: SuffixShape::OneToSix,
+            suffix: SuffixShape::default(),
             mixture: DrawMixture::AlphabetOnly,
             objective_witness_path: Some(options.output.join("first-bug-input.json")),
             placement: Some(pinned(resources.placement.clone())),
