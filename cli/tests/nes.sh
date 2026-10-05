@@ -19,7 +19,7 @@ PYTHON
 "$binary" branch "$evidence/search" --step 0 --stop --out "$evidence/prefix"
 "$binary" replay "$evidence/prefix" --out "$evidence/prefix-copy"
 printf '%s\n' '{"actions":[{"buttons":0,"hold_frames":1},{"buttons":0,"hold_frames":1}]}' > "$evidence/input.json"
-"$binary" run "$rom" --config-toml "$recipe" --actions "$evidence/input.json" --out "$evidence/scripted"
+"$binary" run "$rom" --config-toml "$recipe" --actions "$evidence/input.json" --repeat 2 --out "$evidence/scripted"
 "$binary" branch "$evidence/scripted" --step 1 --stop --out "$evidence/nonempty-prefix"
 "$binary" search --from "$evidence/nonempty-prefix" --executions 4 --out "$evidence/rooted"
 "$binary" resume "$evidence/rooted" --executions 4 --out "$evidence/continued"
@@ -30,6 +30,7 @@ import json, sys
 from pathlib import Path
 root=Path(sys.argv[1])
 def manifest(name): return json.loads((root/name/'manifest.json').read_text())
+assert len(manifest('scripted')['payload']['repeats']) == 2
 assert manifest('search')['payload']['witness']==manifest('replay')['payload']['witness']
 assert manifest('prefix')['payload']['input']['actions']==[]
 assert manifest('prefix')['payload']==manifest('prefix-copy')['payload']
@@ -48,3 +49,44 @@ status=0
 test "$status" -eq 2
 test ! -e "$evidence/refused"
 grep -q 'recorded artifact input has changed' "$evidence/tamper.txt"
+
+python3 - "$binary" "$rom" "$recipe" "$evidence" <<'PYTHON'
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+binary, rom, recipe, evidence = sys.argv[1:]
+root = Path(evidence)
+run = root / 'interrupted'
+with (root / 'interrupted.log').open('w') as log:
+    process = subprocess.Popen([binary, 'search', rom, '--config-toml', recipe,
+        '--executions', '10000', '--out', str(run)], stdout=log, stderr=log, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 45
+        journal = run / 'package/checkpoints/checkpoints.jsonl'
+        while True:
+            if journal.exists():
+                try:
+                    records = [json.loads(line) for line in journal.read_text().splitlines()]
+                    if records and (journal.parent / Path(records[-1]['file']).name).is_file():
+                        break
+                except (ValueError, KeyError):
+                    pass
+            if process.poll() is not None:
+                raise AssertionError('search exited before interruption')
+            if time.monotonic() >= deadline:
+                raise AssertionError('no checkpoint within 45 seconds')
+            time.sleep(0.05)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+records = []
+for line in journal.read_text().splitlines():
+    try:
+        records.append(json.loads(line))
+    except ValueError:
+        break
+completed = records[-1]['executions']
+subprocess.run([binary, 'resume', str(run), '--executions', '4', '--out', str(root / 'recovered')], check=True)
+report = json.loads((root / 'recovered/report.json').read_text())
+assert report['executions_completed'] == completed + 4
+PYTHON

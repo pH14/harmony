@@ -201,7 +201,8 @@ retained whole-search checkpoint. Its budgets are additional: `--executions 5000
 permits 5,000 more executions from that checkpoint, while `--for 10m` grants a new
 10-minute wall window. With neither, it adds 1,000 executions. A time-only resume
 removes the previous execution ceiling. Checkpoints are written periodically and
-at completion; an interrupted run can retain an earlier checkpoint. A new seed
+at completion; an interrupted run can retain an earlier checkpoint. NES retains
+its checkpoint journal and origin input under the run's `package` directory. A new seed
 intentionally changes the draw sequence.
 
 Run names resolve beneath `.harmony/runs`; saved-run commands also accept a run

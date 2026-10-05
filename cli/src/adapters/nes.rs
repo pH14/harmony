@@ -168,7 +168,7 @@ impl Package for Nes {
             let result = (|| {
                 for _ in 0..request.repeat {
                     let witness = replay(&out, &m, input.clone())?;
-                    m.payload = serde_json::json!({"input":input,"finding":witness["victory"],"witness":witness});
+                    record_witness(&mut m, &input, witness, None)?;
                 }
                 Ok(0)
             })();
@@ -218,13 +218,7 @@ impl Package for Nes {
                 Err("the NES guest adapter requires Linux".into())
             }
         };
-        let result=result.and_then(|()|{
-            for entry in fs::read_dir(&search.output)? {let entry=entry?;fs::rename(entry.path(),out.join(entry.file_name()))?;}
-            fs::remove_dir(&search.output)?;
-            let input:serde_json::Value=serde_json::from_slice(&fs::read(out.join("witness-input.json"))?)?;
-            let result:serde_json::Value=serde_json::from_slice(&fs::read(out.join("result.json"))?)?;
-            m.payload=serde_json::json!({"input":input,"witness":result["witness"],"finding":result["solved"]});Ok(0)
-        });
+        let result = result.and_then(|()| collect_search(&out, &search.output, &mut m));
         finish(&out, &mut m, result)
     }
 }
@@ -359,12 +353,9 @@ fn saved(request: Request) -> Result<u8> {
             let result = (|| {
                 for _ in 0..request.repeat {
                     let witness = replay(&out, &m, input.clone())?;
-                    if request.operation == Operation::Replay
-                        && witness != original.payload["witness"]
-                    {
-                        return Err("replay diverged from the recorded execution".into());
-                    }
-                    m.payload = serde_json::json!({"input":input,"finding":witness["victory"],"witness":witness});
+                    let expected = (request.operation == Operation::Replay)
+                        .then_some(&original.payload["witness"]);
+                    record_witness(&mut m, &input, witness, expected)?;
                 }
                 Ok(0)
             })();
@@ -399,7 +390,7 @@ fn continue_search(request: Request) -> Result<u8> {
         if original.mode != "search" {
             return Err("resume requires a saved search".into());
         }
-        let (checkpoint, completed) = crate::runs::checkpoint_record(&parent)?;
+        let (checkpoint, completed) = crate::runs::checkpoint_record(&parent.join("package"))?;
         let additional =
             request
                 .budget
@@ -462,9 +453,65 @@ fn continue_search(request: Request) -> Result<u8> {
             Err("the NES guest adapter requires Linux".into())
         }
     };
-    let result=result.and_then(|()|{for entry in fs::read_dir(&options.output)?{let entry=entry?;fs::rename(entry.path(),out.join(entry.file_name()))?;}fs::remove_dir(&options.output)?;
-        let input:serde_json::Value=serde_json::from_slice(&fs::read(out.join("witness-input.json"))?)?;
-        let report:serde_json::Value=serde_json::from_slice(&fs::read(out.join("result.json"))?)?;
-        m.payload=serde_json::json!({"input":input,"witness":report["witness"],"finding":report["solved"]});Ok(0)});
+    let result = result.and_then(|()| collect_search(&out, &options.output, &mut m));
     finish(&out, &mut m, result)
+}
+
+fn collect_search(out: &Path, package: &Path, m: &mut Manifest) -> Result<u8> {
+    for entry in fs::read_dir(package)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() && entry.file_name() != "origin-input.json" {
+            fs::rename(entry.path(), out.join(entry.file_name()))?;
+        }
+    }
+    let input: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("witness-input.json"))?)?;
+    let report: serde_json::Value = serde_json::from_slice(&fs::read(out.join("result.json"))?)?;
+    m.payload =
+        serde_json::json!({"input":input,"witness":report["witness"],"finding":report["solved"]});
+    Ok(0)
+}
+fn record_witness(
+    m: &mut Manifest,
+    input: &serde_json::Value,
+    witness: serde_json::Value,
+    expected: Option<&serde_json::Value>,
+) -> Result<()> {
+    let previous = m.payload["witness"].clone();
+    let mut repeats = m.payload["repeats"].as_array().cloned().unwrap_or_default();
+    repeats.push(witness.clone());
+    let divergent = expected.is_some_and(|value| *value != witness)
+        || (!previous.is_null() && previous != witness);
+    m.payload = serde_json::json!({"input":input,"finding":witness["victory"],"witness":witness,"repeats":repeats});
+    if divergent {
+        return Err("replay diverged from the recorded execution or an earlier repeat".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn repeats_preserve_observed_divergence_and_inheritance_clears_results() {
+        let mut c = Config::default();
+        c.workload.package = "nes".into();
+        c.runner.kind = "quicknes".into();
+        let mut m = Manifest::new(c, "run").unwrap();
+        let input = serde_json::json!({"actions":[]});
+        let first = serde_json::json!({"victory":true,"digest":"first"});
+        record_witness(&mut m, &input, first.clone(), None).unwrap();
+        record_witness(&mut m, &input, first.clone(), None).unwrap();
+        assert_eq!(m.payload["repeats"].as_array().unwrap().len(), 2);
+        let observed = serde_json::json!({"victory":false,"digest":"diverged"});
+        assert!(record_witness(&mut m.clone(), &input, observed.clone(), None).is_err());
+        assert!(record_witness(&mut m, &input, observed.clone(), Some(&first)).is_err());
+        assert_eq!(m.payload["witness"], observed);
+        assert_eq!(m.payload["finding"], false);
+        assert_eq!(m.payload["repeats"].as_array().unwrap().len(), 3);
+        let parent = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+        let inherited = m.inherit(parent.path(), child.path(), "search").unwrap();
+        assert!(inherited.payload.is_null());
+    }
 }

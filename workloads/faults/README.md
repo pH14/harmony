@@ -207,11 +207,12 @@ the next one can boot a virtual machine in that process.
 
 ## User-mode Linux
 
-`--backend uml --uml-profile PROFILE` runs the same search on a
+`--backend uml` with `runner.options.uml_profile = "PROFILE"` in the TOML
+recipe runs the same search on a
 User-mode Linux guest (`UmlSession` in
 [consonance-client](../../consonance/client/README.md)) as an ordinary user on
 any Linux host, with no KVM. The profile is verified at start, its kernel
-replaces `--kernel`, and each session runs in the search thread. The profile
+replaces `runner.options.kernel`, and each session runs in the search thread. The profile
 identity, host architecture, CPU model and CPU feature flags join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses

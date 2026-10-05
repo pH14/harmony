@@ -49,6 +49,10 @@ pub fn list(json: bool) -> Result<u8> {
 pub fn diff(left: &str, right: &str) -> Result<u8> {
     let left = Manifest::read(&locate(left)?)?;
     let right = Manifest::read(&locate(right)?)?;
+    let left_outcome =
+        crate::adapters::select(&left.config.workload)?.semantic_outcome(&left.payload);
+    let right_outcome =
+        crate::adapters::select(&right.config.workload)?.semantic_outcome(&right.payload);
     let mut changes = serde_json::Map::new();
     for (name, a, b) in [
         (
@@ -61,7 +65,7 @@ pub fn diff(left: &str, right: &str) -> Result<u8> {
             serde_json::to_value(left.artifacts)?,
             serde_json::to_value(right.artifacts)?,
         ),
-        ("execution", left.payload, right.payload),
+        ("execution", left_outcome, right_outcome),
         ("runner", left.runner_identity, right.runner_identity),
     ] {
         if a != b {

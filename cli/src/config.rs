@@ -122,6 +122,9 @@ impl Source {
             || self.package.is_some()
     }
     pub fn load(&self) -> Result<Config> {
+        self.load_with_runner(None, None)
+    }
+    fn load_with_runner(&self, runner: Option<&str>, backend: Option<&str>) -> Result<Config> {
         let default = Path::new("harmony.toml");
         let path = self.config.as_deref().or_else(|| {
             (self.config_toml.is_none() && self.input.is_none() && default.exists())
@@ -146,6 +149,12 @@ impl Source {
         if let Some(input) = &self.input {
             config.workload.input = Some(input.clone());
         }
+        if let Some(runner) = runner {
+            config.runner.kind = runner.into();
+        }
+        if let Some(backend) = backend {
+            config.runner.backend = Some(backend.into());
+        }
         config.validate()?;
         let package = crate::adapters::select(&config.workload)?;
         config.workload.package = package.name().into();
@@ -157,16 +166,8 @@ impl Source {
 }
 impl Execution {
     pub fn load(&self) -> Result<Config> {
-        let mut config = self.source.load()?;
-        if let Some(kind) = &self.runner {
-            config.runner.kind = kind.clone();
-        }
-        if let Some(backend) = &self.backend {
-            config.runner.backend = Some(backend.clone());
-        }
-        crate::adapters::select(&config.workload)?.validate_runner(&mut config)?;
-        crate::runners::normalize(&mut config.runner, &std::env::current_dir()?)?;
-        Ok(config)
+        self.source
+            .load_with_runner(self.runner.as_deref(), self.backend.as_deref())
     }
     pub fn specified(&self) -> bool {
         self.source.specified() || self.runner.is_some() || self.backend.is_some()
@@ -252,5 +253,65 @@ mod tests {
                 "{text}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+    #[test]
+    fn runner_overrides_precede_owned_option_validation() {
+        for (runner, backend, options) in [
+            (None, Some("kvm"), ""),
+            (
+                Some("consonance"),
+                Some("kvm"),
+                "[runner.options]\nkernel='kernel'\nram_mib=256",
+            ),
+        ] {
+            let result = Execution {
+                source: Source {
+                    input: Some("game.nes".into()),
+                    config_toml: Some(options.into()),
+                    ..Default::default()
+                },
+                runner: runner.map(str::to_owned),
+                backend: backend.map(str::to_owned),
+            }
+            .load();
+            if cfg!(target_os = "linux") {
+                let c = result.unwrap();
+                assert_eq!(c.runner.kind, "consonance");
+                assert_eq!(c.runner.backend.as_deref(), Some("kvm"));
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("requires Linux KVM")
+                );
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("harmony.toml");
+        std::fs::write(
+            &path,
+            "[workload]\ninput='game.nes'\n[runner.options]\ncore='core.so'",
+        )
+        .unwrap();
+        let c = Execution {
+            source: Source {
+                config: Some(path),
+                ..Default::default()
+            },
+            runner: Some("quicknes".into()),
+            backend: None,
+        }
+        .load()
+        .unwrap();
+        assert_eq!(
+            Path::new(c.runner.options["core"].as_str().unwrap()),
+            root.path().canonicalize().unwrap().join("core.so")
+        );
     }
 }

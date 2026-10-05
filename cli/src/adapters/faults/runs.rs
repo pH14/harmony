@@ -109,3 +109,28 @@ impl Manifest {
         })
     }
 }
+
+pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
+    let mut outcome = payload.clone();
+    if let Some(report) = outcome
+        .get_mut("outcome")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        report.remove("wall_seconds");
+    }
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn semantic_comparison_ignores_host_duration_but_keeps_execution_changes() {
+        let a = serde_json::json!({"actions":[1],"outcome":{"wall_seconds":1,"replays":[{"state_hash":"same"}]}});
+        let mut b = a.clone();
+        b["outcome"]["wall_seconds"] = 2.into();
+        assert_eq!(semantic_outcome(&a), semantic_outcome(&b));
+        b["outcome"]["replays"][0]["state_hash"] = "changed".into();
+        assert_ne!(semantic_outcome(&a), semantic_outcome(&b));
+    }
+}

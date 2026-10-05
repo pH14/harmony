@@ -30,6 +30,9 @@ impl Package for Faults {
         }
         Ok(())
     }
+    fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
+        runs::semantic_outcome(payload)
+    }
     fn supports(&self, _operation: Operation) -> bool {
         true
     }
