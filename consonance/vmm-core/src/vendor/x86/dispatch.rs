@@ -1024,7 +1024,7 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
         out.push(("xsave-restore-bv", dig(&value.to_le_bytes())));
     }
     if let Some(bytes) = &s.nested_state {
-        out.push(("nested-vmx", dig(bytes)));
+        out.push(("nested-state", dig(bytes)));
     }
     out.push(("xsave-extended", part(576, xs.len())));
 }
@@ -1079,11 +1079,11 @@ mod tests {
         let encoded = encode_vcpu_state(&state);
         assert!(encoded.starts_with(&ordinary));
         assert_ne!(encoded, ordinary);
-        state.nested_state.as_mut().unwrap()[8] ^= 1;
+        state.nested_state.as_mut().unwrap()[8..16].copy_from_slice(&0x3000_u64.to_le_bytes());
         assert_ne!(encode_vcpu_state(&state), encoded);
         let mut components = Vec::new();
         vcpu_components(&state, &mut components);
-        assert!(components.iter().any(|(name, _)| *name == "nested-vmx"));
+        assert!(components.iter().any(|(name, _)| *name == "nested-state"));
 
         let mut backend = vmm_backend::MockBackend::new();
         backend.set_state(state);
