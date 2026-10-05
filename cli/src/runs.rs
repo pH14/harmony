@@ -155,6 +155,7 @@ impl Manifest {
         child.mode = mode.into();
         child.status = "running".into();
         child.error = None;
+        child.payload = serde_json::Value::Null;
         child.parent = Some(source.to_path_buf());
         for name in self.artifacts.keys() {
             let original = source.join("artifacts").join(name);

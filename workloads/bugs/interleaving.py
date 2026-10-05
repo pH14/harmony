@@ -49,10 +49,33 @@ def verdict(report, summary, assertion, variant, budget, returncode):
     return "MISS", violations
 
 
+def search_command(args, image, prefix, variant, noise, seed, run):
+    knobs = [f"{prefix}.correct={int(variant == 'correct')}", f"{prefix}.noise={noise}"]
+    recipe = (f"[workload.options]\nknobs = {json.dumps(knobs)}\n"
+              f"[runner.options]\nkernel = {json.dumps(str(args.kernel.resolve()))}\n"
+              f"base_initramfs = {json.dumps(str(args.initramfs.resolve()))}\n"
+              f"ram_mib = {args.ram_mib}\n")
+    return [str(args.cli.resolve()), "search", str(image), "--backend", "kvm",
+            "--config-toml", recipe, "--seed", str(seed), "--executions", str(args.executions),
+            "--out", str(run)]
+
+
 def self_test():
     import unittest
 
     class VerdictTests(unittest.TestCase):
+        def test_search_uses_owned_recipe_fields(self):
+            import tomllib
+            args = argparse.Namespace(cli=Path("harmony"), kernel=Path('kernel "quoted"'),
+                                      initramfs=Path("guest image"), ram_mib=256, executions=4)
+            command = search_command(args, Path("app.oci"), "case", "correct", 2, 1, Path("run"))
+            recipe = tomllib.loads(command[command.index("--config-toml") + 1])
+            self.assertEqual(recipe["workload"]["options"]["knobs"], ["case.correct=1", "case.noise=2"])
+            self.assertEqual(recipe["runner"]["options"]["kernel"], str(args.kernel.resolve()))
+            self.assertEqual(recipe["runner"]["options"]["base_initramfs"], str(args.initramfs.resolve()))
+            self.assertEqual(recipe["runner"]["options"]["ram_mib"], 256)
+            self.assertFalse({"--kernel", "--base-initramfs", "--ram-mib", "--knobs"}.intersection(command))
+
         def test_controls_need_budget_and_oracle(self):
             report = dict(executions=5000, bugs=[], bug_found=False)
             summary = {"assertions": {"case": {"passed": True}}}
@@ -141,12 +164,7 @@ def main():
                 parser.error(f"missing image {image}; build it with --build")
             run = campaign / f"{case}-{variant}-n{noise}-s{seed}-{uuid.uuid4().hex[:6]}"
             prefix, assertion = CASES[case][1:]
-            command = [str(args.cli.resolve()), "search", str(image),
-                       "--backend", "kvm", "--kernel", str(args.kernel.resolve()),
-                       "--base-initramfs", str(args.initramfs.resolve()), "--seed", str(seed),
-                       "--executions", str(args.executions), "--ram-mib", str(args.ram_mib),
-                       "--knobs", f"{prefix}.correct={int(variant == 'correct')} {prefix}.noise={noise}",
-                       "--out", str(run)]
+            command = search_command(args, image, prefix, variant, noise, seed, run)
             start = time.monotonic()
             with run.with_suffix(".console.txt").open("w") as log:
                 result = subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT)

@@ -67,6 +67,9 @@ pub trait Package: Sync {
     fn normalize(&self, config: &mut Config, base: &Path) -> Result<()>;
     fn validate_runner(&self, config: &mut Config) -> Result<()>;
     fn supports(&self, operation: Operation) -> bool;
+    fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
+        payload.clone()
+    }
     fn execute(&self, request: Request) -> Result<u8>;
     fn init(&self, path: &Path, language: Option<String>, input: Option<String>) -> Result<()>;
 }
