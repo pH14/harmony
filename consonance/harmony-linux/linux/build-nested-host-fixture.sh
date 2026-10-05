@@ -9,6 +9,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/tree/bin" "$work/tree/proc" "$work/tree/dev" "$work/tree/sys"
 cc -O2 -static -Wall -Wextra -Werror "$here/nested-kvm-check.c" -o "$work/tree/check"
+cc -O2 -static -Wall -Wextra -Werror "$here/nested-kvm-cache-check.c" -o "$work/tree/cache-check"
 install -m 0755 "${NESTED_HOST_BUSYBOX:?provide a static BusyBox}" "$work/tree/bin/busybox"
 cat >"$work/tree/init" <<'INIT'
 #!/bin/busybox sh
@@ -37,6 +38,9 @@ fi
 *) echo "FAIL: unknown nested vendor"; /bin/busybox poweroff -f; exit 1 ;;
 esac
 echo "NESTED_CHECK_STATUS=$status"
+case "$(/bin/busybox cat /proc/cmdline)" in
+*harmony_nested_cache_check*) /cache-check ;;
+esac
 /bin/busybox poweroff -f
 INIT
 chmod 0755 "$work/tree/init"

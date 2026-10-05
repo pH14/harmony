@@ -211,6 +211,12 @@ and fail its first restore. VMX fails its continuation; SVM fails immediate
 GIF readback before another nested entry can change it. Missing nested
 VMX/SVM or a guest that cannot create a KVM VM fails the job. Kernel publication
 still requires the instruction audit to pass.
+The direct fixture also runs
+`vmm-core::vendor::x86::contract::nested::tests::nested_restore_preserves_unsynchronized_vmcs_fields`.
+It stops a minimal L2 runner after three exits, runs a detour through exit five
+without reading L2 segment state, and compares the complete nested payload
+immediately after direct outer restore. This exercises a cached VMCS boundary
+that the production inner VMM's segment-state reads would otherwise synchronize.
 If a compiled kernel fails qualification, the evidence artifact retains its
 unpublished `vmlinux`, matching boot components, configuration, alternatives and
 KVM disassembly for review.
@@ -235,6 +241,8 @@ assertion and action lineage before the current-source qualification proceeds.
 It retains both binaries' input provenance, the historical source, host KVM
 parameters, kernel logs and nested-entry trace events. This is a rebuild control,
 not a replay claim about the original unretained outer binary.
+Current qualification reuses that kernel and OCI base, builds its own inner
+driver image, and rebuilds the direct cache fixture from current source.
 Manual runs can require `nested_vendor=vmx` or `nested_vendor=svm`; the default
 `auto` accepts either. `nested_runner` selects the standard x86 Ubuntu 22.04
 or 24.04 image; its label does not guarantee a CPU vendor. A vendor mismatch

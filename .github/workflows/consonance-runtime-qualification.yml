@@ -137,7 +137,7 @@ jobs:
           retain_history_diagnostics() {
             local result=$?
             set +e
-            if [[ -e /sys/kernel/tracing/events/kvm/kvm_nested_vmenter_failed/enable ]]; then
+            if sudo test -e /sys/kernel/tracing/events/kvm/kvm_nested_vmenter_failed/enable; then
               printf 0 | sudo tee /sys/kernel/tracing/tracing_on >/dev/null
               sudo cat /sys/kernel/tracing/trace >"$history/host-nested-trace.txt"
             fi
@@ -238,6 +238,7 @@ jobs:
           sudo chmod a+rw /dev/kvm
           /tmp/nested-kvm-check | tee nested-host-evidence/host-kvm-after-build.txt
           cmp nested-host-evidence/host-kvm.txt nested-host-evidence/host-kvm-after-build.txt
+          NESTED_HOST_BUSYBOX=/bin/busybox bash consonance/harmony-linux/linux/build-nested-host-fixture.sh consonance/harmony-linux/build/x86_64
       - name: L1 initializes its KVM vendor backend and creates a VM
         env:
           NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
@@ -249,16 +250,24 @@ jobs:
             --test x86_kvm_nested_host l1_creates_kvm_vm -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee nested-host-evidence/l1-boot.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/l1-boot.log
+          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p vmm-core --lib \
+            vendor::x86::contract::nested::tests::nested_restore_preserves_unsynchronized_vmcs_fields \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee nested-host-evidence/nested-cache-restore.log
+          grep -Fq 'NESTED_CACHE_RESTORE vmcs_fields=pass' nested-host-evidence/nested-cache-restore.log
       - name: Build the static inner driver and matching OCI runtime
         env:
+          HISTORY_RUN: ${{ inputs.nested_history_run }}
           HARMONY_RUNTIME_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
           HARMONY_RUNTIME_INIT: ${{ github.workspace }}/consonance/harmony-linux/runtime/init.sh
           HARMONY_RUNTIME_SUPERVISOR: ${{ github.workspace }}/consonance/harmony-linux/supervisor/target/x86_64-unknown-linux-musl/release/harmony-supervisor
         run: |
           set -euo pipefail
           rustup target add x86_64-unknown-linux-musl
-          cargo build --locked --release --target x86_64-unknown-linux-musl --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
-          bash consonance/harmony-linux/linux/build-oci-runtime-initramfs.sh x86_64 2>&1 | tee nested-host-evidence/oci-runtime-build.log
+          if [[ -z "$HISTORY_RUN" ]]; then
+            cargo build --locked --release --target x86_64-unknown-linux-musl --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
+            bash consonance/harmony-linux/linux/build-oci-runtime-initramfs.sh x86_64 2>&1 | tee nested-host-evidence/oci-runtime-build.log
+          fi
           bash consonance/nested-driver/build-image.sh consonance/harmony-linux/build/x86_64/nested-driver.oci
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           taskset -c "$cpu" target/x86_64-unknown-linux-musl/release/nested-driver | tee nested-host-evidence/inner-direct.log
@@ -386,7 +395,7 @@ jobs:
               sudo cat "$parameter"
             done >nested-host-evidence/host-kvm-intel-parameters.txt
           fi
-          if [[ -e /sys/kernel/tracing/events/kvm/kvm_nested_vmenter_failed/enable ]]; then
+          if sudo test -e /sys/kernel/tracing/events/kvm/kvm_nested_vmenter_failed/enable; then
             printf 0 | sudo tee /sys/kernel/tracing/tracing_on >/dev/null
             sudo cat /sys/kernel/tracing/trace >nested-host-evidence/host-nested-trace.txt
           fi
