@@ -16,6 +16,7 @@ PYTHON
 "$binary" prepare "$rom"
 "$binary" search "$rom" --config-toml "$recipe" --executions 4 --out "$evidence/search"
 "$binary" replay "$evidence/search" --out "$evidence/replay"
+"$binary" diff "$evidence/search" "$evidence/replay" > "$evidence/diff.json"
 "$binary" branch "$evidence/search" --step 0 --stop --out "$evidence/prefix"
 "$binary" replay "$evidence/prefix" --out "$evidence/prefix-copy"
 printf '%s\n' '{"actions":[{"buttons":0,"hold_frames":1},{"buttons":0,"hold_frames":1}]}' > "$evidence/input.json"
@@ -29,6 +30,7 @@ python3 - "$evidence" <<'PYTHON'
 import json, sys
 from pathlib import Path
 root=Path(sys.argv[1])
+assert json.loads((root/'diff.json').read_text()) == {}
 def manifest(name): return json.loads((root/name/'manifest.json').read_text())
 assert len(manifest('scripted')['payload']['repeats']) == 2
 assert manifest('search')['payload']['witness']==manifest('replay')['payload']['witness']
