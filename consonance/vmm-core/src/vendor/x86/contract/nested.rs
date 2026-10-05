@@ -221,6 +221,204 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+    struct InterruptBeforeNestedEntry {
+        inner: vmm_backend::KvmBackend,
+        armed: std::rc::Rc<std::cell::Cell<bool>>,
+        delivered: std::rc::Rc<std::cell::Cell<usize>>,
+        raised: bool,
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+    impl InterruptBeforeNestedEntry {
+        fn observe(&mut self, exit: &vmm_backend::Exit<vmm_backend::X86>) {
+            if self.armed.get()
+                && matches!(
+                    exit,
+                    vmm_backend::Exit::Arch(vmm_backend::X86Exit::Rdmsr { index: 0x1d9 })
+                )
+            {
+                self.raised = true;
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+    impl vmm_backend::Backend for InterruptBeforeNestedEntry {
+        type A = vmm_backend::X86;
+
+        fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
+            self.inner.set_policy(policy)
+        }
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: forwarded under the caller's own `map_memory` contract.
+            unsafe { self.inner.map_memory(gpa, host) }
+        }
+        fn drain_dirty_pages(&mut self) -> vmm_backend::Result<Vec<u64>> {
+            self.inner.drain_dirty_pages()
+        }
+        fn run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::X86>> {
+            let exit = self.inner.run()?;
+            self.observe(&exit);
+            Ok(exit)
+        }
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.inner.inject(event)
+        }
+        fn set_pending_irq(&mut self, vector: Option<u8>) -> vmm_backend::Result<()> {
+            self.inner
+                .set_pending_irq(vector.or(self.raised.then_some(0xff)))
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            loop {
+                match self.inner.take_accepted_interrupt() {
+                    Some(0xff) if self.raised => {
+                        self.raised = false;
+                        self.delivered.set(self.delivered.get() + 1);
+                    }
+                    accepted => return accepted,
+                }
+            }
+        }
+        fn read_irq_mask(&mut self) -> vmm_backend::Result<Option<bool>> {
+            self.inner.read_irq_mask()
+        }
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_read(value)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_ok()
+        }
+        fn complete_hypercall(&mut self, ret: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_hypercall(ret)
+        }
+        fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
+            self.inner.complete_arch(c)
+        }
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.inner.retire_pending_completion()
+        }
+        fn finish_exit(
+            &mut self,
+        ) -> vmm_backend::Result<Option<vmm_backend::Exit<vmm_backend::X86>>> {
+            let exit = self.inner.finish_exit()?;
+            if let Some(exit) = &exit {
+                self.observe(exit);
+            }
+            Ok(exit)
+        }
+        fn prepare_snapshot(&mut self) -> vmm_backend::Result<()> {
+            self.inner.prepare_snapshot()
+        }
+        fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.inner.save()
+        }
+        fn validate_restore_state(
+            &self,
+            state: &vmm_backend::VcpuState,
+        ) -> vmm_backend::Result<()> {
+            self.inner.validate_restore_state(state)
+        }
+        fn restore(&mut self, state: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.inner.restore(state)
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.inner.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.inner.reset_exit_counts()
+        }
+        fn store_completions(&self) -> vmm_backend::StoreCompletions {
+            self.inner.store_completions()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
+            self.inner.capabilities()
+        }
+        fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+            self.inner.cancellation_flag()
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+    #[test]
+    #[ignore = "requires nested VMX or SVM and NESTED_HOST_KERNEL / NESTED_HOST_INITRAMFS"]
+    fn interrupt_raised_before_nested_entry_reaches_the_nested_host()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let read = |name| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            Ok(std::fs::read(std::env::var(name)?)?)
+        };
+        let kernel = read("NESTED_HOST_KERNEL")?;
+        let initramfs = read("NESTED_HOST_INITRAMFS")?;
+        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
+        let (inner, nested_host) = crate::vendor::x86::bringup::nested_host_backend()?;
+        let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let delivered = std::rc::Rc::new(std::cell::Cell::new(0));
+        let backend = InterruptBeforeNestedEntry {
+            inner,
+            armed: std::rc::Rc::clone(&armed),
+            delivered: std::rc::Rc::clone(&delivered),
+            raised: false,
+        };
+        let mut vmm = crate::vendor::x86::bringup::compose_linux_nested_host_virtual_time(
+            backend,
+            nested_host,
+            &kernel,
+            &initramfs,
+            256 << 20,
+            cmdline,
+            42,
+        )?;
+        let contains =
+            |serial: &[u8], text: &str| serial.windows(text.len()).any(|w| w == text.as_bytes());
+        let mut finished = false;
+        for _ in 0..20_000_000 {
+            let progress = vmm.step()?;
+            let serial = vmm.serial();
+            if !armed.get() && contains(serial, "NESTED_CACHE_STEP=1\r\n") {
+                armed.set(true);
+            }
+            let failed = contains(serial, "FAIL: cache check") && serial.ends_with(b"\n");
+            if failed || contains(serial, "NESTED_CACHE_STEP=12\r\n") {
+                finished = true;
+                break;
+            }
+            if progress != crate::vmm::Step::Continued {
+                break;
+            }
+        }
+        let serial = String::from_utf8_lossy(vmm.serial()).into_owned();
+        let tail = &serial[serial.len().saturating_sub(4096)..];
+        if !finished || serial.contains("FAIL: cache check") {
+            return Err(format!(
+                "nested fixture failed after {} interrupts:\n{tail}",
+                delivered.get()
+            )
+            .into());
+        }
+        let reported = serial
+            .matches("Spurious APIC interrupt (vector 0xFF)")
+            .count();
+        if delivered.get() == 0 || reported == 0 || reported > delivered.get() {
+            return Err(format!(
+                "nested host saw {reported} of {} interrupts:\n{tail}",
+                delivered.get()
+            )
+            .into());
+        }
+        println!(
+            "NESTED_INTERRUPT_BEFORE_ENTRY delivered={} reported={reported}",
+            delivered.get()
+        );
+        Ok(())
+    }
+
     #[test]
     fn nested_snapshot_publication_retains_every_live_backend_byte() {
         use crate::vmm::{GuestRam, Vmm};

@@ -217,6 +217,12 @@ It stops a minimal L2 runner after three exits, runs a detour through exit five
 without reading L2 segment state, and compares the complete nested payload
 immediately after direct outer restore. This exercises a cached VMCS boundary
 that the production inner VMM's segment-state reads would otherwise synchronize.
+It also runs
+`vmm-core::vendor::x86::contract::nested::tests::interrupt_raised_before_nested_entry_reaches_the_nested_host`.
+That test raises vector 0xFF whenever L1 reads DEBUGCTL, which Linux does with
+interrupts disabled just before it enters L2. L1 must report each delivered
+vector as a spurious interrupt, and the cache fixture must finish all twelve L2
+exits.
 If a compiled kernel fails qualification, the evidence artifact retains its
 unpublished `vmlinux`, matching boot components, configuration, alternatives and
 KVM disassembly for review.
