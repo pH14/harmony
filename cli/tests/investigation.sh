@@ -9,7 +9,7 @@ evidence=$(cd "$evidence" && pwd)
 export HARMONY_SDK_DIR="$repo"
 cp "$repo/cli/tests/fixtures/logging.c" "$evidence/main.c"
 cd "$evidence"
-"$binary" init --language c --image harmony-cli-investigation:local
+"$binary" init harmony-cli-investigation:local --language c
 python3 - "$repo" <<'PY'
 import json
 import platform
@@ -18,20 +18,21 @@ from pathlib import Path
 root = Path(sys.argv[1]) / "consonance/harmony-linux/build" / platform.machine()
 kernel = root / ("Image" if platform.machine() == "aarch64" else "bzImage")
 config = Path("harmony.toml")
-config.write_text(f"kernel = {json.dumps(str(kernel))}\n"
-                  f"base_initramfs = {json.dumps(str(root / 'initramfs-oci.cpio.gz'))}\n"
-                  "wall_seconds = 30\n" + config.read_text() +
-                  "\n[hooks]\ndebug = ['/opt/harmony/application', 'debug']\n")
+text = config.read_text().replace('[runner.options]', '[runner.options]\n' +
+    f"kernel = {json.dumps(str(kernel))}\nbase_initramfs = {json.dumps(str(root / 'initramfs-oci.cpio.gz'))}")
+text = text.replace('[search]', '[search]\nwall_seconds = 30')
+config.write_text(text + "\n[workload.options.hooks]\ndebug = ['/opt/harmony/application', 'debug']\n"
+    "\n[[workload.options.interventions.verbose]]\nkind = 'hook'\nname = 'debug'\nfor = '1s'\n")
 PY
 "$binary" prepare --json > prepared.json
 python3 -c 'import json; json.load(open("prepared.json"))'
 "$binary" doctor --offline --json > doctor.json
 "$binary" run --name baseline
-"$binary" branch baseline --at-step 0 --inject 'hook debug 1s' --follow --name verbose
+"$binary" branch baseline --step 0 --do verbose --name verbose
 "$binary" logs verbose --contains 'debug logging' > debug.log
 grep -q '^application debug logging enabled$' debug.log
 "$binary" replay verbose --name verified
-"$binary" branch baseline --at-step 0 --name prefix
+"$binary" branch baseline --step 0 --stop --name prefix
 "$binary" replay prefix --name prefix-copy
 "$binary" replay prefix-copy --name prefix-copy-copy
 "$binary" inspect verbose --json > inspected.json
@@ -47,13 +48,13 @@ status=0
 "$binary" search --from prefix --executions 4 --for 30s --name neighborhood || status=$?
 test "$status" -le 1
 status=0
-"$binary" search --resume neighborhood --seed 9223372036854775808 --name invalid-seed > invalid-seed.txt 2>&1 || status=$?
+"$binary" resume neighborhood --seed 9223372036854775808 --name invalid-seed > invalid-seed.txt 2>&1 || status=$?
 test "$status" -eq 2
 grep -q 'maximum integer' invalid-seed.txt
 test ! -e .harmony/runs/invalid-seed
 printf '{"file":' >> .harmony/runs/neighborhood/checkpoints/checkpoints.jsonl
 status=0
-"$binary" search --resume neighborhood --executions 8 --for 30s --name extended || status=$?
+"$binary" resume neighborhood --executions 4 --for 30s --name extended || status=$?
 test "$status" -le 1
 python3 - <<'PY'
 import json
@@ -61,10 +62,10 @@ from pathlib import Path
 runs = Path('.harmony/runs')
 a = json.loads((runs / 'neighborhood/report.json').read_text())
 b = json.loads((runs / 'extended/report.json').read_text())
-assert b['executions'] > a['executions']
-assert json.loads((runs / 'prefix/manifest.json').read_text())['settle'] is False
+assert b['executions'] == a['executions'] + 4
+assert json.loads((runs / 'prefix/manifest.json').read_text())['payload']['settle'] is False
 for name in ('neighborhood', 'extended'):
-    assert json.loads((runs / name / 'manifest.json').read_text())['settle'] is True
+    assert json.loads((runs / name / 'manifest.json').read_text())['payload']['settle'] is True
 PY
 cp -R .harmony/runs/prefix .harmony/runs/tampered
 printf corruption >> .harmony/runs/tampered/artifacts/kernel

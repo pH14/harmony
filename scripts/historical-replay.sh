@@ -79,11 +79,11 @@ guest_arguments=()
 . "$(dirname "$0")/historical-backend.sh"
 historical_backend "reports/${CASE_ID}.${label}.denial.json"
 if [[ "$mode" == reproduce ]]; then
-    arguments=(replay "$(dirname "$input")" --bug 1 --repeat "$repeats")
+    arguments=(replay "$(dirname "$input")" --finding 1 --repeat "$repeats")
 else
     arguments=(run "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci"
-        "${guest_arguments[@]}" --base-initramfs "$base_initramfs"
-        --actions "$input" --repeat "$repeats" --ram-mib "$RAM_MIB" --knobs "$knobs")
+        "${guest_arguments[@]}"
+        --actions "$input" --repeat "$repeats")
 fi
 timeout -k 30 "$timeout_seconds" ${launcher[@]+"${launcher[@]}"} "$harmony" \
     "${arguments[@]}" --out "$out" >"$console" 2>&1 || status=$?

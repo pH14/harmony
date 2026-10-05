@@ -220,16 +220,26 @@ worker's store fills its budget faster than under KVM.
 
 ## Running it
 
+Put explicit guest artifacts in the runner table of `harmony.toml`:
+
+```toml
+[runner]
+kind = "consonance"
+backend = "kvm"
+[runner.options]
+kernel = "vmlinux"
+base_initramfs = "initramfs.cpio.gz"
+ram_mib = 1024
 ```
-harmony search IMAGE.oci --backend kvm \
-    --kernel vmlinux --base-initramfs initramfs.cpio.gz \
-    --seed 1 --executions 100000 \
-    --ram-mib 1024 --out run/
-harmony replay run/ --bug 1 --repeat 10 --out confirm/
-harmony search IMAGE.oci --backend uml \
-    --uml-profile profile --base-initramfs initramfs.cpio.gz \
-    --seed 1 --executions 20000 --ram-mib 1024 --out run/
+
+```sh
+harmony search IMAGE.oci --config harmony.toml --seed 1 --executions 100000 --out run/
+harmony replay run/ --finding 1 --repeat 10 --out confirm/
 ```
+
+For UML, select `runner.backend = "uml"` and set `runner.options.uml_profile`
+instead of `kernel`. Workload knobs, supervision and interventions belong in
+`workload.options`; see the [CLI recipe](../../cli/README.md).
 
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and

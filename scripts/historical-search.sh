@@ -52,11 +52,8 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     ${launcher[@]+"${launcher[@]}"} "${harmony}" search \
     "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci" \
     "${guest_arguments[@]}" \
-    --base-initramfs "${base_initramfs}" \
     --seed "${SEED}" \
     --executions "${EXECUTIONS}" \
-    --ram-mib "${RAM_MIB}" \
-    --knobs "${knobs}" \
     --for "${WALL_MINUTES}m" \
     --out "${out}" >"${console}" 2>&1 || status=$?
 tail -n 80 "${console}" || true

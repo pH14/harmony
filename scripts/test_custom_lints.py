@@ -864,7 +864,7 @@ class NesCompositionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / workflow.path).parent.mkdir(parents=True)
-            (root / workflow.path).write_text("run: harmony search --backend native game.nes\n")
+            (root / workflow.path).write_text("run: harmony search --runner quicknes game.nes\n")
             violations = LINTS.check_nes_backend(root, "Harmony Workloads", entry, "checks", workflow)
         self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"])
         self.assertIn("never runs the consonance backend", violations[0].text)

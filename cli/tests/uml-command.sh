@@ -9,8 +9,15 @@ initramfs=${3:?base initramfs required}
 evidence=${4:?evidence directory required}
 mkdir -p "$evidence"
 evidence=$(cd "$evidence" && pwd)
-"$binary" run "$image" --backend uml --uml-profile "$profile" \
-    --base-initramfs "$initramfs" --ram-mib 1024 --for 60s --out "$evidence/original" -- /bin/true
+runtime=$(python3 - "$profile" "$initramfs" <<'PYTHON'
+import json, sys
+print('[runner]\nkind = "consonance"\nbackend = "uml"\n[runner.options]')
+print('uml_profile = ' + json.dumps(sys.argv[1]))
+print('base_initramfs = ' + json.dumps(sys.argv[2]))
+print('ram_mib = 1024')
+PYTHON
+)
+"$binary" run "$image" --config-toml "$runtime" --for 60s --out "$evidence/original" -- /bin/true
 "$binary" replay "$evidence/original" --out "$evidence/replayed"
 "$binary" replay "$evidence/replayed" --out "$evidence/replayed-again"
 python3 - "$evidence" <<'PY'

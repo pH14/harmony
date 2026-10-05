@@ -78,8 +78,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked --release -p harmony-cli
-          timeout -k 10 120 taskset -c 0,1 target/release/harmony search --backend native \
-            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+          timeout -k 10 120 taskset -c 0,1 target/release/harmony search --runner quicknes \
+            --config-toml "$(printf '[runner.options]\ncore = \"%s/quicknes_libretro.so\"\n' "$NOVA_BUILD")" \
             --seed 20260901 --executions 4 \
             --out nova-native-check/search "${NOVA_BUILD}/nova.nes" \
             2>&1 | tee nova-native-check/console.txt

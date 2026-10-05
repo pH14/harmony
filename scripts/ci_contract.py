@@ -731,7 +731,7 @@ NES_COMPOSITIONS = {
 # How a workflow file shows which backend it executes a composition on. A
 # composition keeps at least one marker for the backend it is registered with.
 BACKEND_MARKERS = {
-    "native": ("--backend native", "nes-eval"),
+    "native": ("--runner quicknes", "nes-eval"),
     "consonance": ("--backend kvm", "--backend hvf", "--backend uml", "--backend consonance", "--features consonance",
                    "nova-consonance-campaign"),
 }

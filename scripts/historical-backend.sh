@@ -12,13 +12,13 @@ historical_backend() {
     case "${BACKEND:-consonance}" in
         consonance)
             test -s "${PWD}/guest/bzImage"
-            guest_arguments=(--backend kvm --kernel "${PWD}/guest/bzImage")
+            guest_backend=kvm
             ;;
         uml)
             local profile=${PWD}/guest/uml
             chmod +x "${profile}/linux" "${profile}/harmony-uml-qualify"
             test -s "${profile}/profile.json"
-            guest_arguments=(--backend uml --uml-profile "${profile}")
+            guest_backend=uml
             launcher=("${profile}/harmony-uml-qualify" exec --report "${denial}" --)
             ;;
         *)
@@ -26,6 +26,21 @@ historical_backend() {
             return 2
             ;;
     esac
+    local recipe
+    recipe=$(python3 - "$guest_backend" "$PWD/guest" "$RAM_MIB" "${KNOBS:-}" <<'PYTHON'
+import json, sys
+from pathlib import Path
+backend, directory, ram, knobs = sys.argv[1:]
+root = Path(directory)
+print('[runner]\nkind = "consonance"\nbackend = ' + json.dumps(backend))
+print('[runner.options]\nram_mib = ' + ram)
+print('base_initramfs = ' + json.dumps(str(root / 'initramfs-oci.cpio.gz')))
+key, path = ('uml_profile', root / 'uml') if backend == 'uml' else ('kernel', root / 'bzImage')
+print(key + ' = ' + json.dumps(str(path)))
+print('[workload.options]\nknobs = ' + json.dumps(knobs.split()))
+PYTHON
+    )
+    guest_arguments=(--config-toml "$recipe")
 }
 
 historical_snapshots() {
