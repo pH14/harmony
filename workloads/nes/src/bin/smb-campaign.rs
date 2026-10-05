@@ -12,9 +12,7 @@ use std::{
 use nes_workload::{
     search::archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, retention_policy_from_identifier},
     search::campaign::default_window,
-    search::draw::{
-        DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
-    },
+    search::draw::{DrawMixture, draw_mixture_from_identifier},
     smb::archive::SmbArchiveReport,
     smb::campaign::{
         SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport,
@@ -80,7 +78,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut retention = RetentionPolicy::Unprobed;
     let mut vocabulary = SmbButtonVocabulary::default();
     let mut terminal = SmbTerminalPredicate::GameVictory;
-    let mut suffix = SuffixShape::default();
     let mut mixture = DrawMixture::EnergySplice { scale: 6 };
     let mut checkpoint_path = None;
     let mut write_final_artifacts = true;
@@ -108,13 +105,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                 &args
                     .next()
                     .ok_or("missing --vocabulary value")?
-                    .to_string_lossy(),
-            )?;
-        } else if flag == "--suffix" {
-            suffix = suffix_shape_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --suffix value")?
                     .to_string_lossy(),
             )?;
         } else if flag == "--mixture" {
@@ -189,7 +179,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         memory_budget_mib,
         materialize_final_artifacts: write_final_artifacts,
         retention,
-        suffix,
         mixture,
         victory_input_path: Some(output.join("victory-input.json")),
     };

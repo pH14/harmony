@@ -4,78 +4,7 @@ use std::{error::Error, num::NonZeroUsize};
 
 use crate::search::rand::RomuDuoJrRand;
 
-pub const SUFFIX_ONE_OR_TWO_IDENTIFIER: &str = "one_or_two";
-
-pub const SUFFIX_ONE_TO_SIX_IDENTIFIER: &str = "one_to_six";
-
-pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str =
-    "one_to_six_within_3_max_action_cost_full_hold";
-
-pub const SUFFIX_COST_BOUND_FULL_HOLDS: u64 = 3;
-
-pub const SUFFIX_DOUBLE_WHILE_IN_PLACE_IDENTIFIER: &str = "one_doubling_while_in_place_up_to_64";
-
 pub const SUFFIX_DOUBLING_LIMIT: u8 = 64;
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum SuffixShape {
-    OneOrTwo,
-    OneToSix,
-    OneToSixBounded,
-    #[default]
-    DoubleWhileInPlace,
-}
-
-impl SuffixShape {
-    #[must_use]
-    pub(crate) fn longest_draw(self) -> usize {
-        match self {
-            Self::OneOrTwo => 2,
-            Self::OneToSix | Self::OneToSixBounded => 6,
-            Self::DoubleWhileInPlace => usize::from(SUFFIX_DOUBLING_LIMIT),
-        }
-    }
-
-    pub(crate) fn bound_cost<A>(
-        self,
-        suffix: &mut Vec<A>,
-        cost: fn(&A) -> u64,
-        max_action_cost: u64,
-    ) {
-        if self != Self::OneToSixBounded {
-            return;
-        }
-        let bound = SUFFIX_COST_BOUND_FULL_HOLDS.saturating_mul(max_action_cost);
-        let mut total = 0_u64;
-        let reached = suffix.iter().position(|action| {
-            total = total.saturating_add(cost(action));
-            total >= bound
-        });
-        if let Some(index) = reached {
-            suffix.truncate(index.saturating_add(1));
-        }
-    }
-}
-
-#[must_use]
-pub(crate) fn suffix_shape_identifier(shape: SuffixShape) -> &'static str {
-    match shape {
-        SuffixShape::OneOrTwo => SUFFIX_ONE_OR_TWO_IDENTIFIER,
-        SuffixShape::OneToSix => SUFFIX_ONE_TO_SIX_IDENTIFIER,
-        SuffixShape::OneToSixBounded => SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER,
-        SuffixShape::DoubleWhileInPlace => SUFFIX_DOUBLE_WHILE_IN_PLACE_IDENTIFIER,
-    }
-}
-
-pub fn suffix_shape_from_identifier(identifier: &str) -> Result<SuffixShape, Box<dyn Error>> {
-    match identifier {
-        SUFFIX_ONE_OR_TWO_IDENTIFIER => Ok(SuffixShape::OneOrTwo),
-        SUFFIX_ONE_TO_SIX_IDENTIFIER => Ok(SuffixShape::OneToSix),
-        SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER => Ok(SuffixShape::OneToSixBounded),
-        SUFFIX_DOUBLE_WHILE_IN_PLACE_IDENTIFIER => Ok(SuffixShape::DoubleWhileInPlace),
-        _ => Err(format!("suffix shape {identifier} is not recognized").into()),
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DrawMixture {
@@ -212,7 +141,6 @@ pub(crate) fn energy_strategy(
 }
 
 pub fn draw_suffix<A, B, U>(
-    shape: SuffixShape,
     mixture: DrawMixture,
     mixture_weight: u8,
     mutation_seed: u64,
@@ -232,19 +160,7 @@ where
         ),
         DrawMixture::AlphabetOnly | DrawMixture::BiasedHalf => None,
     };
-    let length = match shape {
-        SuffixShape::OneOrTwo => {
-            if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
-                2
-            } else {
-                1
-            }
-        }
-        SuffixShape::OneToSix | SuffixShape::OneToSixBounded => {
-            1 + rand.below(NonZeroUsize::new(6).ok_or("invalid suffix odds")?)
-        }
-        SuffixShape::DoubleWhileInPlace => usize::from(SUFFIX_DOUBLING_LIMIT),
-    };
+    let length = usize::from(SUFFIX_DOUBLING_LIMIT);
     let mut suffix = Vec::with_capacity(length);
     for _ in 0..length {
         let take_biased = match energy_biased {
@@ -267,44 +183,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        DrawMixture, EnergyStrategy, MixtureEnergy, SuffixShape, draw_mixture_from_identifier,
-        draw_mixture_identifier, draw_suffix, energy_strategy, suffix_shape_from_identifier,
-        suffix_shape_identifier,
+        DrawMixture, EnergyStrategy, MixtureEnergy, draw_mixture_from_identifier,
+        draw_mixture_identifier, draw_suffix, energy_strategy,
     };
-
-    #[test]
-    fn the_bounded_shape_cuts_a_suffix_after_the_action_that_reaches_the_bound() {
-        let cost = |action: &u64| *action;
-        let longest = 120;
-        let mut suffix = vec![100, 200, 60, 5, 5];
-        SuffixShape::OneToSixBounded.bound_cost(&mut suffix, cost, longest);
-        assert_eq!(suffix, vec![100, 200, 60]);
-        let mut short = vec![100, 200, 59];
-        SuffixShape::OneToSixBounded.bound_cost(&mut short, cost, longest);
-        assert_eq!(short, vec![100, 200, 59]);
-        let mut one = vec![1_000, 1];
-        SuffixShape::OneToSixBounded.bound_cost(&mut one, cost, longest);
-        assert_eq!(one, vec![1_000]);
-        let mut unbounded = vec![100, 200, 60, 5, 5];
-        SuffixShape::OneToSix.bound_cost(&mut unbounded, cost, longest);
-        assert_eq!(unbounded.len(), 5);
-    }
-
-    #[test]
-    fn the_shape_identifier_round_trips_and_rejects_unknown_names() {
-        for shape in [
-            SuffixShape::OneOrTwo,
-            SuffixShape::OneToSix,
-            SuffixShape::OneToSixBounded,
-            SuffixShape::DoubleWhileInPlace,
-        ] {
-            assert_eq!(
-                suffix_shape_from_identifier(suffix_shape_identifier(shape)).expect("round trip"),
-                shape
-            );
-        }
-        assert!(suffix_shape_from_identifier("two_or_three").is_err());
-    }
 
     #[test]
     fn the_mixture_identifier_round_trips_and_rejects_unknown_names() {
@@ -330,7 +211,6 @@ mod tests {
         for seed in 0..512_u64 {
             let mut alphabet_calls = 0_u32;
             let plain = draw_suffix(
-                SuffixShape::OneOrTwo,
                 DrawMixture::AlphabetOnly,
                 128,
                 seed,
@@ -343,7 +223,6 @@ mod tests {
             )
             .expect("alphabet-only suffix");
             let with_empty_table = draw_suffix(
-                SuffixShape::OneOrTwo,
                 DrawMixture::BiasedHalf,
                 128,
                 seed,
@@ -358,32 +237,10 @@ mod tests {
     }
 
     #[test]
-    fn two_action_suffixes_are_drawn_at_one_in_four() {
-        let long = (0..4_096_u64)
-            .filter(|seed| {
-                draw_suffix(
-                    SuffixShape::OneOrTwo,
-                    DrawMixture::AlphabetOnly,
-                    128,
-                    *seed,
-                    None,
-                    |_| Ok(None::<u64>),
-                    |_, rand| Ok(rand.next_u64()),
-                )
-                .expect("suffix")
-                .len()
-                    == 2
-            })
-            .count();
-        assert!((900..1_150).contains(&long), "two-action suffixes: {long}");
-    }
-
-    #[test]
     fn each_alphabet_draw_sees_the_action_before_it() {
         for seed in 0..256_u64 {
             let mut seen = Vec::new();
             let suffix = draw_suffix(
-                SuffixShape::OneToSix,
                 DrawMixture::AlphabetOnly,
                 128,
                 seed,
@@ -407,7 +264,6 @@ mod tests {
             let biased = (0..4_096_u64)
                 .filter(|seed| {
                     let suffix = draw_suffix(
-                        SuffixShape::OneToSix,
                         DrawMixture::Energy { scale: 6 },
                         weight,
                         *seed,

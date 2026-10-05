@@ -169,10 +169,6 @@ impl InputPolicy for TestWorkload {
             ..DEFAULT_DRAW_TABLE_PARAMETERS
         }
     }
-
-    fn max_action_cost(&self) -> u64 {
-        2
-    }
 }
 
 impl TargetExecution for TestWorkload {
@@ -308,7 +304,6 @@ fn continuation_config(
         memory_budget_mib: Some(budget_mib),
         materialize_final_artifacts: true,
         run: (),
-        suffix: SuffixShape::OneOrTwo,
         mixture,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
@@ -1018,8 +1013,7 @@ fn a_resume_refuses_a_changed_workload_policy() {
 
 #[test]
 fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
-    let mut config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
-    config.suffix = SuffixShape::DoubleWhileInPlace;
+    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();
     let (live, checkpoint) = run_campaign_checkpointed(
         &TestWorkload,
@@ -1070,7 +1064,7 @@ fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
         *line = serde_json::to_string(&value).unwrap();
         let error = replay_error(&lines);
         assert!(
-            error.contains("recorded suffix limit does not match the suffix shape"),
+            error.contains("recorded suffix limit does not match the drawn suffix"),
             "a tampered limit failed for another reason: {error}"
         );
     }

@@ -220,8 +220,6 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-pub const LONGEST_HOLD_FRAMES: u8 = 120;
-
 const START: u8 = 0x08;
 
 pub const CHORDS: ChordVocabulary = ChordVocabulary {

@@ -36,8 +36,8 @@ ladder exist for Metroid only today; another game adds them in step 1.
 - A resume with the original seed repeats the original run, apart from
   timing-dependent fields. Another seed keeps the archive and draws new
   choices.
-- A resume may change the searcher's policies: suffix, mixture, retention,
-  selector, continuation, objective stop, draw tables and preference. Give a
+- A resume may change the searcher's policies: mixture, retention, selector,
+  continuation, objective stop, draw tables and preference. Give a
   changed policy a new identifier, or the resume records no change.
 - A resume refuses a changed workload identity, any other workload policy
   (such as the key), worker count, admission window, limits or checkpoint

@@ -352,8 +352,6 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-pub const LONGEST_HOLD_FRAMES: u8 = 120;
-
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
 const SELECT: u8 = 0x04;

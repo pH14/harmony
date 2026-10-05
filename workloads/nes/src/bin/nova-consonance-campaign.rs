@@ -44,10 +44,7 @@ mod real {
                 NovaCampaignConfig, NovaCampaignOrigin, NovaGame, run_nova_campaign_checkpointed,
             },
         },
-        search::{
-            archive::RetentionPolicy,
-            draw::{DrawMixture, SuffixShape},
-        },
+        search::{archive::RetentionPolicy, draw::DrawMixture},
         witness::replay_witness,
     };
     use serde_json::json;
@@ -260,7 +257,6 @@ mod real {
             memory_budget_mib: Some(memory_budget.archive_memory_budget_mib),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::Unprobed,
-            suffix: SuffixShape::default(),
             mixture: DrawMixture::AlphabetOnly,
             victory_input_path: Some(args.output.join("victory-input.json")),
         };

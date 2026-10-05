@@ -303,7 +303,7 @@ mod live {
     use searcher::search::{
         archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{CampaignOrigin, PlacedThread, ThreadPlacement},
-        draw::{DrawMixture, SuffixShape},
+        draw::DrawMixture,
     };
     use serde_json::json;
 
@@ -412,7 +412,6 @@ mod live {
             memory_budget_mib: Some(MEMORY_BUDGET_MIB),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::Unprobed,
-            suffix: SuffixShape::default(),
             mixture: DrawMixture::AlphabetOnly,
             objective_witness_path: Some(options.output.join("first-bug-input.json")),
             placement: Some(pinned(resources.placement.clone())),

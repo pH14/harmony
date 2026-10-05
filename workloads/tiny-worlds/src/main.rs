@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use searcher::search::draw::{draw_mixture_from_identifier, suffix_shape_from_identifier};
+use searcher::search::draw::draw_mixture_from_identifier;
 use serde::Deserialize;
 use std::{error::Error, io::Read};
 use tiny_worlds::{Keep, Scale, SearchSettings, Workload, run_kept, run_scaled, worlds::World};
@@ -26,8 +26,6 @@ struct Request {
 #[serde(deny_unknown_fields)]
 struct SearchRequest {
     #[serde(default)]
-    suffix: Option<String>,
-    #[serde(default)]
     mixture: Option<String>,
     #[serde(default)]
     stop_on_objective: Option<bool>,
@@ -41,9 +39,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let request: Request = serde_json::from_str(&input)?;
     let mut settings = SearchSettings::default();
     if let Some(search) = &request.search {
-        if let Some(suffix) = &search.suffix {
-            settings.suffix = suffix_shape_from_identifier(suffix)?;
-        }
         settings.mixture = search
             .mixture
             .as_deref()

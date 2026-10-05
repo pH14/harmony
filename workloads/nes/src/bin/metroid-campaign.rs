@@ -21,9 +21,7 @@ use nes_workload::{
     search::{
         archive::RetentionPolicy,
         campaign::TargetExecution,
-        draw::{
-            DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
-        },
+        draw::{DrawMixture, draw_mixture_from_identifier},
     },
 };
 use sha2::{Digest, Sha256};
@@ -37,7 +35,6 @@ struct Args {
     workers: u32,
     host: String,
     memory_budget_mib: Option<usize>,
-    suffix: SuffixShape,
     mixture: DrawMixture,
     verify_replay: bool,
     root_input: Option<PathBuf>,
@@ -56,7 +53,6 @@ impl Args {
         let mut workers = 2_u32;
         let mut host = "local".to_owned();
         let mut memory_budget_mib = None;
-        let mut suffix = SuffixShape::default();
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut verify_replay = false;
         let mut root_input = None;
@@ -81,11 +77,6 @@ impl Args {
                 "--memory-budget-mib" => {
                     memory_budget_mib = Some(parse_number("memory-budget-mib", value)?);
                 }
-                "--suffix" => {
-                    suffix = suffix_shape_from_identifier(
-                        &value.into_string().map_err(|_| "suffix is not UTF-8")?,
-                    )?;
-                }
                 "--mixture" => {
                     mixture = draw_mixture_from_identifier(
                         &value.into_string().map_err(|_| "mixture is not UTF-8")?,
@@ -103,7 +94,6 @@ impl Args {
             workers,
             host,
             memory_budget_mib,
-            suffix,
             mixture,
             verify_replay,
             root_input,
@@ -169,7 +159,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        suffix: args.suffix,
         mixture: args.mixture,
         victory_input_path: None,
     };

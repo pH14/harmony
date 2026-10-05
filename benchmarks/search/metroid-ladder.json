@@ -146,7 +146,6 @@
   "executions": 3000000,
   "frames": 1000000000,
   "mixture": "energy_splice:6",
-  "suffix": "one_doubling_while_in_place_up_to_64",
   "verification": "witness",
   "wall_seconds": 14400,
   "window": 2
