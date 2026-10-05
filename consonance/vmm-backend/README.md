@@ -38,6 +38,13 @@ guest mode without a pending nested entry. The validator rejects unknown flags,
 malformed vendor layouts and cross-vendor restore before mutation. Ordinary
 backends neither capture nor accept nested state.
 
+With a userspace LAPIC, KVM delivers a `KVM_INTERRUPT` vector to L2 whenever
+L1 is in nested guest mode. KVM also reports an open interrupt window while
+L1's VMLAUNCH, VMRESUME or VMRUN is still pending, even though L1 had
+interrupts disabled. Before queuing a vector, the backend reads the nested
+state's guest-mode flag. In guest mode the vector stays pending and the window
+request is cleared, so a later exit from L1 outside guest mode delivers it.
+
 X86 restore uses the host Linux 7.1
 [KVM selftest](https://github.com/torvalds/linux/blob/v7.1/tools/testing/selftests/kvm/lib/x86/processor.c)
 dependency order: special

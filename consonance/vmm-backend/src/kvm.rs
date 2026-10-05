@@ -173,19 +173,24 @@ pub(crate) fn plan_irq_entry(
     page: RunPage,
     pending_irq: Option<u8>,
     readiness_current: bool,
-) -> IrqEntry {
+    nested_guest_mode: impl FnOnce() -> Result<bool>,
+) -> Result<IrqEntry> {
     match pending_irq {
         Some(vector) if readiness_current && page.ready_for_interrupt_injection() != 0 => {
             page.set_request_interrupt_window(false);
-            IrqEntry::Queue(vector)
+            if nested_guest_mode()? {
+                Ok(IrqEntry::Run)
+            } else {
+                Ok(IrqEntry::Queue(vector))
+            }
         }
         Some(_) => {
             page.set_request_interrupt_window(true);
-            IrqEntry::Run
+            Ok(IrqEntry::Run)
         }
         None => {
             page.set_request_interrupt_window(false);
-            IrqEntry::Run
+            Ok(IrqEntry::Run)
         }
     }
 }
