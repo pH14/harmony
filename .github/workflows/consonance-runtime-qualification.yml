@@ -102,7 +102,7 @@ jobs:
           sudo dmesg >nested-host-evidence/host-dmesg-before.txt
           if [[ -n "$HISTORY_RUN" && -d /sys/module/kvm_intel ]]; then
             trace=/sys/kernel/tracing
-            sudo sh -c 'printf 0 > /sys/kernel/tracing/tracing_on; printf 4096 > /sys/kernel/tracing/buffer_size_kb; printf "" > /sys/kernel/tracing/trace'
+            sudo sh -c 'printf 0 > /sys/kernel/tracing/tracing_on; printf 16384 > /sys/kernel/tracing/buffer_size_kb; printf "" > /sys/kernel/tracing/trace'
             for event in kvm_nested_vmenter_failed kvm_nested_vmexit_inject; do
               printf 1 | sudo tee "$trace/events/kvm/$event/enable" >/dev/null
             done
@@ -119,7 +119,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev cpio xz-utils busybox-static
+          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev cpio xz-utils busybox-static dwarves
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@v2
@@ -141,10 +141,19 @@ jobs:
               printf 0 | sudo tee /sys/kernel/tracing/tracing_on >/dev/null
               sudo cat /sys/kernel/tracing/trace >"$history/host-nested-trace.txt"
             fi
+            if sudo test -e /sys/kernel/tracing/events/harmony_nested/enable; then
+              sudo bash consonance/harmony-linux/linux/trace-nested-vmcs12.sh stop
+              printf "" | sudo tee /sys/kernel/tracing/trace >/dev/null
+              printf 1 | sudo tee /sys/kernel/tracing/tracing_on >/dev/null
+            fi
             sudo dmesg >"$history/host-dmesg.txt"
             exit "$result"
           }
           trap retain_history_diagnostics EXIT
+          if [[ -d /sys/module/kvm_intel ]]; then
+            sudo bash consonance/harmony-linux/linux/trace-nested-vmcs12.sh start ||
+              echo "VMCS12 entry probes unavailable on this host"
+          fi
           gh run download "$HISTORY_RUN" --repo "$GITHUB_REPOSITORY" \
             --name "nested-host-$HISTORY_RUN" --dir "$history/original"
           gh run download "$HISTORY_RUN" --repo "$GITHUB_REPOSITORY" \
