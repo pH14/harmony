@@ -48,15 +48,17 @@ harmony init --language rust
 harmony prepare
 harmony search --name baseline --for 10m
 harmony inspect baseline
-harmony replay baseline --bug 1 --repeat 3
-harmony branch baseline --bug 1 --before 1steps --name earlier
+harmony replay baseline --finding 1 --repeat 3
+harmony branch baseline --finding 1 --rewind 1 --stop --name earlier
 harmony search --from earlier --name neighborhood
 ```
 
 `harmony.toml` describes services, readiness, test traffic, assertions and control
 hooks. Inline TOML and direct image inputs work too. The CLI chooses KVM, HVF or
 UML and keeps prepared artifacts for exact replay. NES files select the native
-game package: `harmony search game.nes --core quicknes_libretro.so`.
+game package: `harmony search game.nes`, with the runner library configured in
+`runner.options.core`. Workload inputs, runner options and search budgets have
+separate TOML tables.
 See [CLI documentation](cli/README.md) for preparation, runtime provisioning,
 logging, interventions and whole-search continuation.
 

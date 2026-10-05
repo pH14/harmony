@@ -156,11 +156,8 @@ jobs:
         if: steps.scope.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          timeout -k 10 300 taskset -c 0,1 target/release/harmony search --backend kvm \
-            --kernel consonance/harmony-linux/build/x86_64/bzImage \
-            --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-            --nes-image consonance/harmony-linux/build/nes.oci \
-            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+          timeout -k 10 300 taskset -c 0,1 target/release/harmony search --runner consonance --backend kvm \
+            --config-toml $'[workload.options]\nguest_image = "consonance/harmony-linux/build/nes.oci"' \
             --seed 20260901 --executions 4 \
             --out harmony-nes-check/search "${NOVA_BUILD}/nova.nes" \
             2>&1 | tee harmony-nes-check/console.txt
@@ -182,6 +179,19 @@ jobs:
           if not any(json.loads(line).get("event") == "job" for line in stream[1:]):
               raise SystemExit("the Harmony NES check recorded no job event")
           PY
+      - name: Replay and branch the saved guest execution
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          timeout -k 10 120 target/release/harmony replay harmony-nes-check/search \
+            --out harmony-nes-check/guest-replay
+          timeout -k 10 120 target/release/harmony branch harmony-nes-check/search \
+            --step 0 --stop --out harmony-nes-check/guest-prefix
+      - name: Exercise native CLI investigation and continuation
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          timeout -k 10 120 taskset -c 0,1 bash cli/tests/nes.sh \
+            "${NOVA_BUILD}/nova.nes" "${NOVA_BUILD}/quicknes_libretro.so" \
+            harmony-nes-check/native-cli
       - name: Capture the guest-produced tape natively with game audio
         if: steps.scope.outputs.enabled == 'true'
         run: |
@@ -301,15 +311,13 @@ jobs:
           PACKAGE_EXECUTIONS: "8"
         run: |
           rm -rf package-native package-consonance
-          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --backend native \
-            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --runner quicknes \
+            --config-toml "$(printf '[runner.options]\ncore = \"%s/quicknes_libretro.so\"\n' "$NOVA_BUILD")" \
             --seed "${PACKAGE_SEED}" \
             --executions "${PACKAGE_EXECUTIONS}" \
             --out package-native "${NOVA_BUILD}/nova.nes"
-          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --backend kvm \
-            --kernel consonance/harmony-linux/build/x86_64/bzImage \
-            --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-            --nes-image consonance/harmony-linux/build/nes.oci \
+          taskset -c "${PACKAGE_CPUS}" target/release/harmony search --runner consonance --backend kvm \
+            --config-toml $'[workload.options]\nguest_image = "consonance/harmony-linux/build/nes.oci"' \
             --seed "${PACKAGE_SEED}" \
             --executions "${PACKAGE_EXECUTIONS}" \
             --out package-consonance "${NOVA_BUILD}/nova.nes"

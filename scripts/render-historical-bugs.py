@@ -105,7 +105,7 @@ def replay_command(case: dict) -> str:
     """Show the command shape for a reproducer from the current run."""
     if case.get("ci", {}).get("status", "runnable") != "runnable":
         return "—"
-    return "`harmony replay RUN --bug 1 --repeat 1 --out REPLAY`"
+    return "`harmony replay RUN --finding 1 --repeat 1 --out REPLAY`"
 
 
 def render(cases: list[dict], reports: dict) -> str:

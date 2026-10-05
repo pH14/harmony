@@ -94,10 +94,10 @@ docker build -f workloads/languages/python/Dockerfile --target compiled \
 docker build -f workloads/languages/python/postgres.Dockerfile \
   -t harmony-python-postgres:local .
 harmony search harmony-python-postgres:local --backend kvm \
-  --kernel GUEST_KERNEL --base-initramfs BASE_INITRAMFS \
+  --config harmony.toml \
   --executions 64 --for 5m --out evidence/python-postgres
 harmony run harmony-python-postgres:local --backend kvm \
-  --kernel GUEST_KERNEL --base-initramfs BASE_INITRAMFS \
+  --config harmony.toml \
   --actions workloads/languages/python/reference-events.json --repeat 2 \
   --out evidence/python-postgres-replay
 ```

@@ -57,7 +57,9 @@ docker save -o lost-update.oci harmony-lost-update
 Search it like any faults image:
 
 ```sh
-harmony search lost-update.oci --backend kvm \
-  --kernel Image --base-initramfs initramfs-oci.cpio.gz \
-  --seed 1 --executions 100000 --ram-mib 256 --out run/
+harmony search lost-update.oci --backend kvm --config harmony.toml \
+  --seed 1 --executions 100000 --out run/
 ```
+
+Set guest paths and memory in `runner.options.kernel`,
+`runner.options.base_initramfs` and `runner.options.ram_mib` in the recipe.

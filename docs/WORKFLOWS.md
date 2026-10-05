@@ -514,3 +514,8 @@ a pinned UML profile, and the source SDK for language preparation. Guest, UML
 and SDK archives carry SHA-256 sidecars. `harmony doctor` and `harmony prepare`
 fetch assets for the CLI version and host architecture into the user data
 cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR`.
+
+The Harmony NES Nova lane also runs `cli/tests/nes.sh` against the pinned native
+runner. It checks the shared CLI's prepared-input execution, exact replay, prefix
+branching, nonempty rooted searches, additional-budget continuation and artifact
+tamper refusal. Its evidence is uploaded with the existing Nova artifact.
