@@ -269,6 +269,11 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee nested-host-evidence/nested-interrupt-before-entry.log
           grep -Fq 'NESTED_INTERRUPT_BEFORE_ENTRY delivered=' nested-host-evidence/nested-interrupt-before-entry.log
+          timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p vmm-core --lib \
+            vendor::x86::contract::nested::tests::restore_before_nested_operation_onto_a_nested_host \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee nested-host-evidence/nested-restore-before-nested-operation.log
+          grep -Fq 'NESTED_RESTORE_BEFORE_NESTED_OPERATION pass' nested-host-evidence/nested-restore-before-nested-operation.log
       - name: Build the static inner driver and matching OCI runtime
         env:
           HISTORY_RUN: ${{ inputs.nested_history_run }}

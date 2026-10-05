@@ -53,9 +53,13 @@ events, then nested state. Event restoration follows general registers because
 KVM_SET_REGS clears the exception queue. The selftest's earlier event write
 loses pending #PF and #GP under the enabled exception-payload API; the existing
 live exception-payload and serviced-MSR regressions exercise that difference.
-The complete nested payload is installed after all architectural
-state. Invalid format, size, mode flags, or contract presence fails preflight
-before any restore ioctl.
+A nested-host restore first installs the vendor's inactive nested state.
+The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
+operation by loading VMCS12 host state or switching to VMCB01. Doing that
+first keeps it from overwriting the restored registers, and lets a snapshot
+taken before VMXON clear CR4.VMXE. The complete nested payload is installed
+after all architectural state. Invalid format, size, mode flags, or contract
+presence fails preflight before any restore ioctl.
 
 `Backend::drain_dirty_pages` returns the guest pages written since the last
 drain, so snapshots copy and restores reload only those pages. The KVM backends

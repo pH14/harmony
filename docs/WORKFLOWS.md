@@ -223,6 +223,10 @@ That test raises vector 0xFF whenever L1 reads DEBUGCTL, which Linux does with
 interrupts disabled just before it enters L2. L1 must report each delivered
 vector as a spurious interrupt, and the cache fixture must finish all twelve L2
 exits.
+`vmm-core::vendor::x86::contract::nested::tests::restore_before_nested_operation_onto_a_nested_host`
+restores a cut taken during early boot onto a vCPU that has since enabled VMX
+or SVM, compares the restored registers and nested payload, and runs the
+restored guest to the fixture's last exit.
 If a compiled kernel fails qualification, the evidence artifact retains its
 unpublished `vmlinux`, matching boot components, configuration, alternatives and
 KVM disassembly for review.
