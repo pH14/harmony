@@ -94,6 +94,7 @@ pub const MAX_ENTRIES_PER_KEY: usize = 2;
 const HISTORY_COMPACTION_MIN_DROPS: usize = 4_096;
 #[cfg(test)]
 const HISTORY_COMPACTION_MIN_DROPS: usize = 16;
+const HISTORY_COMPACTION_SHARE: usize = 16;
 pub const REPLAY_DISTANCE_ACTIONS: usize = 8;
 const MAINTENANCE_QUANTUM: usize = 32;
 
@@ -1381,21 +1382,21 @@ where
             .collect()
     }
 
+    fn compaction_min_drops(&self) -> usize {
+        HISTORY_COMPACTION_MIN_DROPS.max(self.entries.len() / HISTORY_COMPACTION_SHARE)
+    }
+
     fn compact_history(&mut self, force: bool) -> Result<(), &'static str> {
         let history_target = self
             .memory_limit
             .map_or(usize::MAX, |limit| limit / 4)
             .max(1);
-        let entry_pressure = self.entries.len()
-            >= self
-                .max_entries
-                .saturating_add(HISTORY_COMPACTION_MIN_DROPS);
+        let min_drops = self.compaction_min_drops();
+        let entry_pressure = self.entries.len() >= self.max_entries.saturating_add(min_drops);
         if !force && self.history_memory_bytes() <= history_target && !entry_pressure {
             return Ok(());
         }
-        if !force
-            && self.entries.len().saturating_sub(self.active_count) < HISTORY_COMPACTION_MIN_DROPS
-        {
+        if !force && self.entries.len().saturating_sub(self.active_count) < min_drops {
             return Ok(());
         }
         if !force
@@ -1404,18 +1405,15 @@ where
                 .keep_releases
                 .wrapping_sub(releases)
                 .saturating_add(dropped)
-                < HISTORY_COMPACTION_MIN_DROPS
+                < min_drops
         {
-            debug_assert!(
-                self.history_keep().iter().filter(|keep| !**keep).count()
-                    < HISTORY_COMPACTION_MIN_DROPS
-            );
+            debug_assert!(self.history_keep().iter().filter(|keep| !**keep).count() < min_drops);
             return Ok(());
         }
 
         let keep = self.history_keep();
         let dropped = keep.iter().filter(|keep| !**keep).count();
-        if !force && dropped < HISTORY_COMPACTION_MIN_DROPS {
+        if !force && dropped < min_drops {
             self.failed_compaction = Some((self.keep_releases, dropped));
             return Ok(());
         }
@@ -3555,9 +3553,9 @@ mod tests {
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
-        HISTORY_COMPACTION_MIN_DROPS, Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY,
-        MAX_TIER_RANK_SHIFT, SelectorAccounting, SelectorDraw, SelectorPath, TierCells,
-        WeightedSet, checked_tier_rank_shift, tier_weight,
+        HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
+        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, MAX_TIER_RANK_SHIFT, SelectorAccounting,
+        SelectorDraw, SelectorPath, TierCells, WeightedSet, checked_tier_rank_shift, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -6769,6 +6767,46 @@ mod tests {
         assert_eq!(
             archive.historical_entries_dropped(),
             u64::try_from(HISTORY_COMPACTION_MIN_DROPS).expect("threshold fits in u64")
+        );
+    }
+
+    #[test]
+    fn entry_pressure_compaction_waits_for_a_share_of_the_archive() {
+        let entries = HISTORY_COMPACTION_MIN_DROPS * HISTORY_COMPACTION_SHARE * 2;
+        let min_drops = entries / HISTORY_COMPACTION_SHARE;
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        for index in 0..u16::try_from(entries).expect("entry count fits in u16") {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: index.to_be_bytes().to_vec(),
+                        key: FlatKey([index, index, 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert history entry")
+                .expect("retain history entry");
+        }
+        archive.max_entries = 0;
+        archive.memory_limit = Some(usize::MAX);
+        for index in 0..min_drops - 1 {
+            assert!(archive.deactivate(index));
+        }
+        archive
+            .compact_history_if_needed()
+            .expect("a dead tail below the share is left for a later batch");
+        assert_eq!(archive.history_compactions(), 0);
+        assert!(archive.deactivate(min_drops - 1));
+        archive
+            .compact_history_if_needed()
+            .expect("a dead tail at the share compacts");
+        assert_eq!(archive.history_compactions(), 1);
+        assert_eq!(
+            archive.historical_entries_dropped(),
+            u64::try_from(min_drops).expect("drop count fits in u64")
         );
     }
 
