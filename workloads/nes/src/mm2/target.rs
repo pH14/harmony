@@ -597,6 +597,17 @@ pub struct Mm2Target {
     genesis_prefix: Vec<ButtonChord>,
     execution_work: u64,
     route: Mm2Route,
+    sink: Option<CaptureSink>,
+}
+
+pub type FrameSink = Box<dyn FnMut(&[VideoFrame], &[i16]) -> Result<(), Box<dyn Error>> + Send>;
+
+struct CaptureSink(FrameSink);
+
+impl std::fmt::Debug for CaptureSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CaptureSink")
+    }
 }
 
 fn idle_chords(frames: u32) -> Vec<ButtonChord> {
@@ -864,6 +875,7 @@ impl Mm2Target {
             genesis_prefix,
             execution_work: 0,
             route,
+            sink: None,
         })
     }
 
@@ -911,6 +923,10 @@ impl Mm2Target {
     pub fn start_capturing(&mut self) {
         self.machine.set_video_capture(true);
         self.machine.set_audio_capture(true);
+    }
+
+    pub fn set_frame_sink(&mut self, sink: Option<FrameSink>) {
+        self.sink = sink.map(CaptureSink);
     }
 
     pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
@@ -1138,6 +1154,11 @@ impl Mm2Target {
         let mut frames = 0_u64;
         for chord in chords {
             frames += u64::try_from(self.run_action(chord)?.len()).ok()?;
+            if let Some(CaptureSink(sink)) = &mut self.sink {
+                let video = self.machine.take_video_frames();
+                let audio = self.machine.take_audio_samples();
+                sink(&video, &audio).ok()?;
+            }
         }
         Some(frames)
     }

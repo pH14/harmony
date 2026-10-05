@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{env, error::Error, fs, path::PathBuf};
+use std::{
+    env,
+    error::Error,
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use nes_workload::{
     film::{FPS, Film},
@@ -41,9 +47,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("the first action captured no video")?;
     let (width, height) = (first.width, first.height);
 
-    let mut film = Film::start(&video, width, height)?;
-    film.write(&opening, &target.drain_audio())?;
+    let film = Arc::new(Mutex::new(Film::start(&video, width, height)?));
+    film.lock()
+        .map_err(|_| "the film lock is poisoned")?
+        .write(&opening, &target.drain_audio())?;
     drop(opening);
+    let drive_film = Arc::clone(&film);
+    target.set_frame_sink(Some(Box::new(move |frames, audio| {
+        drive_film
+            .lock()
+            .map_err(|_| "the film lock is poisoned")?
+            .write(frames, audio)
+    })));
 
     let mut applied = 1_usize;
     for action in &input.actions[1..] {
@@ -52,17 +67,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         target.apply(action);
         applied += 1;
-        film.write(&target.drain_frames(), &target.drain_audio())?;
+        let mut writer = film.lock().map_err(|_| "the film lock is poisoned")?;
+        writer.write(&target.drain_frames(), &target.drain_audio())?;
         if applied.is_multiple_of(250) {
             eprintln!(
                 "action {applied}/{} frames={}",
                 input.actions.len(),
-                film.frames()
+                writer.frames()
             );
         }
     }
 
-    let film = film.finish()?;
+    target.set_frame_sink(None);
+    let film = Arc::try_unwrap(film)
+        .map_err(|_| "the film is still shared")?
+        .into_inner()
+        .map_err(|_| "the film lock is poisoned")?
+        .finish()?;
 
     println!(
         "{}",
@@ -78,6 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "weapon_energies": target.diagnostic_weapon_energies()?,
             "bosses_beaten": target.mechanical_state().bosses_beaten(),
             "dead": target.is_dead(),
+            "failed": target.exit_kind() != ExitKind::Ok,
             "objective_reached": target.objective_reached(),
         })
     );
