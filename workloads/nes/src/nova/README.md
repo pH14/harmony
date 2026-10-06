@@ -15,12 +15,12 @@ because the Consonance backend serves reads only after a run.
 
 Nova retains one scheduled representative per 16-pixel location under each of
 four preferences. The first prefers states with more cleared levels,
-collectibles, available levels, carried abilities, health and puzzle chips, in
-that order. Each of the other three ranks the count of one key color ahead of
-the first preference.
+collectibles, available levels, health and puzzle chips, in that order. Each of
+the other three ranks the count of one key color ahead of the first preference.
 The progress tier is the cleared-level count. The place is the collectible and
 available counts, the level identity, the boss-fight count, the puzzle state and
-a two-bucket position; the holder identity is the exact position bucket.
+a two-bucket position; the holder identity is the exact position bucket and the
+held ability.
 In whole-game mode the selector puts most draws on the highest cleared count, so
 places in levels already cleared stop taking most of the search. A level
 campaign stops at its first clear, so it has one tier.
@@ -54,6 +54,13 @@ color, so holding more keys of a color never closes a route, and a row of locks
 of one color needs as many keys. Held keys are same-slot preferences, as
 Metroid's missiles are: the place leaves them out, and each per-color
 preference keeps the state with the most keys of its color.
+
+Nova holds one copied ability at a time, and it carries over between levels.
+Abilities reach different spots: a burger ride climbs over a wall, and a
+fireball launches metal arrows. Nova copies an enemy's ability only while holding
+none, so swapping abilities passes through a state with no ability. The identity
+keeps one holder for each ability at a place, so a state that swapped abilities
+keeps its slot beside the states that did not.
 
 Toggle switches flip one level-wide flag that swaps which toggle blocks are
 solid, and a carried pickup block can be set down to bridge a gap. Both change

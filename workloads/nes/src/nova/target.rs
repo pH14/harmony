@@ -845,6 +845,7 @@ where
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
                 || state.keys != prior_state.keys
+                || state.ability != prior_state.ability
                 || state.level_reload_pending != prior_state.level_reload_pending;
             if boundary {
                 let frame_count = self
