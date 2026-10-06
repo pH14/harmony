@@ -66,7 +66,7 @@ const TERMINAL_POLICY_IDENTIFIER: &str = "first_durable_level_clear";
 const VIABILITY_PROBE_MASKS: [u8; 4] = [0, 0x01, 0x80, 0x81];
 const VIABILITY_PROBE_FRAMES: u16 = 60;
 
-type NovaPreference = (u8, u8, u8, bool, u8, u8, u8);
+type NovaPreference = (u8, u8, u8, bool, u8, u8);
 type NovaChampionKey = (NovaProgressWatermark, NovaPreference);
 
 pub struct NovaGame<M = QuickNesMachine, P = Vec<u8>>

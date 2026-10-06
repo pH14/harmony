@@ -159,13 +159,6 @@ impl NovaMechanicalState {
             .try_into()
             .unwrap_or(u8::MAX)
     }
-
-    #[must_use]
-    pub fn key_count(self) -> u8 {
-        self.keys
-            .iter()
-            .fold(0_u8, |total, count| total.saturating_add(*count))
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -851,6 +844,7 @@ where
             };
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
+                || state.keys != prior_state.keys
                 || state.level_reload_pending != prior_state.level_reload_pending;
             if boundary {
                 let frame_count = self
@@ -1121,7 +1115,7 @@ pub fn spatial_bucket(state: NovaMechanicalState) -> (u8, u8, u16, u16) {
 }
 
 #[must_use]
-pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8, u8) {
+pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8) {
     (
         state.cleared_count(),
         state.collectible_count(),
@@ -1129,7 +1123,6 @@ pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8
         state.ability != 0,
         state.health,
         state.chips,
-        state.key_count(),
     )
 }
 
