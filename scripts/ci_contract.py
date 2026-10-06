@@ -396,6 +396,15 @@ CONSONANCE_RUNTIME = Workflow(
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
         Job("Exact Runtime Artifacts", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
+    ),
+)
+
+CONSONANCE_NESTED_HOST = Workflow(
+    path=f"{WORKFLOW_DIR}/consonance-nested-host-qualification.yml",
+    name="Checks / Consonance / Nested Host Qualification",
+    owner="Consonance",
+    triggers=("push", "schedule", "workflow_dispatch"),
+    jobs=(
         Job("Nested Host", "full", 90,
             test_targets=("vmm-core", "vmm-core:x86_kvm_nested_host", "nested-driver:live",
                           "nested-driver:nested_restore", "nested-driver:sdk_operations"),
@@ -678,6 +687,7 @@ WORKFLOWS = (
     CONSONANCE_ANALYSIS,
     CONSONANCE_HARDWARE,
     CONSONANCE_RUNTIME,
+    CONSONANCE_NESTED_HOST,
     CONSONANCE_XSAVE,
     CONSONANCE_UML,
     DISSONANCE_CHECKS,

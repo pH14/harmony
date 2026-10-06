@@ -59,6 +59,24 @@ class StructureTests(unittest.TestCase):
                     self.assertTrue(needs & builders)
                     self.assertIn("!cancelled()", str(job.get("if", "")))
 
+    def main_push_paths(self, workflow):
+        text = (ROOT / workflow.path).read_text()
+        block = re.search(r"^  push:\n    branches: \[main\]\n    paths:\n((?:      - .+\n)+)", text, re.M)
+        self.assertIsNotNone(block)
+        return {line.strip()[2:].removesuffix("/**") for line in block.group(1).splitlines()}
+
+    def runtime_inputs(self):
+        spec = importlib.util.spec_from_file_location(
+            "runtime_artifacts", ROOT / "consonance/harmony-linux/scripts/runtime-artifacts.py")
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        return set(runtime.INPUTS)
+
+    def test_nested_host_qualification_runs_when_main_changes_its_inputs(self):
+        crates = {f"consonance/{name}" for name in ("vmm-backend", "vmm-core", "nested-driver", "client")}
+        expected = self.runtime_inputs() - {"flake.nix", "flake.lock"} | crates
+        self.assertEqual(self.main_push_paths(ci_contract.CONSONANCE_NESTED_HOST), expected)
+
     def test_paths_and_names_are_unique_and_present(self):
         paths = [workflow.path for workflow in ci_contract.WORKFLOWS]
         names = [workflow.name for workflow in ci_contract.WORKFLOWS]
