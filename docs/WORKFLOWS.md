@@ -200,7 +200,7 @@ schedule, on manual dispatch, and on pushes to main that change anything under
 `test_nested_host_qualification_runs_when_main_changes_its_inputs` recomputes
 that dependency closure from the Cargo manifests. The job caches the nested-host
 kernel, fixture and OCI runtime under the guest runtime source key and the
-workflow file's hash, so a push that changes only Rust crates skips the kernel
+hash of the workflow file and toolchain pin, so a push that changes only Rust crates skips the kernel
 build. Test binaries compile on every CPU before each test runs pinned to one.
 Scheduled and push runs accept whichever nested vendor the runner
 provides; a dispatch can require VMX or SVM. The job first
