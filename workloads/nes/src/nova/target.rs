@@ -49,6 +49,7 @@ const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
 const SAVE_RAM_SIZE: usize = 0x2000;
 const PLAYER_ABILITY: usize = 0x7200 - SAVE_RAM_BASE;
+const CHECKPOINT_LEVEL: usize = 0x7259 - SAVE_RAM_BASE;
 const LEVEL_CLEARED: usize = 0x7f1f - SAVE_RAM_BASE;
 const LEVEL_AVAILABLE: usize = 0x7f27 - SAVE_RAM_BASE;
 const COLLECTIBLE_BITS: usize = 0x7f2f - SAVE_RAM_BASE;
@@ -197,7 +198,7 @@ const BOOT_TO_MAIN_MENU: [ButtonChord; 3] = [
     },
 ];
 
-const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
+const MAIN_MENU_TO_PRE_LEVEL: [ButtonChord; 4] = [
     ButtonChord {
         buttons: JOYPAD_START,
         hold_frames: 6,
@@ -214,6 +215,9 @@ const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
         buttons: 0,
         hold_frames: 54,
     },
+];
+
+const PRE_LEVEL_TO_GAMEPLAY: [ButtonChord; 8] = [
     ButtonChord {
         buttons: JOYPAD_UP,
         hold_frames: 6,
@@ -248,6 +252,11 @@ const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
     },
 ];
 
+const LEVEL_END_WAIT: ButtonChord = ButtonChord {
+    buttons: 0,
+    hold_frames: 120,
+};
+
 #[derive(Debug)]
 pub struct NovaTarget<M = QuickNesMachine, P = Vec<u8>>
 where
@@ -273,7 +282,11 @@ where
     P: SnapshotState,
 {
     pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
-        for actions in [&BOOT_TO_MAIN_MENU[..], &MAIN_MENU_TO_GAMEPLAY[..]] {
+        for actions in [
+            &BOOT_TO_MAIN_MENU[..],
+            &MAIN_MENU_TO_PRE_LEVEL[..],
+            &PRE_LEVEL_TO_GAMEPLAY[..],
+        ] {
             machine::nes::run_actions(&mut machine, actions)?;
         }
         Self::from_machine(machine)
@@ -325,7 +338,10 @@ impl NovaTarget<QuickNesMachine> {
         machine.write_save_ram(LEVEL_AVAILABLE, &available)?;
 
         let main_menu = machine.snapshot()?;
-        machine.branch(main_menu, &nes::reproducer(&MAIN_MENU_TO_GAMEPLAY))?;
+        machine.branch(
+            main_menu,
+            &nes::reproducer(&[&MAIN_MENU_TO_PRE_LEVEL[..], &PRE_LEVEL_TO_GAMEPLAY[..]].concat()),
+        )?;
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(main_menu)?;
         let (wram, save_ram) = read_memory(&machine)?;
@@ -399,6 +415,55 @@ where
 
     fn halted(&self) -> bool {
         self.failed || self.is_dead() || (self.halt_on_level_clear && self.cleared_a_level())
+    }
+
+    fn starts_next_level(&self, prior: NovaMechanicalState, state: NovaMechanicalState) -> bool {
+        !self.halt_on_level_clear
+            && state.cleared_count() > prior.cleared_count()
+            && state.cleared_count() < NOVA_CAMPAIGN_LEVEL_COUNT
+    }
+
+    fn start_next_level(&mut self) -> Result<(NovaMechanicalState, u64), MachineError> {
+        let level_end = self.machine.snapshot()?;
+        let branched = self.machine.branch(
+            level_end,
+            &nes::reproducer(&[&[LEVEL_END_WAIT][..], &PRE_LEVEL_TO_GAMEPLAY[..]].concat()),
+        );
+        self.machine.drop_snapshot(level_end)?;
+        branched?;
+        let mut frames = 0_u64;
+        let mut last_wram = None;
+        loop {
+            let stop = self.machine.run(StopConditions::default(), None)?;
+            let produced = self.machine.frames();
+            frames = frames.saturating_add(u64::try_from(produced.len()).unwrap_or(u64::MAX));
+            if let Some(wram) = produced.last() {
+                last_wram = Some(*wram);
+            }
+            match stop {
+                machine::StopReason::Quiescent { .. } => break,
+                machine::StopReason::SnapshotPoint { .. } => {}
+                _ => {
+                    return Err(MachineError::Backend(
+                        "Nova level start stopped before its last menu press".to_owned(),
+                    ));
+                }
+            }
+        }
+        let wram = last_wram.ok_or_else(|| {
+            MachineError::Backend("Nova level start produced no frames".to_owned())
+        })?;
+        let save_ram = self
+            .machine
+            .read(SAVE_RAM_BASE as u64, SAVE_RAM_SIZE as u32)?;
+        let state = decode_state(&wram, &save_ram)?;
+        if read_byte(&save_ram, CHECKPOINT_LEVEL)? != state.started_level || state.health == 0 {
+            return Err(MachineError::Backend(format!(
+                "Nova did not start level {} after the exit door",
+                state.started_level
+            )));
+        }
+        Ok((state, frames))
     }
 
     #[must_use]
@@ -531,6 +596,7 @@ impl NovaTarget<QuickNesMachine> {
         let result = (|| {
             let mut metadata = None;
             let mut skip = skip_frames;
+            let mut prior = self.observation.decoded;
             for action in &input.actions {
                 self.render_action(
                     *action,
@@ -539,6 +605,23 @@ impl NovaTarget<QuickNesMachine> {
                     &mut metadata,
                     &mut skip,
                 )?;
+                if self.halt_on_level_clear {
+                    continue;
+                }
+                let (wram, save_ram) = read_memory(&self.machine)?;
+                let state = decode_state(&wram, &save_ram)?;
+                if self.starts_next_level(prior, state) {
+                    for chord in [&[LEVEL_END_WAIT][..], &PRE_LEVEL_TO_GAMEPLAY[..]].concat() {
+                        self.render_action(
+                            chord,
+                            video_output,
+                            audio_output,
+                            &mut metadata,
+                            &mut skip,
+                        )?;
+                    }
+                }
+                prior = state;
             }
             let (endpoint_wram, endpoint_save_ram) = read_memory(&self.machine)?;
             let input_endpoint = decode_state(&endpoint_wram, &endpoint_save_ram)?;
@@ -700,6 +783,7 @@ where
             return;
         }
         let prior_state = self.observation.decoded;
+        let action_start = prior_state;
         let start = self.current;
         if self
             .machine
@@ -786,6 +870,17 @@ where
         }
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
+        }
+        if self.starts_next_level(action_start, self.observation.decoded) {
+            let Ok((state, frames)) = self.start_next_level() else {
+                self.failed = true;
+                return;
+            };
+            self.execution_work = self.execution_work.saturating_add(frames);
+            let observation =
+                self.make_observation(self.observation.frame_count.saturating_add(frames), state);
+            self.action_observations.push(observation.clone());
+            self.observation = observation;
         }
         let next = match self.machine.snapshot() {
             Ok(next) => next,
@@ -1046,6 +1141,8 @@ mod tests {
         fail_next_drop: bool,
         reads_need_a_run: bool,
         stale_reads: bool,
+        exit_door_on_up: bool,
+        start_level_on_a: bool,
         lifecycle: Vec<&'static str>,
     }
 
@@ -1080,6 +1177,8 @@ mod tests {
                 fail_next_drop: false,
                 reads_need_a_run: false,
                 stale_reads: false,
+                exit_door_on_up: false,
+                start_level_on_a: false,
                 lifecycle: Vec::new(),
             }
         }
@@ -1155,6 +1254,19 @@ mod tests {
                 .unwrap_or(self.staged.len())
                 .min(self.staged.len());
             for action in self.staged.drain(..chord_count).collect::<Vec<_>>() {
+                let checkpoint = SAVE_RAM_BASE + CHECKPOINT_LEVEL;
+                let level = self.state[STARTED_LEVEL_NUMBER];
+                if self.exit_door_on_up
+                    && action.buttons == JOYPAD_UP
+                    && self.state[checkpoint] == level
+                {
+                    self.state[SAVE_RAM_BASE + LEVEL_CLEARED + usize::from(level / 8)] |=
+                        1 << (level % 8);
+                    self.state[STARTED_LEVEL_NUMBER] = level + 1;
+                }
+                if self.start_level_on_a && action.buttons == JOYPAD_A {
+                    self.state[checkpoint] = level;
+                }
                 for _ in 0..action.bounded_hold_frames() {
                     self.state[0] = self.state[0].wrapping_add(1);
                     if !self.zero_frames {
@@ -1265,6 +1377,66 @@ mod tests {
         target.set_halt_on_level_clear(false);
         target.apply(&ButtonChord::new(0, 3));
         assert_eq!(target.machine.run_calls, 1);
+    }
+
+    fn exit_door_machine(cleared_before: u8) -> FakeMachine {
+        let mut machine = FakeMachine::new();
+        machine.exit_door_on_up = true;
+        machine.start_level_on_a = true;
+        let cleared = level_prefix_bitmap(cleared_before);
+        machine.state[SAVE_RAM_BASE + LEVEL_CLEARED..][..PERSISTENT_BITMAP_LEN]
+            .copy_from_slice(&cleared);
+        machine.state[STARTED_LEVEL_NUMBER] = cleared_before;
+        machine.state[SAVE_RAM_BASE + CHECKPOINT_LEVEL] = cleared_before;
+        machine
+    }
+
+    fn level_start_frames() -> u64 {
+        std::iter::once(LEVEL_END_WAIT)
+            .chain(PRE_LEVEL_TO_GAMEPLAY)
+            .map(|chord| u64::from(chord.bounded_hold_frames()))
+            .sum()
+    }
+
+    #[test]
+    fn whole_game_starts_the_next_level_after_an_exit_door() {
+        let mut target = NovaTarget::from_machine(exit_door_machine(0)).expect("genesis");
+        target.set_halt_on_level_clear(false);
+        target.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(!target.failed);
+        let state = target.mechanical_state();
+        assert_eq!((state.cleared_count(), state.started_level), (1, 1));
+        assert_eq!(target.observe().frame_count, 2 + level_start_frames());
+        assert_eq!(target.execution_work(), 2 + level_start_frames());
+        target.apply(&ButtonChord::new(0, 1));
+        assert!(!target.failed);
+        assert_eq!(target.observe().frame_count, 3 + level_start_frames());
+    }
+
+    #[test]
+    fn a_level_that_fails_to_start_is_an_execution_failure() {
+        let mut machine = exit_door_machine(0);
+        machine.start_level_on_a = false;
+        let mut target = NovaTarget::from_machine(machine).expect("genesis");
+        target.set_halt_on_level_clear(false);
+        target.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(target.failed);
+        assert!(matches!(target.exit_kind(), ExitKind::Crash));
+    }
+
+    #[test]
+    fn no_level_starts_after_a_level_campaign_clear_or_the_last_level() {
+        let mut level = NovaTarget::from_machine(exit_door_machine(0)).expect("genesis");
+        level.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert_eq!(level.observe().frame_count, 2);
+        assert!(level.cleared_a_level());
+        let mut game = NovaTarget::from_machine(exit_door_machine(NOVA_CAMPAIGN_LEVEL_COUNT - 1))
+            .expect("genesis");
+        game.set_halt_on_level_clear(false);
+        game.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(!game.failed);
+        assert_eq!(game.observe().frame_count, 2);
+        assert!(game.cleared_every_level());
     }
 
     #[test]

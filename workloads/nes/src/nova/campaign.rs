@@ -501,7 +501,7 @@ where
             (
                 TERMINAL_POLICY_FIELD,
                 if self.whole_game {
-                    "every_level_cleared"
+                    "every_level_cleared_in_order"
                 } else {
                     TERMINAL_POLICY_IDENTIFIER
                 },
@@ -812,12 +812,12 @@ impl crate::film::Filmable for NovaGame<QuickNesMachine> {
     }
 }
 
-impl<M, P> crate::film::Endpointed for NovaGame<M, P>
+impl<M, P> NovaGame<M, P>
 where
     M: NovaMachineKind<P>,
     P: SnapshotState,
 {
-    fn headless_endpoint(&self, input: &NovaInput) -> Result<serde_json::Value, Box<dyn Error>> {
+    fn headless_replay(&self, input: &NovaInput) -> Result<NovaTarget<M, P>, Box<dyn Error>> {
         let mut target = self
             .new_target()
             .map_err(|error| -> Box<dyn Error> { error.into() })?;
@@ -828,15 +828,23 @@ where
                 return Err("the recorded Nova input crashed during headless replay".into());
             }
         }
-        Ok(serde_json::to_value(target.observe().decoded)?)
+        Ok(target)
+    }
+}
+
+impl<M, P> crate::film::Endpointed for NovaGame<M, P>
+where
+    M: NovaMachineKind<P>,
+    P: SnapshotState,
+{
+    fn headless_endpoint(&self, input: &NovaInput) -> Result<serde_json::Value, Box<dyn Error>> {
+        Ok(serde_json::to_value(
+            self.headless_replay(input)?.observe().decoded,
+        )?)
     }
 
-    fn input_frames(&self, input: &NovaInput) -> u64 {
-        input
-            .actions
-            .iter()
-            .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum()
+    fn input_frames(&self, input: &NovaInput) -> Result<u64, Box<dyn Error>> {
+        Ok(self.headless_replay(input)?.observe().frame_count)
     }
 }
 
