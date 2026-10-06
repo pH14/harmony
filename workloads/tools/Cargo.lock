@@ -405,6 +405,7 @@ name = "searcher"
 version = "0.1.0"
 dependencies = [
  "postcard",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
