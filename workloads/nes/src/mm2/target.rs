@@ -49,7 +49,6 @@ pub const NO_REFIGHT_BOSS: u8 = 0xff;
 const BOOBEAM_STAGE: u8 = 11;
 const WILY5_STAGE: u8 = 12;
 const FINAL_STAGE: u8 = 14;
-const BOOBEAM_SLOTS: std::ops::RangeInclusive<usize> = 20..=29;
 const BOOBEAM_TRAP_ID: u8 = 0x6d;
 const BOOBEAM_BARRIER_ID: u8 = 0x57;
 const DYING_FRAMES: u32 = 30;
@@ -61,6 +60,10 @@ const WEAPON_ENERGY_BYTES: usize = 12;
 const OBJECT_ID_TABLE: usize = 0x400;
 const OBJECT_FLAG_TABLE: usize = 0x420;
 const OBJECT_SLOTS: usize = 0x20;
+const OBJECT_X_TABLE: usize = 0x460;
+const OBJECT_Y_TABLE: usize = 0x4a0;
+const TARGET_GRID_CELL: u8 = 32;
+const TARGET_GRID_COLUMNS: u8 = 8;
 const OBJECT_ACTIVE: u8 = 0x80;
 const ITEM_OBJECT_FIRST: u8 = 0x38;
 const ITEM_OBJECT_LAST: u8 = 0x3a;
@@ -218,7 +221,7 @@ pub struct Mm2MechanicalState {
     pub bank: u8,
     pub current_boss: u8,
     pub refights: u8,
-    pub boobeam_targets: u16,
+    pub boobeam_targets: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -226,6 +229,7 @@ pub struct Mm2Tier {
     pub robot_masters: u8,
     pub castles: u8,
     pub refights: u8,
+    pub castle_boss_defeated: bool,
     pub machine_shell: bool,
 }
 
@@ -249,8 +253,21 @@ impl Mm2MechanicalState {
             robot_masters: self.bosses_beaten(),
             castles,
             refights: self.refights.count_ones().try_into().unwrap_or(u8::MAX),
+            castle_boss_defeated: self.castle_boss_defeated(),
             machine_shell: self.machine_shell_broken(),
         }
+    }
+
+    #[must_use]
+    pub fn castle_boss_defeated(self) -> bool {
+        (MM2_FIRST_WILY_STAGE..=MM2_LAST_WILY_STAGE).contains(&self.stage)
+            && self.boss_phase >= BOSS_PHASE_DEFEATED
+            && self.last_castle_boss()
+    }
+
+    fn last_castle_boss(self) -> bool {
+        self.stage != WILY5_STAGE
+            || (self.refights == u8::MAX && self.current_boss == WILY_MACHINE)
     }
 
     #[must_use]
@@ -402,13 +419,15 @@ fn decode_state_after(
     })
 }
 
-fn boobeam_targets(wram: &[u8]) -> Result<u16, MachineError> {
-    let mut targets = 0_u16;
-    for (bit, slot) in BOOBEAM_SLOTS.enumerate() {
+fn boobeam_targets(wram: &[u8]) -> Result<u64, MachineError> {
+    let mut targets = 0_u64;
+    for slot in 0..OBJECT_SLOTS {
         let id = read_byte(wram, OBJECT_ID_TABLE + slot)?;
         let flags = read_byte(wram, OBJECT_FLAG_TABLE + slot)?;
         if flags & OBJECT_ACTIVE != 0 && (id == BOOBEAM_TRAP_ID || id == BOOBEAM_BARRIER_ID) {
-            targets |= 1 << bit;
+            let column = read_byte(wram, OBJECT_X_TABLE + slot)? / TARGET_GRID_CELL;
+            let row = read_byte(wram, OBJECT_Y_TABLE + slot)? / TARGET_GRID_CELL;
+            targets |= 1 << (row * TARGET_GRID_COLUMNS + column);
         }
     }
     Ok(targets)
@@ -472,7 +491,7 @@ pub fn preference_tuple(state: Mm2MechanicalState) -> (Mm2Tier, u8, u16) {
 }
 
 #[must_use]
-pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u16) {
+pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u64) {
     (state.refights, state.refight_boss(), state.boobeam_targets)
 }
 
@@ -513,11 +532,9 @@ fn transition(state: Mm2MechanicalState) -> Option<Transition> {
     if state.stage < MM2_FIRST_WILY_STAGE && state.boss_phase >= BOSS_PHASE_DEFEATED {
         return Some(Transition::RobotMaster(state.stage));
     }
-    let last_castle_boss = state.stage != WILY5_STAGE
-        || (state.refights == u8::MAX && state.current_boss == WILY_MACHINE);
     ((MM2_FIRST_WILY_STAGE..MM2_LAST_WILY_STAGE).contains(&state.stage)
         && state.boss_phase == BOSS_PHASE_CLEARED
-        && last_castle_boss)
+        && state.last_castle_boss())
         .then_some(Transition::Castle(state.stage))
 }
 
@@ -1608,9 +1625,38 @@ mod tests {
         wram[0x419] = BOOBEAM_BARRIER_ID;
         wram[0x439] = 0x92;
         wram[0x41a] = BOOBEAM_BARRIER_ID;
-        assert_eq!(decode_state(&wram).expect("decode").boobeam_targets, 0b10_0001);
+        wram[0x474] = 232;
+        wram[0x4b4] = 112;
+        wram[0x479] = 56;
+        wram[0x4b9] = 96;
+        assert_eq!(
+            decode_state(&wram).expect("decode").boobeam_targets,
+            1 << 31 | 1 << 25
+        );
         wram[0xb1] = BOSS_PHASE_NONE;
         assert_eq!(decode_state(&wram).expect("decode").boobeam_targets, 0);
+    }
+
+    #[test]
+    fn boobeam_targets_follow_positions_whatever_slots_hold_them() {
+        let mut first = vec![0_u8; WRAM_SIZE];
+        first[0x2a] = BOOBEAM_STAGE;
+        first[0xb1] = BOSS_PHASE_FIGHTING;
+        let mut second = first.clone();
+        for (wram, trap, barrier) in [(&mut first, 0x14, 0x15), (&mut second, 0x17, 0x12)] {
+            wram[0x400 + trap] = BOOBEAM_TRAP_ID;
+            wram[0x420 + trap] = 0x80;
+            wram[0x460 + trap] = 172;
+            wram[0x4a0 + trap] = 60;
+            wram[0x400 + barrier] = BOOBEAM_BARRIER_ID;
+            wram[0x420 + barrier] = 0x80;
+            wram[0x460 + barrier] = 120;
+            wram[0x4a0 + barrier] = 42;
+        }
+        assert_eq!(
+            decode_state(&first).expect("decode").boobeam_targets,
+            decode_state(&second).expect("decode").boobeam_targets
+        );
     }
 
     #[test]
