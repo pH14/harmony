@@ -36,6 +36,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | schedule, workflow_dispatch |
+| `Checks / Consonance / Nested Host Qualification` | `consonance-nested-host-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
 | `Checks / Consonance / UML` | `consonance-uml.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Dissonance` | `dissonance-checks.yml` | pull_request, push |
@@ -192,9 +193,11 @@ the job.
 
 ## Ignored tests
 
-The Guest Runtime Qualification workflow's `Nested Host` job runs on its
-schedule, on path-filtered pushes to main, and on a manual `nested_host_only`
-dispatch. Scheduled and push runs accept whichever nested vendor the runner
+The Nested Host Qualification workflow's `Nested Host` job runs on its
+schedule, on manual dispatch, and on pushes to main that change its inputs: the
+workspace manifests, `consonance/harmony-linux` and the protocol crates its
+runtime builds from, `vmm-backend`, `vmm-core`, `nested-driver` and `client`.
+Scheduled and push runs accept whichever nested vendor the runner
 provides; a dispatch can require VMX or SVM. The job first
 requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its selected Ubuntu
 x86 runner, then builds the separate

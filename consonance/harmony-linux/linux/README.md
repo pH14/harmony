@@ -160,7 +160,7 @@ protection and stock-clock KVM behavior retain their existing semantics.
 KVM-supported Intel VMX or AMD SVM with NPT, and creates one VM. The fixture
 checks the disabled hardware preemption timer on Intel and reports it as
 inapplicable on AMD. AMD SEV is disabled; this profile hosts ordinary nested
-VMs without memory encryption. The manual Guest Runtime Qualification job builds and boots
+VMs without memory encryption. The Nested Host Qualification workflow builds and boots
 these exact inputs on an x86 runner.
 The fixture also includes `nested-kvm-cache-check.c`. With
 `harmony_nested_cache_check` on the kernel command line, it runs a minimal L2
