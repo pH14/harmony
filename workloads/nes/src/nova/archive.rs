@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_cleared_tiers_level_fight_puzzle_arrow_state_key_colors_spatial_32_place_preference_v10";
+    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_key_color_preferences_v11";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -45,16 +45,7 @@ pub struct NovaArchiveKey {
 }
 
 impl ArchiveKey for NovaArchiveKey {
-    type Place = (
-        u8,
-        u8,
-        u8,
-        u8,
-        u8,
-        ([bool; KEY_COLORS], bool, bool, bool, u8, u16),
-        u16,
-        u16,
-    );
+    type Place = (u8, u8, u8, u8, u8, (bool, bool, bool, u8, u16), u16, u16);
     type Progress = u8;
     type Identity = (u16, u16);
 
@@ -66,7 +57,6 @@ impl ArchiveKey for NovaArchiveKey {
             self.level,
             self.fight,
             (
-                self.keys.map(|count| count > 0),
                 self.sun_key,
                 self.carrying_block,
                 self.toggle,
@@ -91,11 +81,15 @@ impl ArchiveKey for NovaArchiveKey {
     }
 
     fn preferences() -> usize {
-        1
+        1 + KEY_COLORS
     }
 
-    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
-        self.preference().cmp(&other.preference())
+    fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
+        match preference.checked_sub(1) {
+            Some(color) => (self.keys.get(color), self.preference())
+                .cmp(&(other.keys.get(color), other.preference())),
+            None => self.preference().cmp(&other.preference()),
+        }
     }
 
     type Lineage = ();
@@ -108,7 +102,7 @@ impl ArchiveKey for NovaArchiveKey {
 }
 
 impl NovaArchiveKey {
-    fn preference(self) -> (u8, u8, u8, bool, u8, u8, u8) {
+    fn preference(self) -> (u8, u8, u8, bool, u8, u8) {
         (
             self.cleared,
             self.collectibles,
@@ -116,16 +110,13 @@ impl NovaArchiveKey {
             self.has_ability,
             self.health,
             self.chips,
-            self.keys
-                .iter()
-                .fold(0_u8, |total, count| total.saturating_add(*count)),
         )
     }
 }
 
 #[must_use]
 pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
-    let (cleared, collectibles, available, has_ability, health, chips, _) = preference_tuple(state);
+    let (cleared, collectibles, available, has_ability, health, chips) = preference_tuple(state);
     NovaArchiveKey {
         cleared,
         collectibles,
@@ -301,8 +292,6 @@ mod tests {
     #[test]
     fn puzzle_state_is_its_own_place() {
         let base = archive_key(state(100, 4, 0));
-        let mut keyed = state(100, 4, 0);
-        keyed.keys = [0, 1, 0];
         let mut sun = state(100, 4, 0);
         sun.sun_key = true;
         let mut carrying = state(100, 4, 0);
@@ -315,7 +304,6 @@ mod tests {
         spent_arrow.arrow_blocks = 1;
         let places = [
             base,
-            archive_key(keyed),
             archive_key(sun),
             archive_key(carrying),
             archive_key(toggled),
@@ -329,14 +317,31 @@ mod tests {
     }
 
     #[test]
-    fn more_keys_of_a_held_color_share_a_place_and_are_preferred() {
+    fn each_key_color_keeps_its_largest_count_at_a_place() {
+        let none = archive_key(state(100, 4, 0));
         let mut one = state(100, 4, 0);
         one.keys = [0, 1, 0];
-        let mut two = state(100, 4, 0);
-        two.keys = [0, 2, 0];
-        let (one, two) = (archive_key(one), archive_key(two));
-        assert_eq!(one.place(), two.place());
-        assert_eq!(two.preference_cmp(0, one), Ordering::Greater);
+        let one = archive_key(one);
+        assert_eq!(none.place(), one.place());
+        assert_eq!(none.preference_cmp(0, one), Ordering::Equal);
+        assert_eq!(one.preference_cmp(2, none), Ordering::Greater);
+        let mut healthy = state(100, 4, 0);
+        healthy.keys = [5, 0, 0];
+        let mut hurt = state(100, 3, 0);
+        hurt.keys = [6, 0, 0];
+        let (healthy, hurt) = (archive_key(healthy), archive_key(hurt));
+        assert_eq!(healthy.place(), hurt.place());
+        assert_eq!(healthy.preference_cmp(0, hurt), Ordering::Greater);
+        assert_eq!(hurt.preference_cmp(1, healthy), Ordering::Greater);
+        let mut red = state(100, 4, 0);
+        red.keys = [2, 1, 0];
+        let mut green = state(100, 4, 0);
+        green.keys = [1, 3, 0];
+        let (red, green) = (archive_key(red), archive_key(green));
+        assert_eq!(red.place(), green.place());
+        assert_eq!(red.preference_cmp(1, green), Ordering::Greater);
+        assert_eq!(green.preference_cmp(2, red), Ordering::Greater);
+        assert_eq!(NovaArchiveKey::preferences(), 4);
     }
 
     #[test]
