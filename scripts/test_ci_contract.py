@@ -5,6 +5,7 @@
 import json
 import importlib.util
 import tempfile
+import tomllib
 import re
 import unittest
 from pathlib import Path
@@ -72,10 +73,39 @@ class StructureTests(unittest.TestCase):
         spec.loader.exec_module(runtime)
         return set(runtime.INPUTS)
 
+    def path_dependency_closure(self, built, tested):
+        seen = set()
+        pending = [(ROOT / crate).resolve() for crate in built | tested]
+        while pending:
+            crate = pending.pop()
+            if crate in seen:
+                continue
+            seen.add(crate)
+            manifest = tomllib.loads((crate / "Cargo.toml").read_text())
+            kinds = ["dependencies", "build-dependencies"]
+            if crate.relative_to(ROOT).as_posix() in tested:
+                kinds.append("dev-dependencies")
+            tables = [manifest, *manifest.get("target", {}).values()]
+            for table in tables:
+                for kind in kinds:
+                    for spec in table.get(kind, {}).values():
+                        if isinstance(spec, dict) and "path" in spec:
+                            pending.append((crate / spec["path"]).resolve())
+        return {crate.relative_to(ROOT).as_posix() for crate in seen}
+
     def test_nested_host_qualification_runs_when_main_changes_its_inputs(self):
-        crates = {f"consonance/{name}" for name in ("vmm-backend", "vmm-core", "nested-driver", "client")}
-        expected = self.runtime_inputs() - {"flake.nix", "flake.lock"} | crates
-        self.assertEqual(self.main_push_paths(ci_contract.CONSONANCE_NESTED_HOST), expected)
+        required = (self.runtime_inputs() - {"flake.nix", "flake.lock"}) | {"rust-toolchain.toml"}
+        required |= self.path_dependency_closure(
+            built={"cli"}, tested={"consonance/vmm-core", "consonance/nested-driver"})
+        paths = self.main_push_paths(ci_contract.CONSONANCE_NESTED_HOST)
+        def covers(path, item):
+            return item == path or item.startswith(path + "/")
+        for item in sorted(required):
+            with self.subTest(required=item):
+                self.assertTrue(any(covers(path, item) for path in paths))
+        for path in sorted(paths):
+            with self.subTest(path=path):
+                self.assertTrue(any(covers(path, item) for item in required))
 
     def test_paths_and_names_are_unique_and_present(self):
         paths = [workflow.path for workflow in ci_contract.WORKFLOWS]
