@@ -57,12 +57,14 @@ Arrow blocks are single-use. Touching a wood arrow turns the tile empty and
 launches a flying arrow that the player can ride. A flying arrow empties the
 next arrow, crate, bomb or fork tile it hits and turns or splits on arrows.
 A state that has already spent the arrow a climb needs sits at the same
-position as one that has not. The decoder counts the remaining tiles of these
-kinds (metatiles 11, 41-45 and 151-158 in the source's `metatileenum.s`) in
-the level map.
+position as one that has not. The decoder counts the remaining wood, metal and
+fork arrows (metatiles 41-44, 151-154, 157 and 158 in the source's
+`metatileenum.s`) in the level map. Crates and bombs are left out, because
+the player breaks crates in ordinary play and each broken crate would start a
+new set of places across the whole level.
 
 The puzzle state is the held keys, the carried sun key, the carried pickup
-block, the toggle flag, the puzzle chips and the arrow block count. Every
+block, the toggle flag, the puzzle chips and the arrow count. Every
 level load resets all of it.
 
 Reports may record progress reached inside an action. Reproducer selection uses

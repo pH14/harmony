@@ -52,9 +52,7 @@ const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
 const SAVE_RAM_SIZE: usize = 0x2000;
 const LEVEL_MAP_BYTES: usize = 0x1000;
-const ARROW_PUZZLE_BLOCKS: [u8; 14] = [
-    11, 41, 42, 43, 44, 45, 151, 152, 153, 154, 155, 156, 157, 158,
-];
+const ARROW_BLOCKS: [u8; 10] = [41, 42, 43, 44, 151, 152, 153, 154, 157, 158];
 const PLAYER_ABILITY: usize = 0x7200 - SAVE_RAM_BASE;
 const CHECKPOINT_LEVEL: usize = 0x7259 - SAVE_RAM_BASE;
 const PER_LEVEL_ITEM_TYPE: usize = 0x720d - SAVE_RAM_BASE;
@@ -1045,7 +1043,7 @@ fn arrow_blocks(save_ram: &[u8]) -> Result<u16, MachineError> {
         .ok_or_else(|| MachineError::Backend("Nova level map is absent".to_owned()))?;
     let count = map
         .iter()
-        .filter(|block| ARROW_PUZZLE_BLOCKS.contains(block))
+        .filter(|block| ARROW_BLOCKS.contains(block))
         .count();
     Ok(u16::try_from(count).unwrap_or(u16::MAX))
 }
@@ -1751,9 +1749,13 @@ mod tests {
             (0, 41),
             (17, 153),
             (0x0fff, 158),
-            (0x0ffe, 11),
+            (0x0ffe, 157),
             (40, 1),
             (41, 46),
+            (42, 11),
+            (43, 45),
+            (44, 155),
+            (45, 156),
         ] {
             save[offset] = block;
         }
