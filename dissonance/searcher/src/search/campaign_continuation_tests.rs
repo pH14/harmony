@@ -758,6 +758,16 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
         original.0.telemetry.admission.results_held > 0,
         "no result waited for admission"
     );
+    let freed: u64 = std::fs::read_to_string(directory.join("checkpoints.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["freed_snapshots"]
+                .as_u64()
+                .unwrap()
+        })
+        .sum();
+    assert!(freed > 0, "pruning interval checkpoints freed no snapshot");
     let mut kept = std::fs::read_dir(&directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())

@@ -624,13 +624,22 @@ follows it, so resuming re-executes the unadmitted jobs and admits them in the
 same order. `CheckpointPlan` writes one at a fixed execution interval, at each
 new workload milestone (`Reporting::checkpoint_marks`), and at each new top
 archive tier. Milestone and tier checkpoints are kept; only the last two
-interval checkpoints are kept. The snapshot store keeps every snapshot any
-checkpoint listed.
+interval checkpoints are kept.
 
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
-list it by entry id and offset. Each `.ckpt` file holds its header, that index,
-and the postcard body; `checkpoints.jsonl` records write time and sizes. The
+list it by entry id and offset. The writer counts the kept checkpoints that
+list each stored snapshot. Deleting an interval checkpoint decrements the
+counts of the snapshots it listed. A snapshot no kept checkpoint lists leaves
+the writer's map, and on Linux its byte range in the store becomes a hole
+(`fallocate` with `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`). The file
+keeps its length and every other offset stays valid, so no checkpoint file
+changes. On macOS, and on a Linux filesystem without hole punching, the freed
+bytes stay in the file. Each `.ckpt` file holds its header, that index, and
+the postcard body. `checkpoints.jsonl` records write time and sizes:
+`store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
+kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
+what the write's pruning released. The
 header names the body's layout, `SEARCH_CHECKPOINT_FORMAT`. The name changes
 whenever a stored type such as `Archive` changes, and a reader refuses a
 checkpoint of any other layout before it decodes the body. The
