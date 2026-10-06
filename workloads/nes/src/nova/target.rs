@@ -51,6 +51,10 @@ const CHIP_COUNT: usize = 0x508;
 const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
 const SAVE_RAM_SIZE: usize = 0x2000;
+const LEVEL_MAP_BYTES: usize = 0x1000;
+const ARROW_PUZZLE_BLOCKS: [u8; 14] = [
+    11, 41, 42, 43, 44, 45, 151, 152, 153, 154, 155, 156, 157, 158,
+];
 const PLAYER_ABILITY: usize = 0x7200 - SAVE_RAM_BASE;
 const CHECKPOINT_LEVEL: usize = 0x7259 - SAVE_RAM_BASE;
 const PER_LEVEL_ITEM_TYPE: usize = 0x720d - SAVE_RAM_BASE;
@@ -119,6 +123,7 @@ pub struct NovaMechanicalState {
     pub sun_key: bool,
     pub carrying_block: bool,
     pub toggle: bool,
+    pub arrow_blocks: u8,
     pub ability: u8,
     pub level_reload_pending: bool,
     pub levels_cleared: [u8; PERSISTENT_BITMAP_LEN],
@@ -1034,6 +1039,17 @@ fn held_keys(save_ram: &[u8]) -> Result<[u8; KEY_COLORS], MachineError> {
     Ok(keys)
 }
 
+fn arrow_blocks(save_ram: &[u8]) -> Result<u8, MachineError> {
+    let map = save_ram
+        .get(..LEVEL_MAP_BYTES)
+        .ok_or_else(|| MachineError::Backend("Nova level map is absent".to_owned()))?;
+    let count = map
+        .iter()
+        .filter(|block| ARROW_PUZZLE_BLOCKS.contains(block))
+        .count();
+    Ok(u8::try_from(count).unwrap_or(u8::MAX))
+}
+
 fn fight_progress(wram: &[u8]) -> Result<u8, MachineError> {
     for slot in 0..OBJECT_SLOTS {
         let kind = read_byte(wram, OBJECT_TYPE + slot)? & !1;
@@ -1085,6 +1101,7 @@ pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState,
         sun_key: read_byte(wram, CARRYING_SUN_KEY)? != 0,
         carrying_block: read_byte(wram, CARRYING_PICKUP_BLOCK)? != 0,
         toggle: read_byte(wram, TOGGLE_BLOCK_ENABLED)? != 0,
+        arrow_blocks: arrow_blocks(save_ram)?,
         ability: read_byte(save_ram, PLAYER_ABILITY)?,
         level_reload_pending: read_byte(wram, NEED_LEVEL_RELOAD)? != 0,
         levels_cleared: read_bitmap(save_ram, LEVEL_CLEARED)?,
@@ -1723,6 +1740,29 @@ mod tests {
         assert_eq!(state.collectible_count(), 1);
         assert_eq!((state.keys, state.sun_key), ([0, 0, 0], false));
         assert_eq!((state.carrying_block, state.toggle), (false, false));
+        assert_eq!(state.arrow_blocks, 0);
+    }
+
+    #[test]
+    fn decoder_counts_arrow_puzzle_blocks_in_the_level_map() {
+        let wram = [0_u8; WRAM_SIZE];
+        let mut save = vec![0_u8; 8 * 1024];
+        for (offset, block) in [
+            (0, 41),
+            (17, 153),
+            (0x0fff, 158),
+            (0x0ffe, 11),
+            (40, 1),
+            (41, 46),
+        ] {
+            save[offset] = block;
+        }
+        save[LEVEL_MAP_BYTES] = 43;
+        let state = decode_state(&wram, &save).expect("decode fixture");
+        assert_eq!(state.arrow_blocks, 4);
+        save[..LEVEL_MAP_BYTES].fill(43);
+        let full = decode_state(&wram, &save).expect("decode full map");
+        assert_eq!(full.arrow_blocks, u8::MAX);
     }
 
     #[test]
