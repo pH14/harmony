@@ -15,7 +15,8 @@ because the Consonance backend serves reads only after a run.
 
 Nova retains one scheduled representative per 16-pixel location. At the same
 location, the adapter prefers states with more cleared levels, collectibles,
-available levels, carried abilities, health, and puzzle chips, in that order.
+available levels, carried abilities, health, puzzle chips, and held keys, in that
+order.
 The progress tier is the cleared-level count. The place is the collectible and
 available counts, the level identity, the boss-fight count, the puzzle state and
 a two-bucket position; the holder identity is the exact position bucket.
@@ -47,7 +48,9 @@ chips are all collected, so a held key or chip changes where the player can go
 without changing the position. Keys live on the inventory's
 per-level page, which every level start clears; a slot holds the item type and
 one less than its count. The decoder counts red, green and blue keys from that
-page and reads the carried sun key separately.
+page and reads the carried sun key separately. A lock uses up one key of its
+color, so holding more keys of a color never closes a route. The place records
+which colors are held, and the preference favors more keys.
 
 Toggle switches flip one level-wide flag that swaps which toggle blocks are
 solid, and a carried pickup block can be set down to bridge a gap. Both change
@@ -63,7 +66,7 @@ fork arrows (metatiles 41-44, 151-154, 157 and 158 in the source's
 the player breaks crates in ordinary play and each broken crate would start a
 new set of places across the whole level.
 
-The puzzle state is the held keys, the carried sun key, the carried pickup
+The puzzle state is the held key colors, the carried sun key, the carried pickup
 block, the toggle flag, the puzzle chips and the arrow count. Every
 level load resets all of it.
 
