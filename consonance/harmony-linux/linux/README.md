@@ -165,9 +165,11 @@ these exact inputs on an x86 runner.
 The fixture also includes `nested-kvm-cache-check.c`. With
 `harmony_nested_cache_check` on the kernel command line, it runs a minimal L2
 through twelve port exits and prints each completed step without reading L2
-segment state. The outer cache regression captures after step three, detours
-through step five, and checks that direct restore preserves every nested-state
-byte. This helper isolates host VMCS synchronization; the OCI milestone checks
+segment state. L2 increments DS before each exit and reports it as the step
+number, so L2 fails the check if it resumes with a segment value it did not
+save. The outer cache regression captures after step three, detours through
+step five, checks that direct restore preserves every nested-state byte, and
+runs the restored fixture to step twelve. This helper isolates host VMCS synchronization; the OCI milestone checks
 continue to use the production inner Consonance driver.
 
 `trace-nested-vmcs.sh start` adds host kprobes on Intel nested VM entry.

@@ -22,7 +22,9 @@ int main(void)
     unsigned char *ram = mmap(NULL, 65536, PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ram == MAP_FAILED) { perror("mmap RAM"); return 1; }
-    const unsigned char program[] = { 0x40, 0xe6, 0x80, 0xeb, 0xfb };
+    const unsigned char program[] = {
+        0x8c, 0xdb, 0x43, 0x8e, 0xdb, 0x8c, 0xd8, 0xe6, 0x80, 0xeb, 0xf5,
+    };
     memcpy(ram + 0x1000, program, sizeof(program));
     struct kvm_userspace_memory_region region = {
         .slot = 0, .guest_phys_addr = 0, .memory_size = 65536,

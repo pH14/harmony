@@ -139,7 +139,9 @@ outer restores at SDK lifecycle boundaries after inner KVM_RUN has returned.
 The ignored `nested_restore_preserves_unsynchronized_vmcs_fields` test uses the
 direct nested-host fixture's `harmony_nested_cache_check` mode. Its minimal L2
 runner leaves segment fields unread after VM exit, then direct outer restore
-must preserve the saved nested payload. This isolates host VMCS cache state
+must preserve the saved nested payload. L2 counts its exits in DS, and the
+restored fixture must run to its last exit, so host-cached L2 segment state
+from the detour fails the test. This isolates host VMCS and VMCB cache state
 from the production driver's segment-state capture.
 The ignored `interrupt_raised_before_nested_entry_reaches_the_nested_host` test
 runs the same fixture and raises vector 0xFF each time L1 reads DEBUGCTL with
