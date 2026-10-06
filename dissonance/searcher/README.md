@@ -634,7 +634,9 @@ counts of the snapshots it listed. A snapshot no kept checkpoint lists leaves
 the writer's map, and on Linux its byte range in the store becomes a hole
 (`fallocate` with `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`). The file
 keeps its length and every other offset stays valid, so no checkpoint file
-changes. On macOS, and on a Linux filesystem without hole punching, the freed
+changes. The writer syncs the directory after deleting a pruned checkpoint and
+before punching, so a crash cannot bring back a checkpoint whose snapshots are
+gone. On macOS, and on a Linux filesystem without hole punching, the freed
 bytes stay in the file. Each `.ckpt` file holds its header, that index, and
 the postcard body. `checkpoints.jsonl` records write time and sizes:
 `store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
