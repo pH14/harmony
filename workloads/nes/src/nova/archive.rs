@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_preference_v8";
+    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_preference_v9";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
