@@ -501,6 +501,32 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(plots.completions([solved, censored, failed], 'frames_to_first_victory'),
                          ([0, 12], [0, 1 / 3]))
 
+    @unittest.skipUnless(importlib.util.find_spec('matplotlib'), 'matplotlib is not installed')
+    def test_figures_render_from_progress_lines(self):
+        import plots
+        with tempfile.TemporaryDirectory() as directory:
+            matrix = Path(directory) / 'matrix'
+            cell = 'smb-s1-w2-m256'
+            (matrix / cell / 'campaign').mkdir(parents=True)
+            progress = [{'executions': n, 'execution_work': 40 * n, 'search_elapsed_millis': 10 * n,
+                         'resident_memory_bytes': 4096 * n, 'historical_cells': n,
+                         'progress': {'deepest': n}} for n in (1, 100, 200)]
+            (matrix / cell / 'campaign/progress.jsonl').write_text(
+                ''.join(json.dumps(line) + '\n' for line in progress))
+            (matrix / cell / 'resources.jsonl').write_text(json.dumps(
+                {'elapsed_seconds': 1, 'rss_bytes': 1 << 20, 'disk': {'logical_bytes': 1 << 20}}) + '\n')
+            summary = {'cell': cell, 'case': 'smb', 'status': 'complete', 'origin': 'power-on',
+                       'search_request': {'workers': 2, 'memory_mib': 256, 'seed': 1},
+                       'result': {'solved': True, 'frames_to_first_victory': 8000, 'frames_emulated': 8000,
+                                  'frames_per_second': 1000.},
+                       'max_process_rss_bytes': 1 << 20, 'peak_disk_logical_bytes_sampled': 1 << 20}
+            eval.write_json(matrix / 'matrix.json', {'cells': [cell]})
+            eval.write_json(matrix / 'results.json', [summary])
+            out = Path(directory) / 'figures'
+            plots.render([('run', matrix)], out)
+            self.assertTrue((out / 'smb-w2-m256.svg').is_file())
+            self.assertTrue((out / 'smb-w2-m256-observations.svg').is_file())
+
 
 if __name__ == '__main__':
     unittest.main()

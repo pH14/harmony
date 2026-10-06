@@ -122,13 +122,13 @@ def render(runs, out):
                 all_progress.extend(progress)
                 timed = [p for p in progress if p.get('search_elapsed_millis') is not None]
                 seconds = [p['search_elapsed_millis'] / 1000 for p in timed]
-                axes[0, 1].plot(seconds, [p['frames_emulated'] for p in timed], color=color, alpha=.5)
+                axes[0, 1].plot(seconds, [p['execution_work'] for p in timed], color=color, alpha=.5)
                 axes[0, 2].plot(seconds, [p['resident_memory_bytes'] / 1024**2 for p in timed], color=color, alpha=.5)
                 rss = [p for p in resources if p.get('rss_bytes') is not None]
                 axes[1, 0].plot([p['elapsed_seconds'] for p in rss], [p['rss_bytes'] / 1024**2 for p in rss], color=color, alpha=.5)
                 axes[1, 1].plot([p['elapsed_seconds'] for p in resources],
                                 [p['disk']['logical_bytes'] / 1024**2 for p in resources], color=color, alpha=.5)
-                axes[1, 2].plot([p['frames_emulated'] for p in timed],
+                axes[1, 2].plot([p['execution_work'] for p in timed],
                                 [p['historical_cells'] for p in timed], color=color, alpha=.5)
         titles = [('Verified fraction by admitted frames', 'Emulator frames', 'Fraction of registered trials'),
                   ('Emulator work over search time', 'Search seconds', 'Admitted frames'),
@@ -155,7 +155,7 @@ def render(runs, out):
             for axis, (group, field) in zip(axes.flat, metrics):
                 for label, seed, color, progress in progress_series:
                     points = [p for p in progress if isinstance((p.get(group) or {}).get(field), (int, float))]
-                    axis.step([p['frames_emulated'] for p in points], [p[group][field] for p in points],
+                    axis.step([p['execution_work'] for p in points], [p[group][field] for p in points],
                               where='post', alpha=.5, color=color)
                 axis.set(title=f'{group}.{field}', xlabel='Emulator frames')
                 axis.xaxis.set_major_locator(MaxNLocator(4))
