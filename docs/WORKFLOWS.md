@@ -194,9 +194,14 @@ the job.
 ## Ignored tests
 
 The Nested Host Qualification workflow's `Nested Host` job runs on its
-schedule, on manual dispatch, and on pushes to main that change its inputs: the
-workspace manifests, `consonance/harmony-linux` and the protocol crates its
-runtime builds from, `vmm-backend`, `vmm-core`, `nested-driver` and `client`.
+schedule, on manual dispatch, and on pushes to main that change anything under
+`consonance/`, the workspace manifests, the toolchain pin, or a crate that
+`vmm-core`, `nested-driver` or `harmony-cli` depend on by path.
+`test_nested_host_qualification_runs_when_main_changes_its_inputs` recomputes
+that dependency closure from the Cargo manifests. The job caches the nested-host
+kernel, fixture and OCI runtime under the guest runtime source key and the
+workflow file's hash, so a push that changes only Rust crates skips the kernel
+build. Test binaries compile on every CPU before each test runs pinned to one.
 Scheduled and push runs accept whichever nested vendor the runner
 provides; a dispatch can require VMX or SVM. The job first
 requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its selected Ubuntu
