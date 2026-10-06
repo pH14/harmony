@@ -45,6 +45,8 @@ const FIGHTER_MAKER_PHASES: u8 = 3;
 const FIGHTER_MAKER_PHASE_HITS: u8 = 5;
 const FINAL_BOSS_HITS: u8 = 20;
 const CARRYING_SUN_KEY: usize = 0x500;
+const CARRYING_PICKUP_BLOCK: usize = 0x501;
+const TOGGLE_BLOCK_ENABLED: usize = 0x505;
 const CHIP_COUNT: usize = 0x508;
 const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
@@ -115,6 +117,8 @@ pub struct NovaMechanicalState {
     pub fight: u8,
     pub keys: [u8; KEY_COLORS],
     pub sun_key: bool,
+    pub carrying_block: bool,
+    pub toggle: bool,
     pub ability: u8,
     pub level_reload_pending: bool,
     pub levels_cleared: [u8; PERSISTENT_BITMAP_LEN],
@@ -1079,6 +1083,8 @@ pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState,
         fight: fight_progress(wram)?,
         keys: held_keys(save_ram)?,
         sun_key: read_byte(wram, CARRYING_SUN_KEY)? != 0,
+        carrying_block: read_byte(wram, CARRYING_PICKUP_BLOCK)? != 0,
+        toggle: read_byte(wram, TOGGLE_BLOCK_ENABLED)? != 0,
         ability: read_byte(save_ram, PLAYER_ABILITY)?,
         level_reload_pending: read_byte(wram, NEED_LEVEL_RELOAD)? != 0,
         levels_cleared: read_bitmap(save_ram, LEVEL_CLEARED)?,
@@ -1716,12 +1722,15 @@ mod tests {
         assert_eq!((state.cleared_count(), state.available_count()), (3, 8));
         assert_eq!(state.collectible_count(), 1);
         assert_eq!((state.keys, state.sun_key), ([0, 0, 0], false));
+        assert_eq!((state.carrying_block, state.toggle), (false, false));
     }
 
     #[test]
     fn decoder_counts_held_keys_by_color() {
         let mut wram = [0_u8; WRAM_SIZE];
         wram[CARRYING_SUN_KEY] = 1;
+        wram[CARRYING_PICKUP_BLOCK] = 1;
+        wram[TOGGLE_BLOCK_ENABLED] = 64;
         let mut save = vec![0_u8; 8 * 1024];
         for (slot, item, amount) in [(0, 4, 0), (3, 2, 1), (5, 9, 4), (9, 3, 0)] {
             save[PER_LEVEL_ITEM_TYPE + slot] = item;
@@ -1729,6 +1738,7 @@ mod tests {
         }
         let state = decode_state(&wram, &save).expect("decode fixture");
         assert_eq!((state.keys, state.sun_key), ([2, 1, 1], true));
+        assert_eq!((state.carrying_block, state.toggle), (true, true));
     }
 
     #[test]
