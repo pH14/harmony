@@ -73,6 +73,13 @@ class StructureTests(unittest.TestCase):
         spec.loader.exec_module(runtime)
         return set(runtime.INPUTS)
 
+    def workspace_root(self, crate):
+        for directory in (crate, *crate.parents):
+            manifest = directory / "Cargo.toml"
+            if manifest.is_file() and "workspace" in tomllib.loads(manifest.read_text()):
+                return directory
+        raise AssertionError(f"no workspace root above {crate}")
+
     def path_dependency_closure(self, built, tested):
         seen = set()
         pending = [(ROOT / crate).resolve() for crate in built | tested]
@@ -88,9 +95,15 @@ class StructureTests(unittest.TestCase):
             tables = [manifest, *manifest.get("target", {}).values()]
             for table in tables:
                 for kind in kinds:
-                    for spec in table.get(kind, {}).values():
+                    for name, spec in table.get(kind, {}).items():
+                        if isinstance(spec, dict) and spec.get("workspace"):
+                            root = self.workspace_root(crate)
+                            workspace = tomllib.loads((root / "Cargo.toml").read_text())
+                            spec, crate_dir = workspace["workspace"]["dependencies"][name], root
+                        else:
+                            crate_dir = crate
                         if isinstance(spec, dict) and "path" in spec:
-                            pending.append((crate / spec["path"]).resolve())
+                            pending.append((crate_dir / spec["path"]).resolve())
         return {crate.relative_to(ROOT).as_posix() for crate in seen}
 
     def test_nested_host_qualification_runs_when_main_changes_its_inputs(self):

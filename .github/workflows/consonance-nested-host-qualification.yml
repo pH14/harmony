@@ -107,7 +107,7 @@ jobs:
         id: inputs
         with:
           path: consonance/harmony-linux/build/x86_64
-          key: consonance-nested-host-v1-x86_64-${{ hashFiles('.github/workflows/consonance-nested-host-qualification.yml') }}-${{ steps.source.outputs.key }}
+          key: consonance-nested-host-v1-x86_64-${{ hashFiles('.github/workflows/consonance-nested-host-qualification.yml', 'rust-toolchain.toml') }}-${{ steps.source.outputs.key }}
       - name: Reproduce a retained historical nested campaign
         if: inputs.nested_history_run != ''
         env:
