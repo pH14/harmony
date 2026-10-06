@@ -1733,8 +1733,20 @@ mod tests {
             )
             .is_err()
         );
+        let clock = Workload {
+            config: World::PassiveClock(passive_clock::Config {
+                events: vec![33, 41],
+                holds: vec![passive_clock::HoldBand {
+                    minimum: 8,
+                    maximum: 8,
+                    weight: 1,
+                }],
+            }),
+            broken: false,
+            scale: None,
+        };
         let spent = run_kept(
-            &w,
+            &clock,
             Keep::Portfolio,
             test_seed(),
             40,
@@ -1744,6 +1756,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(spent["verified"], true);
+        assert!(spent["work"].as_u64().unwrap() >= 16 * 8);
         assert!(spent["work_overshoot"].as_u64().unwrap() > 0);
     }
 
