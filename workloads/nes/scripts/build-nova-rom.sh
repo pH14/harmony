@@ -81,6 +81,8 @@ verify_symbol LevelNumber 0xA7
 verify_symbol StartedLevelNumber 0xA8
 verify_symbol NeedLevelReload 0xA9
 verify_symbol CarryingSunKey 0x500
+verify_symbol CarryingPickupBlock 0x501
+verify_symbol ToggleBlockEnabled 0x505
 verify_symbol ChipCount 0x508
 verify_symbol ChipsNeeded 0x509
 verify_symbol ObjectF1 0x2D

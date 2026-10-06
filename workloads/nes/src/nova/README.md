@@ -17,7 +17,7 @@ Nova retains one scheduled representative per 16-pixel location. At the same
 location, the adapter prefers states with more cleared levels, collectibles,
 available levels, carried abilities, health, and puzzle chips, in that order.
 The place is the cleared, collectible and available counts, the level identity,
-the boss-fight count, the held keys, the puzzle chips and a two-bucket position;
+the boss-fight count, the puzzle state and a two-bucket position;
 the holder identity is the exact position bucket.
 The adapter has no progress tier, so the selector treats every Nova place as a
 peer and ranks places only by their draw counts.
@@ -48,6 +48,12 @@ per-level page, which every level start clears; a slot holds the item type and
 one less than its count. The decoder counts red, green and blue keys from that
 page and reads the carried sun key separately.
 
+Toggle switches flip one level-wide flag that swaps which toggle blocks are
+solid, and a carried pickup block can be set down to bridge a gap. Both change
+where the player can go at an unchanged position. The puzzle state is the held
+keys, the carried sun key, the carried pickup block, the toggle flag and the
+puzzle chips. Every level load clears all of it.
+
 Reports may record progress reached inside an action. Reproducer selection uses
 action endpoints, where the serialized input identifies the complete state.
 
@@ -71,6 +77,8 @@ Coordinates use Nova's 12.4 fixed-point representation: `high * 16 + low / 16`.
 | Internal/selected level | `$00A7/$00A8` | system RAM |
 | Reload pending | `$00A9` | system RAM |
 | Carried sun key | `$0500` | system RAM |
+| Carried pickup block | `$0501` | system RAM |
+| Toggle blocks enabled | `$0505` | system RAM |
 | Puzzle chips/required | `$0508/$0509` | system RAM |
 | Object type (16 slots) | `$002D` | system RAM |
 | Level variable | `$038E` | system RAM |
