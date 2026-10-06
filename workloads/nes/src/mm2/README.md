@@ -42,6 +42,10 @@ menu. Some bytes need context:
   one bit per standing object's 32-pixel cell on the screen. The game assigns
   these objects to different slots from one attempt to the next, and the
   objects never move, so the cell names an object where the slot does not.
+- A boss intro runs from the boss byte at `$b1` turning on until the boss
+  meter starts to fill. Its length in frames counts as the intro's progress,
+  because Mecha Dragon flies in for about 450 frames while the player has to
+  stay above the pit, and nothing else in the key changes during that wait.
 - Enemy damage counts only on an active object that the hit flag at `$110`
   confirms, because enemy slots are reused.
 
@@ -54,7 +58,8 @@ stage-clear sequence after the kill, and a kill that left the tier unchanged
 would share its draws with every fight state in the room. The place is the
 stage, screen, room, boss damage, enemy damage, the 32-pixel position bucket,
 posture, platforms and whether the menu is open, plus the Wily 5 refights,
-the refight boss in play and the Boobeam targets left. The holder identity is
+the refight boss in play, the Boobeam targets left and the boss intro's
+64-frame step. The holder identity is
 the 16-pixel position bucket, the weapon and the menu state. Health and summed
 weapon energy choose which arrival holds a slot and add no slots.
 

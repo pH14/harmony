@@ -222,6 +222,7 @@ pub struct Mm2MechanicalState {
     pub current_boss: u8,
     pub refights: u8,
     pub boobeam_targets: u64,
+    pub boss_intro_frames: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -308,6 +309,16 @@ impl Mm2MechanicalState {
         } else {
             0
         }
+    }
+
+    #[must_use]
+    pub fn boss_intro(self) -> bool {
+        self.boss_fight_underway() && self.boss_health == 0
+    }
+
+    #[must_use]
+    pub fn boss_intro_step(self) -> u8 {
+        u8::try_from(self.boss_intro_frames / BOSS_INTRO_STEP_FRAMES).unwrap_or(u8::MAX)
     }
 
     #[must_use]
@@ -416,6 +427,7 @@ fn decode_state_after(
         } else {
             0
         },
+        boss_intro_frames: 0,
     })
 }
 
@@ -485,14 +497,16 @@ pub const ENEMY_DAMAGE_BUCKET: u8 = 2;
 
 pub const BOSS_DAMAGE_BUCKET: u8 = 2;
 
+pub const BOSS_INTRO_STEP_FRAMES: u16 = 64;
+
 #[must_use]
 pub fn preference_tuple(state: Mm2MechanicalState) -> (Mm2Tier, u8, u16) {
     (state.tier(), state.health, state.weapon_energy)
 }
 
 #[must_use]
-pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u64) {
-    (state.refights, state.refight_boss(), state.boobeam_targets)
+pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u64, u8) {
+    (state.refights, state.refight_boss(), state.boobeam_targets, state.boss_intro_step())
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1293,6 +1307,7 @@ impl Target for Mm2Target {
         let mut dying_run = self.observation.dying_run;
         let mut fall_run = self.observation.fall_run;
         let mut enemy_damage = self.observation.decoded.enemy_damage;
+        let mut boss_intro_frames = self.observation.decoded.boss_intro_frames;
         let mut prior_frame = self.current_wram;
         let mut previous = self.observation.decoded;
         let mut pending = None;
@@ -1327,6 +1342,8 @@ impl Target for Mm2Target {
                 .saturating_add(enemy_damage_between(&prior_frame, wram))
                 .min(ENEMY_DAMAGE_CAP);
             state.enemy_damage = enemy_damage;
+            boss_intro_frames = if state.boss_intro() { boss_intro_frames.saturating_add(1) } else { 0 };
+            state.boss_intro_frames = boss_intro_frames;
             prior_frame = *wram;
             let escaped = prior_state.boss_phase >= BOSS_PHASE_FIGHTING
                 && prior_state.boss_phase < BOSS_PHASE_DEFEATED
@@ -1422,6 +1439,7 @@ impl Target for Mm2Target {
                 return;
             };
             endpoint_state.enemy_damage = enemy_damage;
+            endpoint_state.boss_intro_frames = boss_intro_frames;
             let mut observation = self.make_observation(endpoint_frame, endpoint_state);
             observation.dead = died;
             observation.fall_run = fall_run;
