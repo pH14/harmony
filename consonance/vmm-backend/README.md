@@ -62,8 +62,13 @@ A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
 first keeps it from overwriting the restored registers, and lets a snapshot
-taken before VMXON clear CR4.VMXE. The complete nested payload is installed
-after all architectural state. Invalid format, size, mode flags, or contract
+taken before VMXON clear CR4.VMXE. On SVM the backend then clears EFER.SVME
+before writing the saved EFER. Leaving nested operation keeps the host's VMCB02
+and the last VMCB12 address, and the host reloads L2 segment, descriptor-table
+and debug state from VMCB12 only when L1 marks it dirty. Restored guest RAM
+rolls VMCB12 back while L1's clean bits stay set, so without that reset L2
+would resume with values from after the snapshot. Clearing SVME frees VMCB02.
+The complete nested payload is installed after all architectural state. Invalid format, size, mode flags, or contract
 presence fails preflight before any restore ioctl. So does a VMXON or VMCS12
 address beyond the guest's physical address width, which KVM derives from
 CPUID leaf 0x80000008 and rejects only after the architectural state is written.

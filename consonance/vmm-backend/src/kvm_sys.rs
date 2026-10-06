@@ -390,6 +390,28 @@ impl KvmBackend {
         saved_msrs(kmsrs.as_slice(), got, indices.len())
     }
 
+    fn release_svm_nested_cache(&self) -> Result<()> {
+        const EFER: u32 = 0xc000_0080;
+        const SVME: u64 = 1 << 12;
+        let mut msrs = Msrs::from_entries(&[kvm_msr_entry {
+            index: EFER,
+            ..Default::default()
+        }])
+        .map_err(|_| BackendError::Internal("EFER MSR list too large"))?;
+        ensure_full_msr_count(self.vcpu.get_msrs(&mut msrs).map_err(kvm_err)?, 1)?;
+        let efer = msrs.as_slice()[0].data;
+        if efer & SVME == 0 {
+            return Ok(());
+        }
+        let cleared = Msrs::from_entries(&[kvm_msr_entry {
+            index: EFER,
+            data: efer & !SVME,
+            ..Default::default()
+        }])
+        .map_err(|_| BackendError::Internal("EFER MSR list too large"))?;
+        ensure_full_msr_count(self.vcpu.set_msrs(&cleared).map_err(kvm_err)?, 1)
+    }
+
     fn restore_msrs(&self, state: &VcpuState) -> Result<()> {
         if state.msrs.is_empty() {
             return Ok(());
@@ -1039,6 +1061,9 @@ impl Backend for KvmBackend {
                 let inactive = crate::arch::x86::inactive_nested_state(format);
                 // SAFETY: the inactive header is a complete initialized ABI value whose declared size equals the slice length; the owned vCPU is stopped for the ioctl.
                 unsafe { raw_set_nested_state(self.vcpu.as_raw_fd(), &inactive)? };
+                if format == NestedFormat::Svm {
+                    self.release_svm_nested_cache()?;
+                }
             }
 
             restore_sregs2_with_flush(&state.sregs, |sregs| {
