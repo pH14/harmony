@@ -19,6 +19,9 @@ deterministic execution.
   logic under Miri.
 - Record follow-up work in GitHub issues and preserve implementation history in
   commits and pull requests.
+- A spawned task for an out-of-scope fix is done only after the fix is committed
+  on its own branch, a PR is open, and the `shipping-code` skill has carried
+  that PR through review and passing CI. Report the PR link as the result.
 - For code-review work, use the applicable lenses in `REVIEWING.md`.
 - Backwards compatibility is not a goal. Do not preserve old code paths to
   avoid breaking changes.
