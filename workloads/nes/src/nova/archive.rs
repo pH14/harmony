@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_preference_v9";
+    "nova_cleared_tiers_level_fight_puzzle_arrow_state_key_colors_spatial_32_place_preference_v10";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -51,7 +51,7 @@ impl ArchiveKey for NovaArchiveKey {
         u8,
         u8,
         u8,
-        ([u8; KEY_COLORS], bool, bool, bool, u8, u16),
+        ([bool; KEY_COLORS], bool, bool, bool, u8, u16),
         u16,
         u16,
     );
@@ -66,7 +66,7 @@ impl ArchiveKey for NovaArchiveKey {
             self.level,
             self.fight,
             (
-                self.keys,
+                self.keys.map(|count| count > 0),
                 self.sun_key,
                 self.carrying_block,
                 self.toggle,
@@ -108,7 +108,7 @@ impl ArchiveKey for NovaArchiveKey {
 }
 
 impl NovaArchiveKey {
-    fn preference(self) -> (u8, u8, u8, bool, u8, u8) {
+    fn preference(self) -> (u8, u8, u8, bool, u8, u8, u8) {
         (
             self.cleared,
             self.collectibles,
@@ -116,13 +116,16 @@ impl NovaArchiveKey {
             self.has_ability,
             self.health,
             self.chips,
+            self.keys
+                .iter()
+                .fold(0_u8, |total, count| total.saturating_add(*count)),
         )
     }
 }
 
 #[must_use]
 pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
-    let (cleared, collectibles, available, has_ability, health, chips) = preference_tuple(state);
+    let (cleared, collectibles, available, has_ability, health, chips, _) = preference_tuple(state);
     NovaArchiveKey {
         cleared,
         collectibles,
@@ -323,6 +326,17 @@ mod tests {
         for (index, place) in places.iter().enumerate() {
             assert!(!places[index + 1..].contains(place));
         }
+    }
+
+    #[test]
+    fn more_keys_of_a_held_color_share_a_place_and_are_preferred() {
+        let mut one = state(100, 4, 0);
+        one.keys = [0, 1, 0];
+        let mut two = state(100, 4, 0);
+        two.keys = [0, 2, 0];
+        let (one, two) = (archive_key(one), archive_key(two));
+        assert_eq!(one.place(), two.place());
+        assert_eq!(two.preference_cmp(0, one), Ordering::Greater);
     }
 
     #[test]
