@@ -38,14 +38,20 @@ menu. Some bytes need context:
   for a few frames. The decoder keeps the previous stage through that borrow.
 - Wily 5 tracks its refights in a bitmask at `$bc`. The Wily Machine refills
   its meter between its two forms, so boss damage reads zero during the refill.
-- Boobeam Trap's targets count while that fight is underway.
+- Boobeam Trap's cannons and barriers count while that fight is underway, as
+  one bit per standing object's 32-pixel cell on the screen. The game assigns
+  these objects to different slots from one attempt to the next, and the
+  objects never move, so the cell names an object where the slot does not.
 - Enemy damage counts only on an active object that the hit flag at `$110`
   confirms, because enemy slots are reused.
 
 ## Archive key
 
 The progress tier is the Robot Master clears, the castle clears, the Wily 5
-refights and whether the Wily Machine's first form is broken. The place is the
+refights, whether the Wily Machine's first form is broken and whether the
+boss that clears the current castle is defeated. A castle clear waits for the
+stage-clear sequence after the kill, and a kill that left the tier unchanged
+would share its draws with every fight state in the room. The place is the
 stage, screen, room, boss damage, enemy damage, the 32-pixel position bucket,
 posture, platforms and whether the menu is open, plus the Wily 5 refights,
 the refight boss in play and the Boobeam targets left. The holder identity is

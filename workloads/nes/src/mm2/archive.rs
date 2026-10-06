@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v21";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_target_grid_v22";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -43,13 +43,13 @@ pub struct Mm2ArchiveKey {
     pub energy: u16,
     pub refights: u8,
     pub refight_boss: u8,
-    pub boobeam_targets: u16,
+    pub boobeam_targets: u64,
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
     type Place = (
         (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool),
-        (u8, u8, u16),
+        (u8, u8, u64),
     );
     type Progress = Mm2Tier;
     type Identity = (u8, u8, u8, u8);
@@ -332,6 +332,21 @@ mod tests {
     }
 
     #[test]
+    fn a_castle_boss_kill_rises_one_tier_and_a_refight_kill_does_not() {
+        let mut fight = state(100, 28, u8::MAX);
+        fight.stage = 11;
+        fight.boss_phase = 2;
+        let fighting = archive_key(fight).progress();
+        fight.boss_phase = BOSS_PHASE_DEFEATED;
+        let defeated = archive_key(fight).progress();
+        assert!(defeated.castle_boss_defeated && defeated > fighting);
+        fight.stage = 12;
+        fight.refights = 0x01;
+        fight.current_boss = 1;
+        assert!(!archive_key(fight).progress().castle_boss_defeated);
+    }
+
+    #[test]
     fn each_castle_clear_refight_and_shell_break_rises_one_tier() {
         let mut wily = state(100, 28, u8::MAX);
         wily.stage = 8;
@@ -348,6 +363,9 @@ mod tests {
         wily.boss_phase = 5;
         let shell = archive_key(wily).progress();
         assert!(shell.machine_shell && shell > refought);
+        wily.boss_phase = BOSS_PHASE_DEFEATED;
+        let machine_defeated = archive_key(wily).progress();
+        assert!(machine_defeated.castle_boss_defeated && machine_defeated > shell);
         wily.stage = 13;
         wily.refights = 0;
         wily.boss_phase = 0;
