@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_peer_places_level_fight_keys_chips_spatial_32_place_preference_v4";
+    "nova_peer_places_level_fight_puzzle_state_spatial_32_place_preference_v5";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -37,12 +37,24 @@ pub struct NovaArchiveKey {
     pub fight: u8,
     pub keys: [u8; KEY_COLORS],
     pub sun_key: bool,
+    pub carrying_block: bool,
+    pub toggle: bool,
     pub x: u16,
     pub y: u16,
 }
 
 impl ArchiveKey for NovaArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u8, [u8; KEY_COLORS], bool, u8, u16, u16);
+    type Place = (
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        ([u8; KEY_COLORS], bool, bool, bool, u8),
+        u16,
+        u16,
+    );
     type Progress = ();
     type Identity = (u16, u16);
 
@@ -54,9 +66,13 @@ impl ArchiveKey for NovaArchiveKey {
             self.started_level,
             self.level,
             self.fight,
-            self.keys,
-            self.sun_key,
-            self.chips,
+            (
+                self.keys,
+                self.sun_key,
+                self.carrying_block,
+                self.toggle,
+                self.chips,
+            ),
             self.x / 2,
             self.y / 2,
         )
@@ -117,6 +133,8 @@ pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
         fight: state.fight,
         keys: state.keys,
         sun_key: state.sun_key,
+        carrying_block: state.carrying_block,
+        toggle: state.toggle,
         x: state.x / 16,
         y: state.y / 16,
     }
@@ -275,18 +293,24 @@ mod tests {
     }
 
     #[test]
-    fn held_keys_and_chips_are_their_own_places() {
+    fn puzzle_state_is_its_own_place() {
         let base = archive_key(state(100, 4, 0));
         let mut keyed = state(100, 4, 0);
         keyed.keys = [0, 1, 0];
         let mut sun = state(100, 4, 0);
         sun.sun_key = true;
+        let mut carrying = state(100, 4, 0);
+        carrying.carrying_block = true;
+        let mut toggled = state(100, 4, 0);
+        toggled.toggle = true;
         let mut chipped = state(100, 4, 0);
         chipped.chips = 1;
         let places = [
             base,
             archive_key(keyed),
             archive_key(sun),
+            archive_key(carrying),
+            archive_key(toggled),
             archive_key(chipped),
         ]
         .map(|key| key.place());
