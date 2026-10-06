@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_target_grid_v22";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_target_grid_boss_intro_v22";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -44,12 +44,13 @@ pub struct Mm2ArchiveKey {
     pub refights: u8,
     pub refight_boss: u8,
     pub boobeam_targets: u64,
+    pub boss_intro: u8,
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
     type Place = (
         (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool),
-        (u8, u8, u64),
+        (u8, u8, u64, u8),
     );
     type Progress = Mm2Tier;
     type Identity = (u8, u8, u8, u8);
@@ -68,7 +69,7 @@ impl ArchiveKey for Mm2ArchiveKey {
                 self.platforms,
                 self.menu != MENU_CLOSED,
             ),
-            (self.refights, self.refight_boss, self.boobeam_targets),
+            (self.refights, self.refight_boss, self.boobeam_targets, self.boss_intro),
         )
     }
 
@@ -115,6 +116,7 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         refights: state.refights,
         refight_boss: state.refight_boss(),
         boobeam_targets: state.boobeam_targets,
+        boss_intro: state.boss_intro_step(),
         stage: state.stage,
         screen: state.screen,
         room: state.room,
@@ -248,6 +250,7 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mm2::target::BOSS_INTRO_STEP_FRAMES;
     use crate::search::rand::RomuDuoJrRand;
 
     fn state(x: u8, health: u8, weapons: u8) -> Mm2MechanicalState {
@@ -296,6 +299,22 @@ mod tests {
         let next = archive_key(next_state);
         assert_ne!(first.place(), next.place());
         assert_eq!(first.progress(), next.progress());
+    }
+
+    #[test]
+    fn each_step_of_a_boss_intro_is_a_place_and_the_fight_ends_the_intro() {
+        let mut waiting = state(100, 28, 0);
+        waiting.boss_phase = 1;
+        assert!(waiting.boss_intro());
+        let early = archive_key(waiting);
+        waiting.boss_intro_frames = BOSS_INTRO_STEP_FRAMES;
+        let later = archive_key(waiting);
+        assert_ne!(early.place(), later.place());
+        assert_eq!(early.progress(), later.progress());
+
+        let mut fighting = waiting;
+        fighting.boss_health = 28;
+        assert!(!fighting.boss_intro());
     }
 
     #[test]
