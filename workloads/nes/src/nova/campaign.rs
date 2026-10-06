@@ -406,6 +406,7 @@ fn action_champion_key(observations: &[NovaObservations]) -> Option<NovaChampion
                 available: state.available_count(),
                 started_level: state.started_level,
                 level: state.level,
+                fight: state.fight,
                 x: state.x,
                 y: state.y,
             },
