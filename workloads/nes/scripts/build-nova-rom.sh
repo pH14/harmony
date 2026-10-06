@@ -89,6 +89,7 @@ verify_symbol ObjectF2 0x463
 verify_symbol ObjectF3 0x473
 verify_symbol ObjectF4 0x483
 verify_symbol PlayerAbility 0x7200
+verify_symbol CheckpointLevelNumber 0x7259
 verify_symbol LevelCleared 0x7F1F
 verify_symbol LevelAvailable 0x7F27
 verify_symbol CollectibleBits 0x7F2F

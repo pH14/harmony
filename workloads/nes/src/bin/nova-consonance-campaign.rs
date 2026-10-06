@@ -289,7 +289,7 @@ mod real {
         )?;
         let witness = replay_witness(&game, &NovaCampaignRun, best_input)?;
         let endpoint = game.headless_endpoint(best_input)?;
-        let best_input_frames = game.input_frames(best_input);
+        let best_input_frames = game.input_frames(best_input)?;
         fs::write(
             args.output.join("result.json"),
             serde_json::to_vec_pretty(&json!({
