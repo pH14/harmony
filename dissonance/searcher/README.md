@@ -396,11 +396,11 @@ run, its total draws and yields, its carried-in wins in the current run, and
 the rank below's name, draws and yields when the run began, and the draws each
 cell received, and
 every live progress line carries it under `selector`. The draws each cell
-received and `selector.portfolio` appear only on every 100,000th execution's
-line and the final line. Counting portfolio holders compares every pair of
-holders in each slot, which on every line would take most of the
-coordinator's time, and the draws of tens of thousands of cells on every line
-would add gigabytes of progress log.
+received and `selector.portfolio` appear once each time the executions double,
+on the line at 102,400 executions times a power of two, and on the final line.
+Counting portfolio holders compares every pair of holders in each slot, which
+on every line would take most of the coordinator's time. The draws of hundreds
+of thousands of cells take tens of megabytes per line.
 
 Continuation edges copy their action tail only after the existing-cost check
 accepts the edge; equal-cost and more expensive routes leave the bank unchanged
@@ -550,6 +550,13 @@ completion results, and resource costs in
 fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
 without a workload runtime or external artifact.
+
+The live progress sidecar gets a line at the first execution and every 100
+executions until 204,800. After that the step between lines doubles each time
+the executions double, so each doubling adds 1,024 lines, the same bound the
+progress curve keeps. A 250-million-execution run writes about 12,500 lines.
+The cadence depends only on the execution count, so a resumed run writes the
+same lines as an uninterrupted one.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
 work, terminal endpoint and execution-failure totals, final totals, logical
