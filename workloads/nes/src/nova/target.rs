@@ -432,33 +432,28 @@ where
     }
 
     fn start_next_level(&mut self) -> Result<(NovaMechanicalState, u64), MachineError> {
-        let level_end = self.machine.snapshot()?;
-        let branched = self.machine.branch(
-            level_end,
-            &nes::reproducer(&[&[LEVEL_END_WAIT][..], &PRE_LEVEL_TO_GAMEPLAY[..]].concat()),
-        );
-        self.machine.drop_snapshot(level_end)?;
-        branched?;
         let mut frames = 0_u64;
-        let mut last_wram = None;
-        loop {
-            let stop = self.machine.run(StopConditions::default(), None)?;
+        let mut endpoint = None;
+        for chord in std::iter::once(LEVEL_END_WAIT).chain(PRE_LEVEL_TO_GAMEPLAY) {
+            let from = self.machine.snapshot()?;
+            let ran = self
+                .machine
+                .branch(from, &nes::reproducer(std::slice::from_ref(&chord)))
+                .and_then(|()| self.machine.run(StopConditions::default(), None));
+            self.machine.drop_snapshot(from)?;
+            if !matches!(
+                ran?,
+                machine::StopReason::Quiescent { .. } | machine::StopReason::SnapshotPoint { .. }
+            ) {
+                return Err(MachineError::Backend(
+                    "Nova level start stopped before its last menu press".to_owned(),
+                ));
+            }
             let produced = self.machine.frames();
             frames = frames.saturating_add(u64::try_from(produced.len()).unwrap_or(u64::MAX));
-            if let Some(wram) = produced.last() {
-                last_wram = Some(*wram);
-            }
-            match stop {
-                machine::StopReason::Quiescent { .. } => break,
-                machine::StopReason::SnapshotPoint { .. } => {}
-                _ => {
-                    return Err(MachineError::Backend(
-                        "Nova level start stopped before its last menu press".to_owned(),
-                    ));
-                }
-            }
+            endpoint = produced.last().copied();
         }
-        let wram = last_wram.ok_or_else(|| {
+        let wram = endpoint.ok_or_else(|| {
             MachineError::Backend("Nova level start produced no frames".to_owned())
         })?;
         let save_ram = self
@@ -1307,12 +1302,17 @@ mod tests {
                     self.vtime = self.vtime.saturating_add(1);
                 }
             }
-            Ok(self
+            let stop = self
                 .run_stops
                 .pop_front()
                 .unwrap_or(machine::StopReason::Quiescent {
                     vtime: machine::Moment(self.vtime),
-                }))
+                });
+            if self.append_sentinel && !matches!(stop, machine::StopReason::SnapshotPoint { .. }) {
+                self.frames.clear();
+                self.stale_reads = true;
+            }
+            Ok(stop)
         }
 
         fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
@@ -1437,6 +1437,29 @@ mod tests {
         target.apply(&ButtonChord::new(0, 1));
         assert!(!target.failed);
         assert_eq!(target.observe().frame_count, 3 + level_start_frames());
+    }
+
+    #[test]
+    fn level_start_reads_each_menu_press_at_its_snapshot_point() {
+        let mut machine = exit_door_machine(0);
+        machine.max_chords_per_run = Some(1);
+        machine.append_sentinel = true;
+        let chords = 2 + PRE_LEVEL_TO_GAMEPLAY.len();
+        machine.run_stops.extend(std::iter::repeat_n(
+            machine::StopReason::SnapshotPoint {
+                vtime: machine::Moment(0),
+            },
+            chords,
+        ));
+        let mut target = NovaTarget::from_machine(machine).expect("genesis");
+        target.set_halt_on_level_clear(false);
+        target.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(!target.failed);
+        let state = target.mechanical_state();
+        assert_eq!((state.cleared_count(), state.started_level), (1, 1));
+        assert_eq!(target.observe().frame_count, 2 + level_start_frames());
+        assert_eq!(target.machine.vtime, 2 + level_start_frames());
+        assert_eq!(target.machine.run_calls, chords);
     }
 
     #[test]
