@@ -17,8 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_key_color_preferences_v11";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_ability_identity_key_color_preferences_v12";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -29,13 +28,13 @@ pub struct NovaArchiveKey {
     pub cleared: u8,
     pub collectibles: u8,
     pub available: u8,
-    pub has_ability: bool,
     pub health: u8,
     pub chips: u8,
     pub started_level: u8,
     pub level: u8,
     pub fight: u8,
     pub keys: [u8; KEY_COLORS],
+    pub ability: u8,
     pub sun_key: bool,
     pub carrying_block: bool,
     pub toggle: bool,
@@ -47,7 +46,7 @@ pub struct NovaArchiveKey {
 impl ArchiveKey for NovaArchiveKey {
     type Place = (u8, u8, u8, u8, u8, (bool, bool, bool, u8, u16), u16, u16);
     type Progress = u8;
-    type Identity = (u16, u16);
+    type Identity = (u16, u16, u8);
 
     fn place(self) -> Self::Place {
         (
@@ -73,7 +72,7 @@ impl ArchiveKey for NovaArchiveKey {
     }
 
     fn identity(self) -> Self::Identity {
-        (self.x, self.y)
+        (self.x, self.y, self.ability)
     }
 
     fn capacity() -> usize {
@@ -102,12 +101,11 @@ impl ArchiveKey for NovaArchiveKey {
 }
 
 impl NovaArchiveKey {
-    fn preference(self) -> (u8, u8, u8, bool, u8, u8) {
+    fn preference(self) -> (u8, u8, u8, u8, u8) {
         (
             self.cleared,
             self.collectibles,
             self.available,
-            self.has_ability,
             self.health,
             self.chips,
         )
@@ -116,18 +114,18 @@ impl NovaArchiveKey {
 
 #[must_use]
 pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
-    let (cleared, collectibles, available, has_ability, health, chips) = preference_tuple(state);
+    let (cleared, collectibles, available, _, health, chips) = preference_tuple(state);
     NovaArchiveKey {
         cleared,
         collectibles,
         available,
-        has_ability,
         health,
         chips,
         started_level: state.started_level,
         level: state.level,
         fight: state.fight,
         keys: state.keys,
+        ability: state.ability,
         sun_key: state.sun_key,
         carrying_block: state.carrying_block,
         toggle: state.toggle,
@@ -313,6 +311,25 @@ mod tests {
         .map(|key| key.place());
         for (index, place) in places.iter().enumerate() {
             assert!(!places[index + 1..].contains(place));
+        }
+    }
+
+    #[test]
+    fn each_held_ability_keeps_its_own_holder_at_a_place() {
+        let none = archive_key(state(100, 4, 0));
+        let mut nice = state(100, 4, 0);
+        nice.ability = 6;
+        let mut burger = state(100, 3, 0);
+        burger.ability = 11;
+        let keys = [none, archive_key(nice), archive_key(burger)];
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(key.place(), none.place());
+            assert_eq!(key.progress(), none.progress());
+            assert!(
+                keys[index + 1..]
+                    .iter()
+                    .all(|other| other.identity() != key.identity())
+            );
         }
     }
 
