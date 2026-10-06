@@ -16,11 +16,12 @@ because the Consonance backend serves reads only after a run.
 Nova retains one scheduled representative per 16-pixel location. At the same
 location, the adapter prefers states with more cleared levels, collectibles,
 available levels, carried abilities, health, and puzzle chips, in that order.
-The place is the cleared, collectible and available counts, the level identity,
-the boss-fight count, the puzzle state and a two-bucket position;
-the holder identity is the exact position bucket.
-The adapter has no progress tier, so the selector treats every Nova place as a
-peer and ranks places only by their draw counts.
+The progress tier is the cleared-level count. The place is the collectible and
+available counts, the level identity, the boss-fight count, the puzzle state and
+a two-bucket position; the holder identity is the exact position bucket.
+In whole-game mode the selector puts most draws on the highest cleared count, so
+places in levels already cleared stop taking most of the search. A level
+campaign stops at its first clear, so it has one tier.
 
 A boss fight keeps the player on one screen until the boss falls, so position
 alone gives the search one place for the whole fight. The decoder reads the
