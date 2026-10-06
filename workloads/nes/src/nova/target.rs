@@ -20,9 +20,30 @@ const PLAYER_X_HIGH: usize = 0x26;
 const PLAYER_Y_HIGH: usize = 0x27;
 const PLAYER_Y_LOW: usize = 0x28;
 const PLAYER_HEALTH: usize = 0x4b;
+const OBJECT_TYPE: usize = 0x2d;
 const LEVEL_NUMBER: usize = 0xa7;
 const STARTED_LEVEL_NUMBER: usize = 0xa8;
 const NEED_LEVEL_RELOAD: usize = 0xa9;
+const LEVEL_VARIABLE: usize = 0x38e;
+const OBJECT_VX_HIGH: usize = 0x423;
+const OBJECT_STATE: usize = 0x463;
+const OBJECT_F3: usize = 0x473;
+const OBJECT_F4: usize = 0x483;
+const OBJECT_SLOTS: usize = 16;
+const OBJECT_STATE_INIT: u8 = 0x84;
+const BOSS_FIGHT: u8 = 0x66;
+const MOLSNO: u8 = 0x86;
+const FOREHEAD_BLOCK_GUY: u8 = 0x90;
+const FIGHTER_MAKER: u8 = 0x94;
+const JOHN: u8 = 0x9a;
+const FINAL_BOSS: u8 = 0xa8;
+const SCHEME_TEAM_FIGHT_SIZES: [u8; 2] = [12, 10];
+const JACK_STONE_FIGHT: u8 = 2;
+const JACK_STONE_HITS: u8 = 16;
+const SHOT_BOSS_HITS: u8 = 8;
+const FIGHTER_MAKER_PHASES: u8 = 3;
+const FIGHTER_MAKER_PHASE_HITS: u8 = 5;
+const FINAL_BOSS_HITS: u8 = 20;
 const CHIP_COUNT: usize = 0x508;
 const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
@@ -84,6 +105,7 @@ pub struct NovaMechanicalState {
     pub health: u8,
     pub chips: u8,
     pub chips_needed: u8,
+    pub fight: u8,
     pub ability: u8,
     pub level_reload_pending: bool,
     pub levels_cleared: [u8; PERSISTENT_BITMAP_LEN],
@@ -894,6 +916,37 @@ fn fixed_point_pixels(high: u8, low: u8) -> u16 {
     u16::from(high) * 16 + u16::from(low >> 4)
 }
 
+fn fight_progress(wram: &[u8]) -> Result<u8, MachineError> {
+    for slot in 0..OBJECT_SLOTS {
+        let kind = read_byte(wram, OBJECT_TYPE + slot)? & !1;
+        let f3 = read_byte(wram, OBJECT_F3 + slot)?;
+        let f4 = read_byte(wram, OBJECT_F4 + slot)?;
+        let hits = read_byte(wram, OBJECT_VX_HIGH + slot)?;
+        let progress = match kind {
+            BOSS_FIGHT if f3 == JACK_STONE_FIGHT => hits.min(JACK_STONE_HITS),
+            BOSS_FIGHT => {
+                let Some(&size) = SCHEME_TEAM_FIGHT_SIZES.get(usize::from(f3)) else {
+                    continue;
+                };
+                if read_byte(wram, OBJECT_STATE + slot)? == OBJECT_STATE_INIT {
+                    0
+                } else {
+                    size.saturating_sub(read_byte(wram, LEVEL_VARIABLE)?)
+                }
+            }
+            MOLSNO | FOREHEAD_BLOCK_GUY | JOHN => f4.min(SHOT_BOSS_HITS),
+            FIGHTER_MAKER => {
+                f3.min(FIGHTER_MAKER_PHASES) * FIGHTER_MAKER_PHASE_HITS
+                    + f4.min(FIGHTER_MAKER_PHASE_HITS - 1)
+            }
+            FINAL_BOSS => hits.min(FINAL_BOSS_HITS),
+            _ => continue,
+        };
+        return Ok(progress);
+    }
+    Ok(0)
+}
+
 pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState, MachineError> {
     Ok(NovaMechanicalState {
         level: read_byte(wram, LEVEL_NUMBER)?,
@@ -909,6 +962,7 @@ pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState,
         health: read_byte(wram, PLAYER_HEALTH)?,
         chips: read_byte(wram, CHIP_COUNT)?,
         chips_needed: read_byte(wram, CHIPS_NEEDED)?,
+        fight: fight_progress(wram)?,
         ability: read_byte(save_ram, PLAYER_ABILITY)?,
         level_reload_pending: read_byte(wram, NEED_LEVEL_RELOAD)? != 0,
         levels_cleared: read_bitmap(save_ram, LEVEL_CLEARED)?,
@@ -1440,6 +1494,75 @@ mod tests {
         assert_eq!((state.health, state.chips, state.chips_needed), (4, 3, 5));
         assert_eq!((state.cleared_count(), state.available_count()), (3, 8));
         assert_eq!(state.collectible_count(), 1);
+    }
+
+    #[test]
+    fn decoder_counts_progress_in_every_boss_fight() {
+        let save = vec![0_u8; 8 * 1024];
+        let fight = |setup: &dyn Fn(&mut [u8; WRAM_SIZE])| {
+            let mut wram = [0_u8; WRAM_SIZE];
+            wram[OBJECT_TYPE] = 0x20;
+            setup(&mut wram);
+            decode_state(&wram, &save).expect("decode fixture").fight
+        };
+        assert_eq!(fight(&|_| {}), 0);
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 9] = BOSS_FIGHT | 1;
+                wram[LEVEL_VARIABLE] = 7;
+            }),
+            5
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 9] = BOSS_FIGHT;
+                wram[OBJECT_STATE + 9] = OBJECT_STATE_INIT;
+            }),
+            0
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 3] = BOSS_FIGHT;
+                wram[OBJECT_F3 + 3] = 1;
+                wram[LEVEL_VARIABLE] = 10;
+            }),
+            0
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 15] = BOSS_FIGHT;
+                wram[OBJECT_F3 + 15] = JACK_STONE_FIGHT;
+                wram[OBJECT_F4 + 15] = 5;
+                wram[OBJECT_VX_HIGH + 15] = 11;
+            }),
+            11
+        );
+        for boss in [MOLSNO, FOREHEAD_BLOCK_GUY, JOHN] {
+            assert_eq!(
+                fight(&|wram| {
+                    wram[OBJECT_TYPE + 4] = boss | 1;
+                    wram[OBJECT_F3 + 4] = 90;
+                    wram[OBJECT_F4 + 4] = 6;
+                }),
+                6
+            );
+        }
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE] = FIGHTER_MAKER;
+                wram[OBJECT_F3] = 2;
+                wram[OBJECT_F4] = 3;
+            }),
+            13
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 2] = FINAL_BOSS;
+                wram[OBJECT_STATE + 2] = 255;
+                wram[OBJECT_VX_HIGH + 2] = 30;
+            }),
+            FINAL_BOSS_HITS
+        );
     }
 
     #[test]

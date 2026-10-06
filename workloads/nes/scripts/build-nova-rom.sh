@@ -82,6 +82,12 @@ verify_symbol StartedLevelNumber 0xA8
 verify_symbol NeedLevelReload 0xA9
 verify_symbol ChipCount 0x508
 verify_symbol ChipsNeeded 0x509
+verify_symbol ObjectF1 0x2D
+verify_symbol LevelVariable 0x38E
+verify_symbol ObjectVXH 0x423
+verify_symbol ObjectF2 0x463
+verify_symbol ObjectF3 0x473
+verify_symbol ObjectF4 0x483
 verify_symbol PlayerAbility 0x7200
 verify_symbol LevelCleared 0x7F1F
 verify_symbol LevelAvailable 0x7F27
