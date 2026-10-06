@@ -184,6 +184,9 @@ mod tests {
                 if vmm.serial().ends_with(marker.as_bytes()) {
                     return Ok(());
                 }
+                if vmm.serial().windows(17).any(|w| w == b"FAIL: cache check") {
+                    return Err(String::from_utf8_lossy(vmm.serial()).into_owned().into());
+                }
                 if progress != crate::vmm::Step::Continued {
                     return Err(format!("cache fixture stopped: {progress:?}").into());
                 }
@@ -217,6 +220,7 @@ mod tests {
                 saved.len(), restored.len()
             ).into());
         }
+        advance(&mut vmm, 12)?;
         println!("NESTED_CACHE_RESTORE vmcs_fields=pass");
         Ok(())
     }

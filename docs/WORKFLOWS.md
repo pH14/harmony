@@ -218,7 +218,9 @@ The direct fixture also runs
 `vmm-core::vendor::x86::contract::nested::tests::nested_restore_preserves_unsynchronized_vmcs_fields`.
 It stops a minimal L2 runner after three exits, runs a detour through exit five
 without reading L2 segment state, and compares the complete nested payload
-immediately after direct outer restore. This exercises a cached VMCS boundary
+immediately after direct outer restore. L2 counts its steps in DS, and the
+restored fixture must reach exit twelve, so a host that keeps L2 segment state
+cached from the detour fails the check. This exercises a cached VMCS boundary
 that the production inner VMM's segment-state reads would otherwise synchronize.
 It also runs
 `vmm-core::vendor::x86::contract::nested::tests::interrupt_raised_before_nested_entry_reaches_the_nested_host`.
