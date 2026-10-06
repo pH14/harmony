@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_peer_places_level_fight_puzzle_state_spatial_32_place_preference_v5";
+    "nova_cleared_tiers_level_fight_puzzle_state_spatial_32_place_preference_v6";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -50,17 +50,15 @@ impl ArchiveKey for NovaArchiveKey {
         u8,
         u8,
         u8,
-        u8,
         ([u8; KEY_COLORS], bool, bool, bool, u8),
         u16,
         u16,
     );
-    type Progress = ();
+    type Progress = u8;
     type Identity = (u16, u16);
 
     fn place(self) -> Self::Place {
         (
-            self.cleared,
             self.collectibles,
             self.available,
             self.started_level,
@@ -78,7 +76,9 @@ impl ArchiveKey for NovaArchiveKey {
         )
     }
 
-    fn progress(self) -> Self::Progress {}
+    fn progress(self) -> Self::Progress {
+        self.cleared
+    }
 
     fn identity(self) -> Self::Identity {
         (self.x, self.y)
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(weak.identity(), strong.identity());
         assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         let cleared = archive_key(state(100, 4, 1));
-        assert_ne!(cleared.place(), strong.place());
+        assert_eq!((strong.progress(), cleared.progress()), (0, 1));
         assert_eq!(cleared.preference_cmp(0, strong), Ordering::Greater);
         assert_eq!(NovaArchiveKey::capacity(), 1);
     }
