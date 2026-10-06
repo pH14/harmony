@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_cleared_tiers_level_fight_puzzle_state_spatial_32_place_preference_v6";
+    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_preference_v7";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -39,6 +39,7 @@ pub struct NovaArchiveKey {
     pub sun_key: bool,
     pub carrying_block: bool,
     pub toggle: bool,
+    pub arrow_blocks: u8,
     pub x: u16,
     pub y: u16,
 }
@@ -50,7 +51,7 @@ impl ArchiveKey for NovaArchiveKey {
         u8,
         u8,
         u8,
-        ([u8; KEY_COLORS], bool, bool, bool, u8),
+        ([u8; KEY_COLORS], bool, bool, bool, u8, u8),
         u16,
         u16,
     );
@@ -70,6 +71,7 @@ impl ArchiveKey for NovaArchiveKey {
                 self.carrying_block,
                 self.toggle,
                 self.chips,
+                self.arrow_blocks,
             ),
             self.x / 2,
             self.y / 2,
@@ -135,6 +137,7 @@ pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
         sun_key: state.sun_key,
         carrying_block: state.carrying_block,
         toggle: state.toggle,
+        arrow_blocks: state.arrow_blocks,
         x: state.x / 16,
         y: state.y / 16,
     }
@@ -305,6 +308,8 @@ mod tests {
         toggled.toggle = true;
         let mut chipped = state(100, 4, 0);
         chipped.chips = 1;
+        let mut spent_arrow = state(100, 4, 0);
+        spent_arrow.arrow_blocks = 1;
         let places = [
             base,
             archive_key(keyed),
@@ -312,6 +317,7 @@ mod tests {
             archive_key(carrying),
             archive_key(toggled),
             archive_key(chipped),
+            archive_key(spent_arrow),
         ]
         .map(|key| key.place());
         for (index, place) in places.iter().enumerate() {

@@ -51,9 +51,19 @@ page and reads the carried sun key separately.
 
 Toggle switches flip one level-wide flag that swaps which toggle blocks are
 solid, and a carried pickup block can be set down to bridge a gap. Both change
-where the player can go at an unchanged position. The puzzle state is the held
-keys, the carried sun key, the carried pickup block, the toggle flag and the
-puzzle chips. Every level load clears all of it.
+where the player can go at an unchanged position.
+
+Arrow blocks are single-use. Touching a wood arrow turns the tile empty and
+launches a flying arrow that the player can ride. A flying arrow empties the
+next arrow, crate, bomb or fork tile it hits and turns or splits on arrows.
+A state that has already spent the arrow a climb needs sits at the same
+position as one that has not. The decoder counts the remaining tiles of these
+kinds (metatiles 11, 41-45 and 151-158 in the source's `metatileenum.s`) in
+the level map.
+
+The puzzle state is the held keys, the carried sun key, the carried pickup
+block, the toggle flag, the puzzle chips and the arrow block count. Every
+level load resets all of it.
 
 Reports may record progress reached inside an action. Reproducer selection uses
 action endpoints, where the serialized input identifies the complete state.
@@ -86,6 +96,7 @@ Coordinates use Nova's 12.4 fixed-point representation: `high * 16 + low / 16`.
 | Object VX high (16 slots) | `$0423` | system RAM |
 | Object state F2 (16 slots) | `$0463` | system RAM |
 | Object F3/F4 (16 slots) | `$0473/$0483` | system RAM |
+| Level map, 16 bytes per column | `$6000..$6FFF` | save RAM `$0000` |
 | Copied ability | `$7200` | save RAM `$1200` |
 | Per-level item types/amounts | `$720D/$7221` | save RAM `$120D/$1221` |
 | Checkpoint level | `$7259` | save RAM `$1259` |
