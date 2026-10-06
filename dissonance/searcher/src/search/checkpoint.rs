@@ -519,8 +519,14 @@ mod tests {
         probe.write_all(&[1; 1 << 20]).expect("fill the probe");
         probe.sync_all().expect("sync the probe");
         let before = allocated_bytes(&path);
-        punch_hole(&probe, 0, 1 << 20).expect("punch the probe");
-        let punched = allocated_bytes(&path) < before;
+        let punched = rustix::fs::fallocate(
+            &probe,
+            rustix::fs::FallocateFlags::PUNCH_HOLE | rustix::fs::FallocateFlags::KEEP_SIZE,
+            0,
+            1 << 20,
+        )
+        .is_ok()
+            && allocated_bytes(&path) < before;
         fs::remove_file(&path).expect("remove the probe");
         punched
     }
