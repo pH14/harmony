@@ -60,8 +60,13 @@ stage, screen, room, boss damage, enemy damage, the 32-pixel position bucket,
 posture, platforms and whether the menu is open, plus the Wily 5 refights,
 the refight boss in play, the Boobeam targets left and the boss intro's
 64-frame step. The holder identity is
-the 16-pixel position bucket, the weapon and the menu state. Health and summed
-weapon energy choose which arrival holds a slot and add no slots.
+the 16-pixel position bucket, the weapon and the menu state. The key declares two
+preferences, and each place keeps the best arrival under each. The first ranks
+health, then summed weapon energy. The second ranks the weapon energies sorted
+lowest first, then health, so it keeps the arrival whose most-drained weapon
+holds the most. Random input fires whatever weapon is equipped, and a summed
+total hides one weapon spent down while the others stay full, which matters
+where a boss takes damage from one weapon only.
 
 ## Milestones and evidence
 

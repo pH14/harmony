@@ -57,6 +57,7 @@ const PLAYER_Y: usize = 0x4a0;
 const PLAYER_HEALTH: usize = 0x6c0;
 const WEAPON_ENERGY: usize = 0x9c;
 const WEAPON_ENERGY_BYTES: usize = 12;
+pub const MM2_WEAPONS: usize = 11;
 const OBJECT_ID_TABLE: usize = 0x400;
 const OBJECT_FLAG_TABLE: usize = 0x420;
 const OBJECT_SLOTS: usize = 0x20;
@@ -207,6 +208,7 @@ pub struct Mm2MechanicalState {
     pub y: u8,
     pub health: u8,
     pub weapon_energy: u16,
+    pub weapon_energies: [u8; MM2_WEAPONS],
     pub equipped_energy: u8,
     pub platforms: u8,
     pub lives: u8,
@@ -401,6 +403,7 @@ fn decode_state_after(
         weapon_energy: (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
             .map(|index| read_byte(wram, index).map(u16::from))
             .sum::<Result<u16, MachineError>>()?,
+        weapon_energies: weapon_energies(wram)?,
         equipped_energy: match usize::from(weapon) {
             index @ 1..=WEAPON_ENERGY_BYTES => read_byte(wram, WEAPON_ENERGY + index - 1)?,
             _ => 0,
@@ -461,6 +464,14 @@ fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
                 .then(|| before.saturating_sub(after).min(ENEMY_HIT_CAP))
         })
         .fold(0_u8, u8::saturating_add)
+}
+
+fn weapon_energies(wram: &[u8]) -> Result<[u8; MM2_WEAPONS], MachineError> {
+    let mut energies = [0; MM2_WEAPONS];
+    for (index, energy) in energies.iter_mut().enumerate() {
+        *energy = read_byte(wram, WEAPON_ENERGY + index)?;
+    }
+    Ok(energies)
 }
 
 fn live_platforms(wram: &[u8]) -> Result<u8, MachineError> {
