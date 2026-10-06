@@ -123,7 +123,7 @@ pub struct NovaMechanicalState {
     pub sun_key: bool,
     pub carrying_block: bool,
     pub toggle: bool,
-    pub arrow_blocks: u8,
+    pub arrow_blocks: u16,
     pub ability: u8,
     pub level_reload_pending: bool,
     pub levels_cleared: [u8; PERSISTENT_BITMAP_LEN],
@@ -1039,7 +1039,7 @@ fn held_keys(save_ram: &[u8]) -> Result<[u8; KEY_COLORS], MachineError> {
     Ok(keys)
 }
 
-fn arrow_blocks(save_ram: &[u8]) -> Result<u8, MachineError> {
+fn arrow_blocks(save_ram: &[u8]) -> Result<u16, MachineError> {
     let map = save_ram
         .get(..LEVEL_MAP_BYTES)
         .ok_or_else(|| MachineError::Backend("Nova level map is absent".to_owned()))?;
@@ -1047,7 +1047,7 @@ fn arrow_blocks(save_ram: &[u8]) -> Result<u8, MachineError> {
         .iter()
         .filter(|block| ARROW_PUZZLE_BLOCKS.contains(block))
         .count();
-    Ok(u8::try_from(count).unwrap_or(u8::MAX))
+    Ok(u16::try_from(count).unwrap_or(u16::MAX))
 }
 
 fn fight_progress(wram: &[u8]) -> Result<u8, MachineError> {
@@ -1760,9 +1760,14 @@ mod tests {
         save[LEVEL_MAP_BYTES] = 43;
         let state = decode_state(&wram, &save).expect("decode fixture");
         assert_eq!(state.arrow_blocks, 4);
+        save[..300].fill(43);
+        let many = decode_state(&wram, &save).expect("decode crowded map");
+        save[0] = 0;
+        let spent = decode_state(&wram, &save).expect("decode spent arrow");
+        assert_eq!((many.arrow_blocks, spent.arrow_blocks), (302, 301));
         save[..LEVEL_MAP_BYTES].fill(43);
         let full = decode_state(&wram, &save).expect("decode full map");
-        assert_eq!(full.arrow_blocks, u8::MAX);
+        assert_eq!(full.arrow_blocks, 4096);
     }
 
     #[test]

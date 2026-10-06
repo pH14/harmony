@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_preference_v7";
+    "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_preference_v8";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -39,7 +39,7 @@ pub struct NovaArchiveKey {
     pub sun_key: bool,
     pub carrying_block: bool,
     pub toggle: bool,
-    pub arrow_blocks: u8,
+    pub arrow_blocks: u16,
     pub x: u16,
     pub y: u16,
 }
@@ -51,7 +51,7 @@ impl ArchiveKey for NovaArchiveKey {
         u8,
         u8,
         u8,
-        ([u8; KEY_COLORS], bool, bool, bool, u8, u8),
+        ([u8; KEY_COLORS], bool, bool, bool, u8, u16),
         u16,
         u16,
     );
