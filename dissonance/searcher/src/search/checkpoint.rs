@@ -218,15 +218,22 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         if header.reason == "interval" {
             self.intervals
                 .push_back((path, index.iter().map(|stored| stored.id).collect()));
+            let mut pruned = Vec::new();
             while self.intervals.len() > INTERVAL_CHECKPOINTS_KEPT {
                 if let Some((oldest, ids)) = self.intervals.pop_front() {
                     fs::remove_file(oldest)?;
-                    let (snapshots, bytes) = self.release(&ids)?;
-                    freed = (
-                        freed.0.saturating_add(snapshots),
-                        freed.1.saturating_add(bytes),
-                    );
+                    pruned.push(ids);
                 }
+            }
+            if !pruned.is_empty() {
+                File::open(&self.plan.directory)?.sync_all()?;
+            }
+            for ids in pruned {
+                let (snapshots, bytes) = self.release(&ids)?;
+                freed = (
+                    freed.0.saturating_add(snapshots),
+                    freed.1.saturating_add(bytes),
+                );
             }
         }
         let line = serde_json::to_string(&CheckpointLogLine {
@@ -266,7 +273,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         freed.sort_unstable_by_key(|stored| stored.offset);
         let mut bytes = 0_u64;
         let mut hole: Option<(u64, u64)> = None;
-        for stored in &freed {
+        for stored in freed.iter().filter(|stored| stored.len > 0) {
             bytes = bytes.saturating_add(stored.len);
             hole = match hole {
                 Some((offset, len)) if offset.saturating_add(len) == stored.offset => {
@@ -500,12 +507,22 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn allocated_store_bytes(directory: &Path) -> u64 {
+    fn allocated_bytes(path: &Path) -> u64 {
         use std::os::unix::fs::MetadataExt;
-        fs::metadata(directory.join(SNAPSHOT_STORE))
-            .expect("store metadata")
-            .blocks()
-            * 512
+        fs::metadata(path).expect("file metadata").blocks() * 512
+    }
+
+    #[cfg(target_os = "linux")]
+    fn punches_holes(directory: &Path) -> bool {
+        let path = directory.join("hole-probe");
+        let mut probe = File::create(&path).expect("create the probe");
+        probe.write_all(&[1; 1 << 20]).expect("fill the probe");
+        probe.sync_all().expect("sync the probe");
+        let before = allocated_bytes(&path);
+        punch_hole(&probe, 0, 1 << 20).expect("punch the probe");
+        let punched = allocated_bytes(&path) < before;
+        fs::remove_file(&path).expect("remove the probe");
+        punched
     }
 
     #[test]
@@ -521,13 +538,15 @@ mod tests {
         write_snapshots(&mut writer, 15, "milestone", &[2, 3]);
         write_snapshots(&mut writer, 20, "interval", &[2, 3, 4]);
         #[cfg(target_os = "linux")]
-        let allocated = allocated_store_bytes(&directory);
+        let allocated = allocated_bytes(&directory.join(SNAPSHOT_STORE));
         write_snapshots(&mut writer, 30, "interval", &[3, 4]);
         #[cfg(target_os = "linux")]
-        assert!(
-            allocated_store_bytes(&directory) + (1 << 17) < allocated,
-            "pruning the first interval checkpoint released no store blocks"
-        );
+        if punches_holes(&directory) {
+            assert!(
+                allocated_bytes(&directory.join(SNAPSHOT_STORE)) + (1 << 17) < allocated,
+                "pruning the first interval checkpoint released no store blocks"
+            );
+        }
         assert_eq!(writer.stored.keys().copied().collect::<Vec<_>>(), [2, 3, 4]);
         write_snapshots(&mut writer, 40, "interval", &[5]);
         write_snapshots(&mut writer, 50, "interval", &[5, 6]);
@@ -583,6 +602,32 @@ mod tests {
                     .exists()
             );
         }
+        fs::remove_dir_all(&directory).expect("remove the directory");
+    }
+
+    #[test]
+    fn pruning_releases_snapshots_that_encode_to_no_bytes() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-empty-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut writer =
+            CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
+        for (executions, id) in [(10, 1), (20, 2), (30, 3)] {
+            writer
+                .write(
+                    &header(executions, "interval"),
+                    std::iter::once((id, &())),
+                    |out| Ok(postcard::to_io(&executions, out).map(|_| ())?),
+                )
+                .expect("write the checkpoint");
+        }
+        assert_eq!(writer.stored.keys().copied().collect::<Vec<_>>(), [2, 3]);
+        let mut reader = CheckpointReader::open(&directory.join("000000000030-interval.ckpt"))
+            .expect("open the last checkpoint");
+        assert_eq!(reader.next::<u64>().expect("body"), 30);
+        assert_eq!(reader.snapshots::<()>().expect("read"), [(3, ())]);
         fs::remove_dir_all(&directory).expect("remove the directory");
     }
 
