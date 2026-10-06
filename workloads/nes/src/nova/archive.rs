@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     nova::target::{
-        ButtonChord, NovaInput, NovaMechanicalState, NovaObservations, NovaSnapshot,
+        ButtonChord, KEY_COLORS, NovaInput, NovaMechanicalState, NovaObservations, NovaSnapshot,
         preference_tuple,
     },
     search::archive::{
@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "nova_peer_places_level_fight_spatial_32_place_preference_v3";
+    "nova_peer_places_level_fight_keys_chips_spatial_32_place_preference_v4";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -35,12 +35,14 @@ pub struct NovaArchiveKey {
     pub started_level: u8,
     pub level: u8,
     pub fight: u8,
+    pub keys: [u8; KEY_COLORS],
+    pub sun_key: bool,
     pub x: u16,
     pub y: u16,
 }
 
 impl ArchiveKey for NovaArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u8, u16, u16);
+    type Place = (u8, u8, u8, u8, u8, u8, [u8; KEY_COLORS], bool, u8, u16, u16);
     type Progress = ();
     type Identity = (u16, u16);
 
@@ -52,6 +54,9 @@ impl ArchiveKey for NovaArchiveKey {
             self.started_level,
             self.level,
             self.fight,
+            self.keys,
+            self.sun_key,
+            self.chips,
             self.x / 2,
             self.y / 2,
         )
@@ -110,6 +115,8 @@ pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
         started_level: state.started_level,
         level: state.level,
         fight: state.fight,
+        keys: state.keys,
+        sun_key: state.sun_key,
         x: state.x / 16,
         y: state.y / 16,
     }
@@ -265,6 +272,27 @@ mod tests {
         let after = archive_key(hit);
         assert_ne!(after.place(), before.place());
         assert_eq!(after.identity(), before.identity());
+    }
+
+    #[test]
+    fn held_keys_and_chips_are_their_own_places() {
+        let base = archive_key(state(100, 4, 0));
+        let mut keyed = state(100, 4, 0);
+        keyed.keys = [0, 1, 0];
+        let mut sun = state(100, 4, 0);
+        sun.sun_key = true;
+        let mut chipped = state(100, 4, 0);
+        chipped.chips = 1;
+        let places = [
+            base,
+            archive_key(keyed),
+            archive_key(sun),
+            archive_key(chipped),
+        ]
+        .map(|key| key.place());
+        for (index, place) in places.iter().enumerate() {
+            assert!(!places[index + 1..].contains(place));
+        }
     }
 
     #[test]

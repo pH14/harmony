@@ -44,12 +44,18 @@ const SHOT_BOSS_HITS: u8 = 8;
 const FIGHTER_MAKER_PHASES: u8 = 3;
 const FIGHTER_MAKER_PHASE_HITS: u8 = 5;
 const FINAL_BOSS_HITS: u8 = 20;
+const CARRYING_SUN_KEY: usize = 0x500;
 const CHIP_COUNT: usize = 0x508;
 const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
 const SAVE_RAM_SIZE: usize = 0x2000;
 const PLAYER_ABILITY: usize = 0x7200 - SAVE_RAM_BASE;
 const CHECKPOINT_LEVEL: usize = 0x7259 - SAVE_RAM_BASE;
+const PER_LEVEL_ITEM_TYPE: usize = 0x720d - SAVE_RAM_BASE;
+const PER_LEVEL_ITEM_AMOUNT: usize = 0x7221 - SAVE_RAM_BASE;
+const PER_LEVEL_ITEM_SLOTS: usize = 10;
+const RED_KEY_ITEM: u8 = 2;
+pub const KEY_COLORS: usize = 3;
 const LEVEL_CLEARED: usize = 0x7f1f - SAVE_RAM_BASE;
 const LEVEL_AVAILABLE: usize = 0x7f27 - SAVE_RAM_BASE;
 const COLLECTIBLE_BITS: usize = 0x7f2f - SAVE_RAM_BASE;
@@ -107,6 +113,8 @@ pub struct NovaMechanicalState {
     pub chips: u8,
     pub chips_needed: u8,
     pub fight: u8,
+    pub keys: [u8; KEY_COLORS],
+    pub sun_key: bool,
     pub ability: u8,
     pub level_reload_pending: bool,
     pub levels_cleared: [u8; PERSISTENT_BITMAP_LEN],
@@ -1011,6 +1019,22 @@ fn fixed_point_pixels(high: u8, low: u8) -> u16 {
     u16::from(high) * 16 + u16::from(low >> 4)
 }
 
+fn held_keys(save_ram: &[u8]) -> Result<[u8; KEY_COLORS], MachineError> {
+    let mut keys = [0_u8; KEY_COLORS];
+    for slot in 0..PER_LEVEL_ITEM_SLOTS {
+        let item = read_byte(save_ram, PER_LEVEL_ITEM_TYPE + slot)?;
+        let Some(count) = item
+            .checked_sub(RED_KEY_ITEM)
+            .and_then(|color| keys.get_mut(usize::from(color)))
+        else {
+            continue;
+        };
+        let amount = read_byte(save_ram, PER_LEVEL_ITEM_AMOUNT + slot)?;
+        *count = count.saturating_add(amount.saturating_add(1));
+    }
+    Ok(keys)
+}
+
 fn fight_progress(wram: &[u8]) -> Result<u8, MachineError> {
     for slot in 0..OBJECT_SLOTS {
         let kind = read_byte(wram, OBJECT_TYPE + slot)? & !1;
@@ -1058,6 +1082,8 @@ pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState,
         chips: read_byte(wram, CHIP_COUNT)?,
         chips_needed: read_byte(wram, CHIPS_NEEDED)?,
         fight: fight_progress(wram)?,
+        keys: held_keys(save_ram)?,
+        sun_key: read_byte(wram, CARRYING_SUN_KEY)? != 0,
         ability: read_byte(save_ram, PLAYER_ABILITY)?,
         level_reload_pending: read_byte(wram, NEED_LEVEL_RELOAD)? != 0,
         levels_cleared: read_bitmap(save_ram, LEVEL_CLEARED)?,
@@ -1666,6 +1692,20 @@ mod tests {
         assert_eq!((state.health, state.chips, state.chips_needed), (4, 3, 5));
         assert_eq!((state.cleared_count(), state.available_count()), (3, 8));
         assert_eq!(state.collectible_count(), 1);
+        assert_eq!((state.keys, state.sun_key), ([0, 0, 0], false));
+    }
+
+    #[test]
+    fn decoder_counts_held_keys_by_color() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[CARRYING_SUN_KEY] = 1;
+        let mut save = vec![0_u8; 8 * 1024];
+        for (slot, item, amount) in [(0, 4, 0), (3, 2, 1), (5, 9, 4), (9, 3, 0)] {
+            save[PER_LEVEL_ITEM_TYPE + slot] = item;
+            save[PER_LEVEL_ITEM_AMOUNT + slot] = amount;
+        }
+        let state = decode_state(&wram, &save).expect("decode fixture");
+        assert_eq!((state.keys, state.sun_key), ([2, 1, 1], true));
     }
 
     #[test]
