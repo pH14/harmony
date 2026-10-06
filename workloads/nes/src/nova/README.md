@@ -69,6 +69,7 @@ Coordinates use Nova's 12.4 fixed-point representation: `high * 16 + low / 16`.
 | Object state F2 (16 slots) | `$0463` | system RAM |
 | Object F3/F4 (16 slots) | `$0473/$0483` | system RAM |
 | Copied ability | `$7200` | save RAM `$1200` |
+| Checkpoint level | `$7259` | save RAM `$1259` |
 | Cleared levels | `$7F1F..$7F26` | save RAM `$1F1F` |
 | Available levels | `$7F27..$7F2E` | save RAM `$1F27` |
 | Collectibles | `$7F2F..$7F36` | save RAM `$1F2F` |
@@ -92,6 +93,17 @@ and the retained-input table.
 The default level campaign stops on its first new durable clear.
 `NovaGame::with_whole_game()` disables that intermediate stop and requires all
 40 campaign levels to be cleared.
+
+Whole-game mode plays the levels in the game's order. An exit door marks the
+level cleared and selects the next level, then the game shows a level-end screen
+and a pre-level menu whose level select can start any open level. The search
+never drives those screens: after an action that clears a level, the adapter
+waits out the level-end screen and presses Up three times and A on the
+pre-level menu, the same presses the setup uses for the first level. Three Up
+presses reach "Start!" from either initial cursor, because the menu has a fourth
+"Show Intro" option, with the cursor on it, only for an uncleared level with an
+intro cutscene. The adapter then checks that the game's checkpoint level is the
+new level; a level that fails to start is an execution failure.
 The common `nes-eval` request selects this mode with `whole_game: true` from
 level 1. Its fixed terminal policy is part of replay identity. Isolated later-
 level fixtures initialize the declared prior-clear bitmap and remain separate
