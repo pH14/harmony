@@ -17,8 +17,8 @@ Nova retains one scheduled representative per 16-pixel location. At the same
 location, the adapter prefers states with more cleared levels, collectibles,
 available levels, carried abilities, health, and puzzle chips, in that order.
 The place is the cleared, collectible and available counts, the level identity,
-the boss-fight count and a two-bucket position; the holder identity is the
-exact position bucket.
+the boss-fight count, the held keys, the puzzle chips and a two-bucket position;
+the holder identity is the exact position bucket.
 The adapter has no progress tier, so the selector treats every Nova place as a
 peer and ranks places only by their draw counts.
 
@@ -39,6 +39,14 @@ flicker, so the decoder finds the boss by its object type in any slot:
 The Scheme Team counter reads zero while the fight object is still in its
 initial state, before the fight sets `LevelVariable`. The count is zero outside
 a fight.
+
+Puzzle levels block their exits with colored locks and chip sockets. A key
+opens a lock of its color on touch, and a chip socket opens once the level's
+chips are all collected, so a held key or chip changes where the player can go
+without changing the position. Keys live on the inventory's
+per-level page, which every level start clears; a slot holds the item type and
+one less than its count. The decoder counts red, green and blue keys from that
+page and reads the carried sun key separately.
 
 Reports may record progress reached inside an action. Reproducer selection uses
 action endpoints, where the serialized input identifies the complete state.
@@ -62,6 +70,7 @@ Coordinates use Nova's 12.4 fixed-point representation: `high * 16 + low / 16`.
 | Health | `$004B` | system RAM |
 | Internal/selected level | `$00A7/$00A8` | system RAM |
 | Reload pending | `$00A9` | system RAM |
+| Carried sun key | `$0500` | system RAM |
 | Puzzle chips/required | `$0508/$0509` | system RAM |
 | Object type (16 slots) | `$002D` | system RAM |
 | Level variable | `$038E` | system RAM |
@@ -69,6 +78,7 @@ Coordinates use Nova's 12.4 fixed-point representation: `high * 16 + low / 16`.
 | Object state F2 (16 slots) | `$0463` | system RAM |
 | Object F3/F4 (16 slots) | `$0473/$0483` | system RAM |
 | Copied ability | `$7200` | save RAM `$1200` |
+| Per-level item types/amounts | `$720D/$7221` | save RAM `$120D/$1221` |
 | Checkpoint level | `$7259` | save RAM `$1259` |
 | Cleared levels | `$7F1F..$7F26` | save RAM `$1F1F` |
 | Available levels | `$7F27..$7F2E` | save RAM `$1F27` |
