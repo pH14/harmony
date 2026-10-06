@@ -10,7 +10,7 @@ use crate::{
     },
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Tier, preference_tuple,
+        MM2_WEAPONS, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Tier, preference_tuple,
     },
     search::archive::{
         Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_target_grid_boss_intro_v22";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_target_grid_boss_intro_weapon_balance_v22";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -41,6 +41,7 @@ pub struct Mm2ArchiveKey {
     pub menu: u8,
     pub health: u8,
     pub energy: u16,
+    pub weapons_lowest_first: [u8; MM2_WEAPONS],
     pub refights: u8,
     pub refight_boss: u8,
     pub boobeam_targets: u64,
@@ -86,11 +87,14 @@ impl ArchiveKey for Mm2ArchiveKey {
     }
 
     fn preferences() -> usize {
-        1
+        2
     }
 
-    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
-        self.preference().cmp(&other.preference())
+    fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
+        match preference {
+            0 => self.preference().cmp(&other.preference()),
+            _ => self.balance().cmp(&other.balance()),
+        }
     }
 
     type Lineage = ();
@@ -104,6 +108,10 @@ impl Mm2ArchiveKey {
     fn preference(self) -> (Mm2Tier, u8, u16) {
         (self.tier, self.health, self.energy)
     }
+
+    fn balance(self) -> (Mm2Tier, [u8; MM2_WEAPONS], u8) {
+        (self.tier, self.weapons_lowest_first, self.health)
+    }
 }
 
 #[must_use]
@@ -113,6 +121,11 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         tier,
         health,
         energy,
+        weapons_lowest_first: {
+            let mut energies = state.weapon_energies;
+            energies.sort_unstable();
+            energies
+        },
         refights: state.refights,
         refight_boss: state.refight_boss(),
         boobeam_targets: state.boobeam_targets,
@@ -289,6 +302,23 @@ mod tests {
         assert_ne!(weak.progress(), strong.progress());
         assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         assert_eq!(Mm2ArchiveKey::capacity(), 1);
+    }
+
+    #[test]
+    fn the_second_preference_keeps_the_holder_whose_lowest_weapon_is_highest() {
+        let mut healthy = state(100, 28, 0xff);
+        healthy.weapon_energies = [28; MM2_WEAPONS];
+        healthy.weapon_energies[7] = 8;
+        healthy.weapon_energies[8] = 0;
+        let mut armed = state(100, 20, 0xff);
+        armed.weapon_energies = [28; MM2_WEAPONS];
+        armed.weapon_energies[3] = 20;
+        armed.weapon_energies[8] = 0;
+        let (healthy, armed) = (archive_key(healthy), archive_key(armed));
+        assert_eq!(healthy.place(), armed.place());
+        assert_eq!(healthy.preference_cmp(0, armed), Ordering::Greater);
+        assert_eq!(armed.preference_cmp(1, healthy), Ordering::Greater);
+        assert_eq!(Mm2ArchiveKey::preferences(), 2);
     }
 
     #[test]
