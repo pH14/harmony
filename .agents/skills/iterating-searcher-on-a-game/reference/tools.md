@@ -60,8 +60,10 @@ ladder exist for Metroid only today; another game adds them in step 1.
 - `campaign/progress.jsonl` holds the progress lines. The last line's
   `workload_diagnostics.named_progress.first_seen` has each milestone's first
   try.
-- `selector.draws_by_cell` gives draws per place every 100,000 tries, which is
-  the data for a heatmap during a run.
+- `selector.draws_by_cell` gives draws per place once each time the tries
+  double (102,400 times a power of two) and on the last line of a finished run,
+  which is the data for a heatmap. Lines come every 100 tries up to 204,800
+  tries, then 1,024 lines per doubling.
 - `retained_diagnostics` on a finished run's last line is the archive census
   per place. A stopped run writes no census.
 - Film the witness and the milestone tapes with the game's film tool, and read

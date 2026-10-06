@@ -91,8 +91,8 @@ without changing any search decision, and job-result hashes leave it out. The
 spin reads the thread's CPU clock only to wait. A scaled run accepts 1–10,000,000,000
 logical work units and requires `verify=false` and `keep=portfolio`. It counts the
 campaign stream's bytes instead of storing them, keeps no per-job evidence,
-skips final archive entries, and writes the searcher's progress lines, one per
-100 executions, to standard error. `HARMONY_COORDINATOR_PROFILE` adds the
+skips final archive entries, and writes the searcher's progress lines to standard
+error at the cadence the searcher README describes. `HARMONY_COORDINATOR_PROFILE` adds the
 coordinator's time profile to standard error. The report on standard output
 holds the settings, the objective result, work, elapsed time, stream bytes,
 logical resident memory, live entries, selector counters, the fraction of

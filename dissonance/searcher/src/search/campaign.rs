@@ -151,10 +151,22 @@ fn compact_progress_curve<M, P>(
     next_interval
 }
 
-const CELL_DRAWS_INTERVAL: u64 = 100_000;
+fn progress_line_interval(executions: u64) -> u64 {
+    let span = PROGRESS_CHECKPOINT_INTERVAL.saturating_mul(MAX_PROGRESS_CURVE_POINTS as u64);
+    let doublings = (executions / span).checked_ilog2().unwrap_or(0);
+    PROGRESS_CHECKPOINT_INTERVAL.saturating_mul(1 << doublings)
+}
 
 fn progress_checkpoint_due(executions: u64) -> bool {
-    executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
+    executions > 0
+        && (executions == 1 || executions.is_multiple_of(progress_line_interval(executions)))
+}
+
+fn full_selector_report_due(executions: u64) -> bool {
+    executions > 0
+        && executions.is_multiple_of(
+            progress_line_interval(executions).saturating_mul(MAX_PROGRESS_CURVE_POINTS as u64),
+        )
 }
 
 pub const RESUME_IDENTIFIER: &str = "whole_tree";
@@ -2690,7 +2702,7 @@ fn write_live_progress<G: Workload>(
         input_reconstructions: core.archive.input_reconstructions(),
         input_index_nodes: core.archive.input_index_nodes(),
         historical_cells: core.archive.historical_cell_count(),
-        selector: if final_census || sequence.is_multiple_of(CELL_DRAWS_INTERVAL) {
+        selector: if final_census || full_selector_report_due(sequence) {
             core.archive.selector_report()
         } else {
             core.archive.selector_counters()
@@ -4971,12 +4983,13 @@ mod tests {
         CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
         ContinuationAccounting, CoordinatorCore, DrawTables, DurationAdmission,
         EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
-        LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, PlacedThread, Reporting, RomuDuoJrRand,
-        SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution, ThreadPlacement,
-        WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve, default_window,
-        draws_continuation, draws_highest_preference, execution_work_delta, finish_record,
-        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
+        LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL,
+        PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry,
+        TargetExecution, ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid,
+        compact_progress_curve, default_window, draws_continuation, draws_highest_preference,
+        execution_work_delta, finish_record, full_selector_report_due, is_zero_usize,
+        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
+        progress_line_interval, progress_policy_is_supported, record_compaction_elapsed,
         record_mixture_outcome, replay_campaign_checkpointed, replay_splice,
         resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
         run_campaign_checkpointed_with_options, schedule_policy_identifier,
@@ -5936,6 +5949,38 @@ mod tests {
         for executions in [0, 2, 99, 101] {
             assert!(!progress_checkpoint_due(executions));
         }
+    }
+
+    #[test]
+    fn progress_lines_thin_to_a_bounded_count_per_doubling() {
+        let span = PROGRESS_CHECKPOINT_INTERVAL * MAX_PROGRESS_CURVE_POINTS as u64;
+        assert_eq!(
+            progress_line_interval(2 * span - 1),
+            PROGRESS_CHECKPOINT_INTERVAL
+        );
+        assert_eq!(
+            progress_line_interval(2 * span),
+            2 * PROGRESS_CHECKPOINT_INTERVAL
+        );
+        assert!(progress_checkpoint_due(2 * span + 200));
+        assert!(!progress_checkpoint_due(2 * span + 100));
+        for doubling in 1..8 {
+            let start = span << doubling;
+            let lines = (start..2 * start)
+                .step_by(PROGRESS_CHECKPOINT_INTERVAL as usize)
+                .filter(|&executions| progress_checkpoint_due(executions))
+                .count();
+            assert_eq!(lines, MAX_PROGRESS_CURVE_POINTS);
+            let reports = (start..2 * start)
+                .step_by(PROGRESS_CHECKPOINT_INTERVAL as usize)
+                .filter(|&executions| full_selector_report_due(executions))
+                .collect::<Vec<_>>();
+            assert_eq!(reports, vec![start]);
+            assert!(progress_checkpoint_due(start));
+        }
+        assert!(full_selector_report_due(span));
+        assert!(!full_selector_report_due(span / 2));
+        assert!(progress_line_interval(u64::MAX) > PROGRESS_CHECKPOINT_INTERVAL);
     }
 
     #[test]
