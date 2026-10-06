@@ -16,10 +16,29 @@ because the Consonance backend serves reads only after a run.
 Nova retains one scheduled representative per 16-pixel location. At the same
 location, the adapter prefers states with more cleared levels, collectibles,
 available levels, carried abilities, health, and puzzle chips, in that order.
-The place is the cleared, collectible and available counts, the level identity
-and a two-bucket position; the holder identity is the exact position bucket.
+The place is the cleared, collectible and available counts, the level identity,
+the boss-fight count and a two-bucket position; the holder identity is the
+exact position bucket.
 The adapter has no progress tier, so the selector treats every Nova place as a
 peer and ranks places only by their draw counts.
+
+A boss fight keeps the player on one screen until the boss falls, so position
+alone gives the search one place for the whole fight. The decoder reads the
+boss's own counter, and every hit or defeated enemy opens a new place. Nova's
+object table has 16 slots and the game reorders them every frame for sprite
+flicker, so the decoder finds the boss by its object type in any slot:
+
+| Boss | Object type | Count |
+|---|---|---|
+| Scheme Team | `BOSS_FIGHT`, F3 0 or 1 | enemies left to defeat, 12 or 10 minus `LevelVariable` |
+| Jack Stone | `BOSS_FIGHT`, F3 2 | hits in VX high, 0..16 |
+| Forehead Block Guy, MolSno, John | own type | hits in F4, 0..8 |
+| Fighter Maker | own type | phase in F3 times 5 plus hits in F4, 0..15 |
+| Final boss | own type | reflected hits in VX high, 0..20 |
+
+The Scheme Team counter reads zero while the fight object is still in its
+initial state, before the fight sets `LevelVariable`. The count is zero outside
+a fight.
 
 Reports may record progress reached inside an action. Reproducer selection uses
 action endpoints, where the serialized input identifies the complete state.
@@ -44,6 +63,11 @@ Coordinates use Nova's 12.4 fixed-point representation: `high * 16 + low / 16`.
 | Internal/selected level | `$00A7/$00A8` | system RAM |
 | Reload pending | `$00A9` | system RAM |
 | Puzzle chips/required | `$0508/$0509` | system RAM |
+| Object type (16 slots) | `$002D` | system RAM |
+| Level variable | `$038E` | system RAM |
+| Object VX high (16 slots) | `$0423` | system RAM |
+| Object state F2 (16 slots) | `$0463` | system RAM |
+| Object F3/F4 (16 slots) | `$0473/$0483` | system RAM |
 | Copied ability | `$7200` | save RAM `$1200` |
 | Cleared levels | `$7F1F..$7F26` | save RAM `$1F1F` |
 | Available levels | `$7F27..$7F2E` | save RAM `$1F27` |

@@ -17,7 +17,8 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_peer_places_level_spatial_32_place_preference_v2";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "nova_peer_places_level_fight_spatial_32_place_preference_v3";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -33,12 +34,13 @@ pub struct NovaArchiveKey {
     pub chips: u8,
     pub started_level: u8,
     pub level: u8,
+    pub fight: u8,
     pub x: u16,
     pub y: u16,
 }
 
 impl ArchiveKey for NovaArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u16, u16);
+    type Place = (u8, u8, u8, u8, u8, u8, u16, u16);
     type Progress = ();
     type Identity = (u16, u16);
 
@@ -49,6 +51,7 @@ impl ArchiveKey for NovaArchiveKey {
             self.available,
             self.started_level,
             self.level,
+            self.fight,
             self.x / 2,
             self.y / 2,
         )
@@ -106,6 +109,7 @@ pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
         chips,
         started_level: state.started_level,
         level: state.level,
+        fight: state.fight,
         x: state.x / 16,
         y: state.y / 16,
     }
@@ -140,6 +144,7 @@ pub struct NovaProgressWatermark {
     pub available: u8,
     pub started_level: u8,
     pub level: u8,
+    pub fight: u8,
     pub x: u16,
     pub y: u16,
 }
@@ -205,6 +210,7 @@ pub fn merge_progress_watermark(
             available: state.available_count(),
             started_level: state.started_level,
             level: state.level,
+            fight: state.fight,
             x: state.x,
             y: state.y,
         });
@@ -249,6 +255,16 @@ mod tests {
         assert_ne!(cleared.place(), strong.place());
         assert_eq!(cleared.preference_cmp(0, strong), Ordering::Greater);
         assert_eq!(NovaArchiveKey::capacity(), 1);
+    }
+
+    #[test]
+    fn each_fight_count_is_its_own_place() {
+        let before = archive_key(state(100, 4, 0));
+        let mut hit = state(100, 4, 0);
+        hit.fight = 1;
+        let after = archive_key(hit);
+        assert_ne!(after.place(), before.place());
+        assert_eq!(after.identity(), before.identity());
     }
 
     #[test]
