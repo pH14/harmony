@@ -201,7 +201,9 @@ schedule, on manual dispatch, and on pushes to main that change anything under
 that dependency closure from the Cargo manifests. The job caches the nested-host
 kernel, fixture and OCI runtime under the guest runtime source key and the
 hash of the workflow file and toolchain pin, so a push that changes only Rust crates skips the kernel
-build. Test binaries compile on every CPU before each test runs pinned to one.
+build and installs only the packages the fixture rebuild needs. Test binaries
+compile on every CPU before each test runs pinned to one, and `harmony-cli`
+builds in the background on the other CPUs while those tests run.
 Scheduled and push runs accept whichever nested vendor the runner
 provides; a dispatch can require VMX or SVM. The job first
 requires `KVM_CAP_NESTED_STATE` and KVM-supported VMX or SVM with NPT on its selected Ubuntu
