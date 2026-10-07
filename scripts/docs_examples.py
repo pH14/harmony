@@ -203,9 +203,17 @@ def run(scenario, evidence, binary, root=ROOT):
     else:
         source = evidence / 'workspace'
         source.mkdir()
-        for name in ('workloads', 'consonance', 'docs'):
-            shutil.copytree(root / name, source / name,
-                            ignore=shutil.ignore_patterns('target', 'build', '__pycache__'))
+        inputs = ('workloads/languages', 'workloads/faults/runtime',
+                  'workloads/bugs/category/lost-update', 'workloads/bugs/interleaving.h',
+                  'consonance/harmony-linux/libvoidstar', 'docs/examples')
+        for name in inputs:
+            destination = source / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if (root / name).is_dir():
+                shutil.copytree(root / name, destination,
+                                ignore=shutil.ignore_patterns('target', 'build', '__pycache__'))
+            else:
+                shutil.copy2(root / name, destination)
         env['HARMONY_SDK_DIR'] = str(source)
         project = source / 'counter-example'
         # Model a source-built installation with matching guest artifacts.
