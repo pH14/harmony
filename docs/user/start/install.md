@@ -26,6 +26,17 @@ it uses Hypervisor.framework; the executable needs the entitlement in
 and [guest runtime build instructions](https://github.com/pH14/harmony/blob/main/consonance/harmony-linux/README.md)
 for platform setup and development runtime artifacts.
 
+For the KVM or Apple silicon walkthrough, build the matching kernel and OCI
+initramfs using those instructions, then run this from the repository root.
+It installs the executable and guest files together so Harmony can find them
+after you change into an application directory:
+
+{{ example "install-runtime" }}
+
+Keep this terminal open for the walkthrough. On macOS, sign the installed
+executable with the entitlement described in CLI setup before running a guest.
+UML needs its separate runtime profile; see the runtime build instructions.
+
 `harmony check` checks the selected workload and runner and obtains missing
 versioned runtime assets when a matching release publishes them. A development
 checkout may require locally built artifacts. Provisioning support does not mean

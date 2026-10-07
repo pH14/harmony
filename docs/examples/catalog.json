@@ -1,6 +1,13 @@
 {
   "application": [
     {
+      "id": "install-runtime",
+      "cwd": "source",
+      "exit": [
+        0
+      ]
+    },
+    {
       "id": "setup",
       "cwd": "source",
       "exit": [

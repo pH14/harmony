@@ -49,9 +49,9 @@ Run the integration with `python3 scripts/docs_examples.py application --evidenc
 matching guest directory through `HARMONY_DOCS_GUEST_DIR` when not using the
 checkout's default locations. Evidence directories must be fresh.
 
-The integration models a source-built installation: it copies the executable
-under an isolated `bin` directory and installs the exact guest artifacts in the
-CLI's normal `share/harmony/guest/ARCH` location. It does not change the tutorial
+The integration supplies source-build outputs in an isolated checkout and runs
+the published installation example to copy the executable and matching guest
+artifacts into `.harmony-install`. It does not change the tutorial
 recipe or hide runtime overrides in the commands. Docker or Podman and KVM are
 required for the CI lane; other platform support is not inferred from this lane.
 

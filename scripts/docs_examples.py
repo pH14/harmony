@@ -164,7 +164,8 @@ def verify(kind, project, binary, env):
     if kind == 'finding':
         report = load(project, 'baseline')
         assert report['bug_found'], 'tutorial must discover a real finding'
-        assert any(b['confirmed'] and b['violations'] for b in report['bugs']), 'no confirmed assertion'
+        assert report['bugs'] and report['bugs'][0]['confirmed'], 'no confirmed assertion in finding 1'
+        assert 'the counter holds every finished increment' in report['bugs'][0]['violations'], 'finding 1 is not the counter assertion'
         assert report['execution_failures'] == 0, 'execution failures are not findings'
         manifest('baseline')
     elif kind == 'state':
@@ -176,15 +177,18 @@ def verify(kind, project, binary, env):
     elif kind == 'followup':
         manifest('followup')
         assert load(project, 'followup')['executions'] == 4
+        retained_file('followup', 'investigation', 'investigating')
     elif kind == 'resume':
         manifest('extended')
         assert load(project, 'extended')['executions'] == load(project, 'followup')['executions'] + 4
+        retained_file('extended', 'investigation', 'investigating')
     elif kind == 'shell':
         manifest('interactive')
         retained_file('interactive', 'shell-change', 'shell change')
     elif kind == 'shell-search':
         manifest('shell-followup')
         assert load(project, 'shell-followup')['executions'] == 4
+        retained_file('shell-followup', 'shell-change', 'shell change')
     elif kind == 'script':
         manifest('inspected')
         retained_file('inspected', 'script-change', 'script change')
@@ -216,20 +220,16 @@ def run(scenario, evidence, binary, root=ROOT):
                 shutil.copy2(root / name, destination)
         env['HARMONY_SDK_DIR'] = str(source)
         project = source / 'counter-example'
-        # Model a source-built installation with matching guest artifacts.
-        # Prerequisites are supplied by CI; no published release is assumed.
-        install = evidence / 'installation'
-        (install / 'bin').mkdir(parents=True)
-        shutil.copy2(binary, install / 'bin/harmony')
-        binary = install / 'bin/harmony'
+        # Supply build outputs; the published installation step must install them.
+        built = source / 'target/release'
+        built.mkdir(parents=True)
+        shutil.copy2(binary, built / 'harmony')
         guest = Path(os.environ.get('HARMONY_DOCS_GUEST_DIR',
                                    root / 'consonance/harmony-linux/build' / os.uname().machine)).resolve()
-        for filename in ('initramfs-oci.cpio.gz', 'Image' if os.uname().machine == 'aarch64' else 'bzImage'):
-            if not (guest / filename).is_file():
-                raise FileNotFoundError(f'required documentation runtime: {guest / filename}')
-        dest = install / 'share/harmony/guest'
-        dest.mkdir(parents=True)
-        (dest / os.uname().machine).symlink_to(guest, target_is_directory=True)
+        destination = source / 'consonance/harmony-linux/build' / os.uname().machine
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.symlink_to(guest, target_is_directory=True)
+        binary = source / '.harmony-install/bin/harmony'
     env['PATH'] = str(binary.parent) + os.pathsep + env.get('PATH', '')
     results = []
     try:

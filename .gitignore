@@ -40,3 +40,5 @@ __pycache__/
 /docs-host-evidence/
 /documentation-evidence/
 /counter-example/
+
+.harmony-install/

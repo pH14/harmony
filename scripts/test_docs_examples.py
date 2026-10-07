@@ -108,6 +108,28 @@ class DocumentationContract(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'confirmed assertion'):
                 docs.verify('finding', self.root, Path('/unused'), {})
 
+    def test_unrelated_assertion_does_not_count_as_counter_finding(self):
+        with patch.object(docs, 'load', return_value={
+            'bug_found': True, 'bugs': [{'confirmed': True, 'violations': [
+                'workload node ends only by a fault the search injected']}]
+        }):
+            with self.assertRaisesRegex(AssertionError, 'counter assertion'):
+                docs.verify('finding', self.root, Path('/unused'), {})
+
+    def test_searches_must_retain_changed_state(self):
+        def load(project, name, filename='report.json'):
+            if filename == 'manifest.json':
+                return {'status': 'complete'}
+            return {'executions': 8 if name == 'extended' else 4}
+        for kind in ('followup', 'resume', 'shell-search'):
+            with self.subTest(kind=kind), patch.object(docs, 'load', side_effect=load), \
+                 patch.object(docs.subprocess, 'run') as command:
+                command.return_value.returncode = 0
+                command.return_value.stdout = ''
+                command.return_value.stderr = ''
+                with self.assertRaisesRegex(AssertionError, 'saved state lost'):
+                    docs.verify(kind, self.root, Path('/unused'), {})
+
     def test_resume_must_add_work(self):
         def load(project, name, filename='report.json'):
             return {'status': 'complete'} if filename == 'manifest.json' else {'executions': 4}
