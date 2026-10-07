@@ -2,6 +2,7 @@
 
 use core::fmt;
 
+pub mod debug;
 pub mod events;
 
 pub mod registers {

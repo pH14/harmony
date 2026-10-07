@@ -910,6 +910,7 @@ mod tests {
             knobs: knobs.iter().map(|knob| (*knob).to_owned()).collect(),
             ram_mib: DEFAULT_RAM_MIB,
             backend: GuestBackend::Vm,
+            root: None,
         }
     }
 

@@ -98,6 +98,10 @@ impl Manifest {
             knobs: self.config.knobs.clone(),
             wall_seconds: self.config.wall_seconds,
             output: path.to_path_buf(),
+            root: self
+                .artifacts
+                .contains_key("root")
+                .then(|| path.join("artifacts/root")),
             uml_profile: self.uml_host.as_ref().map(|_| path.join("artifacts/uml")),
         }
     }

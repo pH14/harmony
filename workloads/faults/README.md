@@ -235,7 +235,7 @@ ram_mib = 1024
 
 ```sh
 harmony search IMAGE.oci --config harmony.toml --seed 1 --executions 100000 --out run/
-harmony replay run/ --finding 1 --repeat 10 --out confirm/
+harmony debug replay run/ --finding 1 --repeat 10 --out confirm/
 ```
 
 For UML, select `runner.backend = "uml"` and set `runner.options.uml_profile`
@@ -357,3 +357,16 @@ prefix without adding settlement actions.
 UML boots the shared `/usr/lib/harmony/init` entrypoint directly. This keeps
 application output on UML’s console instead of passing through the hardware
 arm64 MMIO console wrapper.
+
+## Investigation roots
+
+The package can prepare a recorded prefix for guest debugging and export the
+resulting state as a durable root. A root binds the prepared boot identity to a
+cache extent containing pages and device/service sidecars. Import validates that
+identity and the extent; root bytes also contribute to the workload identity.
+All workers start from the imported root, and later action prefixes/checkpoints
+are relative to it. Commands and interactive input are diagnostic evidence, not
+an instruction to execute those commands again during restoration.
+
+The CLI exposes this through `branch --exec`, `branch --exec-file` and
+`branch --shell`. `search --from BRANCH` restores the saved guest state.

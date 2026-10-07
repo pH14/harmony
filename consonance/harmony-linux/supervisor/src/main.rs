@@ -33,6 +33,12 @@ fn run() -> Result<RunOutcome, String> {
     let spec = ExecutionSpec::read(Path::new(EXECUTION_PATH))
         .map_err(|error| format!("{EXECUTION_PATH}: {error}"))?;
     #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some("--debug-shell") {
+        harmony_supervisor::debug::shell(&spec, std::env::args().nth(2).as_deref())
+            .map_err(|e| e.to_string())?;
+        return Err("debug shell returned unexpectedly".into());
+    }
+    #[cfg(target_os = "linux")]
     prepare_cgroup().map_err(|error| format!("delegated cgroup: {error}"))?;
     #[cfg(target_os = "linux")]
     process::prepare_antithesis_output(
@@ -856,6 +862,8 @@ mod runtime {
         supervisor.set_check_enabled(bundle.check.is_some());
         let mut registers = Registers::new();
         let mut runtime = HookRuntime::new();
+        let mut debug = harmony_supervisor::debug::Terminal::default();
+        let mut debug_status = None;
         let mut buffer = [0_u8; MAX_PAYLOAD];
 
         sdk.state_set(REG_CHECK_ENABLED, u64::from(bundle.check.is_some()))
@@ -868,6 +876,37 @@ mod runtime {
             sdk.state_set(REG_PENDING_FAULTS, u64::MAX)
                 .map_err(|error| format!("state_set({REG_PENDING_FAULTS}): {error}"))?;
             let active = poll_standing(sdk, supervisor.counters().ticks, &mut buffer)?;
+            let answered = sdk
+                .client_mut()
+                .service_request(
+                    process_proto::debug::NAMESPACE,
+                    supervisor.counters().ticks,
+                    &debug.status().encode(),
+                    &mut buffer,
+                )
+                .map_err(|e| format!("debug poll: {e:?}"))?;
+            if let Some(length) = answered
+                && length > 0
+            {
+                let message = process_proto::debug::Message::decode(&buffer[..length])
+                    .map_err(str::to_owned)?;
+                debug
+                    .apply(message)
+                    .map_err(|e| format!("debug command: {e}"))?;
+            }
+            let output = debug.poll().map_err(|e| format!("debug output: {e}"))?;
+            for chunk in output.chunks(process_proto::debug::MAX_DATA) {
+                sdk.client_mut()
+                    .event_emit(process_proto::debug::OUTPUT_EVENT, chunk)
+                    .map_err(|e| format!("debug output: {e:?}"))?;
+            }
+            let status = debug.status().encode();
+            if debug_status.as_ref() != Some(&status) {
+                sdk.client_mut()
+                    .event_emit(process_proto::debug::STATUS_EVENT, &status)
+                    .map_err(|e| format!("debug status: {e:?}"))?;
+                debug_status = Some(status);
+            }
             let tick = supervisor.counters().ticks + 1;
             let exits = reap_nodes(nodes)?;
             let deaths: Vec<u16> = exits.iter().map(|(node, _)| *node).collect();
@@ -935,6 +974,7 @@ mod runtime {
             let tracked: Vec<_> = nodes
                 .iter()
                 .filter_map(|node| node.child.as_ref().map(Child::id))
+                .chain(debug.child_id())
                 .chain(runtime.hooks.iter().map(|hook| hook.child.id()))
                 .chain(runtime.recovery_probe.iter().map(|probe| probe.child.id()))
                 .chain(runtime.retired_probes.iter().map(Child::id))

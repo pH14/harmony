@@ -48,6 +48,7 @@ pub struct UmlSession {
     profile: VerifiedProfile,
     launch: Launch,
     seed: u64,
+    root_identity: [u8; 32],
     progress_limit: Duration,
     factory: ServiceFactory,
     checkpoints: Checkpoints,
@@ -113,11 +114,23 @@ impl UmlSession {
                 .into());
             }
         };
+        let mut identity = Sha256::new();
+        identity.update(b"harmony-uml-root-v1\0");
+        identity.update(profile.identity_sha256.as_bytes());
+        identity.update(config.seed.to_le_bytes());
+        identity.update(config.memory_mib.to_le_bytes());
+        identity.update(config.setup_budget.to_le_bytes());
+        for argument in &config.kernel_arguments {
+            identity.update((argument.len() as u64).to_le_bytes());
+            identity.update(argument.as_bytes());
+        }
+        identity.update(std::fs::read(&config.initramfs)?);
         let mut this = Self {
             session: Some(session),
             profile,
             launch,
             seed: config.seed,
+            root_identity: identity.finalize().into(),
             progress_limit: config.progress_limit,
             factory,
             checkpoints,
@@ -248,6 +261,59 @@ impl SearchSession for UmlSession {
         digest.update(setup);
         digest.update(state);
         Ok(digest.finalize().into())
+    }
+
+    fn root_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        Ok(self.root_identity)
+    }
+
+    fn publish_root(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        target: SnapId,
+    ) -> Result<Lease, Box<dyn Error>> {
+        let target = self
+            .snapshots
+            .get(&target)
+            .ok_or_else(|| SessionError::Control("unknown root snapshot".into()))?;
+        let sidecar = target.sidecar()?;
+        let extent = self
+            .checkpoints
+            .full(target, |pages| -> Result<_, Box<dyn Error>> {
+                let len = extent_len(pages.len(), 0, sidecar.len())
+                    .ok_or_else(|| SessionError::Portable("root snapshot size overflows".into()))?;
+                let mut extent = index.extent(len)?;
+                write_extent(extent.bytes_mut(), pages, &[], &sidecar)?;
+                Ok(extent)
+            })??;
+        Ok(index.publish(namespace, b"root", None, extent, 1)?)
+    }
+
+    fn import_root(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+    ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let chain = index.chain(lease)?;
+        if chain.len() != 1 {
+            return Err("root snapshot must have exactly one extent".into());
+        }
+        let delta = read_extent(chain[0].bytes())?;
+        let deltas = [delta];
+        let resolved = resolve(&deltas)?;
+        let near = self
+            .snapshots
+            .get(&self.setup.0)
+            .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
+        let checkpoint =
+            self.checkpoints
+                .import_full(near, &resolved.pages, resolved.sidecar, &self.factory)?;
+        let id = SnapId(self.next);
+        self.next += 1;
+        let at = checkpoint.moment();
+        self.snapshots.insert(id, checkpoint);
+        Ok((id, at))
     }
 
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {

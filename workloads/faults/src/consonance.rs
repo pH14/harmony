@@ -56,6 +56,7 @@ pub struct FaultConfig {
     pub knobs: Vec<String>,
     pub ram_mib: u32,
     pub backend: GuestBackend,
+    pub root: Option<Arc<Vec<u8>>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -231,6 +232,9 @@ impl ServiceHandler for StandingHandler {
                 quantum.to_le_bytes().to_vec(),
             )?));
         }
+        if question.service() == process_proto::debug::NAMESPACE {
+            return Ok(ServiceResponse::Answered(ChannelAnswer::data(Vec::new())?));
+        }
         if question.service() != STANDING_NAMESPACE {
             return Err(ChannelError::Handler(
                 "the fault package answers only the standing namespace".to_owned(),
@@ -270,6 +274,11 @@ impl ServiceHandler for StandingHandler {
 pub fn service_factory() -> ServiceFactory {
     let nominal = nominal_factory();
     Arc::new(move |config: &ServiceConfig| {
+        if config.identity == DEBUG_IDENTITY {
+            return Ok(
+                Box::new(DebugHandler::decode(&config.configuration)?) as Box<dyn ServiceHandler>
+            );
+        }
         if config.identity != SERVICE_IDENTITY {
             return nominal(config);
         }
@@ -309,6 +318,7 @@ struct Config {
     cache: Option<Arc<dyn CacheIndex>>,
     worker: Option<WorkerLauncher>,
     uml: Option<UmlLaunch>,
+    root: Option<Arc<Vec<u8>>>,
 }
 
 fn uml_launch(
@@ -395,6 +405,7 @@ struct Live {
     key: [u8; 32],
     holder: u64,
     session: Box<dyn SearchSession>,
+    base_identity: [u8; 32],
     setup: SnapId,
     windows: ActionWindows,
     chain: Chain,
@@ -476,6 +487,7 @@ impl FaultTarget {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
+            root: config.root.clone(),
             cache,
             worker,
             uml: config
@@ -576,6 +588,75 @@ impl FaultTarget {
     #[must_use]
     pub fn actions(&self) -> &[FaultAction] {
         &self.actions
+    }
+
+    pub fn debug_position(&self) -> Result<(usize, u64), String> {
+        with_live(&self.config, |live| {
+            let events = live.session.sdk_events().map_err(|e| e.to_string())?;
+            let id = events
+                .iter()
+                .rev()
+                .filter(|(_, id, _)| *id == process_proto::debug::STATUS_EVENT)
+                .find_map(|(_, _, b)| process_proto::debug::Status::decode(b).ok())
+                .map_or(0, |s| s.acknowledged);
+            Ok((events.len(), id))
+        })
+    }
+    pub fn debug_step(
+        &mut self,
+        message: Option<&process_proto::debug::Message>,
+        cursor: &mut usize,
+    ) -> Result<DebugProgress, String> {
+        if self.failed || !self.observation.stop.is_continuable() {
+            return Err("the selected state cannot continue; rewind further".into());
+        }
+        let (progress, observation) = with_live(&self.config, |live| {
+            let (snapshot, at) = live.session.snapshot().map_err(|e| e.to_string())?;
+            let standing = branch_config(live.windows, &self.actions).map_err(|e| e.to_string())?;
+            let service =
+                debug_configuration(&standing.configuration, message).map_err(|e| e.to_string())?;
+            live.session
+                .branch_with_service(snapshot, service, Vec::new(), Vec::new())
+                .map_err(|e| e.to_string())?;
+            live.session
+                .drop_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+            let stop = live
+                .session
+                .run_until(at.checked_add(10_000_000).ok_or("debug clock overflow")?)
+                .map_err(|e| e.to_string())?;
+            let observation = live.observe(FaultStop::from_stop_reason(&stop))?;
+            let events = live.session.sdk_events().map_err(|e| e.to_string())?;
+            let mut progress = DebugProgress {
+                status: None,
+                output: Vec::new(),
+            };
+            for (_, id, bytes) in events.iter().skip(*cursor) {
+                if *id == process_proto::debug::OUTPUT_EVENT {
+                    progress.output.extend_from_slice(bytes);
+                }
+                if *id == process_proto::debug::STATUS_EVENT {
+                    progress.status =
+                        Some(process_proto::debug::Status::decode(bytes).map_err(str::to_owned)?);
+                }
+            }
+            *cursor = events.len();
+            Ok((progress, observation))
+        })?;
+        self.observation = observation;
+        Ok(progress)
+    }
+
+    pub fn export_root(&self) -> Result<Vec<u8>, String> {
+        with_live(&self.config, |live| {
+            let (snapshot, _) = live.session.snapshot().map_err(|e| e.to_string())?;
+            let result = export_root(live.session.as_mut(), snapshot, live.base_identity)
+                .map_err(|e| e.to_string());
+            live.session
+                .drop_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+            result
+        })
     }
 
     pub fn reset(&mut self) {
@@ -802,7 +883,12 @@ impl Live {
         let boot_started = started();
         let mut session =
             Self::open(config).map_err(|error| format!("fault guest boot failed: {error}"))?;
-        let (setup, root_seal) = session.setup_handle();
+        let base_identity = session.root_identity().map_err(|e| e.to_string())?;
+        let (mut setup, mut root_seal) = session.setup_handle();
+        if let Some(root) = &config.root {
+            (setup, root_seal) = import_root(session.as_mut(), root).map_err(|e| e.to_string())?;
+            session.replay_snapshot(setup).map_err(|e| e.to_string())?;
+        }
         let shared = match &config.cache {
             Some(index) => {
                 let setup_hash = session
@@ -820,6 +906,7 @@ impl Live {
         Ok(Self {
             key: config.key,
             holder: HOLDERS.fetch_add(1, Ordering::Relaxed),
+            base_identity,
             session,
             setup,
             windows: ActionWindows { root_seal },
@@ -1223,6 +1310,14 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
 
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
+    let base = base_identity(kernel, initramfs, config);
+    match &config.root {
+        Some(root) => format!("{base};root={:x}", Sha256::digest(root.as_slice())),
+        None => base,
+    }
+}
+
+fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
     if let Some(guest) = config.uml() {
         return format!(
             "faults-uml-v1;{};executable={:x};initramfs={:x};memory_mib={};arguments={};\
@@ -1260,6 +1355,7 @@ mod tests {
     fn unbooted_target() -> FaultTarget {
         FaultTarget {
             config: Arc::new(Config {
+                root: None,
                 key: [0; 32],
                 kernel: Vec::new(),
                 initramfs: Vec::new(),
@@ -1267,6 +1363,7 @@ mod tests {
                     knobs: Vec::new(),
                     ram_mib: DEFAULT_RAM_MIB,
                     backend: GuestBackend::Vm,
+                    root: None,
                 }
                 .session_config(),
                 cache: None,
@@ -1282,6 +1379,33 @@ mod tests {
             guest_horizons_run: 0,
             root_seal: 0,
         }
+    }
+
+    #[test]
+    fn debug_service_is_portable_and_root_identity_includes_saved_state() {
+        let standing = branch_config(ActionWindows { root_seal: 1000 }, &[]).unwrap();
+        let message = process_proto::debug::Message {
+            id: 9,
+            operation: process_proto::debug::Operation::Input,
+            data: b"echo debug\n".to_vec(),
+        };
+        let service = debug_configuration(&standing.configuration, Some(&message)).unwrap();
+        let decoded = DebugHandler::decode(&service.configuration).unwrap();
+        assert_eq!(decoded.message, message.encode().unwrap());
+        assert!(service_factory()(&service).is_ok());
+        assert!(DebugHandler::decode(&[255, 255, 255, 255]).is_err());
+        let mut config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Vm,
+            root: None,
+        };
+        let base = identity(b"kernel", b"initramfs", &config);
+        config.root = Some(Arc::new(vec![1]));
+        let first = identity(b"kernel", b"initramfs", &config);
+        config.root = Some(Arc::new(vec![2]));
+        assert_ne!(first, base);
+        assert_ne!(first, identity(b"kernel", b"initramfs", &config));
     }
 
     #[test]
@@ -1428,4 +1552,118 @@ mod tests {
             .is_err()
         );
     }
+}
+
+fn export_root(
+    session: &mut dyn SearchSession,
+    snapshot: SnapId,
+    identity: [u8; 32],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    use consonance_client::cache::LocalIndex;
+    let index = LocalIndex::new(usize::MAX);
+    let lease = session.publish_root(&index, Namespace::new(&[&identity]), snapshot)?;
+    let chain = index.chain(&lease)?;
+    if chain.len() != 1 {
+        return Err("branch root must be a complete snapshot extent".into());
+    }
+    let mut bytes = b"HMROOT01".to_vec();
+    bytes.extend_from_slice(&identity);
+    bytes.extend_from_slice(chain[0].bytes());
+    Ok(bytes)
+}
+fn import_root(
+    session: &mut dyn SearchSession,
+    bytes: &[u8],
+) -> Result<(SnapId, u64), Box<dyn Error>> {
+    use consonance_client::cache::LocalIndex;
+    if bytes.len() < 40 || &bytes[..8] != b"HMROOT01" {
+        return Err("invalid branch snapshot header".into());
+    }
+    if bytes[8..40] != session.root_identity()? {
+        return Err("branch snapshot setup identity differs".into());
+    }
+    let index = LocalIndex::new(usize::MAX);
+    let mut extent = index.extent(bytes.len() - 40)?;
+    extent.bytes_mut().copy_from_slice(&bytes[40..]);
+    let lease = index.publish(Namespace::new(&[&bytes[8..40]]), b"root", None, extent, 1)?;
+    session.import_root(&index, &lease)
+}
+
+#[derive(Debug)]
+pub struct DebugProgress {
+    pub status: Option<process_proto::debug::Status>,
+    pub output: Vec<u8>,
+}
+const DEBUG_IDENTITY: &[u8] = b"faults-debug-terminal-v1";
+#[derive(Clone, Debug)]
+struct DebugHandler {
+    configuration: Vec<u8>,
+    standing: StandingHandler,
+    message: Vec<u8>,
+}
+impl DebugHandler {
+    fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
+        let (size, rest) = bytes
+            .split_first_chunk::<4>()
+            .ok_or(ChannelError::Malformed)?;
+        let n = u32::from_le_bytes(*size) as usize;
+        let (standing, message) = rest.split_at_checked(n).ok_or(ChannelError::Malformed)?;
+        if !message.is_empty() {
+            process_proto::debug::Message::decode(message).map_err(|_| ChannelError::Malformed)?;
+        }
+        Ok(Self {
+            configuration: bytes.to_vec(),
+            standing: StandingHandler::from_configuration(standing)?,
+            message: message.to_vec(),
+        })
+    }
+}
+impl ServiceHandler for DebugHandler {
+    fn identity(&self) -> &[u8] {
+        DEBUG_IDENTITY
+    }
+    fn configuration(&self) -> &[u8] {
+        &self.configuration
+    }
+    fn respond(
+        &mut self,
+        moment: Moment,
+        question: &Question,
+    ) -> Result<ServiceResponse, ChannelError> {
+        if question.service() == process_proto::debug::NAMESPACE {
+            process_proto::debug::Status::decode(question.payload())
+                .map_err(|_| ChannelError::Malformed)?;
+            return Ok(ServiceResponse::Answered(ChannelAnswer::data(
+                self.message.clone(),
+            )?));
+        }
+        self.standing.respond(moment, question)
+    }
+    fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+        Ok(Vec::new())
+    }
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+        if state.is_empty() {
+            Ok(())
+        } else {
+            Err(ChannelError::Malformed)
+        }
+    }
+    fn clone_box(&self) -> Box<dyn ServiceHandler> {
+        Box::new(self.clone())
+    }
+}
+fn debug_configuration(
+    standing: &[u8],
+    message: Option<&process_proto::debug::Message>,
+) -> Result<ServiceConfig, Box<dyn Error>> {
+    let mut configuration = u32::try_from(standing.len())?.to_le_bytes().to_vec();
+    configuration.extend_from_slice(standing);
+    if let Some(message) = message {
+        configuration.extend(message.encode()?);
+    }
+    Ok(ServiceConfig {
+        identity: DEBUG_IDENTITY.to_vec(),
+        configuration,
+    })
 }

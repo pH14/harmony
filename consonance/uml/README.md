@@ -75,3 +75,11 @@ descriptor passing, `memfd_create`, fixed mappings and process-group signals.
 Miri cannot run those calls, so the tests that make them are ignored under
 Miri and the qualification suites exercise them on Linux; Miri runs the
 crate's other library tests.
+
+`Checkpoints::full` exports all nonzero pages relative to the store's zero root.
+`import_full` restores that complete state over a fresh launch, removing stale
+pages as well as restoring changed ones. Ordinary cache deltas still use their
+explicit setup checkpoint. This distinction makes durable investigation roots
+portable across launches without treating volatile host-private boot memory as
+an interchangeable baseline. Profile and launch identity checks belong to the
+client that persists the root.

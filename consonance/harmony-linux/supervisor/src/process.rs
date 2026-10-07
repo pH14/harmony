@@ -8,6 +8,12 @@ use std::process::{Child, Command, ExitStatus};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
+    command_group(spec, argv, true)
+}
+pub fn terminal_command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
+    command_group(spec, argv, false)
+}
+fn command_group(spec: &ExecutionSpec, argv: &[String], own_group: bool) -> io::Result<Command> {
     spec.validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     if argv.is_empty() {
@@ -48,7 +54,9 @@ pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
         let group_count = libc::c_int::try_from(groups.len()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "too many supplemental groups")
         })?;
-        command.process_group(0);
+        if own_group {
+            command.process_group(0);
+        }
         // SAFETY: the closure is installed before spawning and captures only
         // owned scalars and a vector; its child-side operations are the
         // credential syscalls required by the validated execution contract.

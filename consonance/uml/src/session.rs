@@ -167,6 +167,32 @@ impl Checkpoint {
 }
 
 impl Checkpoints {
+    pub fn full<R>(
+        &self,
+        target: &Checkpoint,
+        use_pages: impl FnOnce(&[(u64, &PageHash, &[u8; PAGE_SIZE])]) -> R,
+    ) -> Result<R, SessionError> {
+        let zero = self.zero()?;
+        Ok(self.delta_pages(&zero, None, &target.memory, |delta| {
+            use_pages(&delta.changed)
+        })?)
+    }
+
+    pub fn import_full(
+        &self,
+        near: &Checkpoint,
+        pages: &[(u64, &PageHash, &[u8; PAGE_SIZE])],
+        sidecar: &[u8],
+        factory: &ServiceFactory,
+    ) -> Result<Checkpoint, SessionError> {
+        let base = Checkpoint {
+            memory: self.zero()?,
+            services: near.services.clone(),
+            request: near.request.clone(),
+        };
+        self.import(&base, near, pages, sidecar, factory)
+    }
+
     pub fn delta<R>(
         &self,
         base: &Checkpoint,
@@ -1046,6 +1072,52 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn complete_root_restores_over_a_different_setup_and_removes_stale_pages() {
+        fn checkpoint(store: &Checkpoints, values: &[(u64, u8)]) -> Checkpoint {
+            let mut pages = store.pages(4 * PAGE_SIZE).unwrap();
+            let root = pages.root;
+            let mut builder = pages.store.derive(root).unwrap();
+            for &(page, value) in values {
+                builder.write_page(page, &[value; PAGE_SIZE]).unwrap();
+            }
+            let id = builder.seal(crate::memory::image_state(4096));
+            drop(pages);
+            Checkpoint {
+                memory: store.adopt(id),
+                services: Services::new(7),
+                request: Vec::new(),
+            }
+        }
+        let first = Checkpoints::new();
+        let target = checkpoint(&first, &[(0, 17), (2, 29)]);
+        let rows = first
+            .full(&target, |pages| {
+                pages
+                    .iter()
+                    .map(|&(gfn, hash, data)| (gfn, *hash, Box::new(*data)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        let rows = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, &**data))
+            .collect::<Vec<_>>();
+        let second = Checkpoints::new();
+        let near = checkpoint(&second, &[(0, 3), (1, 99)]);
+        let restored = second
+            .import_full(
+                &near,
+                &rows,
+                &target.sidecar().unwrap(),
+                &environment::input_spec::nominal_factory(),
+            )
+            .unwrap();
+        assert_eq!(restored.digest().unwrap(), target.digest().unwrap());
+        drop(restored);
+        assert!(second.zero().is_ok());
     }
 
     #[test]
