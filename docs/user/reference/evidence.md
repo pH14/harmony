@@ -1,40 +1,38 @@
 # Saved evidence
 
-Names identify saved searches and branches beneath `.harmony/runs`. Inspection
-commands also accept a saved directory. A new result needs a fresh name or
-output directory; existing evidence is not overwritten.
+Harmony stores named searches and branches under `.harmony/runs`. You can inspect
+a result by name or pass its saved directory directly. Each new result needs
+an unused name or output directory so that it won’t overwrite earlier evidence.
 
-Use `list` to discover saved objects and `show` to examine them. Their JSON
-output is available for automation. The command reference is generated from the
-current executable and lists the supported selectors.
+Use `harmony list` to find saved results and `harmony show` to examine them. Both
+provide JSON output for automation; the [command reference](cli.md) lists the
+available options and selectors.
 
-## What is saved
+## Keep the whole result directory
 
-The manifest records the resolved workload and runner, execution identities,
-artifact hashes, and parent relationship. Package-owned records describe the
-actual actions and outcomes. A search also retains its exploration evidence
-and available whole-search checkpoints.
+A saved result includes a manifest with its workload, runner, execution
+identities, artifact hashes, and relationship to its parent. The workload’s
+records describe the actions and outcomes, while a search also retains its
+exploration evidence and available checkpoints.
 
-A branch can retain a saved guest state. Interactive branches additionally
-retain terminal evidence. A transcript helps explain an investigation; the
-saved state is what allows search to continue after guest changes.
+Branches can contain saved guest state. Interactive branches also retain a
+terminal transcript, which helps explain the changes you made. Continuing a
+search after those changes depends on the saved state, so keep the full result
+directory rather than just copying the report or transcript.
 
-Console evidence is a bounded tail. Adjacent observations may include overlapping
-output. Use it alongside assertions and the timeline rather than treating it as
-a complete application log archive.
+Console output is kept as a bounded tail, and adjacent observations can overlap.
+Use it with the timeline and assertions when investigating; it may not contain
+everything the application printed. Deleting a result directory removes the
+evidence stored there.
 
-Removing a saved directory removes its evidence. Preserve the full directory
-when keeping a result; copying only the report is not sufficient for future
-investigation.
-
-## Exit status
+## Interpret exit status
 
 | Status | Meaning |
 | --- | --- |
-| 0 | Operation completed successfully. |
-| 1 | Application search found a violation or an unmet reachability condition, or an application command failed. |
-| 2 | Invalid input, infrastructure failure, or rejected reproduction. |
+| 0 | The operation completed successfully. |
+| 1 | An application search found a violation or unmet reachability condition, or an application command failed. |
+| 2 | Invalid input, an infrastructure failure, or a rejected reproduction. |
 
-A tutorial search that discovers its intended bug exits 1. Automation must
-check both the expected status and the finding evidence; accepting any nonzero
-status would also accept a broken installation.
+The counter tutorial expects its search to exit with status 1 because it finds
+the intended bug. In automation, check the finding evidence as well as the exit
+status so that an unrelated failure cannot stand in for the expected result.

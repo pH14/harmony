@@ -1,28 +1,32 @@
 # Recipe reference
 
-Commands read `harmony.toml` by default. `--config` selects another file;
-`--config-toml` supplies the same format inline. Explicit command-line settings
-take precedence. File paths are relative to the recipe directory; inline paths
-are relative to the current working directory. Unknown fields are rejected.
+Harmony reads `harmony.toml` by default. Use `--config` to select another file,
+or `--config-toml` to supply a recipe inline. Explicit command-line settings
+override the recipe, and unknown recipe fields are rejected.
 
-## A complete application recipe
+Paths in a recipe file are relative to its directory. For an inline recipe,
+paths are relative to your current working directory.
 
-This is the recipe built and executed by the documentation's counter walkthrough:
+## Configure an application
+
+This is the recipe used by the counter tutorial:
 
 {{ file "docs/examples/counter.toml" }}
 
-| Section | Owns |
+Its settings are grouped by what they control:
+
+| Section | Settings |
 | --- | --- |
-| `workload` | Package and input identity. An OCI input selects the faults package; a `.nes` input selects NES. |
-| `workload.options` | Package-specific build, nodes, setup, readiness, checker, traffic, and hooks. |
-| `runner` | Execution implementation and backend choice. |
-| `runner.options` | Runtime-specific paths and resource settings. |
-| `search` | Seed, execution budget, and wall-clock budget. |
+| `workload` | The package and input. An OCI input selects the faults package; a `.nes` input selects NES. |
+| `workload.options` | Package-specific build, node, setup, readiness, checker, traffic, and hook settings. |
+| `runner` | The execution implementation and backend. |
+| `runner.options` | Runtime paths and resource settings. |
+| `search` | The seed, execution budget, and time budget. |
 
-For Consonance, runtime overrides belong under `runner.options`: `kernel`,
-`base_initramfs`, and `uml_profile`. These are environment setup choices, not
-application behavior. An explicit backend request is validated against the
-workload and host.
+For Consonance, put local runtime paths such as `kernel`, `base_initramfs`, and
+`uml_profile` under `runner.options`. This keeps the runtime setup separate from
+the application’s services and behavior.
 
-The example uses automatic backend selection. For a different environment,
-check [support and requirements](environments.md) before changing it.
+The tutorial lets Harmony select a backend automatically. You can request one
+explicitly, provided it supports the workload and host. Check the
+[supported environments](environments.md) before changing that setting.

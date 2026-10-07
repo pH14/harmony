@@ -1,33 +1,36 @@
 # Use an existing image
 
-An OCI image supplies the application's filesystem and executables. It can be
-a registry image, a saved Docker archive, or an OCI layout. The faults workload
-uses the recipe's node and lifecycle commands, or the image's supervisor bundle
-when those commands are omitted.
+You can supply an application as a registry image, a saved Docker archive, or an
+OCI layout. Harmony uses its filesystem and executables, along with the node
+and lifecycle commands in your recipe. If you omit those commands, the faults
+workload uses the image’s supervisor bundle.
 
-## Check the image's contract
+## Prepare the image for Harmony
 
-The executable must match the guest architecture. Instrumentation must reach
-application loops, and the image must retain the required runtime, symbols,
-and attestations. Hidden entropy instructions must be absent or covered by the
-reviewed instruction rules. Generated machine code needs a supported,
-reviewed runtime.
+An image needs more preparation than it would for an ordinary Docker run. Its
+executables must match the guest architecture and have instrumentation that
+reaches application loops. It must also retain the runtime, symbols, and
+attestations required for admission.
 
-A container that works under ordinary Docker is not automatically a supported
-Harmony workload. Use the [language preparation path](languages.md) where it
-fits, or follow the existing image recipes when building a custom image.
+Instructions that introduce hidden entropy must be removed or covered by the
+reviewed instruction rules. Runtimes that generate machine code need a supported,
+reviewed implementation. The [standard language recipes](languages.md) handle
+these requirements for supported builds; use the existing image recipes as a
+starting point for a custom build.
 
-The [supervisor contract](https://github.com/pH14/harmony/blob/main/consonance/harmony-linux/supervisor/README.md)
-defines bundle syntax and lifecycle behavior. Most users can express those
-commands in [the recipe](../reference/recipe.md) and let the CLI build the bundle.
+You can usually describe startup and lifecycle commands in
+[your recipe](../reference/recipe.md) and let the CLI create the supervisor
+bundle. If you need to supply the bundle yourself, see the
+[supervisor contract](https://github.com/pH14/harmony/blob/main/consonance/harmony-linux/supervisor/README.md)
+for its format and behavior.
 
-## Preserve investigation tools
+## Include the tools you’ll need to investigate
 
-Guest commands use the tools inside the image. Include a shell and the
-application-specific tools you need for interactive diagnosis. A runtime log-level
-control lets you increase logging on a branch without rebuilding the application.
-Its effect is still a change to that branch's execution.
+Guest commands run with the tools inside the image, so include a shell and any
+utilities you’ll want when examining a failure. A runtime log-level control is
+also useful: it lets you turn up logging on a branch without rebuilding the
+program. The extra logging can affect that branch’s execution.
 
-Treat image tags as preparation inputs. Saved experiments retain resolved
-artifacts and identities; investigation must not silently fetch a newer image
-under the same tag.
+An image tag identifies what to prepare. Saved results retain the resolved
+artifacts and their identities so that investigating an old finding won’t
+silently pick up a newer image under the same tag.

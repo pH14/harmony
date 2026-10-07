@@ -1,27 +1,27 @@
 # Explore NES workloads
 
-NES exploration uses the same search, finding, and branch vocabulary with a
-different workload package. Game-specific adapters interpret controller input,
-progress, and outcomes. The current package recognizes SMB and Nova.
+Harmony can explore games using the same searches, findings, and branches as
+application testing. The NES workload interprets controller input and game
+progress, with adapters for SMB and Nova.
 
-Start with the [NES workload setup](https://github.com/pH14/harmony/blob/main/workloads/nes/README.md),
-which owns ROM identification and the pinned emulator requirements. Supply ROMs
-you are entitled to use; the documentation site does not distribute them.
+Follow the [NES workload setup](https://github.com/pH14/harmony/blob/main/workloads/nes/README.md)
+for ROM identification and pinned emulator requirements. You’ll need to supply
+ROMs you’re entitled to use; they aren’t distributed with this documentation.
 
-## Choose execution
+## Choose a runner
 
-Native QuickNES is the default runner. It needs the pinned core library.
-The Consonance adapter instead runs the prepared game environment inside a guest
-and currently requires Linux KVM. Its guest image belongs to the workload's
-options; generic CLI settings do not contain game-specific image fields.
+Native QuickNES is the default and requires the pinned core library. You can
+also use the Consonance adapter to run a prepared game environment inside a
+guest; it currently requires Linux KVM. Configure that guest image in the NES
+workload options.
 
-## Know which investigation tools apply
+## Investigate a game execution
 
-Recorded controller actions and retained game evidence support branching and
-further search. A guest shell and application console logs are not capabilities
-of the native NES runner. Virtual-time rewinds are not available for its
-recordings. Use recorded action boundaries and the package's evidence instead.
+You can branch at recorded controller-action boundaries and use the retained
+game evidence to guide further searches. The native runner has no guest shell
+or application console logs, and its recordings don’t support rewinding by
+virtual time.
 
-[Command help](reference/cli.md) describes the shared syntax; the package decides
-which operations it supports. An unsupported capability should produce an
-explicit error.
+The [command reference](reference/cli.md) covers the shared syntax. Which
+operations are available depends on the workload and runner, and Harmony reports
+an error if you request an unsupported capability.

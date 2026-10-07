@@ -1,33 +1,37 @@
 # Prepare a language build
 
-Use the standard recipe when it matches your project's shape. It supplies the
-instrumentation needed for execution to yield inside application code, not just
-at system calls. The application build and the shared runtime are separate
-layers, so a runtime update need not rebuild every language toolchain.
+The standard language recipes add instrumentation so Harmony can interrupt
+execution inside application code, including loops that make no system calls.
+Choose one that matches your project:
 
-| Language | Starter project | Preparation |
+| Language | Starter project | What the recipe supplies |
 | --- | --- | --- |
 | C | `main.c` and local headers | Clang coverage callbacks and SDK forwarding |
-| Rust | One Cargo package with `src/main.rs` | Pinned compiler, SDK dependency, coverage passes |
-| Go | One main package with `go.mod` | Instrumented compiler wrapper and SDK |
+| Rust | One Cargo package with `src/main.rs` | A pinned compiler, SDK dependency, and coverage passes |
+| Go | One main package with `go.mod` | An instrumented compiler wrapper and SDK |
 | Python | `main.py` and Python sources | Instrumented CPython and a source coverage catalog |
 | Java | A prebuilt `app.jar` | Instrumented HotSpot with loop callbacks |
 
-The [application guide](application.md) shows an executed C recipe. For the
-language toolchains and their tested limits, see the maintained
-[language recipes](https://github.com/pH14/harmony/blob/main/workloads/languages/README.md).
+The [application guide](application.md) uses the C recipe. For toolchain details
+and tested limitations, see the
+[language recipes README](https://github.com/pH14/harmony/blob/main/workloads/languages/README.md).
+The language build and shared runtime occupy separate layers, so updating the
+runtime needn’t rebuild every language toolchain.
 
-## When the starter recipe is too small
+## Adapt the build to your project
 
-Use `workload.options.build.dockerfile` for a custom image build, including Rust
-workspaces, native Python extensions, or Java modules needing more setup.
-C, Rust, and Go also accept an explicit `build.command` argument array that
-produces `/out/application` inside the builder.
+For a more involved build, such as a Rust workspace or a Python application with
+native extensions, set `workload.options.build.dockerfile` to your custom
+Dockerfile. C, Rust, and Go also accept a `build.command` argument array that
+produces `/out/application` inside the builder. Java projects needing additional
+module setup can use a custom Dockerfile too.
 
-Preserve symbols and instrumentation metadata. Copying an ordinary production
-binary into an otherwise prepared image does not add instrumentation to that
-binary. Image admission checks executable files and attestations; it cannot
-prove that every code path has useful instrumentation.
+Keep the symbols and instrumentation metadata when assembling the final image.
+Every application binary needs its own instrumentation; putting an ordinary
+production binary in a prepared image won’t instrument it. Admission checks the
+executables and their attestations, but it cannot establish that every code
+path has useful instrumentation.
 
-Preparation requires Docker or Podman. `--offline` prevents Harmony release
-asset downloads; it does not disable network access inside a container builder.
+You’ll need Docker or Podman for preparation. If you use `--offline`, Harmony
+won’t download release assets, but the container builder can still use the
+network.

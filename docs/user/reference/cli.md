@@ -1,6 +1,6 @@
 # Command reference
 
-This reference is generated from the CLI built with this documentation. The
-[walkthrough](../start/first-bug.md) explains how the commands fit together.
+The command help below comes from the CLI built with these docs. For an example
+of using the commands together, follow the [counter tutorial](../start/first-bug.md).
 
 {{ cli }}

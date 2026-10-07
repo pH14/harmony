@@ -4,38 +4,40 @@ hide:
 ---
 # Find and investigate bugs
 
-Harmony explores different executions of your application and saves the ones
-that break a property you care about. You can return to a finding, inspect what
-happened, and change the conditions before exploring again.
+Harmony tests your application by exploring how it behaves under different
+execution schedules and failures. When an assertion fails, it saves the
+execution so you can return to it, inspect the state, and try changes.
 
-For example: two writers update a counter. Both finish their work, but one
-silently overwrites the other's increment. Harmony can hold a writer between
-its read and write, expose the lost update, and save that execution for investigation.
+The [first tutorial](start/first-bug.md) uses a shared counter with a race that
+loses increments. You’ll find the bug, examine the counter before the failure,
+and start another search from a state you’ve changed.
 
 [Find your first bug](start/first-bug.md){ .md-button .md-button--primary }
 [Install Harmony](start/install.md){ .md-button }
 
-## What you bring
+## What you’ll need
 
-An application, a way to exercise it, and assertions that say what must remain
-true. Harmony prepares supported language builds with instrumentation, runs
-services in a controlled Linux environment, and explores changes in execution
-and fault timing. Your assertions distinguish an application bug from an
-intentional disturbance such as killing a process.
+Bring an application, some traffic or other work for it to handle, and assertions
+that describe correct behavior. Harmony can prepare supported language builds
+and run your services in a controlled Linux environment, where it varies
+execution and fault timing. The assertions tell it when those changes have
+exposed a bug.
 
-## Three things to know
+## Searches, findings, and branches
 
-| Thing | What it gives you |
+These are the three terms you’ll see throughout the CLI and these docs:
+
+| Term | Meaning |
 | --- | --- |
-| **Search** | An exploration that tries many executions and accumulates findings. |
-| **Finding** | Evidence of a property violation in a particular execution. |
-| **Branch** | A saved point you can inspect, change, and explore further. |
+| **Search** | A run that explores many executions and collects findings. |
+| **Finding** | Evidence that a property failed in a particular execution. |
+| **Branch** | A saved point you can inspect, change, and search from. |
 
-Start with the [counter walkthrough](start/first-bug.md), then
-[configure your own application](test/application.md). If you already have a
-finding, go to [investigation](investigate/index.md).
+After the tutorial, [configure your own application](test/application.md).
+If you already have a finding to examine, go to [Investigate](investigate/index.md).
 
-Harmony is experimental. Check the [supported environments](reference/environments.md)
-before preparing a workload. [NES workloads](nes.md) have a separate setup path.
+Harmony is experimental, so check the [supported environments](reference/environments.md)
+before setting up an application. [NES workloads](nes.md) have their own setup
+instructions.
 
 Harmony is licensed under [AGPL-3.0-or-later](https://github.com/pH14/harmony/blob/main/LICENSE).

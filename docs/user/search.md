@@ -1,42 +1,42 @@
 # Run longer searches
 
-Choose whether to keep exploring the current search history or explore from a
-specific changed state. These operations have different starting points.
+You can give an existing search more time, or start a new one from a branch you’ve
+saved. Choose based on whether you want to keep the accumulated search history
+or explore from a particular guest state.
 
-## Continue the same search
+## Continue a search
 
-After the counter walkthrough's `followup` search:
+After running `followup` in the counter tutorial, give it four more executions:
 
 {{ example "resume" }}
 
-`--resume` restores the latest retained whole-search checkpoint, including the
-search archive and scheduler state. The budget is additional: this command
-allows four more executions and a fresh 30-second wall-clock window. It saves
-as `extended` so the earlier evidence stays available.
+`--resume` restores the latest retained checkpoint of the whole search, including
+its archive and scheduler state. The new budget adds four executions and a fresh
+30-second window. Saving as `extended` keeps the earlier result available too.
 
-Checkpoints are periodic. An interrupted search can resume from its most recent
-retained checkpoint rather than its final attempted execution.
+Harmony writes checkpoints periodically. If a search is interrupted, resuming
+picks up from its latest retained checkpoint, which may precede the last
+execution it attempted.
 
-## Search from a branch
+## Start from a branch
+
+The counter tutorial starts its follow-up search this way:
 
 {{ example "followup" }}
 
-This example is the walkthrough's original follow-up command; use a fresh name
-if you already ran it. `--from` starts fresh search history at the saved branch
-state. It does not inherit all the exploration history of the parent search.
+Use a fresh name if you’ve already run this command. `--from` restores the saved
+branch state and begins a new search history there, without carrying over the
+parent search’s accumulated exploration history.
 
-## Set a useful budget
+## Choose a budget
 
-`--executions` bounds logical search work. `--for` bounds host elapsed time.
-When both are supplied, the first limit reached stops the search. A seed selects
-the draw sequence; it is not a guarantee of a particular finding within a
-wall-clock budget.
+`--executions` limits the number of executions, while `--for` limits elapsed host
+time. If you supply both, the search stops when it reaches either limit. The
+seed selects the sequence of random draws, but a time limit can stop the search
+before it reaches the execution you’re interested in.
 
-The process's available CPU and memory constrain its workers. Use host resource
-limits to bound consumption. More workers and longer time give the search more
-opportunities; they do not make an unchecked property meaningful.
-
-Read the summary before interpreting “no finding”: did the application execute,
-did the intended assertions run, and were there execution failures? An unmet
-reachability assertion is useful evidence that the test never reached what you
-wanted to test.
+Available CPU and memory constrain the search workers. Set host resource limits
+if you need to bound consumption. Before increasing the budget, check the summary
+to confirm that the application ran, the assertions were reached, and no
+execution failures prevented useful work. An unmet reachability assertion may
+mean the test never reached the behavior you intended to exercise.
