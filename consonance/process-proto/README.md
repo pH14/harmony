@@ -37,3 +37,7 @@ monotonic nonzero sequence numbers; the guest acknowledges and deduplicates them
 Script buffers are limited to 1 MiB and individual payloads to 3000 bytes. Output
 and changed status arrive through dedicated SDK events. The protocol contains no
 workload-specific fault or controller actions.
+
+Supervised-process service handlers answer an inactive debug poll with empty
+data (or a nominal response) without advancing their standing-action schedule.
+The poll carries a `debug::Status`, independently of the standing request.

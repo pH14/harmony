@@ -377,8 +377,7 @@ jobs:
           printf '%s\n' "$search_result" >nested-host-evidence/search-exit-code.txt
           test -s nested-host-evidence/search/stream.jsonl
           set +e
-          timeout -k 10 360 taskset -c "$cpu" target-cli/release/harmony "${common[@]}" \
-            --replay nested-host-evidence/search/stream.jsonl --out nested-host-evidence/replay \
+          timeout -k 10 360 taskset -c "$cpu" target-cli/release/harmony debug replay nested-host-evidence/search --out nested-host-evidence/replay \
             2>&1 | tee nested-host-evidence/replay.log
           replay_result=${PIPESTATUS[0]}
           set -e

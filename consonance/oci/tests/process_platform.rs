@@ -74,6 +74,11 @@ mod platform {
             moment: environment::Moment,
             question: &Question,
         ) -> std::result::Result<ServiceResponse, ChannelError> {
+            if question.service() == process_proto::debug::NAMESPACE {
+                process_proto::debug::Status::decode(question.payload())
+                    .map_err(|_| ChannelError::Malformed)?;
+                return Ok(ServiceResponse::Answered(Answer::Data(Vec::new())));
+            }
             if question.service() != STANDING_NAMESPACE || !question.payload().is_empty() {
                 return Err(ChannelError::Handler(
                     "process smoke received an unexpected service question".into(),
@@ -102,6 +107,24 @@ mod platform {
         fn clone_box(&self) -> Box<dyn ServiceHandler> {
             Box::new(self.clone())
         }
+    }
+
+    #[test]
+    fn idle_debug_poll_does_not_advance_the_standing_schedule() {
+        let mut service = StandingService { poll: 3 };
+        let status = process_proto::debug::Status {
+            acknowledged: 0,
+            running: false,
+            exit_code: None,
+        };
+        let question =
+            Question::with_request_id(7, process_proto::debug::NAMESPACE, status.encode()).unwrap();
+        let answer = service.respond(40, &question).unwrap();
+        assert!(matches!(answer, ServiceResponse::Answered(Answer::Data(data)) if data.is_empty()));
+        assert_eq!(service.poll, 3);
+        let standing = Question::with_request_id(8, STANDING_NAMESPACE, Vec::new()).unwrap();
+        assert!(service.respond(40, &standing).is_ok());
+        assert_eq!(service.poll, 4);
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
