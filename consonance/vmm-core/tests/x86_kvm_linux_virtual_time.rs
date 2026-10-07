@@ -962,6 +962,10 @@ mod original_witness_tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "writes original-witness artifacts to a temporary directory"
+    )]
     fn same_memory_reconstructs_original_hash_and_retains_only_first_witness() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("witness");
@@ -984,6 +988,10 @@ mod original_witness_tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "writes original-witness artifacts to a temporary directory"
+    )]
     fn different_memory_and_unaligned_event_refuse_suffix_only_attribution() {
         for (memory, index) in [(&b"changed"[..], 255), (&b"memory"[..], 511)] {
             let temp = tempfile::tempdir().unwrap();
@@ -1002,6 +1010,10 @@ mod original_witness_tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "writes original-witness artifacts to a temporary directory"
+    )]
     fn mutated_stopped_ram_is_rejected_before_any_artifact_write() {
         let temp = tempfile::tempdir().unwrap();
         let actual = record(b"original", b"suffix", 255);
