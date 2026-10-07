@@ -586,6 +586,7 @@ mod tests {
         assert_eq!(exit.reason, ExitReason::WallLimit);
         assert!(exit.leftovers.is_empty());
 
+        launch.wall_limit = Duration::from_secs(10);
         let exit = shell(&launch, "yes flood").wait().unwrap();
         assert_eq!(exit.reason, ExitReason::ConsoleLimit);
         assert!(exit.console.len() <= 16);
