@@ -1094,6 +1094,14 @@ class MiriMatrixTests(unittest.TestCase):
                 self.assertTrue(violations)
                 self.assertEqual({v.rule for v in violations}, {"ci-miri-coverage"})
 
+    def test_a_dropped_dispatch_crate_is_reported(self):
+        listed = LINTS._miri_dispatch_crates
+        with mock.patch.object(LINTS, "_miri_dispatch_crates",
+                               side_effect=lambda data: listed(data)[1:]):
+            violations = LINTS.check_miri_matrices(ROOT, self.paths())
+        self.assertTrue(violations)
+        self.assertEqual({v.rule for v in violations}, {"ci-miri-coverage"})
+
     def test_an_unowned_target_is_reported(self):
         with mock.patch.object(ci_contract, "MIRI_OWNERS", {}):
             violations = LINTS.check_miri_matrices(ROOT, self.paths())

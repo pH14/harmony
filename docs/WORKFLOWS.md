@@ -57,6 +57,16 @@ what owns it, and the linter rejects them.
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
 
+A manual dispatch of `Checks / Consonance / Analysis` or `Checks / Harmony /
+Analysis` runs every scheduled job by default. The `job` input narrows it to
+`miri-whole-crate`, `coverage` or `mutants`; `crate` picks one whole-crate Miri
+target and `shard` picks one mutation shard. Unselected matrix rows skip their
+steps and finish in seconds, so verifying one failing job holds one runner:
+
+```bash
+gh workflow run consonance-analysis.yml --ref <branch> -f job=miri-whole-crate -f crate=vmm-core
+```
+
 `Checks / Consonance / UML` owns the User-mode Linux profiles for x86-64 and
 arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
 <Architecture>` builds the profile twice from the locked Nix toolchain and
@@ -422,7 +432,7 @@ duplicate mapping keys, a malformed trigger or an unregistered file.
 | `ci-nes-compositions` | Both NES compositions keep a check and a benchmark and run their registered backend. |
 | `ci-nes-media` | Both compositions film their scenarios and check the media, in steps the registered job always runs. |
 | `ci-nes-case-jobs` | The public case roster maps one-to-one onto independent jobs. |
-| `ci-miri-coverage` | Each Analysis workflow lists exactly the Miri targets it owns. |
+| `ci-miri-coverage` | Each Analysis workflow lists exactly the Miri targets it owns, in its matrices and its `crate` dispatch input. |
 | `ci-historical-arms` | No case or matrix restores a fixed-version comparison arm. |
 | `ci-pinned-seed-outcome` | No expected-output pattern pins a literal seed value. |
 

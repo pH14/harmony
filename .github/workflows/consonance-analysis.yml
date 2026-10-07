@@ -12,6 +12,22 @@ on:
   schedule:
     - cron: "0 8 * * *"
   workflow_dispatch:
+    inputs:
+      job:
+        description: Scheduled job to run
+        type: choice
+        options: [all, miri-whole-crate, coverage, mutants]
+        default: all
+      crate:
+        description: Whole-crate Miri target to interpret
+        type: choice
+        options: [every, nested-driver, vmm-core, hypercall-doorbell, consonance-client, vm-state, vmm-backend, snapshot-store, harmony-supervisor, uml]
+        default: every
+      shard:
+        description: Mutation testing shard to run
+        type: choice
+        options: [every, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]
+        default: every
 
 permissions:
   contents: read
@@ -82,7 +98,7 @@ jobs:
 
   miri-whole-crate:
     name: Miri — ${{ matrix.name }} (Whole Crate)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'miri-whole-crate'))
     runs-on: ubuntu-latest
     timeout-minutes: 320
     strategy:
@@ -116,14 +132,20 @@ jobs:
           - name: uml
             command: -p uml --lib
             miriflags: -Zmiri-permissive-provenance
+    env:
+      SELECTED: ${{ github.event_name == 'schedule' || inputs.crate == 'every' || inputs.crate == matrix.name }}
     steps:
       - uses: actions/checkout@v4
+        if: env.SELECTED == 'true'
       - name: Install pinned nightly and Miri
+        if: env.SELECTED == 'true'
         run: rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
       - uses: Swatinem/rust-cache@v2
+        if: env.SELECTED == 'true'
         with:
           shared-key: consonance-miri-whole-crate
       - name: Interpret the whole crate
+        if: env.SELECTED == 'true'
         env:
           MIRIFLAGS: ${{ matrix.miriflags }}
           MIRI_COMMAND: ${{ matrix.command }}
@@ -134,7 +156,7 @@ jobs:
 
   coverage:
     name: Coverage
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'coverage'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -167,7 +189,7 @@ jobs:
 
   mutants:
     name: Mutation Testing — Shard ${{ matrix.shard }}/16
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'mutants'))
     runs-on: ubuntu-latest
     timeout-minutes: 320
     strategy:
@@ -175,20 +197,26 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     env:
+      SELECTED: ${{ github.event_name == 'schedule' || inputs.shard == 'every' || inputs.shard == format('{0}', matrix.shard) }}
       CARGO_INCREMENTAL: "1"
     steps:
       - uses: actions/checkout@v4
+        if: env.SELECTED == 'true'
       - name: Install stable toolchain
+        if: env.SELECTED == 'true'
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
+        if: env.SELECTED == 'true'
         with:
           shared-key: consonance-mutants
       - uses: taiki-e/install-action@v2
+        if: env.SELECTED == 'true'
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest
       - name: Mutate the Consonance crates
+        if: env.SELECTED == 'true'
         run: |
           mkdir -p "$GITHUB_WORKSPACE/mutants/consonance"
           # shellcheck disable=SC2046
@@ -198,6 +226,7 @@ jobs:
             $(python3 scripts/ci_contract.py package-flags Consonance) \
             --cargo-test-arg=--profile --cargo-test-arg=mutants
       - name: Mutate the guest SDK
+        if: env.SELECTED == 'true'
         run: |
           mkdir -p "$GITHUB_WORKSPACE/mutants/sdk"
           scripts/run-mutants.sh "$GITHUB_WORKSPACE/mutants/sdk" \
@@ -205,7 +234,7 @@ jobs:
             --profile mutants --no-shuffle --sharding round-robin \
             --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.SELECTED == 'true'
         with:
           name: consonance-mutants-${{ matrix.shard }}
           path: ${{ github.workspace }}/mutants
