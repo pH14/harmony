@@ -95,7 +95,7 @@
       "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
       "require_solved": true,
       "search": {
-        "executions": 20000
+        "executions": 60000
       }
     }
   ]
