@@ -5006,6 +5006,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn portable_import_fails_closed_without_a_live_vm_validator() {
         let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut source);
@@ -5335,6 +5336,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn backend_restore_shape_is_preflighted_before_portable_import() {
         let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut source);
