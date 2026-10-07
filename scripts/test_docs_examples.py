@@ -63,6 +63,20 @@ class DocumentationContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unclosed'):
             docs.snippets(self.root)
 
+    def test_removed_inline_option_is_rejected(self):
+        root = self.root / 'minimal'
+        (root / 'docs/user').mkdir(parents=True)
+        (root / 'docs/user/page.md').write_text('Use `harmony show` with `--removed`.')
+        with self.assertRaisesRegex(ValueError, 'removed CLI option'):
+            docs.check_interface('## show\n--json', root)
+
+    def test_removed_inline_command_is_rejected(self):
+        root = self.root / 'minimal'
+        (root / 'docs/user').mkdir(parents=True)
+        (root / 'docs/user/page.md').write_text('Use `harmony obsolete`.')
+        with self.assertRaisesRegex(ValueError, 'CLI command obsolete'):
+            docs.check_interface('## show\n--json', root)
+
     def test_false_finding_is_rejected(self):
         with patch.object(docs, 'load', return_value={'bug_found': False}):
             with self.assertRaisesRegex(AssertionError, 'real finding'):

@@ -2,7 +2,7 @@
 hide:
   - toc
 ---
-# Find a bug. Get back to it.
+# Find and investigate bugs
 
 Harmony explores different executions of your application and saves the ones
 that break a property you care about. You can return to a finding, inspect what
@@ -37,3 +37,5 @@ finding, go to [investigation](investigate/index.md).
 
 Harmony is experimental. Check the [supported environments](reference/environments.md)
 before preparing a workload. [NES workloads](nes.md) have a separate setup path.
+
+Harmony is licensed under [AGPL-3.0-or-later](https://github.com/pH14/harmony/blob/main/LICENSE).

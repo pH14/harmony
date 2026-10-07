@@ -12,6 +12,8 @@ spec.loader.exec_module(examples)
 
 def on_pre_build(config):
     examples.lint(ROOT)
+    binary = Path(os.environ.get('HARMONY_BINARY', ROOT / 'target/release/harmony')).resolve()
+    examples.check_interface(examples.cli_reference(binary), ROOT)
 
 
 def on_page_markdown(markdown, **kwargs):

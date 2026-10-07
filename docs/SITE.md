@@ -18,7 +18,8 @@ an execution owner. `docs/examples/catalog.json` registers every step, expected
 exit status, optional input, time bound, and result predicate.
 
 The command reference comes from the built executable's help, including its
-public subcommands. It has no hand-maintained option table. Prose still needs
+public subcommands. It has no hand-maintained option table. Inline command names
+and option names in prose are also checked against this help. Prose still needs
 review when meaning changes; the checks protect executable contracts rather
 than claiming to prove every sentence.
 
@@ -35,7 +36,9 @@ than claiming to prove every sentence.
 - The walkthrough checks actual finding evidence, restoration of guest files
   from command and interactive branches, a search from the shell-modified state,
   and additional execution work on resume. It retains per-step logs and hashes
-  of the exact displayed commands. It never substitutes a mock for a guest run.
+  of the exact displayed commands, plus result manifests and reports. CI uploads
+  those compact records; it does not duplicate guest images and memory snapshots
+  in the documentation artifact. It never substitutes a mock for a guest run.
 - Unit tests plant untested snippets, copied fences, false findings, and a resume
   that does no work. These must be rejected.
 

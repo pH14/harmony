@@ -4,9 +4,8 @@ Two processes increment the same counter. Each reads the old value, adds one,
 and writes its result. If one writer waits between reading and writing, it can
 overwrite the other writer's completed increment.
 
-The assertion is: **the counter includes every completed increment**. This is a
-real property of the program. It passes in an ordinary uninterrupted increment
-and fails when the writers interleave badly.
+The assertion is: **the counter includes every completed increment**. Each writer records its completed increments separately. Comparing their sum
+with the shared counter exposes an increment that was overwritten.
 
 This walkthrough prepares the existing lost-update example, searches for that
 failure, and opens a branch for investigation. Use a
@@ -50,9 +49,8 @@ summary for execution failures and assertion reachability before spending more
 time. The [search guide](../search.md) explains the difference between continuing
 a search and starting at a saved branch.
 
-The remaining steps require finding 1. CI runs this same bounded example and
-fails if it cannot produce the finding; a successful build alone is not accepted
-as evidence that the tutorial works.
+The remaining steps require finding 1. If you continue the search under a new
+name, use that name in the investigation commands below.
 
 ## 4. Inspect the failing execution
 
@@ -72,7 +70,9 @@ and continue the recorded actions:
 
 The three numbers are the shared counter and each writer's completed increments.
 Compare the first number with the sum of the other two. You are looking at an
-earlier point, so it may still satisfy the property. Continuing the suffix lets
+earlier point, so it may still satisfy the property. The writers keep running while
+the command reads; use the recorded assertion to establish the violation.
+Continuing the suffix lets
 you investigate how that state develops. Opening a guest command can itself
 advance the application; this branch is a new experiment.
 

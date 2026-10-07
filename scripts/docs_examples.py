@@ -109,6 +109,20 @@ def cli_reference(binary):
     return '\n\n'.join(sections)
 
 
+
+def check_interface(reference, root=ROOT):
+    commands = set(re.findall(r'^## ([a-z][a-z-]*)$', reference, re.M))
+    flags = set(re.findall(r'--[a-z][a-z-]*', reference))
+    for path in (root / 'docs/user').rglob('*.md'):
+        for code in re.findall(r'`([^`\n]+)`', path.read_text()):
+            command = re.match(r'harmony ([a-z][a-z-]*)', code)
+            if command and command[1] not in commands:
+                raise ValueError(f'{path}: undocumented CLI command {command[1]}')
+            for flag in re.findall(r'--[a-z][a-z-]*', code):
+                if flag not in flags:
+                    raise ValueError(f'{path}: removed CLI option {flag}')
+
+
 def render(text, root=ROOT, binary=None):
     examples = snippets(root)
     def replace(match):
@@ -236,6 +250,16 @@ def run(scenario, evidence, binary, root=ROOT):
             results[-1]['verified'] = True
     finally:
         (evidence / 'examples.json').write_text(json.dumps(results, indent=2) + '\n')
+        saved = project / '.harmony/runs'
+        if saved.is_dir():
+            for result in saved.iterdir():
+                if not result.is_dir():
+                    continue
+                destination = evidence / 'results' / result.name
+                destination.mkdir(parents=True)
+                for name in ('manifest.json', 'report.json', 'branch.json', 'terminal.log'):
+                    if (result / name).is_file():
+                        shutil.copy2(result / name, destination / name)
 
 
 def main():
