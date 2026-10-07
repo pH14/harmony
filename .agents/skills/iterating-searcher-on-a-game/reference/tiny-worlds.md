@@ -24,23 +24,27 @@ near its threshold can flip.
 
 ## The scorecard
 
-Keep it in private notes. One entry per change and game leg:
+Keep it in private notes. One entry per change and game leg, for workload key
+changes as well as searcher changes:
 
 - The change, and the world and leg ratio the prediction rests on.
 - The game leg: its two ends and its unit, such as tries after the resume.
 - The prediction: the ratio of the changed arm's median tries to the unchanged
   arm's, with an 80% range. Start from the world's ratio and move it toward
-  1.0 where the world's rates differ from the game's.
+  1.0 where the world's rates differ from the game's. For a key change, the
+  world's ratio compares the information hidden against the information in
+  the key.
 - Filed before the game run starts. Never edit a filed prediction.
 - The outcome and hit or miss. A run that never reaches the leg's end is
   censored at the tries it reached.
 
 Put a change's entries in its pull request description.
 
-## Improving the worlds
+## Building and improving the worlds
 
-A scorecard miss means the world lacks the game's mechanism or runs it at a
-different rate. For example, retries that land in a third of attempts in a
+Build or adjust a world for each hard part at diagnosis, and again after a
+scorecard miss. A miss means the world lacks the game's mechanism or runs it
+at a different rate. For example, retries that land in a third of attempts in a
 world and in a few percent in the game cannot predict a change to retries.
 
 1. Write down the game measurement: the leg, its tries per seed, and the
