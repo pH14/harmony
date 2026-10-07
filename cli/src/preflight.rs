@@ -286,6 +286,14 @@ mod tests {
     }
 
     #[test]
+    fn image_preflight_rejects_an_unreadable_image_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("image.tar");
+        std::fs::write(&image, b"not an image archive").unwrap();
+        assert!(image_preflight(false, image.to_str().unwrap()).is_err());
+    }
+
+    #[test]
     fn scan_finds_kernel_and_filters_initramfs_names() {
         let dir = tempfile::tempdir().unwrap();
         for name in [

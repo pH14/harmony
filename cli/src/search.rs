@@ -254,6 +254,28 @@ fn run_nes_consonance(
 
 const SESSION_WORKER: &str = "session-worker";
 
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn session_service(service: &str) -> Option<environment::input_spec::ServiceFactory> {
+    (service == faults_workload::consonance::SESSION_SERVICE)
+        .then(faults_workload::consonance::service_factory)
+}
+
+fn session_worker_args(
+    uml_profile: Option<&std::path::Path>,
+    replay: Option<&[faults_workload::FaultAction]>,
+) -> Option<Vec<std::ffi::OsString>> {
+    match (uml_profile, replay) {
+        (None, None) => Some(vec![SESSION_WORKER.into()]),
+        _ => None,
+    }
+}
+
 pub fn serve_session_worker() -> Result<ExitCode, Box<dyn Error>> {
     #[cfg(any(
         all(
@@ -263,10 +285,7 @@ pub fn serve_session_worker() -> Result<ExitCode, Box<dyn Error>> {
         all(target_os = "macos", target_arch = "aarch64")
     ))]
     {
-        use faults_workload::consonance::{SESSION_SERVICE, service_factory};
-        consonance_client::session::serve_inherited(|service| {
-            (service == SESSION_SERVICE).then(service_factory)
-        })?;
+        consonance_client::session::serve_inherited(session_service)?;
         Ok(ExitCode::SUCCESS)
     }
     #[cfg(not(any(
@@ -312,12 +331,9 @@ fn run_faults_consonance(
         let base = base
             .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
             .ok_or("guest base image missing: use --base-initramfs")?;
-        let worker = match (&options.uml_profile, replay) {
-            (None, None) => Some(consonance_client::session::WorkerLauncher::current_exe(
-                vec![SESSION_WORKER.into()],
-            )?),
-            _ => None,
-        };
+        let worker = session_worker_args(options.uml_profile.as_deref(), replay)
+            .map(consonance_client::session::WorkerLauncher::current_exe)
+            .transpose()?;
         let prepared = faults_workload::prepare::prepare_oci(
             input.to_str().ok_or("OCI input must be UTF-8")?,
             &std::fs::read(base)?,
@@ -453,6 +469,38 @@ mod tests {
         )
         .expect_err("missing NES guest artifacts must fail");
         assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn session_worker_without_an_inherited_socket_fails() {
+        assert!(serve_session_worker().is_err());
+    }
+
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn session_worker_serves_only_the_faults_service() {
+        assert!(session_service(faults_workload::consonance::SESSION_SERVICE).is_some());
+        assert!(session_service("other").is_none());
+    }
+
+    #[test]
+    fn only_kvm_searches_launch_session_workers() {
+        let replay = [];
+        assert_eq!(
+            session_worker_args(None, None),
+            Some(vec![std::ffi::OsString::from(SESSION_WORKER)])
+        );
+        assert_eq!(
+            session_worker_args(Some(std::path::Path::new("profile")), None),
+            None
+        );
+        assert_eq!(session_worker_args(None, Some(&replay)), None);
     }
 
     #[test]
