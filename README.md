@@ -38,7 +38,7 @@ technical scope and is built as a passion project that fits within the quiet gap
 
 ```sh
 cargo build --release -p harmony-cli
-./target/release/harmony doctor
+./target/release/harmony check
 ```
 
 Prepare a language project or point directly at an OCI image:
@@ -47,8 +47,9 @@ Prepare a language project or point directly at an OCI image:
 harmony init --language rust
 harmony prepare
 harmony search --name baseline --for 10m
-harmony inspect baseline
-harmony replay baseline --finding 1 --repeat 3
+harmony show baseline
+harmony branch baseline --finding 1 --rewind 10 --shell --name debugging
+harmony search --from debugging --name neighborhood
 harmony branch baseline --finding 1 --rewind 1 --stop --name earlier
 harmony search --from earlier --name neighborhood
 ```
@@ -60,7 +61,7 @@ game package: `harmony search game.nes`, with the runner library configured in
 `runner.options.core`. Workload inputs, runner options and search budgets have
 separate TOML tables.
 See [CLI documentation](cli/README.md) for preparation, runtime provisioning,
-logging, interventions and whole-search continuation.
+guest commands, interactive debugging and whole-search continuation.
 
 ## Documentation
 

@@ -144,7 +144,7 @@ pub fn acquire(kind: &str, isa: &str, offline: bool) -> Result<PathBuf> {
         return Ok(destination);
     }
     if offline {
-        return Err(format!("missing {kind} artifacts for {isa}; run harmony doctor online or set explicit artifact paths").into());
+        return Err(format!("missing {kind} artifacts for {isa}; run harmony check online or set explicit artifact paths").into());
     }
     let parent = destination
         .parent()

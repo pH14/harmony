@@ -96,7 +96,7 @@ docker build -f workloads/languages/python/postgres.Dockerfile \
 harmony search harmony-python-postgres:local --backend kvm \
   --config harmony.toml \
   --executions 64 --for 5m --out evidence/python-postgres
-harmony run harmony-python-postgres:local --backend kvm \
+harmony debug run harmony-python-postgres:local --backend kvm \
   --config harmony.toml \
   --actions workloads/languages/python/reference-events.json --repeat 2 \
   --out evidence/python-postgres-replay

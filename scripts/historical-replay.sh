@@ -79,9 +79,9 @@ guest_arguments=()
 . "$(dirname "$0")/historical-backend.sh"
 historical_backend "reports/${CASE_ID}.${label}.denial.json"
 if [[ "$mode" == reproduce ]]; then
-    arguments=(replay "$(dirname "$input")" --finding 1 --repeat "$repeats")
+    arguments=(debug replay "$(dirname "$input")" --finding 1 --repeat "$repeats")
 else
-    arguments=(run "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci"
+    arguments=(debug run "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci"
         "${guest_arguments[@]}"
         --actions "$input" --repeat "$repeats")
 fi

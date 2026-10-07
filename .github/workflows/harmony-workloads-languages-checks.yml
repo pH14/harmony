@@ -167,7 +167,7 @@ jobs:
       - name: Check admission, timer progress, park progress and replay identity
         if: steps.scope.outputs.enabled == 'true'
         run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-${{ matrix.id }}:local language-evidence
-      - name: Check configured runs, logging interventions and search continuation
+      - name: Check guest debugging, saved branches and search continuation
         if: steps.scope.outputs.enabled == 'true' && matrix.id == 'c'
         run: timeout -k 10 240 bash cli/tests/investigation.sh language-evidence/investigation
       - if: always() && steps.scope.outputs.enabled == 'true'

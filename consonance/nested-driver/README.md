@@ -147,3 +147,12 @@ The runner must expose KVM-supported VMX or SVM with NPT and
 checks capabilities before building artifacts. Both vendors use the same inner
 driver and six-operation workload; vendor-specific capability identity prevents
 cross-vendor outer snapshot import.
+
+## CLI adapter
+
+`harmony search DRIVER.oci --package nested --config CONFIG.toml` uses the shared
+recipe, budgets and saved-search storage. Set `runner.options.kernel` to the
+nested-host kernel and `base_initramfs` to the OCI base. The adapter captures the
+prepared initramfs and kernel; developer verification uses `harmony debug replay
+SEARCH`. Host search accepts wall budgets in seconds. Historical qualification
+continues to invoke the historical binary's own CLI.

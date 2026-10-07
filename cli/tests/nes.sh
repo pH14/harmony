@@ -15,17 +15,17 @@ PYTHON
 )
 "$binary" prepare "$rom"
 "$binary" search "$rom" --config-toml "$recipe" --executions 4 --out "$evidence/search"
-"$binary" replay "$evidence/search" --out "$evidence/replay"
+"$binary" debug replay "$evidence/search" --out "$evidence/replay"
 "$binary" diff "$evidence/search" "$evidence/replay" > "$evidence/diff.json"
 "$binary" branch "$evidence/search" --step 0 --stop --out "$evidence/prefix"
-"$binary" replay "$evidence/prefix" --out "$evidence/prefix-copy"
+"$binary" debug replay "$evidence/prefix" --out "$evidence/prefix-copy"
 printf '%s\n' '{"actions":[{"buttons":0,"hold_frames":1},{"buttons":0,"hold_frames":1}]}' > "$evidence/input.json"
-"$binary" run "$rom" --config-toml "$recipe" --actions "$evidence/input.json" --repeat 2 --out "$evidence/scripted"
+"$binary" debug run "$rom" --config-toml "$recipe" --actions "$evidence/input.json" --repeat 2 --out "$evidence/scripted"
 "$binary" branch "$evidence/scripted" --step 1 --stop --out "$evidence/nonempty-prefix"
 "$binary" search --from "$evidence/nonempty-prefix" --executions 4 --out "$evidence/rooted"
-"$binary" resume "$evidence/rooted" --executions 4 --out "$evidence/continued"
-"$binary" timeline "$evidence/search" --step 0 --json > "$evidence/timeline.json"
-"$binary" findings "$evidence/search" --json > "$evidence/findings.json"
+"$binary" search --resume "$evidence/rooted" --executions 4 --out "$evidence/continued"
+"$binary" show "$evidence/search" --timeline --step 0 --json > "$evidence/timeline.json"
+"$binary" show "$evidence/search" --json > "$evidence/findings.json"
 python3 - "$evidence" <<'PYTHON'
 import json, sys
 from pathlib import Path
@@ -47,7 +47,7 @@ PYTHON
 cp -R "$evidence/prefix" "$evidence/tampered"
 printf corruption >> "$evidence/tampered/artifacts/input"
 status=0
-"$binary" replay "$evidence/tampered" --out "$evidence/refused" > "$evidence/tamper.txt" 2>&1 || status=$?
+"$binary" debug replay "$evidence/tampered" --out "$evidence/refused" > "$evidence/tamper.txt" 2>&1 || status=$?
 test "$status" -eq 2
 test ! -e "$evidence/refused"
 grep -q 'recorded artifact input has changed' "$evidence/tamper.txt"
@@ -87,8 +87,8 @@ for line in journal.read_text().splitlines():
         records.append(json.loads(line))
     except ValueError:
         break
-completed = records[-1]['executions']
-subprocess.run([binary, 'resume', str(run), '--executions', '4', '--out', str(root / 'recovered')], check=True)
+reserved = records[-1]['reserved']
+subprocess.run([binary, 'search', '--resume', str(run), '--executions', '4', '--out', str(root / 'recovered')], check=True)
 report = json.loads((root / 'recovered/report.json').read_text())
-assert report['executions_completed'] == completed + 4
+assert report['executions_completed'] == reserved + 4
 PYTHON

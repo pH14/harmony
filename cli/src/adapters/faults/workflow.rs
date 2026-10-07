@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn doctor(mut c: Config, offline: bool, json: bool) -> Result<u8> {
+pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
     let runtime_error = super::config::resolve(&mut c, offline)
         .err()
         .map(|error| error.to_string());
@@ -106,7 +106,8 @@ pub fn finish(path: &Path, manifest: &mut Manifest, result: Result<u8>) -> Resul
     }
     manifest.save(path)?;
     println!(
-        "run: {}\ninspect: harmony inspect {}",
+        "{}: {}\nshow: harmony show {}",
+        manifest.mode,
         path.display(),
         path.display()
     );
@@ -136,7 +137,7 @@ pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> 
 }
 
 pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
-    let selection = request.selection.ok_or("select a run")?;
+    let selection = request.selection.ok_or("select a search or branch")?;
     let parent = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&parent)?;
     original.verify(&parent)?;
@@ -149,7 +150,7 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
     let start = if resume {
         if original.mode != "search" {
             return Err(
-                "resume requires a saved search; use search --from for an execution".into(),
+                "search --resume requires a saved search; use search --from for a branch".into(),
             );
         }
         let (checkpoint, completed) = crate::runs::checkpoint_record(&parent)?;

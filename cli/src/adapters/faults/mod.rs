@@ -3,6 +3,7 @@ pub mod config;
 mod investigate;
 mod prepare;
 mod runs;
+mod terminal;
 mod workflow;
 use super::{Operation, Package, Request};
 use crate::config::{Config, Result};
@@ -56,7 +57,7 @@ impl Package for Faults {
                 }
                 Ok(0)
             }
-            Operation::Doctor => workflow::doctor(config, request.offline, request.json),
+            Operation::Check => workflow::check(config, request.offline, request.json),
             Operation::Search if request.selection.is_none() => {
                 workflow::search(config, request.destination, request.offline)
             }
@@ -71,26 +72,25 @@ impl Package for Faults {
                 request.command,
             ),
             Operation::Replay => investigate::replay(
-                request.selection.ok_or("select a run")?,
+                request.selection.ok_or("select a search or branch")?,
                 request.destination,
                 request.repeat,
             ),
             Operation::Branch => investigate::branch(request),
-            Operation::Inspect => {
-                investigate::inspect(request.selection.ok_or("select a run")?, request.json)
-            }
-            Operation::Findings => {
-                investigate::findings(request.selection.ok_or("select a run")?, request.json)
-            }
+            Operation::Inspect => investigate::inspect(
+                request.selection.ok_or("select a search or branch")?,
+                request.json,
+            ),
             Operation::Timeline => investigate::timeline(
-                request.selection.ok_or("select a run")?,
+                request.selection.ok_or("select a search or branch")?,
                 request.point,
                 request.json,
             ),
             Operation::Logs => investigate::logs(
-                request.selection.ok_or("select a run")?,
+                request.selection.ok_or("select a search or branch")?,
                 request.point,
                 request.contains,
+                request.json,
             ),
         }
     }

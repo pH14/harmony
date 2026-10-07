@@ -17,9 +17,9 @@ print('base_initramfs = ' + json.dumps(sys.argv[2]))
 print('ram_mib = 1024')
 PYTHON
 )
-"$binary" run "$image" --config-toml "$runtime" --for 60s --out "$evidence/original" -- /bin/true
-"$binary" replay "$evidence/original" --out "$evidence/replayed"
-"$binary" replay "$evidence/replayed" --out "$evidence/replayed-again"
+"$binary" debug run "$image" --config-toml "$runtime" --for 60s --out "$evidence/original" -- /bin/true
+"$binary" debug replay "$evidence/original" --out "$evidence/replayed"
+"$binary" debug replay "$evidence/replayed" --out "$evidence/replayed-again"
 python3 - "$evidence" <<'PY'
 import hashlib
 import json
@@ -39,6 +39,6 @@ records[0]['application_sha256'] = '0' * 64
 (root / 'original/run.json').write_text(json.dumps(records[0]))
 PY
 status=0
-"$binary" replay "$evidence/original" --out "$evidence/diverged" > "$evidence/diverged.txt" 2>&1 || status=$?
+"$binary" debug replay "$evidence/original" --out "$evidence/diverged" > "$evidence/diverged.txt" 2>&1 || status=$?
 test "$status" -eq 2
 grep -q 'replay diverged' "$evidence/diverged.txt"

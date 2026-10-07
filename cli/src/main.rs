@@ -33,7 +33,7 @@ enum Command {
         language: Option<String>,
     },
     #[command(about = "Check runner availability and provision missing runtime artifacts")]
-    Doctor {
+    Check {
         #[command(flatten)]
         source: Execution,
         #[arg(long)]
@@ -50,7 +50,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    #[command(about = "Explore a workload or start a fresh search from a recorded point")]
+    #[command(about = "Explore a workload, continue a search, or start from a branch")]
     Search {
         #[command(flatten)]
         source: Execution,
@@ -58,24 +58,75 @@ enum Command {
         budget: Budget,
         #[command(flatten)]
         destination: Destination,
-        #[arg(long)]
+        #[arg(
+            long,
+            value_name = "BRANCH",
+            help = "Start a new search from a saved branch"
+        )]
         from: Option<String>,
-        #[arg(long, requires = "from")]
-        finding: Option<usize>,
-        #[command(flatten)]
-        point: Point,
+        #[arg(
+            long,
+            value_name = "SEARCH",
+            conflicts_with = "from",
+            help = "Continue a search with additional budget"
+        )]
+        resume: Option<String>,
         #[arg(long)]
         offline: bool,
     },
-    #[command(about = "Continue saved search history with an additional budget")]
-    Resume {
-        run: String,
+    #[command(
+        about = "Branch from a recorded point; optionally execute guest commands or open a shell"
+    )]
+    Branch {
         #[command(flatten)]
-        budget: Budget,
+        selection: Selection,
+        #[command(flatten)]
+        point: Point,
         #[command(flatten)]
         destination: Destination,
+        #[arg(long, value_name="COMMAND", help="Run shell text inside the guest", conflicts_with_all = ["exec_file", "shell"])]
+        exec: Option<String>,
+        #[arg(long, value_name="LOCAL_SCRIPT", help="Save a host script and execute it inside the guest", conflicts_with_all = ["exec", "shell"])]
+        exec_file: Option<PathBuf>,
+        #[arg(long, help="Open a guest terminal; exit to save state (implies --stop)", conflicts_with_all = ["exec", "exec_file"])]
+        shell: bool,
+        #[arg(long)]
+        actions: Option<PathBuf>,
+        #[arg(long, help = "Save the branch without executing the original suffix")]
+        stop: bool,
     },
-    #[command(about = "Execute a workload once or an explicit recorded input")]
+    #[command(about = "List saved searches and branches")]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Examine a search, finding or branch")]
+    Show {
+        #[command(flatten)]
+        selection: Selection,
+        #[command(flatten)]
+        point: Point,
+        #[arg(long, conflicts_with = "timeline")]
+        logs: bool,
+        #[arg(long, conflicts_with = "logs")]
+        timeline: bool,
+        #[arg(long, requires = "logs")]
+        contains: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(hide = true)]
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommand,
+    },
+    #[command(about = "Compare configuration, artifacts and observed outcomes")]
+    Diff { left: String, right: String },
+    #[command(hide = true)]
+    SessionWorker,
+}
+#[derive(Subcommand)]
+enum DebugCommand {
     Run {
         #[command(flatten)]
         source: Execution,
@@ -96,7 +147,7 @@ enum Command {
         #[arg(last = true)]
         command: Vec<String>,
     },
-    #[command(about = "Verify a saved execution using its recorded artifacts")]
+
     Replay {
         #[command(flatten)]
         selection: Selection,
@@ -105,65 +156,6 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         repeat: u32,
     },
-    #[command(about = "Apply interventions at an explicit point and execute the remaining inputs")]
-    Branch {
-        #[command(flatten)]
-        selection: Selection,
-        #[command(flatten)]
-        point: Point,
-        #[command(flatten)]
-        destination: Destination,
-        #[arg(long = "do")]
-        interventions: Vec<String>,
-        #[arg(long)]
-        intervention_toml: Option<String>,
-        #[arg(long)]
-        actions: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Save the prefix and interventions without executing the original suffix"
-        )]
-        stop: bool,
-    },
-    #[command(about = "List saved runs")]
-    Runs {
-        #[arg(long)]
-        json: bool,
-    },
-    #[command(about = "List findings in a saved run")]
-    Findings {
-        run: String,
-        #[arg(long)]
-        json: bool,
-    },
-    Inspect {
-        #[command(flatten)]
-        selection: Selection,
-        #[arg(long)]
-        json: bool,
-    },
-    Timeline {
-        #[command(flatten)]
-        selection: Selection,
-        #[command(flatten)]
-        point: Point,
-        #[arg(long)]
-        json: bool,
-    },
-    Logs {
-        #[command(flatten)]
-        selection: Selection,
-        #[command(flatten)]
-        point: Point,
-        #[arg(long)]
-        contains: Option<String>,
-    },
-    Diff {
-        left: String,
-        right: String,
-    },
-    #[command(hide = true)]
-    SessionWorker,
 }
 fn execute(command: Command) -> Result<u8> {
     let request = match command {
@@ -182,12 +174,12 @@ fn execute(command: Command) -> Result<u8> {
             println!("created {}", config.display());
             return Ok(0);
         }
-        Command::Doctor {
+        Command::Check {
             source,
             offline,
             json,
         } => Request {
-            operation: Operation::Doctor,
+            operation: Operation::Check,
             config: source.load()?,
             offline,
             json,
@@ -209,25 +201,32 @@ fn execute(command: Command) -> Result<u8> {
             budget,
             destination,
             from,
-            finding,
-            point,
+            resume,
             offline,
         } => {
+            if let Some(run) = resume {
+                if source.specified() {
+                    return Err("search --resume inherits its workload and runner".into());
+                }
+                return workflow::saved(Request {
+                    operation: Operation::Resume,
+                    selection: Some(Selection { run, finding: None }),
+                    budget,
+                    destination,
+                    ..Default::default()
+                });
+            }
             if let Some(run) = from {
                 if source.specified() {
                     return Err("search --from inherits its workload and runner; only search budgets and seed may change".into());
                 }
                 return workflow::saved(Request {
                     operation: Operation::Search,
-                    selection: Some(Selection { run, finding }),
-                    point,
+                    selection: Some(Selection { run, finding: None }),
                     budget,
                     destination,
                     ..Default::default()
                 });
-            }
-            if point.specified() {
-                return Err("point selectors require --from".into());
             }
             let mut config = source.load()?;
             budget.apply(&mut config)?;
@@ -239,20 +238,65 @@ fn execute(command: Command) -> Result<u8> {
                 ..Default::default()
             }
         }
-        Command::Resume {
-            run,
-            budget,
+        Command::Branch {
+            selection,
+            point,
             destination,
+            exec,
+            exec_file,
+            shell,
+            actions,
+            stop,
         } => {
             return workflow::saved(Request {
-                operation: Operation::Resume,
-                selection: Some(Selection { run, finding: None }),
-                budget,
+                operation: Operation::Branch,
+                selection: Some(selection),
+                point,
                 destination,
+                exec,
+                exec_file,
+                shell,
+                actions,
+                stop,
                 ..Default::default()
             });
         }
-        Command::Run {
+        Command::List { json } => return workflow::list(json),
+        Command::Show {
+            selection,
+            point,
+            logs,
+            timeline,
+            contains,
+            json,
+        } => {
+            if point.specified() && !logs && !timeline {
+                return Err("point selectors require --logs or --timeline".into());
+            }
+            return workflow::saved(Request {
+                operation: if logs {
+                    Operation::Logs
+                } else if timeline {
+                    Operation::Timeline
+                } else {
+                    Operation::Inspect
+                },
+                selection: Some(selection),
+                point,
+                contains,
+                json,
+                ..Default::default()
+            });
+        }
+        Command::Debug { command } => return execute_debug(command),
+        Command::Diff { left, right } => return workflow::diff(&left, &right),
+        Command::SessionWorker => return adapters::worker(),
+    };
+    adapters::dispatch(request)
+}
+fn execute_debug(command: DebugCommand) -> Result<u8> {
+    let request = match command {
+        DebugCommand::Run {
             source,
             seed,
             wall_seconds,
@@ -282,7 +326,7 @@ fn execute(command: Command) -> Result<u8> {
                 ..Default::default()
             }
         }
-        Command::Replay {
+        DebugCommand::Replay {
             selection,
             destination,
             repeat,
@@ -295,75 +339,6 @@ fn execute(command: Command) -> Result<u8> {
                 ..Default::default()
             });
         }
-        Command::Branch {
-            selection,
-            point,
-            destination,
-            interventions,
-            intervention_toml,
-            actions,
-            stop,
-        } => {
-            if !point.specified() {
-                return Err("branch requires --step, --rewind, or --rewind-time".into());
-            }
-            return workflow::saved(Request {
-                operation: Operation::Branch,
-                selection: Some(selection),
-                point,
-                destination,
-                interventions,
-                intervention_toml,
-                actions,
-                stop,
-                ..Default::default()
-            });
-        }
-        Command::Runs { json } => return workflow::list(json),
-        Command::Findings { run, json } => {
-            return workflow::saved(Request {
-                operation: Operation::Findings,
-                selection: Some(Selection { run, finding: None }),
-                json,
-                ..Default::default()
-            });
-        }
-        Command::Inspect { selection, json } => {
-            return workflow::saved(Request {
-                operation: Operation::Inspect,
-                selection: Some(selection),
-                json,
-                ..Default::default()
-            });
-        }
-        Command::Timeline {
-            selection,
-            point,
-            json,
-        } => {
-            return workflow::saved(Request {
-                operation: Operation::Timeline,
-                selection: Some(selection),
-                point,
-                json,
-                ..Default::default()
-            });
-        }
-        Command::Logs {
-            selection,
-            point,
-            contains,
-        } => {
-            return workflow::saved(Request {
-                operation: Operation::Logs,
-                selection: Some(selection),
-                point,
-                contains,
-                ..Default::default()
-            });
-        }
-        Command::Diff { left, right } => return workflow::diff(&left, &right),
-        Command::SessionWorker => return adapters::worker(),
     };
     adapters::dispatch(request)
 }
@@ -381,7 +356,7 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     #[test]
-    fn commands_share_plain_point_selectors_and_only_expose_relevant_options() {
+    fn surface_exposes_search_show_and_branch_without_old_aliases() {
         for args in [
             vec![
                 "harmony",
@@ -391,38 +366,55 @@ mod tests {
                 "1",
                 "--rewind",
                 "10",
-                "--do",
-                "verbose",
+                "--exec",
+                "cat /proc/locks",
             ],
-            vec!["harmony", "logs", "baseline", "--step", "4"],
-            vec!["harmony", "timeline", "baseline", "--rewind-time", "2s"],
-            vec!["harmony", "resume", "baseline", "--executions", "5000"],
+            vec!["harmony", "branch", "baseline", "--shell"],
+            vec!["harmony", "branch", "baseline", "--exec-file", "debug.sh"],
+            vec!["harmony", "show", "baseline", "--logs", "--step", "4"],
+            vec![
+                "harmony",
+                "show",
+                "baseline",
+                "--timeline",
+                "--rewind-time",
+                "2s",
+            ],
+            vec![
+                "harmony",
+                "search",
+                "--resume",
+                "baseline",
+                "--executions",
+                "5000",
+            ],
+            vec!["harmony", "search", "--from", "debugging"],
+            vec!["harmony", "list"],
+            vec!["harmony", "check"],
+        ] {
+            Cli::try_parse_from(args).unwrap();
+        }
+        for old in [
+            "doctor", "run", "replay", "resume", "runs", "inspect", "findings", "logs", "timeline",
+            "shell",
+        ] {
+            assert!(Cli::try_parse_from(["harmony", old]).is_err(), "{old}");
+        }
+        for args in [
+            vec!["harmony", "branch", "baseline", "--exec", "true", "--shell"],
+            vec!["harmony", "branch", "baseline", "--do", "verbose"],
+            vec!["harmony", "branch", "baseline", "--before", "10steps"],
+            vec!["harmony", "show", "baseline", "--logs", "--timeline"],
             vec![
                 "harmony",
                 "search",
                 "--from",
+                "debugging",
+                "--resume",
                 "baseline",
-                "--finding",
-                "1",
-                "--rewind",
-                "10",
             ],
-            vec!["harmony", "runs"],
-            vec!["harmony", "findings", "baseline"],
-        ] {
-            Cli::try_parse_from(args).unwrap();
-        }
-        for args in [
-            vec!["harmony", "branch", "baseline", "--before", "10steps"],
-            vec![
-                "harmony", "branch", "baseline", "--step", "1", "--rewind", "2",
-            ],
-            vec!["harmony", "doctor", "--executions", "5"],
-            vec!["harmony", "prepare", "--seed", "5"],
-            vec!["harmony", "search", "--resume", "baseline"],
-            vec!["harmony", "replay", "baseline", "--bug", "1"],
+            vec!["harmony", "check", "--executions", "5"],
             vec!["harmony", "search", "game.nes", "--core", "core.so"],
-            vec!["harmony", "search", "game.nes", "--nes-image", "guest.oci"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }

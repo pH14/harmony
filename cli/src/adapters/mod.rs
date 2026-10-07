@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod faults;
 mod nes;
+mod nested;
 use crate::{
     config::{Budget, Config, Result, Workload},
     runs::Destination,
@@ -10,14 +11,13 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
     Prepare,
-    Doctor,
+    Check,
     Search,
     Run,
     Replay,
     Branch,
     Resume,
     Inspect,
-    Findings,
     Timeline,
     Logs,
 }
@@ -34,8 +34,9 @@ pub struct Request {
     pub repeat: u32,
     pub console: bool,
     pub command: Vec<String>,
-    pub interventions: Vec<String>,
-    pub intervention_toml: Option<String>,
+    pub exec: Option<String>,
+    pub exec_file: Option<PathBuf>,
+    pub shell: bool,
     pub stop: bool,
     pub contains: Option<String>,
 }
@@ -54,8 +55,9 @@ impl Default for Request {
             repeat: 1,
             console: false,
             command: Vec::new(),
-            interventions: Vec::new(),
-            intervention_toml: None,
+            exec: None,
+            exec_file: None,
+            shell: false,
             stop: false,
             contains: None,
         }
@@ -75,6 +77,7 @@ pub trait Package: Sync {
 }
 static PACKAGES: &[&dyn Package] = &[
     &nes::Nes,
+    &nested::Nested,
     &faults::Faults,
     #[cfg(test)]
     &tests::Counter,

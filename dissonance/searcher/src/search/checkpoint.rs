@@ -73,6 +73,7 @@ pub struct StoredSnapshot {
 #[derive(Clone, Debug, Serialize)]
 struct CheckpointLogLine<'a> {
     executions: u64,
+    reserved: u64,
     reason: &'a str,
     file: String,
     write_seconds: f64,
@@ -238,6 +239,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         }
         let line = serde_json::to_string(&CheckpointLogLine {
             executions: header.executions,
+            reserved: header.reserved,
             reason: &header.reason,
             file: name,
             write_seconds: started.elapsed().as_secs_f64(),

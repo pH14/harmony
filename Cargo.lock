@@ -449,6 +449,8 @@ dependencies = [
  "nes-workload",
  "nested-driver",
  "oci-support",
+ "process-proto",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

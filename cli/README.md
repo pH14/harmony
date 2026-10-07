@@ -2,27 +2,29 @@
 
 `harmony` prepares workloads, searches their behavior, and investigates saved
 executions. Workload packages own their inputs, actions, observations and
-interventions. Runners own execution and runtime artifacts. The CLI owns recipes,
-search budgets, named runs and command dispatch.
+debugging capabilities. Runners own execution and runtime artifacts. The CLI owns recipes,
+search budgets, named searches and branches and command dispatch.
 
 ## Start an application
 
 ```sh
 harmony init
+harmony prepare
+harmony check
 harmony search --name baseline --for 10m
-harmony runs
-harmony findings baseline
-harmony inspect baseline --finding 1
-harmony timeline baseline --finding 1
-harmony logs baseline --finding 1 --contains ERROR
-harmony replay baseline --finding 1 --repeat 3 --name confirmed
+harmony list
+harmony show baseline
+harmony show baseline --finding 1 --timeline
+harmony show baseline --finding 1 --logs --contains ERROR
+harmony branch baseline --finding 1 --rewind 10 --shell --name debugging
+harmony search --from debugging --name neighborhood
 ```
 
 `init` infers a language from recognized project files when unambiguous. Use
 `--language c|rust|go|python|java` when needed. It never overwrites a recipe.
-`init IMAGE` sets the application image name. `search` and `run` prepare configured
-builds automatically. `prepare` builds and validates without executing; `doctor`
-checks runner availability, provisions runtime artifacts and reports admission.
+`init IMAGE` sets the application image name. `search` prepares configured builds
+automatically. `prepare` builds and validates without executing; `check` checks
+runner availability, provisions runtime artifacts and reports admission.
 Neither command infers application readiness or correctness.
 
 An OCI image selects the faults workload. A `.nes` input selects the NES workload.
@@ -54,16 +56,6 @@ command = ["/opt/harmony/application", "worker"]
 [workload.options.hooks]
 debug = ["/app/control", "log-level", "debug"]
 partition = ["/app/control", "partition"]
-
-[[workload.options.interventions.verbose]]
-kind = "hook"
-name = "debug"
-for = "1s"
-
-[[workload.options.interventions.delayed]]
-kind = "pause"
-node = "database"
-for = "100ms"
 
 [runner]
 kind = "consonance"
@@ -121,7 +113,7 @@ UML runs on Linux without hardware virtualization, including ordinary containers
 An explicit UML profile selects UML when the backend is automatic.
 
 Consonance artifact overrides are `kernel`, `base_initramfs` and `uml_profile`
-inside `runner.options`. `doctor` provisions checksummed versioned artifacts.
+inside `runner.options`. `check` provisions checksummed versioned artifacts.
 Development artifacts are discovered under `consonance/harmony-linux/build/ARCH`,
 and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
@@ -150,70 +142,109 @@ recorded-input execution, replay, branching, rooted search and continuation.
 NES controller recordings use `--actions FILE`; console logs and virtual-time
 rewinds are not available for these recordings.
 
-## Execution and investigation
+## Search and investigation
 
-```sh
-harmony run my-app:local -- /bin/program argument
-harmony run --actions input.json --repeat 2
-harmony branch baseline --finding 1 --rewind 10 --do verbose --name debug
-harmony branch baseline --finding 1 --step 120 --do delayed --name delayed
-harmony branch baseline --finding 1 --rewind-time 2s --stop --name earlier
-harmony search --from earlier --executions 2000 --name neighborhood
-harmony search --from baseline --finding 1 --rewind 10 --name neighborhood-2
-harmony resume baseline --executions 5000 --name extended
-harmony resume extended --for 10m --name longer
-harmony diff confirmed debug
+```text
+harmony
+├── init [INPUT]                         create harmony.toml
+├── prepare [INPUT]                      build and instrument
+├── check [INPUT]                        check and provision the runner
+├── search [INPUT]                       explore
+│   ├── --resume SEARCH                  continue an existing search
+│   └── --from BRANCH                    explore from a saved branch
+├── list                                 saved searches and branches
+├── show NAME                            summary and findings
+│   ├── --finding N                      select a finding
+│   ├── --logs [--contains TEXT]          application and terminal output
+│   └── --timeline                       recorded actions and observations
+├── branch NAME                          save a new experiment
+│   ├── --finding N                      start from a finding
+│   ├── --step N | --rewind N | --rewind-time 2s
+│   ├── --exec 'COMMAND'                  execute inside the guest
+│   ├── --exec-file LOCAL.sh              copy and execute a local script
+│   ├── --shell                           interactive guest terminal
+│   └── --stop                            save without the original suffix
+└── diff NAME NAME                       compare configuration and outcomes
 ```
-
-`--step N` selects the boundary after N recorded actions; step 0 is the prepared
-initial state. `--rewind N` moves back N steps from the selected finding's first
-observed failure, or the execution endpoint. Recovery actions are included when
-the failure was observed during recovery. `--rewind-time` uses virtual time and
-rounds down to an available boundary. Branch output states the resolved step and
-time. The same selectors work with `timeline`, `logs` and `search --from`.
-
-A branch requires an explicit point. It reconstructs the prefix, applies
-interventions in order, and executes the recorded suffix. `--stop` omits the
-suffix and automatic recovery, leaving a prefix for another search. Branching is
-a new experiment: interventions can change timing and outcomes. Exact replay
-uses the unchanged saved inputs and artifacts.
-
-`--do NAME` selects a named intervention from the saved recipe. The faults package
-accepts `kill`, `pause`, `restart`, `wait` and `hook` actions, with an explicit
-`for` duration. Node operations take `node`; hooks take `name`. Hook durations are
-execution windows, not promises of completion: timeline counters show observed
-hook starts and completions. Windows must fit whole 10ms ticks. The same typed
-plan is available inline:
 
 ```sh
 harmony branch baseline --finding 1 --rewind 10 \
-  --intervention-toml 'actions = [{kind = "hook", name = "debug", for = "1s"}]'
+  --exec '/app/control log-level debug' --name verbose
+harmony branch baseline --finding 1 --rewind-time 2s \
+  --exec-file ./investigate.sh --stop --name earlier
+harmony search --from earlier --executions 2000 --name neighborhood
+harmony search --resume baseline --executions 5000 --name extended
+harmony diff verbose earlier
 ```
 
-`--actions FILE` supplies package-specific recorded actions, including targeted
-fault event parks and kills. Logging changes require an application control hook.
-Rebuilding with another logging configuration creates a different execution
-identity and is not exact replay.
+A **search** explores many possible executions and collects findings. A **branch**
+is a saved experiment at a selected point in one execution. `show` summarizes
+either; `--finding N` narrows it to one finding. `diff` compares resolved
+configuration, saved artifact identities, runner identity and package outcomes.
+It does not compare two directories of arbitrary files.
 
-`search --from` starts fresh search history at the selected prefix. `resume`
+`--step N` selects the boundary after N recorded actions; step 0 is the prepared
+initial state. `--rewind N` moves back N steps from the finding's first observed
+failure, or the branch endpoint. Recovery actions are included when the failure
+was observed during recovery. `--rewind-time` uses virtual time and rounds down
+to an available boundary. The same selectors filter `show --timeline` and
+`show --logs`. Branch output states the resolved step. With no point selector,
+branching selects the finding or endpoint. A search without a selected finding
+can be branched at `--step 0`.
+
+`--exec` is shell text interpreted by `/bin/sh` **inside the guest**. Its paths
+refer to guest files. `--exec-file` reads a file on the **host**, saves its bytes
+with the branch and executes them in the guest. The image must provide `/bin/sh`.
+Both use the workload's working directory, environment and credentials. Commands
+can inspect or mutate files, processes and application controls; they are not
+read-only probes. A branch reconstructs the selected prefix, runs the command,
+and then executes the original suffix. `--stop` omits that suffix and recovery.
+The package-specific `--actions FILE` escape hatch adds typed fault or controller
+inputs before the remaining suffix.
+
+`--shell` opens a guest PTY and implies `--stop`. Exit the shell to save the
+actual guest snapshot, including filesystem and process changes. A subsequent
+`search --from` restores that snapshot and explores from it. It does not rerun
+shell commands. Terminal output and submitted bytes are retained as evidence.
+Interactive timing is part of the new experiment. Faults branches with commands
+require the updated supervisor runtime; use `check` to provision matching assets.
+NES exposes typed controller actions and has no guest shell capability.
+
+`search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest
 retained whole-search checkpoint. Its budgets are additional: `--executions 5000`
-permits 5,000 more executions from that checkpoint, while `--for 10m` grants a new
+permits 5,000 new executions, in addition to finishing any work already queued at that checkpoint, while `--for 10m` grants a new
 10-minute wall window. With neither, it adds 1,000 executions. A time-only resume
 removes the previous execution ceiling. Checkpoints are written periodically and
-at completion; an interrupted run can retain an earlier checkpoint. NES retains
-its checkpoint journal and origin input under the run's `package` directory. A new seed
-intentionally changes the draw sequence.
+at completion; an interrupted search can retain an earlier checkpoint. NES retains
+its checkpoint journal and origin input under `package/`. A new seed intentionally
+changes the draw sequence.
 
-Run names resolve beneath `.harmony/runs`; saved-run commands also accept a run
-directory. `--out DIRECTORY` creates a fresh output directory. Existing runs are
-never overwritten. `runs`, `findings`, `inspect` and `timeline` support `--json`.
+Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
+`--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.
+Existing results are never overwritten. `list` and `show` support `--json`.
 Console evidence retains a bounded 64 KiB tail; adjacent observations can overlap.
+Terminal output is saved separately and included by `show --logs` without a point
+selector. Point-filtered logs show the console captured at that boundary.
+
+The `nested` package preserves the nested VM search supported by the runtime.
+Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
+`runner.options.kernel` pointing to a kernel built with nested KVM support.
+It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
+are supported; branching, shell, continuation and console timelines are not yet
+implemented by this package.
+
+## Developer qualification
+
+Hidden `harmony debug run` executes a fixed action input or an OCI command;
+`harmony debug replay NAME [--finding N] [--repeat N]` checks exact reproduction.
+These are developer qualification tools. Ordinary investigation uses a branch,
+and further exploration uses `search`.
 
 ## Storage and boundaries
 
 The v2 manifest contains the resolved workload and runner identities, artifact
-hashes, parent run and a package-owned payload. Shared run storage never decodes
+hashes, parent recording and a package-owned payload. Shared recording storage never decodes
 fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
@@ -223,7 +254,7 @@ UML also pins host identity. Application replay compares final state, assertions
 actions and recovery evidence. Plain UML replay compares application output and
 bridge events while retaining raw boot logs as diagnostics. Hardware command
 replay also compares the full serial digest. NES replay compares its typed witness
-and snapshot digest. Removing a run directory removes its saved evidence.
+and snapshot digest. Removing a saved directory removes its saved evidence.
 
 Exit 0 means successful operation, including verified reproduction of a finding.
 Application search exits 1 for findings or unmet reachability assertions; a failed
@@ -237,8 +268,8 @@ Run the CLI tests, package tests, Clippy and registered CI checks. The test-only
 counter package exercises preparation, search, replay and branching through the
 same dispatch and storage interfaces without application or NES types.
 
-- `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, logging hooks,
-  exact replay, prefix branching, additional-budget continuation and tamper refusal.
+- `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, guest commands,
+  local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.
 - `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY` exercises plain
   command replay as an unprivileged UML user and rejects planted output divergence.
 - `bash cli/tests/nes.sh ROM CORE DIRECTORY` exercises native NES search, replay,

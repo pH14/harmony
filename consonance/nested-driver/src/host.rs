@@ -32,7 +32,7 @@ pub struct Options {
     pub seed: u64,
     pub executions: u64,
     pub ram_mib: u32,
-    pub wall_minutes: Option<u64>,
+    pub wall_seconds: Option<u64>,
     pub output: PathBuf,
 }
 
@@ -538,20 +538,7 @@ impl Reporting for NestedWorkload {
     }
 }
 
-pub fn run(
-    image: &str,
-    kernel: &[u8],
-    base: &[u8],
-    options: &Options,
-    replay: Option<&Path>,
-    repeat: u32,
-) -> Result<(), Box<dyn Error>> {
-    if options.executions == 0 || options.ram_mib == 0 || repeat == 0 {
-        return Err("search budgets, RAM and repeat must be positive".into());
-    }
-    if options.output.exists() && fs::read_dir(&options.output)?.next().is_some() {
-        return Err("search output directory must be empty".into());
-    }
+pub fn prepare(image: &str, base: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let image = oci_support::image::stage(image, staging.path())?;
     let request = oci_support::bundle::LaunchRequest::new(vec![
@@ -560,9 +547,24 @@ pub fn run(
         "--search".into(),
     ])
     .with_kvm();
-    let initramfs = oci_support::bundle::prepare(&image, &request)?.initramfs(base);
+    Ok(oci_support::bundle::prepare(&image, &request)?.initramfs(base))
+}
+
+pub fn run_prepared(
+    kernel: &[u8],
+    initramfs: &[u8],
+    options: &Options,
+    replay: Option<&Path>,
+    repeat: u32,
+) -> Result<bool, Box<dyn Error>> {
+    if options.executions == 0 || options.ram_mib == 0 || repeat == 0 {
+        return Err("search budgets, RAM and repeat must be positive".into());
+    }
+    if options.output.exists() && fs::read_dir(&options.output)?.next().is_some() {
+        return Err("search output directory must be empty".into());
+    }
     let contract = vmm_core::vendor::x86::bringup::nested_host_contract_hash()?;
-    let workload = NestedWorkload::new(kernel, &initramfs, options, contract);
+    let workload = NestedWorkload::new(kernel, initramfs, options, contract);
     fs::create_dir_all(&options.output)?;
     let (report, _) = match replay {
         Some(path) => {
@@ -585,9 +587,7 @@ pub fn run(
                 workers: 1,
                 execution_budget: options.executions,
                 host: "linux-x86-nested-kvm".into(),
-                wall_budget: options
-                    .wall_minutes
-                    .map(|minutes| Duration::from_secs(minutes.saturating_mul(60))),
+                wall_budget: options.wall_seconds.map(Duration::from_secs),
                 stop_rollout_on_objective: true,
                 stop_campaign_on_objective: true,
                 archive_entry_limit: 4096,
@@ -628,10 +628,7 @@ pub fn run(
         report.archive.evidence.pairs,
         report.archive.evidence.failures.len()
     );
-    if !report.archive.evidence.failures.is_empty() {
-        return Err("nested search found a failure; replay its stream.jsonl".into());
-    }
-    Ok(())
+    Ok(!report.archive.evidence.failures.is_empty())
 }
 
 #[cfg(test)]
@@ -711,7 +708,7 @@ mod tests {
                 seed: 42,
                 executions: 1,
                 ram_mib: 256,
-                wall_minutes: None,
+                wall_seconds: None,
                 output: PathBuf::new(),
             },
             [0; 32],

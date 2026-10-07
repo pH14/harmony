@@ -105,7 +105,7 @@ impl Package for Nes {
             return Ok(0);
         }
         crate::runners::resolve(&mut request.config.runner, request.offline)?;
-        if request.operation == Operation::Doctor {
+        if request.operation == Operation::Check {
             println!(
                 "{}",
                 serde_json::to_string_pretty(
@@ -259,22 +259,38 @@ fn saved(request: Request) -> Result<u8> {
         .finding
         .is_some_and(|finding| finding != 1 || original.payload["finding"] != true)
     {
-        return Err("finding does not exist in this run".into());
+        return Err("finding does not exist in this recording".into());
     }
     match request.operation {
         Operation::Inspect => {
-            println!("{}", serde_json::to_string_pretty(&original)?);
-            Ok(0)
-        }
-        Operation::Findings => {
-            let findings = if original.payload["finding"] == true {
-                vec![
-                    serde_json::json!({"finding":1,"kind":"objective","witness":original.payload["witness"]}),
-                ]
+            if request.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"manifest":original,"result":original.payload})
+                    )?
+                );
             } else {
-                vec![]
-            };
-            println!("{}", serde_json::to_string_pretty(&findings)?);
+                println!(
+                    "{}: {} ({}, {})",
+                    path.display(),
+                    original.status,
+                    original.mode,
+                    original.config.runner.kind
+                );
+                if let Some(error) = &original.error {
+                    println!("error: {error}");
+                }
+                if original.payload["finding"] == true {
+                    println!("finding 1: objective reached");
+                } else {
+                    println!("no findings");
+                }
+                if let Some(actions) = original.payload["input"]["actions"].as_array() {
+                    println!("recorded steps: {}", actions.len());
+                }
+                println!("timeline: harmony show {} --timeline", path.display());
+            }
             Ok(0)
         }
         Operation::Timeline => {
@@ -315,9 +331,9 @@ fn saved(request: Request) -> Result<u8> {
             original.verify(&path)?;
             let mut input = original.payload["input"].clone();
             if request.operation == Operation::Branch {
-                if !request.interventions.is_empty() || request.intervention_toml.is_some() {
+                if request.exec.is_some() || request.exec_file.is_some() || request.shell {
                     return Err(
-                        "NES interventions use typed button inputs through --actions".into(),
+                        "this workload has no guest shell; use typed controller input through --actions".into(),
                     );
                 }
                 if request.point.rewind_time.is_some() {
@@ -375,13 +391,13 @@ fn finish(path: &Path, m: &mut Manifest, result: Result<u8>) -> Result<u8> {
     m.status = if result.is_ok() { "complete" } else { "failed" }.into();
     m.error = result.as_ref().err().map(|e| e.to_string());
     m.save(path)?;
-    println!("run: {}", path.display());
+    println!("{}: {}", m.mode, path.display());
     result
 }
 
 fn continue_search(request: Request) -> Result<u8> {
     use nes_workload::package::{SearchOptions, SearchStart};
-    let selection = request.selection.ok_or("select a run")?;
+    let selection = request.selection.ok_or("select a search or branch")?;
     let parent = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&parent)?;
     original.verify(&parent)?;
@@ -395,7 +411,7 @@ fn continue_search(request: Request) -> Result<u8> {
     request.budget.apply(&mut config)?;
     let start = if request.operation == Operation::Resume {
         if original.mode != "search" {
-            return Err("resume requires a saved search".into());
+            return Err("search --resume requires a saved search".into());
         }
         let (checkpoint, completed) = crate::runs::checkpoint_record(&parent.join("package"))?;
         let additional =

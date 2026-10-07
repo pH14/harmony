@@ -102,12 +102,12 @@ pub fn verify(spec: &Runner, expected: &serde_json::Value) -> Result<()> {
     if spec.kind == "consonance" {
         let c = consonance(spec)?;
         if c.backend == Backend::Auto {
-            return Err("recorded runner must pin its backend".into());
+            return Err("recordingner must pin its backend".into());
         }
         crate::runtime::choose(&c)?;
     }
     if &identity(spec)? != expected {
-        return Err("runner identity differs from the recorded run".into());
+        return Err("runner identity differs from the recording".into());
     }
     Ok(())
 }

@@ -686,3 +686,8 @@ The [host SHA qualification](../../scripts/qualification/README.md) checks indep
 `checkpoint::read_header` exposes the recorded scheduling window to adapters
 that resume on a different worker count. Reusing that window preserves admission
 ordering; the checkpoint reader still validates execution identity and policies.
+
+The checkpoint journal records both completed (`executions`) and reserved
+(`reserved`) work. A consumer granting an additional execution budget starts
+from `reserved`, because restoring the checkpoint also restores already queued
+work. At a completed checkpoint those counts are equal.

@@ -66,7 +66,6 @@ pub struct Config {
     pub workload: Vec<String>,
     pub check: Vec<String>,
     pub hooks: BTreeMap<String, Vec<String>>,
-    pub interventions: BTreeMap<String, Vec<Intervention>>,
 }
 
 impl Default for Config {
@@ -90,7 +89,6 @@ impl Default for Config {
             workload: Vec::new(),
             check: Vec::new(),
             hooks: BTreeMap::new(),
-            interventions: BTreeMap::new(),
         }
     }
 }
@@ -310,33 +308,4 @@ pub fn resolve(config: &mut Config, offline: bool) -> Result<()> {
     config.base_initramfs = runtime.base_initramfs;
     config.uml_profile = runtime.uml_profile;
     Ok(())
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Intervention {
-    Kill {
-        node: String,
-        #[serde(rename = "for")]
-        duration: String,
-    },
-    Pause {
-        node: String,
-        #[serde(rename = "for")]
-        duration: String,
-    },
-    Restart {
-        node: String,
-        #[serde(rename = "for")]
-        duration: String,
-    },
-    Wait {
-        #[serde(rename = "for")]
-        duration: String,
-    },
-    Hook {
-        name: String,
-        #[serde(rename = "for")]
-        duration: String,
-    },
 }
