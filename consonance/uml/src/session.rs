@@ -877,6 +877,176 @@ mod tests {
     use std::os::fd::FromRawFd;
 
     use super::*;
+    use environment::input_spec::nominal_factory;
+
+    const PHYSMEM_BYTES: usize = 4 * PAGE_SIZE;
+
+    fn snapshot(
+        checkpoints: &Checkpoints,
+        parent: Option<&Snapshot>,
+        pages: &[(u64, u8)],
+    ) -> Snapshot {
+        let mut held = checkpoints.pages(PHYSMEM_BYTES).unwrap();
+        let parent = parent.map_or(held.root, Snapshot::id);
+        let mut builder = held.store.derive(parent).unwrap();
+        for &(gfn, fill) in pages {
+            builder.write_changed_page(gfn, &[fill; PAGE_SIZE]).unwrap();
+        }
+        let id = builder.seal(image_state(24));
+        drop(held);
+        checkpoints.adopt(id)
+    }
+
+    fn checkpoint(memory: Snapshot, seed: u64, moment: Option<u64>) -> Checkpoint {
+        let mut services = Services::new(seed);
+        services.latest = 90;
+        services.events.push(Event {
+            moment: 80,
+            id: 3,
+            data: vec![1, 2, 3].into(),
+        });
+        Checkpoint {
+            memory,
+            services,
+            request: moment.map_or_else(Vec::new, |moment| moment.to_le_bytes().to_vec()),
+        }
+    }
+
+    fn owned_delta(
+        checkpoints: &Checkpoints,
+        base: &Checkpoint,
+        target: &Checkpoint,
+    ) -> Vec<(u64, PageHash, [u8; PAGE_SIZE])> {
+        checkpoints
+            .delta(base, None, target, |changed, reverted| {
+                assert!(reverted.is_empty());
+                changed
+                    .iter()
+                    .map(|&(gfn, hash, data)| (gfn, *hash, *data))
+                    .collect()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn checkpoints_report_their_moment_events_and_image() {
+        let checkpoints = Checkpoints::new();
+        let stamped = checkpoint(snapshot(&checkpoints, None, &[(1, 1)]), 5, Some(120));
+        assert_eq!(stamped.moment(), 120);
+        assert_eq!(stamped.bytes(), 24);
+        assert_eq!(stamped.owned_pages(), 1);
+        assert_eq!(stamped.events().len(), 1);
+        assert_eq!(stamped.events()[0].moment, 80);
+
+        let unstamped = checkpoint(snapshot(&checkpoints, None, &[(1, 1)]), 5, None);
+        assert_eq!(unstamped.moment(), 90);
+        assert_eq!(unstamped.digest().unwrap(), {
+            let other = checkpoint(snapshot(&checkpoints, None, &[(1, 1)]), 5, None);
+            other.digest().unwrap()
+        });
+        assert_ne!(unstamped.digest().unwrap(), stamped.digest().unwrap());
+
+        let reseeded = checkpoint(snapshot(&checkpoints, None, &[(2, 2)]), 6, Some(200));
+        let bridged = stamped.with_bridge_of(&reseeded);
+        assert_eq!(bridged.moment(), 200);
+        assert_eq!(bridged.memory.id(), stamped.memory.id());
+        assert_eq!(bridged.sidecar().unwrap(), reseeded.sidecar().unwrap());
+        assert_ne!(bridged.digest().unwrap(), stamped.digest().unwrap());
+        assert_ne!(bridged.digest().unwrap(), reseeded.digest().unwrap());
+        drop(stamped);
+        assert_eq!(bridged.bytes(), 24);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn imported_checkpoints_reproduce_the_published_digest() {
+        let publisher = Checkpoints::new();
+        let base = checkpoint(snapshot(&publisher, None, &[(0, 1)]), 5, Some(10));
+        let target = checkpoint(
+            snapshot(&publisher, Some(&base.memory), &[(2, 7), (3, 8)]),
+            9,
+            Some(400),
+        );
+        let rows = owned_delta(&publisher, &base, &target);
+        assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), vec![2, 3]);
+        let borrowed: Vec<(u64, &PageHash, &[u8; PAGE_SIZE])> = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+
+        let subscriber = Checkpoints::new();
+        let subscriber_base = checkpoint(snapshot(&subscriber, None, &[(0, 1)]), 5, Some(10));
+        assert_eq!(subscriber_base.digest().unwrap(), base.digest().unwrap());
+        let sidecar = target.sidecar().unwrap();
+        let imported = subscriber
+            .import(
+                &subscriber_base,
+                &subscriber_base,
+                &borrowed,
+                &sidecar,
+                &nominal_factory(),
+            )
+            .unwrap();
+        assert_eq!(imported.digest().unwrap(), target.digest().unwrap());
+        assert_eq!(imported.moment(), 400);
+        assert_eq!(imported.events(), target.events());
+
+        for malformed in [
+            &b"HUMLCKP1"[..],
+            &sidecar[..SIDECAR_MAGIC.len()],
+            &sidecar[..SIDECAR_MAGIC.len() + 12],
+            &sidecar[..sidecar.len() - 1],
+        ] {
+            assert!(matches!(
+                subscriber.import(
+                    &subscriber_base,
+                    &subscriber_base,
+                    &borrowed,
+                    malformed,
+                    &nominal_factory(),
+                ),
+                Err(SessionError::Protocol(_))
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn unexpected_pages_lists_unreported_physical_writes() {
+        let checkpoints = Checkpoints::new();
+        let first = IMAGE_PAGES;
+        let stored = snapshot(
+            &checkpoints,
+            None,
+            &[(first, 1), (first + 1, 2), (first + 2, 3)],
+        );
+        let held = checkpoints.held().unwrap();
+        let mut bytes = vec![0_u8; (IMAGE_PAGES as usize) * PAGE_SIZE + PHYSMEM_BYTES];
+        for (gfn, fill) in [
+            (first, 1_u8),
+            (first + 1, 9),
+            (first + 2, 4),
+            (first + 3, 5),
+        ] {
+            let at = gfn as usize * PAGE_SIZE;
+            bytes[at..at + PAGE_SIZE].fill(fill);
+        }
+        let missed = unexpected_pages(
+            &held,
+            stored.id(),
+            vec![first, first + 1, first + 2, first + 3],
+            &[first + 2],
+            &bytes,
+        )
+        .unwrap();
+        assert_eq!(missed, vec![1, 3]);
+        assert!(
+            unexpected_pages(&held, stored.id(), vec![first], &[], &bytes)
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)]

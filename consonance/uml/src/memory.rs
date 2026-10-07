@@ -462,3 +462,341 @@ pub(crate) fn memfd(name: &std::ffi::CStr) -> io::Result<OwnedFd> {
         return Err(error);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::FileExt;
+
+    const PHYSMEM_PAGES: usize = 4;
+    const PHYSMEM_BYTES: usize = PHYSMEM_PAGES * PAGE_SIZE;
+
+    fn page(fill: u8) -> Vec<u8> {
+        vec![fill; PAGE_SIZE]
+    }
+
+    fn file(fd: &OwnedFd) -> std::fs::File {
+        std::fs::File::from(fd.try_clone().unwrap())
+    }
+
+    fn snapshot(
+        checkpoints: &Checkpoints,
+        parent: Option<&Snapshot>,
+        pages: &[(u64, u8)],
+        image: u64,
+    ) -> Snapshot {
+        let mut held = checkpoints.pages(PHYSMEM_BYTES).unwrap();
+        let parent = parent.map_or(held.root, Snapshot::id);
+        let mut builder = held.store.derive(parent).unwrap();
+        for &(gfn, fill) in pages {
+            builder.write_changed_page(gfn, &page(fill)).unwrap();
+        }
+        let id = builder.seal(image_state(image));
+        drop(held);
+        checkpoints.adopt(id)
+    }
+
+    fn digest(snapshot: &Snapshot) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        snapshot.digest(&mut digest).unwrap();
+        digest.finalize().into()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn guest_memory_maps_the_image_and_physical_memory_side_by_side() {
+        let mut memory = GuestMemory::new().unwrap();
+        assert_eq!(file_size(&memory.image).unwrap(), IMAGE_BYTES as u64);
+        assert_eq!(memory.physmem_bytes().unwrap(), 0);
+        // SAFETY: nothing is mapped yet, so no range is touched.
+        assert!(unsafe { memory.bytes() }.is_none());
+        assert!(memory.map().is_err());
+        resize(&memory.physmem, PAGE_SIZE as u64 + 1).unwrap();
+        assert!(memory.map().is_err());
+
+        resize(&memory.physmem, PHYSMEM_BYTES as u64).unwrap();
+        assert_eq!(memory.map().unwrap(), PHYSMEM_BYTES);
+        assert_eq!(memory.map().unwrap(), PHYSMEM_BYTES);
+        // SAFETY: no guest runs, so the test owns both ranges.
+        let bytes = unsafe { memory.bytes() }.unwrap();
+        assert_eq!(bytes.len(), IMAGE_BYTES + PHYSMEM_BYTES);
+        bytes[3] = 0xa5;
+        bytes[IMAGE_BYTES + 2 * PAGE_SIZE + 1] = 0x5a;
+
+        let mut read = [0_u8; 2];
+        file(&memory.image).read_exact_at(&mut read, 2).unwrap();
+        assert_eq!(read, [0, 0xa5]);
+        file(&memory.physmem)
+            .read_exact_at(&mut read, (2 * PAGE_SIZE) as u64)
+            .unwrap();
+        assert_eq!(read, [0, 0x5a]);
+        assert_eq!(
+            data_extents(&memory.physmem, PHYSMEM_BYTES as u64).unwrap(),
+            vec![((2 * PAGE_SIZE) as u64, PAGE_SIZE as u64)]
+        );
+
+        memory.clear_physmem().unwrap();
+        assert_eq!(memory.physmem_bytes().unwrap(), PHYSMEM_BYTES);
+        assert!(
+            data_extents(&memory.physmem, PHYSMEM_BYTES as u64)
+                .unwrap()
+                .is_empty()
+        );
+        memory.clear_image().unwrap();
+        // SAFETY: as above.
+        let bytes = unsafe { memory.bytes() }.unwrap();
+        assert_eq!(bytes[3], 0);
+        assert_eq!(bytes[IMAGE_BYTES + 2 * PAGE_SIZE + 1], 0);
+
+        assert!(matches!(
+            memory.restore_image_size(IMAGE_BYTES as u64 + 1),
+            Err(MemoryError::ImageTooLarge(bytes)) if bytes == IMAGE_BYTES as u64 + 1
+        ));
+        resize(&memory.image, 8).unwrap();
+        memory.restore_image_size(8).unwrap();
+        assert_eq!(file_size(&memory.image).unwrap(), IMAGE_BYTES as u64);
+
+        resize(&memory.physmem, (PHYSMEM_BYTES + PAGE_SIZE) as u64).unwrap();
+        assert!(memory.map().is_err());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn data_extents_report_every_written_run() {
+        let fd = memfd(c"harmony-uml-extents").unwrap();
+        resize(&fd, (8 * PAGE_SIZE) as u64).unwrap();
+        let file = file(&fd);
+        file.write_all_at(&page(1), PAGE_SIZE as u64).unwrap();
+        file.write_all_at(&page(2), (2 * PAGE_SIZE) as u64).unwrap();
+        file.write_all_at(&page(3), (6 * PAGE_SIZE) as u64).unwrap();
+        assert_eq!(
+            data_extents(&fd, (8 * PAGE_SIZE) as u64).unwrap(),
+            vec![
+                (PAGE_SIZE as u64, (2 * PAGE_SIZE) as u64),
+                ((6 * PAGE_SIZE) as u64, PAGE_SIZE as u64),
+            ]
+        );
+        assert_eq!(
+            data_extents(&fd, (2 * PAGE_SIZE) as u64).unwrap(),
+            vec![(PAGE_SIZE as u64, PAGE_SIZE as u64)]
+        );
+        assert!(data_extents(&fd, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn checkpoints_start_empty_and_keep_one_physical_memory_size() {
+        let checkpoints = Checkpoints::new();
+        assert!(checkpoints.stats().is_none());
+        assert!(matches!(checkpoints.held(), Err(MemoryError::Empty)));
+        assert!(format!("{checkpoints:?}").contains("stats: None"));
+
+        let root = checkpoints.pages(PHYSMEM_BYTES).unwrap().root;
+        assert_eq!(checkpoints.held().unwrap().root, root);
+        assert_eq!(checkpoints.pages(PHYSMEM_BYTES).unwrap().root, root);
+        assert_eq!(checkpoints.held().unwrap().image_bytes(root).unwrap(), 0);
+        assert_eq!(checkpoints.stats().unwrap().snapshots, 1);
+        assert!(format!("{checkpoints:?}").contains("stats: Some"));
+        assert!(matches!(
+            checkpoints.pages(2 * PHYSMEM_BYTES),
+            Err(MemoryError::Size { got, expected })
+                if got == 2 * PHYSMEM_BYTES && expected == PHYSMEM_BYTES
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn snapshots_report_their_image_and_pages_until_the_last_share_drops() {
+        let checkpoints = Checkpoints::new();
+        let first = snapshot(&checkpoints, None, &[(0, 1), (IMAGE_PAGES + 1, 2)], 40);
+        assert_eq!(first.image_bytes(), 40);
+        assert_eq!(first.owned_pages(), 2);
+        assert_eq!(format!("{first:?}"), format!("Snapshot({:?})", first.id()));
+
+        let shared = first.share();
+        assert_eq!(shared.id(), first.id());
+        let snapshots = checkpoints.stats().unwrap().snapshots;
+        drop(first);
+        assert_eq!(checkpoints.stats().unwrap().snapshots, snapshots);
+        assert_eq!(shared.image_bytes(), 40);
+        assert_eq!(shared.owned_pages(), 2);
+        drop(shared);
+        assert_eq!(checkpoints.stats().unwrap().snapshots, snapshots - 1);
+
+        let foreign = snapshot(&Checkpoints::new(), None, &[(0, 1)], 0);
+        let orphan = Checkpoints::new().adopt(foreign.id());
+        assert_eq!(orphan.image_bytes(), 0);
+        assert_eq!(orphan.owned_pages(), 0);
+        assert!(matches!(
+            orphan.digest(&mut Sha256::new()),
+            Err(MemoryError::Empty)
+        ));
+        let _ = orphan.share();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn digests_cover_pages_and_image_length() {
+        let checkpoints = Checkpoints::new();
+        let base = snapshot(&checkpoints, None, &[(1, 1)], 10);
+        let same = snapshot(&checkpoints, None, &[(1, 1)], 10);
+        let longer = snapshot(&checkpoints, None, &[(1, 1)], 11);
+        let other_page = snapshot(&checkpoints, None, &[(1, 2)], 10);
+        let child = snapshot(&checkpoints, Some(&base), &[(2, 3)], 10);
+        assert_eq!(digest(&base), digest(&same));
+        assert_ne!(digest(&base), digest(&longer));
+        assert_ne!(digest(&base), digest(&other_page));
+        assert_ne!(digest(&base), digest(&child));
+        let reverted = snapshot(&checkpoints, Some(&child), &[(2, 0)], 10);
+        assert_eq!(digest(&reverted), digest(&base));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn imported_deltas_reproduce_the_published_snapshot() {
+        let publisher = Checkpoints::new();
+        let base = snapshot(&publisher, None, &[(0, 1), (5, 2)], 30);
+        let parent = snapshot(&publisher, Some(&base), &[(6, 3)], 30);
+        let target = snapshot(&publisher, Some(&parent), &[(5, 0), (7, 4)], 50);
+
+        let (rows, reverted) = publisher
+            .delta_pages(&base, Some(&parent), &target, |delta| {
+                let rows: Vec<(u64, PageHash, Vec<u8>)> = delta
+                    .changed
+                    .iter()
+                    .map(|&(gfn, hash, data)| (gfn, *hash, data.to_vec()))
+                    .collect();
+                (rows, delta.reverted.clone())
+            })
+            .unwrap();
+        assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), vec![5, 7]);
+        assert!(reverted.is_empty());
+        let rows = publisher
+            .delta_pages(&base, None, &target, |delta| {
+                delta
+                    .changed
+                    .iter()
+                    .map(|&(gfn, hash, data)| (gfn, *hash, *data))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.0).collect::<Vec<_>>(),
+            vec![5, 6, 7]
+        );
+
+        let subscriber = Checkpoints::new();
+        let subscriber_base = snapshot(&subscriber, None, &[(0, 1), (5, 2)], 30);
+        assert_eq!(digest(&subscriber_base), digest(&base));
+        let borrowed: Vec<(u64, &PageHash, &[u8; PAGE_SIZE])> = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let imported = subscriber
+            .import_pages(&subscriber_base, &subscriber_base, &borrowed, 50)
+            .unwrap();
+        assert_eq!(imported.image_bytes(), 50);
+        assert_eq!(digest(&imported), digest(&target));
+
+        let near = snapshot(&subscriber, Some(&subscriber_base), &[(6, 3)], 30);
+        let again = subscriber
+            .import_pages(&subscriber_base, &near, &borrowed, 50)
+            .unwrap();
+        assert_eq!(digest(&again), digest(&target));
+
+        assert!(matches!(
+            Checkpoints::new().delta_pages(&base, None, &target, |_| ()),
+            Err(MemoryError::Empty)
+        ));
+        assert!(matches!(
+            Checkpoints::new().import_pages(&base, &base, &borrowed, 50),
+            Err(MemoryError::Empty)
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn imports_and_shortening_flatten_long_chains() {
+        let checkpoints = Checkpoints::new();
+        let base = snapshot(&checkpoints, None, &[(0, 1)], 20);
+        let mut tip = base.share();
+        for step in 0..MAX_CHAIN_LEN {
+            let gfn = 1 + u64::from(step % 3);
+            let next = snapshot(&checkpoints, Some(&tip), &[(gfn, step as u8 + 2)], 20);
+            tip = next;
+        }
+        let chain = checkpoints
+            .held()
+            .unwrap()
+            .stats(tip.id())
+            .unwrap()
+            .chain_len;
+        assert!(chain >= MAX_CHAIN_LEN);
+
+        let page_bytes = (IMAGE_PAGES as usize) * PAGE_SIZE + PHYSMEM_BYTES;
+        let mut memory = vec![0_u8; page_bytes];
+        for gfn in 0..4_u64 {
+            let mut buffer = page(0);
+            checkpoints
+                .held()
+                .unwrap()
+                .store
+                .read_page(tip.id(), gfn, &mut buffer)
+                .unwrap();
+            let at = gfn as usize * PAGE_SIZE;
+            memory[at..at + PAGE_SIZE].copy_from_slice(&buffer);
+        }
+        let before = digest(&tip);
+        let flat = {
+            let mut held = checkpoints.held().unwrap();
+            held.store.retain(tip.id()).unwrap();
+            held.shorten(tip.id(), &memory).unwrap()
+        };
+        assert_ne!(flat, tip.id());
+        let flat = checkpoints.adopt(flat);
+        assert_eq!(
+            checkpoints
+                .held()
+                .unwrap()
+                .stats(flat.id())
+                .unwrap()
+                .chain_len,
+            1
+        );
+        assert_eq!(flat.image_bytes(), 20);
+        assert_eq!(digest(&flat), before);
+
+        let short = checkpoints
+            .held()
+            .unwrap()
+            .shorten(base.id(), &memory)
+            .unwrap();
+        assert_eq!(short, base.id());
+
+        let source = snapshot(&checkpoints, Some(&base), &[(9, 7)], 20);
+        let rows = checkpoints
+            .delta_pages(&base, None, &source, |delta| {
+                delta
+                    .changed
+                    .iter()
+                    .map(|&(gfn, hash, data)| (gfn, *hash, *data))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        let borrowed: Vec<(u64, &PageHash, &[u8; PAGE_SIZE])> = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let imported = checkpoints
+            .import_pages(&base, &tip, &borrowed, 20)
+            .unwrap();
+        let imported_chain = checkpoints
+            .held()
+            .unwrap()
+            .stats(imported.id())
+            .unwrap()
+            .chain_len;
+        assert!(imported_chain < MAX_CHAIN_LEN);
+        assert_eq!(digest(&imported), digest(&source));
+    }
+}
