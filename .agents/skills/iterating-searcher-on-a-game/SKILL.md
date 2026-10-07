@@ -73,8 +73,10 @@ These hold at every step.
    runs. Before a long run, show with a short probe that the target is
    reachable and that the counter can move.
 9. Before every launch, write down the question, the arms, the counter you
-   will read, the budget and the expected wall time. Skip a launch whose result
-   would change no decision.
+   will read, the budget and the expected wall time. For a game run at a hard
+   part, also name the hard part's tiny world and the scorecard prediction the
+   run will score; a hard part with no world gets one first (step 6). Skip a
+   launch whose result would change no decision.
 10. Improve the general search machinery. The searcher carries no game names,
     coordinates or per-level mechanisms; the custom lints reject game names in
     `dissonance/searcher`.
@@ -98,15 +100,17 @@ Game iteration progress:
 - [ ] 3. Rooted segments at each hard part
 - [ ] 4. Handoff comparison; pick the biggest gap
 - [ ] 5. Diagnose the gap from film; write one general change
-- [ ] 6. Panel: reject clearly bad changes; write scorecard predictions
-- [ ] 7. Checkpoint slices, changed and unchanged, 3+ seeds each
-- [ ] 8. Power-on run with the change
-- [ ] 9. Score the predictions; improve the tiny world that missed
-- [ ] 10. SMB three cells, panel, pull request
+- [ ] 6. Tiny world for the hard part: the unchanged searcher loses as in the game
+- [ ] 7. Panel: reject clearly bad changes; write scorecard predictions
+- [ ] 8. Checkpoint slices, changed and unchanged, 3+ seeds each
+- [ ] 9. Power-on run with the change
+- [ ] 10. Score the predictions; improve the tiny world that missed
+- [ ] 11. SMB three cells, panel, pull request
 ```
 
-Steps 5 to 9 repeat for each change. A change that fails a step goes back to
-step 5 with the film of the failure. Commands and manifest fields are in
+Steps 5 to 10 repeat for each change, whether it lands in the searcher or in
+the workload's key. A change that fails a step goes back to step 5 with the
+film of the failure. Commands and manifest fields are in
 [reference/tools.md](reference/tools.md).
 
 ### Step 1: Map milestones and hard parts
@@ -202,10 +206,30 @@ starting questions, never as answers:
 - The top tier takes most draws, so a lower tier that could gather resources
   gets few.
 
-### Step 6: Panel
+### Step 6: Tiny world for the hard part
 
-Run the panel rules and the compare mode against the change's base. Details
-are in [reference/tiny-worlds.md](reference/tiny-worlds.md).
+Every diagnosed hard part gets a tiny world before its change runs on the
+game, whichever component the change touches.
+
+1. Name the mechanism the film shows, such as a consumable spent before the
+   barrier that needs it, or progress the key cannot see.
+2. Pick the family in `workloads/tiny-worlds` that has the mechanism, or
+   extend one as [reference/tiny-worlds.md](reference/tiny-worlds.md)
+   describes.
+3. Set the world's options until the unchanged searcher loses there at about
+   the game's rate: the share of seeds that pass and the tries to pass.
+4. Record the world, its options and both loss rates in the notes.
+
+A workload key change still gets a world. The world shows what the searcher
+cannot find without the key's help, and a later searcher change is measured on
+the same world with that information hidden.
+
+### Step 7: Panel
+
+Run the panel rules and the compare mode against the change's base, with the
+hard part's world in the compare. For a workload key change, compare the world
+with the information hidden against the world with it in the key. Details are
+in [reference/tiny-worlds.md](reference/tiny-worlds.md).
 
 - Drop a change the panel calls clearly bad on any world.
 - A world still undecided at its layout limit means the change is not
@@ -216,7 +240,7 @@ are in [reference/tiny-worlds.md](reference/tiny-worlds.md).
 - Before any game run, write a scorecard entry for each game leg the change
   should move and for each watch leg the panel names.
 
-### Step 7: Checkpoint slices
+### Step 8: Checkpoint slices
 
 Slice each hard part the change targets and each hard part a watch leg names.
 Resume the checkpoint that opens that hard part with the changed searcher and
@@ -229,7 +253,7 @@ and the delivered states come along, so every slice includes the handoff.
   the leg's scorecard range. A few seeds resolve only large differences.
 - If the change fails, film the failed attempts and return to step 5.
 
-### Step 8: Power-on run
+### Step 9: Power-on run
 
 Run the change from power-on on three or more seeds. Compare the tries to each
 milestone with the baseline's, and report emulator frames beside tries,
@@ -237,16 +261,17 @@ because a change can cut tries while adding frames per try. This is the final
 test, because only a single run shows the search picking and carrying the
 state itself.
 
-### Step 9: Score the predictions and improve the tiny worlds
+### Step 10: Score the predictions and improve the tiny worlds
 
 Add each game outcome to the scorecard beside its prediction, hit or miss. A
 miss means a world lacks the game's mechanism or runs it at a different rate.
 Film of the game leg shows which. Change the world, or build a new one, until
-the unchanged searcher loses there the way it loses in the game. Build a world
-only after the game shows where the loss is. The steps are in
+the unchanged searcher loses there the way it loses in the game. Every world
+comes from a game loss seen on film, at step 6 or after a miss here. The steps
+are in
 [reference/tiny-worlds.md](reference/tiny-worlds.md).
 
-### Step 10: Regression checks and pull request
+### Step 11: Regression checks and pull request
 
 - SMB three cells against main: every cell must solve; compare tries to the
   first win.
