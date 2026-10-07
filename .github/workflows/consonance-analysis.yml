@@ -172,13 +172,14 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Region coverage of the Consonance crates
-        # The excluded files are the host hypervisor bindings and the live
-        # session paths, which need a hypervisor this runner cannot provide.
+        # The excluded files are the host hypervisor bindings, the live
+        # session paths and the UML qualification binary, which need a
+        # hypervisor or a built UML profile this runner cannot provide.
         run: |
           # shellcheck disable=SC2046
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
             $(python3 scripts/ci_contract.py package-flags Consonance) \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs)|consonance/client/src/session/live\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs)|consonance/client/src/session/live\.rs|consonance/uml/src/bin/' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
