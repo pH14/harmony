@@ -131,11 +131,17 @@ pub struct NovaMechanicalState {
 
 impl NovaMechanicalState {
     #[must_use]
-    pub fn cleared_count(self) -> u8 {
+    pub fn cleared(self, index: u8) -> bool {
         self.levels_cleared
-            .iter()
-            .map(|byte| byte.count_ones())
-            .sum::<u32>()
+            .get(usize::from(index / 8))
+            .is_some_and(|byte| byte & (1 << (index % 8)) != 0)
+    }
+
+    #[must_use]
+    pub fn cleared_in_order(self) -> u8 {
+        (0..NOVA_CAMPAIGN_LEVEL_COUNT)
+            .take_while(|index| self.cleared(*index))
+            .count()
             .try_into()
             .unwrap_or(u8::MAX)
     }
@@ -286,7 +292,7 @@ where
     action_observations: Vec<NovaObservations>,
     failed: bool,
     snapshot_base: Option<P>,
-    genesis_cleared: u8,
+    genesis_level: u8,
     halt_on_level_clear: bool,
     execution_work: u64,
 }
@@ -330,7 +336,7 @@ where
             observation,
             failed: false,
             snapshot_base: None,
-            genesis_cleared: state.cleared_count(),
+            genesis_level: state.started_level,
             halt_on_level_clear: true,
             execution_work: 0,
         })
@@ -416,12 +422,12 @@ where
 
     #[must_use]
     pub fn cleared_a_level(&self) -> bool {
-        self.observation.decoded.cleared_count() > self.genesis_cleared
+        self.observation.decoded.cleared(self.genesis_level)
     }
 
     #[must_use]
     pub fn cleared_every_level(&self) -> bool {
-        self.observation.decoded.cleared_count() >= NOVA_CAMPAIGN_LEVEL_COUNT
+        self.observation.decoded.cleared_in_order() >= NOVA_CAMPAIGN_LEVEL_COUNT
     }
 
     pub fn set_halt_on_level_clear(&mut self, halt: bool) {
@@ -434,8 +440,8 @@ where
 
     fn starts_next_level(&self, prior: NovaMechanicalState, state: NovaMechanicalState) -> bool {
         !self.halt_on_level_clear
-            && state.cleared_count() > prior.cleared_count()
-            && state.cleared_count() < NOVA_CAMPAIGN_LEVEL_COUNT
+            && state.cleared_in_order() > prior.cleared_in_order()
+            && state.cleared_in_order() < NOVA_CAMPAIGN_LEVEL_COUNT
     }
 
     fn start_next_level(&mut self) -> Result<(NovaMechanicalState, u64), MachineError> {
@@ -1118,7 +1124,7 @@ pub fn spatial_bucket(state: NovaMechanicalState) -> (u8, u8, u16, u16) {
 #[must_use]
 pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8) {
     (
-        state.cleared_count(),
+        state.cleared_in_order(),
         state.collectible_count(),
         state.available_count(),
         state.ability != 0,
@@ -1417,7 +1423,7 @@ mod tests {
     #[test]
     fn whole_game_policy_executes_after_a_level_clear() {
         let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
-        target.genesis_cleared = 0;
+        target.genesis_level = 0;
         target.observation.decoded.levels_cleared[0] = 1;
         assert!(target.cleared_a_level());
         assert!(!target.cleared_every_level());
@@ -1454,7 +1460,7 @@ mod tests {
         target.apply(&ButtonChord::new(JOYPAD_UP, 2));
         assert!(!target.failed);
         let state = target.mechanical_state();
-        assert_eq!((state.cleared_count(), state.started_level), (1, 1));
+        assert_eq!((state.cleared_in_order(), state.started_level), (1, 1));
         assert_eq!(target.observe().frame_count, 2 + level_start_frames());
         assert_eq!(target.execution_work(), 2 + level_start_frames());
         target.apply(&ButtonChord::new(0, 1));
@@ -1479,7 +1485,7 @@ mod tests {
         target.apply(&ButtonChord::new(JOYPAD_UP, 2));
         assert!(!target.failed);
         let state = target.mechanical_state();
-        assert_eq!((state.cleared_count(), state.started_level), (1, 1));
+        assert_eq!((state.cleared_in_order(), state.started_level), (1, 1));
         assert_eq!(target.observe().frame_count, 2 + level_start_frames());
         assert_eq!(target.machine.vtime, 2 + level_start_frames());
         assert_eq!(target.machine.run_calls, chords);
@@ -1494,6 +1500,18 @@ mod tests {
         target.apply(&ButtonChord::new(JOYPAD_UP, 2));
         assert!(target.failed);
         assert!(matches!(target.exit_kind(), ExitKind::Crash));
+    }
+
+    #[test]
+    fn a_level_clear_reads_the_selected_level_bit_alone() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.genesis_level = 20;
+        target.observation.decoded.levels_cleared = [255, 255, 140, 0, 0, 128, 0, 0];
+        assert_eq!(target.observation.decoded.cleared_in_order(), 16);
+        assert!(!target.cleared_a_level());
+        target.observation.decoded.levels_cleared[2] |= 1 << 4;
+        assert!(target.cleared_a_level());
+        assert_eq!(target.observation.decoded.cleared_in_order(), 16);
     }
 
     #[test]
@@ -1730,13 +1748,14 @@ mod tests {
         let mut save = vec![0_u8; 8 * 1024];
         save[PLAYER_ABILITY] = 6;
         save[LEVEL_CLEARED] = 0b1011;
+        save[LEVEL_CLEARED + 5] = 0x80;
         save[LEVEL_AVAILABLE] = 0xff;
         save[COLLECTIBLE_BITS + 7] = 0x80;
         let state = decode_state(&wram, &save).expect("decode fixture");
         assert_eq!((state.x, state.y), (0x34a, 0x0b8));
         assert_eq!((state.level, state.started_level), (9, 7));
         assert_eq!((state.health, state.chips, state.chips_needed), (4, 3, 5));
-        assert_eq!((state.cleared_count(), state.available_count()), (3, 8));
+        assert_eq!((state.cleared_in_order(), state.available_count()), (2, 8));
         assert_eq!(state.collectible_count(), 1);
         assert_eq!((state.keys, state.sun_key), ([0, 0, 0], false));
         assert_eq!((state.carrying_block, state.toggle), (false, false));

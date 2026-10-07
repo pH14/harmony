@@ -17,11 +17,14 @@ Nova retains one scheduled representative per 16-pixel location under each of
 four preferences. The first prefers states with more cleared levels,
 collectibles, available levels, health and puzzle chips, in that order. Each of
 the other three ranks the count of one key color ahead of the first preference.
-The progress tier is the cleared-level count. The place is the collectible and
+The progress tier is the number of levels cleared in campaign order, the
+leading run of set bits in the cleared-level bitmap. A glitch reachable in play
+can rewrite other bits of that bitmap, and a count of every set bit would rank
+such a state above the level the run has reached. The place is the collectible and
 available counts, the level identity, the boss-fight count, the puzzle state and
 a two-bucket position; the holder identity is the exact position bucket and the
 held ability.
-In whole-game mode the selector puts most draws on the highest cleared count, so
+In whole-game mode the selector puts most draws on the highest tier, so
 places in levels already cleared stop taking most of the search. A level
 campaign stops at its first clear, so it has one tier.
 
