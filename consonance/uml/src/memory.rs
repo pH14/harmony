@@ -642,10 +642,12 @@ mod tests {
         let same = snapshot(&checkpoints, None, &[(1, 1)], 10);
         let longer = snapshot(&checkpoints, None, &[(1, 1)], 11);
         let other_page = snapshot(&checkpoints, None, &[(1, 2)], 10);
+        let other_gfn = snapshot(&checkpoints, None, &[(2, 1)], 10);
         let child = snapshot(&checkpoints, Some(&base), &[(2, 3)], 10);
         assert_eq!(digest(&base), digest(&same));
         assert_ne!(digest(&base), digest(&longer));
         assert_ne!(digest(&base), digest(&other_page));
+        assert_ne!(digest(&base), digest(&other_gfn));
         assert_ne!(digest(&base), digest(&child));
         let reverted = snapshot(&checkpoints, Some(&child), &[(2, 0)], 10);
         assert_eq!(digest(&reverted), digest(&base));
