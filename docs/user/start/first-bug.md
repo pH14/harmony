@@ -1,98 +1,103 @@
 # Find and investigate your first bug
 
-Two processes increment the same counter. Each reads the old value, adds one,
-and writes its result. If one writer waits between reading and writing, it can
-overwrite the other writer's completed increment.
+We’ll start with a shared counter that loses increments when its two writers
+race. The program tracks each writer’s completed increments separately, so it
+can detect when the total falls behind.
 
-The assertion is: **the counter includes every completed increment**. Each writer records its completed increments separately. Comparing their sum
-with the shared counter exposes an increment that was overwritten.
-
-This walkthrough prepares the existing lost-update example, searches for that
-failure, and opens a branch for investigation. Use a
-[supported host](../reference/environments.md), the built CLI, and Docker or
-Podman. Start in the Harmony repository root.
+You’ll use Harmony to find one of these failures, inspect the counter, and save
+a branch to test further. Before starting, follow the
+[installation instructions](install.md) and have Docker or Podman running.
+The commands below start in the Harmony repository root.
 
 ## 1. Copy the example
 
+The repository includes the C source and a recipe for running both writers.
+Copy them into a working directory:
+
 {{ example "setup" }}
 
-The source and its support header come from the repository's tested lost-update
-workload. The supplied recipe names two writers and a setup command that creates
-their shared counter. It uses the standard instrumented C build.
+The recipe initializes the shared counter before starting the writers and uses
+Harmony’s standard C build to instrument the program.
 
 ## 2. Prepare and check it
 
+Build the application image:
+
 {{ example "prepare" }}
 
-Preparation builds the image, retains symbols, and checks admission. The first
-build can take several minutes. It does not yet search the application.
+This also saves the debugging symbols and checks that Harmony can use the image.
+Allow several minutes for the first build.
+
+Next, check that the host and runtime are ready:
 
 {{ example "check" }}
 
-Resolve any reported missing runtime or host requirement before continuing.
-A successful check means the execution prerequisites are available, not that the
-application is correct.
+If this reports a missing dependency or a host configuration problem, resolve it
+before continuing.
 
 ## 3. Search for a lost update
 
+Give Harmony up to 1,000 executions or two minutes to find the race:
+
 {{ example "search" }}
 
-The search stops at 1,000 executions or two minutes, whichever comes first.
-A search that finds a violation exits with status 1; that is an application
-finding, not a failed installation. Infrastructure errors use status 2.
+Finding a bug causes this command to exit with status 1. That’s the expected
+outcome here; status 2 indicates an error running the search.
+
+Open the results:
 
 {{ example "findings" }}
 
-Look for a confirmed finding for **the counter holds every finished increment**.
-Search results and timing can vary. If this budget finds nothing, inspect the
-summary for execution failures and assertion reachability before spending more
-time. The [search guide](../search.md) explains the difference between continuing
-a search and starting at a saved branch.
+You should see a confirmed failure of **the counter holds every finished
+increment**. If no finding appears, check the summary for execution errors and
+whether the assertion was reached. See [Run longer searches](../search.md) for
+how to continue the search.
 
-The remaining steps require finding 1. If you continue the search under a new
-name, use that name in the investigation commands below.
+The following commands investigate finding 1 in `baseline`. If you saved a
+longer search under another name, substitute that name below.
 
 ## 4. Inspect the failing execution
 
+Open the timeline and application logs:
+
 {{ example "inspect" }}
 
-The timeline shows recorded actions and observations. Logs show retained
-application output. A quiet application can have little output even when the
-assertion evidence identifies a failure. The timeline is the better starting
-point for this counter.
+Start with the timeline, which includes the actions leading up to the failed
+assertion. This example writes little to its application logs, though those
+logs can be useful when investigating your own program.
 
 ## 5. Inspect the counter before the failure
 
-Move back one action from the first observed failure, print the shared counter,
-and continue the recorded actions:
+Go back one action before the failure and read the counter:
 
 {{ example "state" }}
 
-The three numbers are the shared counter and each writer's completed increments.
-Compare the first number with the sum of the other two. You are looking at an
-earlier point, so it may still satisfy the property. The writers keep running while
-the command reads; use the recorded assertion to establish the violation.
-Continuing the suffix lets
-you investigate how that state develops. Opening a guest command can itself
-advance the application; this branch is a new experiment.
+The output contains three numbers: the shared total, followed by each writer’s
+count of completed increments. If the first is smaller than the other two added
+together, an increment has been lost.
+
+Here you’re reading an earlier state, and the writers can run while the command
+executes. The numbers may therefore differ from those at the original failure;
+use the recorded assertion as evidence of the bug. After the command finishes,
+Harmony continues the recorded actions and saves the result as `before-failure`.
 
 ## 6. Save a point for another search
 
-Return to step 0, the prepared initial state, and write a marker in the guest.
-Saving without the remaining recorded actions gives us an uncomplicated starting
-point for another search:
+You can also change the guest and search from that changed state. To try this,
+return to the prepared initial state at step 0 and create a file:
 
 {{ example "branch" }}
 
-The command prints `investigating`. Its file change belongs to the saved
-`debugging` branch. The original search remains available.
+The command prints `investigating` and saves a branch called `debugging` with the
+new file in it. `--stop` saves that state without running the remaining recorded
+actions.
+
+Run four executions from this branch:
 
 {{ example "followup" }}
 
-This starts a new four-execution search from the changed guest state. It does
-not need to find another bug to demonstrate that the branch is usable.
+Each starts with `/tmp/investigation` present. You now have a separate search
+called `followup`; `baseline` is still available for comparison.
 
-Continue with [interactive investigation](../investigate/index.md) to open a
-shell, change the state, and search from it. The
-[application guide](../test/application.md) explains how to replace this example
-with your own services.
+Continue to [Investigate](../investigate/index.md) to try an interactive shell,
+or [Configure an application](../test/application.md) to test your own program.
