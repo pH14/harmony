@@ -458,6 +458,18 @@ mod tests {
     }
 
     #[test]
+    fn nested_consonance_requires_a_kernel_before_execution() {
+        let error = run_nested_consonance(&args(Package::Nested, Backend::Consonance))
+            .expect_err("nested search without a kernel must fail");
+        let expected = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            "nested search requires --kernel pointing to the qualified nested-host kernel"
+        } else {
+            "nested search requires Linux x86 KVM with nested VMX or SVM"
+        };
+        assert_eq!(error.to_string(), expected);
+    }
+
+    #[test]
     fn missing_native_nes_input_is_rejected() {
         let mut args = args(Package::Nes, Backend::Native);
         args.core = Some(PathBuf::from("missing-quicknes-core"));
