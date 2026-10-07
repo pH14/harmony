@@ -401,7 +401,7 @@ fn action_champion_key(observations: &[NovaObservations]) -> Option<NovaChampion
         let state = observation.decoded;
         (
             NovaProgressWatermark {
-                cleared: state.cleared_count(),
+                cleared: state.cleared_in_order(),
                 collectibles: state.collectible_count(),
                 available: state.available_count(),
                 started_level: state.started_level,
