@@ -1483,6 +1483,13 @@ def _miri_matrix_names(data: dict, suffix: str) -> list[str]:
     return []
 
 
+def _miri_dispatch_crates(data: dict) -> list[str]:
+    triggers = data.get("on", data.get(True, {}))
+    dispatch = triggers.get("workflow_dispatch") if isinstance(triggers, dict) else None
+    crate = ((dispatch or {}).get("inputs") or {}).get("crate") or {}
+    return [option for option in crate.get("options") or [] if option != "every"]
+
+
 def check_miri_matrices(repo_root: Path, tracked: set[str]) -> list[Violation]:
     """Each component's Analysis workflow lists exactly the targets it owns."""
     import ci_contract
@@ -1525,6 +1532,11 @@ def check_miri_matrices(repo_root: Path, tracked: set[str]) -> list[Violation]:
                 violations.append(Violation("ci-miri-coverage", workflow.path, 0,
                     f"the Miri{suffix} matrix lists {sorted(listed)} and "
                     f"scripts/miri_scope.py registers {sorted(expected)} for {owner}"))
+        dispatchable = _miri_dispatch_crates(data)
+        if sorted(dispatchable) != sorted(whole.get(owner, [])):
+            violations.append(Violation("ci-miri-coverage", workflow.path, 0,
+                f"the dispatch input 'crate' offers {sorted(dispatchable)} and "
+                f"scripts/miri_scope.py registers {sorted(whole.get(owner, []))} for {owner}"))
     return violations
 
 
@@ -1896,7 +1908,7 @@ def main(argv: list[str] | None = None) -> int:
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running Results job.",
         "ci-nes-media": "Both NES compositions publish video with game audio: a bounded capture in the Checks workflow and every scenario in the Benchmarks workflow. Register the capture in scripts/ci_contract.py and check the media with scripts/verify-nes-films.py.",
         "ci-nes-compositions": "Both NES compositions stay: Dissonance runs the game on native QuickNES and Harmony runs it inside a Consonance VM. Each keeps a bounded check and a full benchmark.",
-        "ci-miri-coverage": "The Analysis workflow of each component must list exactly the Miri targets scripts/miri_scope.py registers and scripts/ci_contract.py assigns to it.",
+        "ci-miri-coverage": "The Analysis workflow of each component must list exactly the Miri targets scripts/miri_scope.py registers and scripts/ci_contract.py assigns to it, in its matrices and in its dispatch input 'crate'.",
         "ci-analysis-grouping": "Coverage, Miri, mutation testing and proofs belong in the owning component's Analysis workflow, beside each other and apart from its bounded correctness checks.",
         "ci-host-compatibility": f"Harmony is built and tested on every host it supports. '{HOST_COMPATIBILITY_WORKFLOW}' keeps a bounded pull request job for each of {', '.join(HOST_COMPATIBILITY_JOBS)}.",
         "ci-pinned-seed-outcome": (

@@ -12,6 +12,22 @@ on:
   schedule:
     - cron: "40 8 * * *"
   workflow_dispatch:
+    inputs:
+      job:
+        description: Scheduled job to run
+        type: choice
+        options: [all, miri-whole-crate, coverage, mutants]
+        default: all
+      crate:
+        description: Whole-crate Miri target to interpret
+        type: choice
+        options: [every, machine, nes-guest]
+        default: every
+      shard:
+        description: Mutation testing shard to run
+        type: choice
+        options: [every, "0", "1", "2", "3"]
+        default: every
 
 permissions:
   contents: read
@@ -71,7 +87,7 @@ jobs:
 
   miri-whole-crate:
     name: Miri — ${{ matrix.name }} (Whole Crate)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'miri-whole-crate'))
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
@@ -83,15 +99,20 @@ jobs:
           - name: nes-guest
             command: --manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins
     env:
+      SELECTED: ${{ github.event_name == 'schedule' || inputs.crate == 'every' || inputs.crate == matrix.name }}
       MIRIFLAGS: -Zmiri-permissive-provenance
     steps:
       - uses: actions/checkout@v4
+        if: env.SELECTED == 'true'
       - name: Install pinned nightly and Miri
+        if: env.SELECTED == 'true'
         run: rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
       - uses: Swatinem/rust-cache@v2
+        if: env.SELECTED == 'true'
         with:
           shared-key: harmony-miri-whole-crate
       - name: Interpret the whole crate
+        if: env.SELECTED == 'true'
         env:
           MIRI_COMMAND: ${{ matrix.command }}
         run: |
@@ -101,7 +122,7 @@ jobs:
 
   coverage:
     name: Coverage
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'coverage'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -131,7 +152,7 @@ jobs:
 
   mutants:
     name: Mutation Testing — Shard ${{ matrix.shard }}/4
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'mutants'))
     runs-on: ubuntu-latest
     timeout-minutes: 320
     strategy:
@@ -139,20 +160,26 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     env:
+      SELECTED: ${{ github.event_name == 'schedule' || inputs.shard == 'every' || inputs.shard == format('{0}', matrix.shard) }}
       CARGO_INCREMENTAL: "1"
     steps:
       - uses: actions/checkout@v4
+        if: env.SELECTED == 'true'
       - name: Install stable toolchain
+        if: env.SELECTED == 'true'
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
+        if: env.SELECTED == 'true'
         with:
           shared-key: harmony-mutants
       - uses: taiki-e/install-action@v2
+        if: env.SELECTED == 'true'
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest
       - name: Mutate the assembled CLI
+        if: env.SELECTED == 'true'
         run: |
           # shellcheck disable=SC2046
           scripts/run-mutants.sh "$GITHUB_WORKSPACE/mutants/cli" \
@@ -161,7 +188,7 @@ jobs:
             $(python3 scripts/ci_contract.py package-flags Harmony) \
             --cargo-test-arg=--profile --cargo-test-arg=mutants
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.SELECTED == 'true'
         with:
           name: harmony-mutants-${{ matrix.shard }}
           path: ${{ github.workspace }}/mutants
