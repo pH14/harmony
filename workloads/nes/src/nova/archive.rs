@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_ability_identity_key_color_preferences_v12";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_in_order_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_ability_identity_key_color_preferences_v13";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -194,7 +194,7 @@ pub struct NovaArchiveReport {
 #[must_use]
 pub fn milestones(state: NovaMechanicalState) -> NovaMilestones {
     NovaMilestones {
-        cleared: state.cleared_count(),
+        cleared: state.cleared_in_order(),
         available: state.available_count(),
         collectibles: state.collectible_count(),
         acquired_ability: state.ability != 0,
@@ -225,7 +225,7 @@ pub fn merge_progress_watermark(
     for observation in observations {
         let state = observation.decoded;
         *watermark = (*watermark).max(NovaProgressWatermark {
-            cleared: state.cleared_count(),
+            cleared: state.cleared_in_order(),
             collectibles: state.collectible_count(),
             available: state.available_count(),
             started_level: state.started_level,
