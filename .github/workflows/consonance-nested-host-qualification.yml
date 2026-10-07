@@ -363,13 +363,14 @@ jobs:
             consonance/harmony-linux/build/x86_64/nested-driver.oci/oci-layout \
             consonance/harmony-linux/build/x86_64/nested-driver.oci/blobs/sha256/* \
             >nested-host-evidence/current-provenance.sha256
+          inputs="$GITHUB_WORKSPACE/consonance/harmony-linux/build/x86_64"
+          recipe=$(printf '[runner.options]\nkernel = "%s"\nbase_initramfs = "%s"\nram_mib = 512\n' \
+            "$inputs/bzImage-nested-host" "$inputs/initramfs-oci.cpio.gz")
           common=(search consonance/harmony-linux/build/x86_64/nested-driver.oci --package nested
-            --kernel consonance/harmony-linux/build/x86_64/bzImage-nested-host
-            --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
-            --ram-mib 512 --seed 42)
+            --config-toml "$recipe" --seed 42)
           set +e
           timeout -k 10 360 taskset -c "$cpu" target-cli/release/harmony "${common[@]}" \
-            --executions 100 --wall-minutes 5 --out nested-host-evidence/search \
+            --executions 100 --for 5m --out nested-host-evidence/search \
             2>&1 | tee nested-host-evidence/search.log
           search_result=${PIPESTATUS[0]}
           set -e

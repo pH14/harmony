@@ -182,7 +182,7 @@ jobs:
       - name: Replay and branch the saved guest execution
         if: steps.scope.outputs.enabled == 'true'
         run: |
-          timeout -k 10 120 target/release/harmony replay harmony-nes-check/search \
+          timeout -k 10 120 target/release/harmony debug replay harmony-nes-check/search \
             --out harmony-nes-check/guest-replay
           timeout -k 10 120 target/release/harmony branch harmony-nes-check/search \
             --step 0 --stop --out harmony-nes-check/guest-prefix

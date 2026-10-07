@@ -6,13 +6,24 @@ use crate::{
 };
 use std::fs;
 pub fn saved(mut request: Request) -> Result<u8> {
-    let path = locate(&request.selection.as_ref().ok_or("select a run")?.run)?;
+    let path = locate(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
     let manifest = Manifest::read(&path)?;
     if !matches!(
         request.operation,
-        Operation::Inspect | Operation::Findings | Operation::Timeline | Operation::Logs
+        Operation::Inspect | Operation::Timeline | Operation::Logs
     ) {
         manifest.verify(&path)?;
+    }
+    if request.operation == Operation::Search && manifest.mode != "branch" {
+        return Err(
+            "search --from requires a branch; use branch NAME to choose a starting point".into(),
+        );
     }
     request.config = manifest.config;
     crate::adapters::dispatch(request)
@@ -26,7 +37,7 @@ pub fn list(json: bool) -> Result<u8> {
             if !entry.file_type()?.is_dir() {
                 continue;
             }
-            match Manifest::read(&entry.path()) { Ok(m)=>runs.push(serde_json::json!({"name":entry.file_name().to_string_lossy(),"mode":m.mode,"status":m.status,"workload":m.config.workload.package,"runner":m.config.runner.kind})), Err(error)=>eprintln!("cannot read {}: {error}",entry.path().display()) }
+            match Manifest::read(&entry.path()) { Ok(m) if matches!(m.mode.as_str(), "search" | "branch")=>runs.push(serde_json::json!({"name":entry.file_name().to_string_lossy(),"mode":m.mode,"status":m.status,"workload":m.config.workload.package,"runner":m.config.runner.kind})), Ok(_)=>{}, Err(error)=>eprintln!("cannot read {}: {error}",entry.path().display()) }
         }
     }
     runs.sort_by_key(|v| v["name"].as_str().unwrap_or_default().to_owned());

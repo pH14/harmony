@@ -2,17 +2,18 @@
 use crate::config::Result;
 #[derive(Clone, Debug, clap::Args)]
 pub struct Selection {
+    #[arg(value_name = "NAME")]
     pub run: String,
-    #[arg(long)]
+    #[arg(long, help = "Select a numbered finding from the search")]
     pub finding: Option<usize>,
 }
 #[derive(Clone, Debug, Default, clap::Args)]
 pub struct Point {
-    #[arg(long, conflicts_with_all=["rewind", "rewind_time"])]
+    #[arg(long, help="Select the boundary after this many recorded actions", conflicts_with_all=["rewind", "rewind_time"])]
     pub step: Option<usize>,
-    #[arg(long, conflicts_with_all=["step", "rewind_time"])]
+    #[arg(long, help="Move back this many steps from the finding or endpoint", conflicts_with_all=["step", "rewind_time"])]
     pub rewind: Option<usize>,
-    #[arg(long, conflicts_with_all=["step", "rewind"])]
+    #[arg(long, help="Move back by guest time, rounded to a recorded boundary (e.g. 2s)", conflicts_with_all=["step", "rewind"])]
     pub rewind_time: Option<String>,
 }
 impl Point {

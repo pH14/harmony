@@ -250,7 +250,7 @@ mod tests {
 pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
     let directory = path.join("checkpoints");
     let text = fs::read_to_string(directory.join("checkpoints.jsonl")).map_err(
-        |_| "this run has no whole-search checkpoint yet (written periodically and when a search completes)",
+        |_| "this recording has no whole-search checkpoint yet (written periodically and when a search completes)",
     )?;
     for (index, line) in text.lines().rev().enumerate() {
         let record: serde_json::Value = match serde_json::from_str(line) {
@@ -267,9 +267,9 @@ pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
             if candidate.is_file() {
                 return Ok((
                     candidate,
-                    record["executions"]
+                    record["reserved"]
                         .as_u64()
-                        .ok_or("checkpoint journal has no execution count")?,
+                        .ok_or("checkpoint journal has no reserved execution count")?,
                 ));
             }
         }
@@ -292,10 +292,15 @@ mod checkpoint_tests {
         for suffix in ["", "{", "{\"file\":", "{\"file\":\"next"] {
             fs::write(
                 &journal,
-                format!("{{\"file\":\"checkpoint.bin\",\"executions\":4}}\n{suffix}"),
+                format!(
+                    "{{\"file\":\"checkpoint.bin\",\"executions\":4,\"reserved\":7}}\n{suffix}"
+                ),
             )
             .unwrap();
-            assert_eq!(checkpoint_record(root.path()).unwrap().0, checkpoint);
+            assert_eq!(
+                checkpoint_record(root.path()).unwrap(),
+                (checkpoint.clone(), 7)
+            );
         }
         fs::write(&journal, "{\"file\":\"checkpoint.bin\"}\n{\"file\":broken}").unwrap();
         assert!(checkpoint_record(root.path()).is_err());

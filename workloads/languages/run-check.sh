@@ -9,11 +9,11 @@ ram=${HARMONY_LANGUAGE_RAM_MIB:-1024}
 mkdir -p "$evidence"
 "$binary" prepare "$image" --json > "$evidence/admission.json"
 for boot in 1 2; do
-    "$binary" run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/boot-$boot"
+    "$binary" debug run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/boot-$boot"
 done
 python3 "$(dirname "$0")/verify-runs.py" "$evidence/boot-1" "$evidence/boot-2" \
     --output "$evidence/determinism.json"
-"$binary" run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/park" \
+"$binary" debug run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/park" \
     -- /opt/harmony/park-launcher /opt/harmony/fixture
 python3 - "$evidence/park" <<'PY'
 import json
@@ -30,12 +30,12 @@ if [[ $image == *language-java* ]]; then
     compiled=(-Xcomp -XX:-TieredCompilation -XX:CompileCommand=quiet
         '-XX:CompileCommand=compileonly,Fixture::*' '-XX:CompileCommand=compileonly,java.lang.invoke.*::*')
     for boot in 1 2; do
-        "$binary" run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 300s --out "$evidence/xcomp-$boot" \
+        "$binary" debug run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 300s --out "$evidence/xcomp-$boot" \
             -- /opt/java/bin/java "${compiled[@]}" -cp /opt/harmony/java Fixture
     done
     python3 "$(dirname "$0")/verify-runs.py" "$evidence/xcomp-1" "$evidence/xcomp-2" \
         --output "$evidence/xcomp-determinism.json"
-    "$binary" run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 300s --out "$evidence/generated" \
+    "$binary" debug run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 300s --out "$evidence/generated" \
         -- /opt/java/bin/java "${compiled[@]}" -cp /opt/harmony/java Fixture generated
     python3 - "$evidence/generated" <<'PY'
 import json
@@ -48,8 +48,8 @@ PY
 fi
 
 if [[ $image == *language-c* ]]; then
-    "$binary" run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/processes" -- /opt/harmony/fixture processes
-    "$binary" run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/gcc" -- /opt/harmony/gcc-fixture
+    "$binary" debug run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/processes" -- /opt/harmony/fixture processes
+    "$binary" debug run "$image" --seed "$seed" --config-toml $'[runner.options]\n'"ram_mib = $ram" --for 120s --out "$evidence/gcc" -- /opt/harmony/gcc-fixture
     python3 - "$evidence" <<'PY'
 import json
 import sys

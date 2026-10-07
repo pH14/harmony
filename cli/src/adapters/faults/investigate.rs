@@ -3,13 +3,13 @@
 use super::runs::Manifest;
 use crate::{config::Result, runs::Destination};
 use faults_workload::{
-    FaultAction, FaultOperation,
+    FaultAction,
     package::{self, ReplaySummary, Report},
 };
-use std::{fs, num::NonZeroU16, path::Path};
+use std::{fs, path::Path};
 
+use crate::selection::Point;
 pub use crate::selection::Selection;
-use crate::selection::{Point, millis};
 
 fn report(path: &Path) -> Result<Report> {
     Ok(serde_json::from_slice(&fs::read(
@@ -18,9 +18,9 @@ fn report(path: &Path) -> Result<Report> {
 }
 
 fn bug_index(bug: usize, length: usize) -> Result<usize> {
-    bug.checked_sub(1)
-        .filter(|i| *i < length)
-        .ok_or_else(|| format!("bug {bug} does not exist; this run has {length} findings").into())
+    bug.checked_sub(1).filter(|i| *i < length).ok_or_else(|| {
+        format!("bug {bug} does not exist; this recording has {length} findings").into()
+    })
 }
 
 pub fn selected_actions(
@@ -35,7 +35,7 @@ pub fn selected_actions(
             .clone())
     } else if manifest.mode == "search" {
         Err(
-            "select a finding with --finding NUMBER; use resume RUN to continue the whole search"
+            "select a finding with --finding NUMBER; use search --resume NAME to continue the whole search"
                 .into(),
         )
     } else {
@@ -147,75 +147,86 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
 }
 
 pub fn branch(request: crate::adapters::Request) -> Result<u8> {
-    let selection = request.selection.ok_or("select a run")?;
+    let selection = request.selection.ok_or("select a search or branch")?;
     let source = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&source)?;
     original.verify(&source)?;
     if original.bundle.is_none() {
         return Err("branching requires a supervised application scenario".into());
     }
-    let recorded = witness(&source, selection.finding)?;
-    let (actions, boundaries, anchor) = trajectory(&recorded, selection.finding.is_some());
+    let (actions, boundaries, anchor) = if selection.finding.is_none()
+        && request.point.step == Some(0)
+        && original.mode == "search"
+    {
+        (Vec::new(), vec![(0, 0)], 0)
+    } else {
+        let recorded = witness(&source, selection.finding)?;
+        trajectory(&recorded, selection.finding.is_some())
+    };
     let cut = request.point.resolve(&boundaries, anchor)?;
     if cut > actions.len() {
         return Err("selected boundary has no reproducible input prefix".into());
     }
-    let quantum = actions
-        .get(cut.saturating_sub(1))
-        .or(actions.first())
-        .map_or(NonZeroU16::MIN, |action| action.coverage_quantum);
-    let mut continuation = actions[..cut].to_vec();
-    let mut injections = Vec::new();
-    for name in &request.interventions {
-        injections.extend(original.config.interventions.get(name).ok_or_else(|| format!("unknown intervention {name:?}; define workload.options.interventions.{name}"))?.clone());
+    let script = match (&request.exec, &request.exec_file) {
+        (Some(text), None) => Some(text.as_bytes().to_vec()),
+        (None, Some(path)) => Some(fs::read(path)?),
+        (None, None) => None,
+        _ => return Err("choose --exec or --exec-file".into()),
+    };
+    if script
+        .as_ref()
+        .is_some_and(|s| s.len() > process_proto::debug::MAX_SCRIPT)
+    {
+        return Err("guest script exceeds 1 MiB".into());
     }
-    if let Some(text) = &request.intervention_toml {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Plan {
-            actions: Vec<super::config::Intervention>,
-        }
-        injections.extend(toml::from_str::<Plan>(text)?.actions);
-    }
-    for injection in &injections {
-        continuation.push(injection_action(
-            injection,
-            original.bundle.as_deref().unwrap_or_default(),
-            &original,
-            quantum,
-        )?);
-    }
+    let mut continuation = Vec::new();
     if let Some(path) = request.actions {
         continuation
             .extend(faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions);
     }
-    if !request.stop {
+    let stop = request.stop || request.shell;
+    if !stop {
         continuation.extend_from_slice(&actions[cut..]);
     }
     let out = request.destination.create()?;
-    let mut manifest =
-        original.inherit(&source, &out, if !request.stop { "run" } else { "branch" })?;
+    let mut manifest = original.inherit(&source, &out, "branch")?;
     manifest.actions = continuation;
-    manifest.settle = !request.stop;
+    manifest.settle = !stop;
     manifest.save(&out)?;
-    println!(
-        "branch point: after action {cut}; virtual offset {} ms from setup",
-        boundaries
-            .iter()
-            .find(|(step, _)| *step == cut)
-            .map(|(_, moment)| moment
-                .saturating_sub(boundaries.first().map_or(0, |(_, moment)| *moment))
-                / 1_000_000)
-            .unwrap_or_default()
-    );
-    let result = package::execute_actions(
-        &manifest.fault_artifacts(&out)?,
-        &manifest.actions,
-        1,
-        &manifest.options(&out),
-        !request.stop,
-    )
-    .map(|report| super::workflow::report_code(&report));
+    println!("branch point: after action {cut}");
+    let result = (|| -> Result<u8> {
+        let mut target = package::prepare_debug(
+            &manifest.fault_artifacts(&out)?,
+            &actions[..cut],
+            &manifest.options(&out),
+        )?;
+        if let Some(script) = &script {
+            manifest.store(&out, "debug-script.sh", script)?;
+        }
+        let code = super::terminal::execute(&mut target, &out, script.as_deref(), request.shell)?;
+        let root = target.export_root()?;
+        drop(target);
+        manifest.store(&out, "root", &root)?;
+        fs::write(
+            out.join("branch.json"),
+            serde_json::to_vec_pretty(
+                &serde_json::json!({"parent_step":cut,"shell":request.shell,"command_exit":code}),
+            )?,
+        )?;
+        manifest.save(&out)?;
+        let report = package::execute_actions(
+            &manifest.fault_artifacts(&out)?,
+            &manifest.actions,
+            1,
+            &manifest.options(&out),
+            !stop,
+        )?;
+        Ok(if code != 0 {
+            1
+        } else {
+            super::workflow::report_code(&report)
+        })
+    })();
     super::workflow::finish(&out, &mut manifest, result)
 }
 
@@ -257,8 +268,8 @@ pub fn prefix(
     selection: &Selection,
     point: &Point,
 ) -> Result<Vec<FaultAction>> {
-    if !point.specified() && selection.finding.is_none() {
-        return selected_actions(path, manifest, None);
+    if manifest.mode != "branch" {
+        return Err("search --from requires a saved branch".into());
     }
     let recorded = witness(path, selection.finding)?;
     let (actions, boundaries, anchor) = trajectory(&recorded, selection.finding.is_some());
@@ -269,66 +280,6 @@ pub fn prefix(
     eprintln!("selected step {cut}");
     Ok(actions[..cut].to_vec())
 }
-
-fn injection_action(
-    action: &super::config::Intervention,
-    bundle: &str,
-    manifest: &Manifest,
-    quantum: NonZeroU16,
-) -> Result<FaultAction> {
-    use super::config::Intervention;
-    let (kind, target, duration) = match action {
-        Intervention::Kill { node, duration } => ("kill", node.as_str(), duration.as_str()),
-        Intervention::Pause { node, duration } => ("pause", node.as_str(), duration.as_str()),
-        Intervention::Restart { node, duration } => ("restart", node.as_str(), duration.as_str()),
-        Intervention::Wait { duration } => ("wait", "", duration.as_str()),
-        Intervention::Hook { name, duration } => ("hook", name.as_str(), duration.as_str()),
-    };
-    let ms = millis(duration)?;
-    if ms % 10 != 0 {
-        return Err("fault durations must be whole 10ms ticks".into());
-    }
-    let ticks = NonZeroU16::new(u16::try_from(ms / 10)?).ok_or("zero fault duration")?;
-    let node = || -> Result<u16> {
-        let nodes: Vec<_> = bundle
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                (fields.next() == Some("node"))
-                    .then(|| fields.next())
-                    .flatten()
-            })
-            .collect();
-        nodes
-            .iter()
-            .position(|name| *name == target)
-            .map(|n| n as u16)
-            .ok_or_else(|| format!("unknown node {target:?}; nodes: {}", nodes.join(", ")).into())
-    };
-    let operation = match kind {
-        "wait" => FaultOperation::Wait(ticks),
-        "kill" => FaultOperation::Kill(node()?, ticks),
-        "pause" => FaultOperation::Pause(node()?, ticks),
-        "restart" => FaultOperation::Restart(node()?, ticks),
-        "hook" => {
-            let id =
-                if let Some(index) = manifest.config.hooks.keys().position(|name| name == target) {
-                    index as u32 + 1
-                } else {
-                    target.parse::<u32>()?
-                };
-            let vocabulary = FaultVocabulary::parse(bundle)?;
-            if !vocabulary.hooks().contains(&id) {
-                return Err("unknown hook".into());
-            }
-            FaultOperation::Hook(id, ticks)
-        }
-        _ => return Err(format!("unknown intervention {kind:?}").into()),
-    };
-    Ok(FaultAction::new(operation, quantum))
-}
-
-use faults_workload::FaultVocabulary;
 
 pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
@@ -346,7 +297,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let selected = if let Some(bug) = selection.finding {
         let bugs = report["bugs"]
             .as_array()
-            .ok_or("this run has no findings")?;
+            .ok_or("this recording has no findings")?;
         bugs[bug_index(bug, bugs.len())?].clone()
     } else {
         report
@@ -388,7 +339,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
             );
             show_replay(&selected["replay"]);
             println!(
-                "timeline: harmony timeline {} --finding {bug}\nreplay: harmony replay {} --finding {bug}",
+                "timeline: harmony show {} --timeline --finding {bug}\nbranch: harmony branch {} --finding {bug}",
                 path.display(),
                 path.display()
             );
@@ -416,7 +367,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
             }
             if !bugs.is_empty() {
                 println!(
-                    "inspect a finding: harmony inspect {} --finding 1",
+                    "show a finding: harmony show {} --finding 1",
                     path.display()
                 );
             }
@@ -472,57 +423,68 @@ pub fn timeline(selection: Selection, point: Point, json: bool) -> Result<u8> {
     Ok(0)
 }
 
-pub fn logs(selection: Selection, point: Point, contains: Option<String>) -> Result<u8> {
+pub fn logs(
+    selection: Selection,
+    point: Point,
+    contains: Option<String>,
+    json: bool,
+) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
-    let filter = |text: &str| {
-        for line in text.lines() {
-            if contains.as_ref().is_none_or(|needle| line.contains(needle)) {
-                println!("{line}");
-            }
-        }
+    let mut sections = Vec::new();
+    let filter = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| contains.as_ref().is_none_or(|needle| line.contains(needle)))
+            .map(str::to_owned)
+            .collect()
     };
     if path.join("serial.log").is_file() && selection.finding.is_none() {
         if point.specified() {
             return Err("command logs have no action boundaries; omit point selectors".into());
         }
-        filter(&fs::read_to_string(path.join("serial.log"))?);
+        sections.push(serde_json::json!({"source":"console","step":null,"lines":filter(&fs::read_to_string(path.join("serial.log"))?)}));
     } else {
-        let witness = witness(&path, selection.finding)?;
-        let at = if point.specified() {
-            let (_, boundaries, anchor) = trajectory(&witness, selection.finding.is_some());
-            Some(point.resolve(&boundaries, anchor)? as u64)
-        } else {
-            None
+        let witness = match witness(&path, selection.finding) {
+            Ok(witness) => Some(witness),
+            Err(_)
+                if selection.finding.is_none()
+                    && !point.specified()
+                    && path.join("terminal.log").is_file() =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
         };
-        for step in witness
-            .timeline
-            .into_iter()
-            .filter(|step| at.is_none_or(|at| at == step.step))
-        {
-            println!(
-                "--- step {} (console captured at this boundary) ---",
-                step.step
-            );
-            filter(&step.console);
+        if let Some(witness) = witness {
+            let at = if point.specified() {
+                let (_, boundaries, anchor) = trajectory(&witness, selection.finding.is_some());
+                Some(point.resolve(&boundaries, anchor)? as u64)
+            } else {
+                None
+            };
+            for step in witness
+                .timeline
+                .into_iter()
+                .filter(|step| at.is_none_or(|at| at == step.step))
+            {
+                sections.push(serde_json::json!({"source":"console","step":step.step,"lines":filter(&step.console)}));
+            }
         }
     }
-    Ok(0)
-}
-
-pub fn findings(selection: Selection, json: bool) -> Result<u8> {
-    let path = crate::runs::locate(&selection.run)?;
-    let report = report(&path)?;
+    if selection.finding.is_none() && !point.specified() && path.join("terminal.log").is_file() {
+        sections.push(serde_json::json!({"source":"terminal","step":null,"lines":filter(&String::from_utf8_lossy(&fs::read(path.join("terminal.log"))?))}));
+    }
     if json {
-        println!("{}", serde_json::to_string_pretty(&report.bugs)?);
+        println!("{}", serde_json::to_string_pretty(&sections)?);
     } else {
-        for (index, bug) in report.bugs.iter().enumerate() {
+        for section in sections {
             println!(
-                "finding {}: confirmed={} stop={:?} assertions={:?}",
-                index + 1,
-                bug.confirmed,
-                bug.stop,
-                bug.violations
+                "--- {} step {} ---",
+                section["source"].as_str().unwrap_or_default(),
+                section["step"]
             );
+            for line in section["lines"].as_array().into_iter().flatten() {
+                println!("{}", line.as_str().unwrap_or_default());
+            }
         }
     }
     Ok(0)
@@ -531,6 +493,8 @@ pub fn findings(selection: Selection, json: bool) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faults_workload::FaultOperation;
+    use std::num::NonZeroU16;
     #[test]
     fn finding_anchor_includes_recovery_and_precedes_later_recorded_actions() {
         use faults_workload::{
@@ -570,35 +534,6 @@ mod tests {
             .resolve(&boundaries, anchor)
             .unwrap(),
             1
-        );
-    }
-    #[test]
-    fn typed_interventions_resolve_names_and_reject_unrepresentable_durations() {
-        let manifest =
-            Manifest::new(super::super::config::Config::default(), "branch", None).unwrap();
-        let bundle = "node alpha /app\nnode beta /app\n";
-        let action = super::super::config::Intervention::Kill {
-            node: "beta".into(),
-            duration: "100ms".into(),
-        };
-        let result =
-            injection_action(&action, bundle, &manifest, NonZeroU16::new(64).unwrap()).unwrap();
-        assert_eq!(
-            result.operation,
-            FaultOperation::Kill(1, NonZeroU16::new(10).unwrap())
-        );
-        assert_eq!(result.coverage_quantum.get(), 64);
-        assert!(
-            injection_action(
-                &super::super::config::Intervention::Pause {
-                    node: "beta".into(),
-                    duration: "1ms".into()
-                },
-                bundle,
-                &manifest,
-                NonZeroU16::MIN
-            )
-            .is_err()
         );
     }
 }

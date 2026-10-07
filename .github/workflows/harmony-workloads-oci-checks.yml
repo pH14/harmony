@@ -313,8 +313,8 @@ jobs:
           sudo chmod a+rw /dev/kvm
           stat -c '%n mode=%a owner=%U group=%G' /dev/kvm | tee nested-runtime-report/kvm.txt
           grep -m1 'model name' /proc/cpuinfo | tee nested-runtime-report/runner.txt
-      - name: Verify CLI host and guest doctor
-        run: target/release/harmony doctor --offline --json | tee nested-runtime-report/doctor.json
+      - name: Verify CLI host and guest check
+        run: target/release/harmony check --offline --json | tee nested-runtime-report/check.json
       - name: Run the workload twice through the canonical runtime
         env:
           MARKERS: ${{ matrix.markers }}
@@ -327,7 +327,7 @@ jobs:
             rm -rf "$out"
             # The shell watchdog outlives the CLI budget so a timed-out run can
             # still persist its partial serial log.
-            timeout -k 10 1260 target/release/harmony run "$image" \
+            timeout -k 10 1260 target/release/harmony debug run "$image" \
               --seed 20260901 --config-toml $'[runner.options]\nram_mib = 2048' --for 1200s --console --out "$out" \
               2>&1 | tee "$report/console/${WORKLOAD}-${repetition}.txt"
             test -s "$out/serial.log"

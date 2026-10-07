@@ -85,7 +85,7 @@ pub fn run(c: &mut Config, offline: bool) -> Result<serde_json::Value> {
     admission.require_admission()?;
     let bundle = c.bundle()?;
     let report = serde_json::json!({ "image": image, "admission": admission, "bundle": bundle,
-        "language": c.build.language, "next": "harmony doctor, then harmony search" });
+        "language": c.build.language, "next": "harmony check, then harmony search" });
     Ok(report)
 }
 

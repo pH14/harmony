@@ -21,40 +21,54 @@ config = Path("harmony.toml")
 text = config.read_text().replace('[runner.options]', '[runner.options]\n' +
     f"kernel = {json.dumps(str(kernel))}\nbase_initramfs = {json.dumps(str(root / 'initramfs-oci.cpio.gz'))}")
 text = text.replace('[search]', '[search]\nwall_seconds = 30')
-config.write_text(text + "\n[workload.options.hooks]\ndebug = ['/opt/harmony/application', 'debug']\n"
-    "\n[[workload.options.interventions.verbose]]\nkind = 'hook'\nname = 'debug'\nfor = '1s'\n")
+config.write_text(text)
 PY
 "$binary" prepare --json > prepared.json
 python3 -c 'import json; json.load(open("prepared.json"))'
-"$binary" doctor --offline --json > doctor.json
-"$binary" run --name baseline
-"$binary" branch baseline --step 0 --do verbose --name verbose
-"$binary" logs verbose --contains 'debug logging' > debug.log
-grep -q '^application debug logging enabled$' debug.log
-"$binary" replay verbose --name verified
-"$binary" branch baseline --step 0 --stop --name prefix
-"$binary" replay prefix --name prefix-copy
-"$binary" replay prefix-copy --name prefix-copy-copy
-"$binary" inspect verbose --json > inspected.json
-"$binary" timeline verbose --json > timeline.json
-python3 - <<'PY'
+"$binary" check --offline --json > check.json
+"$binary" search --executions 1 --name baseline
+"$binary" branch baseline --step 0 --exec 'test ! -e /tmp/debug; touch /tmp/debug; echo COMMAND_SAVED' --stop --name verbose
+"$binary" branch verbose --exec 'test -f /tmp/debug && echo RESTORED_COMMAND' --stop --name verified
+"$binary" show verified --logs --contains RESTORED_COMMAND > debug.log
+grep -q '^RESTORED_COMMAND' debug.log
+printf 'test -f /tmp/debug && touch /tmp/local-script-saved && echo LOCAL_SCRIPT\n' > debug.sh
+"$binary" branch verbose --exec-file ./debug.sh --stop --name scripted
+cmp debug.sh .harmony/runs/scripted/artifacts/debug-script.sh
+rm debug.sh
+printf 'test -t 0 && test -f /tmp/local-script-saved && touch /tmp/shell-saved && echo GUEST_PTY\nexit\n' | \
+    "$binary" branch scripted --shell --name interactive
+"$binary" branch interactive --exec 'test -f /tmp/shell-saved && echo RESTORED_SHELL' --stop --name shell-copy
+"$binary" show shell-copy --logs --json > shell-logs.json
+python3 - <<'PYTHON'
 import json
-steps = json.load(open("timeline.json"))
-assert any(s['observation']['hooks_started'] > 0 for s in steps)
-assert any(s['observation']['hooks_finished'] > 0 for s in steps)
-assert any('application debug logging enabled' in s['console'] for s in steps)
-PY
+assert any('RESTORED_SHELL' in line for section in json.load(open('shell-logs.json')) for line in section['lines'])
+PYTHON
+"$binary" branch baseline --step 0 --stop --name prefix
+"$binary" branch prefix --stop --name prefix-copy
+"$binary" show verbose --json > inspected.json
+"$binary" show verbose --timeline --json > timeline.json
+python3 - <<'PYTHON'
+import json
+assert json.load(open('inspected.json'))['manifest']['mode'] == 'branch'
+assert json.load(open('timeline.json'))[0]['step'] == 0
+PYTHON
+status=0
+"$binary" search --from interactive --executions 2 --for 30s --name shell-search || status=$?
+test "$status" -le 1
+"$binary" branch shell-search --step 0 --exec 'test -f /tmp/shell-saved && echo SEARCH_RESTORED_SHELL' --stop --name shell-search-root
+"$binary" show shell-search-root --logs --contains SEARCH_RESTORED_SHELL > search-root.log
+grep -q '^SEARCH_RESTORED_SHELL' search-root.log
 status=0
 "$binary" search --from prefix --executions 4 --for 30s --name neighborhood || status=$?
 test "$status" -le 1
 status=0
-"$binary" resume neighborhood --seed 9223372036854775808 --name invalid-seed > invalid-seed.txt 2>&1 || status=$?
+"$binary" search --resume neighborhood --seed 9223372036854775808 --name invalid-seed > invalid-seed.txt 2>&1 || status=$?
 test "$status" -eq 2
 grep -q 'maximum integer' invalid-seed.txt
 test ! -e .harmony/runs/invalid-seed
 printf '{"file":' >> .harmony/runs/neighborhood/checkpoints/checkpoints.jsonl
 status=0
-"$binary" resume neighborhood --executions 4 --for 30s --name extended || status=$?
+"$binary" search --resume neighborhood --executions 4 --for 30s --name extended || status=$?
 test "$status" -le 1
 python3 - <<'PY'
 import json
@@ -70,7 +84,7 @@ PY
 cp -R .harmony/runs/prefix .harmony/runs/tampered
 printf corruption >> .harmony/runs/tampered/artifacts/kernel
 status=0
-"$binary" replay tampered --name refused > tamper.txt 2>&1 || status=$?
+"$binary" branch tampered --stop --name refused > tamper.txt 2>&1 || status=$?
 test "$status" -eq 2
 grep -q 'recorded artifact kernel has changed' tamper.txt
 test ! -e .harmony/runs/refused
