@@ -73,10 +73,10 @@ These hold at every step.
    runs. Before a long run, show with a short probe that the target is
    reachable and that the counter can move.
 9. Before every launch, write down the question, the arms, the counter you
-   will read, the budget and the expected wall time. For a game run at a hard
-   part, also name the hard part's tiny world and the scorecard prediction the
-   run will score; a hard part with no world gets one first (step 6). Skip a
-   launch whose result would change no decision.
+   will read, the budget and the expected wall time. For a game run that tests
+   a change at a hard part, also name the hard part's tiny world and the
+   scorecard prediction the run will score; a hard part with no world gets one
+   first (step 6). Skip a launch whose result would change no decision.
 10. Improve the general search machinery. The searcher carries no game names,
     coordinates or per-level mechanisms; the custom lints reject game names in
     `dissonance/searcher`.
@@ -195,7 +195,9 @@ stocked state to a hard part has to search the route.
 3. Find the existing searcher component that does the job badly: selection,
    retention and preference, continuation replay, the suffix draw, or the
    workload's key. Change that component in general terms.
-4. Make one change per test. Check that it can resume from a checkpoint.
+4. Make one change per test. Check that a searcher change can resume from a
+   checkpoint. A key change cannot resume one, so step 8 tests it with rooted
+   segments.
 
 Some searcher behaviours recur across games. Check for them, and treat them as
 starting questions, never as answers:
@@ -248,6 +250,9 @@ with the unchanged searcher, under three or more new seeds each. Set the budget
 above the slowest pass of that part in any earlier run (rule 4). The archive
 and the delivered states come along, so every slice includes the handoff.
 
+- A key change cannot resume an old checkpoint. Run rooted segments from the
+  same best-stocked tape with the changed and the unchanged key instead, three
+  or more seeds each, and read them the same way.
 - Confirm from counters or film that the change fired during the slice.
 - Read each leg as tries after the resume. Compare the arms' median tries with
   the leg's scorecard range. A few seeds resolve only large differences.
