@@ -17,3 +17,6 @@ pub use supervise::{Action, Counters, ProcessSupervisor, Supervisor};
 pub const TICK_NANOS: u64 = 10_000_000;
 pub const READY_TICKS: u32 = 6_000;
 pub const ANTITHESIS_OUTPUT_DIR: &str = "/run/antithesis";
+
+#[cfg(target_os = "linux")]
+pub mod debug;

@@ -114,6 +114,14 @@ impl Checkpoints {
         }
     }
 
+    pub(crate) fn zero(&self) -> Result<Snapshot, MemoryError> {
+        let mut pages = self.held()?;
+        let root = pages.root;
+        pages.store.retain(root)?;
+        drop(pages);
+        Ok(self.adopt(root))
+    }
+
     pub(crate) fn delta_pages<R>(
         &self,
         base: &Snapshot,

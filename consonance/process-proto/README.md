@@ -28,3 +28,12 @@ unrelated or future decision class cannot stop process supervision.
 cargo test -p process-proto
 cargo clippy -p process-proto --all-targets -- -D warnings
 ```
+
+## Guest debug terminal
+
+The `debug` module owns the bounded namespace-10 command protocol: append script
+bytes, execute, open shell, send input, close input and resize a PTY. Messages have
+monotonic nonzero sequence numbers; the guest acknowledges and deduplicates them.
+Script buffers are limited to 1 MiB and individual payloads to 3000 bytes. Output
+and changed status arrive through dedicated SDK events. The protocol contains no
+workload-specific fault or controller actions.

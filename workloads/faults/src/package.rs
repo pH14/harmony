@@ -17,6 +17,7 @@ pub struct Options {
     pub wall_seconds: Option<u64>,
     pub output: PathBuf,
     pub uml_profile: Option<PathBuf>,
+    pub root: Option<PathBuf>,
 }
 
 impl Options {
@@ -404,7 +405,30 @@ mod live {
             knobs: options.knobs.clone(),
             ram_mib: options.ram_mib,
             backend,
+            root: options
+                .root
+                .as_ref()
+                .map(std::fs::read)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .map(Arc::new),
         })
+    }
+
+    pub fn prepare_debug(
+        artifacts: &Artifacts,
+        actions: &[FaultAction],
+        options: &Options,
+    ) -> Result<FaultTarget, Box<dyn Error>> {
+        let mut target =
+            FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, &config(options)?)?;
+        for action in actions {
+            target.apply_replayed(*action);
+        }
+        if target.actions().len() != actions.len() || target.failed() {
+            return Err("selected prefix could not be reconstructed".into());
+        }
+        Ok(target)
     }
 
     pub fn search(
@@ -725,7 +749,7 @@ mod live {
     ),
     not(miri)
 ))]
-pub use live::{Resources, execute_actions, replay, resources, search};
+pub use live::{Resources, execute_actions, prepare_debug, replay, resources, search};
 
 #[cfg(test)]
 mod tests {
@@ -740,6 +764,7 @@ mod tests {
             wall_seconds: None,
             output: PathBuf::from("unused"),
             uml_profile: None,
+            root: None,
         }
     }
 

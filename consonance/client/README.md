@@ -221,3 +221,11 @@ Session console diagnostics return the most recent 64 KiB. The VM reader pages
 from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
+
+Durable roots use the `SearchSession` root methods, separately from the transient
+cache namespace. Hardware roots remain deltas against the verified deterministic
+setup. UML roots contain all nonzero guest and private-image pages, plus service
+sidecars, and bind the profile, initramfs, memory, arguments and seed. They can be
+imported over a fresh launch whose host-private setup bytes differ. Cache deltas
+still require their original setup identity. Neither interface interprets
+workload commands.

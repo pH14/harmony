@@ -121,3 +121,14 @@ probes alongside running nodes; the OCI fixture checks guest credentials. Linux
 event-channel socket regressions run natively because the pinned Miri interpreter
 does not support their nonblocking ioctl. Descriptor duplication and ownership
 remain covered under Miri.
+
+## Investigation terminal
+
+The supervisor polls the process-proto debug namespace alongside standing policy.
+When enabled by the host, it runs a shell or uploaded script on a guest PTY with
+the workload environment, credentials and working directory. The image supplies
+`/bin/sh`. The helper creates a session and controlling terminal, preserving job
+control and terminal signals. Input is acknowledged once; output and status are
+SDK events. Ordinary execution replies with no debug command. The terminal, its
+children and filesystem changes live entirely in guest memory and snapshots.
+The host saves the post-session snapshot rather than replaying interactive input.

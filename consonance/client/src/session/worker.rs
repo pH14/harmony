@@ -60,6 +60,24 @@ pub trait SearchSession: std::fmt::Debug {
     fn cache_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
         self.state_hash()
     }
+    fn root_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        self.cache_identity()
+    }
+    fn publish_root(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        target: SnapId,
+    ) -> Result<Lease, Box<dyn Error>> {
+        self.publish_snapshot(index, namespace, b"root", None, target, 1)
+    }
+    fn import_root(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+    ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.import_cached(index, lease, self.setup_handle().0)
+    }
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>>;
     fn telemetry_counters(&self) -> Vec<(String, u64)>;
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64>;
