@@ -132,3 +132,9 @@ control and terminal signals. Input is acknowledged once; output and status are
 SDK events. Ordinary execution replies with no debug command. The terminal, its
 children and filesystem changes live entirely in guest memory and snapshots.
 The host saves the post-session snapshot rather than replaying interactive input.
+
+The shell helper resets inherited terminal signal dispositions before exec;
+otherwise the background runtime launcher can leave child commands ignoring
+Ctrl-C. Linux unit and CLI PTY tests exercise this path. Miri does not model the
+`signal` syscall; the syscall test is excluded there, while terminal buffer and
+protocol tests remain interpreter tests.

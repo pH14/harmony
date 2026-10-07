@@ -43,6 +43,49 @@ python3 - <<'PYTHON'
 import json
 assert any('RESTORED_SHELL' in line for section in json.load(open('shell-logs.json')) for line in section['lines'])
 PYTHON
+python3 - "$binary" <<'PYTHON'
+import os, pty, select, subprocess, sys, time
+from pathlib import Path
+binary = sys.argv[1]
+master, slave = pty.openpty()
+process = subprocess.Popen([binary, 'branch', 'baseline', '--step', '0', '--shell', '--name', 'terminal'], stdin=slave, stdout=slave, stderr=slave)
+os.close(slave)
+transcript = bytearray()
+def until(marker):
+    start = len(transcript)
+    deadline = time.monotonic() + 60
+    while marker not in transcript[start:]:
+        if time.monotonic() > deadline:
+            raise AssertionError('guest terminal did not return to its prompt')
+        if select.select([master], [], [], .1)[0]:
+            transcript.extend(os.read(master, 65536))
+        if process.poll() is not None:
+            raise AssertionError('guest terminal exited early')
+try:
+    until(b'# ')
+    os.write(master, b'sleep 100\n')
+    time.sleep(.5)
+    os.write(master, b'\x03')
+    until(b'# ')
+    os.write(master, b'test -t 0 && touch /tmp/terminal-saved && echo TERMINAL_OK\n')
+    until(b'TERMINAL_OK\r\n# ')
+    os.write(master, b'exit\n')
+    deadline = time.monotonic() + 60
+    while process.poll() is None and time.monotonic() < deadline:
+        if select.select([master], [], [], .1)[0]:
+            try:
+                transcript.extend(os.read(master, 65536))
+            except OSError:
+                break
+    assert process.wait(timeout=5) == 0
+finally:
+    Path('terminal-transcript.log').write_bytes(transcript)
+    os.close(master)
+    if process.poll() is None:
+        process.kill()
+        process.wait()
+subprocess.run([binary, 'branch', 'terminal', '--exec', 'test -f /tmp/terminal-saved', '--stop', '--name', 'terminal-copy'], check=True)
+PYTHON
 "$binary" branch baseline --step 0 --stop --name prefix
 "$binary" branch prefix --stop --name prefix-copy
 "$binary" show verbose --json > inspected.json

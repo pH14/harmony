@@ -163,7 +163,25 @@ impl Terminal {
         Ok(output)
     }
 }
+fn reset_terminal_signals() -> io::Result<()> {
+    for signal in [
+        libc::SIGINT,
+        libc::SIGQUIT,
+        libc::SIGTSTP,
+        libc::SIGTTIN,
+        libc::SIGTTOU,
+    ] {
+        // SAFETY: each number names a valid terminal signal and SIG_DFL installs
+        // no Rust handler. This runs in the dedicated shell helper before exec.
+        if unsafe { libc::signal(signal, libc::SIG_DFL) } == libc::SIG_ERR {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 pub fn shell(spec: &ExecutionSpec, script: Option<&str>) -> io::Result<()> {
+    reset_terminal_signals()?;
     rustix::process::setsid()?;
     rustix::process::ioctl_tiocsctty(io::stdin())?;
     let mut argv = vec!["/bin/sh".into()];
@@ -186,6 +204,18 @@ pub fn shell(spec: &ExecutionSpec, script: Option<&str>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_terminal_child_does_not_inherit_ignored_interrupts() {
+        // SAFETY: SIGINT is valid and SIG_IGN installs no handler or references.
+        let previous = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+        assert_ne!(previous, libc::SIG_ERR);
+        reset_terminal_signals().unwrap();
+        // SAFETY: previous is the valid disposition returned for this process.
+        let replaced = unsafe { libc::signal(libc::SIGINT, previous) };
+        assert_eq!(replaced, libc::SIG_DFL);
+    }
+
     #[test]
     fn commands_are_acknowledged_once_and_buffers_are_bounded() {
         let mut terminal = Terminal::default();
