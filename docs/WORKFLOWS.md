@@ -522,5 +522,15 @@ out and strictly builds current main rather than publishing an older artifact.
 Thus a late-arriving workflow still publishes current content even when GitHub
 replaces a pending deployment. Pull-request checks and all build
 jobs retain independent per-push groups. Its full-trigger exception expresses this trust boundary, not an
-extended runtime budget; both jobs are bounded to ten minutes. See
+extended runtime budget; both jobs are bounded to fifteen minutes. See
 [SITE.md](SITE.md) for preview and hosting configuration.
+
+The documentation build runs on code-only changes as well as documentation
+changes. It executes the source-build example and derives CLI reference from the
+resulting executable. `Documentation Examples` in the language workflow consumes
+the shared C image and exact guest artifacts, then executes the same example
+regions the site renders. It checks a confirmed lost-update finding, persisted
+command and shell changes, rooted search, and additional-budget continuation.
+Example, CLI, runtime, searcher, and fixture changes select this guest check.
+The strict build rejects copied code fences and examples without an execution
+owner. See [SITE.md](SITE.md) for the contract and evidence format.

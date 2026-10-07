@@ -189,8 +189,10 @@ def run(scenario, evidence, binary, root=ROOT):
     else:
         source = evidence / 'workspace'
         source.mkdir()
-        for name in ('workloads', 'docs'):
-            (source / name).symlink_to(root / name, target_is_directory=True)
+        for name in ('workloads', 'consonance', 'docs'):
+            shutil.copytree(root / name, source / name,
+                            ignore=shutil.ignore_patterns('target', 'build', '__pycache__'))
+        env['HARMONY_SDK_DIR'] = str(source)
         project = source / 'counter-example'
         # Model a source-built installation with matching guest artifacts.
         # Prerequisites are supplied by CI; no published release is assumed.

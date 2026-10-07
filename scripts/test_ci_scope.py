@@ -22,9 +22,9 @@ class ScopeTests(unittest.TestCase):
                       if job.scope}
         self.assertEqual(set(SCENARIOS) | {"kani", "miri"}, registered)
 
-    def test_a_searcher_change_runs_both_nes_compositions_and_nothing_else(self):
+    def test_a_searcher_change_runs_nes_and_documented_application(self):
         self.assertEqual(self.active("dissonance/searcher/src/search/archive.rs"),
-                         {"dissonance_nes", "harmony_nes"})
+                         {"dissonance_nes", "harmony_nes", "harmony_languages"})
 
     def test_stb_changes_select_their_own_game(self):
         for path in ("workloads/nes/src/stb/target.rs", "workloads/nes/src/bin/stb-probe.rs",

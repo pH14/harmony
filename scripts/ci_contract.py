@@ -574,6 +574,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             scope="harmony_languages"),
         Job("UML Command Replay", "pr", 15, scope="harmony_languages"),
+        Job("Documentation Examples", "pr", 15, scope="harmony_languages"),
     ),
 )
 
@@ -692,8 +693,8 @@ DOCUMENTATION = Workflow(
     owner="Harmony",
     triggers=("pull_request", "push", "workflow_dispatch"),
     jobs=(
-        Job("Documentation", "pr", 10),
-        Job("Publish", "full", 10,
+        Job("Documentation", "pr", 15),
+        Job("Publish", "full", 15,
             exception="Only trusted main runs may publish; pull requests build read-only artifacts."),
     ),
 )
