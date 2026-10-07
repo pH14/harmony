@@ -77,6 +77,25 @@ class DocumentationContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'CLI command obsolete'):
             docs.check_interface('## show\n--json', root)
 
+    def test_bad_command_status_fails_the_runner(self):
+        evidence = self.root / 'failed-execution'
+        with patch.object(docs, 'lint', return_value={'broken': 'exit 2'}), \
+             patch.object(docs, 'catalog', return_value={'host': [{'id': 'broken', 'exit': [0]}]}):
+            with self.assertRaisesRegex(AssertionError, 'got 2'):
+                docs.run('host', evidence, Path('/usr/bin/false'), self.root)
+        record = json.loads((evidence / 'examples.json').read_text())
+        self.assertEqual(record[0]['exit'], 2)
+        self.assertFalse(record[0]['verified'])
+
+    def test_missing_expected_output_fails_the_runner(self):
+        evidence = self.root / 'missing-output'
+        with patch.object(docs, 'lint', return_value={'broken': 'echo wrong'}), \
+             patch.object(docs, 'catalog', return_value={
+                 'host': [{'id': 'broken', 'exit': [0], 'contains': 'required evidence'}]}):
+            with self.assertRaisesRegex(AssertionError, 'missing expected output'):
+                docs.run('host', evidence, Path('/usr/bin/false'), self.root)
+        self.assertFalse(json.loads((evidence / 'examples.json').read_text())[0]['verified'])
+
     def test_false_finding_is_rejected(self):
         with patch.object(docs, 'load', return_value={'bug_found': False}):
             with self.assertRaisesRegex(AssertionError, 'real finding'):
