@@ -266,6 +266,13 @@ fn session_service(service: &str) -> Option<environment::input_spec::ServiceFact
         .then(faults_workload::consonance::service_factory)
 }
 
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 fn session_worker_args(
     uml_profile: Option<&std::path::Path>,
     replay: Option<&[faults_workload::FaultAction]>,
@@ -489,6 +496,13 @@ mod tests {
         assert!(session_service("other").is_none());
     }
 
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
     #[test]
     fn only_kvm_searches_launch_session_workers() {
         let replay = [];
