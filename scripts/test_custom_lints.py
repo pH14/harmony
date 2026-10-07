@@ -44,6 +44,9 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_site_sources_and_only_named_assets_are_allowed(self):
         self.assertFalse(LINTS.check_docs_allowlist([
             "docs/SITE.md", "docs/requirements.txt", "docs/user/index.md",
+            "docs/hooks.py", "docs/examples/catalog.json", "docs/examples/counter.toml",
+            "docs/examples/main.c", "docs/examples/walkthrough.sh", "docs/examples/host.sh",
+            "docs/examples/inspect.sh", "docs/examples/README.md",
             "docs/user/how-to/install.md", "docs/user/assets/styles.css",
             "docs/user/assets/harmony.svg",
         ]))

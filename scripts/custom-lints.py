@@ -1624,6 +1624,14 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
         # cannot broaden the repository documentation allowance.
         if rel_path in {
             "docs/requirements.txt",
+            "docs/hooks.py",
+            "docs/examples/README.md",
+            "docs/examples/catalog.json",
+            "docs/examples/counter.toml",
+            "docs/examples/host.sh",
+            "docs/examples/inspect.sh",
+            "docs/examples/main.c",
+            "docs/examples/walkthrough.sh",
             "docs/user/assets/harmony.svg",
             "docs/user/assets/styles.css",
         }:

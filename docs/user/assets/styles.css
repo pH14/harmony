@@ -20,18 +20,15 @@
 .md-typeset h2 { font-weight: 600; letter-spacing: -.02em; }
 .md-typeset code { border-radius: .2rem; }
 .md-typeset pre > code { border-radius: .4rem; }
-.md-typeset .hero { padding: 1rem 0 1.5rem; max-width: 42rem; }
-.md-typeset .hero h1 { font-size: 2.65rem; line-height: 1.13; margin: .25rem 0 .7rem; }
-.md-typeset .hero p { font-size: 1rem; max-width: 34rem; }
-.md-typeset .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: .65rem; font-weight: 700; color: var(--md-typeset-a-color); }
-.md-typeset .md-button { border-radius: .3rem; padding: .45em 1.1em; font-size: .8rem; margin: .3rem .4rem .3rem 0; }
-.doc-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin: 1rem 0 1.8rem; }
-.doc-card { border: 1px solid var(--md-default-fg-color--lightest); border-radius: .45rem; padding: 1rem 1.15rem; }
-.md-typeset .doc-card h2 { margin: 0 0 .3rem; font-size: 1rem; }
-.md-typeset .doc-card p { margin: .25rem 0; }
+/* Task-first pages use the same readable layout throughout. */
+.md-typeset .md-button { border-radius: .3rem; padding: .5em 1em; margin: .35rem .5rem .5rem 0; }
+.md-typeset > h1 { max-width: 34rem; line-height: 1.2; }
+.md-typeset table:not([class]) { font-size: .76rem; }
+.md-typeset pre { margin: 1.1em 0; }
+.md-nav__link--active { font-weight: 650; }
 @media (max-width: 600px) {
-  .doc-cards { grid-template-columns: 1fr; }
-  .md-typeset .hero h1 { font-size: 2rem; }
+  .md-typeset h1 { font-size: 1.8rem; }
+  .md-typeset .md-button { display: block; text-align: center; }
 }
 [data-md-color-scheme="slate"] .md-typeset .md-button {
   color: #98dcca;

@@ -2,48 +2,38 @@
 hide:
   - toc
 ---
-<div class="hero" markdown>
-<span class="eyebrow">Harmony documentation</span>
-# Make the failure repeatable.
+# Find a bug. Get back to it.
 
-Run Linux workloads in a controlled environment. Explore failures caused by process crashes, pauses, and restarts. Keep the inputs that let you reproduce what happened.
+Harmony explores different executions of your application and saves the ones
+that break a property you care about. You can return to a finding, inspect what
+happened, and change the conditions before exploring again.
 
-[Install Harmony](how-to/install.md){ .md-button .md-button--primary }
-[Run your first workload](tutorials/first-run.md){ .md-button }
-</div>
+For example: two writers update a counter. Both finish their work, but one
+silently overwrites the other's increment. Harmony can hold a writer between
+its read and write, expose the lost update, and save that execution for investigation.
 
-Harmony is an experimental testing tool for people building databases, services, and other stateful systems. You bring a Linux container image and a way to check whether your application is behaving correctly.
+[Find your first bug](start/first-bug.md){ .md-button .md-button--primary }
+[Install Harmony](start/install.md){ .md-button }
 
-!!! note "Before you begin"
-    These docs describe the current source version. Installation currently requires building the CLI and its Linux guest runtime; there are no published release downloads. Check [system compatibility](reference/compatibility.md) before starting a build.
+## What you bring
 
-<div class="doc-cards" markdown>
-<div class="doc-card" markdown>
-## Learn by doing
-[Tutorials](tutorials/index.md) walk you through a reproducible container run and a small fault-search experiment, with expected results at each step.
-</div>
-<div class="doc-card" markdown>
-## Get a task done
-[How-to guides](how-to/index.md) cover installation, your own OCI images, workload preparation, SDK integration, and failure replay.
-</div>
-<div class="doc-card" markdown>
-## Look up the details
-[Reference](reference/index.md) defines supported systems, command options, image requirements, bundle syntax, SDK calls, and output files.
-</div>
-<div class="doc-card" markdown>
-## Understand the behavior
-[Explanation](explanation/index.md) describes what determinism means, how fault search works, and what makes an assertion useful.
-</div>
-</div>
+An application, a way to exercise it, and assertions that say what must remain
+true. Harmony prepares supported language builds with instrumentation, runs
+services in a controlled Linux environment, and explores changes in execution
+and fault timing. Your assertions distinguish an application bug from an
+intentional disturbance such as killing a process.
 
-## Choose your starting point
+## Three things to know
 
-| Your goal | Start here |
+| Thing | What it gives you |
 | --- | --- |
-| Run a container and repeat its output | [Your first reproducible run](tutorials/first-run.md) |
-| Test a service through crashes and restarts | [Prepare a fault workload](how-to/fault-workload.md) |
-| Reproduce an already recorded failure | [Replay a failure](how-to/replay.md) |
-| Report application correctness to Harmony | [Add SDK assertions](how-to/sdk.md) |
-| Explore a supported NES game | [Search an NES workload](how-to/nes.md) |
+| **Search** | An exploration that tries many executions and accumulates findings. |
+| **Finding** | Evidence of a property violation in a particular execution. |
+| **Branch** | A saved point you can inspect, change, and explore further. |
 
-Harmony is licensed under [AGPL-3.0-or-later](https://github.com/pH14/harmony/blob/main/LICENSE).
+Start with the [counter walkthrough](start/first-bug.md), then
+[configure your own application](test/application.md). If you already have a
+finding, go to [investigation](investigate/index.md).
+
+Harmony is experimental. Check the [supported environments](reference/environments.md)
+before preparing a workload. [NES workloads](nes.md) have a separate setup path.

@@ -1,5 +1,5 @@
 site_name: Harmony
-site_description: Run Linux workloads reproducibly. Find failures. Replay what happened.
+site_description: Find bugs, inspect the evidence, and explore from a changed state.
 site_url: https://ph14.github.io/harmony/
 repo_url: https://github.com/pH14/harmony
 repo_name: pH14/harmony
@@ -57,31 +57,28 @@ validation:
     not_found: warn
     unrecognized_links: warn
     anchors: warn
+hooks:
+  - docs/hooks.py
 nav:
-  - Home: index.md
-  - Tutorials:
-      - tutorials/index.md
-      - Your first reproducible run: tutorials/first-run.md
-      - Your first fault search: tutorials/first-search.md
-  - How-to guides:
-      - how-to/index.md
-      - Install Harmony: how-to/install.md
-      - Run your OCI image: how-to/oci.md
-      - Prepare a fault workload: how-to/fault-workload.md
-      - Replay a failure: how-to/replay.md
-      - Add SDK assertions: how-to/sdk.md
-      - Search an NES workload: how-to/nes.md
-      - Troubleshoot a run: how-to/troubleshooting.md
+  - Start here:
+      - What is Harmony?: index.md
+      - Install Harmony: start/install.md
+      - Find your first bug: start/first-bug.md
+  - Test your application:
+      - Configure an application: test/application.md
+      - Prepare a language build: test/languages.md
+      - Define correctness: test/assertions.md
+      - Use an existing image: test/images.md
+  - Investigate:
+      - Investigate a finding: investigate/index.md
+      - Run longer searches: search.md
+  - How it works:
+      - Determinism and investigation: concepts/determinism.md
+      - Components and execution: concepts/architecture.md
   - Reference:
-      - reference/index.md
-      - System compatibility: reference/compatibility.md
-      - Command line: reference/cli.md
-      - OCI image contract: reference/oci.md
-      - Workload bundles: reference/bundles.md
-      - Guest SDK: reference/sdk.md
-      - Run artifacts: reference/artifacts.md
-  - Explanation:
-      - explanation/index.md
-      - Determinism and replay: explanation/determinism.md
-      - Searching for failures: explanation/search.md
-      - Writing useful assertions: explanation/assertions.md
+      - Commands: reference/cli.md
+      - Recipe: reference/recipe.md
+      - Supported environments: reference/environments.md
+      - Saved evidence: reference/evidence.md
+      - Troubleshooting: reference/troubleshooting.md
+  - NES: nes.md

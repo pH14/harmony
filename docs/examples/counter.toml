@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[workload]
+package = "faults"
+input = "harmony-counter:local"
+
+[workload.options]
+setup = ["/opt/harmony/application", "init", "/tmp/counter"]
+ready = ["/opt/harmony/application", "ready"]
+
+[workload.options.build]
+language = "c"
+context = "."
+
+[workload.options.nodes.writer-0]
+command = ["/opt/harmony/application", "writer", "/tmp/counter", "0"]
+
+[workload.options.nodes.writer-1]
+command = ["/opt/harmony/application", "writer", "/tmp/counter", "1"]
+
+[runner]
+kind = "consonance"
+backend = "auto"
+
+[runner.options]
+ram_mib = 1024

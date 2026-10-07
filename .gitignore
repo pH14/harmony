@@ -35,3 +35,8 @@ __pycache__/
 
 # Generated user documentation.
 /site/
+
+# Local executable-documentation evidence.
+/docs-host-evidence/
+/documentation-evidence/
+/counter-example/
