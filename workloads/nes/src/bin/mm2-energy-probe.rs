@@ -36,7 +36,7 @@ fn report(index: usize, target: &Mm2Target) -> Result<(), Box<dyn Error>> {
     for value in target.diagnostic_weapon_energies()? {
         print!(" {value}");
     }
-    println!(" {:016x} {}", state.boobeam_targets, state.boss_intro_frames);
+    println!(" {}", state.boss_intro_frames);
     Ok(())
 }
 
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for name in WEAPONS {
         print!(" {name}");
     }
-    println!(" boobeam intro");
+    println!(" intro");
     report(0, &target)?;
     for (index, action) in replay.actions.iter().enumerate() {
         if target.exit_kind() != ExitKind::Ok {

@@ -38,10 +38,6 @@ menu. Some bytes need context:
   for a few frames. The decoder keeps the previous stage through that borrow.
 - Wily 5 tracks its refights in a bitmask at `$bc`. The Wily Machine refills
   its meter between its two forms, so boss damage reads zero during the refill.
-- Boobeam Trap's cannons and barriers count while that fight is underway, as
-  one bit per standing object's 32-pixel cell on the screen. The game assigns
-  these objects to different slots from one attempt to the next, and the
-  objects never move, so the cell names an object where the slot does not.
 - A boss intro runs from the boss byte at `$b1` turning on until the boss
   meter starts to fill. Its length in frames counts as the intro's progress,
   because Mecha Dragon flies in for about 450 frames while the player has to
@@ -58,8 +54,7 @@ stage-clear sequence after the kill, and a kill that left the tier unchanged
 would share its draws with every fight state in the room. The place is the
 stage, screen, room, boss damage, enemy damage, the 32-pixel position bucket,
 posture, platforms and whether the menu is open, plus the Wily 5 refights,
-the refight boss in play, the Boobeam targets left and the boss intro's
-64-frame step. The holder identity is
+the refight boss in play and the boss intro's 64-frame step. The holder identity is
 the 16-pixel position bucket, the weapon and the menu state. The key declares two
 preferences, and each place keeps the best arrival under each. The first ranks
 health, then summed weapon energy. The second ranks the weapon energies sorted
