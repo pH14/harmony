@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_target_grid_boss_intro_weapon_balance_v22";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_boss_intro_weapon_balance_v22";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -44,14 +44,13 @@ pub struct Mm2ArchiveKey {
     pub weapons_lowest_first: [u8; MM2_WEAPONS],
     pub refights: u8,
     pub refight_boss: u8,
-    pub boobeam_targets: u64,
     pub boss_intro: u8,
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
     type Place = (
         (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool),
-        (u8, u8, u64, u8),
+        (u8, u8, u8),
     );
     type Progress = Mm2Tier;
     type Identity = (u8, u8, u8, u8);
@@ -70,7 +69,7 @@ impl ArchiveKey for Mm2ArchiveKey {
                 self.platforms,
                 self.menu != MENU_CLOSED,
             ),
-            (self.refights, self.refight_boss, self.boobeam_targets, self.boss_intro),
+            (self.refights, self.refight_boss, self.boss_intro),
         )
     }
 
@@ -128,7 +127,6 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         },
         refights: state.refights,
         refight_boss: state.refight_boss(),
-        boobeam_targets: state.boobeam_targets,
         boss_intro: state.boss_intro_step(),
         stage: state.stage,
         screen: state.screen,

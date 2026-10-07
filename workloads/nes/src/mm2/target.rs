@@ -46,11 +46,8 @@ const CURRENT_BOSS: usize = 0xb3;
 const REFIGHTS: usize = 0xbc;
 const WILY_MACHINE: u8 = 12;
 pub const NO_REFIGHT_BOSS: u8 = 0xff;
-const BOOBEAM_STAGE: u8 = 11;
 const WILY5_STAGE: u8 = 12;
 const FINAL_STAGE: u8 = 14;
-const BOOBEAM_TRAP_ID: u8 = 0x6d;
-const BOOBEAM_BARRIER_ID: u8 = 0x57;
 const DYING_FRAMES: u32 = 30;
 const PLAYER_X: usize = 0x460;
 const PLAYER_Y: usize = 0x4a0;
@@ -61,10 +58,6 @@ pub const MM2_WEAPONS: usize = 11;
 const OBJECT_ID_TABLE: usize = 0x400;
 const OBJECT_FLAG_TABLE: usize = 0x420;
 const OBJECT_SLOTS: usize = 0x20;
-const OBJECT_X_TABLE: usize = 0x460;
-const OBJECT_Y_TABLE: usize = 0x4a0;
-const TARGET_GRID_CELL: u8 = 32;
-const TARGET_GRID_COLUMNS: u8 = 8;
 const OBJECT_ACTIVE: u8 = 0x80;
 const ITEM_OBJECT_FIRST: u8 = 0x38;
 const ITEM_OBJECT_LAST: u8 = 0x3a;
@@ -223,7 +216,6 @@ pub struct Mm2MechanicalState {
     pub bank: u8,
     pub current_boss: u8,
     pub refights: u8,
-    pub boobeam_targets: u64,
     pub boss_intro_frames: u16,
 }
 
@@ -392,7 +384,6 @@ fn decode_state_after(
         }
     };
     let weapon = read_byte(wram, SELECTED_WEAPON)?;
-    let fighting = (BOSS_PHASE_FIGHTING..BOSS_PHASE_DEFEATED).contains(&boss_phase);
     Ok(Mm2MechanicalState {
         stage,
         screen: read_byte(wram, PLAYER_SCREEN)?,
@@ -425,27 +416,8 @@ fn decode_state_after(
         } else {
             0
         },
-        boobeam_targets: if stage == BOOBEAM_STAGE && fighting {
-            boobeam_targets(wram)?
-        } else {
-            0
-        },
         boss_intro_frames: 0,
     })
-}
-
-fn boobeam_targets(wram: &[u8]) -> Result<u64, MachineError> {
-    let mut targets = 0_u64;
-    for slot in 0..OBJECT_SLOTS {
-        let id = read_byte(wram, OBJECT_ID_TABLE + slot)?;
-        let flags = read_byte(wram, OBJECT_FLAG_TABLE + slot)?;
-        if flags & OBJECT_ACTIVE != 0 && (id == BOOBEAM_TRAP_ID || id == BOOBEAM_BARRIER_ID) {
-            let column = read_byte(wram, OBJECT_X_TABLE + slot)? / TARGET_GRID_CELL;
-            let row = read_byte(wram, OBJECT_Y_TABLE + slot)? / TARGET_GRID_CELL;
-            targets |= 1 << (row * TARGET_GRID_COLUMNS + column);
-        }
-    }
-    Ok(targets)
 }
 
 fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
@@ -516,8 +488,8 @@ pub fn preference_tuple(state: Mm2MechanicalState) -> (Mm2Tier, u8, u16) {
 }
 
 #[must_use]
-pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u64, u8) {
-    (state.refights, state.refight_boss(), state.boobeam_targets, state.boss_intro_step())
+pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u8) {
+    (state.refights, state.refight_boss(), state.boss_intro_step())
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1642,50 +1614,6 @@ mod tests {
         assert!(state.machine_shell_broken());
         assert_eq!(state.boss_damage(), 0);
         assert!(state.tier().machine_shell);
-    }
-
-    #[test]
-    fn boobeam_targets_and_barriers_are_read_only_during_the_wily4_fight() {
-        let mut wram = vec![0_u8; WRAM_SIZE];
-        wram[0x2a] = BOOBEAM_STAGE;
-        wram[0xb1] = BOSS_PHASE_FIGHTING;
-        wram[0x414] = BOOBEAM_TRAP_ID;
-        wram[0x434] = 0xc3;
-        wram[0x419] = BOOBEAM_BARRIER_ID;
-        wram[0x439] = 0x92;
-        wram[0x41a] = BOOBEAM_BARRIER_ID;
-        wram[0x474] = 232;
-        wram[0x4b4] = 112;
-        wram[0x479] = 56;
-        wram[0x4b9] = 96;
-        assert_eq!(
-            decode_state(&wram).expect("decode").boobeam_targets,
-            1 << 31 | 1 << 25
-        );
-        wram[0xb1] = BOSS_PHASE_NONE;
-        assert_eq!(decode_state(&wram).expect("decode").boobeam_targets, 0);
-    }
-
-    #[test]
-    fn boobeam_targets_follow_positions_whatever_slots_hold_them() {
-        let mut first = vec![0_u8; WRAM_SIZE];
-        first[0x2a] = BOOBEAM_STAGE;
-        first[0xb1] = BOSS_PHASE_FIGHTING;
-        let mut second = first.clone();
-        for (wram, trap, barrier) in [(&mut first, 0x14, 0x15), (&mut second, 0x17, 0x12)] {
-            wram[0x400 + trap] = BOOBEAM_TRAP_ID;
-            wram[0x420 + trap] = 0x80;
-            wram[0x460 + trap] = 172;
-            wram[0x4a0 + trap] = 60;
-            wram[0x400 + barrier] = BOOBEAM_BARRIER_ID;
-            wram[0x420 + barrier] = 0x80;
-            wram[0x460 + barrier] = 120;
-            wram[0x4a0 + barrier] = 42;
-        }
-        assert_eq!(
-            decode_state(&first).expect("decode").boobeam_targets,
-            decode_state(&second).expect("decode").boobeam_targets
-        );
     }
 
     #[test]
