@@ -28,6 +28,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install stable toolchain
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt
@@ -48,13 +50,15 @@ jobs:
             cargo metadata --locked --format-version 1 --manifest-path "$manifest" >/dev/null
           done
       - name: Deterministic repository lints
+        env:
+          README_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           python3 -m pip install PyYAML==6.0.3
           python3 -m unittest discover -s scripts -p 'test_custom_lints.py'
           python3 -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -m unittest discover -s scripts -p 'test_*scope.py'
           python3 -m unittest discover -s scripts -p test_semantic_lints.py
-          python3 scripts/custom-lints.py
+          python3 scripts/custom-lints.py --readme-base "$README_BASE"
           python3 scripts/strip-comments.py --check
 
   dependency-boundaries:

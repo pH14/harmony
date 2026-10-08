@@ -1791,6 +1791,69 @@ def check_lab_notes(files: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# README human-written section
+# ---------------------------------------------------------------------------
+
+# The README opens with text a person wrote. A blockquote after it says that
+# everything below was written by an LLM. The text above that notice must match
+# the base revision, so an LLM edit to the person's text fails the check.
+README_PATH = "README.md"
+README_NOTICE_LINE = "> [!WARNING]"
+README_NOTICE_TEXT = "> Everything you read after this point"
+README_HUMAN_RULE = "readme-human-section"
+README_DEFAULT_BASE = "origin/main"
+
+
+def readme_human_section(text: str) -> str | None:
+    lines = text.splitlines(keepends=True)
+    notices = [
+        i for i in range(len(lines) - 1)
+        if lines[i].rstrip("\r\n") == README_NOTICE_LINE
+        and lines[i + 1].startswith(README_NOTICE_TEXT)
+    ]
+    if len(notices) != 1:
+        return None
+    return "".join(lines[:notices[0]])
+
+
+def _git_output(repo_root: Path, *args: str) -> str | None:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def _readme_violation(message: str) -> Violation:
+    return Violation(rule=README_HUMAN_RULE, path=README_PATH, line=0, text=message)
+
+
+def check_readme_human_section(repo_root: Path, files: list[str], base: str) -> list[Violation]:
+    if README_PATH not in files:
+        return []
+    current = (repo_root / README_PATH).read_text(encoding="utf-8", errors="replace")
+    current_section = readme_human_section(current)
+    if current_section is None:
+        return [_readme_violation(f"expected one LLM notice starting '{README_NOTICE_TEXT}'")]
+    # Comparing with the merge base also covers commits the branch added on top of it.
+    merge_base = _git_output(repo_root, "merge-base", "HEAD", base)
+    if merge_base is None:
+        return [_readme_violation(f"cannot find base revision '{base}'; fetch it or pass --readme-base")]
+    base_text = _git_output(repo_root, "show", f"{merge_base.strip()}:{README_PATH}")
+    if base_text is None:
+        return []
+    base_section = readme_human_section(base_text)
+    if base_section is None:
+        return [_readme_violation(f"base revision '{base}' has no single LLM notice")]
+    if current_section != base_section:
+        return [_readme_violation(f"text above the LLM notice differs from base revision '{base}'")]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1800,6 +1863,11 @@ def main(argv: list[str] | None = None) -> int:
         "--repo-root",
         type=Path,
         default=Path(__file__).resolve().parent.parent,
+    )
+    parser.add_argument(
+        "--readme-base",
+        default=README_DEFAULT_BASE,
+        help="revision whose README text above the LLM notice must be unchanged",
     )
     args = parser.parse_args(argv)
     root = args.repo_root.resolve()
@@ -1822,8 +1890,9 @@ def main(argv: list[str] | None = None) -> int:
     docs_violations = check_docs_allowlist(files)
     toplevel_violations = check_toplevel_dirs(files)
     lab_violations = check_lab_notes(files)
+    readme_violations = check_readme_human_section(root, files, args.readme_base)
 
-    new_file_violations = vocabulary_violations + comment_violations + misplaced_violations + numbered_violations + workflow_violations + seed_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations
+    new_file_violations = vocabulary_violations + comment_violations + misplaced_violations + numbered_violations + workflow_violations + seed_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations + readme_violations
 
     # Remediation text for non-Rule checks.
     REMEDIATION = {
@@ -1919,6 +1988,11 @@ def main(argv: list[str] | None = None) -> int:
             "compares two runs of the same build against each other."
         ),
         "ci-historical-arms": "A historical scenario searches the current build alone. Cases carry the affected and fixed versions as provenance, never as an execution arm, a matrix dimension or a replay mode.",
+        README_HUMAN_RULE: (
+            "The README text above the LLM notice was written by a person. An LLM "
+            "must never change it. Move new text below the notice, or restore the "
+            "text above it to match the base revision."
+        ),
         "lab-notes-not-tracked": (
             "Lab notes, run reports, and campaign results must not be checked "
             "into the repository. They belong in external storage. Remove the "
