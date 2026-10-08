@@ -3,6 +3,7 @@ import "./style.css";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, validateTape } from "./heat.js";
 import { CREDIT, creditPNG, snapshotHash } from "./media.js";
+import { viewCenter } from "./view.js";
 const base = new URL(import.meta.env.BASE_URL, location.href),
   $ = (id) => document.getElementById(id);
 document.querySelector("#app").innerHTML = `
@@ -39,6 +40,7 @@ let heat = new Heatmap(),
   lastAuto = 0,
   zoom = 1,
   center = 640,
+  centerY = 112,
   hoverCell = null,
   selectedCell = null,
   mapLevel = 0,
@@ -388,6 +390,7 @@ function setRoom(level) {
   canvas.width = mapWidth;
   zoom = 1;
   center = mapWidth / 2;
+  centerY = 112;
   selectedCell = null;
   hoverCell = null;
   $("room").value = String(mapLevel);
@@ -401,9 +404,11 @@ $("room").onchange = () => {
   setRoom(Number($("room").value));
 };
 $("left").onclick = () => {
+  userSelected = true;
   center = Math.max(mapWidth / 2 / zoom, center - mapWidth / 8 / zoom);
 };
 $("right").onclick = () => {
+  userSelected = true;
   center = Math.min(
     mapWidth - mapWidth / 2 / zoom,
     center + mapWidth / 8 / zoom,
@@ -425,9 +430,9 @@ function drawMap(now) {
   ctx.fillStyle = "#122b42";
   ctx.fillRect(0, 0, mapWidth, 224);
   ctx.save();
-  ctx.translate(mapWidth / 2, 0);
+  ctx.translate(mapWidth / 2, 112);
   ctx.scale(zoom, zoom);
-  ctx.translate(-center, (-(zoom - 1) * 112) / zoom);
+  ctx.translate(-center, -centerY);
   const panorama = panoramas.get(mapLevel);
   if (panorama?.complete && panorama.naturalWidth)
     ctx.drawImage(panorama, 0, 0);
@@ -497,7 +502,7 @@ function mapCoordinates(e) {
     py = ((e.clientY - rect.top) / rect.height) * 224;
   return {
     x: Math.floor(((px - mapWidth / 2) / zoom + center) / 32),
-    y: Math.floor(((py - 112) / zoom + 112 + 8) / 32),
+    y: Math.floor(((py - 112) / zoom + centerY + 8) / 32),
     level: mapLevel,
   };
 }
@@ -544,22 +549,29 @@ canvas.addEventListener("keydown", (e) => {
   }
 });
 $("zoom").onclick = () => {
+  userSelected = true;
   zoom = zoom === 1 ? 2 : zoom === 2 ? 4 : 1;
-  center = Math.max(
-    mapWidth / 2 / zoom,
-    Math.min(
-      mapWidth - mapWidth / 2 / zoom,
-      (selectedCell?.x ??
-        Math.floor((mapLevel === 0 ? bestX : bestMainX) / 32)) *
-        32 +
-        16,
-    ),
-  );
+  const point =
+    current?.observation.level === mapLevel
+      ? { x: current.observation.x, y: current.observation.y - 8 }
+      : {
+          x:
+            (selectedCell?.x ??
+              Math.floor((mapLevel === 0 ? bestX : bestMainX) / 32)) *
+              32 +
+            16,
+          y: (selectedCell?.y ?? 5) * 32 + 8,
+        };
+  const view = viewCenter(mapWidth, zoom, point);
+  center = view.x;
+  centerY = view.y;
   $("zoom").textContent = zoom === 1 ? "Zoom in" : `${zoom}× · zoom in`;
 };
 $("fit").onclick = () => {
+  userSelected = true;
   zoom = 1;
   center = mapWidth / 2;
+  centerY = 112;
   $("zoom").textContent = "Zoom in";
 };
 $("pause").onclick = () => {
@@ -575,6 +587,7 @@ $("reset").onclick = () => {
 };
 $("play").onclick = async () => {
   if (seeking) return;
+  userSelected = true;
   if (playing) {
     playing = false;
     $("play").textContent = "▶ Play history";
@@ -631,7 +644,10 @@ $("history-file").onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     if (file.size > 1000000) throw new Error("History file too large");
-    const tape = JSON.parse(await file.text()),
+    const readingEpoch = replayEpoch,
+      text = await file.text();
+    if (readingEpoch !== replayEpoch) return;
+    const tape = JSON.parse(text),
       frames = validateTape(tape);
     userSelected = true;
     const state = {

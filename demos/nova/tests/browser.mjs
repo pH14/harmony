@@ -124,6 +124,7 @@ try {
     wasmBinary: await readFile(new URL("engine/quicknes.wasm", localBase)),
   });
   emulator.boot();
+  const rootHash = await snapshotHash(emulator.capture());
   const longActions = [
     ...tape.actions,
     ...Array(500).fill({ buttons: 0, frames: 120 }),
@@ -152,6 +153,36 @@ try {
       document.querySelector("#verification").textContent ===
       "Saved controller history",
   );
+  await page
+    .locator("#history-file")
+    .setInputFiles({
+      name: "root.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(
+        JSON.stringify({ ...tape, actions: [], endpoint_sha256: rootHash }),
+      ),
+    });
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent ===
+        "Saved controller history" &&
+      document.querySelector("#scrub").max === "0",
+  );
+  await page.locator("#zoom").click();
+  await page.waitForTimeout(50);
+  assert.ok(
+    await page.locator("#map").evaluate((canvas) => {
+      const data = canvas
+        .getContext("2d")
+        .getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 0; i < data.length; i += 4)
+        if (data[i] === 255 && data[i + 1] === 245 && data[i + 2] === 204)
+          return true;
+      return false;
+    }),
+    "Zoom must keep the selected ground state visible",
+  );
+  await page.locator("#fit").click();
   for (const file of [
     "licenses/CREDITS.md",
     "licenses/harmony-source.tar.gz",
