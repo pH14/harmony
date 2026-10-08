@@ -88,17 +88,29 @@ for (const seed of [1, 2, 3]) {
 engine.restore(root);
 const bounded = new Explorer(1);
 bounded.set_snapshot_budget(16 * 1024 * 1024);
-let batch;
+let batch, lastRetained;
 for (let tries = 0; tries < 6000; tries += 2) {
   batch = JSON.parse(bounded.advance(2));
+  for (const point of batch.points)
+    if (point.retained !== null) lastRetained = point.retained;
   if (batch.stopped) break;
 }
 assert.ok(batch.stopped && batch.snapshot_bytes >= 16 * 1024 * 1024);
 assert.ok(
   batch.snapshot_bytes < 16 * 1024 * 1024 + 8 * engine.capture().length,
 );
-const retained = JSON.parse(bounded.state(0));
-assert.equal(retained.frames, 0, "Budget stops preserve inspectable histories");
+assert.ok(lastRetained > 0);
+const retained = JSON.parse(bounded.state(lastRetained));
+const snapshot = bounded.snapshot(lastRetained);
+assert.ok(retained.frames > 0 && snapshot.length > 0);
+engine.restore(root);
+for (const action of retained.actions)
+  engine.run(action.buttons, action.frames);
+assert.deepEqual(
+  engine.capture(),
+  snapshot,
+  "A late retained state must replay exactly after the budget stop",
+);
 bounded.free();
 console.log(
   "Small snapshot budget stops with its retained histories available.",

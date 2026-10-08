@@ -68,7 +68,10 @@ This driver does not run the complete native `Campaign` scheduler: rollouts have
 one to eight controller actions rather than adaptive campaign coordination,
 continuation banks and checkpoints. Its seed determines search choices; wall
 time changes only animation, heat decay and presentation. Restart increments
-the seed from an initial seed of 2, which has a recorded Level 2 witness.
+the seed from an initial seed of 2, which has a recorded Level 2 witness under
+the desktop budget. The smaller phone budget pauses this default run before
+Level 2; phones can inspect and replay the retained exploration but are not
+promised that transition within their budget.
 Seed 1 is retained in regression diagnostics as a censored run, not described
 as a successful clear. A history is bounded to 10,000 actions and 200,000 frames, matching
 import admission. Runs stop after 100,000 paths, approximately 20,000 historical

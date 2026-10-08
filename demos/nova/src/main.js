@@ -672,6 +672,7 @@ function updateStats() {
   $("work").textContent = fmt(stats.frames);
 }
 function renderMapRows(owner) {
+  const focusedMap = document.activeElement?.closest(".map-row")?.dataset.map;
   const rooms = owner?.rooms || [mapLevel];
   for (const [id, image] of panoramas)
     if (!rooms.includes(id)) {
@@ -694,13 +695,16 @@ function renderMapRows(owner) {
       const c = id === mapLevel ? canvas : document.createElement("canvas");
       c.className = "area-map";
       c.width = 1280;
-      c.height = Math.min(
-        320,
-        Math.max(
-          128,
-          Math.round((1280 / maps.get(id).width) * maps.get(id).height),
-        ),
-      );
+      c.height =
+        c === canvas && zoom > 1
+          ? 320
+          : Math.min(
+              320,
+              Math.max(
+                128,
+                Math.round((1280 / maps.get(id).width) * maps.get(id).height),
+              ),
+            );
       c.dataset.map = id;
       if (c !== canvas) {
         c.tabIndex = 0;
@@ -715,6 +719,12 @@ function renderMapRows(owner) {
       return row;
     }),
   );
+  if (focusedMap !== undefined) {
+    const target =
+      document.querySelector(`.map-row[data-map="${focusedMap}"] canvas`) ||
+      canvas;
+    target.focus({ preventScroll: true });
+  }
 }
 function drawMap(now) {
   for (const c of document.querySelectorAll(".area-map")) drawArea(c, now);
@@ -915,6 +925,7 @@ function bindMap(c) {
     if (e.key === "Enter") {
       e.preventDefault();
       if (level !== mapLevel) setRoom(level);
+      hoverCell = point;
       inspect(heat.cells.get(`${level}:${point.x}:${point.y}`));
     }
   });

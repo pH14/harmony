@@ -267,6 +267,15 @@ try {
       await page.locator(`.map-row[data-map="${id}"] canvas`).isVisible(),
       true,
     );
+  await page.locator('.map-row[data-map="49"] canvas').focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("#map").getAttribute("data-map"), "49");
+  assert.equal(
+    await page.locator("#map").evaluate((c) => c === document.activeElement),
+    true,
+    "Entering a cell on a stacked map must preserve keyboard focus",
+  );
   await page.locator('.map-row[data-map="45"] .area-label').click();
   assert.equal(await page.locator("#map").getAttribute("data-map"), "45");
   assert.match(await page.locator("#map-label").innerText(), /MAIN LEVEL/);
@@ -289,6 +298,20 @@ try {
     .click();
   await page.locator('.map-card[data-map="45"]').click();
   await page.locator("#zoom").click();
+  await page
+    .locator("#worlds")
+    .getByRole("button", { name: "World 2", exact: true })
+    .click();
+  assert.equal(
+    await page.locator("#map").evaluate((c) => c.height),
+    320,
+    "World navigation must preserve the zoomed map viewport",
+  );
+  await page
+    .locator("#worlds")
+    .getByRole("button", { name: "World 1", exact: true })
+    .click();
+  await page.locator("#map").scrollIntoViewIfNeeded();
   const before = await page.locator("#map").evaluate((c) => c.toDataURL()),
     bounds = await page.locator("#map").boundingBox();
   await page.mouse.move(
@@ -303,9 +326,8 @@ try {
   );
   await page.mouse.up();
   await page.waitForTimeout(100);
-  assert.notEqual(
-    await page.locator("#map").evaluate((c) => c.toDataURL()),
-    before,
+  assert.ok(
+    (await page.locator("#map").evaluate((c) => c.toDataURL())) !== before,
     "Dragging the zoomed map must move the view",
   );
   await page.locator("#reset").click();
