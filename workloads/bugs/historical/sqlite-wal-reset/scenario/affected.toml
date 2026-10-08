@@ -8,7 +8,7 @@ ready = ["/bin/true"]
 
 [workload.options.build]
 context = "../../../../.."
-command = ["bash", "workloads/bugs/historical/sqlite-wal-reset/scenario/build.sh", "affected"]
+command = ["bash", "workloads/bugs/historical/sqlite-wal-reset/scenario/build.sh"]
 
 [workload.options.nodes.checkpoint]
 command = ["/opt/python/bin/python3.14", "/opt/harmony/sqlite/workload.py", "checkpoint"]
