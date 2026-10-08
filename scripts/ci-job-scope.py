@@ -8,13 +8,14 @@ import os
 from pathlib import Path
 import subprocess
 
-from ci_contract import MIRI_OWNERS
+from ci_contract import MIRI_OWNERS, WORKFLOWS
 from ci_scope import SCENARIOS, selected
 from miri_scope import TARGETS, selected_targets
 from quality_scope import kani_required
+from rust_scope import rust_checks_required
 
 
-FULL_RUN_KINDS = ("harmony_nes", "harmony_languages")
+FULL_RUN_KINDS = ("harmony_nes", "harmony_languages", "rust_checks")
 
 
 def changed_paths(kind, event, base, before):
@@ -54,6 +55,12 @@ def selection(kind, target, paths):
         include = [item for item in selected_targets(paths) if item["name"] in names]
         return {"enabled": bool(include),
                 "matrix": json.dumps({"include": include}, separators=(",", ":"))}
+    if kind == "rust_checks":
+        workflows = {Path(workflow.path).name for workflow in WORKFLOWS
+                     if any(job.select == "rust_checks" for job in workflow.jobs)}
+        if target not in workflows:
+            raise ValueError(f"no workflow selects rust_checks as {target!r}")
+        return {"enabled": rust_checks_required(paths, target)}
     if target:
         raise ValueError(f"{kind} does not accept a target")
     if kind == "kani":
@@ -63,7 +70,7 @@ def selection(kind, target, paths):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", choices=(*SCENARIOS, "kani", "miri", "miri_matrix"), required=True)
+    parser.add_argument("--kind", choices=(*SCENARIOS, "kani", "miri", "miri_matrix", "rust_checks"), required=True)
     parser.add_argument("--target", default="")
     args = parser.parse_args()
     paths = changed_paths(args.kind, os.environ.get("EVENT_NAME", ""),

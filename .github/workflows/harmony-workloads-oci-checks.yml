@@ -34,8 +34,27 @@ env:
   HARMONY_PLATFORM_FIXTURE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/fixture
 
 jobs:
+  scope:
+    name: Change Selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust_checks: ${{ steps.rust_checks.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: rust_checks
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: rust_checks
+          target: harmony-workloads-oci-checks.yml
+
   exact-runtime-artifacts:
     name: Exact Runtime Artifacts
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -45,8 +64,8 @@ jobs:
 
   container-execution:
     name: Container Execution
-    needs: exact-runtime-artifacts
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') }}
+    needs: [scope, exact-runtime-artifacts]
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.rust_checks == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -96,8 +115,8 @@ jobs:
 
   postgresql:
     name: PostgreSQL
-    needs: exact-runtime-artifacts
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') }}
+    needs: [scope, exact-runtime-artifacts]
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.rust_checks == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

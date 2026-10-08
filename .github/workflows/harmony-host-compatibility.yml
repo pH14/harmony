@@ -30,8 +30,27 @@ env:
   PORTABLE_TEST_FLOOR: 1000
 
 jobs:
+  scope:
+    name: Change Selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust_checks: ${{ steps.rust_checks.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: rust_checks
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: rust_checks
+          target: harmony-host-compatibility.yml
+
   macos-arm64:
     name: macOS Arm64
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: macos-14
     timeout-minutes: 15
     steps:
@@ -99,6 +118,8 @@ jobs:
 
   linux-arm64:
     name: Linux Arm64
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:

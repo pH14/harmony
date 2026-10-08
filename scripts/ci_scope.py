@@ -3,7 +3,7 @@
 """Select bounded workload checks and API checks from changed repository paths.
 
 Each name is one registered job's change-selection kind; `ci_contract.SCOPE_KINDS`
-maps it to the workflow that owns it.
+maps it to the workflows that use it.
 """
 
 import fnmatch

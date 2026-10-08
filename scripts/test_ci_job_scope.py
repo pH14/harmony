@@ -102,6 +102,23 @@ class InlineSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SCOPE.selection("miri_matrix", "Nobody", [])
 
+    def test_rust_checks_are_selected_per_workflow_and_fully_on_manual_runs(self):
+        docs = ["docs/WORKFLOWS.md", "scripts/semantic-lints.py"]
+        self.assertEqual(SCOPE.selection("rust_checks", "harmony-checks.yml", docs), {"enabled": False})
+        self.assertEqual(SCOPE.selection("rust_checks", "harmony-checks.yml", ["cli/src/main.rs"]),
+                         {"enabled": True})
+        own = [".github/workflows/repository-checks.yml"]
+        self.assertTrue(SCOPE.selection("rust_checks", "repository-checks.yml", own)["enabled"])
+        self.assertFalse(SCOPE.selection("rust_checks", "harmony-checks.yml", own)["enabled"])
+        with self.assertRaises(ValueError):
+            SCOPE.selection("rust_checks", "consonance-analysis.yml", docs)
+        with self.assertRaises(ValueError):
+            SCOPE.selection("rust_checks", "", docs)
+        for event in ("schedule", "workflow_dispatch"):
+            with mock.patch.object(SCOPE.subprocess, "check_output", return_value="README.md\0Cargo.toml\0"):
+                paths = SCOPE.changed_paths("rust_checks", event, "", "")
+            self.assertTrue(SCOPE.selection("rust_checks", "harmony-checks.yml", paths)["enabled"])
+
     def test_matches_existing_selectors(self):
         samples = [[], ["docs/WORKFLOWS.md"], ["Cargo.lock"],
                    ["workloads/nes/src/stb/target.rs"], ["cli/src/main.rs"],

@@ -198,6 +198,21 @@ skipped and never starts a runner. The `miri_matrix` kind publishes the Miri
 targets a change reaches for one component as the matrix of the Miri job;
 `scripts/miri_scope.py` is its only list.
 
+The `rust_checks` kind selects a workflow's Rust build and test jobs. Its
+target is the file name of the workflow. A change selects the jobs unless every
+changed path is one of these:
+
+- Documentation: Markdown, `docs/`, `LICENSE`, `.agents/`, `.claude/`,
+  `.githooks/` and `benchmarks/`.
+- A tool only the Repository workflow runs, listed in
+  `scripts/rust_scope.py`. `scripts/test_rust_scope.py` fails when another
+  workflow or action starts naming one.
+- The file of another workflow.
+
+A path that selects any scenario in `scripts/ci_scope.py` always selects, and so
+does any path the selector does not recognize. A scheduled or manual run
+selects the whole tracked tree.
+
 A job that always runs part of its work and selects only the rest, such as the
 hardware steps of `CPU State`, runs the selector itself once, unconditionally,
 under the id `scope`, after a complete-history checkout, and guards the

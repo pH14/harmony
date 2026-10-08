@@ -22,8 +22,27 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
+  scope:
+    name: Change Selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust_checks: ${{ steps.rust_checks.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: rust_checks
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: rust_checks
+          target: harmony-checks.yml
+
   cli:
     name: CLI
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -46,6 +65,8 @@ jobs:
 
   nes-adapter:
     name: NES Adapter
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -87,6 +108,8 @@ jobs:
 
   fault-injection:
     name: Fault Injection
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

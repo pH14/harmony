@@ -273,24 +273,29 @@ CONSONANCE_CHECKS = Workflow(
     owner="Consonance",
     triggers=("pull_request", "push"),
     jobs=(
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("Exact Runtime Artifacts", "pr", 45,
             exception="A cold build of the exact guest kernel and runtime exceeds "
-                      "the pull request check budget."),
+                      "the pull request check budget.",
+            select="rust_checks"),
         Job("Guest Memory", "pr", 15,
             crates=("guest-image", "oci-support", "nested-driver", "vmm-core"),
-            test_targets=("vmm-core:linux_loader_proptest",)),
+            test_targets=("vmm-core:linux_loader_proptest",),
+            select="rust_checks"),
         Job("CPU State", "pr", 15,
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
                           "vmm-backend:kvm_smoke"),
             ignored_tests=KVM_SERVICED_EXIT_TESTS + ("vmm-backend::contract_kvm *",),
-            scope="consonance_kvm"),
+            scope="consonance_kvm",
+            select="rust_checks"),
         Job("Device State", "pr", 15,
             crates=("lapic", "gicv3", "telemetry"),
             ignored_tests=(
                 "gicv3 device::performance_tests::qualify_arbitration",
                 "gicv3 device::performance_tests::qualify_delivery_cycle",
-            )),
+            ),
+            select="rust_checks"),
         Job("Virtual Time", "pr", 15,
             crates=("vtime",),
             test_targets=("vmm-core:virtual_time", "vmm-core:x86_kvm_virtual_time",
@@ -300,19 +305,22 @@ CONSONANCE_CHECKS = Workflow(
                 "x1_ten_same_seed_runs_produce_one_normalized_log",
                 "vmm-core::x86_kvm_linux_virtual_time x2_same_seed_boots_one_normalized_log",
             ),
-            scope="consonance_platform"),
+            scope="consonance_platform",
+            select="rust_checks"),
         Job("Snapshot and Restore", "pr", 15,
             crates=("snapshot-store", "unison"),
             test_targets=("vmm-core:snapshot_branch", "vmm-core:event_loop"),
             ignored_tests=("vmm-backend::kvm_smoke save_restore_round_trips_on_real_kvm",
                            PUBLIC_SNAPSHOT_IDENTITY_TEST),
-            scope="consonance_kvm"),
+            scope="consonance_kvm",
+            select="rust_checks"),
         Job("Execution Protocol", "pr", 15,
             crates=("consonance-client", "control-proto", "environment",
                     "execution-proto", "hypercall-doorbell", "hypercall-proto",
                     "process-proto"),
-            test_targets=("vmm-core:protocol",)),
-        Job("Guest Runtime", "pr", 15),
+            test_targets=("vmm-core:protocol",),
+            select="rust_checks"),
+        Job("Guest Runtime", "pr", 15, select="rust_checks"),
     ),
 )
 
@@ -447,11 +455,13 @@ DISSONANCE_CHECKS = Workflow(
     owner="Dissonance",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("Archive", "pr", 15, crates=("searcher",)),
-        Job("Scheduling", "pr", 15, test_targets=("searcher:adaptive_durations",)),
-        Job("Search Coordination", "pr", 15, test_targets=("searcher:interfaces",)),
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
+        Job("Archive", "pr", 15, crates=("searcher",), select="rust_checks"),
+        Job("Scheduling", "pr", 15, test_targets=("searcher:adaptive_durations",), select="rust_checks"),
+        Job("Search Coordination", "pr", 15, test_targets=("searcher:interfaces",), select="rust_checks"),
         Job("Campaign Recording and Replay", "pr", 15,
-            test_targets=("searcher:adaptive_campaign",)),
+            test_targets=("searcher:adaptive_campaign",),
+            select="rust_checks"),
     ),
 )
 
@@ -473,9 +483,10 @@ HARMONY_CHECKS = Workflow(
     owner="Harmony",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("CLI", "pr", 15, crates=("harmony-cli",), test_targets=("harmony-cli:staging",)),
-        Job("NES Adapter", "pr", 15),
-        Job("Fault Injection", "pr", 15),
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
+        Job("CLI", "pr", 15, crates=("harmony-cli",), test_targets=("harmony-cli:staging",), select="rust_checks"),
+        Job("NES Adapter", "pr", 15, select="rust_checks"),
+        Job("Fault Injection", "pr", 15, select="rust_checks"),
     ),
 )
 
@@ -503,9 +514,10 @@ REPOSITORY_CHECKS = Workflow(
     owner="Repository",
     triggers=("pull_request", "push"),
     jobs=(
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("Formatting, Boundaries and Tooling", "pr", 15),
         Job("Semantic Lints", "pr", 15),
-        Job("Ignored Tests — <Host>", "pr", 15),
+        Job("Ignored Tests — <Host>", "pr", 15, select="rust_checks"),
     ),
 )
 
@@ -515,8 +527,9 @@ HARMONY_HOST_COMPATIBILITY = Workflow(
     owner="Harmony Host Compatibility",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("macOS Arm64", "pr", 15),
-        Job("Linux Arm64", "pr", 15),
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
+        Job("macOS Arm64", "pr", 15, select="rust_checks"),
+        Job("Linux Arm64", "pr", 15, select="rust_checks"),
     ),
 )
 
@@ -540,7 +553,8 @@ DISSONANCE_TINY_WORLDS_CHECKS = Workflow(
     owner="Dissonance Workloads",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("World Mechanics", "pr", 15, crates=("tiny-worlds",)),
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
+        Job("World Mechanics", "pr", 15, crates=("tiny-worlds",), select="rust_checks"),
     ),
 )
 
@@ -589,14 +603,17 @@ HARMONY_OCI_CHECKS = Workflow(
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("Exact Runtime Artifacts", "pr", 45,
             exception="A cold build of the exact guest kernel and runtime exceeds "
-                      "the pull request check budget."),
+                      "the pull request check budget.",
+            select="rust_checks"),
         Job("Container Execution", "pr", 15,
             test_targets=("oci-support:platform", "oci-support:process_platform"),
             ignored_tests=OCI_PLATFORM_TESTS,
-            scope="consonance_platform"),
-        Job("PostgreSQL", "pr", 15, scope="harmony_oci"),
+            scope="consonance_platform",
+            select="rust_checks"),
+        Job("PostgreSQL", "pr", 15, scope="harmony_oci", select="rust_checks"),
         Job("Docker", "full", 90,
             exception="Building the pinned Docker workload image and booting it "
                       "twice under nested KVM exceeds the pull request budget."),
@@ -682,11 +699,13 @@ CONSONANCE_UML = Workflow(
     owner="Consonance",
     triggers=("pull_request", "push", "workflow_dispatch"),
     jobs=(
-        Job("UML Launcher", "pr", 15, crates=("uml",)),
+        Job("Change Selection", "pr", 5, selects=("rust_checks",)),
+        Job("UML Launcher", "pr", 15, crates=("uml",), select="rust_checks"),
         Job("UML Artifacts — <Architecture>", "pr", 45,
             exception="Two cold compilations of the pinned UML kernel and locked "
-                      "toolchain exceed the pull request check budget."),
-        Job("UML Qualification — <Target>", "pr", 15),
+                      "toolchain exceed the pull request check budget.",
+            select="rust_checks"),
+        Job("UML Qualification — <Target>", "pr", 15, select="rust_checks"),
     ),
 )
 
@@ -770,19 +789,21 @@ MIRI_ANALYSIS_WORKFLOWS = {
     "Harmony": HARMONY_ANALYSIS.name,
 }
 
-# Change-selection kinds the composite action accepts, and the workflow that
-# owns each one.
+# Change-selection kinds the composite action accepts, and the workflows that
+# use each one.
 SCOPE_KINDS = {
-    "dissonance_nes": DISSONANCE_NES_CHECKS.name,
-    "dissonance_stb": DISSONANCE_NES_CHECKS.name,
-    "harmony_nes": HARMONY_NES_CHECKS.name,
-    "harmony_oci": HARMONY_OCI_CHECKS.name,
-    "harmony_languages": HARMONY_LANGUAGES_CHECKS.name,
-    "consonance_platform": CONSONANCE_CHECKS.name,
-    "consonance_kvm": CONSONANCE_CHECKS.name,
-    "kani": CONSONANCE_ANALYSIS.name,
-    "miri": HARMONY_ANALYSIS.name,
-    "miri_matrix": CONSONANCE_ANALYSIS.name,
+    "dissonance_nes": (DISSONANCE_NES_CHECKS.name,),
+    "dissonance_stb": (DISSONANCE_NES_CHECKS.name,),
+    "harmony_nes": (HARMONY_NES_CHECKS.name,),
+    "harmony_oci": (HARMONY_OCI_CHECKS.name,),
+    "harmony_languages": (HARMONY_LANGUAGES_CHECKS.name,),
+    "consonance_platform": (CONSONANCE_CHECKS.name, HARMONY_OCI_CHECKS.name),
+    "consonance_kvm": (CONSONANCE_CHECKS.name,),
+    "kani": (CONSONANCE_ANALYSIS.name,),
+    "miri": (HARMONY_ANALYSIS.name,),
+    "miri_matrix": (CONSONANCE_ANALYSIS.name,),
+    "rust_checks": tuple(workflow.name for workflow in WORKFLOWS
+                         if any(job.select == "rust_checks" for job in workflow.jobs)),
 }
 
 # Historical bug scenarios are named after the bug, never after an execution
