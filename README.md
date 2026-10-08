@@ -10,8 +10,7 @@ Harmony is composed of two halves that work together to reach resolution on your
 
 * `consonance`: a deterministic Linux environment that runs your code reproducibly every time. It is built with
 hardware portability in mind, allowing Harmony to run on Intel, AMD, and ARM chips across Linux (KVM) and macOS (HVF),
-including within nested virtualization. User-mode Linux also runs in ordinary Linux
-containers without hardware virtualization.
+including within nested virtualization, or even as a user-mode Linux process.
 
 * `dissonance`: a chaotic exploration tool that takes your code through adversarial conditions trying to find bugs.
 
