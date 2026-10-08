@@ -219,6 +219,24 @@ try {
     /CC BY-NC-SA 4.0/,
   );
   await page.locator("#close-info").click();
+  const artCredits = page.locator(".art-credit");
+  assert.equal(await artCredits.count(), 3);
+  for (const credit of await artCredits.all()) {
+    assert.equal(await credit.isVisible(), true);
+    assert.match(
+      await credit.innerText(),
+      /Nova the Squirrel art by NovaSquirrel/,
+    );
+    assert.match(await credit.innerText(), /CC BY-NC-SA 4.0/);
+    assert.equal(
+      await credit.locator('a[rel="license"]').getAttribute("href"),
+      "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+    );
+    assert.match(
+      await credit.locator("a").first().getAttribute("href"),
+      /NovaSquirrel\/NovaTheSquirrel/,
+    );
+  }
   for (const text of [
     "How it works",
     "Everything runs in your browser",
@@ -294,6 +312,10 @@ try {
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
+    true,
+  );
+  assert.equal(
+    await page.locator(".exploration > .art-credit").isVisible(),
     true,
   );
   await mkdir("test-results", { recursive: true });

@@ -126,7 +126,9 @@ can place the artifact under `/nova/`. No generated assets or ROM are checked in
 
 Nova the Squirrel is by **NovaSquirrel**. Game code is GPL-3.0-or-later; original
 graphics, sound and gameplay imagery are CC BY-NC-SA 4.0 with upstream character
-restrictions. This is a noncommercial software demonstration. Full attribution,
-restrictions, pinned source references and corresponding-source links are in
+restrictions. This is a noncommercial software demonstration.
+Creator, source and Creative Commons license links appear directly under the
+map, replay and atlas. Full attribution, restrictions, pinned source references
+and corresponding-source links are in
 [CREDITS.md](CREDITS.md) and the site's Credits dialog. The build distributes
 original sources and build recipes alongside the ROM and emulator.

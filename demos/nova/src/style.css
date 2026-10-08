@@ -830,3 +830,26 @@ dialog p {
     min-height: 0;
   }
 }
+
+.art-credit {
+  display: block;
+  margin: 10px 0;
+  color: #aabac8;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.art-credit a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.exploration > .art-credit {
+  margin: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+}
+@media (max-width: 700px) {
+  .exploration > .art-credit {
+    padding-inline: 12px;
+  }
+}
