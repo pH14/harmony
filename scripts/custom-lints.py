@@ -1731,6 +1731,7 @@ TOPLEVEL_DIR_ALLOWLIST = {
     "cli",
     "consonance",
     "dissonance",
+    "demos",
     "docs",
     "scripts",
     "workloads",
