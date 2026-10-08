@@ -4,7 +4,12 @@ import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, validateTape } from "./heat.js";
 import { CREDIT, creditPNG, snapshotHash } from "./media.js";
 import { viewCenter } from "./view.js";
-import { project, completedLevels, mergeProgress } from "./world.js";
+import {
+  project,
+  completedLevels,
+  mergeProgress,
+  isMapEvidence,
+} from "./world.js";
 const base = new URL(import.meta.env.BASE_URL, location.href),
   $ = (id) => document.getElementById(id);
 const catalog = await (await fetch(new URL("maps.json", base))).json();
@@ -210,7 +215,12 @@ async function selectState(state, autoplay = false, propagateError = false) {
         : state.observation.chips,
     ],
     ["Ability", state.observation.ability],
-    ["Area", maps.get(state.observation.level)?.label || "Transition"],
+    [
+      "Area",
+      isMapEvidence(state.observation, catalog.levels)
+        ? maps.get(state.observation.level)?.label
+        : "Level transition",
+    ],
     ["Controller actions", state.actions.length],
   ];
   for (const [name, value] of fields) {
@@ -222,7 +232,11 @@ async function selectState(state, autoplay = false, propagateError = false) {
     div.append(label, b);
     $("details").append(div);
   }
-  if (state.observation.level !== mapLevel) setRoom(state.observation.level);
+  if (
+    isMapEvidence(state.observation, catalog.levels) &&
+    state.observation.level !== mapLevel
+  )
+    setRoom(state.observation.level);
   const selection = seek(autoplay ? 0 : state.frames, propagateError),
     epoch = replayEpoch;
   const success = await selection;
@@ -328,6 +342,7 @@ function startSearch() {
         const state = data.state;
         stateCache.set(0, state);
         seenMaps.add(state.observation.level);
+        updateRoomTabs();
         heat.visit(
           {
             observation: project(
@@ -346,15 +361,15 @@ function startSearch() {
         for (const point of data.points) {
           const o = point.observation,
             map = maps.get(o.level);
-          if (!map) continue;
+          for (const level of completedLevels(o.cleared_levels))
+            if (!wins.has(level) && point.retained !== null)
+              wins.set(level, point.retained);
+          mergeProgress(cleared, o);
+          if (!map || !isMapEvidence(o, catalog.levels)) continue;
           const first = !seenMaps.has(o.level);
           seenMaps.add(o.level);
           if (point.retained !== null && !arrivals.has(o.level))
             arrivals.set(o.level, point.retained);
-          for (const level of completedLevels(o.cleared_levels))
-            if (!cleared.has(level) && point.retained !== null)
-              wins.set(level, point.retained);
-          mergeProgress(cleared, o);
           const best = bestByMap.get(o.level) || 0;
           if (o.x > best && point.retained !== null) {
             bestByMap.set(o.level, o.x);
@@ -675,7 +690,10 @@ function drawMap(now) {
     ctx.lineWidth = 1.5 / zoom;
     ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
   }
-  if (current?.observation.level === mapLevel) {
+  if (
+    current?.observation.level === mapLevel &&
+    isMapEvidence(current.observation, catalog.levels)
+  ) {
     const o = project(current.observation, maps.get(mapLevel));
     ctx.strokeStyle = "#fff5cc";
     ctx.lineWidth = 1.5 / zoom;
@@ -784,7 +802,8 @@ $("zoom").onclick = () => {
   userSelected = true;
   zoom = zoom === 1 ? 2 : zoom === 2 ? 4 : 1;
   const o =
-    current?.observation.level === mapLevel
+    current?.observation.level === mapLevel &&
+    isMapEvidence(current.observation, catalog.levels)
       ? project(current.observation, maps.get(mapLevel))
       : null;
   const point = o

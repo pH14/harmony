@@ -2,7 +2,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { project, completedLevels, mergeProgress } from "../src/world.js";
+import {
+  project,
+  completedLevels,
+  mergeProgress,
+  isMapEvidence,
+} from "../src/world.js";
 import { viewCenter } from "../src/view.js";
 test("the pinned source catalogs the real intro door chain and all campaign levels", () => {
   const { maps, levels } = JSON.parse(
@@ -38,4 +43,37 @@ test("completion comes from campaign clear bits and remains latched across branc
   mergeProgress(progress, { cleared_levels: [0, 2] });
   assert.deepEqual([...progress], [0, 9]);
   assert.equal(completedLevels([255, 255, 255, 255, 255]).length, 40);
+});
+test("end screens and level selection cannot mark the next area as explored", () => {
+  const { levels } = JSON.parse(
+    readFileSync(new URL("../public/maps.json", import.meta.url)),
+  );
+  const gameplay = {
+    level: 45,
+    selected_level: 0,
+    checkpoint_level: 0,
+    program_bank: 9,
+    reload: false,
+  };
+  assert.equal(isMapEvidence(gameplay, levels), true);
+  assert.equal(
+    isMapEvidence({ ...gameplay, checkpoint_level: 49 }, levels),
+    true,
+  );
+  assert.equal(
+    isMapEvidence({ ...gameplay, level: 1, selected_level: 1 }, levels),
+    false,
+  );
+  assert.equal(isMapEvidence({ ...gameplay, program_bank: 14 }, levels), false);
+  assert.equal(
+    isMapEvidence({ ...gameplay, level: 49, reload: true }, levels),
+    false,
+  );
+  assert.equal(
+    isMapEvidence(
+      { ...gameplay, level: 1, selected_level: 1, checkpoint_level: 1 },
+      levels,
+    ),
+    true,
+  );
 });

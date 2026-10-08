@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createEngine } from "../src/emulator.js";
 import { png } from "./png.mjs";
 import { creditPNG } from "../src/media.js";
+const versions = await readFile(
+  new URL("../../../workloads/nes/nova-versions.env", import.meta.url),
+  "utf8",
+);
+const commit = versions.match(/^NOVA_COMMIT=([a-f0-9]{40})$/m)?.[1];
+if (!commit) throw new Error("Missing pinned Nova source revision");
 const base = pathToFileURL(process.cwd() + "/public/"),
-  source =
-    ".build/" +
-    (await readdir(".build")).find((n) => n.startsWith("NovaTheSquirrel-"));
+  source = `.build/NovaTheSquirrel-${commit}`;
 const table = await readFile(source + "/src/levels.s", "utf8");
 const names = [
   ...table.split("MasterLevelListH:")[0].matchAll(/<([a-z0-9_]+)/g),

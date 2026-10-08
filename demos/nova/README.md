@@ -69,7 +69,8 @@ the seed. A history is bounded to 10,000 actions and 200,000 frames, matching
 import admission. Runs stop after 100,000 paths, approximately 20,000 historical
 entries, or 128 MiB of compressed snapshot payload (at most seven additional
 entries in the final rollout). Raw DEFLATE compression preserves every snapshot
-byte, including snapshots whose selector entries have retired. Decompression is
+byte. Stored boxed slices discard spare compressor capacity, so the payload
+count also bounds their backing allocations. This includes snapshots whose selector entries have retired. Decompression is
 bounded to one MiB. Total memory also includes archive structures, emulators,
 decoded images and UI storage. Budgets do not guarantee game completion.
 
@@ -86,7 +87,10 @@ portal links for connected rooms. Occupied editor pages determine map extents;
 empty editor padding is trimmed. Packed horizontal runtime pages project back
 into source rows for tall levels. An offline camera captures each original map,
 with build-only RAM writes and button presses to skip dialogs. Those snapshots
-never enter live search or replay. Heat is actual controller-action endpoints,
+never enter live search or replay. Only non-reloading main-loop states whose map and loaded checkpoint belong to
+the selected level contribute heat or area visits. End screens and level-select
+menus still contribute clear witnesses without claiming visits to the next map.
+Heat is actual controller-action endpoints,
 rather than interpolated or fabricated visits. The marker and film show a
 historical endpoint, rather than one continuously moving search agent.
 

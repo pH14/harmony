@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "../src/emulator.js";
+import { isMapEvidence } from "../src/world.js";
 import { snapshotHash, CREDIT } from "../src/media.js";
 import init, { Explorer } from "../rust/pkg/nova_browser.js";
 const base = new URL("../public/", import.meta.url);
@@ -15,6 +16,7 @@ await init({
     new URL("../rust/pkg/nova_browser_bg.wasm", import.meta.url),
   ),
 });
+const catalog = JSON.parse(await readFile(new URL("maps.json", base)));
 const root = engine.boot();
 await mkdir("test-results", { recursive: true });
 for (const seed of [1, 2, 3]) {
@@ -26,6 +28,7 @@ for (const seed of [1, 2, 3]) {
     for (const point of batch.points)
       if (
         [49, 45].includes(point.observation.level) &&
+        isMapEvidence(point.observation, catalog.levels) &&
         point.retained !== null &&
         !arrivals.has(point.observation.level)
       ) {

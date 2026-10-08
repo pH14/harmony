@@ -18,3 +18,11 @@ export function mergeProgress(progress, observation) {
     progress.add(id);
   return progress;
 }
+export function isMapEvidence(observation, levels) {
+  if (observation.reload || observation.program_bank !== 9) return false;
+  const owner = (map) => levels.find((level) => level.rooms.includes(map))?.id;
+  return (
+    owner(observation.level) === observation.selected_level &&
+    owner(observation.checkpoint_level) === observation.selected_level
+  );
+}

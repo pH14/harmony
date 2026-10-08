@@ -35,6 +35,8 @@ pub struct Observation {
     pub health: u8,
     pub level: u8,
     pub selected_level: u8,
+    pub checkpoint_level: u8,
+    pub program_bank: u8,
     pub chips: u8,
     pub chips_needed: u8,
     pub cleared_levels: [u8; 5],
@@ -113,6 +115,8 @@ pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
         health: ram[0x4b],
         level: ram[0xa7],
         selected_level: ram[0xa8],
+        checkpoint_level: ram[0x1a59],
+        program_bank: ram[0x39e],
         chips: ram[0x508],
         chips_needed: ram[0x509],
         cleared_levels: ram[0x271f..0x2724].try_into().unwrap(),
@@ -185,7 +189,7 @@ struct State {
 #[wasm_bindgen]
 pub struct Explorer {
     archive: Archive<Action, Observation, (), ()>,
-    snapshots: BTreeMap<usize, Vec<u8>>,
+    snapshots: BTreeMap<usize, Box<[u8]>>,
     rng: RomuDuoJrRand,
     executions: u32,
     deaths: u32,
@@ -193,6 +197,10 @@ pub struct Explorer {
     stopped: bool,
     won: bool,
     snapshot_bytes: usize,
+}
+
+fn compress_snapshot(bytes: &[u8]) -> Box<[u8]> {
+    miniz_oxide::deflate::compress_to_vec(bytes, 1).into_boxed_slice()
 }
 
 fn js_error(e: impl std::fmt::Display) -> JsValue {
@@ -221,7 +229,7 @@ impl Explorer {
                 (),
             )
             .map_err(js_error)?;
-        let root = miniz_oxide::deflate::compress_to_vec(&capture()?, 1);
+        let root = compress_snapshot(&capture()?);
         let snapshot_bytes = root.len();
         Ok(Self {
             archive,
@@ -288,7 +296,7 @@ impl Explorer {
                     && let std::collections::btree_map::Entry::Vacant(entry) =
                         self.snapshots.entry(id)
                 {
-                    let compressed = miniz_oxide::deflate::compress_to_vec(&capture()?, 1);
+                    let compressed = compress_snapshot(&capture()?);
                     self.snapshot_bytes += compressed.len();
                     entry.insert(compressed);
                 }
@@ -369,15 +377,28 @@ mod tests {
         ram[0x2727] = 3;
         ram[0x508] = 7;
         ram[0x509] = 12;
+        ram[0x1a59] = 45;
+        ram[0x39e] = 9;
         let state = decode(&ram).unwrap();
         assert_eq!(
             (state.x, state.y, state.health, state.ability, state.cleared),
             (56, 148, 4, 2, 3)
         );
+        assert_eq!((state.checkpoint_level, state.program_bank), (45, 9));
         assert_eq!(state.cleared_levels, [5, 0, 0, 0, 128]);
         assert_eq!(state.available_levels, [3, 0, 0, 0, 0]);
         assert_eq!((state.chips, state.chips_needed), (7, 12));
         assert!(decode(&ram[..0x800]).is_err());
+    }
+    #[test]
+    fn compressed_snapshot_owns_only_its_payload_and_round_trips() {
+        let bytes: Vec<u8> = (0..20998).map(|i| (i % 256) as u8).collect();
+        let compressed: Box<[u8]> = compress_snapshot(&bytes);
+        assert!(compressed.len() < bytes.len() / 2);
+        assert_eq!(
+            miniz_oxide::inflate::decompress_to_vec_with_limit(&compressed, 1048576).unwrap(),
+            bytes
+        );
     }
     #[test]
     fn heatmap_position_is_not_full_archive_identity() {

@@ -139,6 +139,8 @@ export function decode(ram) {
     health: ram[0x4b],
     level: ram[0xa7],
     selected_level: ram[0xa8],
+    checkpoint_level: ram[0x1a59],
+    program_bank: ram[0x39e],
     chips: ram[0x508],
     chips_needed: ram[0x509],
     cleared_levels: Array.from(ram.slice(0x271f, 0x2724)),
