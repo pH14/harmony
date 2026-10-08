@@ -21,9 +21,9 @@ from typing import NamedTuple
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = ".github/workflows"
 
-# The three top-level categories. A workflow name is a category followed by its
+# The top-level categories. A workflow name is a category followed by its
 # owner and, where a composition or grouping owns it, further qualifiers.
-CATEGORIES = ("Checks", "Benchmarks", "Release")
+CATEGORIES = ("Checks", "Benchmarks", "Release", "Maintenance")
 
 # Names these categories replaced. They described when a workflow ran or how
 # thorough it was rather than what owns it.
@@ -709,6 +709,16 @@ CONSONANCE_UML = Workflow(
     ),
 )
 
+REPOSITORY_MAINTENANCE = Workflow(
+    path=f"{WORKFLOW_DIR}/repository-maintenance.yml",
+    name="Maintenance / Repository",
+    owner="Repository",
+    triggers=("schedule", "workflow_dispatch"),
+    jobs=(
+        Job("Prune Merged Branches", "full", 10),
+    ),
+)
+
 WORKFLOWS = (
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
@@ -733,6 +743,7 @@ WORKFLOWS = (
     HARMONY_HISTORICAL_BENCHMARKS,
     HARMONY_UML_CAMPAIGN,
     RELEASE,
+    REPOSITORY_MAINTENANCE,
 )
 
 # The two NES compositions. Native QuickNES exercises the Dissonance adapter;

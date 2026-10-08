@@ -1,0 +1,41 @@
+name: Maintenance / Repository
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Delete the branches instead of listing them
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: repository-maintenance
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune Merged Branches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Delete branches whose work is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
+        run: |
+          flags=()
+          if [ "$APPLY" = "true" ]; then
+            flags+=(--apply)
+          fi
+          python3 scripts/prune-branches.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            "${flags[@]}"
