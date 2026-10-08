@@ -36,6 +36,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-guest-memory
       - uses: taiki-e/install-action@v2
         with:
@@ -74,6 +75,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-cpu-state
       - uses: taiki-e/install-action@v2
         with:
@@ -142,6 +144,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-device-state
       - uses: taiki-e/install-action@v2
         with:
@@ -195,6 +198,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-virtual-time
       - uses: taiki-e/install-action@v2
         with:
@@ -280,6 +284,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-snapshot-restore
       - uses: taiki-e/install-action@v2
         with:
@@ -351,6 +356,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-execution-protocol
       - uses: taiki-e/install-action@v2
         with:
@@ -381,6 +387,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-guest-runtime
           workspaces: |
             consonance/harmony-linux/sdk -> target

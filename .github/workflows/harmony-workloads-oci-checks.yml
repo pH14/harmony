@@ -67,6 +67,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.enabled == 'true'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-oci-container-execution
       - name: Restore the qualified guest runtime
         if: steps.scope.outputs.enabled == 'true'
@@ -119,6 +120,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.enabled == 'true'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-oci-postgresql
       - name: Restore the qualified guest runtime
         if: steps.scope.outputs.enabled == 'true'
@@ -259,6 +261,7 @@ jobs:
           } 2>&1 | tee nested-runtime-report/host-setup.log
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-oci-nested-runtime
       - name: Restore the qualified guest runtime
         uses: ./.github/actions/platform-runtime

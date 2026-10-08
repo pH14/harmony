@@ -74,6 +74,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.enabled == 'true'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-miri
       - name: Interpret the tests this change reaches
         if: steps.scope.outputs.enabled == 'true'
@@ -110,6 +111,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: env.SELECTED == 'true'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-miri-whole-crate
       - name: Interpret the whole crate
         if: env.SELECTED == 'true'
@@ -133,6 +135,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-coverage
       - uses: taiki-e/install-action@v2
         with:
@@ -173,6 +176,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: env.SELECTED == 'true'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-mutants
       - uses: taiki-e/install-action@v2
         if: env.SELECTED == 'true'

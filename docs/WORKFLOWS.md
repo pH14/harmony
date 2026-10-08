@@ -219,6 +219,16 @@ still fails its job and still uploads the evidence it produced. A required
 hardware test is never downgraded to a successful skip: missing artifacts fail
 the job.
 
+## Caches
+
+GitHub keeps 10 GiB of caches per repository and evicts the least recently used
+entry past that. A pull request cannot read another pull request's caches, so
+every Rust build cache it saved was dead weight for everyone else. Each
+`Swatinem/rust-cache` step saves only on `main` and restores on pull requests
+from the entry `main` saved. The language layer caches save on any ref,
+because a missed layer costs a build of up to sixteen minutes and the entry is
+small.
+
 ## Ignored tests
 
 The Nested Host Qualification workflow's `Nested Host` job runs on its

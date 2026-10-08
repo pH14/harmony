@@ -162,6 +162,7 @@ jobs:
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: ignored-tests-${{ matrix.runner }}
       - uses: taiki-e/install-action@v2
         with:

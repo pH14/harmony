@@ -10,6 +10,7 @@ runs:
         sudo apt-get install --yes --no-install-recommends build-essential curl git unzip python3 python3-pil ffmpeg jq
     - uses: Swatinem/rust-cache@v2
       with:
+        save-if: ${{ github.ref == 'refs/heads/main' }}
         workspaces: workloads/nes -> target
     - name: Reproduce pinned Super Tilt Bro and QuickNES
       shell: bash
