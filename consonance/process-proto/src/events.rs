@@ -7,11 +7,19 @@ pub const EVENT_CMD_PARK: u64 = 2;
 pub const EVENT_CMD_PARK_STATUS: u64 = 3;
 pub const EVENT_CMD_COVERAGE_STATUS: u64 = 4;
 pub const EVENT_REPORT_HELLO: u64 = 0x4841_524d_4f4e_5945;
-pub const EVENT_PROTOCOL_VERSION: u64 = 5;
+pub const EVENT_PROTOCOL_VERSION: u64 = 6;
 pub const EVENT_CONTROL_FRAME_SIZE: usize = 40;
 pub const EVENT_REPORT_SIZE: usize = 16;
 pub const EVENT_RARITY_LIMIT: u8 = 64;
 pub const EVENT_PARK_EDGE_LIMIT: u32 = 1 << 24;
+pub const EVENT_SITE_PARK_FLAG: u32 = 1 << 31;
+
+#[must_use]
+pub fn valid_park_selector(value: u32) -> bool {
+    (value > 0 && value <= EVENT_PARK_EDGE_LIMIT)
+        || (value & EVENT_SITE_PARK_FLAG != 0 && value & !EVENT_SITE_PARK_FLAG != 0)
+}
+
 pub const EVENT_PARK_STATUS_ARMED: u64 = 1;
 pub const EVENT_PARK_STATUS_HELD: u64 = 2;
 

@@ -56,7 +56,7 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
     Ok(if ready { 0 } else { 2 })
 }
 
-fn configure(mut c: Config, offline: bool) -> Result<Config> {
+pub(super) fn configure(mut c: Config, offline: bool) -> Result<Config> {
     if c.image.is_none() {
         return Err("provide a workload input or configure its build".into());
     }
@@ -67,7 +67,11 @@ fn configure(mut c: Config, offline: bool) -> Result<Config> {
     Ok(c)
 }
 
-fn capture_runtime(manifest: &mut Manifest, path: &Path, initramfs: &[u8]) -> Result<()> {
+pub(super) fn capture_runtime(
+    manifest: &mut Manifest,
+    path: &Path,
+    initramfs: &[u8],
+) -> Result<()> {
     let kernel = manifest.config.kernel.as_ref().ok_or("missing kernel")?;
     let kernel = fs::read(kernel)?;
     manifest.store(path, "kernel", &kernel)?;
@@ -78,7 +82,7 @@ fn capture_runtime(manifest: &mut Manifest, path: &Path, initramfs: &[u8]) -> Re
     manifest.save(path)
 }
 
-fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
+pub(super) fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     let base = fs::read(c.base_initramfs.as_ref().ok_or("missing base initramfs")?)?;
     let generated = c.bundle()?;
     let prepared = faults_workload::prepare::prepare_oci_with_bundle(

@@ -157,7 +157,9 @@ harmony
 │   ├── --finding N                      select a finding
 │   ├── --logs [--contains TEXT]          application and terminal output
 │   └── --timeline                       recorded actions and observations
-├── branch NAME                          save a new experiment
+├── branch [NAME]                        save a new experiment
+│   ├── --config FILE                    start from a recipe’s initial state
+│   ├── --repeat N                       repeat the continuation from its saved root
 │   ├── --finding N                      start from a finding
 │   ├── --step N | --rewind N | --rewind-time 2s
 │   ├── --exec 'COMMAND'                  execute inside the guest
@@ -274,3 +276,19 @@ same dispatch and storage interfaces without application or NES types.
   command replay as an unprivileged UML user and rejects planted output divergence.
 - `bash cli/tests/nes.sh ROM CORE DIRECTORY` exercises native NES search, replay,
   prefix branching, rooted search, continuation and tamper refusal.
+
+## Authored regression tests
+
+`branch --config harmony.toml --actions schedule.json --repeat 2 --name regression`
+starts an experiment at the prepared recipe's initial state. Without `NAME` or an
+explicit recipe, it reads `harmony.toml`. The package owns the typed action file;
+the shared CLI does not interpret faults or controller inputs. A recipe-origin
+branch has the same saved artifacts, observations and follow-up commands as a
+branch from a finding. Point selectors require a saved origin.
+
+For faults workloads, preparation and any `--exec`, `--exec-file`, or `--shell`
+interaction occur once. `--repeat N` restores that resulting guest snapshot for
+each continuation. Each execution retains its own report; repeating does not
+itself assert equality or success. Tests should compare their intended oracle and
+state evidence. See the [Python helper](../workloads/faults/python/README.md) and
+[SQLite regression](../workloads/bugs/historical/sqlite-wal-reset/scenario/README.md).

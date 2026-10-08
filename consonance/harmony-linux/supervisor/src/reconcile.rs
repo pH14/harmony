@@ -11,6 +11,13 @@ pub struct EventPark {
     pub start: u64,
 }
 
+impl EventPark {
+    #[must_use]
+    pub fn site(&self) -> bool {
+        self.edges & process_proto::events::EVENT_SITE_PARK_FLAG != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EventKillWindow {
     pub node: u16,

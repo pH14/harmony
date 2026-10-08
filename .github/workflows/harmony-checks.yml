@@ -111,5 +111,7 @@ jobs:
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
             cargo test --locked --manifest-path "$manifest" --all-features
           done
+      - name: Authored experiment helper
+        run: python3 -m unittest discover -s workloads/faults/python
       - name: Guest-side instrumentation runtime
         run: make -C workloads/faults/runtime check

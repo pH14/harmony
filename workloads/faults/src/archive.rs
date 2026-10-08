@@ -622,6 +622,7 @@ mod tests {
             FaultOperation::Hook(..) => 4,
             FaultOperation::EventKill { .. } => 5,
             FaultOperation::EventPark { .. } => 6,
+            FaultOperation::SitePark { .. } => panic!("authored site parks are not searched"),
         };
         for _ in 0..2_000 {
             let action =
@@ -629,6 +630,7 @@ mod tests {
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action.operation {
+                FaultOperation::SitePark { .. } => panic!("authored site parks are not searched"),
                 FaultOperation::Wait(_) => {}
                 FaultOperation::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
