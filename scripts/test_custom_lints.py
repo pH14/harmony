@@ -837,7 +837,10 @@ class SelectorJobTests(unittest.TestCase):
 
     def test_a_selected_job_needs_the_selector_and_requires_its_output(self):
         _, consumer = self.registry()
-        for change in ({"needs": []}, {"if": ""}, {"if": "needs.scope.outputs.harmony_languages == 'true' || always()"}):
+        for change in ({"needs": []}, {"if": ""},
+                       {"if": "needs.scope.outputs.harmony_languages == 'true' || always()"},
+                       {"if": "github.event_name == 'push' || github.event_name == 'pull_request' "
+                              "&& needs.scope.outputs.harmony_languages == 'true'"}):
             with self.subTest(change=change):
                 self.assertEqual(self.rules("check", self.selected(**change), consumer), ["ci-scope-routing"])
         guarded = "(github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.harmony_languages == 'true'"
@@ -1174,6 +1177,41 @@ class MiriMatrixTests(unittest.TestCase):
             violations = LINTS.check_miri_matrices(ROOT, self.paths())
         self.assertTrue(violations)
         self.assertEqual({v.rule for v in violations}, {"ci-miri-coverage"})
+
+    def violations_after(self, mutate):
+        import copy
+        parse = LINTS._parse_workflow
+        consonance = ci_contract.by_name(ci_contract.MIRI_ANALYSIS_WORKFLOWS["Consonance"]).path
+
+        def parsed(path):
+            data = parse(path)
+            if path.relative_to(ROOT).as_posix() == consonance:
+                data = copy.deepcopy(data)
+                mutate(data)
+            return data
+
+        with mock.patch.object(LINTS, "_parse_workflow", side_effect=parsed):
+            return LINTS.check_miri_matrices(ROOT, self.paths())
+
+    def test_the_selected_matrix_must_be_the_owner_output_of_the_selector(self):
+        def literal(data):
+            data["jobs"]["miri"]["strategy"]["matrix"] = {"include": [{"name": "uml"}]}
+
+        def other_output(data):
+            data["jobs"]["miri"]["strategy"]["matrix"] = "${{ fromJSON(needs.scope.outputs.kani) }}"
+
+        def other_owner(data):
+            data["jobs"]["scope"]["steps"][1]["with"]["target"] = "Harmony"
+
+        def other_source(data):
+            data["jobs"]["scope"]["outputs"]["miri_targets"] = "${{ steps.kani.outputs.enabled }}"
+
+        for mutate in (literal, other_output, other_owner, other_source):
+            with self.subTest(mutation=mutate.__name__):
+                violations = self.violations_after(mutate)
+                self.assertTrue(violations)
+                self.assertEqual({v.rule for v in violations}, {"ci-miri-coverage"})
+        self.assertFalse(self.violations_after(lambda data: None))
 
     def test_an_unowned_target_is_reported(self):
         with mock.patch.object(ci_contract, "MIRI_OWNERS", {}):
