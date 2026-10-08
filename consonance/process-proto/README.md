@@ -41,3 +41,10 @@ workload-specific fault or controller actions.
 Supervised-process service handlers answer an inactive debug poll with empty
 data (or a nominal response) without advancing their standing-action schedule.
 The poll carries a `debug::Status`, independently of the standing request.
+
+Event protocol version 6 additionally reserves bit 31 of the park selector for an
+exact, nonzero 31-bit application marker. Other selectors remain weighted edge
+counts through `EVENT_PARK_EDGE_LIMIT`. Exact markers fire once per arm and ignore
+hotness and module-offset targeting. This uses the existing control frame; the
+versioned hello prevents an older runtime from silently interpreting the selector
+as an ordinary edge budget.

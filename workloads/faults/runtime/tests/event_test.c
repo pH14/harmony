@@ -322,6 +322,21 @@ int main(void)
         assert(get_word(response, 16) == 0);
     }
 
+    for (unsigned i = 0; i < 4096; ++i)
+        harmony_instrumentation_event(42);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK,
+             HARMONY_FAULT_EVENT_SITE_PARK_FLAG | 42, 1, response);
+    harmony_instrumentation_event(41);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 7);
+    harmony_instrumentation_event(42);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 8);
+    assert(get_word(response, 16) == 0);
+    harmony_instrumentation_event(42);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 8);
+
     send_frame(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 22, 22);
     for (;;) {
         int initialized;

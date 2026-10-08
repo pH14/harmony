@@ -122,3 +122,15 @@ flags: armed while the park counts toward `k`, and held while any thread is in
 a hold. At least one flag stays set from arming until the last hold after a
 disarm finishes, so the agent can distinguish a held thread from a recovered
 process without guessing a sleep duration.
+
+## Authored site parks
+
+Protocol version 6 accepts an exact application marker in the low 31 bits when
+`HARMONY_FAULT_EVENT_SITE_PARK_FLAG` is set. A matching raw coverage callback parks
+its calling thread once per arm, independently of the hotness-weighted edge
+budget. It does not automatically rearm after waking. Ordinary event parks keep
+their weighted, repeating behavior. A marker must be nonzero and is assigned by
+the application; collisions must be rejected when composing an authored schedule.
+The faults package exposes this as `SitePark`. A `SitePark` stays armed from its
+action until the marker fires, so the hold length does not limit when the marker
+can be reached. Random searches never sample it.

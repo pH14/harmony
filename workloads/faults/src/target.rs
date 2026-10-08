@@ -43,6 +43,12 @@ pub enum FaultOperation {
         #[serde(default, with = "park_target_serde")]
         target: Option<ParkTarget>,
     },
+    SitePark {
+        node: u16,
+        site: u32,
+        hold_us: u32,
+        ticks: NonZeroU16,
+    },
     Pause(u16, NonZeroU16),
     Restart(u16, NonZeroU16),
     Hook(u32, NonZeroU16),
@@ -56,6 +62,7 @@ impl FaultOperation {
             | Self::Kill(_, ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
+            | Self::SitePark { ticks, .. }
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
             | Self::Hook(_, ticks) => u64::from(ticks.get()),
@@ -87,6 +94,17 @@ impl FaultOperation {
                 ),
                 ticks,
                 target,
+            },
+            Self::SitePark {
+                node,
+                site,
+                hold_us,
+                ..
+            } => Self::SitePark {
+                node,
+                site,
+                hold_us,
+                ticks,
             },
             Self::Pause(node, _) => Self::Pause(node, ticks),
             Self::Restart(node, _) => Self::Restart(node, ticks),
@@ -143,6 +161,18 @@ impl FaultOperation {
                     put(&target.start.to_le_bytes());
                     put(&target.end.to_le_bytes());
                 }
+            }
+            Self::SitePark {
+                node,
+                site,
+                hold_us,
+                ticks,
+            } => {
+                put(&[7]);
+                put(&node.to_le_bytes());
+                put(&site.to_le_bytes());
+                put(&hold_us.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
             }
             Self::Pause(node, ticks) => {
                 put(&[4]);
@@ -323,6 +353,24 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                     },
                 ),
                 (start, end),
+            )),
+        },
+        FaultOperation::SitePark {
+            node,
+            site,
+            hold_us,
+            ..
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcEventPark {
+                        edges: process_proto::events::EVENT_SITE_PARK_FLAG | site,
+                        hold: Span(u64::from(hold_us) * 1_000),
+                        target: None,
+                    },
+                ),
+                (start, u64::MAX),
             )),
         },
         FaultOperation::Kill(node, _) => ActionDelta {
@@ -887,6 +935,33 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn authored_parks_remain_armed_for_the_rest_of_the_execution() {
+        let action = FaultOperation::SitePark {
+            node: 2,
+            site: 42,
+            hold_us: 10_000_000,
+            ticks: ticks(10),
+        };
+        let actions = [action.into(), FaultOperation::Hook(1, ticks(100)).into()];
+        let window = WINDOWS.window(&actions, 0).unwrap();
+        let fault = action_delta(action.into(), window).standing.unwrap();
+        assert_eq!(fault.start, ROOT);
+        assert_eq!(fault.end, u64::MAX);
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((
+                2,
+                Fault::ProcEventPark {
+                    edges: process_proto::events::EVENT_SITE_PARK_FLAG | 42,
+                    hold: Span(10_000_000_000),
+                    target: None,
+                }
+            ))
+        );
+        assert_eq!(action.with_ticks(ticks(1)).with_ticks(ticks(10)), action);
     }
 
     #[test]

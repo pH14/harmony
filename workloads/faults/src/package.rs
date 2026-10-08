@@ -278,6 +278,14 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
     }
     for action in &actions {
         match &action.operation {
+            FaultOperation::SitePark { site, .. }
+                if *site == 0 || *site >= process_proto::events::EVENT_SITE_PARK_FLAG =>
+            {
+                return Err("site marker must be in 1..2^31".into());
+            }
+            FaultOperation::SitePark { hold_us: 0, .. } => {
+                return Err("site park hold must be positive".into());
+            }
             FaultOperation::EventKill { rarity, .. } if *rarity >= 64 => {
                 return Err("event rarity exceeds the runtime hash width".into());
             }
