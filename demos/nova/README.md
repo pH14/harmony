@@ -73,8 +73,10 @@ tab; ending takeover also stops its sound. The AudioContext is unlocked in the
 play/watch click before any asynchronous reset. Automatic attract replay starts
 silently until the visitor chooses to watch. Save/open-history and screenshot
 controls are omitted from the interface. Search controls sit at the top left,
-with a compact counter strip above the rooms. Warm graphite surfaces and amber
-controls surround the unchanged cold-to-hot heat colors.
+with a compact counter strip above the rooms. Neutral charcoal surfaces, system
+typography and restrained controls keep the unchanged cold-to-hot heat colors
+prominent. Route rows and atlas levels avoid
+nested card borders; the light Play from here button remains the primary action.
 A separate, lazily loaded emulator generates PCM because switching QuickNES
 from its silent buffer changes serialized APU bytes. Only the original silent
 emulator records controller endpoints; the reusable audio emulator never enters
