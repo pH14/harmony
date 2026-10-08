@@ -1,0 +1,8 @@
+setup /app/control setup
+node A /app/control node 0
+node B /app/control node 1
+node C /app/control node 2
+ready /app/control ready
+hook 1 /app/control partition
+hook 2 /app/control write
+hook 3 /app/control heal

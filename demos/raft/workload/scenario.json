@@ -1,0 +1,1 @@
+[{"operation":{"Wait":20},"coverage_quantum":256},{"operation":{"Hook":[1,10]},"coverage_quantum":256},{"operation":{"Hook":[2,20]},"coverage_quantum":256},{"operation":{"Kill":[0,160]},"coverage_quantum":256}]
