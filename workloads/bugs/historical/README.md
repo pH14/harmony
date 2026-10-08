@@ -6,6 +6,10 @@ graduate the finder from "catches what we planted" to "catches what actually hap
 
 **FOSS only.** Every entry must be fully reproducible from public source at a pinned version.
 
+[DISCOVERY.md](DISCOVERY.md) audits how much of each runnable case's discovery
+comes from workload and search assistance, and specifies the general-discovery
+workloads and the experiment that compares the two.
+
 ## Provenance is the check
 
 An entry is not accepted on folklore. Its README must cite primary sources — the upstream
