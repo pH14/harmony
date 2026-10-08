@@ -519,9 +519,10 @@ newest copy from the Actions cache before it judges. A judgment is keyed by the
 file's path and content, the model, the questions and the composed context, so
 a later push to a pull request judges only the files whose content or context
 changed. The job saves the file under a key derived from its own hash, so a run
-that changed nothing adds no cache entry. A pull request's cache is readable
-only from that pull request and its base branch. A push to main therefore
-judges the merged diff once, then reuses that cache for later pushes. A change
+that changed nothing adds no cache entry. A pull request run reads the caches
+of its own pull request and of its base branch, and main cannot read a pull
+request's cache. A push to main therefore judges the merged diff once, then
+reuses that cache for later pushes. A change
 to `docs/WORKFLOWS.md` or the registry changes the context of every workflow
 judgment and judges all workflows again. The file keeps at most
 `CACHE_ENTRY_LIMIT` judgments and drops the oldest first.
