@@ -1,0 +1,66 @@
+Stop User-mode Linux VMA walks at the marker a failed fork leaves
+
+When dup_mmap() fails partway, for example because a fatal signal arrives
+while a process forks, Linux 6.18 has already copied the parent's whole VMA
+tree into the child and stores XA_ZERO_ENTRY over the first VMA it did not
+duplicate. Entries from the marker on still point at the parent's VMAs.
+exit_mmap() stops at the marker, but the teardown calls tlb_finish_mmu(),
+and UML's flush_tlb_mm() walks every entry. It reads vm_end from the marker
+itself (address 0x40e) and the guest panics with "Kernel mode fault at addr
+0x40e" in flush_tlb_mm called from copy_process. A Harmony node kill that
+lands while a process forks reproduces it deterministically.
+
+flush_tlb_mm() and the checkpoint walks over each live address space now
+stop at the marker, as exit_mmap() does. Mainline no longer leaves the
+marker since commit 43873af772f8 ("mm: change dup_mmap() recovery"), so the
+arm64 series, which builds on 7.2-rc4, does not need this patch.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/kernel/skas/mmu.c
++++ b/arch/um/kernel/skas/mmu.c
+@@ -167,8 +167,11 @@
+ 		if (context->id.stack)
+ 			os_track_mark(__pa(context->id.stack),
+ 				      STUB_DATA_PAGES * UM_KERN_PAGE_SIZE);
+-		for_each_vma(vmi, vma)
++		for_each_vma(vmi, vma) {
++			if (xa_is_zero(vma))
++				break;
+ 			um_checkpoint_revoke(mm, vma->vm_start, vma->vm_end);
++		}
+ 	}
+ }
+ 
+@@ -194,7 +197,10 @@
+ 		if (ret < 0)
+ 			panic("Restoring an address space failed: %d\n", ret);
+ 		unmap(id, 0, STUB_START);
+-		for_each_vma(vmi, vma)
++		for_each_vma(vmi, vma) {
++			if (xa_is_zero(vma))
++				break;
+ 			um_checkpoint_mark_present(mm, vma->vm_start, vma->vm_end);
++		}
+ 	}
+ }
+--- a/arch/um/kernel/tlb.c
++++ b/arch/um/kernel/tlb.c
+@@ -221,6 +221,13 @@
+ 	struct vm_area_struct *vma;
+ 	VMA_ITERATOR(vmi, mm, 0);
+ 
+-	for_each_vma(vmi, vma)
++	for_each_vma(vmi, vma) {
++		/*
++		 * A failed dup_mmap() leaves XA_ZERO_ENTRY at the first VMA it
++		 * did not copy. Entries from there on belong to the parent.
++		 */
++		if (xa_is_zero(vma))
++			break;
+ 		um_tlb_mark_sync(mm, vma->vm_start, vma->vm_end);
++	}
+ }
