@@ -69,7 +69,7 @@ results.
 | Internal reachability markers | Reachables `churn finished`, `concurrent index build finished`, `vacuum finished` and `amcheck compared the index`. `vacuum finished` is documented as making "a pruned state … a search goal". | Mild assistance: these are workload-level goals that reward reaching the steps of the recipe. |
 | Oracle | Always `every heap tuple has an index entry` from `pg_amcheck --heapallindexed`, which is silent when it cannot compare. | Domain: the documented detector. |
 | Interventions | Wait, Kill, Pause, Restart, Hook. The image is uninstrumented, so there are no event actions. | Domain |
-| Earlier attempts | `probe.json` is a hand-written overlap of churn, build, check and waits that trips the oracle. The README records the fillfactor recalibration. A 2026-09 KVM campaign found the bug at execution 476. | Assistance (history) |
+| Earlier attempts | `probe.json` is a hand-written overlap of churn, build, check and waits that trips the oracle. The README records the fillfactor recalibration. | Assistance (history) |
 
 ### etcd 3.5.2 consistent-index inconsistency (`etcd-3.5-inconsistency`)
 
@@ -259,8 +259,10 @@ All three workloads share these rules:
   - `reconnect`: close the connection and open a new one.
 - **Properties** (Always):
   - `postgres amcheck finds every heap tuple indexed`: fails when
-    `bt_index_check` raises `index_corrupted` (SQLSTATE `XX002`). Any other
-    error is inconclusive. **This is the case's scored assertion.**
+    `bt_index_check` raises `data_corrupted` (SQLSTATE `XX001`) or
+    `index_corrupted` (`XX002`). Any other error, including a lost connection,
+    is inconclusive. **This is the case's scored assertion.** (Corrected
+    before any general-arm measurement; see Corrections.)
   - `postgres index and sequential scans agree`.
   - `postgres preserves acknowledged commits`.
 - **Evidence** (Reachable): `postgres amcheck verified an index`, and
@@ -380,3 +382,57 @@ H1, H3 and H4. With ten campaigns per arm it detects only large effects.
 Searches that start from saved intermediate states are diagnostic only, and
 their discoveries are labeled separately from searches from normal
 initialization.
+
+## Validation method
+
+Before any general-arm discovery measurement, the following must hold on the
+User-mode Linux profile. The pull request that introduces this experiment
+carries the measured values.
+
+- **Choices branch and replay.** `harmony debug run --actions` replays an input
+  from genesis in fresh sessions. The UML replay `state_hash` covers the
+  services state, which includes the handler configuration and so the choices
+  themselves. It therefore cannot show whether the guest diverged. The checks
+  compare the guest's own evidence at each action boundary instead: virtual
+  moment, instrumented edge crossings and edge digest, assertion sets, and the
+  console. One input replayed in two sessions must agree everywhere. Two
+  inputs that differ only in a later action's choice must agree up to that
+  action and diverge after it on each general image. On a focused image they
+  must agree everywhere.
+- **Oracles.** Each general image runs its oracle self-test while it builds
+  (see [general](general/README.md#oracle-self-tests)). A clean run with kills
+  or restarts must report nothing. An acknowledged write must be read back. A
+  definite failure must never appear, and one that appears is reported. An
+  indeterminate write is accepted only as one of its two possible results. A
+  member behind an acknowledgement's revision is stale, not wrong. A lost
+  acknowledged write and the system's own corruption signal must be reported.
+  The etcd unit tests also pin that each client numbers its own operations, so
+  journals are never merged by operation id.
+- **Scoring.** `scripts/historical-discovery.py` gives each campaign one
+  outcome, and `scripts/test_historical_discovery.py` covers every outcome. A
+  confirmed crash with no violated assertion, such as a guest kernel panic
+  ([#518](https://github.com/pH14/harmony/issues/518)), is a `guest-crash`
+  outcome and never a discovery. The reproducer replay runs the first confirmed
+  finding that carries the scored assertion (`FINDING=<index>`), not the first
+  finding. Deliberate kills are recorded actions. A node exit that no injected
+  fault explains violates the supervisor's `workload node ends only by a fault
+  the search injected` assertion, which is reported as another violation.
+- **Compatible observations.** A check counts only when it reaches its evidence
+  assertion, and a campaign that never reaches one is `inconclusive`. The etcd
+  checker compares each member at that member's own read revision. The SQLite
+  and PostgreSQL checks compare the owned rows inside a single snapshot
+  transaction. After a fault, the SQLite clients run the comparison at process
+  start, and the PostgreSQL clients run it on reconnect.
+
+## Corrections
+
+Each correction to the frozen specification, with its reason. A correction
+made after a general-arm measurement restarts every affected measurement.
+
+1. **PostgreSQL amcheck SQLSTATE** (before any general-arm measurement). The
+   specification named only `index_corrupted` (`XX002`) as an amcheck
+   violation. PostgreSQL 14 reports a heap tuple without an index entry, which
+   is the symptom of this case's bug, with `data_corrupted` (`XX001`) in
+   `bt_tuple_present_callback`. Under the original rule the general oracle could
+   not have scored the bug at all. Both amcheck corruption classes now fail the
+   assertion.

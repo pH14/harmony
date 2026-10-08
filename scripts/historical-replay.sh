@@ -64,22 +64,28 @@ if (( repeats > max_sessions )); then
     exit 1
 fi
 
-mkdir -p reports
+report_dir=${REPORT_DIR:-reports}
+finding=${FINDING:-1}
+[[ "${finding}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "historical-replay: infra-failure (finding must be positive)" >&2
+    exit 1
+}
+mkdir -p "${report_dir}"
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 verdict=0
 
 label="${mode}-$(basename "${input}" .json)"
-out="reports/${CASE_ID}.${label}"
-console="reports/${CASE_ID}.${label}.console.txt"
+out="${report_dir}/${CASE_ID}.${label}"
+console="${report_dir}/${CASE_ID}.${label}.console.txt"
 rm -rf "${out}"
 status=0
 launcher=()
 guest_arguments=()
 # shellcheck source=historical-backend.sh disable=SC1091
 . "$(dirname "$0")/historical-backend.sh"
-historical_backend "reports/${CASE_ID}.${label}.denial.json"
+historical_backend "${report_dir}/${CASE_ID}.${label}.denial.json"
 if [[ "$mode" == reproduce ]]; then
-    arguments=(debug replay "$(dirname "$input")" --finding 1 --repeat "$repeats")
+    arguments=(debug replay "$(dirname "$input")" --finding "$finding" --repeat "$repeats")
 else
     arguments=(debug run "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci"
         "${guest_arguments[@]}"
