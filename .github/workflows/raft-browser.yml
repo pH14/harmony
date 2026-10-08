@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Harmony Workloads / Raft Browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raft-browser-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  raft-browser:
+    name: Raft Browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: demos/raft
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: demos/raft/package-lock.json
+      - name: Build and test static demo
+        run: |
+          npm ci
+          npm run format:check
+          npm test
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Verify browser investigation
+        run: |
+          npm run preview > "$RUNNER_TEMP/raft-preview.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:4174/ > /dev/null; then break; fi
+            sleep 1
+          done
+          npm run test:browser
+      - name: Static demo
+        uses: actions/upload-artifact@v4
+        with:
+          name: raft-browser-dist
+          path: demos/raft/dist
+          if-no-files-found: error
+      - name: Browser evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: raft-browser-evidence
+          path: demos/raft/test-results
+          if-no-files-found: ignore

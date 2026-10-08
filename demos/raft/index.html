@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Harmony · The lost write</title>
+    <link rel="stylesheet" href="src/style.css" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="../">harmony<span>✳</span></a
+      ><span class="eyebrow">CONSONANCE / RAFT LAB</span
+      ><span id="mode" class="badge">Recorded Linux execution</span
+      ><button
+        id="boot"
+        title="Desktop Chrome · about 75 MB · live restoration can take several minutes"
+      >
+        Start live Linux
+      </button>
+    </header>
+    <main>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">A FAILURE YOU CAN WALK BACK INTO</p>
+          <h1>The write that disappeared.</h1>
+          <p>
+            Three replicas. One acknowledged write. Watch a fault reveal a
+            mistake — then go back and ask the machine why.
+          </p>
+        </div>
+        <div class="assertion" id="assertion">
+          <span class="status-dot"></span>
+          <div>
+            <strong>Acknowledged writes survive a leader change</strong
+            ><small id="verdict">Watching the original execution</small>
+          </div>
+        </div>
+      </section>
+      <section class="workspace">
+        <aside>
+          <p class="eyebrow">TEACHING WORKLOAD</p>
+          <button class="file selected" data-line="97">◈ raft.c</button
+          ><button class="file" data-line="71">Transport <span>71</span></button
+          ><button class="file" data-line="110">
+            Replication <span>110</span></button
+          ><button class="file" data-line="191">
+            Election <span>191</span></button
+          ><button class="file" data-line="214">
+            Invariant <span>214</span>
+          </button>
+          <div class="legend">
+            <span>EVENT ACTIVITY</span>
+            <div class="gradient"></div>
+            <small
+              >quiet → active → concentrated<br />Recent events cool as time
+              passes.</small
+            >
+          </div>
+          <p class="small">
+            Real C source. Color marks emitted event sites; it is not full line
+            coverage.
+          </p>
+          <div id="metrics"></div>
+        </aside>
+        <div class="editor">
+          <div class="tabbar">
+            <span>raft.c <i>●</i></span
+            ><small id="location">original / before the fault</small>
+          </div>
+          <div
+            id="code"
+            tabindex="0"
+            aria-label="Source code with event activity"
+          ></div>
+        </div>
+        <div class="right">
+          <div class="panel-title">
+            <span>THE CLUSTER</span><span id="clock">0.00s</span>
+          </div>
+          <div id="cluster">
+            <svg viewBox="0 0 300 150" aria-hidden="true">
+              <path id="link-ab" d="M150 35L65 120" />
+              <path id="link-ac" d="M150 35L235 120" />
+              <path d="M65 120H235" />
+            </svg>
+            <div class="node a" data-node="A">
+              <b>A</b><small>leader</small><em>counter 0</em>
+            </div>
+            <div class="node b" data-node="B">
+              <b>B</b><small>follower</small><em>counter 0</em>
+            </div>
+            <div class="node c" data-node="C">
+              <b>C</b><small>follower</small><em>counter 0</em>
+            </div>
+          </div>
+          <div id="client">
+            CLIENT RECEIPT <strong>waiting for a write</strong>
+          </div>
+          <div class="panel-title">
+            <span>EVENTS THROUGH THIS MOMENT</span><span id="count">0</span>
+          </div>
+          <div id="logs" role="log" aria-label="Captured workload events"></div>
+        </div>
+      </section>
+      <section class="timeline">
+        <button id="play" aria-label="Pause playback">Ⅱ</button
+        ><input
+          id="scrub"
+          type="range"
+          min="0"
+          max="3"
+          step="0.001"
+          value="0"
+          aria-label="Execution time"
+        /><span id="time">0.00 / 3.00s</span>
+        <div id="phases">
+          <button data-step="0">Boot</button
+          ><button data-step="1">Healthy</button
+          ><button data-step="2">Isolate A</button
+          ><button data-step="3">Acknowledge</button
+          ><button data-step="4">Kill A · elect B</button>
+        </div>
+      </section>
+      <section class="investigate">
+        <div>
+          <p class="eyebrow">NOW DO THE IMPOSSIBLE</p>
+          <h2>Turn on tracing before the failure.</h2>
+          <p>
+            The original execution stays intact. Rewind before the partition,
+            enable replication tracing, and replay its fault sequence.
+          </p>
+        </div>
+        <div class="actions">
+          <button id="trace" class="primary">↶ Rewind & enable tracing</button
+          ><button id="quorum">Try waiting for a quorum</button
+          ><button id="original">Original failure</button
+          ><button id="shell">Open a shell here</button>
+        </div>
+        <div class="command">
+          <span>$</span
+          ><code id="command"
+            >harmony branch failure --step 1 --exec '/app/control trace' --name
+            investigation</code
+          ><button id="copy">Copy</button>
+        </div>
+        <p id="explanation" aria-live="polite">
+          Playback is captured from real Harmony CLI runs. Start live Linux to
+          execute these commands in your browser.
+        </p>
+      </section>
+      <section class="console" hidden>
+        <div class="panel-title">
+          <span>REAL LINUX TERMINAL</span
+          ><span id="runtime-status">Not started</span>
+        </div>
+        <p>
+          Try
+          <button class="tip" data-command="/app/control status">
+            inspect replicas
+          </button>
+          <button class="tip" data-command="cat /tmp/raft/*.state">
+            read state files
+          </button>
+          <button class="tip" data-command="exit">save & leave shell</button>
+        </p>
+        <div id="terminal"></div>
+      </section>
+      <footer>
+        <span
+          >Deliberately buggy Raft teaching subset · 3 processes · 1 log entry ·
+          Linux UML</span
+        ><a href="public/evidence/failure.json" download
+          >Download original CLI report ↗</a
+        ><a href="https://github.com/pH14/harmony">Source ↗</a
+        ><a href="NOTICES.md">Runtime sources & licenses</a>
+      </footer>
+    </main>
+    <script type="module" src="src/app.mjs"></script>
+  </body>
+</html>

@@ -23,16 +23,16 @@ assertion at election time.
 | Setup | `/app/control setup` | Creates the shared experiment directory. |
 | Replicas | `/app/control node 0`, `1`, `2` | Independently supervised, instrumented Linux processes. |
 | Ready | `/app/control ready` | Requires all three initial state files. |
-| Fault hook 1 | `/app/control partition` | Enables a drop gate in the teaching transport around A. |
+| Fault hook 1 | `/app/control partition` | Enables packet dropping in the teaching transport around A. |
 | Client hook 2 | `/app/control write` | Submits the single counter write to A. |
-| Recovery hook 3 | `/app/control heal` | Removes the transport drop gate. |
+| Recovery hook 3 | `/app/control heal` | Disables transport packet dropping. |
 | Invariant | `check()` in the elected leader | Emits `raft-ack-durability` if an acknowledged write is absent. |
 
 The native image uses the composed fault runtime, the unmodified SDK
 forwarding shim, sanitizer coverage instrumentation, symbols, and a binary
 attestation. Its small scratch rootfs contains only the application, shell,
 inspection tools and required pinned Debian libraries. It needs no reviewed
-hardware-entropy instruction exceptions. The control file gates and state
+hardware-entropy instruction exceptions. The control files and state
 files are intentional teaching interfaces, visible from the real shell.
 
 ## Investigation
@@ -104,3 +104,39 @@ within the `/raft/` service-worker scope when live mode is requested, then
 reloads once. This does not change `/nova/`. Desktop Chrome is the tested
 live browser. Boot and restoration under software emulation can take minutes;
 recorded playback remains the immediate introduction.
+
+## Static frontend and publishing
+
+```sh
+cd demos/raft
+npm ci
+npm run build
+npm test
+npx playwright install chromium
+npm run preview
+# In another terminal:
+npm run test:browser
+CHROME=1 npm run test:live
+```
+
+`build` verifies every runtime input against `runtime-lock.json` and produces
+`dist/` with only the required files. The lock pins the tested QEMU-Wasm
+8.2.0 amd64-alpine distribution; the other upstream x86_64 distribution did
+not successfully execute this CLI. Runtime sources and third-party licenses
+are linked in `NOTICES.md`. Browser images are static release artifacts,
+separate from product releases. Live verification can take several minutes
+per restoration and is intentionally separate from the bounded PR UI checks.
+`test:live` executes a new failure, a tracing branch, and a real interactive
+shell mutation saved on exit. `DEMO_URL` selects a deployed site; `CHROME=1`
+uses installed desktop Chrome instead of Playwright Chromium.
+
+For Pages-like testing use `ISOLATE=0 npm run preview`. The first live request
+installs the scoped isolation worker and reloads before booting. All runtime
+assets are same-origin. Recorded playback needs no isolation or downloads
+of the machine image.
+
+The shared `gh-pages` branch hosts `/nova/` and `/raft/`. Publish the dist tree
+with `tools/publish-pages.sh`; it updates only `/raft/`, the shared landing
+page and Raft's deployment metadata, preserving Nova and unrelated content.
+The script requires an explicitly chosen source revision and a clean gh-pages
+checkout. It does not merge either demo's implementation pull request.
