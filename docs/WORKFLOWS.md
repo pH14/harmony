@@ -211,7 +211,8 @@ changed path is one of these:
 
 A path that selects any scenario in `scripts/ci_scope.py` always selects, and so
 does any path the selector does not recognize. A scheduled or manual run
-selects the whole tracked tree.
+selects the whole tracked tree, and so does a run whose diff cannot be read, as
+after a force push to main.
 
 A job that always runs part of its work and selects only the rest, such as the
 hardware steps of `CPU State`, runs the selector itself once, unconditionally,

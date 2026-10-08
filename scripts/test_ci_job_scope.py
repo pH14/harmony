@@ -119,6 +119,23 @@ class InlineSelectionTests(unittest.TestCase):
                 paths = SCOPE.changed_paths("rust_checks", event, "", "")
             self.assertTrue(SCOPE.selection("rust_checks", "harmony-checks.yml", paths)["enabled"])
 
+    def test_rust_checks_run_everything_when_the_diff_cannot_be_read(self):
+        error = subprocess.CalledProcessError(128, ["git", "diff"])
+        calls = []
+
+        def check_output(command, text):
+            calls.append(command)
+            if command[:2] == ["git", "diff"]:
+                raise error
+            return "README.md\0Cargo.toml\0"
+
+        with mock.patch.object(SCOPE.subprocess, "check_output", side_effect=check_output):
+            paths = SCOPE.changed_paths("rust_checks", "push", "", "a" * 40)
+            self.assertEqual(paths, ["README.md", "Cargo.toml"])
+            self.assertTrue(SCOPE.selection("rust_checks", "harmony-checks.yml", paths)["enabled"])
+            with self.assertRaises(subprocess.CalledProcessError):
+                SCOPE.changed_paths("harmony_nes", "push", "", "a" * 40)
+
     def test_matches_existing_selectors(self):
         samples = [[], ["docs/WORKFLOWS.md"], ["Cargo.lock"],
                    ["workloads/nes/src/stb/target.rs"], ["cli/src/main.rs"],

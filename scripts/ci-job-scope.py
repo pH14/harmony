@@ -33,7 +33,13 @@ def changed_paths(kind, event, base, before):
         command = ["git", "diff", "--no-renames", "--name-only", "-z", f"{before}...HEAD"]
     else:
         command = ["git", "diff", "--no-renames", "--name-only", "-z", before, "HEAD"]
-    return [path for path in subprocess.check_output(command, text=True).split("\0") if path]
+    try:
+        output = subprocess.check_output(command, text=True)
+    except subprocess.CalledProcessError:
+        if kind != "rust_checks":
+            raise
+        output = subprocess.check_output(["git", "ls-files", "-z"], text=True)
+    return [path for path in output.split("\0") if path]
 
 
 def selection(kind, target, paths):
