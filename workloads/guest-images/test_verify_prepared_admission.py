@@ -63,7 +63,8 @@ class CompositionTests(unittest.TestCase):
     def oracle_dump(self):
         manifest_path = self.root / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        session = {"ram_bytes": 134217728, "seed": p.ORACLE_SEED,
+        session = {"guest_contract": "Ordinary",
+                   "ram_bytes": 134217728, "seed": p.ORACLE_SEED,
                    "run_budget": 2000000000, "cmdline": p.ORACLE_CMDLINE,
                    "identity_tag": "", "wall_limit": None,
                    "defer_virtual_time_checkpoint_hashes": True}
@@ -85,8 +86,8 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual(report["engine_scope"], p.ORACLE_SCOPE)
 
     def test_resealed_oracle_configuration_mutations(self):
-        for field, value in [("seed", 0), ("ram_bytes", 268435456),
-                             ("run_budget", 1), ("defer_virtual_time_checkpoint_hashes", False),
+        for field, value in [("guest_contract", "NestedHost"), ("seed", 0),
+                             ("ram_bytes", 268435456), ("run_budget", 1), ("defer_virtual_time_checkpoint_hashes", False),
                              ("cmdline", p.ORACLE_CMDLINE + " quiet")]:
             with self.subTest(field=field):
                 manifest, session = self.oracle_dump()
