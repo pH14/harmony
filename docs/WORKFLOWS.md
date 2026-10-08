@@ -514,6 +514,18 @@ and fails if GitHub no longer has it. When that commit is all zeros, as when
 the branch is new, the job judges every tracked file, and that run can exceed
 the 15-minute limit.
 
+The job keeps its judgments in `.semantic-lints-cache.json` and restores the
+newest copy from the Actions cache before it judges. A judgment is keyed by the
+file's path and content, the model, the questions and the composed context, so
+a later push to a pull request judges only the files whose content or context
+changed. The job saves the file under a key derived from its own hash, so a run
+that changed nothing adds no cache entry. A pull request's cache is readable
+only from that pull request and its base branch. A push to main therefore
+judges the merged diff once, then reuses that cache for later pushes. A change
+to `docs/WORKFLOWS.md` or the registry changes the context of every workflow
+judgment and judges all workflows again. The file keeps at most
+`CACHE_ENTRY_LIMIT` judgments and drops the oldest first.
+
 ## Verification
 
 ```sh

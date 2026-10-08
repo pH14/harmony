@@ -314,6 +314,43 @@ class ContentWindowTests(RequiresApiKey):
         self.assertEqual(len(calls), 1)
 
 
+class CachePersistenceTests(unittest.TestCase):
+    def test_a_saved_cache_reloads_to_identical_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = {f"{index:064x}": [{"start": 0, "end": 1, "answers": {}}] for index in (9, 3, 7)}
+            LINTS.save_cache(root, cache)
+            first = (root / LINTS.CACHE_PATH).read_bytes()
+            self.assertEqual(list(LINTS.load_cache(root)), list(cache))
+            LINTS.save_cache(root, LINTS.load_cache(root))
+            self.assertEqual((root / LINTS.CACHE_PATH).read_bytes(), first)
+
+    def test_the_oldest_entries_go_when_the_cache_is_over_its_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = {f"key{index}": [] for index in range(5)}
+            with mock.patch.object(LINTS, "CACHE_ENTRY_LIMIT", 3):
+                LINTS.save_cache(root, cache)
+            self.assertEqual(list(LINTS.load_cache(root)), ["key2", "key3", "key4"])
+
+    def test_a_second_run_over_unchanged_files_judges_nothing_and_rewrites_the_cache_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "notes.txt").write_text("plain notes\n")
+            calls = []
+            first_cache = LINTS.load_cache(root)
+            LINTS.run(root, ["notes.txt"], post=make_post(full_answers(), calls), cache=first_cache)
+            LINTS.save_cache(root, first_cache)
+            first = (root / LINTS.CACHE_PATH).read_bytes()
+            judged = len(calls)
+            self.assertGreater(judged, 0)
+            second_cache = LINTS.load_cache(root)
+            LINTS.run(root, ["notes.txt"], post=make_post(full_answers(), calls), cache=second_cache)
+            LINTS.save_cache(root, second_cache)
+            self.assertEqual(len(calls), judged)
+            self.assertEqual((root / LINTS.CACHE_PATH).read_bytes(), first)
+
+
 class RetryTests(unittest.TestCase):
     def test_retries_429_twice_then_succeeds(self) -> None:
         call_count = {"n": 0}
