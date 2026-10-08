@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-const markers = {
-  start: "\x1eHARMONY_EXEC",
-  json: "\x1eHARMONY_BEGIN",
-  end: "\x1eHARMONY_END",
-};
+import { markers } from "./command-session.mjs";
 export class ConsoleFilter {
+  markers = markers();
   mode = "visible";
   buffer = "";
   skipNewline = false;
-  begin() {
+  begin(id = "") {
+    this.markers = markers(id);
     this.mode = "start";
     this.buffer = "";
     this.skipNewline = false;
@@ -25,10 +23,10 @@ export class ConsoleFilter {
       }
       const marker =
         this.mode === "start"
-          ? markers.start
+          ? this.markers.start
           : this.mode === "json"
-            ? markers.end
-            : markers.json;
+            ? this.markers.end
+            : this.markers.json;
       const index = this.buffer.indexOf(marker);
       if (index >= 0) {
         if (this.mode === "visible") shown += this.buffer.slice(0, index);

@@ -3,7 +3,7 @@
 Harmony and this frontend are AGPL-3.0-or-later (see LICENSE). The exact runtime
 inputs and SHA-256 digests are in runtime-lock.json. The CLI, UML patches,
 workload and assembly scripts are in the corresponding source archive:
-https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/harmony-raft-runtime-source.tar.gz
+https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/harmony-raft-runtime-source.tar.gz
 
 Third-party components retain their licenses:
 

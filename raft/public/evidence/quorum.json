@@ -1,9 +1,9 @@
 {
   "package": "faults",
   "mode": "replay",
-  "image_sha256": "cda804e3de121a9a16aa9df14b88bab675194bd6c4fc1c229cd880c75be633da",
+  "image_sha256": "cca629e4bb64a98560081bfae49f3b240a226c3bc850b64ce006794cc6aa5162",
   "kernel_sha256": "b8c9a0f39ce0f035c5d0e7e56aa679f1b6bf56c71f4d2b93e66c62d4b0c7e1a7",
-  "identity": "faults-uml-v1;profile=1fc3d4a7f3b92c41a98eca907a462ce9243935238e322f8850a359533a3934bd;architecture=x86_64;cpu=vendor_id=GenuineIntel;cpu family=6;model=198;stepping=2;model name=Intel(R) Core(TM) Ultra 9 285HX;features=3681a51069baaf942f88ebf769f30808080057e2fe9b1f886ec413a9620fd0ca;executable=b8c9a0f39ce0f035c5d0e7e56aa679f1b6bf56c71f4d2b93e66c62d4b0c7e1a7;initramfs=cda804e3de121a9a16aa9df14b88bab675194bd6c4fc1c229cd880c75be633da;memory_mib=256;arguments=rdinit=/usr/lib/harmony/init;seed=5071463764063969634;setup_budget=120000000000;tag=faults-consonance-execution-v6;action=standing-fault-delta-v3;snapshot=uml-checkpoint-v1;root=a35d1a071bc598d5164b8ed402ebbdf13a515e237ec772d926734742b073b28c",
+  "identity": "faults-uml-v1;profile=1fc3d4a7f3b92c41a98eca907a462ce9243935238e322f8850a359533a3934bd;architecture=x86_64;cpu=vendor_id=GenuineIntel;cpu family=6;model=198;stepping=2;model name=Intel(R) Core(TM) Ultra 9 285HX;features=3681a51069baaf942f88ebf769f30808080057e2fe9b1f886ec413a9620fd0ca;executable=b8c9a0f39ce0f035c5d0e7e56aa679f1b6bf56c71f4d2b93e66c62d4b0c7e1a7;initramfs=cca629e4bb64a98560081bfae49f3b240a226c3bc850b64ce006794cc6aa5162;memory_mib=256;arguments=rdinit=/usr/lib/harmony/init;seed=5071463764063969634;setup_budget=120000000000;tag=faults-consonance-execution-v6;action=standing-fault-delta-v3;snapshot=uml-checkpoint-v1;root=f0c77df82958ecf49d543e08fca321483e80c5a1376e1677df03b23dd7063bf1",
   "seed": 0,
   "workers": 1,
   "ram_mib": 256,
