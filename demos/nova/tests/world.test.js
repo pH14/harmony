@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  followDiscovery,
   project,
   completedLevels,
   mergeProgress,
@@ -75,5 +76,25 @@ test("end screens and level selection cannot mark the next area as explored", ()
       levels,
     ),
     true,
+  );
+});
+
+test("a next-level discovery follows a clear even when the preceding level was inspected", () => {
+  const clear = new Set([0]);
+  assert.equal(
+    followDiscovery({ selected_level: 1 }, true, 0, true, clear),
+    true,
+  );
+  assert.equal(
+    followDiscovery({ selected_level: 0 }, true, 0, true, clear),
+    false,
+  );
+  assert.equal(
+    followDiscovery({ selected_level: 1 }, true, 0, true, new Set()),
+    false,
+  );
+  assert.equal(
+    followDiscovery({ selected_level: 1 }, false, 0, true, clear),
+    false,
   );
 });

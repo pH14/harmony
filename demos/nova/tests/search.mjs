@@ -23,11 +23,12 @@ for (const seed of [1, 2, 3]) {
   engine.restore(root);
   const search = new Explorer(seed),
     arrivals = new Map();
-  for (let tries = 0; tries < 6000 && arrivals.size < 2; tries += 2) {
+  let nextLevel = false;
+  for (let tries = 0; tries < 22000 && !nextLevel; tries += 2) {
     const batch = JSON.parse(search.advance(2));
     for (const point of batch.points)
       if (
-        [49, 45].includes(point.observation.level) &&
+        [49, 45, 1].includes(point.observation.level) &&
         isMapEvidence(point.observation, catalog.levels) &&
         point.retained !== null &&
         !arrivals.has(point.observation.level)
@@ -35,7 +36,11 @@ for (const seed of [1, 2, 3]) {
         const state = JSON.parse(search.state(point.retained)),
           snapshot = search.snapshot(point.retained);
         assert.ok(state.observation.health > 0);
-        assert.equal(state.observation.selected_level, 0);
+        if (state.observation.level === 1) {
+          assert.equal(state.observation.selected_level, 1);
+          assert.ok(state.observation.cleared_levels[0] & 1);
+          nextLevel = true;
+        } else assert.equal(state.observation.selected_level, 0);
         engine.restore(root);
         for (const action of state.actions)
           engine.run(action.buttons, action.frames);
@@ -72,7 +77,29 @@ for (const seed of [1, 2, 3]) {
     `Seed ${seed} must preserve the garden-to-main door`,
   );
   assert.ok(arrivals.get(49) <= arrivals.get(45));
+  if (seed !== 1)
+    assert.ok(nextLevel, `Seed ${seed} must enter Level 2 after a real clear`);
+  search.free();
   console.log(
-    `Seed ${seed}: Garden at ${arrivals.get(49)} paths, main area at ${arrivals.get(45)}; both exact replays passed.`,
+    `Seed ${seed}: Garden at ${arrivals.get(49)} paths, main area at ${arrivals.get(45)}; exact replays passed; Level 2 ${nextLevel ? "reached" : "censored at 22,000 paths"}.`,
   );
 }
+
+engine.restore(root);
+const bounded = new Explorer(1);
+bounded.set_snapshot_budget(16 * 1024 * 1024);
+let batch;
+for (let tries = 0; tries < 6000; tries += 2) {
+  batch = JSON.parse(bounded.advance(2));
+  if (batch.stopped) break;
+}
+assert.ok(batch.stopped && batch.snapshot_bytes >= 16 * 1024 * 1024);
+assert.ok(
+  batch.snapshot_bytes < 16 * 1024 * 1024 + 8 * engine.capture().length,
+);
+const retained = JSON.parse(bounded.state(0));
+assert.equal(retained.frames, 0, "Budget stops preserve inspectable histories");
+bounded.free();
+console.log(
+  "Small snapshot budget stops with its retained histories available.",
+);

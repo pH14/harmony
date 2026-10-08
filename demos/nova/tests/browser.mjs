@@ -244,8 +244,13 @@ try {
     "Watch the search find its way",
     "Heat cools. Histories stay.",
     "EXPLORATION NOTES",
+    "Watch Main level arrival",
+    "Find the exit",
+    "Garden · Visited",
   ])
     assert.equal(await page.getByText(text, { exact: false }).count(), 0);
+  assert.equal(await page.locator("#goal-status").isVisible(), false);
+  assert.equal(await page.locator(".area-state").count(), 0);
   assert.equal(
     await page.locator("#heat-toggle,#fit,#left,#right,#seed-label").count(),
     0,
@@ -256,10 +261,16 @@ try {
     "Resume Search",
   );
   assert.equal(await page.locator("#reset").innerText(), "Restart Search");
-  await page.locator('#room-tabs button[data-map="45"]').click();
+  assert.equal(await page.locator(".map-row").count(), 3);
+  for (const id of [0, 49, 45])
+    assert.equal(
+      await page.locator(`.map-row[data-map="${id}"] canvas`).isVisible(),
+      true,
+    );
+  await page.locator('.map-row[data-map="45"] .area-label').click();
   assert.equal(await page.locator("#map").getAttribute("data-map"), "45");
   assert.match(await page.locator("#map-label").innerText(), /MAIN LEVEL/);
-  await page.locator('#room-tabs button[data-map="49"]').click();
+  await page.locator('.map-row[data-map="49"] .area-label').click();
   assert.match(await page.locator("#map-label").innerText(), /GARDEN/);
   await page
     .locator("#worlds")

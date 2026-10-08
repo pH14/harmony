@@ -32,16 +32,19 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life. The play/pause icon controls search;
 Restart Search resets it. Heat is always on. Clicking a visited cell lists its
-latest twelve retained states. Arrow keys and Enter also select cells. Area tabs
-and the world atlas can open any map immediately, including unvisited areas. Opening a visited area selects its furthest retained
+latest twelve retained states. Arrow keys and Enter also select cells. Each level
+shows all its connected areas as stacked live maps: Introduction, Garden and
+Main Level are visible together. Area labels and the world atlas can focus any map
+immediately, including unvisited areas. Opening a visited area selects its furthest retained
 state. Zoom focuses the selected state; dragging moves the zoomed view.
 
-The goal names the focused level and its exit. The completion counter and green
-level cards latch actual campaign clear bits seen across alternate histories.
-Visited area tabs gain a check mark. Watch Arrival replays the first retained
-door transition; Watch Level Finish replays the first witness for a new clear. Game
+The level heading and completion counter latch actual campaign clear bits seen
+across alternate histories. Green atlas cards record these witnesses; Watch Level
+Finish replays the first witness for a new clear. Reaching a door is not a clear:
+Nova needs a fresh Up press while touching it. A newly discovered next campaign
+level brings its maps into view even after inspecting the preceding level. Game
 Complete requires all 40 bits in one history, rather than the union of separate
-branches. A budget stop says Search Limit Reached and does not claim a win.
+branches. A budget stop is visible and does not claim a win.
 
 The attract-mode film follows frontier discoveries until the visitor interacts.
 Selecting a state replays its controller history from the level-one root in a
@@ -65,14 +68,36 @@ This driver does not run the complete native `Campaign` scheduler: rollouts have
 one to eight controller actions rather than adaptive campaign coordination,
 continuation banks and checkpoints. Its seed determines search choices; wall
 time changes only animation, heat decay and presentation. Restart increments
-the seed. A history is bounded to 10,000 actions and 200,000 frames, matching
+the seed from an initial seed of 2, which has a recorded Level 2 witness.
+Seed 1 is retained in regression diagnostics as a censored run, not described
+as a successful clear. A history is bounded to 10,000 actions and 200,000 frames, matching
 import admission. Runs stop after 100,000 paths, approximately 20,000 historical
-entries, or 128 MiB of compressed snapshot payload (at most seven additional
-entries in the final rollout). Raw DEFLATE compression preserves every snapshot
-byte. Stored boxed slices discard spare compressor capacity, so the payload
-count also bounds their backing allocations. This includes snapshots whose selector entries have retired. Decompression is
-bounded to one MiB. Total memory also includes archive structures, emulators,
-decoded images and UI storage. Budgets do not guarantee game completion.
+entries, or a compressed snapshot budget (at most seven additional entries in
+the final rollout). Phones/coarse-pointer devices and devices reporting at most
+4 GiB of RAM use 32 MiB of snapshots and 96 MiB of search WASM buffers; other
+devices use 128 MiB and 192 MiB. The buffer check includes both worker-side Rust
+and QuickNES memories, happens after each two-rollout batch, and can overshoot
+by that batch's allocations. It excludes the separate 16 MiB replay emulator.
+In recorded desktop seeds, 11,400 snapshots occupied about 80 MiB compressed and
+89 MiB of Rust linear memory. The 32 MiB phone snapshot budget therefore retains
+roughly 4,000--5,000 similar states, not a guaranteed count.
+
+Raw DEFLATE preserves every snapshot byte. Boxed slices discard spare compressor
+capacity; retired selector entries still retain their snapshots. Decompression
+is bounded to one MiB. The UI caches at most 32 fetched histories and 2 MiB of
+estimated storage (64 bytes per action plus snapshot and record overhead);
+current replay and in-flight messages are separate. Evicted histories remain in
+the worker archive and can be fetched again. Full-resolution panoramas are held
+only for the focused level's connected rooms. Atlas images are decoded one at a
+time into 320 by 96 thumbnails, at most 6.7 MiB for all 57 maps; discarded full
+images can take time to be reclaimed by the browser. Browsing every level no
+longer retains about 156 MiB of decoded panoramas.
+
+These limits do not measure total browser memory or guarantee immunity to mobile
+OOM termination. Archive structures, JS objects, in-flight histories, image
+decoding, canvases, rendering and the browser itself also consume memory. A limit
+pauses exploration while retained states stay inspectable; Restart Search ends
+the worker and releases its archive. Budgets do not guarantee game completion.
 
 The original level-one root uses the native adapter's pinned menu/setup sequence,
 including resetting persistent progression to the first available level. Search
@@ -108,11 +133,13 @@ npm run test:browser
 
 The search check requires three real seeds to reach the garden (map 49) and
 main area (map 45), and exactly replays both first-arrival tapes against their
-compressed snapshots. It exports these witnesses as browser evidence. The old
+compressed snapshots. Across a 22,000-path three-seed diagnostic, seeds 2 and 3
+clear Level 1 and enter Level 2; seed 1 is censored without a clear. The check
+exactly replays next-level witnesses for seeds 2 and 3 and exercises a small
+snapshot-budget stop. It exports these witnesses as browser evidence. The old
 admission of only maps 0 and 40 rejected the garden door; map 40 is a bonus level.
 The UI check covers cell selection, replay, frame zero, scrubbing, attributed
-PNG/JSON downloads, valid and tampered imports, cancelling a long import, direct
-main/garden selection, world browsing, tall-level layout, dragging, the simplified
+PNG/JSON downloads, valid and tampered imports, cancelling a long import, stacked live-map selection, world browsing, tall-level layout, dragging, the simplified
 toolbar, restart, mobile layout, credits and source bundles. A native and wasm32
 selector fixture checks the same recorded choices with weights above 2^32,
 including 2^56 tiers. `CHROME_CHANNEL=chrome` uses an installed Chrome;

@@ -853,3 +853,37 @@ dialog p {
     padding-inline: 12px;
   }
 }
+
+#map,
+.area-map {
+  width: 100%;
+  height: auto;
+  aspect-ratio: auto;
+  display: block;
+  image-rendering: pixelated;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+.map-row {
+  border-bottom: 1px solid #2a3c4a;
+}
+.map-row:last-child {
+  border-bottom: 0;
+}
+.area-label {
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: #132333;
+  width: 100%;
+  text-align: left;
+  font-size: 11px;
+  color: #a9bfce;
+  padding: 9px 18px;
+}
+.area-label[aria-pressed="true"] {
+  color: var(--gold);
+}
+.map-card b {
+  padding-bottom: 8px;
+}

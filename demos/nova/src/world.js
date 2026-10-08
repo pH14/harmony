@@ -26,3 +26,17 @@ export function isMapEvidence(observation, levels) {
     owner(observation.checkpoint_level) === observation.selected_level
   );
 }
+
+export function followDiscovery(
+  observation,
+  first,
+  focusedLevel,
+  userSelected,
+  cleared,
+) {
+  return (
+    first &&
+    (!userSelected ||
+      (observation.selected_level > focusedLevel && cleared.has(focusedLevel)))
+  );
+}

@@ -4,11 +4,13 @@ import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, validateTape } from "./heat.js";
 import { CREDIT, creditPNG, snapshotHash } from "./media.js";
 import { viewCenter } from "./view.js";
+import { StateCache, memoryBudget } from "./memory.js";
 import {
   project,
   completedLevels,
   mergeProgress,
   isMapEvidence,
+  followDiscovery,
 } from "./world.js";
 const base = new URL(import.meta.env.BASE_URL, location.href),
   $ = (id) => document.getElementById(id);
@@ -18,13 +20,13 @@ const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT
 document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony">◈ <b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span></header>
 <main><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><button id="zoom" title="Zoom into the selected state; drag the map to move">Zoom in</button></div></div>
-<div class="goal"><div><strong id="goal-title">Level 1 · Find the exit</strong><span id="goal-status">Searching</span></div><div><span id="goal-count">0 / 40 levels cleared</span><button id="completion" hidden>Watch completion</button></div></div>
-<nav id="room-tabs" aria-label="Areas in this level"></nav>
-<div class="map-wrap"><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label">INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
-<div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="area-progress">Introduction</span></div>
+<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><span id="goal-count">0 / 40 levels cleared</span><button id="completion" hidden>Watch completion</button></div></div>
+<nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
+<div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
+<div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
 ${artCredit}<div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></section>
-<section class="inspect"><div class="film"><div class="section-title"><div><span class="eyebrow">FOLLOW A HISTORY</span><h2 id="film-title">The first possibility</h2></div><span id="verification" hidden>Starting emulator</span></div><div class="screen"><canvas id="film" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></div><div class="film-actions"><button id="screenshot" disabled>Save this frame</button><button id="export" disabled>Save history</button><button id="import">Open history</button><input id="history-file" type="file" accept="application/json,.json" hidden></div></div>
-<aside><div class="section-title"><div><span class="eyebrow">EXACT STATES, SAME PLACE</span><h2 id="cell-title">Selected state</h2></div><span id="cell-visits" class="badge">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><div id="details" class="details"></div></aside></section>
+<section class="inspect"><div class="film"><div class="section-title"><div><h2 id="film-title">The first possibility</h2></div><span id="verification" hidden>Starting emulator</span></div><div class="screen"><canvas id="film" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></div><div class="film-actions"><button id="screenshot" disabled>Save this frame</button><button id="export" disabled>Save history</button><button id="import">Open history</button><input id="history-file" type="file" accept="application/json,.json" hidden></div></div>
+<aside><div class="section-title"><div><h2 id="cell-title">Selected state</h2></div><span id="cell-visits" class="badge">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><div id="details" class="details"></div></aside></section>
 <section class="atlas"><div class="section-title"><h2>The game</h2><nav id="worlds" aria-label="Game worlds"></nav></div><div id="atlas" class="atlas-grid"></div>${artCredit}</section>
 <footer><span>Nova the Squirrel by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
 <div id="error" role="alert" hidden></div>
@@ -37,7 +39,7 @@ let heat = new Heatmap(),
   gameWon = false,
   paused = false,
   ready = false,
-  seed = 1,
+  seed = 2,
   request = 0,
   userSelected = false,
   current = null,
@@ -62,7 +64,7 @@ let heat = new Heatmap(),
   watchRequested = false,
   pointerStart = null,
   dragged = false;
-let stateCache = new Map(),
+let stateCache = new StateCache(),
   sparks = [],
   bestByMap = new Map(),
   bestStates = new Map(),
@@ -71,18 +73,53 @@ let stateCache = new Map(),
   cleared = new Set(),
   wins = new Map(),
   stats = {};
-const panoramas = new Map();
+const budget = memoryBudget(
+  navigator.deviceMemory,
+  matchMedia("(pointer: coarse)").matches,
+);
+const panoramas = new Map(),
+  thumbnails = new Map();
+let thumbnailQueue = Promise.resolve();
 function panorama(level) {
   if (!panoramas.has(level)) {
     const image = new Image();
-    image.onload = () => drawAtlas(performance.now());
     image.src = new URL(maps.get(level).file, base).href;
     panoramas.set(level, image);
   }
   return panoramas.get(level);
 }
+function thumbnail(level) {
+  if (thumbnails.has(level)) return;
+  const thumb = document.createElement("canvas");
+  thumb.width = 320;
+  thumb.height = 96;
+  thumbnails.set(level, thumb);
+  thumbnailQueue = thumbnailQueue.then(async () => {
+    const image = new Image();
+    await new Promise((resolve) => {
+      image.onload = image.onerror = resolve;
+      image.src = new URL(maps.get(level).file, base).href;
+    });
+    if (image.naturalWidth) {
+      const scale = Math.min(
+        320 / image.naturalWidth,
+        96 / image.naturalHeight,
+      );
+      const context = thumb.getContext("2d");
+      context.imageSmoothingEnabled = false;
+      context.drawImage(
+        image,
+        (320 - image.naturalWidth * scale) / 2,
+        (96 - image.naturalHeight * scale) / 2,
+        image.naturalWidth * scale,
+        image.naturalHeight * scale,
+      );
+    }
+    image.src = "";
+    drawAtlas(performance.now());
+  });
+}
 const canvas = $("map"),
-  ctx = canvas.getContext("2d"),
   film = $("film").getContext("2d");
 const fmt = (n) => Math.round(n || 0).toLocaleString();
 function showError(error) {
@@ -258,11 +295,13 @@ function renderStates() {
       button.className = "state" + (current?.id === id ? " selected" : "");
       button.textContent = state
         ? `#${id}  ·  ${fmt(state.frames)} frames  ·  ♥ ${state.observation.health}  ·  ${state.observation.chips} chips`
-        : `#${id} · loading history…`;
-      button.disabled = !state;
+        : `#${id} · load history`;
+      button.disabled = false;
       button.onclick = () => {
         userSelected = true;
-        selectState(state).catch(fail);
+        if (state) selectState(state).catch(fail);
+        else
+          worker.postMessage({ type: "states", ids: [id], request: ++request });
       };
       return button;
     }),
@@ -287,7 +326,7 @@ function inspect(cell) {
 function startSearch() {
   if (worker) worker.terminate();
   heat = new Heatmap();
-  stateCache = new Map();
+  stateCache = new StateCache();
   selectedCell = null;
   current = null;
   replayEpoch++;
@@ -318,6 +357,7 @@ function startSearch() {
   center = 640;
 
   $("error").hidden = true;
+  $("memory-limit").hidden = true;
   $("status").textContent = "Loading Nova…";
   $("pause").disabled = true;
   updateSearchControl();
@@ -379,7 +419,8 @@ function startSearch() {
           }
           heat.visit({ ...point, observation: project(o, map) }, now);
           sparks.push({ ...project(o, map), time: now });
-          if (first && !userSelected) setRoom(o.level);
+          if (followDiscovery(o, first, focusedLevel, userSelected, cleared))
+            setRoom(o.level);
           if (first) updateRoomTabs();
         }
         sparks = sparks.slice(-120);
@@ -412,13 +453,15 @@ function startSearch() {
           ? "Game complete"
           : "Search limit reached";
         $("pause").disabled = true;
+        $("memory-limit").hidden = data.won;
+        $("memory-limit").textContent = "Memory or search limit reached";
         $("status-dot").className = "paused";
       }
     } catch (e) {
       fail(e);
     }
   };
-  worker.postMessage({ type: "init", base: base.href, seed });
+  worker.postMessage({ type: "init", base: base.href, seed, budget });
 }
 function updateSearchControl() {
   $("pause").innerHTML = paused
@@ -528,19 +571,18 @@ function renderNavigation() {
           thumb.height = 96;
           const label = document.createElement("b");
           label.textContent = maps.get(id).label;
-          const status = document.createElement("span");
-          status.className = "area-state";
-          button.append(thumb, label, status);
+          button.append(thumb, label);
           button.onclick = () => {
             userSelected = true;
             browseRoom(id);
           };
           article.append(button);
-          panorama(id);
+          thumbnail(id);
         }
         return article;
       }),
   );
+  renderMapRows(owner);
   drawAtlas(performance.now());
 }
 function drawAtlas(now) {
@@ -549,7 +591,7 @@ function drawAtlas(now) {
       map = maps.get(id),
       c = card.querySelector("canvas"),
       context = c.getContext("2d"),
-      image = panoramas.get(id),
+      image = thumbnails.get(id),
       scale = Math.min(c.width / map.width, c.height / map.height);
     context.imageSmoothingEnabled = false;
     context.fillStyle = "#0b1928";
@@ -560,7 +602,16 @@ function drawAtlas(now) {
       (c.height - map.height * scale) / 2,
     );
     context.scale(scale, scale);
-    if (image?.complete && image.naturalWidth) context.drawImage(image, 0, 0);
+    if (image) {
+      context.restore();
+      context.drawImage(image, 0, 0);
+      context.save();
+      context.translate(
+        (c.width - map.width * scale) / 2,
+        (c.height - map.height * scale) / 2,
+      );
+      context.scale(scale, scale);
+    }
     context.fillStyle = "rgba(7,24,43,.6)";
     context.fillRect(0, 0, map.width, map.height);
     for (const cell of heat.cells.values())
@@ -572,9 +623,6 @@ function drawAtlas(now) {
         }
       }
     context.restore();
-    card.querySelector(".area-state").textContent = seenMaps.has(id)
-      ? "Visited"
-      : "Unexplored";
   }
   for (const article of document.querySelectorAll(".level-card")) {
     const id = Number(article.dataset.level);
@@ -588,15 +636,6 @@ function completionWitness() {
     return {
       id: wins.get(focusedLevel),
       label: `Watch Level ${focusedLevel + 1} finish`,
-    };
-  const owner = catalog.levels.find((level) => level.id === focusedLevel);
-  const area = [...(owner?.rooms || [])]
-    .reverse()
-    .find((id) => id >= 45 && arrivals.has(id));
-  if (area !== undefined)
-    return {
-      id: arrivals.get(area),
-      label: `Watch ${maps.get(area).label} arrival`,
     };
   return null;
 }
@@ -623,25 +662,83 @@ function updateStats() {
   $("goal-count").textContent = `${cleared.size} / 40 levels cleared`;
   $("goal-title").textContent = gameWon
     ? "Game complete"
-    : `Level ${Math.min(focusedLevel + 1, 40)} · ${cleared.has(focusedLevel) ? "Complete ✓" : "Find the exit"}`;
+    : `Level ${Math.min(focusedLevel + 1, 40)}${cleared.has(focusedLevel) ? " ✓" : ""}`;
   const witness = completionWitness();
   $("completion").hidden = !witness;
   if (witness) $("completion").textContent = witness.label;
-  $("area-progress").textContent =
-    `${maps.get(mapLevel).label} · ${seenMaps.has(mapLevel) ? "Visited" : "Not reached yet"}`;
+  $("states").title =
+    `${fmt(stats.snapshot_bytes / 1048576)} MiB compressed snapshots; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`;
   drawAtlas(performance.now());
   $("work").textContent = fmt(stats.frames);
 }
+function renderMapRows(owner) {
+  const rooms = owner?.rooms || [mapLevel];
+  for (const [id, image] of panoramas)
+    if (!rooms.includes(id)) {
+      image.src = "";
+      panoramas.delete(id);
+    }
+  $("map-rows").replaceChildren(
+    ...rooms.map((id) => {
+      const row = document.createElement("section");
+      row.className = "map-row";
+      row.dataset.map = id;
+      const label = document.createElement("button");
+      label.textContent = maps.get(id).label;
+      label.className = "area-label";
+      label.setAttribute("aria-pressed", id === mapLevel);
+      label.onclick = () => {
+        userSelected = true;
+        browseRoom(id);
+      };
+      const c = id === mapLevel ? canvas : document.createElement("canvas");
+      c.className = "area-map";
+      c.width = 1280;
+      c.height = Math.min(
+        320,
+        Math.max(
+          128,
+          Math.round((1280 / maps.get(id).width) * maps.get(id).height),
+        ),
+      );
+      c.dataset.map = id;
+      if (c !== canvas) {
+        c.tabIndex = 0;
+        c.setAttribute(
+          "aria-label",
+          `${maps.get(id).label} heatmap. Click a warm cell to replay.`,
+        );
+        bindMap(c);
+      }
+      row.append(label, c);
+      panorama(id);
+      return row;
+    }),
+  );
+}
 function drawMap(now) {
+  for (const c of document.querySelectorAll(".area-map")) drawArea(c, now);
+  $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
+}
+function drawArea(canvas, now) {
+  const ctx = canvas.getContext("2d"),
+    mapLevel = Number(canvas.dataset.map),
+    map = maps.get(mapLevel),
+    mapWidth = map.width,
+    mapHeight = map.height,
+    active = canvas === $("map"),
+    areaZoom = active ? zoom : 1,
+    areaCenter = active ? center : mapWidth / 2,
+    areaCenterY = active ? centerY : mapHeight / 2;
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = "#122b42";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.translate(canvas.width / 2, canvas.height / 2);
   const scale =
-    Math.min(canvas.width / mapWidth, canvas.height / mapHeight) * zoom;
+    Math.min(canvas.width / mapWidth, canvas.height / mapHeight) * areaZoom;
   ctx.scale(scale, scale);
-  ctx.translate(-center, -centerY);
+  ctx.translate(-areaCenter, -areaCenterY);
   const image = panorama(mapLevel);
   if (image?.complete && image.naturalWidth) ctx.drawImage(image, 0, 0);
   ctx.fillStyle = "rgba(7,24,43,.62)";
@@ -658,12 +755,12 @@ function drawMap(now) {
       ctx.fillStyle = `rgba(${color},.48)`;
       ctx.fillRect(x + 1, y + 1, 30, 30);
       ctx.strokeStyle = `rgba(${color},.8)`;
-      ctx.lineWidth = 0.7 / zoom;
+      ctx.lineWidth = 0.7 / areaZoom;
       ctx.strokeRect(x + 1, y + 1, 30, 30);
     }
   }
   ctx.strokeStyle = "rgba(166,205,241,.07)";
-  ctx.lineWidth = 0.5 / zoom;
+  ctx.lineWidth = 0.5 / areaZoom;
   for (let x = 0; x <= mapWidth; x += 32) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
@@ -688,7 +785,7 @@ function drawMap(now) {
   const focus = hoverCell || selectedCell;
   if (focus?.level === mapLevel) {
     ctx.strokeStyle = "#fff0bd";
-    ctx.lineWidth = 1.5 / zoom;
+    ctx.lineWidth = 1.5 / areaZoom;
     ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
   }
   if (
@@ -697,7 +794,7 @@ function drawMap(now) {
   ) {
     const o = project(current.observation, maps.get(mapLevel));
     ctx.strokeStyle = "#fff5cc";
-    ctx.lineWidth = 1.5 / zoom;
+    ctx.lineWidth = 1.5 / areaZoom;
     ctx.beginPath();
     ctx.arc(o.x, o.y - 8, 9, 0, Math.PI * 2);
     ctx.stroke();
@@ -705,103 +802,131 @@ function drawMap(now) {
     ctx.fillRect(o.x - 2, o.y - 10, 4, 4);
   }
   ctx.restore();
-  $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
 }
 function mapCoordinates(e) {
-  const rect = canvas.getBoundingClientRect(),
-    px = ((e.clientX - rect.left) / rect.width) * canvas.width,
-    py = ((e.clientY - rect.top) / rect.height) * canvas.height,
-    scale = Math.min(canvas.width / mapWidth, canvas.height / mapHeight) * zoom;
+  const c = e.currentTarget,
+    id = Number(c.dataset.map),
+    map = maps.get(id),
+    rect = c.getBoundingClientRect(),
+    px = ((e.clientX - rect.left) / rect.width) * c.width,
+    py = ((e.clientY - rect.top) / rect.height) * c.height,
+    active = c === canvas,
+    scale =
+      Math.min(c.width / map.width, c.height / map.height) *
+      (active ? zoom : 1);
   return {
-    x: Math.floor(((px - canvas.width / 2) / scale + center) / 32),
-    y: Math.floor(((py - canvas.height / 2) / scale + centerY + 8) / 32),
-    level: mapLevel,
+    x: Math.floor(
+      ((px - c.width / 2) / scale + (active ? center : map.width / 2)) / 32,
+    ),
+    y: Math.floor(
+      ((py - c.height / 2) / scale + (active ? centerY : map.height / 2) + 8) /
+        32,
+    ),
+    level: id,
   };
 }
-canvas.addEventListener("pointerdown", (e) => {
-  pointerStart = { x: e.clientX, y: e.clientY, center, centerY };
-  dragged = false;
-});
-canvas.addEventListener("pointerup", () => {
-  pointerStart = null;
-});
-canvas.addEventListener("pointercancel", () => {
-  pointerStart = null;
-});
-canvas.addEventListener("pointermove", (e) => {
-  if (pointerStart && e.buttons && zoom > 1) {
-    const dx = e.clientX - pointerStart.x,
-      dy = e.clientY - pointerStart.y;
-    if (Math.hypot(dx, dy) > 4) dragged = true;
+function bindMap(c) {
+  c.addEventListener("pointerdown", (e) => {
+    pointerStart = { x: e.clientX, y: e.clientY, center, centerY };
+    dragged = false;
+  });
+  for (const event of ["pointerup", "pointercancel"])
+    c.addEventListener(event, () => {
+      pointerStart = null;
+    });
+  c.addEventListener("pointermove", (e) => {
+    if (c === canvas && pointerStart && e.buttons && zoom > 1) {
+      const dx = e.clientX - pointerStart.x,
+        dy = e.clientY - pointerStart.y;
+      if (Math.hypot(dx, dy) > 4) dragged = true;
+      if (dragged) {
+        userSelected = true;
+        const rect = c.getBoundingClientRect(),
+          scale = Math.min(c.width / mapWidth, c.height / mapHeight) * zoom;
+        const view = viewCenter(
+          mapWidth,
+          zoom,
+          {
+            x: pointerStart.center - (dx * c.width) / rect.width / scale,
+            y: pointerStart.centerY - (dy * c.height) / rect.height / scale,
+          },
+          mapHeight,
+          { width: c.width, height: c.height },
+        );
+        center = view.x;
+        centerY = view.y;
+        return;
+      }
+    }
+    hoverCell = mapCoordinates(e);
+    const cell = heat.cells.get(
+      `${hoverCell.level}:${hoverCell.x}:${hoverCell.y}`,
+    );
+    $("hover").hidden = false;
+    $("hover").textContent =
+      `${cell?.visits || 0} visits · ${cell?.ids.length || 0} states`;
+  });
+  c.addEventListener("pointerleave", () => {
+    pointerStart = null;
+    hoverCell = null;
+    $("hover").hidden = true;
+  });
+  c.addEventListener("click", (e) => {
     if (dragged) {
-      userSelected = true;
-      const rect = canvas.getBoundingClientRect(),
-        scale =
-          Math.min(canvas.width / mapWidth, canvas.height / mapHeight) * zoom;
-      const view = viewCenter(
-        mapWidth,
-        zoom,
-        {
-          x: pointerStart.center - (dx * canvas.width) / rect.width / scale,
-          y: pointerStart.centerY - (dy * canvas.height) / rect.height / scale,
-        },
-        mapHeight,
-        { width: canvas.width, height: canvas.height },
-      );
-      center = view.x;
-      centerY = view.y;
+      dragged = false;
       return;
     }
-  }
-  hoverCell = mapCoordinates(e);
-  const cell = heat.cells.get(`${mapLevel}:${hoverCell.x}:${hoverCell.y}`);
-  $("hover").hidden = false;
-  $("hover").textContent =
-    `Cell ${hoverCell.x}, ${hoverCell.y} · ${cell?.visits || 0} visits · ${cell?.ids.length || 0} states`;
-});
-canvas.addEventListener("pointerleave", () => {
-  pointerStart = null;
-  hoverCell = null;
-  $("hover").hidden = true;
-});
-canvas.addEventListener("click", (e) => {
-  if (dragged) {
-    dragged = false;
-    return;
-  }
-  const c = mapCoordinates(e);
-  inspect(heat.cells.get(`${mapLevel}:${c.x}:${c.y}`));
-});
-canvas.addEventListener("keydown", (e) => {
-  const c = hoverCell || selectedCell || { level: mapLevel, x: 1, y: 5 };
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
-    e.preventDefault();
-    hoverCell = {
-      ...c,
-      x: Math.max(
-        0,
-        Math.min(
-          Math.floor(mapWidth / 32) - 1,
-          c.x + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0),
+    const point = mapCoordinates(e),
+      cell = heat.cells.get(`${point.level}:${point.x}:${point.y}`);
+    if (point.level !== mapLevel) setRoom(point.level);
+    inspect(cell);
+  });
+  c.addEventListener("keydown", (e) => {
+    const level = Number(c.dataset.map),
+      map = maps.get(level);
+    const point = (hoverCell?.level === level ? hoverCell : null) ||
+      (selectedCell?.level === level ? selectedCell : null) || {
+        level,
+        x: 1,
+        y: 5,
+      };
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+      e.preventDefault();
+      hoverCell = {
+        ...point,
+        x: Math.max(
+          0,
+          Math.min(
+            Math.floor(map.width / 32) - 1,
+            point.x +
+              (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0),
+          ),
         ),
-      ),
-      y: Math.max(
-        0,
-        Math.min(
-          Math.ceil(mapHeight / 32) - 1,
-          c.y + (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0),
+        y: Math.max(
+          0,
+          Math.min(
+            Math.ceil(map.height / 32) - 1,
+            point.y +
+              (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0),
+          ),
         ),
-      ),
-    };
-  }
-  if (e.key === "Enter") {
-    e.preventDefault();
-    inspect(heat.cells.get(`${mapLevel}:${c.x}:${c.y}`));
-  }
-});
+      };
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (level !== mapLevel) setRoom(level);
+      inspect(heat.cells.get(`${level}:${point.x}:${point.y}`));
+    }
+  });
+}
+bindMap(canvas);
 $("zoom").onclick = () => {
   userSelected = true;
   zoom = zoom === 1 ? 2 : zoom === 2 ? 4 : 1;
+  canvas.height =
+    zoom > 1
+      ? 320
+      : Math.min(320, Math.max(128, Math.round((1280 / mapWidth) * mapHeight)));
   const o =
     current?.observation.level === mapLevel &&
     isMapEvidence(current.observation, catalog.levels)

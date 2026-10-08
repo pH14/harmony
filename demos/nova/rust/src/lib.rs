@@ -197,6 +197,7 @@ pub struct Explorer {
     stopped: bool,
     won: bool,
     snapshot_bytes: usize,
+    max_snapshot_bytes: usize,
 }
 
 fn compress_snapshot(bytes: &[u8]) -> Box<[u8]> {
@@ -241,7 +242,12 @@ impl Explorer {
             stopped: false,
             won: false,
             snapshot_bytes,
+            max_snapshot_bytes: 128 * 1024 * 1024,
         })
+    }
+
+    pub fn set_snapshot_budget(&mut self, bytes: u32) {
+        self.max_snapshot_bytes = (bytes as usize).clamp(16 * 1024 * 1024, 128 * 1024 * 1024);
     }
 
     pub fn advance(&mut self, jobs: u32) -> Result<String, JsValue> {
@@ -319,7 +325,7 @@ impl Explorer {
             self.stopped = self.won
                 || self.archive.live_entry_count() >= 20000
                 || self.executions >= 100000
-                || self.snapshot_bytes >= 128 * 1024 * 1024;
+                || self.snapshot_bytes >= self.max_snapshot_bytes;
         }
         serde_json::to_string(&Batch {
             executions: self.executions,
