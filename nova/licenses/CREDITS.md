@@ -24,7 +24,10 @@ The deployed site includes the pinned Nova source archive, GPL text, pinned
 QuickNES source, and browser frontend/build recipe in `licenses/`. The source
 archive contains the upstream author/cameo credits. Harmony's complete source
 and pinned build recipes are linked from the site; source is also available
-alongside every release of this demo.
+alongside every release of this demo. `rust-dependencies.tar.gz` contains the
+locked Rust dependency sources and their original license/copyright notices,
+including miniz_oxide (MIT, Zlib or Apache-2.0) and adler2 (0BSD, MIT or
+Apache-2.0). These permissive notices accompany the compiled search worker.
 
 **QuickNES** by Shay Green and contributors, with the libretro port by its
 contributors, is pinned to `26bb785c9deddb66a17717b21bb4e328f03ade32`:
