@@ -314,7 +314,7 @@ class ContentWindowTests(RequiresApiKey):
         self.assertEqual(len(calls), 1)
 
 
-class CachePersistenceTests(unittest.TestCase):
+class CachePersistenceTests(RequiresApiKey):
     def test_a_saved_cache_reloads_to_identical_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
