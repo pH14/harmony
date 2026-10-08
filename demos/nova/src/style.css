@@ -887,3 +887,7 @@ dialog p {
 .map-card b {
   padding-bottom: 8px;
 }
+#memory-limit {
+  display: block;
+  color: var(--gold);
+}

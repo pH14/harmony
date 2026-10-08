@@ -329,6 +329,18 @@ try {
     await page.locator(".exploration > .art-credit").isVisible(),
     true,
   );
+  await page.locator("#memory-limit").evaluate((notice) => {
+    notice.textContent = "Memory or search limit reached";
+    notice.hidden = false;
+  });
+  assert.equal(
+    await page.locator("#memory-limit").isVisible(),
+    true,
+    "Mobile must show the budget-stop notice",
+  );
+  await page.locator("#memory-limit").evaluate((notice) => {
+    notice.hidden = true;
+  });
   await mkdir("test-results", { recursive: true });
   await page.screenshot({ path: "test-results/mobile.png", fullPage: true });
   await page.setViewportSize({ width: 1440, height: 1100 });
