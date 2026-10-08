@@ -333,7 +333,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultOperation::EventKill { node, rarity, .. } => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
-                (start, u64::MAX),
+                (start, end),
             )),
         },
         FaultOperation::EventPark {
@@ -370,7 +370,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                         target: None,
                     },
                 ),
-                (start, u64::MAX),
+                (start, end),
             )),
         },
         FaultOperation::Kill(node, _) => ActionDelta {
@@ -938,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn authored_parks_remain_armed_for_the_rest_of_the_execution() {
+    fn a_site_park_window_is_its_own_action_window() {
         let action = FaultOperation::SitePark {
             node: 2,
             site: 42,
@@ -949,7 +949,7 @@ mod tests {
         let window = WINDOWS.window(&actions, 0).unwrap();
         let fault = action_delta(action.into(), window).standing.unwrap();
         assert_eq!(fault.start, ROOT);
-        assert_eq!(fault.end, u64::MAX);
+        assert_eq!((fault.start, fault.end), window);
         assert_eq!(
             decode_process_target(&fault.target),
             Some((

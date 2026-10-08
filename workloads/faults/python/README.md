@@ -22,7 +22,7 @@ case.parked(site).observed("writer-committed").violated("no-loss").identical()
 
 Node and hook names resolve against the faults recipe. Durations are positive
 10ms multiples of guest time. `park` arms an exact marker that stays armed until
-the node reaches it once; the node then holds for `for_`. `wait` on any action
+the node reaches it once, even after later actions; the node then holds for `for_`. `wait` on any action
 sets when the next action begins. Guest time includes instrumentation cost, so
 measure when the guest reaches a marker before choosing the schedule's waits. The guest must explicitly call `notify_coverage(site.id)` at
 the intended point. Names use a stable 31-bit hash, with collisions among declared
@@ -45,4 +45,5 @@ introduced.
 
 Run helper tests with `python3 -m unittest discover -s workloads/faults/python`.
 The [SQLite example](../../bugs/historical/sqlite-wal-reset/scenario/README.md)
-compares affected, fixed and no-pause executions of a real historical race.
+reproduces a real historical race and compares it with the same schedule
+without the park.

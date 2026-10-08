@@ -131,6 +131,7 @@ its calling thread once per arm, independently of the hotness-weighted edge
 budget. It does not automatically rearm after waking. Ordinary event parks keep
 their weighted, repeating behavior. A marker must be nonzero and is assigned by
 the application; collisions must be rejected when composing an authored schedule.
-The faults package exposes this as `SitePark`. A `SitePark` stays armed from its
-action until the marker fires, so the hold length does not limit when the marker
-can be reached. Random searches never sample it.
+The faults package exposes this as `SitePark`. The supervisor arms it when its
+action's window opens and does not disarm it when the window closes, so the node
+stays armed until it reaches the marker once. A later event park on the same node
+replaces it. Random searches never sample it.

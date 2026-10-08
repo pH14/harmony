@@ -201,9 +201,13 @@ impl ProcessSupervisor {
                 }
                 match (was.event_park, now.event_park) {
                     (None, Some(park)) => actions.push(Action::ArmEventPark(node, park)),
-                    (Some(_), None) => actions.push(Action::DisarmEventPark(node)),
-                    (Some(previous), Some(park)) if previous != park => {
+                    (Some(previous), None) if !previous.site() => {
                         actions.push(Action::DisarmEventPark(node));
+                    }
+                    (Some(previous), Some(park)) if previous != park => {
+                        if !previous.site() {
+                            actions.push(Action::DisarmEventPark(node));
+                        }
                         actions.push(Action::ArmEventPark(node, park));
                     }
                     _ => {}
@@ -660,6 +664,35 @@ mod tests {
             sup.tick(&ActiveWindows::new(), &[]),
             [Action::DisarmEventKill(0), Action::DisarmEventPark(0)]
         );
+    }
+
+    #[test]
+    fn a_site_park_arms_on_entry_and_stays_armed_after_its_window() {
+        let mut sup = Supervisor::new(1);
+        let park = ProcessAction::EventPark {
+            edges: process_proto::events::EVENT_SITE_PARK_FLAG | 42,
+            hold_nanos: 8,
+            target: None,
+        };
+        let site = active(&[(0, park)]);
+        assert_eq!(sup.tick(&site, &[]).len(), 1);
+        assert!(sup.tick(&ActiveWindows::new(), &[]).is_empty());
+        let ordinary = active(&[(
+            0,
+            ProcessAction::EventPark {
+                edges: 3,
+                hold_nanos: 8,
+                target: None,
+            },
+        )]);
+        assert!(matches!(
+            sup.tick(&site, &[])[..],
+            [Action::ArmEventPark(0, _)]
+        ));
+        assert!(matches!(
+            sup.tick(&ordinary, &[])[..],
+            [Action::ArmEventPark(0, EventPark { edges: 3, .. })]
+        ));
     }
 
     #[test]

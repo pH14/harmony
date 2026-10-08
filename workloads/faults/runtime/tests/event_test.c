@@ -79,6 +79,14 @@ static void await_sleep(int slot)
     assert(pthread_mutex_unlock(&sleep_lock) == 0);
 }
 
+static void reset_sleeps(void)
+{
+    assert(pthread_mutex_lock(&sleep_lock) == 0);
+    memset(sleep_entered, 0, sizeof(sleep_entered));
+    memset(sleep_released, 0, sizeof(sleep_released));
+    assert(pthread_mutex_unlock(&sleep_lock) == 0);
+}
+
 static void release_sleep(int slot)
 {
     assert(pthread_mutex_lock(&sleep_lock) == 0);
@@ -336,6 +344,26 @@ int main(void)
     harmony_instrumentation_event(42);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 8);
+
+    {
+        pthread_t ordinary;
+        pthread_t site;
+        reset_sleeps();
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1234567, response);
+        assert(pthread_create(&ordinary, NULL, park_callback, (void *)(uintptr_t)77) == 0);
+        await_sleep(0);
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK,
+                 HARMONY_FAULT_EVENT_SITE_PARK_FLAG | 9, 2345678, response);
+        assert(pthread_create(&site, NULL, park_callback, (void *)(uintptr_t)9) == 0);
+        await_sleep(1);
+        release_sleep(1);
+        assert(pthread_join(site, NULL) == 0);
+        release_sleep(0);
+        assert(pthread_join(ordinary, NULL) == 0);
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+        assert(get_word(response, 8) == 10);
+        assert(get_word(response, 16) == 0);
+    }
 
     send_frame(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 22, 22);
     for (;;) {
