@@ -8,6 +8,10 @@ unavailable. The kernel image then contains none of these instructions, and
 the build scan requires that. The vDSO keeps the native instructions because
 CR4.TSD traps them in user mode.
 
+Each trapped read advances virtual time by one read, so a TSC spin would take
+one VM exit per nanosecond of delay. use_tsc_delay() therefore leaves udelay()
+on the instruction loop calibrated by lpj.
+
 This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
 repository's designated guest-kernel patch exception.
 
@@ -87,3 +91,20 @@ repository's designated guest-kernel patch exception.
  /*
   * Standard way to access the cycle counter.
   */
+--- a/arch/x86/lib/delay.c
++++ b/arch/x86/lib/delay.c
+@@ -173,6 +173,14 @@
+ 
+ void __init use_tsc_delay(void)
+ {
++	/*
++	 * In a Harmony guest every counter read is a VM exit that advances
++	 * virtual time by one read, so a TSC spin would take one exit per
++	 * nanosecond of delay. The instruction loop calibrated by lpj reads
++	 * no counter.
++	 */
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
++		return;
+ 	if (delay_fn == delay_loop)
+ 		delay_fn = delay_tsc;
+ }
