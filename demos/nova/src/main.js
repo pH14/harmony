@@ -210,7 +210,8 @@ function advanceFilm(target, paint = true, renderAt = target) {
       timeline.interval - (currentFrame % timeline.interval),
     );
     engine.run(action.buttons, n, currentFrame + n === renderAt);
-    if (playing && !seeking) music.run(action.buttons, n);
+    if (playing && !seeking)
+      music.advance(action.buttons, n, Number($("speed").value));
     currentFrame += n;
     if (currentFrame % timeline.interval === 0)
       timeline.put(currentFrame, engine.capture());
@@ -1539,11 +1540,10 @@ function animate(now) {
         break;
       }
       engine.run(controller.buttons(), 1, true);
-      music.run(controller.buttons());
+      music.advance(controller.buttons());
       currentFrame++;
       if (currentFrame % traceStride === 0) recordTrail();
     }
-    music.flush();
     $("film").dataset.audioFrames = music.samples;
     current.frames = currentFrame;
     if (current.branch?.manual) current.branch.manual.to = currentFrame;
@@ -1558,7 +1558,6 @@ function animate(now) {
     frameCredit -= frames;
     if (frames) {
       advanceFilm(Math.min(current.frames, currentFrame + frames));
-      music.flush(Number($("speed").value));
       $("film").dataset.audioFrames = music.samples;
       segments = trailSegments(trace);
       if (currentFrame === current.frames) {

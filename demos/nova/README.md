@@ -126,8 +126,10 @@ final two-rollout batch can retain up to fourteen additional entries. Phones/coa
 devices use 128 MiB and 192 MiB. The buffer check includes both worker-side Rust
 and QuickNES memories, happens after each two-rollout batch, and can overshoot
 by that batch's allocations. It excludes the separate 16 MiB replay emulator, the bounded checkpoint cache,
-and a further 16 MiB audio emulator allocated after the first takeover. Web Audio
-PCM capture is capped at 9,600 stereo frames (200 ms at 48 kHz); queued playback
+and a further 16 MiB audio emulator allocated after the first audible replay or takeover. Web Audio
+PCM capture is capped at 9,600 stereo frames (200 ms at 48 kHz). Audio advances
+in chunks of at most 12 game frames and drains after each chunk, including
+12× movies on 30 Hz displays; queued playback
 is bounded, flushed on release, and is not a recording of past audio.
 In recorded desktop seeds, 11,400 snapshots occupied about 80 MiB compressed and
 89 MiB of Rust linear memory. The 32 MiB phone snapshot budget therefore retains

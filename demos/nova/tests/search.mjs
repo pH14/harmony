@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from "node:assert/strict";
+import { GameAudio } from "../src/audio.js";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "../src/emulator.js";
 import { validateTape } from "../src/heat.js";
@@ -255,4 +256,50 @@ for (const buttons of [128, 129, 0, 64, 65, 2, 16, 0]) {
 }
 console.log(
   "Efficient video preserves snapshot bytes; isolated game audio produces bounded non-silent PCM and matches game RAM across 720 movement/jump frames.",
+);
+
+const audioContext = class {
+  constructor() {
+    this.currentTime = 0;
+    this.state = "running";
+  }
+  resume() {
+    return Promise.resolve();
+  }
+  createGain() {
+    return { gain: { value: 1 }, connect() {} };
+  }
+  createBuffer(channels, frames) {
+    const pcm = Array.from(
+      { length: channels },
+      () => new Float32Array(frames),
+    );
+    return { getChannelData: (c) => pcm[c] };
+  }
+  createBufferSource() {
+    return {
+      playbackRate: { value: 1 },
+      connect() {},
+      disconnect() {},
+      start() {},
+      stop() {},
+    };
+  }
+};
+const movieAudio = new GameAudio(async () => shadow, audioContext);
+await movieAudio.start(() => root);
+movieAudio.advance(129, 24, 12);
+assert.ok(
+  movieAudio.samples > 18500 && movieAudio.samples < 19500,
+  "A 30 Hz presentation at 12x must retain all 24 game frames of real PCM instead of overflowing the 9600-frame capture buffer",
+);
+assert.equal(movieAudio.sources.size, 2);
+for (const source of movieAudio.sources)
+  assert.equal(source.playbackRate.value, 12);
+engine.restore(root);
+engine.run(129, 24);
+assert.deepEqual(shadow.memory(), engine.memory());
+movieAudio.stop();
+console.log(
+  `12x audio retains ${movieAudio.samples} stereo samples across a 24-game-frame presentation; visible game RAM still matches.`,
 );

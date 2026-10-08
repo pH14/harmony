@@ -11,7 +11,7 @@ export class GameAudio {
     this.samples = 0;
     this.muted = false;
   }
-  unlock() {
+  async unlock() {
     if (!this.Context) return Promise.resolve();
     this.context ||= new this.Context({ sampleRate: 48000 });
     if (!this.gain) {
@@ -42,8 +42,14 @@ export class GameAudio {
       throw e;
     }
   }
-  run(buttons, frames = 1) {
-    if (this.active && this.engine) this.engine.run(buttons, frames, false);
+  advance(buttons, frames = 1, rate = 1) {
+    if (!this.active || !this.engine) return;
+    while (frames > 0) {
+      const n = Math.min(12, frames);
+      this.engine.run(buttons, n, false);
+      this.flush(rate);
+      frames -= n;
+    }
   }
   flush(rate = 1) {
     if (!this.active || !this.engine || this.context.state !== "running")

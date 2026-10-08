@@ -109,13 +109,30 @@ test("movie audio batches inputs and schedules samples at the selected speed", a
   const a = new GameAudio(async () => e, Context);
   await a.unlock();
   await a.start(() => "movie frame");
-  a.run(129, 4);
+  a.advance(129, 4, 4);
   assert.deepEqual(action, [129, 4, false]);
-  a.flush(4);
   assert.equal(a.context.nodes[0].playbackRate.value, 4);
   assert.ok(Math.abs(a.nextTime - 0.05) < 1e-9);
   await a.start(() => "new speed");
   assert.equal(a.context.nodes[0].stopped, true);
   a.flush();
   assert.equal(a.context.nodes[1].playbackRate.value, 1);
+});
+
+test("audio context failures reject normally so movie playback can fall back to silence", async () => {
+  class BrokenContext {
+    constructor() {
+      throw new Error("audio unavailable");
+    }
+  }
+  const a = new GameAudio(
+    async () => ({ restore() {}, enableAudio() {} }),
+    BrokenContext,
+  );
+  await assert.rejects(a.unlock(), /audio unavailable/);
+  await assert.rejects(
+    a.start(() => "frame"),
+    /audio unavailable/,
+  );
+  assert.equal(a.active, false);
 });
