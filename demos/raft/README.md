@@ -141,9 +141,8 @@ page and Raft's deployment metadata, preserving Nova and unrelated content.
 The script requires an explicitly chosen source revision and a clean gh-pages
 checkout. It does not merge either demo's implementation pull request.
 
-The manual **Runtime Acceptance** job rebuilds the teaching OCI image, validates
+The **Runtime Acceptance** CI job rebuilds the teaching OCI image, validates
 it using the pinned CLI/UML runtime, records fresh evidence, exercises nested
 boot with both FPU formats, and assembles a new browser image. Its reports and
 image are uploaded as CI artifacts. Raw run reports are release/build inputs,
-not repository history. Enable `verify_runtime` on the Raft Browser workflow
-to run this check; normal PRs keep the bounded static checks.
+not repository history. It runs alongside the static checks with its own 15-minute budget.

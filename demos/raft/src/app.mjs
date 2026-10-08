@@ -246,6 +246,7 @@ $("#boot").onclick = async () => {
         render();
       },
     );
+    if (!runtime) return;
     $("#mode").textContent = "Live Linux · local to this browser";
   } catch (error) {
     $("#runtime-status").textContent = error.message;

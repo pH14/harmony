@@ -595,3 +595,9 @@ Playwright verifies the failure, rewound tracing, quorum counterfactual and mobi
 layout. It uploads `raft-browser-dist` and browser screenshots. The slower live
 Linux/CLI shell round trip is an explicit `npm run test:live` acceptance check;
 it is not represented as covered by the static browser CI job.
+
+The Raft Browser Runtime Acceptance job rebuilds the teaching image against the
+pinned CLI/UML release, checks fresh failure/rewind/quorum/replay/shell evidence,
+boots nested UML with and without XSAVE, and exercises runtime assembly within
+a separate 15-minute PR budget. Raw evidence and assembled images are CI
+artifacts; the static demo downloads hash-checked reports from its release.
