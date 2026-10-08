@@ -217,6 +217,10 @@ where
         self
     }
 
+    fn left_the_campaign(&self, target: &NovaTarget<M, P>) -> bool {
+        self.whole_game && !target.mechanical_state().in_campaign_level()
+    }
+
     fn terminal_reached(&self, target: &NovaTarget<M, P>) -> bool {
         if self.whole_game {
             target.cleared_every_level()
@@ -501,7 +505,7 @@ where
             (
                 TERMINAL_POLICY_FIELD,
                 if self.whole_game {
-                    "every_level_cleared_in_order"
+                    "every_level_cleared_in_order_other_levels_end_the_job"
                 } else {
                     TERMINAL_POLICY_IDENTIFIER
                 },
@@ -720,7 +724,10 @@ where
     fn execution_disposition(&self, target: &NovaTarget<M, P>) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || (!self.whole_game && target.cleared_a_level()) {
+        } else if target.is_dead()
+            || self.left_the_campaign(target)
+            || (!self.whole_game && target.cleared_a_level())
+        {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -745,7 +752,10 @@ where
             objective_reached,
             disposition: if target.exit_kind() != ExitKind::Ok {
                 ExecutionDisposition::Failed
-            } else if target.is_dead() || (!self.whole_game && objective_reached) {
+            } else if target.is_dead()
+                || self.left_the_campaign(target)
+                || (!self.whole_game && objective_reached)
+            {
                 ExecutionDisposition::Terminal
             } else {
                 ExecutionDisposition::Runnable

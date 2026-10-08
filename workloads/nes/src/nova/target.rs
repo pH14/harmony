@@ -147,6 +147,11 @@ impl NovaMechanicalState {
     }
 
     #[must_use]
+    pub fn in_campaign_level(self) -> bool {
+        self.started_level == self.cleared_in_order()
+    }
+
+    #[must_use]
     pub fn available_count(self) -> u8 {
         self.levels_available
             .iter()
@@ -1512,6 +1517,33 @@ mod tests {
         target.observation.decoded.levels_cleared[2] |= 1 << 4;
         assert!(target.cleared_a_level());
         assert_eq!(target.observation.decoded.cleared_in_order(), 16);
+    }
+
+    #[test]
+    fn only_the_next_level_in_order_is_the_campaign_level() {
+        let state = NovaMechanicalState {
+            started_level: 20,
+            levels_cleared: level_prefix_bitmap(20),
+            ..NovaMechanicalState::default()
+        };
+        assert!(state.in_campaign_level());
+        assert!(
+            !NovaMechanicalState {
+                started_level: 12,
+                ..state
+            }
+            .in_campaign_level()
+        );
+        assert!(
+            !NovaMechanicalState {
+                started_level: 21,
+                ..state
+            }
+            .in_campaign_level()
+        );
+        let mut stray = state;
+        stray.levels_cleared[2] |= 1 << 6;
+        assert!(stray.in_campaign_level());
     }
 
     #[test]
