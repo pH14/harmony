@@ -424,52 +424,6 @@ carries the measured values.
   transaction. After a fault, the SQLite clients run the comparison at process
   start, and the PostgreSQL clients run it on reconnect.
 
-## Results
-
-SQLite and etcd come from [run 37733198518](https://github.com/pH14/harmony/actions/runs/37733198518)
-at `ff154193`. PostgreSQL comes from [run 37769880165](https://github.com/pH14/harmony/actions/runs/37769880165)
-at `5666a1f8`, on the patched User-mode Linux profile (correction 2). Each arm
-ran ten campaigns, seeds 1001–1010, at the scored budget. Every campaign
-reached a conclusive check, and none was a replay failure, an unconfirmed
-candidate, a guest crash, inconclusive or an infrastructure failure. Medians
-marked `>` are censored at the budget.
-
-| System | Arm | Discoveries | Median s to first | Median executions to first | Other violations | Executions/s | Fisher p vs `F` |
-|---|---|---:|---:|---:|---:|---:|---:|
-| SQLite | `F` | 4/10 | > 5406 | > 14230 | 0 | 2.4 | — |
-| SQLite | `G` | 0/10 | > 5409 | > 14881 | 0 | 1.8 | 0.087 |
-| SQLite | `A1` | 2/10 | > 5412 | > 16575 | 1 | 1.9 | 0.63 |
-| PostgreSQL | `F` | 10/10 | 175 | 2599 | 0 | 6.9 | — |
-| PostgreSQL | `G` | 0/10 | > 5670 | > 45758 | 0 | 5.1 | 1.1e-5 |
-| PostgreSQL | `A2` | 4/10 | > 5451 | > 40528 | 0 | 6.5 | 0.011 |
-| etcd | `F` | 3/10 | > 5415 | > 4749 | 0 | 0.7 | — |
-| etcd | `G` | 0/10 | > 5419 | > 4520 | 1 | 0.7 | 0.21 |
-
-- **H1** holds for PostgreSQL. SQLite (4 against 0) and etcd (3 against 0) point
-  the same way, but ten campaigns per arm cannot separate them.
-- **H2** is not met: no general arm violated its scored assertion. The etcd
-  general arm reached its bug's state without scoring it (below).
-- **H3** is not supported. Without the in-source markers the SQLite case still
-  found its bug in 2 of 10 campaigns, against 4 of 10 with them.
-- **H4** holds: at fillfactor 100 the PostgreSQL case found its bug in 4 of 10
-  campaigns, against 10 of 10.
-
-Each other violation was triaged and is not counted:
-
-- **etcd `G`, seed 1007** ([#523](https://github.com/pH14/harmony/issues/523)).
-  `linearizable reads observe acknowledged writes` failed, and the finding
-  replays from genesis. A replay that read each member showed one member
-  missing an acknowledged write in the same term and members numbering
-  revisions differently: the consistent-index divergence of the focused case.
-  The scored check was inconclusive for the rest of the run, because
-  `etcd-general-check` stops at the first member it cannot read, and the third
-  member stayed down.
-- **SQLite `A1`, seed 1009** ([#524](https://github.com/pH14/harmony/issues/524)).
-  A writer aborted on the `SQLITE_DEBUG` assertion
-  `pInfo->nBackfill==pWal->hdr.mxFrame` in `walCheckpoint`, the block that the
-  3.51.3 fix changed. No counterfactual replay on 3.51.3 is possible, because
-  a rebuilt binary moves the edges that the event faults count.
-
 ## Corrections
 
 Each correction to the frozen specification, with its reason. A correction
@@ -483,14 +437,12 @@ made after a general-arm measurement restarts every affected measurement.
    not have scored the bug at all. Both amcheck corruption classes now fail the
    assertion.
 
-2. **User-mode Linux guest panic** (after the first measurement). In run
-   37733198518, eight PostgreSQL campaigns (`G` seeds 1002, 1003, 1007, 1009 and
-   1010; `A2` seeds 1006, 1007 and 1009) ended on a guest kernel panic
-   ([#518](https://github.com/pH14/harmony/issues/518)) after 516–4133 s of the
-   budget. That run measured `F` 10/10, `G` 0/10 and `A2` 3/10. A kill during
-   `fork` left the marker of a failed `dup_mmap` in the child's VMA tree, and
-   UML's `flush_tlb_mm` read it as a VMA. The profile now carries
+2. **User-mode Linux guest panic** (after the first measurement). Some
+   PostgreSQL campaigns ended early on a guest kernel panic
+   ([#518](https://github.com/pH14/harmony/issues/518)): a kill during `fork`
+   left the marker of a failed `dup_mmap` in the child's VMA tree, and UML's
+   `flush_tlb_mm` read it as a VMA. The profile now carries
    `linux/patches/um/0010-um-harmony-failed-fork-teardown.patch`, and all three
-   PostgreSQL arms were measured again on it. The SQLite and etcd measurements
-   stand: the patch changes only executions that reach the marker, every such
-   execution panicked before, and none of their 50 campaigns panicked.
+   PostgreSQL arms are measured on it. The SQLite and etcd measurements stand:
+   the patch changes only executions that reach the marker, and every such
+   execution panicked.
