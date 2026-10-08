@@ -681,8 +681,6 @@ CONSONANCE_UML = Workflow(
             exception="Two cold compilations of the pinned UML kernel and locked "
                       "toolchain exceed the pull request check budget."),
         Job("UML Qualification — <Target>", "pr", 15),
-        Job("UML Replay — <Target>", "pr", 15),
-        Job("UML Restore — <Target>", "pr", 15),
     ),
 )
 

@@ -73,17 +73,23 @@ arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
 fails unless every artifact is byte-identical; two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
 port, and every check below runs on an x86-64 and an arm64 runner.
-`UML Qualification — <Target>` runs `harmony-uml-qualify` as the runner's
-ordinary UID, natively and under Docker's default seccomp profile with every
-capability dropped. The qualifier denies ptrace and KVM ioctls to itself and
-every guest, and fails when the host is root or has effective capabilities.
-`UML Replay — <Target>` runs the replay suite on the same targets: 100 replays
-of each fixture under host load, CPU pinning, process stops and host address
-randomization must produce one event hash, and recordings must replay to each cut from a fresh process.
-`UML Restore — <Target>` runs the checkpoint suite on the same targets:
-in-place and fresh-process restores of each fixture must reach the cold event
-hash, and an image without host memory or a restore without the bridge state
-must diverge. Reports remain workflow artifacts.
+`UML Qualification — <Target>` runs three suites of `harmony-uml-qualify` in
+sequence as the runner's ordinary UID, natively and under Docker's default
+seccomp profile with every capability dropped. A failing suite does not stop
+the others, and the job fails if any suite fails. The qualifier denies ptrace
+and KVM ioctls to itself and every guest, and fails when the host is root or
+has effective capabilities.
+
+- `launch` runs repeated boots, a hanging guest, the console limit, child
+  cleanup, a refused seccomp filter and guest init exits.
+- `replay` runs the replay suite: 100 replays of each fixture under host load,
+  CPU pinning, process stops and host address randomization must produce one
+  event hash, and recordings must replay to each cut from a fresh process.
+- `checkpoint` runs the restore suite: in-place and fresh-process restores of
+  each fixture must reach the cold event hash, and an image without host memory
+  or a restore without the bridge state must diverge.
+
+Reports remain workflow artifacts.
 
 ## Dissonance Workloads and Harmony Workloads
 
