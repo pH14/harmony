@@ -1,0 +1,89 @@
+x86: read the counter through IA32_TSC and drop hardware RNG instructions
+
+Stock KVM cannot intercept RDTSC, RDTSCP, RDRAND or RDSEED in the guest
+kernel, so each one reads host state that replay cannot reproduce. Route
+rdtsc() and rdtsc_ordered() through RDMSR(IA32_TSC), which Consonance answers
+from virtual time in the TSC tick domain, and report RDRAND and RDSEED as
+unavailable. The kernel image then contains none of these instructions, and
+the build scan requires that. The vDSO keeps the native instructions because
+CR4.TSD traps them in user mode.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+--- a/arch/x86/include/asm/archrandom.h
++++ b/arch/x86/include/asm/archrandom.h
+@@ -17,6 +17,22 @@
+ 
+ /* Unconditional execution of RDRAND and RDSEED */
+ 
++#ifdef CONFIG_HARMONY_PVCLOCK
++/*
++ * The Harmony CPU contract hides RDRAND and RDSEED, and SVM cannot intercept
++ * them. The kernel reports both as unavailable so it contains neither
++ * instruction.
++ */
++static inline bool __must_check rdrand_long(unsigned long *v)
++{
++	return false;
++}
++
++static inline bool __must_check rdseed_long(unsigned long *v)
++{
++	return false;
++}
++#else
+ static inline bool __must_check rdrand_long(unsigned long *v)
+ {
+ 	bool ok;
+@@ -38,6 +54,8 @@ static inline bool __must_check rdseed_long(unsigned long *v)
+ 	return ok;
+ }
+ 
++#endif
++
+ /*
+  * These are the generic interfaces; they must not be declared if the
+  * stubs in <linux/random.h> are to be invoked.
+--- a/arch/x86/include/asm/tsc.h
++++ b/arch/x86/include/asm/tsc.h
+@@ -10,6 +10,30 @@
+ #include <asm/processor.h>
+ #include <asm/msr.h>
+ 
++#if defined(CONFIG_HARMONY_PVCLOCK) && !defined(BUILD_VDSO)
++/*
++ * The Harmony guest kernel never executes RDTSC or RDTSCP. Stock KVM cannot
++ * intercept those instructions, so they would return the host counter.
++ * Harmony intercepts RDMSR(IA32_TSC) and answers it from virtual time in the
++ * same tick domain. The intercept is a VM exit, which orders the read after
++ * earlier memory accesses. The vDSO keeps the instructions because CR4.TSD
++ * traps them in user mode.
++ */
++static __always_inline u64 rdtsc(void)
++{
++	return __rdmsr(MSR_IA32_TSC);
++}
++
++static __always_inline u64 rdtsc_ordered(void)
++{
++	u64 val;
++
++	barrier();
++	val = __rdmsr(MSR_IA32_TSC);
++	barrier();
++	return val;
++}
++#else
+ /**
+  * rdtsc() - returns the current TSC without ordering constraints
+  *
+@@ -64,6 +88,8 @@ static __always_inline u64 rdtsc_ordered(void)
+ 	return EAX_EDX_VAL(val, low, high);
+ }
+ 
++#endif
++
+ /*
+  * Standard way to access the cycle counter.
+  */

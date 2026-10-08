@@ -5,7 +5,7 @@
 # `consonance/harmony-linux/build/bzImage` that the guest runner consumes. Otherwise a kernel the check REJECTS is left at
 # that path (the scan used to run after the install).
 #
-# This plants a REAL rejection — a `vmlinux` with an un-allowlisted `rdtsc` — and
+# This plants a REAL rejection — a `vmlinux` with an `rdtsc` — and
 # drives the REAL scan (`scan-counter-opcodes.sh`), then asserts the publish-check
 # with the SAME `scan && install` control flow build-kernel.sh uses under
 # `set -e`: on a scan FAILURE nothing is published; on a scan PASS the image is.
@@ -37,16 +37,16 @@ art="$work/bzImage"
 CHECK_TAIL="$work/check-tail.sh"
 cat >"$CHECK_TAIL" <<'EOF'
 set -euo pipefail
-bash "$1" "$2" "$3" >/dev/null 2>&1   # the counter-opcode scan
-install -m 0644 "$4" "$5"             # publish ONLY if the scan passed
+bash "$1" "$2" >/dev/null 2>&1   # the counter-opcode scan
+install -m 0644 "$3" "$4"        # publish ONLY if the scan passed
 EOF
-publish_check() { # <vmlinux> <allowlist>
-    bash "$CHECK_TAIL" "$SCAN" "$1" "$2" "$work/bzImage.built" "$art"
+publish_check() { # <vmlinux>
+    bash "$CHECK_TAIL" "$SCAN" "$1" "$work/bzImage.built" "$art"
 }
 
 # --- NEGATIVE: a PLANTED rejection must NOT be published ----------------------
-# A named function carrying an rdtsc (0f 31); the empty allowlist covers no site,
-# so the real scan's per-site check fails (before the raw-byte stage).
+# A named function carrying an rdtsc (0f 31), so the real scan's per-site check
+# fails (before the raw-byte stage).
 cat >"$work/planted.s" <<'EOF'
 	.text
 	.globl planted_fn
@@ -55,12 +55,11 @@ planted_fn:
 	ret
 EOF
 as -o "$work/planted.o" "$work/planted.s"
-: >"$work/empty-allow.txt"
 
 # Sanity: the real scan actually rejects the planted object (else the check proof
 # below would be vacuous).
-if bash "$SCAN" "$work/planted.o" "$work/empty-allow.txt" >/dev/null 2>&1; then
-    echo "FAIL: the counter-opcode scan did NOT reject a planted un-allowlisted rdtsc" >&2
+if bash "$SCAN" "$work/planted.o" >/dev/null 2>&1; then
+    echo "FAIL: the counter-opcode scan did NOT reject a planted rdtsc" >&2
     exit 1
 fi
 
@@ -69,7 +68,7 @@ rm -f "$art"
 # own `set -e` governs it (errexit is disabled inside functions/subshells tested
 # by a condition — the very pitfall this harness must not fall into).
 set +e
-publish_check "$work/planted.o" "$work/empty-allow.txt"
+publish_check "$work/planted.o"
 check_rc=$?
 set -e
 if [ "$check_rc" -eq 0 ]; then

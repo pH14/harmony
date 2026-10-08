@@ -62,7 +62,6 @@ every new guest program, a copy of the host platform name that outlives the
 host stack, and synchronous reaping of killed stubs.
 
 After a clock or trap patch changes, run the matching instruction reachability
-scan and update its reviewed allowlist when the deliberate instruction count
-changes. After any series change, run `test-patch-series.sh` and the platform
+scan. After any series change, run `test-patch-series.sh` and the platform
 image checks. Generate a patch from a pristine extract of the pinned source;
 preserve its explanatory preamble before the first diff header.
