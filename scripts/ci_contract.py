@@ -496,11 +496,9 @@ REPOSITORY_CHECKS = Workflow(
     owner="Repository",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("Formatting and Lints", "pr", 15),
-        Job("Dependency Boundaries", "pr", 15),
+        Job("Formatting, Boundaries and Tooling", "pr", 15),
         Job("Semantic Lints", "pr", 15),
         Job("Ignored Tests — <Host>", "pr", 15),
-        Job("Tooling", "pr", 15),
     ),
 )
 

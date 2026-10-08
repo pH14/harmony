@@ -22,8 +22,8 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
-  formatting-and-lints:
-    name: Formatting and Lints
+  repository-lints:
+    name: Formatting, Boundaries and Tooling
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -37,6 +37,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
       - name: Format every workspace and out-of-workspace manifest
         run: |
           set -euo pipefail
@@ -44,12 +48,14 @@ jobs:
             cargo fmt --manifest-path "$manifest" --all -- --check
           done
       - name: Lock files match every workspace and out-of-workspace manifest
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           for manifest in $(python3 scripts/ci_contract.py manifests); do
             cargo metadata --locked --format-version 1 --manifest-path "$manifest" >/dev/null
           done
       - name: Deterministic repository lints
+        if: ${{ !cancelled() }}
         env:
           README_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
@@ -60,32 +66,46 @@ jobs:
           python3 -m unittest discover -s scripts -p test_semantic_lints.py
           python3 scripts/custom-lints.py --readme-base "$README_BASE"
           python3 scripts/strip-comments.py --check
-
-  dependency-boundaries:
-    name: Dependency Boundaries
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install stable toolchain
-        run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
-          rustup default "${HARMONY_RUST_TOOLCHAIN}"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install CI cargo tools
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny@0.19.9
       - name: Declared crate boundaries
+        if: ${{ !cancelled() }}
         run: |
           python3 -m unittest discover -s scripts -p test_check_dependency_boundaries.py
           python3 scripts/check-dependency-boundaries.py
       - name: Licenses and advisories for every manifest
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           python3 scripts/ci_contract.py deny | xargs -L1 cargo deny
+      - name: Benchmark and report tooling
+        if: ${{ !cancelled() }}
+        run: |
+          node --test scripts/benchmark-report.test.cjs
+          python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+          python3 workloads/bugs/interleaving.py --self-test
+      - name: Historical scenario tooling
+        if: ${{ !cancelled() }}
+        run: |
+          scripts/check-portable-tests.test.sh
+          scripts/historical-manifest.test.sh
+          scripts/historical-oracle.test.sh
+          scripts/historical-replay.test.sh
+          scripts/historical-search.test.sh
+          python3 scripts/render-historical-bugs.py --check
+      - name: Guest runtime and admission tooling
+        if: ${{ !cancelled() }}
+        run: |
+          bash consonance/harmony-linux/linux/test-patch-series.sh
+          bash consonance/harmony-linux/linux/test-publish-check.sh
+          bash consonance/harmony-linux/linux/test-xsave-canonical.sh
+          python3 consonance/harmony-linux/scripts/test_x86_xstate_admission.py -v
+          python3 consonance/harmony-linux/scripts/test_nix_runtime_artifacts.py -v
+          python3 workloads/guest-images/test_verify_prepared_admission.py -v
+      - name: Determinism model self-tests
+        if: ${{ !cancelled() }}
+        run: |
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
+          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
+          python3 scripts/fit-vtime-costs.py --self-test
 
   semantic-lints:
     name: Semantic Lints
@@ -151,39 +171,3 @@ jobs:
           python-version: '3.12'
       - name: Every ignored test that builds on this host has a runner
         run: python3 scripts/check-test-partition.py ignored
-
-  tooling:
-    name: Tooling
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Benchmark and report tooling
-        run: |
-          node --test scripts/benchmark-report.test.cjs
-          python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
-          python3 workloads/bugs/interleaving.py --self-test
-      - name: Historical scenario tooling
-        run: |
-          scripts/check-portable-tests.test.sh
-          scripts/historical-manifest.test.sh
-          scripts/historical-oracle.test.sh
-          scripts/historical-replay.test.sh
-          scripts/historical-search.test.sh
-          python3 scripts/render-historical-bugs.py --check
-      - name: Guest runtime and admission tooling
-        run: |
-          bash consonance/harmony-linux/linux/test-patch-series.sh
-          bash consonance/harmony-linux/linux/test-publish-check.sh
-          bash consonance/harmony-linux/linux/test-xsave-canonical.sh
-          python3 consonance/harmony-linux/scripts/test_x86_xstate_admission.py -v
-          python3 consonance/harmony-linux/scripts/test_nix_runtime_artifacts.py -v
-          python3 workloads/guest-images/test_verify_prepared_admission.py -v
-      - name: Determinism model self-tests
-        run: |
-          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
-          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
-          python3 scripts/fit-vtime-costs.py --self-test
