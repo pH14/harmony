@@ -239,6 +239,20 @@ assert.deepEqual(
   batched,
   "Audio synthesis must not touch the recorded replay engine",
 );
+engine.restore(root);
+shadow.restore(root);
+for (const buttons of [128, 129, 0, 64, 65, 2, 16, 0]) {
+  for (let frame = 0; frame < 90; frame++) {
+    engine.run(buttons, 1, false);
+    shadow.run(buttons, 1, false);
+    assert.deepEqual(
+      shadow.memory(),
+      engine.memory(),
+      "Audio must follow the visible game RAM and save RAM on every takeover frame",
+    );
+  }
+  shadow.audio();
+}
 console.log(
-  "Efficient video preserves snapshot bytes; isolated game audio produces bounded non-silent PCM.",
+  "Efficient video preserves snapshot bytes; isolated game audio produces bounded non-silent PCM and matches game RAM across 720 movement/jump frames.",
 );
