@@ -60,6 +60,10 @@ mutation($repositoryId: ID!, $ref: GitRefname!, $before: GitObjectID!, $after: G
 """
 
 
+def same_repo(candidate: str | None, repo: str) -> bool:
+    return candidate is not None and candidate.lower() == repo.lower()
+
+
 def classify(
     branch: dict[str, Any],
     repo: str,
@@ -73,7 +77,7 @@ def classify(
         return KEEP, "default branch"
     if branch["truncated"]:
         return KEEP, f"more than {PULL_REQUEST_PAGE} associated pull requests"
-    prs = [pr for pr in branch["prs"] if pr["head_repo"] == repo]
+    prs = [pr for pr in branch["prs"] if same_repo(pr["head_repo"], repo)]
     for pr in prs:
         if pr["state"] == "OPEN":
             return KEEP, f"open pull request #{pr['number']}"
@@ -82,7 +86,7 @@ def classify(
             pr["state"] == "MERGED"
             and pr["head_oid"] == tip
             and pr["base"] == default_branch
-            and pr["base_repo"] == repo
+            and same_repo(pr["base_repo"], repo)
         ):
             return DELETE, f"pull request #{pr['number']} merged this tip"
     if on_default(tip):

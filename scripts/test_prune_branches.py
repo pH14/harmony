@@ -80,6 +80,12 @@ class ClassifyTests(unittest.TestCase):
             branch(prs=[pr(4, "OPEN", head_repo=None)]), on_default=True)
         self.assertEqual(verdict, PRUNE.DELETE)
 
+    def test_repository_names_compare_without_regard_to_case(self):
+        verdict, _ = PRUNE.classify(
+            branch(prs=[pr(4, "OPEN", head_repo="O/R")]), "o/R", "main",
+            lambda oid: True)
+        self.assertEqual(verdict, PRUNE.KEEP)
+
     def test_a_truncated_pull_request_list_keeps_the_branch(self):
         verdict, reason = classify(
             branch(prs=[pr(7, "MERGED")], truncated=True), on_default=True)
