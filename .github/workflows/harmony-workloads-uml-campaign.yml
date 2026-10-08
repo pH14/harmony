@@ -177,7 +177,7 @@ jobs:
           done
           mkdir -p oci-images
           tag="harmony-${IMAGE_PREFIX}:${version}"
-          docker build --pull "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
+          docker build "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
           docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
           (cd oci-images && sha256sum -- *.oci >MANIFEST.sha256)
       - uses: actions/upload-artifact@v4
