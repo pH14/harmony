@@ -333,7 +333,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultOperation::EventKill { node, rarity, .. } => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
-                (start, end),
+                (start, u64::MAX),
             )),
         },
         FaultOperation::EventPark {
@@ -935,6 +935,18 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn an_event_kill_stays_armed_after_its_action_window() {
+        let action = FaultOperation::EventKill {
+            node: 1,
+            rarity: 2,
+            ticks: ticks(10),
+        };
+        let window = WINDOWS.window(&[action.into()], 0).unwrap();
+        let fault = action_delta(action.into(), window).standing.unwrap();
+        assert_eq!((fault.start, fault.end), (window.0, u64::MAX));
     }
 
     #[test]
