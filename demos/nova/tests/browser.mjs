@@ -44,6 +44,8 @@ try {
   const attempts = await page.locator("#attempts").innerText();
   await page.waitForTimeout(200);
   assert.equal(await page.locator("#attempts").innerText(), attempts);
+  assert.equal(await page.locator("#inspector").isVisible(), false);
+  await page.locator("#inspect-open").click();
   const [x, y] = (await page.locator("#details b").first().innerText())
     .split(",")
     .map(Number);
@@ -72,12 +74,16 @@ try {
       document.querySelector("#cell-title").textContent === expected,
     `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
   );
+  assert.equal(await page.locator("#inspector").isVisible(), true);
   assert.equal(await page.locator("#selection-hint").isVisible(), false);
   assert.equal(await page.locator("#verification").isVisible(), false);
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",
     { timeout: 60000 },
+  );
+  await page.waitForFunction(
+    () => Number(document.querySelector("#map").dataset.tracePoints) > 1,
   );
   const selected = await page.locator("#state-list .selected").innerText();
   assert.match(selected, /#\d+/);
@@ -134,7 +140,8 @@ try {
     wasmBinary: await readFile(new URL("engine/quicknes.wasm", localBase)),
   });
   emulator.boot();
-  const rootHash = await snapshotHash(emulator.capture());
+  const emulatorRoot = emulator.capture();
+  const rootHash = await snapshotHash(emulatorRoot);
   const longActions = [
     ...tape.actions,
     ...Array(500).fill({ buttons: 0, frames: 120 }),
@@ -176,6 +183,127 @@ try {
         "Saved controller history" &&
       document.querySelector("#scrub").max === "0",
   );
+  const originalAttempts = await page.locator("#attempts").innerText();
+  await page.locator("#take-control").click();
+  await page.keyboard.down("ArrowRight");
+  await page.waitForTimeout(220);
+  await page.keyboard.up("ArrowRight");
+  await page.keyboard.down("KeyZ");
+  await page.waitForTimeout(80);
+  await page.keyboard.up("KeyZ");
+  await page.locator("#take-control").click();
+  assert.equal(
+    await page.locator("#take-control").getAttribute("aria-pressed"),
+    "false",
+  );
+  const manualDownload = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const manualTape = JSON.parse(
+    await readFile(await (await manualDownload).path()),
+  );
+  assert.ok(manualTape.actions.some((a) => a.buttons & 128));
+  assert.ok(manualTape.actions.some((a) => a.buttons & 1));
+  assert.ok(manualTape.actions.reduce((n, a) => n + a.frames, 0) > 12);
+  emulator.restore(emulatorRoot);
+  for (const a of manualTape.actions) emulator.run(a.buttons, a.frames);
+  assert.equal(
+    await snapshotHash(emulator.capture()),
+    manualTape.endpoint_sha256,
+    "Human inputs must reproduce the exact rendered endpoint",
+  );
+  await page.locator("#search-here").click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#branch-choice").value === "1" &&
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
+  await page.waitForFunction(
+    () =>
+      Number(
+        document.querySelector("#attempts").textContent.replaceAll(",", ""),
+      ) > 100,
+  );
+  await page.locator("#pause").click();
+  await page.waitForTimeout(100);
+  const position = await page.locator("#details b").first().innerText();
+  const [bx, by] = position.split(",").map(Number);
+  const branchClick = await page.locator("#map").evaluate(
+    (c, p) => {
+      const r = c.getBoundingClientRect(),
+        w = Number(c.dataset.mapWidth),
+        h = Number(c.dataset.mapHeight),
+        scale = Math.min(c.width / w, c.height / h) * Number(c.dataset.zoom),
+        px = p.x % w,
+        py = Math.floor(p.x / w) * 224 + p.y - 8;
+      return {
+        x:
+          (((px - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width) /
+          c.width,
+        y:
+          (((py - Number(c.dataset.centerY)) * scale + c.height / 2) *
+            r.height) /
+          c.height,
+      };
+    },
+    { x: bx, y: by },
+  );
+  await page.locator("#map").click({ position: branchClick });
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("#state-list .selected")
+        ?.textContent.includes("#1:") &&
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
+  const childDownload = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const childTape = JSON.parse(
+    await readFile(await (await childDownload).path()),
+  );
+  assert.ok(
+    childTape.actions.reduce((n, a) => n + a.frames, 0) >
+      manualTape.actions.reduce((n, a) => n + a.frames, 0),
+    "The selected branch history must be an actual search descendant",
+  );
+  assert.deepEqual(
+    childTape.actions.slice(0, manualTape.actions.length),
+    manualTape.actions,
+  );
+  emulator.restore(emulatorRoot);
+  for (const a of childTape.actions) emulator.run(a.buttons, a.frames);
+  assert.equal(
+    await snapshotHash(emulator.capture()),
+    childTape.endpoint_sha256,
+    "Search descendants must include and reproduce the human input prefix",
+  );
+  await page.locator("#branch-choice").selectOption("0");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Original game",
+  );
+  assert.equal(
+    await page.locator("#attempts").innerText(),
+    originalAttempts,
+    "Switching back must retain the original paused search",
+  );
+  await page.locator('.area-zoom[data-map="49"]').click();
+  await page.locator('.area-zoom[data-map="45"]').click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.map-row[data-map="49"] canvas').dataset.zoom ===
+        "2" &&
+      document.querySelector('.map-row[data-map="45"] canvas').dataset.zoom ===
+        "2",
+  );
+  assert.equal(
+    await page.locator("#map").getAttribute("data-zoom"),
+    "1",
+    "Zooming another room must leave Introduction at overview scale",
+  );
+  await page.locator('.area-zoom[data-map="49"]').click();
+  await page.locator('.area-zoom[data-map="49"]').click();
+  await page.locator('.area-zoom[data-map="45"]').click();
+  await page.locator('.area-zoom[data-map="45"]').click();
   await page.locator("#zoom").click();
   await page.waitForTimeout(50);
   assert.ok(
@@ -276,6 +404,7 @@ try {
     true,
     "Entering a cell on a stacked map must preserve keyboard focus",
   );
+  await page.locator("#close-inspector").click();
   await page.locator('.map-row[data-map="45"] .area-label').click();
   assert.equal(await page.locator("#map").getAttribute("data-map"), "45");
   assert.match(await page.locator("#map-label").innerText(), /MAIN LEVEL/);
@@ -363,16 +492,65 @@ try {
   await page.locator("#memory-limit").evaluate((notice) => {
     notice.hidden = true;
   });
+  await page.locator("#inspect-open").click();
+  await page.waitForFunction(
+    () => !document.querySelector("#take-control").disabled,
+  );
+  const collapsedHeight = (await page.locator("#inspector").boundingBox())
+    .height;
+  await page.locator("#expand-inspector").click();
+  assert.ok(
+    (await page.locator("#inspector").boundingBox()).height > collapsedHeight,
+  );
+  await page.locator("#take-control").click();
+  const touchRight = page.getByRole("button", {
+    name: "Move right",
+    exact: true,
+  });
+  await touchRight.scrollIntoViewIfNeeded();
+  const touchBounds = await touchRight.boundingBox();
+  await page.mouse.move(touchBounds.x + 20, touchBounds.y + 20);
+  await page.mouse.down();
+  await page.waitForTimeout(160);
+  await page.mouse.up();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  assert.equal(
+    await page.locator("#take-control").getAttribute("aria-pressed"),
+    "false",
+  );
+  const heldFrame = await page.locator("#frame-label").innerText();
+  await page.waitForTimeout(100);
+  assert.equal(
+    await page.locator("#frame-label").innerText(),
+    heldFrame,
+    "Losing focus must stop manual play and release controls",
+  );
   await mkdir("test-results", { recursive: true });
-  await page.screenshot({ path: "test-results/mobile.png", fullPage: true });
+  await page.screenshot({
+    path: "test-results/mobile.png",
+    fullPage: true,
+    animations: "disabled",
+  });
   await page.setViewportSize({ width: 1440, height: 1100 });
   await page.waitForTimeout(2500);
-  await page.screenshot({ path: "test-results/desktop.png", fullPage: true });
+  await page.screenshot({
+    path: "test-results/desktop.png",
+    fullPage: true,
+    animations: "disabled",
+  });
   assert.equal(await page.locator("#error").isVisible(), false);
   assert.deepEqual(errors, []);
   console.log(
     "Browser search, exact replay, scrubbing, downloads, import, room controls, reset and mobile layout passed.",
   );
+} catch (e) {
+  console.error(
+    await page.locator("#verification").textContent(),
+    await page.locator("#frame-label").textContent(),
+    await page.locator("#error").textContent(),
+  );
+  await page.screenshot({ path: "/tmp/nova-play-failure.png", fullPage: true });
+  throw e;
 } finally {
   await browser.close();
 }

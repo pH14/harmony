@@ -2,20 +2,79 @@
 import init, { Explorer } from "../rust/pkg/nova_browser.js";
 import { createEngine } from "./emulator.js";
 import { SearchLoop } from "./loop.js";
-let explorer,
-  initialized = false,
+import { validateTape } from "./heat.js";
+import { branchInfo } from "./branch.js";
+import { snapshotHash } from "./media.js";
+let initialized = false,
   wasm,
   budget,
   engine,
-  generation = 0;
+  genesis,
+  active = 0,
+  generation = 0,
+  busy = false;
+const searches = new Map();
+const externalId = (branch, id) => (branch === 0 ? id : `${branch}:${id}`);
+function usedSnapshots() {
+  return [...searches.values()].reduce(
+    (sum, s) => sum + s.explorer.snapshot_bytes(),
+    0,
+  );
+}
+function memoryLimit() {
+  return (
+    usedSnapshots() >= budget.snapshotsMiB * 1048576 ||
+    wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength >=
+      budget.searchMiB * 1048576
+  );
+}
+function stateFor(branch, id) {
+  const search = searches.get(branch);
+  if (!search) throw new Error("Unknown search branch");
+  const state = JSON.parse(search.explorer.state(id));
+  state.id = externalId(branch, id);
+  state.snapshot = search.explorer.snapshot(id);
+  state.branch = search.branch;
+  return state;
+}
+function choices() {
+  return [...searches].map(([id, s]) => ({
+    id,
+    label: id === 0 ? "Original search" : `Branch ${id}`,
+    branch: s.branch,
+  }));
+}
+function ready(paused = false) {
+  postMessage({
+    type: "ready",
+    active,
+    searches: choices(),
+    state: stateFor(active, 0),
+    paused,
+  });
+}
+function updateMemory(batch) {
+  batch.snapshot_bytes = usedSnapshots();
+  batch.states = [...searches.values()].reduce(
+    (sum, s) => sum + s.explorer.state_count(),
+    0,
+  );
+  batch.wasm_bytes =
+    wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength;
+  batch.stopped ||= memoryLimit();
+}
 const loop = new SearchLoop(() => {
-  if (!initialized) return false;
+  if (!initialized || busy) return false;
   try {
-    const batch = JSON.parse(explorer.advance(2));
-    batch.wasm_bytes =
-      wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength;
-    batch.stopped ||= batch.wasm_bytes >= budget.searchMiB * 1024 * 1024;
-    postMessage({ type: "batch", ...batch });
+    const search = searches.get(active);
+    const batch = JSON.parse(search.explorer.advance(2));
+    batch.points = batch.points.map((p) => ({
+      ...p,
+      retained: p.retained === null ? null : externalId(active, p.retained),
+    }));
+    updateMemory(batch);
+    search.stats = batch;
+    postMessage({ type: "batch", active, ...batch });
     if (batch.stopped) postMessage({ type: "limit", won: batch.won });
     return !batch.stopped;
   } catch (e) {
@@ -37,25 +96,89 @@ onmessage = async ({ data }) => {
       budget = data.budget;
       if (gen !== generation) return;
       globalThis.harmonyEngine = engine;
-      engine.boot();
+      genesis = engine.boot();
       wasm = await init();
       if (gen !== generation) return;
-      explorer = new Explorer(data.seed ?? 1);
-      explorer.set_snapshot_budget(budget.snapshotsMiB * 1024 * 1024);
+      const explorer = new Explorer(data.seed ?? 1);
+      explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
+      searches.set(0, { explorer, branch: null });
       initialized = true;
-      postMessage({ type: "ready", state: JSON.parse(explorer.state(0)) });
+      ready();
       loop.resume();
     } else if (data.type === "pause") {
       loop.pause();
       postMessage({ type: "paused" });
-    } else if (data.type === "resume" && initialized) loop.resume();
-    else if (data.type === "states" && initialized) {
+    } else if (data.type === "resume" && initialized && !busy) loop.resume();
+    else if (data.type === "switch" && initialized && !busy) {
+      if (!searches.has(data.active)) throw new Error("Unknown search branch");
+      loop.pause();
+      active = data.active;
+      ready(true);
+      if (searches.get(active).stats) {
+        updateMemory(searches.get(active).stats);
+        postMessage({
+          type: "batch",
+          active,
+          ...searches.get(active).stats,
+          points: [],
+        });
+      }
+    } else if (data.type === "fork" && initialized && !busy) {
+      loop.pause();
+      busy = true;
+      try {
+        if (searches.size >= 8)
+          throw new Error(
+            "Eight searches retained. Restart Search to release them before creating another.",
+          );
+        const tape = data.tape;
+        const frames = validateTape(tape);
+        if (frames >= 200000 || tape.actions.length >= 10000)
+          throw new Error(
+            "This history has reached its input limit. Choose an earlier frame.",
+          );
+        if (
+          memoryLimit() ||
+          usedSnapshots() + genesis.length + 64 > budget.snapshotsMiB * 1048576
+        )
+          throw new Error(
+            "Search memory limit reached. Save this history and Restart Search to release the retained searches.",
+          );
+        engine.restore(genesis);
+        let chunk = 0;
+        for (const a of tape.actions) {
+          engine.run(a.buttons, a.frames);
+          chunk += a.frames;
+          if (chunk >= 600) {
+            chunk = 0;
+            await new Promise((r) => setTimeout(r, 0));
+          }
+        }
+        if ((await snapshotHash(engine.capture())) !== tape.endpoint_sha256)
+          throw new Error("Branch history does not reproduce its snapshot");
+        const explorer = Explorer.from_history(
+          data.seed,
+          JSON.stringify(tape.actions),
+        );
+        explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
+        const id = searches.size;
+        searches.set(id, { explorer, branch: branchInfo(tape.branch, frames) });
+        active = id;
+        busy = false;
+        ready();
+        loop.resume();
+      } catch (e) {
+        busy = false;
+        postMessage({ type: "branch-error", message: String(e?.message || e) });
+      }
+    } else if (data.type === "states" && initialized) {
       const states = [];
-      for (const id of data.ids.slice(0, 12)) {
+      for (const key of data.ids.slice(0, 12)) {
         try {
-          const state = JSON.parse(explorer.state(id));
-          state.snapshot = explorer.snapshot(id);
-          states.push(state);
+          const parts = String(key).split(":"),
+            branch = parts.length === 1 ? 0 : Number(parts[0]),
+            id = Number(parts.at(-1));
+          states.push(stateFor(branch, id));
         } catch {}
       }
       postMessage({ type: "states", request: data.request, states });

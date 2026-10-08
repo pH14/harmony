@@ -891,3 +891,246 @@ dialog p {
   display: block;
   color: var(--gold);
 }
+
+[hidden] {
+  display: none !important;
+}
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.workspace.inspect-open {
+  grid-template-columns: minmax(0, 1fr) 400px;
+}
+.workspace > * {
+  min-width: 0;
+}
+.inspector {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin: 0;
+  padding: 18px;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #40505e;
+  border-radius: 12px;
+  background: #131c25;
+  box-shadow: 0 20px 70px #0005;
+  animation: drawer-in 0.2s ease-out;
+}
+.drawer-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+.drawer-top button {
+  background: none;
+  border: 0;
+  font-size: 24px;
+  padding: 0 6px;
+}
+.inspector .screen {
+  min-height: 0;
+  padding: 10px;
+}
+.inspector .section-title {
+  margin-bottom: 10px;
+}
+.inspector h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.inspector .transport {
+  gap: 6px;
+}
+.inspector .transport button {
+  min-width: 92px;
+  font-size: 11px;
+  padding-inline: 8px;
+}
+.inspector .details {
+  padding: 15px 0 0;
+  border: 0;
+  gap: 14px 10px;
+}
+.inspector[data-empty="true"] .film,
+.inspector[data-empty="true"] .details {
+  display: none;
+}
+.branch-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+#take-control,
+#search-here {
+  border-color: #84724d;
+  color: #f4dda2;
+}
+.controlling #take-control {
+  background: #51442e;
+}
+#branch-message {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gold);
+  margin-top: 10px;
+}
+#game-controls small {
+  display: block;
+  color: var(--muted);
+  margin: 12px 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.touch-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.touch-controls button {
+  width: 46px;
+  height: 46px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  font-size: 18px;
+}
+.touch-controls button.held {
+  background: #695534;
+  border-color: #f4dda2;
+}
+.dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 46px);
+  gap: 4px;
+}
+.dpad button:first-child {
+  grid-column: 2;
+}
+.dpad button:nth-child(2) {
+  grid-column: 1;
+}
+.dpad button:nth-child(3) {
+  grid-column: 2;
+}
+.area-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #132333;
+}
+.area-label {
+  flex: 1;
+  width: auto;
+}
+.area-zoom {
+  font-size: 10px;
+  padding: 5px 9px;
+  margin: 4px 10px;
+  background: transparent;
+  min-width: 62px;
+}
+#branch-choice {
+  background: #202d39;
+  color: #e1e8ee;
+  border: 1px solid #394755;
+  border-radius: 7px;
+  font-size: 11px;
+  padding: 6px;
+  max-width: 150px;
+}
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@media (max-width: 1000px) {
+  .workspace.inspect-open {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+}
+@media (max-width: 800px) {
+  .workspace.inspect-open {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .inspector {
+    position: fixed;
+    z-index: 20;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    top: auto;
+    max-height: 68dvh;
+    border-radius: 18px 18px 10px 10px;
+    padding: 14px;
+    animation-name: sheet-in;
+  }
+  .drawer-top {
+    position: sticky;
+    top: -14px;
+    z-index: 1;
+    background: #131c25;
+    padding: 7px 0;
+  }
+  .inspector .screen {
+    max-width: 270px;
+    margin: auto;
+  }
+  .inspector .art-credit {
+    font-size: 10px;
+  }
+  .touch-controls {
+    justify-content: center;
+    gap: 20px;
+  }
+  .controls {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  @keyframes sheet-in {
+    from {
+      opacity: 0;
+      transform: translateY(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inspector {
+    animation: none;
+  }
+}
+
+#expand-inspector {
+  display: none;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+@media (max-width: 800px) {
+  #expand-inspector {
+    display: inline-block;
+  }
+  .inspector.expanded {
+    height: calc(100dvh - 24px);
+    max-height: calc(100dvh - 24px);
+  }
+}

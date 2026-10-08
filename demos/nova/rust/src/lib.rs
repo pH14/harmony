@@ -133,6 +133,28 @@ fn admissible(observation: Observation) -> bool {
     observation.health != 0
 }
 
+fn validate_actions(actions: &[Action]) -> Result<(), &'static str> {
+    if actions.len() > 10000 {
+        return Err("History too long");
+    }
+    let mut frames = 0_u32;
+    for a in actions {
+        if a.frames == 0
+            || a.frames > 120
+            || a.buttons & 12 != 0
+            || a.buttons & 48 == 48
+            || a.buttons & 192 == 192
+        {
+            return Err("Invalid controller action");
+        }
+        frames += u32::from(a.frames);
+    }
+    if frames > 200000 {
+        return Err("History too long");
+    }
+    Ok(())
+}
+
 const DIRECTIONS: [u8; 9] = [0, 0x80, 0x40, 0x10, 0x20, 0x90, 0xa0, 0x50, 0x60];
 fn below(rng: &mut RomuDuoJrRand, n: usize) -> usize {
     rng.below(std::num::NonZeroUsize::new(n).unwrap())
@@ -202,6 +224,7 @@ pub struct Explorer {
     won: bool,
     snapshot_bytes: usize,
     max_snapshot_bytes: usize,
+    prefix: Vec<Action>,
 }
 
 fn compress_snapshot(bytes: &[u8]) -> Box<[u8]> {
@@ -216,8 +239,29 @@ fn js_error(e: impl std::fmt::Display) -> JsValue {
 impl Explorer {
     #[wasm_bindgen(constructor)]
     pub fn new(seed: u32) -> Result<Explorer, JsValue> {
+        Self::root(seed, Vec::new(), true)
+    }
+
+    pub fn from_history(seed: u32, history: &str) -> Result<Explorer, JsValue> {
+        if history.len() > 1000000 {
+            return Err(js_error("History file too large"));
+        }
+        let prefix: Vec<Action> = serde_json::from_str(history).map_err(js_error)?;
+        validate_actions(&prefix).map_err(js_error)?;
+        Self::root(seed, prefix, false)
+    }
+
+    pub fn state_count(&self) -> usize {
+        self.snapshots.len()
+    }
+
+    pub fn snapshot_bytes(&self) -> usize {
+        self.snapshot_bytes
+    }
+
+    fn root(seed: u32, prefix: Vec<Action>, genesis: bool) -> Result<Explorer, JsValue> {
         let obs = decode(&memory()?).map_err(js_error)?;
-        if obs.health == 0 || obs.x == 0 || obs.y == 0 || obs.selected_level != 0 {
+        if obs.health == 0 || (genesis && (obs.x == 0 || obs.y == 0 || obs.selected_level != 0)) {
             return Err(js_error("Nova setup did not reach level one"));
         }
         let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
@@ -234,6 +278,10 @@ impl Explorer {
                 (),
             )
             .map_err(js_error)?;
+        let won = obs.cleared_levels == [255; 5];
+        let stopped = won
+            || prefix.len() >= 10000
+            || prefix.iter().map(|a| u32::from(a.frames)).sum::<u32>() >= 200000;
         let root = compress_snapshot(&capture()?);
         let snapshot_bytes = root.len();
         Ok(Self {
@@ -243,11 +291,18 @@ impl Explorer {
             deaths: 0,
             frames: 0,
             snapshots: BTreeMap::from([(0, root)]),
-            stopped: false,
-            won: false,
+            stopped,
+            won,
             snapshot_bytes,
             max_snapshot_bytes: 128 * 1024 * 1024,
+            prefix,
         })
+    }
+
+    fn history(&self, id: usize) -> Result<Vec<Action>, JsValue> {
+        let mut actions = self.prefix.clone();
+        actions.extend(self.archive.entry_input(id).map_err(js_error)?.actions);
+        Ok(actions)
     }
 
     pub fn set_snapshot_budget(&mut self, bytes: u32) {
@@ -266,7 +321,7 @@ impl Explorer {
                 .map_err(js_error)?;
             self.archive.record_selection(parent, &selection);
             restore(&self.snapshot(parent)?)?;
-            let prefix = self.archive.entry_input(parent).map_err(js_error)?.actions;
+            let prefix = self.history(parent)?;
             let mut frame: u32 = prefix.iter().map(|a| u32::from(a.frames)).sum();
             let mut previous = prefix.last().copied();
             let mut current_parent = parent;
@@ -349,7 +404,7 @@ impl Explorer {
             .archive
             .entry_key(id)
             .ok_or_else(|| js_error("unknown state"))?;
-        let actions = self.archive.entry_input(id).map_err(js_error)?.actions;
+        let actions = self.history(id)?;
         let frames = actions.iter().map(|a| u32::from(a.frames)).sum();
         serde_json::to_string(&State {
             id,
@@ -421,6 +476,61 @@ mod tests {
             .unwrap();
         assert_ne!(root, id);
         assert_eq!(archive.entry_input(id).unwrap().actions, suffix);
+    }
+
+    #[test]
+    fn human_histories_reject_invalid_inputs_and_bound_total_work() {
+        assert!(
+            validate_actions(&[Action {
+                buttons: 128,
+                frames: 1
+            }])
+            .is_ok()
+        );
+        for action in [
+            Action {
+                buttons: 8,
+                frames: 1,
+            },
+            Action {
+                buttons: 48,
+                frames: 1,
+            },
+            Action {
+                buttons: 192,
+                frames: 1,
+            },
+            Action {
+                buttons: 0,
+                frames: 0,
+            },
+            Action {
+                buttons: 0,
+                frames: 121,
+            },
+        ] {
+            assert!(validate_actions(&[action]).is_err());
+        }
+        assert!(
+            validate_actions(&vec![
+                Action {
+                    buttons: 0,
+                    frames: 120
+                };
+                1667
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_actions(&vec![
+                Action {
+                    buttons: 0,
+                    frames: 1
+                };
+                10001
+            ])
+            .is_err()
+        );
     }
 
     #[test]

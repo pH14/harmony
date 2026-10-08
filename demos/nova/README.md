@@ -31,12 +31,14 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life. The play/pause icon controls search;
-Restart Search resets it. Heat is always on. Clicking a visited cell lists its
-latest twelve retained states. Arrow keys and Enter also select cells. Each level
+Restart Search resets it. Heat is always on. Clicking a cell opens a history
+inspector beside the maps, or a collapsible bottom sheet on phones. Visited cells
+list their latest twelve retained states; empty cells say so immediately. Arrow keys and Enter also select cells. Each level
 shows all its connected areas as stacked live maps: Introduction, Garden and
 Main Level are visible together. Area labels and the world atlas can focus any map
 immediately, including unvisited areas. Opening a visited area selects its furthest retained
-state. Zoom focuses the selected state; dragging moves the zoomed view.
+state. Each room has its own zoom button and independent view; dragging moves
+that room’s zoomed view.
 
 The level heading and completion counter latch actual campaign clear bits seen
 across alternate histories. Green atlas cards record these witnesses; Watch Level
@@ -52,7 +54,24 @@ second emulator. Endpoint snapshots are compared byte for byte after
 canonicalizing QuickNES's three unused PPU bytes. Verification runs internally,
 without an on-screen badge. Scrubbing reconstructs any frame. Save a PNG, or
 export and reopen a JSON controller history. Movies are rendered live and are
-currently silent. Imports verify the ROM, core and endpoint checksum. PNG
+currently silent. The selected history is traced in gold across its rooms, with
+matching numbered entrance and exit markers at transitions. The position marker
+follows the replay scrubber. Only the selected trail is retained, sampled at a
+fixed interval with at most about 8,400 points for an admitted history.
+
+Take control pauses exploration and starts a new history at the displayed frame,
+including frames in the middle of a recorded action. Move with arrows or WASD,
+jump with Z or Space, and use an ability with X; touch controls work on phones.
+Stop playing, Escape, loss of focus or hiding the tab releases held inputs and
+ends takeover. Search from here verifies that the complete controller prefix
+reproduces the rendered endpoint, then starts a separate explorer rooted there.
+It preserves health, items, level progression and emulator state through replay,
+without teleporting Nova or changing game RAM. The search selector returns to
+any earlier search, preserving its archive and random generator. Taking control
+or forking at an earlier scrubber position discards only that new history’s
+future. Exports and descendant histories include the original inputs, human
+intervention and subsequent search inputs, and remain exactly replayable from
+the original game root. Imports verify the ROM, core and endpoint checksum. PNG
 metadata and JSON exports carry attribution and license references.
 
 ## Boundaries
@@ -75,8 +94,10 @@ promised that transition within their budget.
 Seed 1 is retained in regression diagnostics as a censored run, not described
 as a successful clear. A history is bounded to 10,000 actions and 200,000 frames, matching
 import admission. Runs stop after 100,000 paths, approximately 20,000 historical
-entries, or a compressed snapshot budget (at most seven additional entries in
-the final rollout). Phones/coarse-pointer devices and devices reporting at most
+entries per search, or a shared compressed snapshot budget. Up to eight searches
+are retained in one worker, with only one advancing at a time. Earlier searches
+remain inspectable; their snapshots count toward the same global budget. The
+final two-rollout batch can retain up to fourteen additional entries. Phones/coarse-pointer devices and devices reporting at most
 4 GiB of RAM use 32 MiB of snapshots and 96 MiB of search WASM buffers; other
 devices use 128 MiB and 192 MiB. The buffer check includes both worker-side Rust
 and QuickNES memories, happens after each two-rollout batch, and can overshoot
@@ -89,7 +110,8 @@ Raw DEFLATE preserves every snapshot byte. Boxed slices discard spare compressor
 capacity; retired selector entries still retain their snapshots. Decompression
 is bounded to one MiB. The UI caches at most 32 fetched histories and 2 MiB of
 estimated storage (64 bytes per action plus snapshot and record overhead);
-current replay and in-flight messages are separate. Evicted histories remain in
+current replay, the bounded human controller prefix, selected trail and in-flight
+messages are separate. Branch ancestry metadata is sanitized on import. Evicted histories remain in
 the worker archive and can be fetched again. Full-resolution panoramas are held
 only for the focused level's connected rooms. Atlas images are decoded one at a
 time into 320 by 96 thumbnails, at most 6.7 MiB for all 57 maps; discarded full
@@ -151,7 +173,11 @@ the routine CI check uses the cheaper whole-game chain plus recorded transitions
 to fit the registered 15-minute job limit. Checks export live witnesses as browser
 evidence. The old
 admission of only maps 0 and 40 rejected the garden door; map 40 is a bonus level.
-The UI check covers cell selection, replay, frame zero, scrubbing, attributed
+Rooted search checks fork mid-action and from Main and Level 2, then verify both
+the root snapshot and actual descendants against complete controller histories.
+The UI check covers the drawer, independent room zoom, real keyboard and touch
+inputs, human-history export, branching, returning to a paused original search,
+cell selection, replay, frame zero, scrubbing, attributed
 PNG/JSON downloads, valid and tampered imports, cancelling a long import, stacked live-map selection, world browsing, tall-level layout, dragging, the simplified
 toolbar, restart, mobile layout, credits and source bundles. A native and wasm32
 selector fixture checks the same recorded choices with weights above 2^32,

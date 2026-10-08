@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "../src/emulator.js";
 import { validateTape } from "../src/heat.js";
+import { prefixAt, appendInput } from "../src/branch.js";
 import { isMapEvidence } from "../src/world.js";
 import { snapshotHash, CREDIT } from "../src/media.js";
 import init, { Explorer } from "../rust/pkg/nova_browser.js";
@@ -158,4 +159,54 @@ assert.deepEqual(
 bounded.free();
 console.log(
   "Small snapshot budget stops with its retained histories available.",
+);
+
+const levelTwo = JSON.parse(
+  await readFile(new URL("fixtures/level-two-2.json", import.meta.url)),
+);
+const mainExit = JSON.parse(
+  await readFile(new URL("fixtures/main-exit.json", import.meta.url)),
+);
+for (const [label, prefix, seed] of [
+  ["mid-action", prefixAt(levelTwo.actions, 7), 11],
+  ["Main manual continuation", mainExit.actions.map((a) => ({ ...a })), 13],
+  [
+    "later-level manual continuation",
+    levelTwo.actions.map((a) => ({ ...a })),
+    17,
+  ],
+]) {
+  engine.restore(root);
+  for (const action of prefix) engine.run(action.buttons, action.frames, true);
+  appendInput(prefix, 0, 2);
+  engine.run(0, 2, true);
+  appendInput(prefix, 1, 6);
+  engine.run(1, 6, true);
+  const manual = engine.capture();
+  const branch = Explorer.from_history(seed, JSON.stringify(prefix));
+  assert.deepEqual(JSON.parse(branch.state(0)).actions, prefix);
+  assert.deepEqual(branch.snapshot(0), manual);
+  assert.equal(branch.state_count(), 1);
+  assert.equal(branch.snapshot_bytes() > 0, true);
+  let descendant;
+  for (let jobs = 0; jobs < 20 && descendant === undefined; jobs += 2) {
+    for (const point of JSON.parse(branch.advance(2)).points)
+      if (point.retained !== null && point.retained > 0)
+        descendant = point.retained;
+  }
+  assert.ok(descendant > 0, `${label} must produce a real retained descendant`);
+  const child = JSON.parse(branch.state(descendant)),
+    snapshot = branch.snapshot(descendant);
+  assert.deepEqual(child.actions.slice(0, prefix.length), prefix);
+  engine.restore(root);
+  for (const action of child.actions) engine.run(action.buttons, action.frames);
+  assert.deepEqual(
+    engine.capture(),
+    snapshot,
+    `${label} descendant must exactly replay from the original game root`,
+  );
+  branch.free();
+}
+console.log(
+  "Mid-action and manually guided roots in Main and Level 2 produce exact replayable descendants.",
 );
