@@ -31,7 +31,8 @@ def inspect_engine(manifest, session):
         return
     if scope != ORACLE_SCOPE or manifest.get("mode") != "nes":
         raise a.Rejected("unsupported engine/default session scope")
-    expected_session = {"ram_bytes": 134217728, "seed": ORACLE_SEED,
+    expected_session = {"guest_contract": "Ordinary",
+                        "ram_bytes": 134217728, "seed": ORACLE_SEED,
                         "run_budget": 2000000000, "cmdline": ORACLE_CMDLINE,
                         "identity_tag": "", "wall_limit": None,
                         "defer_virtual_time_checkpoint_hashes": True}
