@@ -691,3 +691,12 @@ The checkpoint journal records both completed (`executions`) and reserved
 (`reserved`) work. A consumer granting an additional execution budget starts
 from `reserved`, because restoring the checkpoint also restores already queued
 work. At a completed checkpoint those counts are equal.
+
+## Browser adapters
+
+`Archive::entry_input` materializes an entry’s complete ancestral action tape
+for inspection or playback and rejects missing indices. A browser adapter can own
+execution snapshots outside the archive and use this read accessor for films.
+A bounded adapter driver does not replace native Campaign coordination. Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
+totals, so wasm32 does not truncate them through `usize`. This uses the same
+multiply-high draw as native selection and preserves its random sequence.
