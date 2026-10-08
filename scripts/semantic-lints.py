@@ -60,6 +60,11 @@ FIXED_RELEASE_WARN_PROBABILITY = 0.75
 
 CACHE_PATH = Path(".semantic-lints-cache.json")
 
+# Entries kept when the cache is written. The oldest go first, and the file
+# keeps insertion order so that a run with no new judgments rewrites identical
+# bytes.
+CACHE_ENTRY_LIMIT = 2000
+
 TEXT_EXTENSIONS = custom_lints.LINTABLE_EXTENSIONS | {".tsv", ".csv"}
 DECISION_RESIDUE_EXTENSIONS = {".md", ".py", ".sh", ".toml"}
 
@@ -783,8 +788,10 @@ def load_cache(repo_root: Path) -> dict:
 
 def save_cache(repo_root: Path, cache: dict) -> None:
     path = repo_root / CACHE_PATH
+    for key in list(cache)[:max(0, len(cache) - CACHE_ENTRY_LIMIT)]:
+        del cache[key]
     with path.open("w") as f:
-        json.dump(cache, f, indent=2, sort_keys=True)
+        json.dump(cache, f, indent=2)
         f.write("\n")
 
 

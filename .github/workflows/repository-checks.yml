@@ -119,6 +119,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Restore earlier judgments
+        uses: actions/cache/restore@v4
+        with:
+          path: .semantic-lints-cache.json
+          key: semantic-lints-judgments-restore-only
+          restore-keys: semantic-lints-judgments-
       - name: Judge changed file content
         env:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -139,6 +145,12 @@ jobs:
             fi
             python3 scripts/semantic-lints.py --changed-from "$BEFORE_SHA"
           fi
+      - name: Save judgments
+        if: ${{ always() && hashFiles('.semantic-lints-cache.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .semantic-lints-cache.json
+          key: semantic-lints-judgments-${{ hashFiles('.semantic-lints-cache.json') }}
 
   ignored-tests:
     name: Ignored Tests — ${{ matrix.host }}
