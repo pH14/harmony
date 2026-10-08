@@ -405,6 +405,7 @@ try {
       document.querySelector("#scrub").max === "0",
   );
   const originalAttempts = await page.locator("#attempts").innerText();
+  const originalCells = await page.locator("#cells").innerText();
   const manualAudioStart = Number(
     await page.locator("#film").getAttribute("data-audio-frames"),
   );
@@ -453,6 +454,16 @@ try {
     await page.locator("#take-control").getAttribute("aria-pressed"),
     "false",
   );
+  await page.evaluate(() => {
+    const worker = window.novaTestWorker,
+      handler = worker.onmessage;
+    worker.onmessage = (event) => {
+      handler(event);
+      if (event.data.type === "ready")
+        window.novaTestReadyCells =
+          document.querySelector("#cells").textContent;
+    };
+  });
   await page.locator("#search-here").click();
   await page.waitForFunction(() => !!window.novaTestFork);
   const manualTape = await page.evaluate(() => window.novaTestFork.tape);
@@ -466,9 +477,36 @@ try {
     manualTape.endpoint_sha256,
     "Human inputs must reproduce the exact rendered endpoint passed to the worker",
   );
+  const manualFrames = manualTape.actions.reduce((n, a) => n + a.frames, 0);
+  await page.waitForFunction(
+    () => document.querySelector("#branch-choice").value === "1",
+  );
+  assert.equal(
+    await page.locator("#inspector").isVisible(),
+    false,
+    "A successful handoff must close the pane",
+  );
+  await page.waitForFunction(
+    () => document.querySelector("#map").dataset.originPulse === "true",
+  );
+  assert.equal(
+    await page.locator("#map").getAttribute("data-origin-frame"),
+    String(manualFrames),
+  );
+  await page.waitForFunction(
+    () => Number(document.querySelector("#map").dataset.tracePoints) > 1,
+  );
+  assert.match(
+    await page.locator("#branch-feedback").textContent(),
+    /Branch 1 is searching/,
+  );
+  assert.equal(
+    await page.evaluate(() => window.novaTestReadyCells),
+    "1",
+    "A new branch must initially show only its actual root cell, without the parent's heat",
+  );
   await page.waitForFunction(
     () =>
-      document.querySelector("#branch-choice").value === "1" &&
       document.querySelector("#verification").textContent === "Exact replay ✓",
   );
   await page.waitForFunction(
@@ -479,6 +517,18 @@ try {
   );
   await page.locator("#pause").click();
   await page.waitForTimeout(100);
+  const branchCells = await page.locator("#cells").innerText();
+  await page.waitForFunction(
+    () => document.querySelector("#map").dataset.originPulse === "false",
+  );
+  assert.ok(
+    Number(await page.locator("#map").getAttribute("data-trace-points")) > 1,
+    "The prefix trail must outlast the origin ripple while the pane stays closed",
+  );
+  await page.locator("#inspect-open").click();
+  await page.waitForFunction(
+    () => !document.querySelector("#take-control").disabled,
+  );
   const position = await page.locator("#details b").first().textContent();
   const [bx, by] = position.split(",").map(Number);
   const branchClick = await page.locator("#map").evaluate(
@@ -547,6 +597,37 @@ try {
     originalAttempts,
     "Switching back must retain the original paused search",
   );
+  assert.equal(
+    await page.locator("#cells").innerText(),
+    originalCells,
+    "Returning to the parent must restore its cells without adding another root visit",
+  );
+  await page.locator("#branch-choice").selectOption("1");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#film-title").dataset.stateId === "1:0" &&
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
+  assert.equal(
+    await page.locator("#cells").innerText(),
+    branchCells,
+    "Returning to a child must restore only that child's heatmap",
+  );
+  await page.locator("#close-inspector").click();
+  await page.waitForFunction(
+    () => Number(document.querySelector("#map").dataset.tracePoints) > 1,
+  );
+  assert.equal(
+    await page.locator("#map").getAttribute("data-origin-frame"),
+    String(manualFrames),
+  );
+  await page.locator("#branch-choice").selectOption("0");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#film-title").dataset.stateId === "0" &&
+      document.querySelector("#verification").textContent === "Original game",
+  );
+  assert.equal(await page.locator("#cells").innerText(), originalCells);
   await page.locator('.area-zoom[data-map="49"]').click();
   await page.locator('.area-zoom[data-map="45"]').click();
   await page.waitForFunction(
@@ -914,6 +995,49 @@ try {
     await page.locator("#frame-label").innerText(),
     heldFrame,
     "Losing focus must stop manual play and release controls",
+  );
+  const phoneBranchId = String(
+    await page.locator("#branch-choice option").count(),
+  );
+  await page.locator("#search-here").click();
+  await page.waitForFunction(
+    (branch) =>
+      document.querySelector("#branch-choice").value === branch &&
+      document.querySelector("#inspector").hidden,
+    phoneBranchId,
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.map-row[data-map="45"] canvas').dataset
+        .originPulse === "true",
+  );
+  const originRoomVisible = await page
+    .locator('.map-row[data-map="45"]')
+    .evaluate((row) => {
+      const bounds = row.getBoundingClientRect();
+      return bounds.top >= 0 && bounds.bottom <= innerHeight;
+    });
+  assert.equal(
+    originRoomVisible,
+    true,
+    "Handoff from expanded phone gameplay must reveal the actual origin room",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
+  await page.locator("#pause").click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.map-row[data-map="45"] canvas').dataset
+        .originPulse === "false",
+  );
+  assert.ok(
+    Number(
+      await page
+        .locator('.map-row[data-map="45"] canvas')
+        .getAttribute("data-trace-points"),
+    ) > 1,
   );
   await mkdir("test-results", { recursive: true });
   await page.screenshot({

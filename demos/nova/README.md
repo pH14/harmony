@@ -82,8 +82,9 @@ from its silent buffer changes serialized APU bytes. Only the original silent
 emulator records controller endpoints; the reusable audio emulator never enters
 search or snapshot verification. The selected history is traced in gold across its rooms, with
 matching numbered entrance and exit markers at transitions. The position marker
-follows the replay scrubber. Only the selected trail is retained, sampled at a
-fixed interval with at most about 8,400 points for an admitted history.
+follows the replay scrubber. The selected trail and one fixed origin trail per
+retained branch are sampled at a fixed interval, each with at most about 8,400 points for an admitted history.
+At most eight search presentations are retained and Restart Search releases them.
 
 The inspector keeps the movie and a prominent 🎮 Play from here action above a
 compact list of alternate routes to the selected spot. Rows use local route
@@ -102,7 +103,14 @@ ends takeover. Start search here (Let search take over after playing) verifies
 that the complete controller prefix reproduces the rendered endpoint, then
 starts a separate explorer rooted there.
 It preserves health, items, level progression and emulator state through replay,
-without teleporting Nova or changing game RAM. The search selector returns to
+without teleporting Nova or changing game RAM. After successful admission, the
+pane closes and the mapped branch origin ripples for 1.2 seconds; reduced-motion visitors get a stationary ring. The map reveals
+that room, including after expanded phone gameplay. The prefix trail to the
+fork remains visible while the pane is closed; inspecting a history shows its
+own complete trail. Each retained search has its own heat, cell history IDs,
+room discoveries, progress and origin trail. Switching restores that search's
+presentation; inactive heat continues to cool by elapsed time, and returning
+does not add a synthetic root visit. The search selector returns to
 any earlier search, preserving its archive and random generator. Taking control
 or forking at an earlier scrubber position discards only that new history’s
 future. Descendant histories include the original inputs, human intervention
