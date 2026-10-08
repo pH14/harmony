@@ -80,10 +80,12 @@ jobs:
       - name: Rebuild and verify the teaching workload
         run: |
           podman build --format docker -f demos/raft/workload/Dockerfile -t harmony-raft-browser:local .
+          podman save --format oci-dir --output "$RUNNER_TEMP/raft-workload" localhost/harmony-raft-browser:local
           python3 - <<'PYTHON'
           import os, pathlib
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'raft-runtime'
           config = pathlib.Path('demos/raft/workload/harmony.toml').read_text()
+          config = config.replace('localhost/harmony-raft-browser:local', str(root.parent / 'raft-workload'))
           config = config.replace('runtime/uml', str(root / 'demo/uml'))
           config = config.replace('runtime/base.cpio.gz', str(root / 'demo/base.cpio.gz'))
           (root / 'harmony.toml').write_text(config)
