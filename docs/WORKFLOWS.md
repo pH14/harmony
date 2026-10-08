@@ -188,10 +188,22 @@ inputs. Weekly runs and `rebuild_images` dispatches rebuild every layer.
 
 ## Change selection
 
-`.github/actions/ci-scope` is the single selector. A job that selects work runs
-it once, unconditionally, under the id `scope`, after a complete-history
-checkout, and guards its own steps with `steps.scope.outputs.enabled` joined by
-`&&`. `ci_contract.SCOPE_KINDS` records which workflow owns each kind.
+`.github/actions/ci-scope` is the single selector. A workflow whose jobs are
+wholly decided by the changed files has one `Change Selection` job with the id
+`scope`. It checks out the complete history and runs the selector once per
+kind, under an id equal to the kind, and publishes each result as a job output
+of the same name. Each selected job needs `scope` and starts only when its
+output is true, joined to any other condition by `&&`, so an unselected job is
+skipped and never starts a runner. The `miri_matrix` kind publishes the Miri
+targets a change reaches for one component as the matrix of the Miri job;
+`scripts/miri_scope.py` is its only list.
+
+A job that always runs part of its work and selects only the rest, such as the
+hardware steps of `CPU State`, runs the selector itself once, unconditionally,
+under the id `scope`, after a complete-history checkout, and guards the
+selected steps with `steps.scope.outputs.enabled` joined by `&&`.
+`ci_contract.SCOPE_KINDS` records which workflow owns each kind. A scheduled or
+manual run of the Languages and NES workflows selects the whole tracked tree.
 
 On a push to main, change selection and `Semantic Lints` read only what that
 push changed, so every push runs to completion. A workflow a push reaches keys
@@ -201,8 +213,8 @@ ref. In a group that pushes share, a later push cancels a running push run and
 replaces a pending one, and the commits of the dropped push are never selected
 or judged on main.
 
-An unselected job finishes successfully with a summary saying it was not
-applicable. A selection or diff error fails closed. A selected test that fails
+A job that selects its own steps and finds none finishes successfully with a
+summary saying it was not applicable. A selection or diff error fails closed. A selected test that fails
 still fails its job and still uploads the evidence it produced. A required
 hardware test is never downgraded to a successful skip: missing artifacts fail
 the job.
@@ -438,7 +450,7 @@ duplicate mapping keys, a malformed trigger or an unregistered file.
 | `ci-pr-job-timeout` | Declared budgets, and the 15-minute bound on pull request work. |
 | `ci-trigger-routing` | A `pr` job runs on pull requests, a `full` job proves it does not, and no pull request job starts a full search. |
 | `ci-trigger-exception` | Mixed trigger classes carry a registered reason. |
-| `ci-scope-routing` | One selector per job, complete checkout, guarded steps. |
+| `ci-scope-routing` | One selector per workflow or job, complete checkout, selected work requires its selection. |
 | `ci-push-concurrency` | Each push to main has its own concurrency group. |
 | `ci-ignored-tests` | A job that runs ignored tests registers them, and its steps name each one it registers. |
 | `ci-analysis-grouping` | Coverage, Miri, mutation and proofs sit in the owning component's Analysis workflow. |

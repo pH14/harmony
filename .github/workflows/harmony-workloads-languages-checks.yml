@@ -36,32 +36,41 @@ env:
   HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
 
 jobs:
-  guest:
-    name: Language Guest Runtime
+  scope:
+    name: Change Selection
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
+    outputs:
+      harmony_languages: ${{ steps.harmony_languages.outputs.enabled }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           filter: blob:none
-      - id: scope
+      - id: harmony_languages
         uses: ./.github/actions/ci-scope
         with:
           kind: harmony_languages
+
+  guest:
+    name: Language Guest Runtime
+    needs: scope
+    if: needs.scope.outputs.harmony_languages == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
       - name: Prepare the exact guest runtime
-        if: steps.scope.outputs.enabled == 'true'
         uses: ./.github/actions/exact-platform-runtime
         with:
           report: language-guest-evidence
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: language-guest-runtime
           path: consonance/harmony-linux/build/x86_64
           if-no-files-found: error
           retention-days: 14
-      - if: always() && steps.scope.outputs.enabled == 'true'
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: language-guest-evidence
@@ -71,6 +80,8 @@ jobs:
 
   images:
     name: Language Image — ${{ matrix.name }}
+    needs: scope
+    if: needs.scope.outputs.harmony_languages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -84,34 +95,23 @@ jobs:
           - { name: Java, id: java }
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-      - id: scope
-        uses: ./.github/actions/ci-scope
-        with:
-          kind: harmony_languages
       - id: key
-        if: steps.scope.outputs.enabled == 'true'
         run: echo "key=language-base-v2-${{ matrix.id }}-$(python3 workloads/languages/image-key.py ${{ matrix.id }})" >>"$GITHUB_OUTPUT"
       - id: cache
-        if: steps.scope.outputs.enabled == 'true'
         uses: actions/cache/restore@v4
         with:
           path: language-base/base.tar
           key: ${{ steps.key.outputs.key }}
       - name: Build or restore the language layer and compose the current runtime
-        if: steps.scope.outputs.enabled == 'true'
         env:
           REBUILD_IMAGES: ${{ github.event_name == 'schedule' || inputs.rebuild_images }}
         run: bash workloads/languages/prepare-ci-image.sh ${{ matrix.id }}
-      - if: steps.scope.outputs.enabled == 'true' && steps.cache.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: language-base/base.tar
           key: ${{ steps.key.outputs.key }}
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: language-image-${{ matrix.id }}
           path: language-image/${{ matrix.id }}.tar
@@ -120,7 +120,8 @@ jobs:
 
   check:
     name: Check — ${{ matrix.name }}
-    needs: [guest, images]
+    needs: [scope, guest, images]
+    if: needs.scope.outputs.harmony_languages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -134,29 +135,18 @@ jobs:
           - { name: Java, id: java }
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-      - id: scope
-        uses: ./.github/actions/ci-scope
-        with:
-          kind: harmony_languages
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: language-image-${{ matrix.id }}
           path: language-image
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: language-guest-runtime
           path: consonance/harmony-linux/build/x86_64
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           shared-key: harmony-language-cli
       - name: Build the CLI and enable KVM
-        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
@@ -165,12 +155,11 @@ jobs:
           sudo chmod a+rw /dev/kvm
           docker load --input language-image/${{ matrix.id }}.tar
       - name: Check admission, timer progress, park progress and replay identity
-        if: steps.scope.outputs.enabled == 'true'
         run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-${{ matrix.id }}:local language-evidence
       - name: Check guest debugging, saved branches and search continuation
-        if: steps.scope.outputs.enabled == 'true' && matrix.id == 'c'
+        if: matrix.id == 'c'
         run: timeout -k 10 240 bash cli/tests/investigation.sh language-evidence/investigation
-      - if: always() && steps.scope.outputs.enabled == 'true'
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: language-evidence-${{ matrix.id }}
@@ -180,24 +169,16 @@ jobs:
 
   uml-profile:
     name: Language UML Profile
+    needs: scope
+    if: needs.scope.outputs.harmony_languages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-      - id: scope
-        uses: ./.github/actions/ci-scope
-        with:
-          kind: harmony_languages
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@v31
       - name: Build the pinned UML profile
-        if: steps.scope.outputs.enabled == 'true'
         run: nix run .#uml-images -- --output "$RUNNER_TEMP/uml"
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: language-uml-profile
           path: ${{ runner.temp }}/uml
@@ -206,52 +187,40 @@ jobs:
 
   uml-command:
     name: UML Command Replay
-    needs: [guest, images, uml-profile]
+    needs: [scope, guest, images, uml-profile]
+    if: needs.scope.outputs.harmony_languages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-      - id: scope
-        uses: ./.github/actions/ci-scope
-        with:
-          kind: harmony_languages
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: language-image-c
           path: language-image
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: language-guest-runtime
           path: consonance/harmony-linux/build/x86_64
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: language-uml-profile
           path: uml-profile
-      - if: steps.scope.outputs.enabled == 'true'
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           shared-key: harmony-language-cli
       - name: Build the CLI
-        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
           cargo build --locked --release -p harmony-cli
           chmod +x uml-profile/linux
       - name: Verify plain command replay as an ordinary user on UML
-        if: steps.scope.outputs.enabled == 'true'
         run: |
           timeout -k 10 300 bash cli/tests/uml-command.sh language-image/c.tar \
             "$GITHUB_WORKSPACE/uml-profile" \
             "$GITHUB_WORKSPACE/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz" \
             uml-command-evidence
-      - if: always() && steps.scope.outputs.enabled == 'true'
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: language-uml-command-evidence

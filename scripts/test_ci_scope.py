@@ -16,11 +16,12 @@ class ScopeTests(unittest.TestCase):
         for scenario in SCENARIOS:
             with self.subTest(scenario=scenario):
                 self.assertIn(scenario, ci_contract.SCOPE_KINDS)
-        registered = {job.scope
+        registered = {kind
                       for workflow in ci_contract.WORKFLOWS
                       for job in workflow.jobs
-                      if job.scope}
-        self.assertEqual(set(SCENARIOS) | {"kani", "miri"}, registered)
+                      for kind in (job.scope, job.select, *job.selects)
+                      if kind}
+        self.assertEqual(set(SCENARIOS) | {"kani", "miri", "miri_matrix"}, registered)
 
     def test_a_searcher_change_runs_both_nes_compositions_and_nothing_else(self):
         self.assertEqual(self.active("dissonance/searcher/src/search/archive.rs"),

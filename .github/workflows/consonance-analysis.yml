@@ -47,50 +47,52 @@ env:
   PINNED_NIGHTLY: nightly-2026-06-16
 
 jobs:
-  miri:
-    name: Miri — ${{ matrix.name }}
+  scope:
+    name: Change Selection
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        name:
-          - vmm-core
-          - nested-driver
-          - hypercall-doorbell
-          - hypercall-doorbell-round-trip
-          - consonance-client
-          - vm-state
-          - vmm-backend
-          - snapshot-store
-          - harmony-supervisor
-          - uml
-    env:
-      HARMONY_MIRI_PR_SMOKE: "1"
+    timeout-minutes: 5
+    outputs:
+      miri_matrix: ${{ steps.miri_matrix.outputs.enabled }}
+      miri_targets: ${{ steps.miri_matrix.outputs.matrix }}
+      kani: ${{ steps.kani.outputs.enabled }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Determine whether this crate is affected
-        id: scope
+      - id: miri_matrix
         uses: ./.github/actions/ci-scope
         with:
-          kind: miri
-          target: ${{ matrix.name }}
+          kind: miri_matrix
+          target: Consonance
+      - id: kani
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: kani
+
+  miri:
+    name: Miri — ${{ matrix.name }}
+    needs: scope
+    if: (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.miri_matrix == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.scope.outputs.miri_targets) }}
+    env:
+      HARMONY_MIRI_PR_SMOKE: "1"
+    steps:
+      - uses: actions/checkout@v4
       - name: Install pinned nightly and Miri
-        if: steps.scope.outputs.enabled == 'true'
         run: rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
       - uses: Swatinem/rust-cache@v2
-        if: steps.scope.outputs.enabled == 'true'
         with:
           shared-key: consonance-miri
       - name: Interpret the tests this change reaches
-        if: steps.scope.outputs.enabled == 'true'
         env:
-          MIRIFLAGS: ${{ steps.scope.outputs.miriflags }}
-          MIRI_COMMAND: ${{ steps.scope.outputs.command }}
+          MIRIFLAGS: ${{ matrix.miriflags }}
+          MIRI_COMMAND: ${{ matrix.command }}
         run: |
           set -euo pipefail
           read -r -a command <<<"${MIRI_COMMAND}"
@@ -243,30 +245,20 @@ jobs:
 
   proofs:
     name: Proofs
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: scope
+    if: (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.kani == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-      - name: Determine whether a proof input changed
-        id: scope
-        uses: ./.github/actions/ci-scope
-        with:
-          kind: kani
       - name: Install stable toolchain
-        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
-        if: steps.scope.outputs.enabled == 'true'
         with:
           shared-key: consonance-proofs
       - name: Cache the Kani toolchain
-        if: steps.scope.outputs.enabled == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -275,14 +267,12 @@ jobs:
             ~/.kani
           key: kani-${{ runner.os }}-${{ env.HARMONY_KANI_VERSION }}
       - name: Install Kani
-        if: steps.scope.outputs.enabled == 'true'
         run: |
           if ! cargo kani --version 2>/dev/null | grep -Fq "${HARMONY_KANI_VERSION}"; then
             cargo install --locked --force --version "${HARMONY_KANI_VERSION}" kani-verifier
           fi
           cargo kani setup
       - name: Verify the virtual clock, APIC, backend and fault policy proofs
-        if: steps.scope.outputs.enabled == 'true'
         run: |
           cargo kani -p vtime
           cargo kani -p lapic

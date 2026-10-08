@@ -2,10 +2,10 @@ name: Select work inside a CI job
 description: Use the complete local diff and report unselected checks as not applicable.
 inputs:
   kind:
-    description: A registered change-selection kind from scripts/ci_scope.py, or kani or miri
+    description: A registered change-selection kind from scripts/ci_scope.py, or kani, miri or miri_matrix
     required: true
   target:
-    description: Registered Miri target
+    description: Registered Miri target, or for miri_matrix the component that owns the targets
     default: ''
 outputs:
   enabled:
@@ -17,6 +17,9 @@ outputs:
   miriflags:
     description: Selected Miri interpreter flags
     value: ${{ steps.select.outputs.miriflags }}
+  matrix:
+    description: Matrix of the selected Miri targets an owner has, as JSON
+    value: ${{ steps.select.outputs.matrix }}
 runs:
   using: composite
   steps:

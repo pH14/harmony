@@ -1097,6 +1097,10 @@ def check_job_scope(rel_path: str, job_id: str, job: dict, registered) -> list[V
     steps = [step for step in job.get("steps", []) if isinstance(step, dict)]
     selectors = [step for step in steps
                  if str(step.get("uses", "")).rstrip("/").endswith(".github/actions/ci-scope")]
+    if registered.selects:
+        return check_selector_job(rel_path, job_id, job, registered, steps, selectors)
+    if registered.select:
+        return check_selected_job(rel_path, job_id, job, registered, selectors)
     if not registered.scope:
         if selectors:
             return problem("selects work under a kind the registry does not record")
@@ -1123,6 +1127,53 @@ def check_job_scope(rel_path: str, job_id: str, job: dict, registered) -> list[V
         guarded = True
     if not guarded:
         return problem("must guard its selected work with steps.scope.outputs.enabled")
+    return []
+
+
+SELECTOR_JOB_ID = "scope"
+
+
+def check_selector_job(rel_path: str, job_id: str, job: dict, registered, steps, selectors) -> list[Violation]:
+    """The workflow's one selector job decides every kind it registers."""
+    def problem(message):
+        return [Violation("ci-scope-routing", rel_path, 0, f"job '{job_id}' {message}")]
+
+    if job_id != SELECTOR_JOB_ID:
+        return problem(f"selects for the workflow and must have the job id '{SELECTOR_JOB_ID}'")
+    kinds = [(step.get("with") or {}).get("kind") for step in selectors]
+    if sorted(map(str, kinds)) != sorted(registered.selects):
+        return problem(f"selects {sorted(map(str, kinds))} and is registered for "
+                       f"{sorted(registered.selects)}")
+    outputs = job.get("outputs") or {}
+    for step in selectors:
+        kind = step["with"]["kind"]
+        if step.get("id") != kind or "if" in step or step.get("continue-on-error", False):
+            return problem(f"must run the '{kind}' selector unconditionally under the id '{kind}'")
+        expected = "${{ steps.%s.outputs.enabled }}" % kind
+        if str(outputs.get(kind, "")).strip() != expected:
+            return problem(f"must publish the output '{kind}' as {expected}")
+    checkout = next((step for step in steps if "actions/checkout" in str(step.get("uses", ""))), None)
+    if checkout is None or (checkout.get("with") or {}).get("fetch-depth") != 0:
+        return problem("must check out the complete diff the selector reads")
+    return []
+
+
+def check_selected_job(rel_path: str, job_id: str, job: dict, registered, selectors) -> list[Violation]:
+    """A job the selector job decides starts only when its kind is selected."""
+    def problem(message):
+        return [Violation("ci-scope-routing", rel_path, 0, f"job '{job_id}' {message}")]
+
+    if selectors:
+        return problem("is selected by the 'scope' job and must not select work itself")
+    needs = job.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    if SELECTOR_JOB_ID not in needs:
+        return problem(f"must need the '{SELECTOR_JOB_ID}' job")
+    condition = _strip_outer_parentheses(
+        str(job.get("if", "")).replace("${{", "").replace("}}", "").strip())
+    wanted = f"needs.{SELECTOR_JOB_ID}.outputs.{registered.select} == 'true'"
+    if wanted not in [_strip_outer_parentheses(part) for part in _split_condition(condition, "&&")]:
+        return problem(f"must require its selection with && {wanted}")
     return []
 
 
@@ -1483,6 +1534,16 @@ def _miri_matrix_names(data: dict, suffix: str) -> list[str]:
     return []
 
 
+def _miri_matrix_is_selected(data: dict, suffix: str) -> bool:
+    """True when the job's matrix is the selector job's output, which `miri_scope.py` fills."""
+    wanted = f"Miri — ${{{{ matrix.name }}}}{suffix}"
+    for job in data["jobs"].values():
+        if job.get("name") == wanted:
+            matrix = (job.get("strategy") or {}).get("matrix")
+            return isinstance(matrix, str) and "fromJSON(needs.scope.outputs." in matrix
+    return False
+
+
 def _miri_dispatch_crates(data: dict) -> list[str]:
     triggers = data.get("on", data.get(True, {}))
     dispatch = triggers.get("workflow_dispatch") if isinstance(triggers, dict) else None
@@ -1527,6 +1588,8 @@ def check_miri_matrices(repo_root: Path, tracked: set[str]) -> list[Violation]:
             violations.append(Violation("ci-workflow-parse", workflow.path, 0, str(error)))
             continue
         for expected, suffix in ((bounded.get(owner, []), ""), (whole.get(owner, []), " (Whole Crate)")):
+            if _miri_matrix_is_selected(data, suffix):
+                continue
             listed = _miri_matrix_names(data, suffix)
             if sorted(listed) != sorted(expected):
                 violations.append(Violation("ci-miri-coverage", workflow.path, 0,
@@ -1972,7 +2035,7 @@ def main(argv: list[str] | None = None) -> int:
             "file must be registered in scripts/ci_contract.py and every registered job must exist."
         ),
         "ci-push-concurrency": "Every push to main runs to completion. A workflow a push reaches keys each concurrency group by scripts/ci_contract.py PUSH_CONCURRENCY_KEY, because a later push in a shared group cancels a running push run and replaces a pending one, and change selection then never sees the commits of the dropped push.",
-        "ci-scope-routing": "Select work inside the job that owns it: one ./.github/actions/ci-scope step under the registered kind, a complete diff checkout, and selected steps guarded with && on the selector's output.",
+        "ci-scope-routing": "Select work once. Either the workflow's 'scope' job runs ./.github/actions/ci-scope for each registered kind after a complete diff checkout and the selected jobs need it and require its output with &&, or a job runs one ci-scope step itself and guards its selected steps with && on the selector's output.",
         "ci-ignored-tests": "A job that runs ignored tests lists them in its ignored_tests in scripts/ci_contract.py as '<binary-id> <test>', and its steps name each binary and test it lists. scripts/check-test-partition.py ignored fails on an ignored test that no job or machine runs.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running Results job.",
         "ci-nes-media": "Both NES compositions publish video with game audio: a bounded capture in the Checks workflow and every scenario in the Benchmarks workflow. Register the capture in scripts/ci_contract.py and check the media with scripts/verify-nes-films.py.",

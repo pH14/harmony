@@ -102,6 +102,12 @@ class Job(NamedTuple):
     media: tuple[str, ...] = ()
     # Change-selection kind this job passes to `.github/actions/ci-scope`.
     scope: str = ""
+    # Change-selection kind the workflow's `scope` job decides for this job. The
+    # job needs `scope` and runs only when that output is true, so an unselected
+    # job never starts a runner.
+    select: str = ""
+    # Kinds this job decides for the other jobs of its workflow.
+    selects: tuple[str, ...] = ()
 
 
 class Workflow(NamedTuple):
@@ -316,7 +322,8 @@ CONSONANCE_ANALYSIS = Workflow(
     owner="Consonance",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
-        Job("Miri — <Crate>", "pr", 15, scope="miri"),
+        Job("Change Selection", "pr", 5, selects=("miri_matrix", "kani")),
+        Job("Miri — <Crate>", "pr", 15, select="miri_matrix"),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
             exception="Interpreting a whole unsafe crate under Miri takes hours, "
                       "so pull requests get the tests the change reaches."),
@@ -325,7 +332,7 @@ CONSONANCE_ANALYSIS = Workflow(
                       "exceeds the pull request budget."),
         Job("Mutation Testing — Shard <N>/16", "full", 320,
             exception="Mutation testing rebuilds the component once per mutant."),
-        Job("Proofs", "pr", 15, scope="kani"),
+        Job("Proofs", "pr", 15, select="kani"),
     ),
 )
 
@@ -561,17 +568,18 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
+        Job("Change Selection", "pr", 5, selects=("harmony_languages",)),
         Job("Language Guest Runtime", "pr", 45,
             exception="A guest runtime missing from the cache is built from source once before bounded consumers.",
-            scope="harmony_languages"),
+            select="harmony_languages"),
         Job("Language Image — <Language>", "pr", 45,
             exception="A language layer missing from the cache is built from source, including CPython and OpenJDK.",
-            scope="harmony_languages"),
-        Job("Check — <Language>", "pr", 15, scope="harmony_languages"),
+            select="harmony_languages"),
+        Job("Check — <Language>", "pr", 15, select="harmony_languages"),
         Job("Language UML Profile", "pr", 45,
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
-            scope="harmony_languages"),
-        Job("UML Command Replay", "pr", 15, scope="harmony_languages"),
+            select="harmony_languages"),
+        Job("UML Command Replay", "pr", 15, select="harmony_languages"),
     ),
 )
 
@@ -773,7 +781,8 @@ SCOPE_KINDS = {
     "consonance_platform": CONSONANCE_CHECKS.name,
     "consonance_kvm": CONSONANCE_CHECKS.name,
     "kani": CONSONANCE_ANALYSIS.name,
-    "miri": CONSONANCE_ANALYSIS.name,
+    "miri": HARMONY_ANALYSIS.name,
+    "miri_matrix": CONSONANCE_ANALYSIS.name,
 }
 
 # Historical bug scenarios are named after the bug, never after an execution
