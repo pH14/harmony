@@ -55,7 +55,8 @@ controller chord policy. It does not run the complete native `Campaign` schedule
 rollouts contain one to eight controller actions rather than its adaptive
 campaign coordination, continuation bank and checkpoints. Its seed determines
 search choices; wall time changes only animation, heat decay and presentation.
-Starting fresh increments the seed and resets the archive. Runs stop after
+Starting fresh increments the seed and resets the archive. A history is bounded
+to 10,000 actions and 200,000 frames, matching import admission. Runs stop after
 20,000 paths or approximately 4,000 historical entries (at most seven additional
 entries in the last rollout). Snapshots are retained separately for every browser
 history, even when the selector retires its endpoint; the bound keeps this near
@@ -85,6 +86,7 @@ not depend on Consonance; the Linux demonstration is a separate application.
 npm test
 cargo test --locked --manifest-path rust/Cargo.toml
 cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+wasm-pack test --node rust
 npx playwright install chromium
 # While the preview server is running:
 npm run test:browser
@@ -92,7 +94,10 @@ npm run test:browser
 
 The browser check executes real search, selects a nonempty history, checks an
 exact endpoint replay, scrubs back and forward, downloads a PNG and history,
-reopens that history, checks credits, room controls, restart and a mobile layout.
+reopens that history, refuses a tampered endpoint, cancels a valid long import
+without a false error, checks frame-zero imagery, credits, source bundles, room
+controls, restart and a mobile layout. A native and wasm32 selector fixture
+checks the same recorded choices with weights above 2³², including 2⁵⁶ tiers.
 `CHROME_CHANNEL=chrome` can use an already installed Chrome. `DEMO_URL` can point
 the check at a deployed subdirectory. It verifies liveness and replay, without
 requiring a specific discovery or completion outcome from a chosen seed.

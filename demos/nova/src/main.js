@@ -73,6 +73,14 @@ function note(message) {
     }),
   );
 }
+function showError(error) {
+  $("error").hidden = false;
+  $("error").textContent = String(error?.message || error);
+}
+function replayError(error) {
+  if (current?.endpoint_sha256) showError(error);
+  else fail(error);
+}
 function fail(error) {
   worker?.postMessage({ type: "pause" });
   $("error").hidden = false;
@@ -83,7 +91,7 @@ function fail(error) {
   $("status-dot").className = "paused";
 }
 function drawFilm() {
-  const p = engine.pixels();
+  const p = currentFrame === 0 && originPixels ? originPixels : engine.pixels();
   film.putImageData(new ImageData(p.data, p.width, p.height), 0, 0);
   $("frame-label").textContent =
     `FRAME ${fmt(currentFrame)} / ${fmt(current?.frames)}`;
@@ -139,7 +147,7 @@ async function verify() {
 function equal(a, b) {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
-async function seek(target) {
+async function seek(target, propagateError = false) {
   if (!current || !engine) return;
   const epoch = ++replayEpoch;
   playing = false;
@@ -159,12 +167,15 @@ async function seek(target) {
       advanceFilm(Math.min(target, currentFrame + 600));
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    if (epoch !== replayEpoch) return;
+    if (epoch !== replayEpoch) return false;
     drawFilm();
     if (currentFrame === current.frames) await verify();
     else $("verification").textContent = "Frame " + fmt(currentFrame);
+    return true;
   } catch (e) {
-    fail(e);
+    if (propagateError) throw e;
+    replayError(e);
+    return false;
   } finally {
     if (epoch === replayEpoch) {
       seeking = false;
@@ -173,7 +184,7 @@ async function seek(target) {
     }
   }
 }
-async function selectState(state, autoplay = false) {
+async function selectState(state, autoplay = false, propagateError = false) {
   if (!engine) return;
   current = state;
   frameCredit = 0;
@@ -201,13 +212,16 @@ async function selectState(state, autoplay = false) {
     $("details").append(div);
   }
   if (state.observation.level !== mapLevel) setRoom(state.observation.level);
-  await seek(autoplay ? 0 : state.frames);
-  if (current !== state) return;
+  const selection = seek(autoplay ? 0 : state.frames, propagateError),
+    epoch = replayEpoch;
+  const success = await selection;
+  if (!success || current !== state || epoch !== replayEpoch) return false;
   if (autoplay) {
     playing = true;
     $("play").textContent = "Ⅱ Pause film";
   }
   renderStates();
+  return true;
 }
 function renderStates() {
   const ids = selectedCell?.ids || [current?.id].filter((x) => x !== undefined);
@@ -627,11 +641,15 @@ $("history-file").onchange = async (e) => {
       endpoint_sha256: tape.endpoint_sha256,
       observation: { x: 0, y: 0, health: 0, chips: 0, ability: 0, level: 0 },
     };
-    await selectState(state);
-    if ((await snapshotHash(engine.capture())) !== tape.endpoint_sha256)
+    if (!(await selectState(state, false, true))) return;
+    const epoch = replayEpoch;
+    const actual = await snapshotHash(engine.capture());
+    if (current !== state || epoch !== replayEpoch) return;
+    if (actual !== tape.endpoint_sha256)
       throw new Error("Saved history endpoint checksum mismatch");
     state.observation = engine.observation();
-    await selectState(state);
+    if (!(await selectState(state, false, true))) return;
+    $("error").hidden = true;
     $("verification").textContent = "Saved controller history";
     note("Opened a saved history locally.");
   } catch (err) {
@@ -655,7 +673,7 @@ $("about").onclick = () =>
   );
 $("credits").onclick = () =>
   showInfo(
-    `<span class="eyebrow">CREDITS & LICENSING</span><h2>Nova the Squirrel</h2><p>Created by <a href="https://novasquirrel.com/">NovaSquirrel</a>. <a href="https://novasquirrel.itch.io/nova-the-squirrel">Play the original game</a>.</p><p>The game’s code is GPL-3.0-or-later. Its original graphics, sound and the gameplay imagery shown here are <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>. This is a noncommercial software demonstration, not endorsed by NovaSquirrel. The original character designs and gameplay are preserved.</p><p>QuickNES: LGPL-2.1-or-later; libretro distribution also includes GPL terms. Harmony’s browser demo and search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits and restrictions</a> · <a href="licenses/nova-source.tar.gz">Nova corresponding source</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
+    `<span class="eyebrow">CREDITS & LICENSING</span><h2>Nova the Squirrel</h2><p>Created by <a href="https://novasquirrel.com/">NovaSquirrel</a>. <a href="https://novasquirrel.itch.io/nova-the-squirrel">Play the original game</a>.</p><p>The game’s code is GPL-3.0-or-later. Its original graphics, sound and the gameplay imagery shown here are <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>. This is a noncommercial software demonstration, not endorsed by NovaSquirrel. The original character designs and gameplay are preserved.</p><p>QuickNES library sources: LGPL-2.1-or-later. The compiled libretro browser core is distributed under GPL-2.0 terms with a GPL-2.0-or-later C++ shim. The separate Harmony browser interface and Rust search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits and restrictions</a> · <a href="licenses/nova-source.tar.gz">Nova corresponding source</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
   );
 function animate(now) {
   const elapsed = lastTime ? Math.min(100, now - lastTime) : 0;
@@ -670,7 +688,7 @@ function animate(now) {
       if (currentFrame === current.frames) {
         playing = false;
         $("play").textContent = "↺ Play again";
-        verify().catch(fail);
+        verify().catch(replayError);
       }
     }
   }

@@ -2,6 +2,10 @@
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
 import { readFile, mkdir } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
+import { createEngine } from "../src/emulator.js";
+import { snapshotHash } from "../src/media.js";
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.CHROME_CHANNEL
@@ -11,13 +15,24 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } }),
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
+page.on("response", (response) => {
+  if (response.status() >= 400)
+    errors.push(`${response.status()} ${response.url()}`);
+});
 try {
   await page.goto(process.env.DEMO_URL || "http://127.0.0.1:4173");
   await page.waitForFunction(
     () =>
+      document.querySelector("#verification").textContent === "Original game",
+  );
+  const originImage = await page
+    .locator("#film")
+    .evaluate((c) => c.toDataURL());
+  await page.waitForFunction(
+    () =>
       Number(
         document.querySelector("#attempts").textContent.replaceAll(",", ""),
-      ) > 30,
+      ) > 30 || !document.querySelector("#error").hidden,
     { timeout: 60000 },
   );
   assert.equal(await page.locator("#error").isVisible(), false);
@@ -32,15 +47,23 @@ try {
   const [x, y] = (await page.locator("#details b").first().innerText())
     .split(",")
     .map(Number);
-  const rect = await page.locator("#map").boundingBox();
-  await page
-    .locator("#map")
-    .click({
-      position: {
-        x: (rect.width * x) / 1280,
-        y: (rect.height * (y - 8)) / 224,
-      },
-    });
+  const rect = await page.locator("#map").boundingBox(),
+    mapWidth = Number(await page.locator("#map").getAttribute("width"));
+  await page.locator("#map").click({
+    position: {
+      x: (rect.width * x) / mapWidth,
+      y: (rect.height * (y - 8)) / 224,
+    },
+  });
+  await page.waitForFunction(
+    (expected) =>
+      document.querySelector("#cell-title").textContent === expected,
+    `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
+  );
+  assert.match(
+    await page.locator("#selection-hint").innerText(),
+    /Choose a retained state/,
+  );
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",
@@ -53,6 +76,10 @@ try {
   await page.locator("#scrub").fill("0");
   await page.waitForFunction(() =>
     document.querySelector("#frame-label").textContent.startsWith("FRAME 0 /"),
+  );
+  assert.equal(
+    await page.locator("#film").evaluate((c) => c.toDataURL()),
+    originImage,
   );
   await page.locator("#scrub").fill(total);
   await page.waitForFunction(
@@ -72,12 +99,77 @@ try {
   const path = await history.path();
   const tape = JSON.parse(await readFile(path));
   assert.ok(tape.actions.length > 0);
+  const status = await page.locator("#status").innerText();
+  await page.locator("#history-file").setInputFiles({
+    name: "tampered.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(
+      JSON.stringify({ ...tape, endpoint_sha256: "0".repeat(64) }),
+    ),
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("#error").textContent.includes("checksum mismatch"),
+  );
+  assert.equal(await page.locator("#status").innerText(), status);
   await page.locator("#history-file").setInputFiles(path);
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent ===
       "Saved controller history",
   );
+  assert.equal(await page.locator("#error").isVisible(), false);
+  const localBase = pathToFileURL(process.cwd() + "/public/");
+  const emulator = await createEngine(localBase, {
+    rom: new Uint8Array(await readFile(new URL("nova.nes", localBase))),
+    wasmBinary: await readFile(new URL("engine/quicknes.wasm", localBase)),
+  });
+  emulator.boot();
+  const longActions = [
+    ...tape.actions,
+    ...Array(500).fill({ buttons: 0, frames: 120 }),
+  ];
+  for (const action of longActions) emulator.run(action.buttons, action.frames);
+  const longTape = {
+    ...tape,
+    actions: longActions,
+    endpoint_sha256: await snapshotHash(emulator.capture()),
+  };
+  await page.locator("#history-file").setInputFiles({
+    name: "long-valid.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(longTape)),
+  });
+  await page.waitForFunction(
+    () => document.querySelector("#play").textContent === "Seeking…",
+  );
+  await page.locator("#scrub").fill("0");
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator("#error").isVisible(), false);
+  assert.equal(await page.locator("#status").innerText(), status);
+  await page.locator("#history-file").setInputFiles(path);
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent ===
+      "Saved controller history",
+  );
+  for (const file of [
+    "licenses/CREDITS.md",
+    "licenses/harmony-source.tar.gz",
+    "licenses/nova-source.tar.gz",
+    "licenses/quicknes-source.tar.gz",
+    "level-one-main.png",
+  ]) {
+    const response = await page.request.get(new URL(file, page.url()).href);
+    assert.equal(response.status(), 200);
+    if (file.endsWith(".tar.gz")) {
+      const body = await response.body(),
+        tar =
+          body.subarray(0, 2).toString("hex") === "1f8b"
+            ? gunzipSync(body)
+            : body;
+      assert.equal(tar.subarray(257, 262).toString(), "ustar");
+    }
+  }
   await page.locator("#credits").click();
   assert.match(
     await page.locator("#info-content").innerText(),

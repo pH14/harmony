@@ -240,11 +240,15 @@ impl Explorer {
             let prefix = self.archive.entry_input(parent).map_err(js_error)?.actions;
             let mut frame: u32 = prefix.iter().map(|a| u32::from(a.frames)).sum();
             let mut previous = prefix.last().copied();
+            let mut current_parent = parent;
             let mut suffix = Vec::new();
             let mut productive = false;
             let count = 1 + below(&mut self.rng, 8);
-            for _ in 0..count {
+            for action_count in (prefix.len()..).take(count) {
                 let action = draw(&mut self.rng, previous);
+                if frame + u32::from(action.frames) > 200_000 || action_count >= 10_000 {
+                    break;
+                }
                 step(action.buttons, action.frames)?;
                 self.frames += u64::from(action.frames);
                 frame += u32::from(action.frames);
@@ -259,10 +263,11 @@ impl Explorer {
                     self.deaths += 1;
                     break;
                 }
+                let retained_before = self.archive.live_entry_count();
                 let id = self
                     .archive
                     .insert(
-                        Some(parent),
+                        Some(current_parent),
                         u64::from(self.executions) + 1,
                         ArchiveCandidate {
                             suffix: suffix.clone(),
@@ -278,7 +283,11 @@ impl Explorer {
                 {
                     entry.insert(capture()?);
                 }
-                productive |= id.is_some();
+                productive |= self.archive.live_entry_count() > retained_before;
+                if let Some(id) = id {
+                    current_parent = id;
+                    suffix.clear();
+                }
                 points.push(Point {
                     observation: obs,
                     retained: id,
@@ -291,7 +300,7 @@ impl Explorer {
         }
         serde_json::to_string(&Batch {
             executions: self.executions,
-            states: self.archive.active_count(),
+            states: self.snapshots.len(),
             deaths: self.deaths,
             frames: self.frames,
             stopped: self.stopped,
@@ -360,5 +369,62 @@ mod tests {
             assert!((2..=12).contains(&a.frames) || (48..=120).contains(&a.frames));
             prev = Some(a);
         }
+    }
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+    struct ProbeKey(u8);
+    impl ArchiveKey for ProbeKey {
+        type Place = u8;
+        type Progress = u8;
+        type Identity = ();
+        type Lineage = ();
+        fn place(self) -> u8 {
+            self.0
+        }
+        fn progress(self) -> u8 {
+            self.0
+        }
+        fn identity(self) {}
+        fn tier_rank_shift() -> u32 {
+            7
+        }
+        fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+        fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn wide_selector_matches_recorded_native_choices() {
+        let mut archive = Archive::<u8, ProbeKey, (), ()>::new(|_| 1);
+        for id in 0..3 {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![id],
+                        key: ProbeKey(id),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap();
+        }
+        let mut rng = RomuDuoJrRand::with_seed(42);
+        let choices: Vec<_> = (0..32)
+            .map(|_| {
+                let (id, draw) = archive.select_parent(&mut rng).unwrap();
+                archive.record_selection(id, &draw);
+                id
+            })
+            .collect();
+        assert_eq!(
+            choices,
+            [
+                2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 2, 2, 2, 2,
+                2, 2, 2, 2
+            ]
+        );
     }
 }

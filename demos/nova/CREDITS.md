@@ -29,10 +29,14 @@ alongside every release of this demo.
 **QuickNES** by Shay Green and contributors, with the libretro port by its
 contributors, is pinned to `26bb785c9deddb66a17717b21bb4e328f03ade32`:
 https://github.com/libretro/QuickNES_Core/tree/26bb785c9deddb66a17717b21bb4e328f03ade32
-The QuickNES emulator sources use **LGPL-2.1-or-later**; the libretro distribution
-also ships GPL-2.0 text. See the shipped upstream `QuickNES.txt` and source-file
-notices. This combined browser build is distributed with corresponding source.
-The browser frontend and Harmony/Dissonance code are **AGPL-3.0-or-later**:
+The `nes_emu` library sources use **LGPL-2.1-or-later**. The libretro distribution
+ships **GPL-2.0** terms, which this demo conservatively applies to the compiled
+QuickNES browser core. Its C++ shim (`tools/frontend.cpp`) is
+**GPL-2.0-or-later**, compatible with that distribution. See the shipped
+`QuickNES.txt` and source-file notices. The compiled core is distributed with
+its corresponding source and build recipe.
+The separate browser interface and Harmony/Dissonance Rust code are
+**AGPL-3.0-or-later**:
 https://github.com/pH14/harmony
 
 No game assets are relicensed as Harmony code. No advertising or payments are
