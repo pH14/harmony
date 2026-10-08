@@ -1177,7 +1177,11 @@ function drawArea(canvas, now) {
     ctx.lineWidth = 1.5 / areaZoom;
     ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
   }
-  const o = $("inspector").hidden ? branchOrigin?.point : markerPoint();
+  const o = $("inspector").hidden
+    ? branchOrigin?.point
+    : current
+      ? markerPoint()
+      : null;
   const mapOrigin =
     branchOrigin?.point?.level === mapLevel ? branchOrigin : null;
   canvas.dataset.originFrame = mapOrigin?.frame ?? "";

@@ -187,6 +187,17 @@ try {
     },
     { x, y },
   );
+  await page.locator("#map").click({ position: { x: 2, y: 2 } });
+  assert.equal(
+    await page.locator("#inspector").getAttribute("data-empty"),
+    "true",
+  );
+  assert.equal(await page.locator("#state-list .state").count(), 0);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".map-row canvas")].every(
+      (c) => c.dataset.markerFrame === "",
+    ),
+  );
   await page.locator("#map").click({ position: click });
   await page.waitForFunction(
     (expected) => document.querySelector("#cell-title").title === expected,

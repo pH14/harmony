@@ -50,7 +50,8 @@ branches. A budget stop is visible and does not claim a win.
 
 A silent preview follows frontier discoveries until the visitor interacts. It
 never draws a replay marker while the history pane is closed; only an intentional
-branch origin remains highlighted on the search map.
+branch origin remains highlighted on the search map. Empty-cell selection also
+clears the previous replay marker.
 Selecting a state replays its controller history from the level-one root in a
 second emulator. Endpoint snapshots are compared byte for byte after
 canonicalizing QuickNES's three unused PPU bytes. Verification runs internally,
