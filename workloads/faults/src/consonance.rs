@@ -25,7 +25,10 @@ use environment::{
     channel::{Answer as ChannelAnswer, ChannelError, Question, ServiceHandler, ServiceResponse},
     input_spec::{ServiceConfig, ServiceFactory, nominal_factory},
 };
-use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
+use fault_policy::{
+    APPLICATION_CHOICE_NAMESPACE, STANDING_NAMESPACE, StandingWindow, encode_standing,
+    encode_windows,
+};
 use searcher::target::ExitKind;
 use sha2::{Digest, Sha256};
 
@@ -137,51 +140,73 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v6";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v7";
 
-type CoverageWindow = (u64, u64, std::num::NonZeroU16);
-const COVERAGE_WINDOW_BYTES: usize = 18;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActionWindow {
+    start: u64,
+    end: u64,
+    quantum: std::num::NonZeroU16,
+    choice: u64,
+}
 
-fn encode_configuration(standing: &[u8], coverage: &[CoverageWindow]) -> Result<Vec<u8>, String> {
+const ACTION_WINDOW_BYTES: usize = 26;
+
+fn encode_configuration(standing: &[u8], actions: &[ActionWindow]) -> Result<Vec<u8>, String> {
     let length = u32::try_from(standing.len()).map_err(|_| "standing windows too large")?;
-    let mut bytes = Vec::with_capacity(4 + standing.len() + coverage.len() * COVERAGE_WINDOW_BYTES);
+    let mut bytes = Vec::with_capacity(4 + standing.len() + actions.len() * ACTION_WINDOW_BYTES);
     bytes.extend_from_slice(&length.to_le_bytes());
     bytes.extend_from_slice(standing);
-    for (start, end, quantum) in coverage {
-        bytes.extend_from_slice(&start.to_le_bytes());
-        bytes.extend_from_slice(&end.to_le_bytes());
-        bytes.extend_from_slice(&quantum.get().to_le_bytes());
+    for window in actions {
+        bytes.extend_from_slice(&window.start.to_le_bytes());
+        bytes.extend_from_slice(&window.end.to_le_bytes());
+        bytes.extend_from_slice(&window.quantum.get().to_le_bytes());
+        bytes.extend_from_slice(&window.choice.to_le_bytes());
     }
     Ok(bytes)
 }
 
-fn decode_configuration(bytes: &[u8]) -> Option<(&[u8], Vec<CoverageWindow>)> {
+fn decode_configuration(bytes: &[u8]) -> Option<(&[u8], Vec<ActionWindow>)> {
     let (length, rest) = bytes.split_first_chunk::<4>()?;
     let length = usize::try_from(u32::from_le_bytes(*length)).ok()?;
     let (standing, rest) = rest.split_at_checked(length)?;
-    if !rest.len().is_multiple_of(COVERAGE_WINDOW_BYTES) {
+    if !rest.len().is_multiple_of(ACTION_WINDOW_BYTES) {
         return None;
     }
-    let mut coverage = Vec::with_capacity(rest.len() / COVERAGE_WINDOW_BYTES);
+    let mut actions = Vec::with_capacity(rest.len() / ACTION_WINDOW_BYTES);
     let mut previous_end = None;
-    for row in rest.chunks_exact(COVERAGE_WINDOW_BYTES) {
+    for row in rest.chunks_exact(ACTION_WINDOW_BYTES) {
         let start = u64::from_le_bytes(row[..8].try_into().ok()?);
         let end = u64::from_le_bytes(row[8..16].try_into().ok()?);
-        let quantum = std::num::NonZeroU16::new(u16::from_le_bytes(row[16..].try_into().ok()?))?;
+        let quantum = std::num::NonZeroU16::new(u16::from_le_bytes(row[16..18].try_into().ok()?))?;
+        let choice = u64::from_le_bytes(row[18..].try_into().ok()?);
         if start >= end || previous_end.is_some_and(|previous| previous != start) {
             return None;
         }
         previous_end = Some(end);
-        coverage.push((start, end, quantum));
+        actions.push(ActionWindow {
+            start,
+            end,
+            quantum,
+            choice,
+        });
     }
-    Some((standing, coverage))
+    Some((standing, actions))
 }
 
 #[derive(Debug)]
 struct StandingPlan {
     configuration: Vec<u8>,
     windows: Vec<StandingWindow>,
-    coverage: Vec<CoverageWindow>,
+    actions: Vec<ActionWindow>,
+}
+
+impl StandingPlan {
+    fn action_at(&self, moment: Moment) -> Option<&ActionWindow> {
+        self.actions
+            .iter()
+            .find(|window| window.start <= moment && moment < window.end)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -189,14 +214,14 @@ struct StandingHandler(Arc<StandingPlan>);
 
 impl StandingHandler {
     fn from_configuration(configuration: &[u8]) -> Result<Self, ChannelError> {
-        let (standing, coverage) =
+        let (standing, actions) =
             decode_configuration(configuration).ok_or(ChannelError::Malformed)?;
         let windows =
             fault_policy::decode_windows(standing).map_err(|_| ChannelError::Malformed)?;
         Ok(Self(Arc::new(StandingPlan {
             configuration: configuration.to_vec(),
             windows,
-            coverage,
+            actions,
         })))
     }
 }
@@ -221,15 +246,21 @@ impl ServiceHandler for StandingHandler {
             }
             let quantum = self
                 .0
-                .coverage
-                .iter()
-                .find(|(start, end, _)| *start <= moment && moment < *end)
-                .map_or(
-                    environment::channel::DEFAULT_COVERAGE_QUANTUM,
-                    |(_, _, quantum)| u64::from(quantum.get()),
-                );
+                .action_at(moment)
+                .map_or(environment::channel::DEFAULT_COVERAGE_QUANTUM, |window| {
+                    u64::from(window.quantum.get())
+                });
             return Ok(ServiceResponse::Answered(ChannelAnswer::data(
                 quantum.to_le_bytes().to_vec(),
+            )?));
+        }
+        if question.service() == APPLICATION_CHOICE_NAMESPACE {
+            if !question.payload().is_empty() {
+                return Err(ChannelError::Malformed);
+            }
+            let choice = self.0.action_at(moment).map_or(0, |window| window.choice);
+            return Ok(ServiceResponse::Answered(ChannelAnswer::data(
+                choice.to_le_bytes().to_vec(),
             )?));
         }
         if question.service() == process_proto::debug::NAMESPACE {
@@ -302,7 +333,12 @@ fn branch_config(
                 .enumerate()
                 .map(|(index, action)| {
                     let (start, end) = windows.window(actions, index)?;
-                    Ok((start, end, action.coverage_quantum))
+                    Ok(ActionWindow {
+                        start,
+                        end,
+                        quantum: action.coverage_quantum,
+                        choice: action.choice,
+                    })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
         )?,
@@ -1522,11 +1558,48 @@ mod tests {
             );
         }
         let (standing, mut gap) = decode_configuration(&configuration.configuration).unwrap();
-        gap[1].0 += 1;
+        gap[1].start += 1;
         let gap = encode_configuration(standing, &gap).unwrap();
         assert!(StandingHandler::from_configuration(&gap).is_err());
         let truncated = &configuration.configuration[..configuration.configuration.len() - 1];
         assert!(StandingHandler::from_configuration(truncated).is_err());
+    }
+
+    #[test]
+    fn choice_windows_answer_the_recorded_action_choice() {
+        let actions = [
+            FaultAction::new(
+                FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()),
+                std::num::NonZeroU16::MIN,
+            )
+            .with_choice(11),
+            FaultAction::new(
+                FaultOperation::Kill(0, std::num::NonZeroU16::new(3).unwrap()),
+                std::num::NonZeroU16::MIN,
+            )
+            .with_choice(u64::MAX),
+        ];
+        let windows = ActionWindows { root_seal: 1_000 };
+        let configuration = branch_config(windows, &actions).unwrap();
+        let mut handler =
+            StandingHandler::from_configuration(&configuration.configuration).unwrap();
+        let question =
+            Question::with_request_id(3, APPLICATION_CHOICE_NAMESPACE, Vec::new()).unwrap();
+        for (moment, expected) in [
+            (999, 0),
+            (1_000, 11),
+            (20_000_999, 11),
+            (20_001_000, u64::MAX),
+            (50_001_000, 0),
+        ] {
+            assert_eq!(
+                handler.respond(moment, &question).unwrap(),
+                ServiceResponse::Answered(ChannelAnswer::Data(expected.to_le_bytes().to_vec()))
+            );
+        }
+        let malformed =
+            Question::with_request_id(3, APPLICATION_CHOICE_NAMESPACE, vec![0]).unwrap();
+        assert!(handler.respond(1_000, &malformed).is_err());
     }
 
     #[test]

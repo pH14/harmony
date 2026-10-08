@@ -238,10 +238,10 @@ pub fn sample_action(
         rand,
         std::num::NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
     );
-    Ok(FaultAction::new(
-        action,
-        NonZeroU16::new(u16::try_from(quantum)?).unwrap(),
-    ))
+    Ok(
+        FaultAction::new(action, NonZeroU16::new(u16::try_from(quantum)?).unwrap())
+            .with_choice(rand.next_u64()),
+    )
 }
 
 const PARK_EDGE_EXPONENTS: u32 = 14;
@@ -847,6 +847,19 @@ mod tests {
             seen.insert(quantum);
         }
         assert_eq!(seen, (0..16).map(|exponent| 1_u16 << exponent).collect());
+    }
+
+    #[test]
+    fn every_drawn_action_carries_its_own_choice() {
+        let mut rand = RomuDuoJrRand::with_seed(37);
+        let choices: BTreeSet<u64> = (0..256)
+            .map(|_| {
+                sample_action(&mut rand, &vocabulary(), 0, TICKS, None)
+                    .unwrap()
+                    .choice
+            })
+            .collect();
+        assert_eq!(choices.len(), 256);
     }
 
     #[test]

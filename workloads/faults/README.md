@@ -64,6 +64,15 @@ instrumented target.
 
 ## Actions
 
+Every action also records a 64-bit `choice` that the search draws with it and
+keys into the action's prefix. The standing service answers SDK opaque service
+namespace 11 (`APPLICATION_CHOICE_NAMESPACE`) with the choice of the action
+whose window holds the current moment, so a workload driver can draw its own
+operations from it: sibling branches of one snapshot then do different work,
+and a replay installs the same choices. Workloads that never ask are
+unaffected. The [general-discovery contract](../bugs/historical/general/README.md)
+describes the guest side.
+
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
 10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
 search draws one duration per suffix from the adaptive duration policy, and

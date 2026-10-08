@@ -4,6 +4,7 @@ use crate::codec::{self, Reader};
 use crate::error::EnvError;
 
 pub const STANDING_NAMESPACE: u16 = 9;
+pub const APPLICATION_CHOICE_NAMESPACE: u16 = 11;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct StandingWindow {
