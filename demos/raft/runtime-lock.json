@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "name": "out.js",
+      "url": "https://raw.githubusercontent.com/ktock/qemu-wasm-demo-images/bfd3583840ae77706c179e00905a121b24c59a2f/amd64-alpine/out.js",
+      "sha256": "08ebe3411401cb02926db16f0501111f42018c054df6c360de6371595c7044a7",
+      "bytes": 225498
+    },
+    {
+      "name": "qemu-system-x86_64.wasm",
+      "url": "https://raw.githubusercontent.com/ktock/qemu-wasm-demo-images/bfd3583840ae77706c179e00905a121b24c59a2f/amd64-alpine/qemu-system-x86_64.wasm",
+      "sha256": "fdc95123c27e9a398b7a774b7f5e2219670368dc779ba8e431393e4784a21d9f",
+      "bytes": 40848104
+    },
+    {
+      "name": "qemu-system-x86_64.worker.js",
+      "url": "https://raw.githubusercontent.com/ktock/qemu-wasm-demo-images/bfd3583840ae77706c179e00905a121b24c59a2f/amd64-alpine/qemu-system-x86_64.worker.js",
+      "sha256": "8efab02a9cb5ee63ced22e9853bce74cbb895d15a5fb3d5139fef855c50f62ea",
+      "bytes": 6000
+    },
+    {
+      "name": "load-kernel.js",
+      "url": "https://raw.githubusercontent.com/ktock/qemu-wasm-demo-images/b7c549b5e6f4c376f76483a03e983214421434ad/alpine-x86_64/load-kernel.js",
+      "sha256": "7eeff850d00dd148bef92f171108bfb81162999d3f0f840e8d87af924e4f1792",
+      "bytes": 7027
+    },
+    {
+      "name": "load-kernel.data",
+      "url": "https://raw.githubusercontent.com/ktock/qemu-wasm-demo-images/b7c549b5e6f4c376f76483a03e983214421434ad/alpine-x86_64/load-kernel.data",
+      "sha256": "dd239e40daf62dfb34e1bedb281ee66a98ae9664935d0471c026726629a52c25",
+      "bytes": 11666432
+    },
+    {
+      "name": "load-rom.js",
+      "url": "https://raw.githubusercontent.com/ktock/qemu-wasm-demo-images/b7c549b5e6f4c376f76483a03e983214421434ad/alpine-x86_64/load-rom.js",
+      "sha256": "617e4dc685cb2cedada4844f097eb18a56cf0f8bbd4c4e2e9231b4f07d0d8a88",
+      "bytes": 7307
+    },
+    {
+      "name": "load-rom.data",
+      "url": "https://raw.githubusercontent.com/ktock/qemu-wasm-demo-images/b7c549b5e6f4c376f76483a03e983214421434ad/alpine-x86_64/load-rom.data",
+      "sha256": "15de099e1363ceb13a31b9d11836337bab974f9460836449330b20c0534d06c9",
+      "bytes": 473088
+    },
+    {
+      "name": "browser.cpio.gz",
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/browser.cpio.gz",
+      "sha256": "38cdd1cd63b2caa80a8d2a1e79e4f32e32938bf5c9fa6f2f36ac30a54c05330d",
+      "bytes": 19970516
+    }
+  ],
+  "source": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/harmony-raft-runtime-source.tar.gz",
+  "evidence": [
+    {
+      "name": "failure.json",
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/failure.json",
+      "sha256": "a3ac57c6e025ffe1e6f95d9a7902a43be11da73e462b0f85cd1175bbe7408a85",
+      "bytes": 30964
+    },
+    {
+      "name": "investigation.json",
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/investigation.json",
+      "sha256": "a0f85965fa547f03148a9cc7a25e78c13bc6f26fd6067846d66ee13512a6df72",
+      "bytes": 25940
+    },
+    {
+      "name": "quorum.json",
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/quorum.json",
+      "sha256": "bbd2603debc26ddffb9655cb92fe03ad145a7fdc1949bb55467274b1a9f1ac25",
+      "bytes": 24919
+    }
+  ]
+}

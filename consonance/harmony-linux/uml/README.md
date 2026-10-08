@@ -146,6 +146,12 @@ host architecture. It extracts a source tree of its own under
 `config-fragment` merged last (and `config-fragment-arm64` after it on arm64),
 and asserts the symbols the profile depends on.
 
+The x86 profile also accepts legacy FXSAVE signal frames on hosts without
+XSAVE, including QEMU’s default `qemu64` CPU. Linux writes the leading
+extended-state metadata for these frames but omits the trailing XSAVE magic.
+The register-size probe measures that legacy state without copying into the
+not-yet-allocated flexible register array.
+
 ## Profile contents
 
 - `linux` is statically linked, so the profile has no host library closure.
@@ -275,3 +281,10 @@ CPU and kernel, and the verified profile.
 credential checks, installs the same filter, writes the credentials, denial
 results, host and command to the report, and executes the command under the
 filter. Campaigns run `harmony search --backend uml` this way.
+
+To check both the legacy FXSAVE and XSAVE paths under software emulation,
+run `verify-legacy-fpu.sh PROFILE HOST_BZIMAGE STATIC_BUSYBOX EVIDENCE_DIR`
+on x86 Linux with QEMU, cpio, gzip and timeout installed. It boots the real
+profile fixture inside an outer Linux kernel, once with XSAVE explicitly
+disabled and once with QEMU's `max` CPU. Both must report `HARMONY_UML PASS`.
+The outer kernel needs devtmpfs, procfs, sysfs and seccomp support.

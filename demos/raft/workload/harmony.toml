@@ -1,0 +1,16 @@
+[workload]
+package = "faults"
+input = "localhost/harmony-raft-browser:local"
+
+[runner]
+kind = "consonance"
+backend = "uml"
+
+[runner.options]
+ram_mib = 128
+uml_profile = "runtime/uml"
+base_initramfs = "runtime/base.cpio.gz"
+
+[search]
+seed = 0
+executions = 1

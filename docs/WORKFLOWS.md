@@ -45,6 +45,7 @@ what owns it, and the linter rejects them.
 | `Checks / Harmony / Analysis` | `harmony-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Dissonance Workloads / NES` | `dissonance-workloads-nes-checks.yml` | pull_request, push |
 | `Checks / Dissonance Workloads / Tiny Worlds` | `dissonance-workloads-tiny-worlds-checks.yml` | pull_request, push |
+| `Checks / Harmony Workloads / Raft Browser` | `raft-browser.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Harmony Workloads / NES` | `harmony-workloads-nes-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Harmony Workloads / Languages` | `harmony-workloads-languages-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Harmony Workloads / OCI` | `harmony-workloads-oci-checks.yml` | pull_request, push, schedule, workflow_dispatch |
@@ -592,3 +593,16 @@ The Harmony NES Nova lane also runs `cli/tests/nes.sh` against the pinned native
 runner. It checks the shared CLI's prepared-input execution, exact replay, prefix
 branching, nonempty rooted searches, additional-budget continuation and artifact
 tamper refusal. Its evidence is uploaded with the existing Nova artifact.
+
+The Raft Browser lane checks report parsing, real evidence, streamed terminal
+framing, code formatting and the static build with checksum-pinned Linux assets.
+Playwright verifies the failure, rewound tracing, quorum counterfactual and mobile
+layout. It uploads `raft-browser-dist` and browser screenshots. The slower live
+Linux/CLI shell round trip is an explicit `npm run test:live` acceptance check;
+it is not represented as covered by the static browser CI job.
+
+The Raft Browser Runtime Acceptance job rebuilds the teaching image against the
+pinned CLI/UML release, checks fresh failure/rewind/quorum/replay/shell evidence,
+boots nested UML with and without XSAVE, and exercises runtime assembly within
+a separate 15-minute PR budget. Raw evidence and assembled images are CI
+artifacts; the static demo downloads hash-checked reports from its release.
