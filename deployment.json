@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "fe9be6a6edbae5dbb06df90f52e24085709f9a05",
+    "commit": "917896075df574f22a578236294848e69df34e5b",
     "build": "reviewed local static build",
-    "ci_run": 37773351866,
-    "sha256": "1ab8c13db3c5c847c664d4eed04f969cb4a69a0ed066e9e3b67aeb3123649847"
+    "ci_run": 37775452182,
+    "sha256": "288ea068f72a513ee42d0916d8ee9f91c6b0d67726a817dad47d21e3dd6ab861"
   },
   "raft": {
     "commit": "28791e77a",

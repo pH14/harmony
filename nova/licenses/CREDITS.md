@@ -18,7 +18,10 @@ The ROM is source-built from that pinned revision using Harmony's reproducible
 recipe. The displayed project-day build stamp is fixed to `1788220800`; the
 original gameplay, graphics and levels are preserved. Generated gameplay media
 and level imagery are shared under CC BY-NC-SA 4.0. Credit and these notices must
-travel with exported images and histories.
+travel with exported images and histories. Level panoramas are assembled from
+gameplay screenshots; browser maps add heat overlays. Original artwork is
+unchanged. Visible creator, source and license links accompany the live map,
+replay and atlas, in addition to the footer and Credits dialog.
 
 The deployed site includes the pinned Nova source archive, GPL text, pinned
 QuickNES source, and browser frontend/build recipe in `licenses/`. The source
