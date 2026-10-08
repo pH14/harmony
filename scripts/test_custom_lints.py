@@ -777,6 +777,79 @@ class DisplayNameTests(unittest.TestCase):
         self.assertEqual(LINTS._job_display_names(dynamic), [LINTS.UNKNOWN_VALUE])
 
 
+class SelectorJobTests(unittest.TestCase):
+    def selector(self, **changes) -> dict:
+        job = {
+            "name": "Change Selection",
+            "timeout-minutes": 5,
+            "outputs": {"harmony_languages": "${{ steps.harmony_languages.outputs.enabled }}"},
+            "steps": [
+                {"uses": "actions/checkout@v4", "with": {"fetch-depth": 0}},
+                {"uses": "./.github/actions/ci-scope", "id": "harmony_languages",
+                 "with": {"kind": "harmony_languages"}},
+            ],
+        }
+        job.update(changes)
+        return job
+
+    def selected(self, **changes) -> dict:
+        job = {
+            "name": "Check",
+            "timeout-minutes": 15,
+            "needs": ["scope"],
+            "if": "needs.scope.outputs.harmony_languages == 'true'",
+            "steps": [{"run": "check"}],
+        }
+        job.update(changes)
+        return job
+
+    def rules(self, job_id, job, registered):
+        return [v.rule for v in LINTS.check_job_scope(".github/workflows/example.yml", job_id, job, registered)]
+
+    def registry(self):
+        return (ci_contract.Job("Change Selection", "pr", 5, selects=("harmony_languages",)),
+                ci_contract.Job("Check", "pr", 15, select="harmony_languages"))
+
+    def test_a_selector_and_its_consumer_pass(self):
+        selector, consumer = self.registry()
+        self.assertFalse(self.rules("scope", self.selector(), selector))
+        self.assertFalse(self.rules("check", self.selected(), consumer))
+
+    def test_the_selector_job_is_named_scope(self):
+        selector, _ = self.registry()
+        self.assertEqual(self.rules("select", self.selector(), selector), ["ci-scope-routing"])
+
+    def test_the_selector_must_decide_every_registered_kind_unconditionally(self):
+        selector, _ = self.registry()
+        job = self.selector()
+        job["steps"][1]["if"] = "false"
+        self.assertEqual(self.rules("scope", job, selector), ["ci-scope-routing"])
+        job = self.selector()
+        job["steps"][1]["with"] = {"kind": "kani"}
+        self.assertEqual(self.rules("scope", job, selector), ["ci-scope-routing"])
+
+    def test_the_selector_must_publish_each_kind_and_read_the_complete_diff(self):
+        selector, _ = self.registry()
+        self.assertEqual(self.rules("scope", self.selector(outputs={}), selector), ["ci-scope-routing"])
+        job = self.selector()
+        job["steps"][0]["with"] = {"fetch-depth": 1}
+        self.assertEqual(self.rules("scope", job, selector), ["ci-scope-routing"])
+
+    def test_a_selected_job_needs_the_selector_and_requires_its_output(self):
+        _, consumer = self.registry()
+        for change in ({"needs": []}, {"if": ""}, {"if": "needs.scope.outputs.harmony_languages == 'true' || always()"}):
+            with self.subTest(change=change):
+                self.assertEqual(self.rules("check", self.selected(**change), consumer), ["ci-scope-routing"])
+        guarded = "(github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.harmony_languages == 'true'"
+        self.assertFalse(self.rules("check", self.selected(**{"if": guarded}), consumer))
+
+    def test_a_selected_job_does_not_select_work_itself(self):
+        _, consumer = self.registry()
+        job = self.selected()
+        job["steps"].append({"uses": "./.github/actions/ci-scope", "id": "scope", "with": {"kind": "harmony_languages"}})
+        self.assertEqual(self.rules("check", job, consumer), ["ci-scope-routing"])
+
+
 class ScopeRoutingTests(unittest.TestCase):
     def job(self, **changes) -> dict:
         job = {

@@ -3,17 +3,22 @@
 """Select work inside its real CI job; never claim an unselected test ran."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
 
+from ci_contract import MIRI_OWNERS
 from ci_scope import SCENARIOS, selected
 from miri_scope import TARGETS, selected_targets
 from quality_scope import kani_required
 
 
+FULL_RUN_KINDS = ("harmony_nes", "harmony_languages")
+
+
 def changed_paths(kind, event, base, before):
-    if event == "workflow_dispatch" and kind == "harmony_nes":
+    if kind in FULL_RUN_KINDS and event in ("workflow_dispatch", "schedule"):
         command = ["git", "ls-files", "-z"]
     elif event not in {"pull_request", "push"}:
         raise ValueError(f"unsupported event for {kind}: {event}")
@@ -42,6 +47,13 @@ def selection(kind, target, paths):
         match = next((item for item in selected_targets(paths) if item["name"] == target), None)
         return {"enabled": match is not None, "command": match["command"] if match else "",
                 "miriflags": match["miriflags"] if match else ""}
+    if kind == "miri_matrix":
+        names = {name for name, owner in MIRI_OWNERS.items() if owner == target}
+        if not names:
+            raise ValueError(f"no Miri targets are owned by {target!r}")
+        include = [item for item in selected_targets(paths) if item["name"] in names]
+        return {"enabled": bool(include),
+                "matrix": json.dumps({"include": include}, separators=(",", ":"))}
     if target:
         raise ValueError(f"{kind} does not accept a target")
     if kind == "kani":
@@ -51,7 +63,7 @@ def selection(kind, target, paths):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", choices=(*SCENARIOS, "kani", "miri"), required=True)
+    parser.add_argument("--kind", choices=(*SCENARIOS, "kani", "miri", "miri_matrix"), required=True)
     parser.add_argument("--target", default="")
     args = parser.parse_args()
     paths = changed_paths(args.kind, os.environ.get("EVENT_NAME", ""),

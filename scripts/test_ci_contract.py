@@ -241,8 +241,9 @@ class RoutingTests(unittest.TestCase):
         used = {}
         for workflow in ci_contract.WORKFLOWS:
             for job in workflow.jobs:
-                if job.scope:
-                    used.setdefault(job.scope, set()).add(workflow.name)
+                for kind in (job.scope, job.select, *job.selects):
+                    if kind:
+                        used.setdefault(kind, set()).add(workflow.name)
         self.assertEqual(set(used), set(ci_contract.SCOPE_KINDS))
         for kind, workflows in used.items():
             with self.subTest(kind=kind):

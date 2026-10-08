@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from ci_contract import MIRI_OWNERS
 from ci_scope import SCENARIOS, selected
 from miri_scope import TARGETS, selected_targets
 from quality_scope import kani_required
@@ -75,6 +76,31 @@ class InlineSelectionTests(unittest.TestCase):
             self.assertTrue(SCOPE.selection("harmony_nes", "", paths)["enabled"])
         with self.assertRaises(ValueError):
             SCOPE.changed_paths("miri", "workflow_dispatch", "", "")
+
+    def test_scheduled_and_manual_language_runs_select_the_tracked_source_tree(self):
+        for event in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                with mock.patch.object(SCOPE.subprocess, "check_output", return_value="README.md\0") as run:
+                    paths = SCOPE.changed_paths("harmony_languages", event, "", "")
+                    run.assert_called_once_with(["git", "ls-files", "-z"], text=True)
+        with self.assertRaises(ValueError):
+            SCOPE.changed_paths("harmony_languages", "merge_group", "", "")
+
+    def test_the_miri_matrix_lists_only_the_owner_targets_a_change_reaches(self):
+        import json
+        none = SCOPE.selection("miri_matrix", "Consonance", ["docs/WORKFLOWS.md"])
+        self.assertFalse(none["enabled"])
+        self.assertEqual(json.loads(none["matrix"]), {"include": []})
+        one = SCOPE.selection("miri_matrix", "Consonance", ["consonance/vm-state/src/lib.rs"])
+        self.assertTrue(one["enabled"])
+        self.assertEqual([item["name"] for item in json.loads(one["matrix"])["include"]], ["vm-state"])
+        harmony = SCOPE.selection("miri_matrix", "Harmony", ["workloads/nes-guest/src/lib.rs"])
+        self.assertEqual([item["name"] for item in json.loads(harmony["matrix"])["include"]], ["nes-guest"])
+        everything = SCOPE.selection("miri_matrix", "Consonance", ["Cargo.lock"])
+        self.assertEqual(len(json.loads(everything["matrix"])["include"]),
+                         len([n for n, o in MIRI_OWNERS.items() if o == "Consonance"]))
+        with self.assertRaises(ValueError):
+            SCOPE.selection("miri_matrix", "Nobody", [])
 
     def test_matches_existing_selectors(self):
         samples = [[], ["docs/WORKFLOWS.md"], ["Cargo.lock"],
