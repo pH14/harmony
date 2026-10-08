@@ -152,6 +152,10 @@ presses reach "Start!" from either initial cursor, because the menu has a fourth
 "Show Intro" option, with the cursor on it, only for an uncleared level with an
 intro cutscene. The adapter then checks that the game's checkpoint level is the
 new level; a level that fails to start is an execution failure.
+A state whose started level differs from the next level in campaign order ends
+its job, as a death does. Play reaches another level only through a glitch,
+which can open the level select after many deaths in one level. Without this
+rule every earlier level would be a new place in the current tier.
 The common `nes-eval` request selects this mode with `whole_game: true` from
 level 1. Its fixed terminal policy is part of replay identity. Isolated later-
 level fixtures initialize the declared prior-clear bitmap and remain separate
