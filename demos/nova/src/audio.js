@@ -11,21 +11,25 @@ export class GameAudio {
     this.samples = 0;
     this.muted = false;
   }
-  async start(snapshot) {
-    const generation = ++this.generation;
-    this.active = true;
-    if (!this.Context) return;
+  unlock() {
+    if (!this.Context) return Promise.resolve();
     this.context ||= new this.Context({ sampleRate: 48000 });
     if (!this.gain) {
       this.gain = this.context.createGain();
       this.gain.connect(this.context.destination);
     }
     this.gain.gain.value = this.muted ? 0 : 0.4;
-    const resume = this.context.resume();
-    this.pending ||= this.factory();
+    return this.context.resume();
+  }
+  async start(snapshot) {
+    this.stop();
+    const generation = ++this.generation;
+    this.active = true;
+    if (!this.Context) return;
     try {
-      const engine = await this.pending;
-      await resume;
+      const resume = this.unlock();
+      this.pending ||= this.factory();
+      const [engine] = await Promise.all([this.pending, resume]);
       if (generation !== this.generation || !this.active) return;
       this.engine = engine;
       engine.restore(snapshot());
@@ -38,10 +42,10 @@ export class GameAudio {
       throw e;
     }
   }
-  run(buttons) {
-    if (this.active && this.engine) this.engine.run(buttons, 1, false);
+  run(buttons, frames = 1) {
+    if (this.active && this.engine) this.engine.run(buttons, frames, false);
   }
-  flush() {
+  flush(rate = 1) {
     if (!this.active || !this.engine || this.context.state !== "running")
       return;
     const pcm = this.engine.audio();
@@ -60,6 +64,7 @@ export class GameAudio {
     }
     const source = this.context.createBufferSource();
     source.buffer = buffer;
+    source.playbackRate.value = rate;
     source.connect(this.gain);
     source.onended = () => {
       this.sources.delete(source);
@@ -68,7 +73,7 @@ export class GameAudio {
     this.sources.add(source);
     this.nextTime = Math.max(this.nextTime, now + 0.025);
     source.start(this.nextTime);
-    this.nextTime += frames / 48000;
+    this.nextTime += frames / 48000 / rate;
     this.samples += frames;
   }
   mute() {

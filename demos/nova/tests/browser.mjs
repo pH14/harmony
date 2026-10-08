@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { createEngine } from "../src/emulator.js";
 import { snapshotHash } from "../src/media.js";
+import { isMapEvidence } from "../src/world.js";
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.CHROME_CHANNEL
@@ -19,12 +20,103 @@ page.on("response", (response) => {
   if (response.status() >= 400)
     errors.push(`${response.status()} ${response.url()}`);
 });
+await page.addInitScript(() => {
+  const RealWorker = window.Worker;
+  window.Worker = class extends RealWorker {
+    constructor(...args) {
+      super(...args);
+      window.novaTestWorker = this;
+      this.addEventListener("message", ({ data }) => {
+        if (data.type === "states") window.novaTestStates = data.states;
+      });
+    }
+    postMessage(data, ...rest) {
+      if (data.type === "states") window.novaTestRequest = data.request;
+      if (data.type === "fork") window.novaTestFork = structuredClone(data);
+      super.postMessage(data, ...rest);
+    }
+  };
+});
+const localBase = pathToFileURL(process.cwd() + "/public/");
+const emulator = await createEngine(localBase, {
+  rom: new Uint8Array(await readFile(new URL("nova.nes", localBase))),
+  wasmBinary: await readFile(new URL("engine/quicknes.wasm", localBase)),
+});
+const emulatorRoot = emulator.boot();
+const catalog = JSON.parse(await readFile(new URL("maps.json", localBase)));
+async function selectFixture(tape, id) {
+  emulator.restore(emulatorRoot);
+  const frames = tape.actions.reduce((n, a) => n + a.frames, 0);
+  for (const a of tape.actions) emulator.run(a.buttons, a.frames);
+  if (tape.endpoint_sha256)
+    assert.equal(await snapshotHash(emulator.capture()), tape.endpoint_sha256);
+  const state = {
+    id,
+    actions: tape.actions,
+    frames,
+    observation: emulator.observation(),
+    snapshot: [...emulator.capture()],
+  };
+  await page.evaluate((state) => {
+    state.snapshot = new Uint8Array(state.snapshot);
+    window.novaTestWorker.onmessage({
+      data: {
+        type: "states",
+        request: window.novaTestRequest,
+        states: [state],
+      },
+    });
+  }, state);
+  return frames;
+}
+async function measurePlayback() {
+  return page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const start = performance.now(),
+          first = Number(document.querySelector("#scrub").value);
+        let samples = 0;
+        const step = (now) => {
+          samples++;
+          if (now - start >= 600)
+            resolve({
+              duration: now - start,
+              frames: Number(document.querySelector("#scrub").value) - first,
+              samples,
+            });
+          else requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }),
+  );
+}
 try {
   await page.goto(process.env.DEMO_URL || "http://127.0.0.1:4173");
   await page.waitForFunction(
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
   );
+  assert.equal(await page.locator("#speed").inputValue(), "1");
+  assert.equal(
+    await page.locator("#screenshot,#export,#import,#history-file").count(),
+    0,
+  );
+  assert.equal(await page.locator(".brand").innerText(), "harmony");
+  const toolbarLayout = await page.locator(".exploration").evaluate((panel) => {
+    const controls = panel.querySelector(".controls").getBoundingClientRect(),
+      counters = panel.querySelector(".metrics").getBoundingClientRect(),
+      goal = panel.querySelector(".goal").getBoundingClientRect(),
+      panelRect = panel.getBoundingClientRect();
+    return {
+      left: controls.left - panelRect.left,
+      countersBottom: counters.bottom,
+      goalTop: goal.top,
+      size: getComputedStyle(panel.querySelector(".metrics b")).fontSize,
+    };
+  });
+  assert.ok(toolbarLayout.left < 30);
+  assert.ok(toolbarLayout.countersBottom <= toolbarLayout.goalTop);
+  assert.ok(parseFloat(toolbarLayout.size) <= 14);
   const originImage = await page
     .locator("#film")
     .evaluate((c) => c.toDataURL());
@@ -125,87 +217,53 @@ try {
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",
   );
-  const pngPromise = page.waitForEvent("download");
-  await page.locator("#screenshot").click();
-  const shot = await pngPromise;
-  const bytes = await readFile(await shot.path());
-  assert.equal(bytes.subarray(1, 4).toString(), "PNG");
-  assert.match(bytes.toString(), /NovaSquirrel/);
-  assert.match(bytes.toString(), /CC BY-NC-SA 4.0/);
-  const historyPromise = page.waitForEvent("download");
-  await page.locator("#export").click();
-  const history = await historyPromise;
-  const path = await history.path();
-  const tape = JSON.parse(await readFile(path));
-  assert.ok(tape.actions.length > 0);
-  const status = await page.locator("#status").innerText();
-  await page.locator("#history-file").setInputFiles({
-    name: "tampered.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(
-      JSON.stringify({ ...tape, endpoint_sha256: "0".repeat(64) }),
-    ),
-  });
-  await page.waitForFunction(() =>
-    document.querySelector("#error").textContent.includes("checksum mismatch"),
-  );
-  assert.equal(await page.locator("#status").innerText(), status);
-  await page.locator("#history-file").setInputFiles(path);
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#verification").textContent ===
-      "Saved controller history",
-  );
-  assert.equal(await page.locator("#error").isVisible(), false);
-  const localBase = pathToFileURL(process.cwd() + "/public/");
-  const emulator = await createEngine(localBase, {
-    rom: new Uint8Array(await readFile(new URL("nova.nes", localBase))),
-    wasmBinary: await readFile(new URL("engine/quicknes.wasm", localBase)),
-  });
-  emulator.boot();
-  const emulatorRoot = emulator.capture();
-  const rootHash = await snapshotHash(emulatorRoot);
-  const longActions = [
-    ...tape.actions,
-    ...Array(500).fill({ buttons: 0, frames: 120 }),
-  ];
-  for (const action of longActions) emulator.run(action.buttons, action.frames);
-  const longTape = {
-    ...tape,
-    actions: longActions,
-    endpoint_sha256: await snapshotHash(emulator.capture()),
-  };
-  await page.locator("#history-file").setInputFiles({
-    name: "long-valid.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(JSON.stringify(longTape)),
-  });
-  await page.waitForFunction(
-    () => document.querySelector("#verification").textContent === "Replaying",
-  );
-  await page.locator("#scrub").fill("0");
-  await page.waitForTimeout(200);
-  assert.equal(await page.locator("#error").isVisible(), false);
-  assert.equal(await page.locator("#status").innerText(), status);
-  await page.locator("#history-file").setInputFiles(path);
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#verification").textContent ===
-      "Saved controller history",
-  );
   const mainTape = JSON.parse(await readFile("tests/fixtures/main-exit.json"));
-  const mainFrames = mainTape.actions.reduce((n, a) => n + a.frames, 0);
-  await page.locator("#history-file").setInputFiles({
-    name: "main.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(JSON.stringify(mainTape)),
-  });
+  const mainFrames = await selectFixture(mainTape, "fixture-main");
   await page.waitForFunction(
-    (n) =>
+    () =>
       document.querySelector("#verification").textContent ===
-        "Saved controller history" &&
-      document.querySelector("#scrub").max === String(n),
-    mainFrames,
+        "Exact replay ✓" &&
+      document
+        .querySelector("#film-title")
+        .textContent.includes("fixture-main"),
+  );
+  const roomFrames = new Map();
+  emulator.restore(emulatorRoot);
+  let frame = 0;
+  for (const action of mainTape.actions) {
+    for (let i = 0; i < action.frames; i++) {
+      emulator.run(action.buttons, 1);
+      frame++;
+      const o = emulator.observation();
+      if (
+        [0, 49, 45].includes(o.level) &&
+        o.health &&
+        isMapEvidence(o, catalog.levels) &&
+        !roomFrames.has(o.level)
+      )
+        roomFrames.set(o.level, frame);
+    }
+  }
+  assert.equal(roomFrames.size, 3);
+  for (const [room, frame] of roomFrames) {
+    await page.locator("#scrub").fill(String(frame));
+    await page.waitForFunction(
+      ({ room, frame }) =>
+        document.querySelector("#map").dataset.map === String(room) &&
+        document
+          .querySelector("#frame-label")
+          .textContent.startsWith("FRAME " + frame.toLocaleString() + " /"),
+      { room, frame },
+    );
+    assert.equal(
+      await page.locator(`.area-label[aria-pressed="true"]`).innerText(),
+      { 0: "Introduction", 49: "Garden", 45: "Main level" }[room],
+    );
+  }
+  await page.locator("#scrub").fill(String(mainFrames));
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Exact replay ✓",
   );
   await page.locator("#scrub").fill(String(mainFrames - 20));
   await page.waitForFunction(
@@ -225,25 +283,27 @@ try {
     document.querySelector("#frame-label").textContent.startsWith("FRAME 0 /"),
   );
   await page.locator("#play").click();
-  const pacing = await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        const start = performance.now(),
-          first = Number(document.querySelector("#scrub").value);
-        let samples = 0;
-        const step = (now) => {
-          samples++;
-          if (now - start >= 600)
-            resolve({
-              duration: now - start,
-              frames: Number(document.querySelector("#scrub").value) - first,
-              samples,
-            });
-          else requestAnimationFrame(step);
-        };
-        requestAnimationFrame(step);
-      }),
+  const normal = await measurePlayback();
+  const normalRate = (normal.frames * 1000) / normal.duration;
+  assert.ok(
+    normalRate >= 45 && normalRate <= 75,
+    `1x replay must track wall time: ${normalRate}`,
   );
+  await page.waitForFunction(
+    () => Number(document.querySelector("#film").dataset.audioFrames) > 0,
+  );
+  await page.locator("#play").click();
+  const pausedAudio = await page
+    .locator("#film")
+    .getAttribute("data-audio-frames");
+  await page.waitForTimeout(100);
+  assert.equal(
+    await page.locator("#film").getAttribute("data-audio-frames"),
+    pausedAudio,
+  );
+  await page.locator("#speed").selectOption("4");
+  await page.locator("#play").click();
+  const pacing = await measurePlayback();
   const rate = (pacing.frames * 1000) / pacing.duration;
   assert.ok(
     rate >= 180 && rate <= 300,
@@ -254,23 +314,77 @@ try {
     "Replay must continue presenting frames during playback",
   );
   await page.locator("#play").click();
+  await page.locator("#speed").selectOption("1");
   console.log(
-    `4x replay: ${rate.toFixed(1)} game frames/s, ${pacing.samples} presentations in ${pacing.duration.toFixed(0)} ms; checkpoint seek reused a late snapshot.`,
+    `Audible 1x replay: ${normalRate.toFixed(1)} game frames/s; 4x: ${rate.toFixed(1)}, ${pacing.samples} presentations; cached scrub follows all three rooms.`,
   );
-  await page.locator("#history-file").setInputFiles({
-    name: "root.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(
-      JSON.stringify({ ...tape, actions: [], endpoint_sha256: rootHash }),
-    ),
-  });
+  for (const room of [49, 45]) {
+    const beforeDoor = roomFrames.get(room) - 30;
+    await page.locator("#scrub").fill(String(beforeDoor));
+    await page.waitForFunction(
+      (frame) =>
+        document
+          .querySelector("#frame-label")
+          .textContent.startsWith("FRAME " + frame.toLocaleString() + " /"),
+      beforeDoor,
+    );
+    await page.locator("#play").click();
+    await page.waitForFunction(
+      (room) => document.querySelector("#map").dataset.map === String(room),
+      room,
+    );
+    assert.ok(
+      Number(await page.locator("#scrub").inputValue()) >= roomFrames.get(room),
+    );
+    await page.locator("#play").click();
+  }
+  const nextTape = JSON.parse(
+    await readFile("tests/fixtures/level-two-2.json"),
+  );
+  await selectFixture(nextTape, "fixture-level-two");
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent ===
-        "Saved controller history" &&
+        "Exact replay ✓" && document.querySelector("#map").dataset.map === "1",
+  );
+  assert.equal(await page.locator("#goal-title").innerText(), "Level 2");
+  await page.locator("#scrub").fill("0");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#map").dataset.map === "0" &&
+      document
+        .querySelector("#frame-label")
+        .textContent.startsWith("FRAME 0 /"),
+  );
+  assert.equal(await page.locator("#goal-title").innerText(), "Level 1");
+  const longFrames = await selectFixture(
+    {
+      actions: [
+        ...mainTape.actions,
+        ...Array(500).fill({ buttons: 0, frames: 120 }),
+      ],
+    },
+    "fixture-long",
+  );
+  await page.waitForFunction(
+    () => document.querySelector("#verification").textContent === "Replaying",
+  );
+  await page.locator("#scrub").fill("0");
+  await page.waitForFunction(() =>
+    document.querySelector("#frame-label").textContent.startsWith("FRAME 0 /"),
+  );
+  assert.equal(await page.locator("#error").isVisible(), false);
+  assert.ok(longFrames > 60000);
+  await selectFixture({ actions: [] }, "fixture-root");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Original game" &&
       document.querySelector("#scrub").max === "0",
   );
   const originalAttempts = await page.locator("#attempts").innerText();
+  const manualAudioStart = Number(
+    await page.locator("#film").getAttribute("data-audio-frames"),
+  );
   await page.locator("#take-control").click();
   await page.keyboard.down("ArrowRight");
   await page.waitForTimeout(500);
@@ -279,7 +393,9 @@ try {
   await page.waitForTimeout(80);
   await page.keyboard.up("KeyZ");
   await page.waitForFunction(
-    () => Number(document.querySelector("#film").dataset.audioFrames) > 0,
+    (start) =>
+      Number(document.querySelector("#film").dataset.audioFrames) > start,
+    manualAudioStart,
   );
   await page.locator("#sound").click();
   assert.equal(
@@ -292,11 +408,9 @@ try {
     await page.locator("#take-control").getAttribute("aria-pressed"),
     "false",
   );
-  const manualDownload = page.waitForEvent("download");
-  await page.locator("#export").click();
-  const manualTape = JSON.parse(
-    await readFile(await (await manualDownload).path()),
-  );
+  await page.locator("#search-here").click();
+  await page.waitForFunction(() => !!window.novaTestFork);
+  const manualTape = await page.evaluate(() => window.novaTestFork.tape);
   assert.ok(manualTape.actions.some((a) => a.buttons & 128));
   assert.ok(manualTape.actions.some((a) => a.buttons & 1));
   assert.ok(manualTape.actions.reduce((n, a) => n + a.frames, 0) > 12);
@@ -305,9 +419,8 @@ try {
   assert.equal(
     await snapshotHash(emulator.capture()),
     manualTape.endpoint_sha256,
-    "Human inputs must reproduce the exact rendered endpoint",
+    "Human inputs must reproduce the exact rendered endpoint passed to the worker",
   );
-  await page.locator("#search-here").click();
   await page.waitForFunction(
     () =>
       document.querySelector("#branch-choice").value === "1" &&
@@ -351,11 +464,13 @@ try {
         ?.textContent.includes("#1:") &&
       document.querySelector("#verification").textContent === "Exact replay ✓",
   );
-  const childDownload = page.waitForEvent("download");
-  await page.locator("#export").click();
-  const childTape = JSON.parse(
-    await readFile(await (await childDownload).path()),
-  );
+  const childState = await page.evaluate(() => window.novaTestStates[0]);
+  const childTape = {
+    actions: childState.actions,
+    endpoint_sha256: await snapshotHash(
+      new Uint8Array(Object.values(childState.snapshot)),
+    ),
+  };
   assert.ok(
     childTape.actions.reduce((n, a) => n + a.frames, 0) >
       manualTape.actions.reduce((n, a) => n + a.frames, 0),
@@ -637,7 +752,7 @@ try {
   assert.equal(await page.locator("#error").isVisible(), false);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser search, exact replay, scrubbing, downloads, import, room controls, reset and mobile layout passed.",
+    "Browser search, exact replay, room-following scrubbing, audible 1x/4x history, manual branching, simplified controls, reset and mobile layout passed.",
   );
 } catch (e) {
   console.error(

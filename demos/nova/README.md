@@ -55,17 +55,26 @@ canonicalizing QuickNES's three unused PPU bytes. Verification runs internally,
 without an on-screen badge. Scrubbing keeps the last complete screenshot visible
 while the slider and an interpolated trail marker follow the requested frame.
 An Updating frame indicator appears only if reconstruction takes over 120 ms;
-interpolation never crosses a reload gap or a room transition. Screenshot saves
-and takeover wait for the actual emulator frame. Replay checkpoints are cached
-only for the selected history, at regular intervals targeting 64 snapshots,
+interpolation never crosses a reload gap or a room transition. Takeover waits
+for the actual emulator frame. The map follows the requested room as soon as the selected trail identifies it, then confirms the room from
+the reconstructed game state. Crossing rooms or campaign levels focuses that
+room and brings it into view; zoomed rooms center on the replay position.
+Keyboard/cell selection keeps its retained-state list during this navigation.
+Replay checkpoints are cached only for the selected history, at regular intervals targeting 64 snapshots,
 with a hard 2 MiB phone / 4 MiB desktop limit. Seeks resume from the closest
 preceding checkpoint or the current emulator frame, yield after approximately
 8 ms of work, and cancel when a newer request arrives. Movies follow elapsed
 wall time, render only their final presented frame, and update details at most
-about seven times per second. Maps refresh at 30 Hz. Scrubbing reconstructs any frame. Save a PNG, or
-export and reopen a JSON controller history. Movies are rendered live and are
-silent during history playback. Takeover plays the game’s original music and
-sound effects, with a Mute button. Audio stops on release, blur or a hidden tab.
+about seven times per second. Maps refresh at 30 Hz. Playback defaults to 1×.
+User-started histories and takeover play the original music and sound effects,
+with one mute control. Faster movies accelerate audio by the selected playback
+rate. Audio stops on pause, seeking, selection, restart, completion, or a hidden
+tab; ending takeover also stops its sound. The AudioContext is unlocked in the
+play/watch click before any asynchronous reset. Automatic attract replay starts
+silently until the visitor chooses to watch. Save/open-history and screenshot
+controls are omitted from the interface. Search controls sit at the top left,
+with a compact counter strip above the rooms. Warm graphite surfaces and amber
+controls surround the unchanged cold-to-hot heat colors.
 A separate, lazily loaded emulator generates PCM because switching QuickNES
 from its silent buffer changes serialized APU bytes. Only the original silent
 emulator records controller endpoints; the reusable audio emulator never enters
@@ -84,10 +93,10 @@ It preserves health, items, level progression and emulator state through replay,
 without teleporting Nova or changing game RAM. The search selector returns to
 any earlier search, preserving its archive and random generator. Taking control
 or forking at an earlier scrubber position discards only that new history’s
-future. Exports and descendant histories include the original inputs, human
-intervention and subsequent search inputs, and remain exactly replayable from
-the original game root. Imports verify the ROM, core and endpoint checksum. PNG
-metadata and JSON exports carry attribution and license references.
+future. Descendant histories include the original inputs, human intervention
+and subsequent search inputs, and remain exactly replayable from the original
+game root. The internal fork admission verifies the ROM, core and endpoint
+checksum. Generated map PNGs carry attribution and license metadata.
 
 ## Boundaries
 
@@ -108,7 +117,7 @@ Level 2; phones can inspect and replay the retained exploration but are not
 promised that transition within their budget.
 Seed 1 is retained in regression diagnostics as a censored run, not described
 as a successful clear. A history is bounded to 10,000 actions and 200,000 frames, matching
-import admission. Runs stop after 100,000 paths, approximately 20,000 historical
+controller-history admission. Runs stop after 100,000 paths, approximately 20,000 historical
 entries per search, or a shared compressed snapshot budget. Up to eight searches
 are retained in one worker, with only one advancing at a time. Earlier searches
 remain inspectable; their snapshots count toward the same global budget. The
@@ -129,8 +138,8 @@ capacity; retired selector entries still retain their snapshots. Decompression
 is bounded to one MiB. The UI caches at most 32 fetched histories and 2 MiB of
 estimated storage (64 bytes per action plus snapshot and record overhead);
 current replay, the bounded human controller prefix, selected trail and in-flight
-messages are separate. Branch ancestry metadata is sanitized on import. Evicted histories remain in
-the worker archive and can be fetched again. Full-resolution panoramas are held
+messages are separate. Branch ancestry metadata is sanitized on fork admission.
+Evicted histories remain in the worker archive and can be fetched again. Full-resolution panoramas are held
 only for the focused level's connected rooms. Atlas images are decoded one at a
 time into 320 by 96 thumbnails, at most 6.7 MiB for all 57 maps; discarded full
 images can take time to be reclaimed by the browser. Browsing every level no
@@ -193,13 +202,18 @@ evidence. The old
 admission of only maps 0 and 40 rejected the garden door; map 40 is a bonus level.
 Rooted search checks fork mid-action and from Main and Level 2, then verify both
 the root snapshot and actual descendants against complete controller histories.
-The UI check covers wall-clock 4× playback, cached late scrubbing, actual audio
+The UI check covers audible wall-clock 1×/4× playback, cached late scrubbing,
+room following across Introduction/Garden/Main and into Level 2, audio
 scheduling and mute, the drawer, independent room zoom, real keyboard and touch
-inputs, human-history export, branching, returning to a paused original search,
-cell selection, replay, frame zero, scrubbing, attributed
-PNG/JSON downloads, valid and tampered imports, cancelling a long import, stacked live-map selection, world browsing, tall-level layout, dragging, the simplified
-toolbar, restart, mobile layout, credits and source bundles. A native and wasm32
-selector fixture checks the same recorded choices with weights above 2^32,
+inputs, human-prefix branching, returning to a paused original search, cell
+selection, exact replay, frame zero, cancellation of long reconstruction,
+stacked live-map selection, world browsing, tall-level layout, dragging, the
+simplified top-left toolbar/counters, restart, mobile layout, credits and source
+bundles. Browser-only worker interception supplies source-matched, replayed
+fixture states through the normal selected-history response boundary; no fixture
+or test API enters production. Actual fork messages and actual archive responses
+verify human and descendant prefixes after removal of file controls. A native
+and wasm32 selector fixture checks the same recorded choices with weights above 2^32,
 including 2^56 tiers. `CHROME_CHANNEL=chrome` uses an installed Chrome;
 `DEMO_URL` targets a deployed subdirectory.
 

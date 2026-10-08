@@ -3,8 +3,8 @@ import "./style.css";
 import { ReplayTimeline, trailPoint } from "./replay.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
-import { Heatmap, validateTape } from "./heat.js";
-import { CREDIT, creditPNG, snapshotHash } from "./media.js";
+import { Heatmap } from "./heat.js";
+import { CREDIT, snapshotHash } from "./media.js";
 import { viewCenter } from "./view.js";
 import {
   prefixAt,
@@ -28,14 +28,14 @@ const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT.title}</a> art by <a href="https://novasquirrel.com/">${CREDIT.author}</a> \u00b7 <a href="${CREDIT.license_url}" rel="license">${CREDIT.license}</a></small>`;
 document.querySelector("#app").innerHTML = `
-<header><a class="brand" href="https://github.com/pH14/harmony">◈ <b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span></header>
-<main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><select id="branch-choice" aria-label="Search branch" hidden></select><button id="inspect-open">History</button></div></div>
+<header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span></header>
+<main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><select id="branch-choice" aria-label="Search branch" hidden></select><button id="inspect-open">History</button></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
 <div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><span id="goal-count">0 / 40 levels cleared</span><button id="completion" hidden>Watch completion</button></div></div>
 <nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
-${artCredit}<div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><span>Selected history</span><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><div class="section-title"><div><h2 id="film-title">The first possibility</h2></div><span id="verification" hidden>Starting emulator</span></div><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></div><div class="branch-actions"><button id="take-control" disabled>Take control</button><button id="search-here" disabled>Search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><button id="sound" aria-label="Mute game audio">Mute</button><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div><div class="film-actions"><button id="screenshot" disabled>Save this frame</button><button id="export" disabled>Save history</button><button id="import">Open history</button><input id="history-file" type="file" accept="application/json,.json" hidden></div></div>
+${artCredit}</section>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><span>Selected history</span><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><div class="section-title"><div><h2 id="film-title">The first possibility</h2></div><span id="verification" hidden>Starting emulator</span></div><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" disabled>Take control</button><button id="search-here" disabled>Search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
 <aside><div class="section-title"><div><h2 id="cell-title">Selected state</h2></div><span id="cell-visits" class="badge">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><div id="details" class="details"></div></aside></section></div>
 <section class="atlas"><div class="section-title"><h2>The game</h2><nav id="worlds" aria-label="Game worlds"></nav></div><div id="atlas" class="atlas-grid"></div>${artCredit}</section>
 <footer><span>Nova the Squirrel by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
@@ -163,10 +163,11 @@ function showError(error) {
   $("error").textContent = String(error?.message || error);
 }
 function replayError(error) {
-  if (current?.endpoint_sha256) showError(error);
-  else fail(error);
+  fail(error);
 }
 function fail(error) {
+  playing = false;
+  music.stop();
   worker?.postMessage({ type: "pause" });
   $("error").hidden = false;
   $("error").textContent = String(error?.message || error);
@@ -191,6 +192,11 @@ function drawFilm() {
   $("frame-label").textContent =
     `FRAME ${fmt(currentFrame)} / ${fmt(current?.frames)}`;
   renderedFrame = currentFrame;
+  followReplayRoom(
+    frameObservation && isMapEvidence(frameObservation, catalog.levels)
+      ? project(frameObservation, maps.get(frameObservation.level))
+      : null,
+  );
   if (!seeking) $("scrub").value = currentFrame;
 }
 function advanceFilm(target, paint = true, renderAt = target) {
@@ -204,6 +210,7 @@ function advanceFilm(target, paint = true, renderAt = target) {
       timeline.interval - (currentFrame % timeline.interval),
     );
     engine.run(action.buttons, n, currentFrame + n === renderAt);
+    if (playing && !seeking) music.run(action.buttons, n);
     currentFrame += n;
     if (currentFrame % timeline.interval === 0)
       timeline.put(currentFrame, engine.capture());
@@ -227,6 +234,35 @@ function markerPoint() {
     ? project(frameObservation, maps.get(frameObservation.level))
     : null;
 }
+function followReplayRoom(point) {
+  if (!point || !userSelected || $("inspector").hidden) return;
+  const changed = point.level !== mapLevel;
+  if (changed) setRoom(point.level, true);
+  const view = roomView(point.level),
+    row = document.querySelector(`.map-row[data-map="${point.level}"]`),
+    c = row?.querySelector("canvas");
+  if (!c) return;
+  if (view.zoom > 1) {
+    const next = viewCenter(
+      maps.get(point.level).width,
+      view.zoom,
+      { x: point.x, y: point.y - 8 },
+      maps.get(point.level).height,
+      c,
+    );
+    view.x = next.x;
+    view.y = next.y;
+  }
+  if (changed) {
+    const bounds = row.getBoundingClientRect(),
+      sheet = $("inspector").getBoundingClientRect(),
+      bottom = matchMedia("(max-width: 800px)").matches
+        ? sheet.top - 12
+        : innerHeight - 20;
+    if (bounds.top < 20 || bounds.bottom > bottom)
+      window.scrollBy({ top: bounds.top - 24, behavior: "instant" });
+  }
+}
 function recordTrail() {
   if (trace.at(-1)?.frame === currentFrame) return;
   const o = engine.observation(),
@@ -240,17 +276,6 @@ function recordTrail() {
   traceMaxFrame = currentFrame;
 }
 async function verify() {
-  const state = current,
-    epoch = replayEpoch;
-  if (state?.endpoint_sha256) {
-    const hash = await snapshotHash(engine.capture());
-    if (state !== current || epoch !== replayEpoch) return;
-    if (hash !== state.endpoint_sha256)
-      throw new Error("Saved history endpoint checksum mismatch");
-    historyVerified = true;
-    $("verification").textContent = "Saved controller history";
-    return;
-  }
   if (!current?.snapshot) {
     $("verification").textContent = current?.frames
       ? "Controller history"
@@ -272,9 +297,10 @@ async function verify() {
 function equal(a, b) {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
-async function seek(target, propagateError = false) {
+async function seek(target) {
   if (!current || !engine) return;
   stopControl();
+  music.stop();
   const epoch = ++replayEpoch;
   playing = false;
   seeking = true;
@@ -284,6 +310,7 @@ async function seek(target, propagateError = false) {
   target = Math.max(0, Math.min(current.frames, Math.floor(target)));
   requestedFrame = target;
   $("scrub").value = target;
+  followReplayRoom(markerPoint());
   const checkpoint = timeline.before(target);
   if (
     currentFrame > target ||
@@ -311,7 +338,6 @@ async function seek(target, propagateError = false) {
     segments = trailSegments(trace);
     return true;
   } catch (e) {
-    if (propagateError) throw e;
     replayError(e);
     return false;
   } finally {
@@ -324,7 +350,7 @@ async function seek(target, propagateError = false) {
     }
   }
 }
-async function selectState(state, autoplay = false, propagateError = false) {
+async function selectState(state, autoplay = false) {
   if (!engine) return;
   stopControl();
   current = state;
@@ -342,18 +368,18 @@ async function selectState(state, autoplay = false, propagateError = false) {
   $("film-title").textContent =
     `State #${state.id ?? "saved"} · ${fmt(state.frames)} frames`;
   $("scrub").max = state.frames;
-  for (const id of ["play", "scrub", "screenshot", "export"])
-    $(id).disabled = false;
+  for (const id of ["play", "scrub"]) $(id).disabled = false;
   if (
     isMapEvidence(state.observation, catalog.levels) &&
     state.observation.level !== mapLevel
   )
     setRoom(state.observation.level);
-  const selection = seek(autoplay ? 0 : state.frames, propagateError),
+  const selection = seek(autoplay ? 0 : state.frames),
     epoch = replayEpoch;
   const success = await selection;
   if (!success || current !== state || epoch !== replayEpoch) return false;
   if (autoplay) {
+    if (userSelected && music.context) startAudio();
     playing = true;
     $("play").textContent = "Ⅱ Pause film";
   }
@@ -420,6 +446,7 @@ function renderStates() {
 function inspect(cell) {
   if (!cell || branchBusy) return;
   stopControl();
+  music.stop();
   playing = false;
   ++request;
   openInspector();
@@ -446,6 +473,7 @@ function inspect(cell) {
 }
 function startSearch() {
   stopControl();
+  music.stop();
   branchBusy = false;
   activeSearch = 0;
   timeline.clear();
@@ -477,8 +505,7 @@ function startSearch() {
   latestBest = null;
   lastAuto = 0;
   stats = {};
-  for (const id of ["play", "scrub", "screenshot", "export"])
-    $(id).disabled = true;
+  for (const id of ["play", "scrub"]) $(id).disabled = true;
   $("details").replaceChildren();
   $("state-list").replaceChildren();
   updateStats();
@@ -633,7 +660,7 @@ function updateSearchControl() {
       ? "Paused"
       : "Searching";
 }
-function setRoom(level) {
+function setRoom(level, preserveSelection = false) {
   const map = maps.get(level);
   if (!map) return;
   mapLevel = level;
@@ -642,7 +669,7 @@ function setRoom(level) {
   canvas.dataset.map = level;
   canvas.dataset.mapWidth = mapWidth;
   canvas.dataset.mapHeight = mapHeight;
-  selectedCell = null;
+  if (!preserveSelection) selectedCell = null;
   hoverCell = null;
   const owner = catalog.levels.find((l) => l.rooms.includes(level));
   focusedLevel = owner?.id ?? 0;
@@ -653,6 +680,10 @@ function setRoom(level) {
   panorama(level);
 }
 function browseRoom(level) {
+  stopControl();
+  music.stop();
+  playing = false;
+  $("play").textContent = "▶ Play history";
   setRoom(level);
   const id = bestStates.get(level) ?? (level === 0 && ready ? 0 : undefined);
   if (id !== undefined) {
@@ -692,6 +723,10 @@ function renderNavigation() {
       button.setAttribute("aria-pressed", world === focusedWorld);
       button.onclick = () => {
         userSelected = true;
+        stopControl();
+        music.stop();
+        playing = false;
+        $("play").textContent = "▶ Play history";
         focusedWorld = world;
         renderNavigation();
       };
@@ -747,7 +782,7 @@ function drawAtlas(now) {
       image = thumbnails.get(id),
       scale = Math.min(c.width / map.width, c.height / map.height);
     context.imageSmoothingEnabled = false;
-    context.fillStyle = "#0b1928";
+    context.fillStyle = "#211f1c";
     context.fillRect(0, 0, c.width, c.height);
     context.save();
     context.translate(
@@ -793,6 +828,7 @@ function completionWitness() {
   return null;
 }
 $("completion").onclick = () => {
+  music.unlock().catch(audioError);
   const witness = completionWitness();
   if (!witness) return;
   userSelected = true;
@@ -1155,104 +1191,41 @@ $("reset").onclick = () => {
   seed++;
   startSearch();
 };
+function audioError(e) {
+  $("branch-message").hidden = false;
+  $("branch-message").textContent = "Game audio unavailable: " + e.message;
+}
+function startAudio() {
+  music.start(() => engine.capture()).catch(audioError);
+}
 $("play").onclick = async () => {
   stopControl();
   if (seeking) return;
   userSelected = true;
   if (playing) {
     playing = false;
+    music.stop();
     $("play").textContent = "▶ Play history";
     return;
   }
-  if (currentFrame >= current.frames) await seek(0);
+  music.unlock().catch(audioError);
+  if (currentFrame >= current.frames) {
+    const state = current,
+      reset = seek(0),
+      epoch = replayEpoch;
+    if (!(await reset) || current !== state || epoch !== replayEpoch) return;
+  }
   playing = true;
   frameCredit = 0;
+  startAudio();
   $("play").textContent = "Ⅱ Pause film";
+};
+$("speed").onchange = () => {
+  if (playing) startAudio();
 };
 $("scrub").oninput = () => {
   userSelected = true;
   seek(Number($("scrub").value));
-};
-function download(blob, name) {
-  const url = URL.createObjectURL(blob),
-    a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-$("screenshot").onclick = () => {
-  const frame = currentFrame,
-    id = current?.id ?? "saved";
-  $("film").toBlob(async (blob) =>
-    download(
-      await creditPNG(blob, frame),
-      `nova-state-${id}-frame-${frame}.png`,
-    ),
-  );
-};
-$("export").onclick = async () => {
-  stopControl();
-  const tape = {
-    format: "harmony-nova-browser-v1",
-    rom_sha256: ROM_SHA256,
-    core_revision: CORE_REVISION,
-    seed,
-    actions: current.actions,
-    branch: current.branch,
-    observation: current.observation,
-    endpoint_sha256:
-      current.endpoint_sha256 ||
-      (await snapshotHash(current.snapshot || origin)),
-    credits: CREDIT,
-  };
-  download(
-    new Blob([JSON.stringify(tape, null, 2)], { type: "application/json" }),
-    `nova-history-${current?.id ?? "saved"}.json`,
-  );
-};
-$("import").onclick = () => $("history-file").click();
-$("history-file").onchange = async (e) => {
-  if (branchBusy || controlMode) return;
-  try {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 1000000) throw new Error("History file too large");
-    const readingEpoch = replayEpoch,
-      text = await file.text();
-    if (readingEpoch !== replayEpoch) return;
-    const tape = JSON.parse(text),
-      frames = validateTape(tape);
-    userSelected = true;
-    openInspector();
-    const state = {
-      id: "saved",
-      actions: tape.actions,
-      branch: branchInfo(tape.branch, frames),
-      frames,
-      endpoint_sha256: tape.endpoint_sha256,
-      observation: { x: 0, y: 0, health: 0, chips: 0, ability: 0, level: 0 },
-    };
-    if (!(await selectState(state, false, true))) return;
-    const epoch = replayEpoch;
-    const actual = await snapshotHash(engine.capture());
-    if (current !== state || epoch !== replayEpoch) return;
-    if (actual !== tape.endpoint_sha256)
-      throw new Error("Saved history endpoint checksum mismatch");
-    state.observation = engine.observation();
-    selectedCell = null;
-    if (isMapEvidence(state.observation, catalog.levels))
-      setRoom(state.observation.level);
-    renderStates();
-    drawFilm();
-    $("error").hidden = true;
-    $("verification").textContent = "Saved controller history";
-  } catch (err) {
-    $("error").hidden = false;
-    $("error").textContent = err.message;
-  } finally {
-    e.target.value = "";
-  }
 };
 const showInfo = (html) => {
   $("info-content").innerHTML = html;
@@ -1273,6 +1246,7 @@ function openInspector() {
 }
 function closeInspector() {
   stopControl();
+  music.stop();
   playing = false;
   $("play").textContent = "▶ Play history";
   $("inspector").hidden = true;
@@ -1296,9 +1270,7 @@ function updateBranchControls() {
   $("scrub").disabled = !current || controlMode || branchBusy;
   $("play").disabled = !current || controlMode || branchBusy || seeking;
   $("branch-choice").disabled = branchBusy || controlMode;
-  $("import").disabled = branchBusy || controlMode;
-  $("screenshot").disabled = !current || seeking || branchBusy;
-  $("export").disabled = !current || seeking || branchBusy;
+  $("sound").disabled = !current;
   $("inspect-open").disabled = branchBusy;
   $("pause").disabled = !ready || branchBusy || controlMode || !!stats.stopped;
   $("inspector").classList.toggle("controlling", controlMode);
@@ -1379,12 +1351,7 @@ $("take-control").onclick = () => {
   controller.clear();
   controlMode = true;
   timeline.trim(currentFrame);
-  music
-    .start(() => engine.capture())
-    .catch((e) => {
-      $("branch-message").hidden = false;
-      $("branch-message").textContent = "Game audio unavailable: " + e.message;
-    });
+  startAudio();
   $("play").textContent = "▶ Play history";
   renderStates();
   updateBranchControls();
@@ -1393,6 +1360,7 @@ $("take-control").onclick = () => {
 $("search-here").onclick = async () => {
   if (!current || seeking || branchBusy || !frameObservation?.health) return;
   stopControl();
+  music.stop();
   playing = false;
   paused = true;
   worker.postMessage({ type: "pause" });
@@ -1433,6 +1401,7 @@ $("search-here").onclick = async () => {
 };
 $("branch-choice").onchange = () => {
   stopControl();
+  music.stop();
   playing = false;
   userSelected = true;
   paused = true;
@@ -1446,15 +1415,20 @@ $("branch-choice").onchange = () => {
     active: Number($("branch-choice").value),
   });
 };
-$("sound").onclick = () => {
-  const muted = music.mute();
-  $("sound").textContent = muted ? "Unmute" : "Mute";
-  $("sound").setAttribute(
-    "aria-label",
-    muted ? "Unmute game audio" : "Mute game audio",
-  );
+function updateSoundControl() {
+  const muted = music.muted,
+    label = muted ? "Unmute game audio" : "Mute game audio";
+  $("sound").innerHTML =
+    `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9h4l5-4v14l-5-4H3z"/>${muted ? '<path d="m16 9 5 6m0-6-5 6"/>' : '<path d="M16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>'}</svg>`;
+  $("sound").setAttribute("aria-label", label);
+  $("sound").title = label;
   $("sound").setAttribute("aria-pressed", muted);
+}
+$("sound").onclick = () => {
+  music.mute();
+  updateSoundControl();
 };
+updateSoundControl();
 window.addEventListener("keydown", (e) => {
   if (e.code === "Escape") {
     if (controlMode) stopControl();
@@ -1483,6 +1457,7 @@ window.addEventListener("blur", stopControl);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     stopControl();
+    music.stop();
     playing = false;
     $("play").textContent = "▶ Play history";
   }
@@ -1560,7 +1535,7 @@ function animate(now) {
         stopControl();
         $("branch-message").hidden = false;
         $("branch-message").textContent =
-          "History limit reached. Save this history or choose an earlier frame.";
+          "History limit reached. Choose an earlier frame to continue.";
         break;
       }
       engine.run(controller.buttons(), 1, true);
@@ -1583,9 +1558,12 @@ function animate(now) {
     frameCredit -= frames;
     if (frames) {
       advanceFilm(Math.min(current.frames, currentFrame + frames));
+      music.flush(Number($("speed").value));
+      $("film").dataset.audioFrames = music.samples;
       segments = trailSegments(trace);
       if (currentFrame === current.frames) {
         playing = false;
+        music.stop();
         $("play").textContent = "↺ Play again";
         verify().then(updateBranchControls).catch(replayError);
       }

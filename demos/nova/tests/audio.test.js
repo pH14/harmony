@@ -20,6 +20,7 @@ class Context {
   }
   createBufferSource() {
     const n = {
+      playbackRate: { value: 1 },
       connect() {},
       disconnect() {},
       start(at) {
@@ -95,4 +96,26 @@ test("failed audio initialization can retry without reviving a stopped session",
   reject(new Error("late failure"));
   await loading;
   assert.equal(b.active, false);
+});
+
+test("movie audio batches inputs and schedules samples at the selected speed", async () => {
+  let action;
+  const e = {
+    restore() {},
+    enableAudio() {},
+    run: (...args) => (action = args),
+    audio: () => new Int16Array(9600),
+  };
+  const a = new GameAudio(async () => e, Context);
+  await a.unlock();
+  await a.start(() => "movie frame");
+  a.run(129, 4);
+  assert.deepEqual(action, [129, 4, false]);
+  a.flush(4);
+  assert.equal(a.context.nodes[0].playbackRate.value, 4);
+  assert.ok(Math.abs(a.nextTime - 0.05) < 1e-9);
+  await a.start(() => "new speed");
+  assert.equal(a.context.nodes[0].stopped, true);
+  a.flush();
+  assert.equal(a.context.nodes[1].playbackRate.value, 1);
 });
