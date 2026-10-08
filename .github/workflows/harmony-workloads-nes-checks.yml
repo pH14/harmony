@@ -91,6 +91,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.enabled == 'true'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-nes-nova
           workspaces: |
             . -> target
@@ -237,6 +238,7 @@ jobs:
             bc binutils bison build-essential bzip2 cc65 cpio flex g++ kmod libelf-dev libssl-dev python3 shellcheck wget
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: harmony-nes-backend-equivalence
           workspaces: |
             . -> target

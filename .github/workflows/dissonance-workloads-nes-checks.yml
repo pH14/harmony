@@ -55,6 +55,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.enabled == 'true'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: dissonance-nes-nova
           workspaces: |
             . -> target

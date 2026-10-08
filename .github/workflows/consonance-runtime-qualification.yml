@@ -32,6 +32,8 @@ jobs:
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare the exact runtime
         uses: ./.github/actions/exact-platform-runtime
         with:

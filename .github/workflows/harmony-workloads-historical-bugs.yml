@@ -90,6 +90,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Compute platform source key
         id: source
         run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
@@ -131,6 +133,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build tools
         run: |
           cargo build --locked --release -p harmony-cli

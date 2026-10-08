@@ -63,6 +63,7 @@ jobs:
             bc binutils bison build-essential bzip2 cc65 cpio ffmpeg flex g++ kmod libelf-dev libssl-dev python3 shellcheck wget
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
             dissonance -> dissonance/target
