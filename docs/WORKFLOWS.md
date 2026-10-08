@@ -10,7 +10,7 @@ means. A new workflow is registered once, in the registry.
 
 A workflow name reads `Category / Owner` or `Category / Owner / Workload`.
 
-- **Category**: `Checks`, `Benchmarks` or `Release`.
+- **Category**: `Checks`, `Benchmarks`, `Release` or `Maintenance`.
 - **Owner**: a component (`Repository`, `Consonance`, `Dissonance`, `Harmony`)
   or a composition (`Harmony Host Compatibility`, `Dissonance Workloads`,
   `Harmony Workloads`).
@@ -53,6 +53,7 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
+| `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
@@ -410,6 +411,16 @@ violate the case's assertion with its evidence and reach one state digest.
 The language workflow also builds a pinned UML profile for `UML Command Replay`.
 That bounded check runs a plain OCI command and fresh replays as an ordinary
 user, compares application and bridge evidence, and rejects a planted divergence.
+
+## Repository maintenance
+
+`Maintenance / Repository` runs `scripts/prune-branches.py` every day. It
+deletes a remote branch when no open pull request uses it and either a merged
+pull request's head is exactly the branch tip or the tip is reachable from
+`main`. It keeps every other branch and lists it in the job summary with the
+reason: closed without merging, commits after the merged head, or no pull
+request. A manual dispatch lists the deletions and performs them only with the
+`apply` input.
 
 ## Naming
 

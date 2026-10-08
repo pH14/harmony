@@ -63,6 +63,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_custom_lints.py'
           python3 -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -m unittest discover -s scripts -p 'test_*scope.py'
+          python3 -m unittest discover -s scripts -p test_prune_branches.py
           python3 -m unittest discover -s scripts -p test_semantic_lints.py
           python3 scripts/custom-lints.py --readme-base "$README_BASE"
           python3 scripts/strip-comments.py --check
