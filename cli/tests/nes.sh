@@ -21,6 +21,9 @@ PYTHON
 "$binary" debug replay "$evidence/prefix" --out "$evidence/prefix-copy"
 printf '%s\n' '{"actions":[{"buttons":0,"hold_frames":1},{"buttons":0,"hold_frames":1}]}' > "$evidence/input.json"
 "$binary" debug run "$rom" --config-toml "$recipe" --actions "$evidence/input.json" --repeat 2 --out "$evidence/scripted"
+"$binary" branch --config-toml "$(printf '[workload]\ninput = "%s"\n%s' "$rom" "$recipe")" \
+  --actions "$evidence/input.json" --repeat 2 --out "$evidence/fresh"
+"$binary" branch "$evidence/fresh" --step 1 --stop --out "$evidence/fresh-prefix"
 "$binary" branch "$evidence/scripted" --step 1 --stop --out "$evidence/nonempty-prefix"
 "$binary" search --from "$evidence/nonempty-prefix" --executions 4 --out "$evidence/rooted"
 "$binary" search --resume "$evidence/rooted" --executions 4 --out "$evidence/continued"
@@ -33,6 +36,9 @@ root=Path(sys.argv[1])
 assert json.loads((root/'diff.json').read_text()) == {}
 def manifest(name): return json.loads((root/name/'manifest.json').read_text())
 assert len(manifest('scripted')['payload']['repeats']) == 2
+assert manifest('fresh')['mode']=='branch'
+assert manifest('fresh')['payload']['repeats']==manifest('scripted')['payload']['repeats']
+assert manifest('fresh-prefix')['payload']['input']['actions']==manifest('fresh')['payload']['input']['actions'][:1]
 assert manifest('search')['payload']['witness']==manifest('replay')['payload']['witness']
 assert manifest('prefix')['payload']['input']['actions']==[]
 assert manifest('prefix')['payload']==manifest('prefix-copy')['payload']

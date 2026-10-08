@@ -659,6 +659,7 @@ mod live {
                     .saturating_add(summary.settle_ticks),
             );
             report.bug_found |= summary.bug;
+            report.executions += 1;
             report.replays.push(summary);
         }
         report.wall_seconds = started.elapsed().as_secs();

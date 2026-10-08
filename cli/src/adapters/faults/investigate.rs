@@ -147,26 +147,6 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
 }
 
 pub fn branch(request: crate::adapters::Request) -> Result<u8> {
-    let selection = request.selection.ok_or("select a search or branch")?;
-    let source = crate::runs::locate(&selection.run)?;
-    let original = Manifest::read(&source)?;
-    original.verify(&source)?;
-    if original.bundle.is_none() {
-        return Err("branching requires a supervised application scenario".into());
-    }
-    let (actions, boundaries, anchor) = if selection.finding.is_none()
-        && request.point.step == Some(0)
-        && original.mode == "search"
-    {
-        (Vec::new(), vec![(0, 0)], 0)
-    } else {
-        let recorded = witness(&source, selection.finding)?;
-        trajectory(&recorded, selection.finding.is_some())
-    };
-    let cut = request.point.resolve(&boundaries, anchor)?;
-    if cut > actions.len() {
-        return Err("selected boundary has no reproducible input prefix".into());
-    }
     let script = match (&request.exec, &request.exec_file) {
         (Some(text), None) => Some(text.as_bytes().to_vec()),
         (None, Some(path)) => Some(fs::read(path)?),
@@ -179,17 +159,51 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
     {
         return Err("guest script exceeds 1 MiB".into());
     }
-    let mut continuation = Vec::new();
-    if let Some(path) = request.actions {
-        continuation
-            .extend(faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions);
-    }
+    let mut continuation = match &request.actions {
+        Some(path) => faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions,
+        None => Vec::new(),
+    };
     let stop = request.stop || request.shell;
-    if !stop {
-        continuation.extend_from_slice(&actions[cut..]);
-    }
-    let out = request.destination.create()?;
-    let mut manifest = original.inherit(&source, &out, "branch")?;
+    let (out, mut manifest, prefix, cut) = if let Some(selection) = &request.selection {
+        let source = crate::runs::locate(&selection.run)?;
+        let original = Manifest::read(&source)?;
+        original.verify(&source)?;
+        if original.bundle.is_none() {
+            return Err("branching requires a supervised application scenario".into());
+        }
+        let (actions, boundaries, anchor) = if selection.finding.is_none()
+            && request.point.step == Some(0)
+            && original.mode == "search"
+        {
+            (Vec::new(), vec![(0, 0)], 0)
+        } else {
+            trajectory(
+                &witness(&source, selection.finding)?,
+                selection.finding.is_some(),
+            )
+        };
+        let cut = request.point.resolve(&boundaries, anchor)?;
+        if cut > actions.len() {
+            return Err("selected boundary has no reproducible input prefix".into());
+        }
+        if !stop {
+            continuation.extend_from_slice(&actions[cut..]);
+        }
+        let out = request.destination.create()?;
+        let manifest = original.inherit(&source, &out, "branch")?;
+        (out, manifest, actions[..cut].to_vec(), cut)
+    } else {
+        let config = super::workflow::configure(
+            super::config::Config::from_shared(&request.config)?,
+            request.offline,
+        )?;
+        let (artifacts, bundle, vocabulary) = super::workflow::prepare_faults(&config)?;
+        let out = request.destination.create()?;
+        let mut manifest = Manifest::new(config, "branch", Some(bundle))?;
+        manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
+        super::workflow::capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
+        (out, manifest, Vec::new(), 0)
+    };
     manifest.actions = continuation;
     manifest.settle = !stop;
     manifest.save(&out)?;
@@ -197,7 +211,7 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
     let result = (|| -> Result<u8> {
         let mut target = package::prepare_debug(
             &manifest.fault_artifacts(&out)?,
-            &actions[..cut],
+            &prefix,
             &manifest.options(&out),
         )?;
         if let Some(script) = &script {
@@ -217,7 +231,7 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
         let report = package::execute_actions(
             &manifest.fault_artifacts(&out)?,
             &manifest.actions,
-            1,
+            request.repeat,
             &manifest.options(&out),
             !stop,
         )?;

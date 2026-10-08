@@ -12,7 +12,7 @@ use adapters::{Operation, Request};
 use clap::{Parser, Subcommand};
 use config::{Budget, Execution, Result, Source};
 use runs::Destination;
-use selection::{Point, Selection};
+use selection::{BranchOrigin, Point, Selection};
 use std::{path::PathBuf, process::ExitCode};
 #[derive(Parser)]
 #[command(name="harmony", version=runtime::RELEASE, about="Prepare workloads, explore failures, and investigate their histories")]
@@ -75,11 +75,15 @@ enum Command {
         offline: bool,
     },
     #[command(
-        about = "Branch from a recorded point; optionally execute guest commands or open a shell"
+        about = "Create an experiment from a recipe or recorded point; optionally open a guest shell"
     )]
     Branch {
         #[command(flatten)]
-        selection: Selection,
+        origin: BranchOrigin,
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..), help = "Repeat the continuation from the same saved state")]
+        repeat: u32,
+        #[arg(long)]
+        offline: bool,
         #[command(flatten)]
         point: Point,
         #[command(flatten)]
@@ -239,7 +243,9 @@ fn execute(command: Command) -> Result<u8> {
             }
         }
         Command::Branch {
-            selection,
+            origin,
+            repeat,
+            offline,
             point,
             destination,
             exec,
@@ -248,9 +254,10 @@ fn execute(command: Command) -> Result<u8> {
             actions,
             stop,
         } => {
-            return workflow::saved(Request {
+            let mut request = Request {
                 operation: Operation::Branch,
-                selection: Some(selection),
+                repeat,
+                offline,
                 point,
                 destination,
                 exec,
@@ -259,7 +266,24 @@ fn execute(command: Command) -> Result<u8> {
                 actions,
                 stop,
                 ..Default::default()
-            });
+            };
+            if let Some(run) = origin.run {
+                request.selection = Some(Selection {
+                    run,
+                    finding: origin.finding,
+                });
+                return workflow::saved(request);
+            }
+            if request.point.specified() {
+                return Err("point selectors require a saved search or branch".into());
+            }
+            request.config = Source {
+                config: origin.config,
+                config_toml: origin.config_toml,
+                ..Default::default()
+            }
+            .load()?;
+            return adapters::dispatch(request);
         }
         Command::List { json } => return workflow::list(json),
         Command::Show {
@@ -370,6 +394,22 @@ mod tests {
                 "cat /proc/locks",
             ],
             vec!["harmony", "branch", "baseline", "--shell"],
+            vec![
+                "harmony",
+                "branch",
+                "--config",
+                "harmony.toml",
+                "--repeat",
+                "2",
+            ],
+            vec![
+                "harmony",
+                "branch",
+                "--config-toml",
+                "[workload]",
+                "--actions",
+                "actions.json",
+            ],
             vec!["harmony", "branch", "baseline", "--exec-file", "debug.sh"],
             vec!["harmony", "show", "baseline", "--logs", "--step", "4"],
             vec![
@@ -403,6 +443,9 @@ mod tests {
         for args in [
             vec!["harmony", "branch", "baseline", "--exec", "true", "--shell"],
             vec!["harmony", "branch", "baseline", "--do", "verbose"],
+            vec!["harmony", "branch", "baseline", "--config", "harmony.toml"],
+            vec!["harmony", "branch", "--finding", "1"],
+            vec!["harmony", "branch", "--repeat", "0"],
             vec!["harmony", "branch", "baseline", "--before", "10steps"],
             vec!["harmony", "show", "baseline", "--logs", "--timeline"],
             vec![
