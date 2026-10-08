@@ -10,7 +10,8 @@
     "test:browser": "node tools/ui-check.mjs",
     "test:live": "node tools/live-check.mjs",
     "preview": "DIST=1 node tools/serve.mjs",
-    "format:check": "prettier --check index.html isolate-sw.js src tests tools/*.mjs"
+    "format:check": "prettier --check index.html isolate-sw.js src tests tools/*.mjs",
+    "pretest": "node tools/fetch-evidence.mjs"
   },
   "dependencies": {
     "@xterm/xterm": "5.5.0",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readFile, writeFile, mkdir, cp, rm } from "node:fs/promises";
 import "./fetch-runtime.mjs";
+import "./fetch-evidence.mjs";
 const root = new URL("../", import.meta.url),
   dist = new URL("dist/", root);
 await rm(dist, { recursive: true, force: true });

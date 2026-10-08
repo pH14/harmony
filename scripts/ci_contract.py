@@ -538,7 +538,7 @@ RAFT_BROWSER_CHECKS = Workflow(
     name="Checks / Harmony Workloads / Raft Browser",
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "workflow_dispatch"),
-    jobs=(Job("Raft Browser", "pr", 15),),
+    jobs=(Job("Raft Browser", "pr", 15), Job("Runtime Acceptance", "full", 15)),
 )
 
 DISSONANCE_NES_CHECKS = Workflow(

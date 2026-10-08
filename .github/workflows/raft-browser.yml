@@ -6,6 +6,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      verify_runtime:
+        description: Rebuild the workload and verify native runtime assembly
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -58,4 +63,51 @@ jobs:
         with:
           name: raft-browser-evidence
           path: demos/raft/test-results
+          if-no-files-found: ignore
+
+  runtime-acceptance:
+    name: Runtime Acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install native execution tools
+        run: sudo apt-get update && sudo apt-get install -y podman qemu-system-x86 cpio
+      - name: Fetch and unpack the pinned runtime
+        run: |
+          node demos/raft/tools/fetch-runtime.mjs
+          mkdir -p "$RUNNER_TEMP/raft-runtime"
+          cd "$RUNNER_TEMP/raft-runtime"
+          gzip -dc "$GITHUB_WORKSPACE/demos/raft/public/runtime/browser.cpio.gz" | cpio -idmu --no-absolute-filenames
+      - name: Rebuild and verify the teaching workload
+        run: |
+          podman build --format docker -f demos/raft/workload/Dockerfile -t harmony-raft-browser:local .
+          python3 - <<'PYTHON'
+          import os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'raft-runtime'
+          config = pathlib.Path('demos/raft/workload/harmony.toml').read_text()
+          config = config.replace('runtime/uml', str(root / 'demo/uml'))
+          config = config.replace('runtime/base.cpio.gz', str(root / 'demo/base.cpio.gz'))
+          (root / 'harmony.toml').write_text(config)
+          PYTHON
+          bash demos/raft/tools/record-evidence.sh "$RUNNER_TEMP/raft-runtime/bin/harmony" "$RUNNER_TEMP/raft-runtime/harmony.toml" "$RUNNER_TEMP/raft-evidence"
+      - name: Verify both Linux FPU frame formats
+        run: |
+          bash consonance/harmony-linux/uml/verify-legacy-fpu.sh "$RUNNER_TEMP/raft-runtime/demo/uml" demos/raft/public/runtime/load-kernel.data "$RUNNER_TEMP/raft-runtime/bin/busybox" "$RUNNER_TEMP/raft-fpu"
+      - name: Assemble the browser runtime
+        run: |
+          bash demos/raft/tools/assemble-runtime.sh "$RUNNER_TEMP/raft-runtime/bin/harmony" "$RUNNER_TEMP/raft-runtime/demo/uml" "$RUNNER_TEMP/raft-runtime/demo/base.cpio.gz" "$RUNNER_TEMP/raft-runtime/bin/busybox" localhost/harmony-raft-browser:local "$RUNNER_TEMP/raft-assembled"
+      - name: Runtime acceptance artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: raft-native-acceptance
+          path: |
+            ${{ runner.temp }}/raft-evidence
+            ${{ runner.temp }}/raft-fpu
+            ${{ runner.temp }}/raft-assembled
           if-no-files-found: ignore

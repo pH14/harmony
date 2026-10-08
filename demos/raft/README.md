@@ -56,7 +56,7 @@ numbers and guest timestamps. It is **event activity**, not full line
 coverage. Recent activity cools exponentially, while visited event sites
 remain tinted. Logs and cluster roles come from those events; phase controls
 come from recorded action boundaries. The right pane never invents log
-lines. `public/evidence` contains the original CLI reports, including runtime
+lines. `public/evidence` is populated from checksum-pinned release assets containing the original CLI reports, including runtime
 identity, image hashes, assertions, action history and captured console tails.
 
 The quorum example demonstrates this one counterfactual. It does not prove
@@ -140,3 +140,10 @@ with `tools/publish-pages.sh`; it updates only `/raft/`, the shared landing
 page and Raft's deployment metadata, preserving Nova and unrelated content.
 The script requires an explicitly chosen source revision and a clean gh-pages
 checkout. It does not merge either demo's implementation pull request.
+
+The manual **Runtime Acceptance** job rebuilds the teaching OCI image, validates
+it using the pinned CLI/UML runtime, records fresh evidence, exercises nested
+boot with both FPU formats, and assembles a new browser image. Its reports and
+image are uploaded as CI artifacts. Raw run reports are release/build inputs,
+not repository history. Enable `verify_runtime` on the Raft Browser workflow
+to run this check; normal PRs keep the bounded static checks.
