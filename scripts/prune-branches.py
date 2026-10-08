@@ -4,7 +4,8 @@
 
 A branch is deleted when no open pull request uses it and one of these holds:
 a merged pull request's head is exactly the branch tip, or the tip is reachable
-from the default branch. Every other branch is kept and listed with the reason,
+from the default branch. The deletion applies only while the branch still
+points at the tip that was judged. Every other branch is kept and listed with the reason,
 so a closed-unmerged or pull-request-less branch is never deleted here.
 """
 
@@ -14,16 +15,18 @@ import argparse
 import json
 import subprocess
 import sys
-import urllib.parse
 from pathlib import Path
 from typing import Any, Callable
 
 DELETE = "delete"
 KEEP = "keep"
+PULL_REQUEST_PAGE = 20
+NULL_OID = "0" * 40
 
 QUERY = """
 query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
+    id
     defaultBranchRef { name }
     refs(refPrefix: "refs/heads/", first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
@@ -31,12 +34,14 @@ query($owner: String!, $name: String!, $after: String) {
         name
         target { oid }
         associatedPullRequests(first: 20) {
+          pageInfo { hasNextPage }
           nodes {
             number
             state
             headRefOid
             baseRefName
-            isCrossRepository
+            headRepository { nameWithOwner }
+            baseRepository { nameWithOwner }
           }
         }
       }
@@ -45,9 +50,19 @@ query($owner: String!, $name: String!, $after: String) {
 }
 """
 
+DELETE_MUTATION = """
+mutation($repositoryId: ID!, $ref: GitRefname!, $before: GitObjectID!, $after: GitObjectID!) {
+  updateRefs(input: {
+    repositoryId: $repositoryId,
+    refUpdates: [{ name: $ref, beforeOid: $before, afterOid: $after }]
+  }) { clientMutationId }
+}
+"""
+
 
 def classify(
     branch: dict[str, Any],
+    repo: str,
     default_branch: str,
     on_default: Callable[[str], bool],
 ) -> tuple[str, str]:
@@ -56,7 +71,9 @@ def classify(
     tip = branch["oid"]
     if name == default_branch:
         return KEEP, "default branch"
-    prs = [pr for pr in branch["prs"] if not pr["cross_repository"]]
+    if branch["truncated"]:
+        return KEEP, f"more than {PULL_REQUEST_PAGE} associated pull requests"
+    prs = [pr for pr in branch["prs"] if pr["head_repo"] == repo]
     for pr in prs:
         if pr["state"] == "OPEN":
             return KEEP, f"open pull request #{pr['number']}"
@@ -65,6 +82,7 @@ def classify(
             pr["state"] == "MERGED"
             and pr["head_oid"] == tip
             and pr["base"] == default_branch
+            and pr["base_repo"] == repo
         ):
             return DELETE, f"pull request #{pr['number']} merged this tip"
     if on_default(tip):
@@ -77,10 +95,6 @@ def classify(
     return KEEP, f"commits after pull request #{prs[0]['number']}"
 
 
-def delete_path(repo: str, name: str) -> str:
-    return f"repos/{repo}/git/refs/heads/{urllib.parse.quote(name, safe='/')}"
-
-
 def gh(*args: str) -> str:
     result = subprocess.run(
         ["gh", *args], check=True, capture_output=True, text=True
@@ -88,9 +102,10 @@ def gh(*args: str) -> str:
     return result.stdout
 
 
-def fetch_branches(repo: str) -> tuple[str, list[dict[str, Any]]]:
+def fetch_branches(repo: str) -> tuple[str, str, list[dict[str, Any]]]:
     owner, name = repo.split("/", 1)
     default_branch = ""
+    repo_id = ""
     branches: list[dict[str, Any]] = []
     after = None
     while True:
@@ -104,17 +119,20 @@ def fetch_branches(repo: str) -> tuple[str, list[dict[str, Any]]]:
             args += ["-f", f"after={after}"]
         data = json.loads(gh(*args))["data"]["repository"]
         default_branch = data["defaultBranchRef"]["name"]
+        repo_id = data["id"]
         for node in data["refs"]["nodes"]:
             branches.append({
                 "name": node["name"],
                 "oid": node["target"]["oid"],
+                "truncated": node["associatedPullRequests"]["pageInfo"]["hasNextPage"],
                 "prs": [
                     {
                         "number": pr["number"],
                         "state": pr["state"],
                         "head_oid": pr["headRefOid"],
                         "base": pr["baseRefName"],
-                        "cross_repository": pr["isCrossRepository"],
+                        "head_repo": (pr["headRepository"] or {}).get("nameWithOwner"),
+                        "base_repo": (pr["baseRepository"] or {}).get("nameWithOwner"),
                     }
                     for pr in node["associatedPullRequests"]["nodes"]
                 ],
@@ -123,7 +141,19 @@ def fetch_branches(repo: str) -> tuple[str, list[dict[str, Any]]]:
         if not page["hasNextPage"]:
             break
         after = page["endCursor"]
-    return default_branch, sorted(branches, key=lambda branch: branch["name"])
+    return default_branch, repo_id, sorted(branches, key=lambda branch: branch["name"])
+
+
+def delete_branch(repo_id: str, name: str, tip: str) -> None:
+    """Delete the branch only if it still points at the tip that was judged."""
+    gh(
+        "api", "graphql",
+        "-f", f"query={DELETE_MUTATION}",
+        "-f", f"repositoryId={repo_id}",
+        "-f", f"ref=refs/heads/{name}",
+        "-f", f"before={tip}",
+        "-f", f"after={NULL_OID}",
+    )
 
 
 def reachable_from(ref: str) -> Callable[[str], bool]:
@@ -165,14 +195,14 @@ def main() -> int:
                         help="file that receives the Markdown summary")
     args = parser.parse_args()
 
-    default_branch, branches = fetch_branches(args.repo)
+    default_branch, repo_id, branches = fetch_branches(args.repo)
     on_default = reachable_from(f"origin/{default_branch}")
 
     deleted: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
     kept: list[tuple[str, str]] = []
     for branch in branches:
-        verdict, reason = classify(branch, default_branch, on_default)
+        verdict, reason = classify(branch, args.repo, default_branch, on_default)
         if verdict == KEEP:
             kept.append((branch["name"], reason))
             continue
@@ -183,7 +213,7 @@ def main() -> int:
             deleted.append((branch["name"], reason))
             continue
         try:
-            gh("api", "-X", "DELETE", delete_path(args.repo, branch["name"]))
+            delete_branch(repo_id, branch["name"], branch["oid"])
         except subprocess.CalledProcessError as error:
             failed.append((branch["name"], error.stderr.strip().splitlines()[-1]))
         else:
