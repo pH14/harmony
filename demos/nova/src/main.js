@@ -35,8 +35,8 @@ document.querySelector("#app").innerHTML = `
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
 ${artCredit}</section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><span>Selected history</span><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><div class="section-title"><div><h2 id="film-title">The first possibility</h2></div><span id="verification" hidden>Starting emulator</span></div><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" disabled>Take control</button><button id="search-here" disabled>Search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
-<aside><div class="section-title"><div><h2 id="cell-title">Selected state</h2></div><span id="cell-visits" class="badge">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><div id="details" class="details"></div></aside></section></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" aria-describedby="branch-hint" disabled>🎮 Play from here</button><p id="branch-hint">Play a few moves, then let the search take over.</p><button id="search-here" aria-describedby="branch-hint" disabled>↗ Start search here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
+<aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
 <section class="atlas"><div class="section-title"><h2>The game</h2><nav id="worlds" aria-label="Game worlds"></nav></div><div id="atlas" class="atlas-grid"></div>${artCredit}</section>
 <footer><span>Nova the Squirrel by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
 <div id="error" role="alert" hidden></div>
@@ -366,8 +366,9 @@ async function selectState(state, autoplay = false) {
   $("selection-hint").hidden = true;
   recordTrailAtRoot();
   frameCredit = 0;
-  $("film-title").textContent =
-    `State #${state.id ?? "saved"} · ${fmt(state.frames)} frames`;
+  $("film-title").textContent = state.branch?.manual
+    ? "Your branch"
+    : `State #${state.id}`;
   $("scrub").max = state.frames;
   for (const id of ["play", "scrub"]) $(id).disabled = false;
   if (
@@ -429,9 +430,24 @@ function renderStates() {
       const state = current?.id === id ? current : stateCache.get(id),
         button = document.createElement("button");
       button.className = "state" + (current?.id === id ? " selected" : "");
-      button.textContent = state
-        ? `#${id}  ·  ${fmt(state.frames)} frames  ·  ♥ ${state.observation.health}  ·  ${state.observation.chips} chips`
-        : `#${id} · load history`;
+      const title = document.createElement("span"),
+        identity = document.createElement("span"),
+        duration = document.createElement("span"),
+        resources = document.createElement("span");
+      title.className = "state-summary";
+      identity.textContent = String(id).startsWith("manual-")
+        ? "Your branch"
+        : `#${id}`;
+      duration.textContent = state
+        ? `${fmt(state.frames)} frames`
+        : "Load history";
+      title.append(identity, duration);
+      resources.className = "state-resources";
+      resources.textContent = state
+        ? `♥ ${state.observation.health} · ${state.observation.chips} chips`
+        : "";
+      button.append(title, resources);
+      button.setAttribute("aria-pressed", current?.id === id);
       button.disabled = false;
       button.onclick = () => {
         userSelected = true;
@@ -520,7 +536,7 @@ function startSearch() {
   updateSearchControl();
 
   $("status-dot").className = "";
-  $("cell-title").textContent = "Selected state";
+  $("cell-title").textContent = "Retained history";
   worker = new Worker(new URL("./search-worker.js", import.meta.url), {
     type: "module",
   });
@@ -1265,7 +1281,12 @@ function updateBranchControls() {
     !!frameObservation?.health;
   $("take-control").disabled = controlMode ? false : !usable;
   $("search-here").disabled = !usable;
-  $("take-control").textContent = controlMode ? "Stop playing" : "Take control";
+  $("take-control").textContent = controlMode
+    ? "🎮 Stop playing"
+    : "🎮 Play from here";
+  $("search-here").textContent = current?.id.startsWith?.("manual-")
+    ? "↗ Let search take over"
+    : "↗ Start search here";
   $("take-control").setAttribute("aria-pressed", controlMode);
   $("game-controls").hidden = !controlMode;
   $("scrub").disabled = !current || controlMode || branchBusy;

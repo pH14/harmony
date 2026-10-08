@@ -138,7 +138,7 @@ try {
   assert.equal(await page.locator("#attempts").innerText(), attempts);
   assert.equal(await page.locator("#inspector").isVisible(), false);
   await page.locator("#inspect-open").click();
-  const [x, y] = (await page.locator("#details b").first().innerText())
+  const [x, y] = (await page.locator("#details b").first().textContent())
     .split(",")
     .map(Number);
   const click = await page.locator("#map").evaluate(
@@ -182,6 +182,27 @@ try {
   );
   const selected = await page.locator("#state-list .selected").innerText();
   assert.match(selected, /#\d+/);
+  assert.equal(
+    await page.locator("#take-control").innerText(),
+    "🎮 Play from here",
+  );
+  assert.equal(await page.locator("#details").isVisible(), false);
+  await page.locator(".state-disclosure summary").click();
+  assert.equal(await page.locator("#details").isVisible(), true);
+  await page.locator(".state-disclosure summary").click();
+  const stateLayout = await page.locator("#inspector").evaluate((panel) => ({
+    fits:
+      panel.scrollWidth <= panel.clientWidth &&
+      [...panel.querySelectorAll(".state")].every(
+        (b) => b.scrollWidth <= b.clientWidth,
+      ),
+    primary: getComputedStyle(panel.querySelector("#take-control"))
+      .backgroundColor,
+    secondary: getComputedStyle(panel.querySelector("#search-here"))
+      .backgroundColor,
+  }));
+  assert.equal(stateLayout.fits, true, "History metadata must fit its buttons");
+  assert.notEqual(stateLayout.primary, stateLayout.secondary);
   const total = await page.locator("#scrub").getAttribute("max");
   assert.ok(Number(total) > 0);
   await page.locator("#scrub").fill("0");
@@ -434,7 +455,7 @@ try {
   );
   await page.locator("#pause").click();
   await page.waitForTimeout(100);
-  const position = await page.locator("#details b").first().innerText();
+  const position = await page.locator("#details b").first().textContent();
   const [bx, by] = position.split(",").map(Number);
   const branchClick = await page.locator("#map").evaluate(
     (c, p) => {
@@ -713,7 +734,24 @@ try {
   assert.ok(
     (await page.locator("#inspector").boundingBox()).height > collapsedHeight,
   );
+  assert.equal(
+    await page
+      .locator("#inspector")
+      .evaluate(
+        (panel) =>
+          panel.scrollWidth <= panel.clientWidth &&
+          [...panel.querySelectorAll(".state")].every(
+            (b) => b.scrollWidth <= b.clientWidth,
+          ),
+      ),
+    true,
+    "Phone histories must not overflow the sheet",
+  );
   await page.locator("#take-control").click();
+  assert.equal(
+    await page.locator("#search-here").innerText(),
+    "↗ Let search take over",
+  );
   const touchRight = page.getByRole("button", {
     name: "Move right",
     exact: true,

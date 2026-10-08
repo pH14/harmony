@@ -83,11 +83,16 @@ matching numbered entrance and exit markers at transitions. The position marker
 follows the replay scrubber. Only the selected trail is retained, sampled at a
 fixed interval with at most about 8,400 points for an admitted history.
 
-Take control pauses exploration and starts a new history at the displayed frame,
+The inspector keeps the movie and a prominent 🎮 Play from here action above a
+compact retained-history picker. Frame counts and resources have separate rows
+that wrap within each button; technical Game state fields are collapsed by
+default. Play from here pauses exploration and starts a new history at the
+displayed frame,
 including frames in the middle of a recorded action. Move with arrows or WASD,
 jump with Z or Space, and use an ability with X; touch controls work on phones.
 Stop playing, Escape, loss of focus or hiding the tab releases held inputs and
-ends takeover. Search from here verifies that the complete controller prefix
+ends takeover. Start search here (Let search take over after playing) verifies
+that the complete controller prefix
 reproduces the rendered endpoint, then starts a separate explorer rooted there.
 It preserves health, items, level progression and emulator state through replay,
 without teleporting Nova or changing game RAM. The search selector returns to
