@@ -20,17 +20,20 @@ TIP = "a" * 40
 OTHER = "b" * 40
 
 
-def pr(number, state, head=TIP, base="main", cross=False):
+REPO = "o/r"
+
+
+def pr(number, state, head=TIP, base="main", head_repo=REPO, base_repo=REPO):
     return {"number": number, "state": state, "head_oid": head,
-            "base": base, "cross_repository": cross}
+            "base": base, "head_repo": head_repo, "base_repo": base_repo}
 
 
-def branch(name="feature", oid=TIP, prs=()):
-    return {"name": name, "oid": oid, "prs": list(prs)}
+def branch(name="feature", oid=TIP, prs=(), truncated=False):
+    return {"name": name, "oid": oid, "prs": list(prs), "truncated": truncated}
 
 
 def classify(candidate, on_default=False):
-    return PRUNE.classify(candidate, "main", lambda oid: on_default)
+    return PRUNE.classify(candidate, REPO, "main", lambda oid: on_default)
 
 
 class ClassifyTests(unittest.TestCase):
@@ -59,8 +62,29 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(verdict, PRUNE.KEEP)
 
     def test_fork_pull_request_with_a_matching_name_is_ignored(self):
-        verdict, _ = classify(branch(prs=[pr(9, "MERGED", cross=True)]))
+        verdict, _ = classify(branch(prs=[pr(9, "MERGED", head_repo="fork/r")]))
         self.assertEqual(verdict, PRUNE.KEEP)
+
+    def test_merge_into_another_repository_does_not_count(self):
+        verdict, _ = classify(branch(prs=[pr(9, "MERGED", base_repo="down/r")]))
+        self.assertEqual(verdict, PRUNE.KEEP)
+
+    def test_open_pull_request_to_another_repository_keeps_branch(self):
+        verdict, reason = classify(
+            branch(prs=[pr(4, "OPEN", base_repo="down/r")]), on_default=True)
+        self.assertEqual(verdict, PRUNE.KEEP)
+        self.assertIn("#4", reason)
+
+    def test_open_pull_request_from_a_deleted_fork_is_ignored(self):
+        verdict, _ = classify(
+            branch(prs=[pr(4, "OPEN", head_repo=None)]), on_default=True)
+        self.assertEqual(verdict, PRUNE.DELETE)
+
+    def test_a_truncated_pull_request_list_keeps_the_branch(self):
+        verdict, reason = classify(
+            branch(prs=[pr(7, "MERGED")], truncated=True), on_default=True)
+        self.assertEqual(verdict, PRUNE.KEEP)
+        self.assertIn("more than", reason)
 
     def test_tip_on_default_branch_is_deleted(self):
         verdict, _ = classify(branch(), on_default=True)
@@ -76,11 +100,19 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(verdict, PRUNE.KEEP)
 
 
-class PathTests(unittest.TestCase):
-    def test_slashes_stay_and_other_characters_are_quoted(self):
-        self.assertEqual(
-            PRUNE.delete_path("o/r", "claude/fix #1"),
-            "repos/o/r/git/refs/heads/claude/fix%20%231")
+class DeleteTests(unittest.TestCase):
+    def test_deletion_names_the_judged_tip_and_the_full_ref(self):
+        calls = []
+        original = PRUNE.gh
+        PRUNE.gh = lambda *args: calls.append(args) or ""
+        try:
+            PRUNE.delete_branch("R_1", "claude/fix #1", TIP)
+        finally:
+            PRUNE.gh = original
+        (args,) = calls
+        self.assertIn("ref=refs/heads/claude/fix #1", args)
+        self.assertIn(f"before={TIP}", args)
+        self.assertIn(f"after={PRUNE.NULL_OID}", args)
 
 
 class SummaryTests(unittest.TestCase):
