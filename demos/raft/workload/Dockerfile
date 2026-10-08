@@ -6,6 +6,8 @@ COPY consonance/harmony-linux/libvoidstar /build/libvoidstar
 COPY workloads/faults/runtime /build/fault-runtime
 COPY workloads/languages/vendor /build/vendor
 COPY demos/raft/workload/raft.c /build/raft.c
+COPY demos/raft/workload/tests /build/tests
+RUN clang -O1 /build/tests/identity.c -o /tmp/identity-test && /tmp/identity-test
 RUN make -C /build/fault-runtime CORE_DIR=/build/libvoidstar BUILD_DIR=/out all
 RUN printf '#include "vendor/antithesis_instrumentation.h"\n' > /build/shim.c && clang -O1 -g -fsanitize-coverage=trace-pc-guard -c /build/raft.c -o /build/raft.o && clang -O1 -g -c /build/shim.c -o /build/shim.o && clang /build/raft.o /build/shim.o -pthread -ldl -Wl,--build-id -o /out/control && mkdir -p /out/symbols && cp /out/control /out/symbols/control && nm --defined-only /out/control | awk '$2 ~ /[tT]/ {print $1 "\t" $3}' > /out/symbols/raft.sym.tsv && sha256sum /out/control | awk '{print $1 "  /app/control"}' > /out/symbols/harmony-instrumented-events
 FROM ${BASE} AS system

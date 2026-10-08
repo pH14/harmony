@@ -45,29 +45,29 @@
     },
     {
       "name": "browser.cpio.gz",
-      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/browser.cpio.gz",
-      "sha256": "df9c4f55ca51a56a0521b6593a9095038fddc9ffe8210666d8ddffaa6662011e",
-      "bytes": 19970877
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/browser.cpio.gz",
+      "sha256": "38cdd1cd63b2caa80a8d2a1e79e4f32e32938bf5c9fa6f2f36ac30a54c05330d",
+      "bytes": 19970516
     }
   ],
-  "source": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/harmony-raft-runtime-source.tar.gz",
+  "source": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/harmony-raft-runtime-source.tar.gz",
   "evidence": [
     {
       "name": "failure.json",
-      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/failure.json",
-      "sha256": "7f790424a17b0d98a4aa72bd956908c4c8932dab5a213971b31e5abbfc47a133",
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/failure.json",
+      "sha256": "a3ac57c6e025ffe1e6f95d9a7902a43be11da73e462b0f85cd1175bbe7408a85",
       "bytes": 30964
     },
     {
       "name": "investigation.json",
-      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/investigation.json",
-      "sha256": "ad5cc68920bf60ac983959fbe191afdb9ba0a5dbba2b386bab3fb7f214e30cca",
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/investigation.json",
+      "sha256": "a0f85965fa547f03148a9cc7a25e78c13bc6f26fd6067846d66ee13512a6df72",
       "bytes": 25940
     },
     {
       "name": "quorum.json",
-      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/quorum.json",
-      "sha256": "df3a4ab9a7e40c2afd2efed1b8483b9bf28ad1b00fcb25d7a4c6b1ec81cde550",
+      "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v2/quorum.json",
+      "sha256": "bbd2603debc26ddffb9655cb92fe03ad145a7fdc1949bb55467274b1a9f1ac25",
       "bytes": 24919
     }
   ]

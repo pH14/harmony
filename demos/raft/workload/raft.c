@@ -230,8 +230,10 @@ static int check(void) {
         fclose(f);
       }
       touch("/tmp/raft/violation");
+      int caller = me;
       me = i;
       EVENT("violation", "acknowledged counter=1 missing from new leader");
+      me = caller;
       return 0;
     }
   }

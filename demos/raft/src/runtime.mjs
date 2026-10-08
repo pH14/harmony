@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { ConsoleFilter } from "./console-filter.mjs";
+import {
+  CommandSession,
+  ConsoleDecoder,
+  complete,
+  report,
+} from "./command-session.mjs";
 const script = (src) =>
   new Promise((resolve, reject) => {
     const s = document.createElement("script");
@@ -10,6 +16,11 @@ const script = (src) =>
   });
 export async function boot(container, status, onReport = () => {}) {
   if (!crossOriginIsolated) {
+    if (sessionStorage.getItem("harmony-isolation-attempt"))
+      throw new Error(
+        "This browser could not isolate the Linux runtime. Open this page directly in desktop Chrome; recorded playback remains available.",
+      );
+    sessionStorage.setItem("harmony-isolation-attempt", "1");
     if (!("serviceWorker" in navigator))
       throw new Error(
         "This browser cannot start the isolated Linux runtime. Recorded evidence remains available.",
@@ -20,6 +31,7 @@ export async function boot(container, status, onReport = () => {}) {
     location.reload();
     return;
   }
+  sessionStorage.removeItem("harmony-isolation-attempt");
   const css = document.createElement("link");
   css.rel = "stylesheet";
   css.href = "vendor/xterm.css";
@@ -27,6 +39,7 @@ export async function boot(container, status, onReport = () => {}) {
   await script("vendor/xterm.js");
   await script("vendor/xterm-pty.js");
   const term = new window.Terminal({
+    disableStdin: true,
     cols: 105,
     rows: 24,
     convertEol: true,
@@ -39,19 +52,30 @@ export async function boot(container, status, onReport = () => {}) {
   let output = "",
     waiting,
     ready = false,
-    busy = false,
     interactive = false,
     shellReady = false;
   const filter = new ConsoleFilter();
+  const session = new CommandSession(),
+    decoder = new ConsoleDecoder();
+  const input = (text) => {
+    const disabled = term.options.disableStdin;
+    term.options.disableStdin = false;
+    term.input(text, true);
+    term.options.disableStdin = disabled;
+  };
   const originalWrite = term.write.bind(term);
   term.write = (data, ...args) => {
-    const text =
-      typeof data === "string" ? data : new TextDecoder().decode(data);
+    const text = decoder.decode(data);
     output += text;
     const shown = filter.write(text);
     if (interactive && /(?:^|[\r\n])# $/.test(output)) {
       shellReady = true;
+      term.options.disableStdin = false;
       status("Guest shell ready · exit saves this branch");
+    }
+    if (filter.mode === "json") {
+      shellReady = false;
+      term.options.disableStdin = true;
     }
     if (shown) originalWrite(shown, ...args);
     else if (typeof args.at(-1) === "function") queueMicrotask(args.at(-1));
@@ -133,35 +157,31 @@ export async function boot(container, status, onReport = () => {}) {
   status("Booting real Linux locally…");
   await waitFor((s) => s.includes("harmony-linux# "), 180000);
   const run = async (cli, name) => {
-    if (busy) throw new Error("A live command is already running.");
-    busy = true;
+    const id = session.start();
+    term.options.disableStdin = true;
     interactive = cli.includes(" --shell ");
     shellReady = false;
     status(cli);
     const start = output.length;
-    const wrapped = `printf '\\036HARMONY_EXEC\\n'; ${cli}; printf '\\036HARMONY_BEGIN\\n'; cat .harmony/runs/${name}/report.json; printf '\\036HARMONY_END\\n'`;
-    filter.begin();
+    const wrapped = `printf '\\036HARMONY_EXEC_${id}\\n'; ${cli}; printf '\\036HARMONY_BEGIN_${id}\\n'; cat .harmony/runs/${name}/report.json; printf '\\036HARMONY_END_${id}\\n'`;
+    filter.begin(id);
     originalWrite(`\r\n$ ${cli}\r\n`);
-    term.input(wrapped + "\r", true);
+    input(wrapped + "\r");
     try {
       await waitFor(
-        (s) =>
-          s.slice(start).includes("\x1eHARMONY_END") &&
-          s.slice(s.lastIndexOf("\x1eHARMONY_END")).includes("harmony-linux# "),
+        (s) => complete(s.slice(start).replace(/\r/g, ""), id),
         interactive ? null : 600000,
       );
-      const text = output.slice(start).replace(/\r/g, "");
-      const begin = text.indexOf("\x1eHARMONY_BEGIN\n");
-      const end = text.lastIndexOf("\x1eHARMONY_END");
-      if (begin < 0 || end < 0)
-        throw new Error("Linux did not return a complete CLI report.");
-      const report = JSON.parse(
-        text.slice(begin + "\x1eHARMONY_BEGIN\n".length, end),
-      );
-      onReport(name, report);
+      const value = report(output.slice(start).replace(/\r/g, ""), id);
+      session.finish(id);
+      onReport(name, value);
       status("Ready · commands execute in this browser");
+    } catch (error) {
+      session.fail(error);
+      status(session.error);
+      throw new Error(session.error);
     } finally {
-      busy = false;
+      term.options.disableStdin = true;
       interactive = false;
       shellReady = false;
     }
@@ -173,11 +193,14 @@ export async function boot(container, status, onReport = () => {}) {
   ready = true;
   return {
     get ready() {
-      return ready && !busy;
+      return ready && session.ready;
+    },
+    get error() {
+      return session.error;
     },
     send(text) {
       if (!shellReady) return;
-      term.input(text, true);
+      input(text);
       term.focus();
     },
     async command(cli) {

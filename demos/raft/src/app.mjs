@@ -168,6 +168,7 @@ async function investigate(action) {
   playing = false;
   if (runtime && !runtime.ready) {
     $("#explanation").textContent =
+      runtime.error ||
       "The live machine is running a command. Its output is in the terminal below.";
     return;
   }
@@ -251,6 +252,12 @@ $("#boot").onclick = async () => {
   } catch (error) {
     $("#runtime-status").textContent = error.message;
     $("#boot").disabled = false;
+    $("#boot").textContent = "Reload Linux";
+    $("#boot").onclick = () => {
+      sessionStorage.removeItem("harmony-isolation-attempt");
+      sessionStorage.setItem("harmony-start-linux", "1");
+      location.reload();
+    };
   }
 };
 document.querySelectorAll(".tip").forEach(

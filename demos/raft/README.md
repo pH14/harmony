@@ -146,3 +146,10 @@ it using the pinned CLI/UML runtime, records fresh evidence, exercises nested
 boot with both FPU formats, and assembles a new browser image. Its reports and
 image are uploaded as CI artifacts. Raw run reports are release/build inputs,
 not repository history. It runs alongside the static checks with its own 15-minute budget.
+
+Live command reports have per-command framing. A failed or timed-out command
+disables further commands until reload; a failed boot offers a full page reload
+instead of starting another VM. Terminal input is enabled only in a ready guest
+shell, and the isolation worker gets one automatic reload attempt. The workload
+build checks that a replica reporting another leader's invariant violation
+retains its own identity.
