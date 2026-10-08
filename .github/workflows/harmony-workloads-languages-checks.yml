@@ -32,8 +32,6 @@ defaults:
 env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
   HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
-  HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-  HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
 
 jobs:
   scope:

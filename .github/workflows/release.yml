@@ -58,8 +58,6 @@ jobs:
       - name: Build canonical platform runtime
         env:
           GUEST_TARGET: ${{ matrix.target }}
-          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \

@@ -81,9 +81,6 @@ jobs:
           key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
       - name: Build exact platform artifacts
         if: steps.runtime.outputs.cache-hit != 'true'
-        env:
-          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget python3

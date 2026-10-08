@@ -19,8 +19,6 @@ require_tools qemu-system-x86_64
 
 # The reproducibility and boot checks use the pinned ubuntu-24.04 toolchain's
 # reviewed opcode baselines. Other build profiles select their own lists.
-export HARMONY_RDTSC_ALLOWLIST=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist-gha.txt}
-export HARMONY_RDRAND_ALLOWLIST=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist-gha.txt}
 
 build_once() {
     ./clean-artifacts.sh

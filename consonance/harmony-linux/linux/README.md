@@ -137,15 +137,12 @@ Built-in initialization preserves the no-modules boundary. It is mutually
 exclusive with the traps-off and task-park profiles and requires a matching
 nested-host VMM contract. The instruction baseline must qualify the newly
 compiled KVM paths before publication; a failed audit is a qualification
-failure, not permission to extend the allowlist without reviewing those paths.
+failure.
 The guest KVM reads its host TSC through `RDMSR(IA32_TSC)`, which the outer
 Consonance MSR filter completes from virtual time. Its ordered counter accessor
 keeps explicit memory fences. The optional VMX hardware preemption timer is
 disabled by default, and the fixture verifies that it remains disabled;
-hardware countdowns cannot use Harmony virtual counter deadlines. Nested-host
-counter baselines are separate from the ordinary kernel's baselines, with
-toolchain-specific selections through `HARMONY_RDTSC_ALLOWLIST` and
-`HARMONY_RDRAND_ALLOWLIST`.
+hardware countdowns cannot use Harmony virtual counter deadlines.
 `HARMONY_BUILD_JOBS` bounds compiler parallelism for small shared-host proofs.
 For a Harmony AMD SVM host, the kernel consumes the contract's frozen CPUID
 TSC/crystal ratio and processor frequency before PIT or APIC calibration.
