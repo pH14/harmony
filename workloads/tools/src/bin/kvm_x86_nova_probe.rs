@@ -745,6 +745,25 @@ mod tests {
         );
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn oracle_admission_session_matches_the_admission_checker() {
+        assert_eq!(
+            serde_json::to_value(super::oracle_admission_session()).unwrap(),
+            serde_json::json!({
+                "guest_contract": "Ordinary",
+                "ram_bytes": 134217728,
+                "seed": 0x4e4f_5641_5f43_4931u64,
+                "run_budget": 2000000000,
+                "cmdline": super::PROBE_CMDLINE,
+                "identity_tag": "",
+                "wall_limit": null,
+                "defer_virtual_time_checkpoint_hashes": true,
+            }),
+            "workloads/guest-images/verify-prepared-admission.py admits exactly this session"
+        );
+    }
+
     #[test]
     fn boot_memory_rejects_unframed_substrings_and_malformed_values() {
         assert!(boot_memory_kib("prefix Memory: 1K/2K available\n").is_err());
