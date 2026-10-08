@@ -1108,5 +1108,76 @@ class MiriMatrixTests(unittest.TestCase):
         self.assertIn("ci-miri-coverage", {v.rule for v in violations})
 
 
+class ReadmeHumanSectionTests(unittest.TestCase):
+    HUMAN = "# Title\n\nWritten by a person.\n\n---\n\n"
+    NOTICE = "> [!WARNING]\n> Everything you read after this point, including any linked docs, has been written by an LLM.\n"
+    LLM = "## Generated\n\nAnything.\n"
+
+    def repo(self, base_readme, readme):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        git = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+               "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        if base_readme is not None:
+            (root / "README.md").write_text(base_readme)
+        else:
+            (root / "NOTES.md").write_text("no readme yet\n")
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "base"], cwd=root, check=True)
+        if readme is not None:
+            (root / "README.md").write_text(readme)
+        return root
+
+    def check(self, base_readme, readme, base="HEAD"):
+        root = self.repo(base_readme, readme)
+        return LINTS.check_readme_human_section(root, ["README.md"], base)
+
+    def test_unchanged_readme_passes(self):
+        readme = self.HUMAN + self.NOTICE + self.LLM
+        self.assertEqual(self.check(readme, readme), [])
+
+    def test_llm_text_below_the_notice_may_change(self):
+        base = self.HUMAN + self.NOTICE + self.LLM
+        readme = self.HUMAN + self.NOTICE + "## Generated\n\nRewritten by an LLM.\n"
+        self.assertEqual(self.check(base, readme), [])
+
+    def test_edited_human_text_is_reported(self):
+        base = self.HUMAN + self.NOTICE + self.LLM
+        readme = self.HUMAN.replace("a person", "an LLM") + self.NOTICE + self.LLM
+        violations = self.check(base, readme)
+        self.assertEqual([(v.rule, v.path) for v in violations],
+                         [(LINTS.README_HUMAN_RULE, "README.md")])
+
+    def test_text_inserted_above_the_notice_is_reported(self):
+        base = self.HUMAN + self.NOTICE + self.LLM
+        readme = "Added line.\n" + base
+        self.assertEqual([v.rule for v in self.check(base, readme)], [LINTS.README_HUMAN_RULE])
+
+    def test_a_removed_notice_is_reported(self):
+        base = self.HUMAN + self.NOTICE + self.LLM
+        violations = self.check(base, self.HUMAN + self.LLM)
+        self.assertEqual([v.rule for v in violations], [LINTS.README_HUMAN_RULE])
+        self.assertIn("expected one LLM notice", violations[0].text)
+
+    def test_a_readme_absent_from_the_base_is_not_checked(self):
+        self.assertEqual(self.check(None, self.HUMAN + self.NOTICE), [])
+
+    def test_an_unknown_base_revision_is_reported(self):
+        readme = self.HUMAN + self.NOTICE
+        violations = self.check(readme, readme, base="no-such-ref")
+        self.assertEqual([v.rule for v in violations], [LINTS.README_HUMAN_RULE])
+        self.assertIn("no-such-ref", violations[0].text)
+
+    def test_the_section_is_the_text_above_a_single_notice(self):
+        self.assertEqual(LINTS.readme_human_section(self.HUMAN + self.NOTICE + self.LLM), self.HUMAN)
+        self.assertIsNone(LINTS.readme_human_section(self.HUMAN + self.LLM))
+        self.assertIsNone(LINTS.readme_human_section(self.NOTICE + self.NOTICE))
+
+    def test_the_tracked_readme_matches_its_base(self):
+        self.assertFalse(LINTS.check_readme_human_section(ROOT, ["README.md"], "HEAD"))
+
+
 if __name__ == "__main__":
     unittest.main()

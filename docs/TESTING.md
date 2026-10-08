@@ -157,3 +157,9 @@ UTF-8 text file and filename, including extensionless files and the checker
 itself. The prohibited term encoded by `PROHIBITED_WORD` is rejected as a word,
 plural, or snake/camel-case identifier component. Larger words such as
 `aggregate` and `propagate` remain valid.
+
+The README text above its LLM notice must match the base revision. The base is
+`origin/main` by default, and `--readme-base` overrides it. CI passes the pull
+request's base commit, or the previous commit on a push. `scripts/custom-lints.py`
+fails when that text differs, including uncommitted edits. Text below the notice
+is not checked.
