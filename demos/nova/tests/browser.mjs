@@ -55,8 +55,11 @@ try {
         height = Number(canvas.dataset.mapHeight),
         scale = Math.min(canvas.width / width, canvas.height / height),
         rect = canvas.getBoundingClientRect();
-      const px = position.x % width,
-        py = Math.floor(position.x / width) * 224 + position.y - 8;
+      const px = Math.floor((position.x % width) / 32) * 32 + 16,
+        py =
+          Math.floor((Math.floor(position.x / width) * 224 + position.y) / 32) *
+            32 +
+          8;
       return {
         x:
           (rect.width * ((canvas.width - width * scale) / 2 + px * scale)) /
@@ -97,6 +100,26 @@ try {
     await page.locator("#film").evaluate((c) => c.toDataURL()),
     originImage,
   );
+  await page.locator("#scrub").fill(total);
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
+  await page.locator("#scrub").fill(String(Number(total) - 1));
+  await page.waitForFunction(
+    (frame) =>
+      document
+        .querySelector("#frame-label")
+        .textContent.startsWith(
+          "FRAME " + Number(frame).toLocaleString() + " /",
+        ),
+    Number(total) - 1,
+  );
+  if (Number(total) > 120)
+    assert.ok(
+      Number(await page.locator("#film").getAttribute("data-seek-start")) > 0,
+      "A near-end scrub should reuse a retained replay checkpoint",
+    );
   await page.locator("#scrub").fill(total);
   await page.waitForFunction(
     () =>
@@ -158,7 +181,7 @@ try {
     buffer: Buffer.from(JSON.stringify(longTape)),
   });
   await page.waitForFunction(
-    () => document.querySelector("#play").textContent === "Seeking…",
+    () => document.querySelector("#verification").textContent === "Replaying",
   );
   await page.locator("#scrub").fill("0");
   await page.waitForTimeout(200);
@@ -169,6 +192,70 @@ try {
     () =>
       document.querySelector("#verification").textContent ===
       "Saved controller history",
+  );
+  const mainTape = JSON.parse(await readFile("tests/fixtures/main-exit.json"));
+  const mainFrames = mainTape.actions.reduce((n, a) => n + a.frames, 0);
+  await page.locator("#history-file").setInputFiles({
+    name: "main.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(mainTape)),
+  });
+  await page.waitForFunction(
+    (n) =>
+      document.querySelector("#verification").textContent ===
+        "Saved controller history" &&
+      document.querySelector("#scrub").max === String(n),
+    mainFrames,
+  );
+  await page.locator("#scrub").fill(String(mainFrames - 20));
+  await page.waitForFunction(
+    (n) =>
+      document
+        .querySelector("#frame-label")
+        .textContent.startsWith("FRAME " + Number(n).toLocaleString() + " /"),
+    mainFrames - 20,
+  );
+  assert.ok(
+    Number(await page.locator("#film").getAttribute("data-seek-start")) >
+      mainFrames / 2,
+    "Long histories must seek from a nearby cached snapshot",
+  );
+  await page.locator("#scrub").fill("0");
+  await page.waitForFunction(() =>
+    document.querySelector("#frame-label").textContent.startsWith("FRAME 0 /"),
+  );
+  await page.locator("#play").click();
+  const pacing = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const start = performance.now(),
+          first = Number(document.querySelector("#scrub").value);
+        let samples = 0;
+        const step = (now) => {
+          samples++;
+          if (now - start >= 600)
+            resolve({
+              duration: now - start,
+              frames: Number(document.querySelector("#scrub").value) - first,
+              samples,
+            });
+          else requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }),
+  );
+  const rate = (pacing.frames * 1000) / pacing.duration;
+  assert.ok(
+    rate >= 180 && rate <= 300,
+    `4x replay must track wall time; got ${rate.toFixed(1)} game frames/second`,
+  );
+  assert.ok(
+    pacing.samples >= 12,
+    "Replay must continue presenting frames during playback",
+  );
+  await page.locator("#play").click();
+  console.log(
+    `4x replay: ${rate.toFixed(1)} game frames/s, ${pacing.samples} presentations in ${pacing.duration.toFixed(0)} ms; checkpoint seek reused a late snapshot.`,
   );
   await page.locator("#history-file").setInputFiles({
     name: "root.json",
@@ -186,11 +273,20 @@ try {
   const originalAttempts = await page.locator("#attempts").innerText();
   await page.locator("#take-control").click();
   await page.keyboard.down("ArrowRight");
-  await page.waitForTimeout(220);
+  await page.waitForTimeout(500);
   await page.keyboard.up("ArrowRight");
   await page.keyboard.down("KeyZ");
   await page.waitForTimeout(80);
   await page.keyboard.up("KeyZ");
+  await page.waitForFunction(
+    () => Number(document.querySelector("#film").dataset.audioFrames) > 0,
+  );
+  await page.locator("#sound").click();
+  assert.equal(
+    await page.locator("#sound").getAttribute("aria-label"),
+    "Unmute game audio",
+  );
+  await page.locator("#sound").click();
   await page.locator("#take-control").click();
   assert.equal(
     await page.locator("#take-control").getAttribute("aria-pressed"),
@@ -233,8 +329,8 @@ try {
         w = Number(c.dataset.mapWidth),
         h = Number(c.dataset.mapHeight),
         scale = Math.min(c.width / w, c.height / h) * Number(c.dataset.zoom),
-        px = p.x % w,
-        py = Math.floor(p.x / w) * 224 + p.y - 8;
+        px = Math.floor((p.x % w) / 32) * 32 + 16,
+        py = Math.floor((Math.floor(p.x / w) * 224 + p.y) / 32) * 32 + 8;
       return {
         x:
           (((px - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width) /

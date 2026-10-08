@@ -210,3 +210,35 @@ for (const [label, prefix, seed] of [
 console.log(
   "Mid-action and manually guided roots in Main and Level 2 produce exact replayable descendants.",
 );
+
+engine.restore(root);
+engine.run(128, 120, true);
+const batched = engine.capture();
+engine.restore(root);
+for (let i = 0; i < 120; i++) engine.run(128, 1, true);
+assert.deepEqual(
+  engine.capture(),
+  batched,
+  "Rendering only the final frame must preserve the exact game snapshot",
+);
+const shadow = await createEngine(base, {
+  rom: await readFile(new URL("nova.nes", base)),
+  wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
+});
+shadow.restore(root);
+shadow.enableAudio(true);
+shadow.run(128, 120, false);
+const pcm = shadow.audio();
+assert.ok(pcm.length > 0 && pcm.length <= 19200);
+assert.ok(
+  pcm.some((n) => n !== 0),
+  "The actual game APU must generate music samples",
+);
+assert.deepEqual(
+  engine.capture(),
+  batched,
+  "Audio synthesis must not touch the recorded replay engine",
+);
+console.log(
+  "Efficient video preserves snapshot bytes; isolated game audio produces bounded non-silent PCM.",
+);

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "./style.css";
+import { ReplayTimeline, trailPoint } from "./replay.js";
+import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, validateTape } from "./heat.js";
 import { CREDIT, creditPNG, snapshotHash } from "./media.js";
@@ -33,7 +35,7 @@ document.querySelector("#app").innerHTML = `
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
 ${artCredit}<div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><span>Selected history</span><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><div class="section-title"><div><h2 id="film-title">The first possibility</h2></div><span id="verification" hidden>Starting emulator</span></div><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></div><div class="branch-actions"><button id="take-control" disabled>Take control</button><button id="search-here" disabled>Search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div><div class="film-actions"><button id="screenshot" disabled>Save this frame</button><button id="export" disabled>Save history</button><button id="import">Open history</button><input id="history-file" type="file" accept="application/json,.json" hidden></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><span>Selected history</span><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><div class="section-title"><div><h2 id="film-title">The first possibility</h2></div><span id="verification" hidden>Starting emulator</span></div><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></div><div class="branch-actions"><button id="take-control" disabled>Take control</button><button id="search-here" disabled>Search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><button id="sound" aria-label="Mute game audio">Mute</button><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div><div class="film-actions"><button id="screenshot" disabled>Save this frame</button><button id="export" disabled>Save history</button><button id="import">Open history</button><input id="history-file" type="file" accept="application/json,.json" hidden></div></div>
 <aside><div class="section-title"><div><h2 id="cell-title">Selected state</h2></div><span id="cell-visits" class="badge">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><div id="details" class="details"></div></aside></section></div>
 <section class="atlas"><div class="section-title"><h2>The game</h2><nav id="worlds" aria-label="Game worlds"></nav></div><div id="atlas" class="atlas-grid"></div>${artCredit}</section>
 <footer><span>Nova the Squirrel by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
@@ -90,7 +92,12 @@ let controlMode = false,
   traceStride = 24,
   frameObservation,
   inspectorReturnFocus,
-  historyVerified = false;
+  historyVerified = false,
+  requestedFrame = 0,
+  renderedFrame = 0,
+  seekStarted = 0,
+  lastMapPaint = 0,
+  lastDetailPaint = 0;
 function roomView(id) {
   if (!views.has(id)) {
     const map = maps.get(id);
@@ -102,6 +109,10 @@ const budget = memoryBudget(
   navigator.deviceMemory,
   matchMedia("(pointer: coarse)").matches,
 );
+const timeline = new ReplayTimeline(
+  (budget.snapshotsMiB === 32 ? 2 : 4) * 1048576,
+);
+const music = new GameAudio(() => createEngine(base));
 const panoramas = new Map(),
   thumbnails = new Map();
 let thumbnailQueue = Promise.resolve();
@@ -166,43 +177,55 @@ function fail(error) {
 }
 function drawFilm() {
   frameObservation = engine?.observation();
-  if (frameObservation) renderDetails(frameObservation);
-  updateBranchControls();
+  if (
+    frameObservation &&
+    ((!playing && !controlMode) || performance.now() - lastDetailPaint > 150)
+  ) {
+    renderDetails(frameObservation);
+    lastDetailPaint = performance.now();
+    updateBranchControls();
+  }
+  if (!playing && !controlMode) updateBranchControls();
   const p = currentFrame === 0 && originPixels ? originPixels : engine.pixels();
   film.putImageData(new ImageData(p.data, p.width, p.height), 0, 0);
   $("frame-label").textContent =
     `FRAME ${fmt(currentFrame)} / ${fmt(current?.frames)}`;
-  $("scrub").value = currentFrame;
+  renderedFrame = currentFrame;
+  if (!seeking) $("scrub").value = currentFrame;
 }
-function actionAt(frame) {
-  let offset = 0;
-  for (const action of current.actions) {
-    if (frame < offset + action.frames)
-      return {
-        buttons: action.buttons,
-        frames: offset + action.frames - frame,
-      };
-    offset += action.frames;
-  }
-  return null;
-}
-function advanceFilm(target) {
+function advanceFilm(target, paint = true, renderAt = target) {
   while (currentFrame < target) {
-    const action = actionAt(currentFrame);
+    const action = timeline.actionAt(currentFrame);
     if (!action) break;
     const n = Math.min(
       action.frames,
       target - currentFrame,
       traceStride - (currentFrame % traceStride),
+      timeline.interval - (currentFrame % timeline.interval),
     );
-    engine.run(action.buttons, n, true);
+    engine.run(action.buttons, n, currentFrame + n === renderAt);
     currentFrame += n;
+    if (currentFrame % timeline.interval === 0)
+      timeline.put(currentFrame, engine.capture());
     if (currentFrame % traceStride === 0 && currentFrame > traceMaxFrame)
       recordTrail();
   }
   if (currentFrame === current.frames && currentFrame > traceMaxFrame)
     recordTrail();
-  drawFilm();
+  if (paint) drawFilm();
+}
+function markerPoint() {
+  if (seeking)
+    return (
+      trailPoint(trace, requestedFrame) ||
+      (requestedFrame === current?.frames &&
+      isMapEvidence(current.observation, catalog.levels)
+        ? project(current.observation, maps.get(current.observation.level))
+        : null)
+    );
+  return frameObservation && isMapEvidence(frameObservation, catalog.levels)
+    ? project(frameObservation, maps.get(frameObservation.level))
+    : null;
 }
 function recordTrail() {
   if (trace.at(-1)?.frame === currentFrame) return;
@@ -256,20 +279,30 @@ async function seek(target, propagateError = false) {
   playing = false;
   seeking = true;
   updateBranchControls();
-  $("play").textContent = "Seeking…";
+  seekStarted = performance.now();
   $("verification").textContent = "Replaying";
   target = Math.max(0, Math.min(current.frames, Math.floor(target)));
-  engine.restore(origin);
-  currentFrame = 0;
-  film.putImageData(
-    new ImageData(originPixels.data, originPixels.width, originPixels.height),
-    0,
-    0,
-  );
+  requestedFrame = target;
+  $("scrub").value = target;
+  const checkpoint = timeline.before(target);
+  if (
+    currentFrame > target ||
+    currentFrame < checkpoint.frame ||
+    (currentFrame === target && renderedFrame !== target)
+  ) {
+    engine.restore(checkpoint.snapshot || origin);
+    currentFrame = checkpoint.frame;
+  }
+  const startedAt = currentFrame;
+  $("film").dataset.seekStart = startedAt;
   try {
     while (currentFrame < target && epoch === replayEpoch) {
-      advanceFilm(Math.min(target, currentFrame + 600));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      const deadline = performance.now() + 8;
+      do {
+        advanceFilm(Math.min(target, currentFrame + 120), false, target);
+      } while (currentFrame < target && performance.now() < deadline);
+      if (currentFrame < target)
+        await new Promise((resolve) => setTimeout(resolve, 0));
     }
     if (epoch !== replayEpoch) return false;
     drawFilm();
@@ -284,6 +317,7 @@ async function seek(target, propagateError = false) {
   } finally {
     if (epoch === replayEpoch) {
       seeking = false;
+      $("film").closest(".screen").classList.remove("updating");
       updateBranchControls();
       $("play").textContent = "▶ Play history";
       $("scrub").value = currentFrame;
@@ -294,6 +328,8 @@ async function selectState(state, autoplay = false, propagateError = false) {
   if (!engine) return;
   stopControl();
   current = state;
+  timeline.reset(state.actions, state.frames);
+  requestedFrame = 0;
   historyVerified = false;
   trace = [];
   segments = [];
@@ -412,6 +448,7 @@ function startSearch() {
   stopControl();
   branchBusy = false;
   activeSearch = 0;
+  timeline.clear();
   trace = [];
   segments = [];
   views.clear();
@@ -933,11 +970,9 @@ function drawArea(canvas, now) {
     ctx.lineWidth = 1.5 / areaZoom;
     ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
   }
-  if (
-    frameObservation?.level === mapLevel &&
-    isMapEvidence(frameObservation, catalog.levels)
-  ) {
-    const o = project(frameObservation, maps.get(mapLevel));
+  const o = markerPoint();
+  canvas.dataset.markerFrame = seeking ? requestedFrame : currentFrame;
+  if (o?.level === mapLevel) {
     ctx.strokeStyle = "#fff5cc";
     ctx.lineWidth = 1.5 / areaZoom;
     ctx.beginPath();
@@ -1205,7 +1240,11 @@ $("history-file").onchange = async (e) => {
     if (actual !== tape.endpoint_sha256)
       throw new Error("Saved history endpoint checksum mismatch");
     state.observation = engine.observation();
-    if (!(await selectState(state, false, true))) return;
+    selectedCell = null;
+    if (isMapEvidence(state.observation, catalog.levels))
+      setRoom(state.observation.level);
+    renderStates();
+    drawFilm();
     $("error").hidden = true;
     $("verification").textContent = "Saved controller history";
   } catch (err) {
@@ -1255,7 +1294,7 @@ function updateBranchControls() {
   $("take-control").setAttribute("aria-pressed", controlMode);
   $("game-controls").hidden = !controlMode;
   $("scrub").disabled = !current || controlMode || branchBusy;
-  $("play").disabled = !current || controlMode || branchBusy;
+  $("play").disabled = !current || controlMode || branchBusy || seeking;
   $("branch-choice").disabled = branchBusy || controlMode;
   $("import").disabled = branchBusy || controlMode;
   $("screenshot").disabled = !current || seeking || branchBusy;
@@ -1273,6 +1312,7 @@ function updateBranchControls() {
 function stopControl() {
   if (!controlMode) return;
   controlMode = false;
+  music.stop();
   controller.clear();
   for (const button of document.querySelectorAll(".touch-controls .held"))
     button.classList.remove("held");
@@ -1283,8 +1323,11 @@ function stopControl() {
     if (current.branch?.manual) current.branch.manual.to = currentFrame;
     if (currentFrame > traceMaxFrame) recordTrail();
     segments = trailSegments(trace);
+    timeline.index(current.actions, current.frames);
+    timeline.trim(currentFrame);
     stateCache.set(current.id, current);
     renderStates();
+    drawFilm();
   }
   updateBranchControls();
 }
@@ -1335,6 +1378,13 @@ $("take-control").onclick = () => {
   $("branch-message").hidden = true;
   controller.clear();
   controlMode = true;
+  timeline.trim(currentFrame);
+  music
+    .start(() => engine.capture())
+    .catch((e) => {
+      $("branch-message").hidden = false;
+      $("branch-message").textContent = "Game audio unavailable: " + e.message;
+    });
   $("play").textContent = "▶ Play history";
   renderStates();
   updateBranchControls();
@@ -1396,6 +1446,15 @@ $("branch-choice").onchange = () => {
     active: Number($("branch-choice").value),
   });
 };
+$("sound").onclick = () => {
+  const muted = music.mute();
+  $("sound").textContent = muted ? "Unmute" : "Mute";
+  $("sound").setAttribute(
+    "aria-label",
+    muted ? "Unmute game audio" : "Mute game audio",
+  );
+  $("sound").setAttribute("aria-pressed", muted);
+};
 window.addEventListener("keydown", (e) => {
   if (e.code === "Escape") {
     if (controlMode) stopControl();
@@ -1422,7 +1481,11 @@ window.addEventListener("keyup", (e) => {
 });
 window.addEventListener("blur", stopControl);
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopControl();
+  if (document.hidden) {
+    stopControl();
+    playing = false;
+    $("play").textContent = "▶ Play history";
+  }
 });
 for (const button of document.querySelectorAll(".touch-controls button")) {
   button.addEventListener("pointerdown", (e) => {
@@ -1473,9 +1536,16 @@ function drawTrail(ctx, level, scale) {
 }
 
 function animate(now) {
-  const elapsed = lastTime ? Math.min(100, now - lastTime) : 0;
+  const wallElapsed = lastTime ? now - lastTime : 0,
+    elapsed = Math.min(100, wallElapsed);
   lastTime = now;
-  drawMap(now);
+  if (now - lastMapPaint >= 1000 / 30) {
+    drawMap(now);
+    lastMapPaint = now;
+  }
+  $("film")
+    .closest(".screen")
+    .classList.toggle("updating", seeking && now - seekStarted > 120);
   if (Math.floor(now / 250) !== Math.floor((now - elapsed) / 250))
     drawAtlas(now);
   if (controlMode && !seeking && current && !document.hidden) {
@@ -1494,9 +1564,12 @@ function animate(now) {
         break;
       }
       engine.run(controller.buttons(), 1, true);
+      music.run(controller.buttons());
       currentFrame++;
       if (currentFrame % traceStride === 0) recordTrail();
     }
+    music.flush();
+    $("film").dataset.audioFrames = music.samples;
     current.frames = currentFrame;
     if (current.branch?.manual) current.branch.manual.to = currentFrame;
     current.observation = engine.observation();
@@ -1505,15 +1578,16 @@ function animate(now) {
     drawFilm();
   }
   if (playing && !seeking && current) {
-    frameCredit += ((elapsed * 60) / 1000) * Number($("speed").value);
+    frameCredit += ((wallElapsed * 60) / 1000) * Number($("speed").value);
     const frames = Math.floor(frameCredit);
     frameCredit -= frames;
     if (frames) {
       advanceFilm(Math.min(current.frames, currentFrame + frames));
+      segments = trailSegments(trace);
       if (currentFrame === current.frames) {
         playing = false;
         $("play").textContent = "↺ Play again";
-        verify().catch(replayError);
+        verify().then(updateBranchControls).catch(replayError);
       }
     }
   }

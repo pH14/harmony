@@ -19,9 +19,14 @@ export const BOOT = [
   [1, 6],
   [0, 60],
 ];
+const runtimeURL = (name, base) => {
+  const url = new URL("engine/" + name, base);
+  url.searchParams.set("v", "audio-replay-2");
+  return url.href;
+};
 export async function createEngine(base, inputs = {}) {
   const factory = (
-    await import(/* @vite-ignore */ new URL("engine/quicknes.js", base).href)
+    await import(/* @vite-ignore */ runtimeURL("quicknes.js", base))
   ).default;
   const rom =
     inputs.rom ||
@@ -35,7 +40,7 @@ export async function createEngine(base, inputs = {}) {
   if (hash !== ROM_SHA256) throw new Error("Nova ROM checksum mismatch");
   const mod = await factory({
     ...(inputs.wasmBinary ? { wasmBinary: inputs.wasmBinary } : {}),
-    locateFile: (name) => new URL("engine/" + name, base).href,
+    locateFile: (name) => runtimeURL(name, base),
     print: () => {},
     printErr: () => {},
   });
@@ -61,6 +66,16 @@ export async function createEngine(base, inputs = {}) {
       )
         throw new Error("Invalid emulator action");
       mod._nova_run(buttons, frames, render ? 1 : 0);
+    },
+    enableAudio(enabled) {
+      mod._nova_audio_enable(enabled ? 1 : 0);
+    },
+    audio() {
+      const count = mod._nova_audio_count(),
+        ptr = mod._nova_audio_samples();
+      const samples = new Int16Array(mod.HEAPU8.buffer, ptr, count).slice();
+      mod._nova_audio_clear();
+      return samples;
     },
     capture() {
       if (!mod._nova_save(scratch, size))

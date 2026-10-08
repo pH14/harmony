@@ -3,10 +3,14 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <algorithm>
 
 static uint8_t buttons;
 static unsigned pixel_format;
 static bool render_enabled = true;
+static bool audio_enabled = false;
+static int16_t audio_samples[19200];
+static size_t audio_count;
 static unsigned width = 256, height = 240;
 static uint8_t pixels[256 * 240 * 4];
 static std::vector<uint8_t> cartridge;
@@ -30,7 +34,7 @@ static bool environment(unsigned command, void* data) {
         return false;
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: *static_cast<bool*>(data)=false; return true;
-    case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE: *static_cast<int*>(data)=render_enabled ? 9 : 8; return true;
+    case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE: *static_cast<int*>(data)=(render_enabled ? 1 : 0) | (audio_enabled ? 2 : 8); return true;
     case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS: return true;
     case RETRO_ENVIRONMENT_SET_VARIABLES:
     case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
@@ -52,8 +56,12 @@ static void video(const void* data, unsigned w, unsigned h, size_t pitch) {
         auto* out=pixels+(y*w+x)*4;out[0]=r;out[1]=g;out[2]=b;out[3]=255;
     }
 }
-static void audio(int16_t,int16_t) {}
-static size_t audio_batch(const int16_t*,size_t frames) {return frames;}
+static size_t audio_batch(const int16_t* samples,size_t frames) {
+    size_t count=std::min(frames*2, size_t(19200)-audio_count);
+    if(audio_enabled && count) {memcpy(audio_samples+audio_count,samples,count*sizeof(int16_t));audio_count+=count;}
+    return frames;
+}
+static void audio(int16_t l,int16_t r) {int16_t pair[]={l,r};audio_batch(pair,1);}
 static void poll() {}
 static int16_t input(unsigned port,unsigned device,unsigned,unsigned id) {
     if(port || device!=RETRO_DEVICE_JOYPAD) return 0;
@@ -71,9 +79,13 @@ int nova_load(const uint8_t* rom,int size) {
     return retro_load_game(&info);
 }
 void nova_run(int b,int frames,int render) {
-    buttons=b;render_enabled=render!=0;
-    for(int i=0;i<frames;i++) retro_run();
+    buttons=b;
+    for(int i=0;i<frames;i++) {render_enabled=render!=0 && i==frames-1;retro_run();}
 }
+void nova_audio_enable(int enabled) {audio_enabled=enabled!=0;audio_count=0;}
+int16_t* nova_audio_samples() {return audio_samples;}
+int nova_audio_count() {return audio_count;}
+void nova_audio_clear() {audio_count=0;}
 int nova_state_size() {return retro_serialize_size();}
 int nova_save(uint8_t* bytes,int size) {return size==nova_state_size() && retro_serialize(bytes,size);}
 int nova_restore(const uint8_t* bytes,int size) {return size==nova_state_size() && retro_unserialize(bytes,size);}

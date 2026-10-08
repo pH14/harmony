@@ -52,9 +52,24 @@ The attract-mode film follows frontier discoveries until the visitor interacts.
 Selecting a state replays its controller history from the level-one root in a
 second emulator. Endpoint snapshots are compared byte for byte after
 canonicalizing QuickNES's three unused PPU bytes. Verification runs internally,
-without an on-screen badge. Scrubbing reconstructs any frame. Save a PNG, or
+without an on-screen badge. Scrubbing keeps the last complete screenshot visible
+while the slider and an interpolated trail marker follow the requested frame.
+An Updating frame indicator appears only if reconstruction takes over 120 ms;
+interpolation never crosses a reload gap or a room transition. Screenshot saves
+and takeover wait for the actual emulator frame. Replay checkpoints are cached
+only for the selected history, at regular intervals targeting 64 snapshots,
+with a hard 2 MiB phone / 4 MiB desktop limit. Seeks resume from the closest
+preceding checkpoint or the current emulator frame, yield after approximately
+8 ms of work, and cancel when a newer request arrives. Movies follow elapsed
+wall time, render only their final presented frame, and update details at most
+about seven times per second. Maps refresh at 30 Hz. Scrubbing reconstructs any frame. Save a PNG, or
 export and reopen a JSON controller history. Movies are rendered live and are
-currently silent. The selected history is traced in gold across its rooms, with
+silent during history playback. Takeover plays the game’s original music and
+sound effects, with a Mute button. Audio stops on release, blur or a hidden tab.
+A separate, lazily loaded emulator generates PCM because switching QuickNES
+from its silent buffer changes serialized APU bytes. Only the original silent
+emulator records controller endpoints; the reusable audio emulator never enters
+search or snapshot verification. The selected history is traced in gold across its rooms, with
 matching numbered entrance and exit markers at transitions. The position marker
 follows the replay scrubber. Only the selected trail is retained, sampled at a
 fixed interval with at most about 8,400 points for an admitted history.
@@ -101,7 +116,10 @@ final two-rollout batch can retain up to fourteen additional entries. Phones/coa
 4 GiB of RAM use 32 MiB of snapshots and 96 MiB of search WASM buffers; other
 devices use 128 MiB and 192 MiB. The buffer check includes both worker-side Rust
 and QuickNES memories, happens after each two-rollout batch, and can overshoot
-by that batch's allocations. It excludes the separate 16 MiB replay emulator.
+by that batch's allocations. It excludes the separate 16 MiB replay emulator, the bounded checkpoint cache,
+and a further 16 MiB audio emulator allocated after the first takeover. Web Audio
+PCM capture is capped at 9,600 stereo frames (200 ms at 48 kHz); queued playback
+is bounded, flushed on release, and is not a recording of past audio.
 In recorded desktop seeds, 11,400 snapshots occupied about 80 MiB compressed and
 89 MiB of Rust linear memory. The 32 MiB phone snapshot budget therefore retains
 roughly 4,000--5,000 similar states, not a guaranteed count.
@@ -175,7 +193,8 @@ evidence. The old
 admission of only maps 0 and 40 rejected the garden door; map 40 is a bonus level.
 Rooted search checks fork mid-action and from Main and Level 2, then verify both
 the root snapshot and actual descendants against complete controller histories.
-The UI check covers the drawer, independent room zoom, real keyboard and touch
+The UI check covers wall-clock 4× playback, cached late scrubbing, actual audio
+scheduling and mute, the drawer, independent room zoom, real keyboard and touch
 inputs, human-history export, branching, returning to a paused original search,
 cell selection, replay, frame zero, scrubbing, attributed
 PNG/JSON downloads, valid and tampered imports, cancelling a long import, stacked live-map selection, world browsing, tall-level layout, dragging, the simplified
