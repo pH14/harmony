@@ -555,42 +555,49 @@ h2 {
 }
 #state-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  max-height: 156px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  max-height: 180px;
   overflow-y: auto;
   padding: 2px;
 }
 .state {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  padding: 8px;
+  padding: 8px 10px;
   text-align: left;
-  font:
-    10px ui-monospace,
-    monospace;
-  background: #292721;
+  font-size: 11px;
+  background: transparent;
   overflow-wrap: anywhere;
 }
-.state:only-child {
-  grid-column: 1 / -1;
+.state-marker {
+  color: var(--muted);
+  font-size: 10px;
+}
+.state.selected .state-marker {
+  color: var(--gold);
 }
 .state-summary {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 3px 8px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
 }
-.state-summary > span:first-child {
-  font-weight: 650;
+.state-name {
+  font-weight: 600;
 }
 .state-summary > span:last-child {
   color: var(--muted);
+  font-size: 10px;
 }
 .state-resources {
-  display: block;
   color: var(--muted);
-  margin-top: 5px;
+  font:
+    10px ui-monospace,
+    monospace;
 }
 .state.selected {
   border-color: #ac925b;
@@ -851,25 +858,102 @@ dialog h2 {
   .inspector {
     position: fixed;
     z-index: 20;
-    inset: auto 10px 10px;
-    max-height: 68dvh;
-    border-radius: 14px 14px 9px 9px;
-    padding: 14px;
+    inset: auto 6px 0;
+    max-height: 44dvh;
+    border-radius: 12px 12px 0 0;
+    padding: 6px;
+    gap: 4px;
     animation-name: sheet-in;
   }
   .drawer-top {
     position: sticky;
-    top: -14px;
+    top: -6px;
     z-index: 1;
     background: var(--surface);
-    padding: 7px 0;
+    padding: 0;
+  }
+  .drawer-top #close-inspector {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    line-height: 1;
+    font-size: 22px;
   }
   .inspector .screen {
     max-width: 270px;
     margin: auto;
   }
+  .inspector:not(.expanded) .film {
+    display: grid;
+    grid-template-columns: 108px minmax(0, 1fr);
+    gap: 4px 8px;
+  }
   .inspector:not(.expanded) .screen {
-    max-width: min(270px, 26dvh);
+    grid-column: 1;
+    grid-row: 1 / 3;
+    align-self: start;
+    flex-direction: column;
+    padding: 4px;
+    width: 100%;
+    margin: 0;
+  }
+  .inspector:not(.expanded) #frame-label {
+    position: static;
+    padding: 2px 0;
+    font-size: 8px;
+  }
+  .inspector:not(.expanded) .transport {
+    grid-column: 2;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px 28px;
+    gap: 4px;
+    margin: 0;
+  }
+  .inspector:not(.expanded) #play {
+    grid-column: 1 / -1;
+    padding: 5px;
+  }
+  .inspector:not(.expanded) .transport select {
+    padding: 3px 0;
+  }
+  .inspector:not(.expanded) #sound {
+    width: 28px;
+    padding: 3px;
+  }
+  .inspector:not(.expanded) .branch-actions {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    gap: 4px;
+  }
+  .inspector:not(.expanded) #take-control {
+    min-height: 36px;
+    padding: 5px;
+    font-size: 13px;
+  }
+  .inspector:not(.expanded) #search-here {
+    min-height: 28px;
+    padding: 4px;
+    font-size: 10px;
+  }
+  .inspector:not(.expanded) #branch-hint {
+    display: none;
+  }
+  .inspector:not(.expanded) .art-credit,
+  .inspector:not(.expanded) #branch-message {
+    grid-column: 1 / -1;
+    margin: 2px 0;
+    font-size: 9px;
+  }
+  .inspector .state-picker {
+    padding-top: 6px;
+  }
+  .inspector .state-picker .section-title {
+    margin-bottom: 5px;
+  }
+  .inspector:not(.expanded) #state-list {
+    max-height: 120px;
   }
   .inspector .art-credit {
     font-size: 10px;
@@ -884,8 +968,8 @@ dialog h2 {
     padding: 7px;
   }
   .inspector.expanded {
-    height: calc(100dvh - 24px);
-    max-height: calc(100dvh - 24px);
+    height: calc(100dvh - 12px);
+    max-height: calc(100dvh - 12px);
   }
   footer {
     flex-direction: column;

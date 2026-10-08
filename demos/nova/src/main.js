@@ -92,6 +92,7 @@ let controlMode = false,
   traceStride = 24,
   frameObservation,
   inspectorReturnFocus,
+  revealReplayRoom = false,
   historyVerified = false,
   requestedFrame = 0,
   renderedFrame = 0,
@@ -254,12 +255,13 @@ function followReplayRoom(point) {
     view.x = next.x;
     view.y = next.y;
   }
-  if (changed) {
+  const phone = matchMedia("(max-width: 800px)").matches;
+  if (changed || (phone && revealReplayRoom)) {
+    revealReplayRoom = false;
+    if (phone && $("inspector").classList.contains("expanded")) return;
     const bounds = row.getBoundingClientRect(),
       sheet = $("inspector").getBoundingClientRect(),
-      bottom = matchMedia("(max-width: 800px)").matches
-        ? sheet.top - 12
-        : innerHeight - 20;
+      bottom = phone ? sheet.top - 12 : innerHeight - 20;
     if (bounds.top < 20 || bounds.bottom > bottom)
       window.scrollBy({ top: bounds.top - 24, behavior: "instant" });
   }
@@ -366,9 +368,9 @@ async function selectState(state, autoplay = false) {
   $("selection-hint").hidden = true;
   recordTrailAtRoot();
   frameCredit = 0;
-  $("film-title").textContent = String(state.id).startsWith("manual-")
-    ? "Your branch"
-    : `State #${state.id}`;
+  $("film-title").textContent = routeName(state.id);
+  $("film-title").dataset.stateId = state.id;
+  $("film-title").title = `State #${state.id} · ${fmt(state.frames)} frames`;
   $("scrub").max = state.frames;
   for (const id of ["play", "scrub"]) $(id).disabled = false;
   if (
@@ -407,6 +409,8 @@ function renderDetails(observation) {
         : "Level transition",
     ],
     ["Controller actions", current?.actions.length || 0],
+    ["State ID", current?.id ?? "—"],
+    ["Frame", fmt(currentFrame)],
   ];
   for (const [name, value] of fields) {
     const div = document.createElement("div");
@@ -423,34 +427,73 @@ function recordTrailAtRoot() {
   currentFrame = 0;
   recordTrail();
 }
+function replayTime(frames) {
+  const seconds = Math.floor(frames / 60);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+function routeName(id) {
+  if (String(id).startsWith("manual-")) return "Your branch";
+  const index = selectedCell?.ids.indexOf(id) ?? -1;
+  return index >= 0 ? `Route ${index + 1}` : "History";
+}
 function renderStates() {
+  if (current) {
+    $("film-title").textContent = routeName(current.id);
+    $("film-title").dataset.stateId = current.id;
+    $("film-title").title =
+      `State #${current.id} · ${fmt(current.frames)} frames`;
+  }
   const ids = selectedCell?.ids || [current?.id].filter((x) => x !== undefined);
+  $("cell-title").textContent = selectedCell
+    ? "Routes to this spot"
+    : "History";
+  $("cell-title").title = selectedCell
+    ? `Cell ${selectedCell.x}, ${selectedCell.y}`
+    : "";
+  $("cell-visits").textContent = selectedCell ? ids.length : "";
+  $("cell-visits").title = selectedCell
+    ? `${fmt(selectedCell.visits)} search visits; ${ids.length} retained routes`
+    : "";
   $("state-list").replaceChildren(
     ...ids.map((id) => {
       const state = current?.id === id ? current : stateCache.get(id),
-        button = document.createElement("button");
-      button.className = "state" + (current?.id === id ? " selected" : "");
-      const title = document.createElement("span"),
-        identity = document.createElement("span"),
+        selected = current?.id === id,
+        button = document.createElement("button"),
+        marker = document.createElement("span"),
+        summary = document.createElement("span"),
+        name = document.createElement("span"),
         duration = document.createElement("span"),
         resources = document.createElement("span");
-      title.className = "state-summary";
-      identity.textContent = String(id).startsWith("manual-")
-        ? "Your branch"
-        : `#${id}`;
+      button.className = "state" + (selected ? " selected" : "");
+      button.dataset.stateId = id;
+      button.title = state
+        ? `State #${id} · ${fmt(state.frames)} frames`
+        : `State #${id}`;
+      marker.className = "state-marker";
+      marker.setAttribute("aria-hidden", "true");
+      marker.textContent = selected ? "✓" : "○";
+      summary.className = "state-summary";
+      name.className = "state-name";
+      name.textContent = routeName(id);
       duration.textContent = state
-        ? `${fmt(state.frames)} frames`
-        : "Load history";
-      title.append(identity, duration);
+        ? `${replayTime(state.frames)} replay`
+        : "Loading…";
+      summary.append(name, duration);
       resources.className = "state-resources";
       resources.textContent = state
-        ? `♥ ${state.observation.health} · ${state.observation.chips} chips`
+        ? `♥ ${state.observation.health}/4 · ${state.observation.chips} chips`
         : "";
-      button.append(title, resources);
-      button.setAttribute("aria-pressed", current?.id === id);
-      button.disabled = false;
+      button.append(marker, summary, resources);
+      button.setAttribute("aria-pressed", selected);
+      if (state)
+        button.setAttribute(
+          "aria-label",
+          `${routeName(id)}, ${Math.floor(state.frames / 60)} seconds of gameplay, health ${state.observation.health} of 4, ${state.observation.chips} chips`,
+        );
+      button.disabled = controlMode || branchBusy;
       button.onclick = () => {
         userSelected = true;
+        revealReplayRoom = true;
         ++request;
         if (state) selectState(state).catch(fail);
         else
@@ -471,6 +514,7 @@ function inspect(cell) {
   $("selection-hint").hidden = !!cell.ids.length;
   userSelected = true;
   selectedCell = cell;
+  revealReplayRoom = true;
   ++replayEpoch;
   seeking = false;
   current = null;
@@ -1257,7 +1301,10 @@ $("credits").onclick = () =>
     `<span class="eyebrow">CREDITS & LICENSING</span><h2>Nova the Squirrel</h2><p>Created by <a href="https://novasquirrel.com/">NovaSquirrel</a>. <a href="https://novasquirrel.itch.io/nova-the-squirrel">Play the original game</a>.</p><p>The game’s code is GPL-3.0-or-later. Its original graphics, sound and the gameplay imagery shown here are <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>. This is a noncommercial software demonstration, not endorsed by NovaSquirrel. The original character designs and gameplay are preserved. Level panoramas are assembled from gameplay screenshots; browser maps add heat overlays. Original artwork is unchanged.</p><p>QuickNES library sources: LGPL-2.1-or-later. The compiled libretro browser core is distributed under GPL-2.0 terms with a GPL-2.0-or-later C++ shim. The separate Harmony browser interface and Rust search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits and restrictions</a> · <a href="licenses/nova-source.tar.gz">Nova corresponding source</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> \u00b7 <a href="licenses/rust-dependencies.tar.gz">Rust dependency sources and notices</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
   );
 function openInspector() {
-  if ($("inspector").hidden) inspectorReturnFocus = document.activeElement;
+  if ($("inspector").hidden) {
+    inspectorReturnFocus = document.activeElement;
+    revealReplayRoom = true;
+  }
   $("inspector").hidden = false;
   $("workspace").classList.add("inspect-open");
 }
@@ -1330,6 +1377,10 @@ function expandInspector(expanded) {
   $("inspector").classList.toggle("expanded", expanded);
   $("expand-inspector").setAttribute("aria-expanded", expanded);
   $("expand-inspector").textContent = expanded ? "Collapse" : "Expand";
+  if (!expanded) {
+    revealReplayRoom = true;
+    followReplayRoom(markerPoint());
+  }
 }
 $("expand-inspector").onclick = () =>
   expandInspector(!$("inspector").classList.contains("expanded"));

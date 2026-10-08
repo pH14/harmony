@@ -165,8 +165,7 @@ try {
   );
   await page.locator("#map").click({ position: click });
   await page.waitForFunction(
-    (expected) =>
-      document.querySelector("#cell-title").textContent === expected,
+    (expected) => document.querySelector("#cell-title").title === expected,
     `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
   );
   assert.equal(await page.locator("#inspector").isVisible(), true);
@@ -181,7 +180,12 @@ try {
     () => Number(document.querySelector("#map").dataset.tracePoints) > 1,
   );
   const selected = await page.locator("#state-list .selected").innerText();
-  assert.match(selected, /#\d+/);
+  assert.match(selected, /Route \d+/);
+  assert.match(selected, /\d+:\d{2} replay/);
+  assert.equal(
+    await page.locator("#cell-title").innerText(),
+    "Routes to this spot",
+  );
   assert.equal(
     await page.locator("#take-control").innerText(),
     "🎮 Play from here",
@@ -244,9 +248,7 @@ try {
     () =>
       document.querySelector("#verification").textContent ===
         "Exact replay ✓" &&
-      document
-        .querySelector("#film-title")
-        .textContent.includes("fixture-main"),
+      document.querySelector("#film-title").dataset.stateId === "fixture-main",
   );
   const roomFrames = new Map();
   emulator.restore(emulatorRoot);
@@ -504,14 +506,14 @@ try {
     () =>
       document
         .querySelector("#state-list .selected")
-        ?.textContent.includes("#1:") &&
+        ?.dataset.stateId.startsWith("1:") &&
       document.querySelector("#verification").textContent === "Exact replay ✓",
   );
   const childState = await page.evaluate(() => window.novaTestStates[0]);
   assert.equal(
     await page.locator("#film-title").innerText(),
-    `State #${childState.id}`,
-    "Search descendants must retain their own identity after human play",
+    await page.locator("#state-list .selected .state-name").innerText(),
+    "Search descendants must match their selected route after human play",
   );
   const childTape = {
     actions: childState.actions,
@@ -771,6 +773,85 @@ try {
     "Play must be visible without scrolling on a small phone",
   );
   await page.setViewportSize({ width: 390, height: 844 });
+  const phonePosition = (await page.locator("#details b").first().textContent())
+    .split(",")
+    .map(Number);
+  const phoneCell = await page.locator("#map").evaluate((canvas, position) => {
+    const w = Number(canvas.dataset.mapWidth),
+      h = Number(canvas.dataset.mapHeight),
+      scale = Math.min(canvas.width / w, canvas.height / h),
+      rect = canvas.getBoundingClientRect();
+    const x = Math.floor((position[0] % w) / 32) * 32 + 16,
+      y =
+        Math.floor((Math.floor(position[0] / w) * 224 + position[1]) / 32) *
+          32 +
+        8;
+    return {
+      x:
+        (rect.width * ((canvas.width - w * scale) / 2 + x * scale)) /
+        canvas.width,
+      y:
+        (rect.height * ((canvas.height - h * scale) / 2 + y * scale)) /
+        canvas.height,
+    };
+  }, phonePosition);
+  await page.locator("#map").click({ position: phoneCell });
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
+  const phoneStateId = await page
+    .locator("#state-list .selected")
+    .getAttribute("data-state-id");
+  await selectFixture(mainTape, phoneStateId);
+  await page.waitForFunction(
+    (id) =>
+      document.querySelector("#verification").textContent ===
+        "Exact replay ✓" &&
+      document.querySelector("#film-title").dataset.stateId === id &&
+      !document.querySelector("#take-control").disabled,
+    phoneStateId,
+  );
+  await page.evaluate(() => {
+    const map = document.querySelector("#map").getBoundingClientRect();
+    window.scrollBy(0, map.bottom + 100);
+  });
+  assert.ok(
+    await page
+      .locator("#map")
+      .evaluate((map) => map.getBoundingClientRect().bottom < 0),
+  );
+  await page.locator("#state-list .selected").click();
+  await page.waitForFunction(
+    () => !document.querySelector("#take-control").disabled,
+  );
+  const phoneMap = await page.locator("#inspector").evaluate((panel) => {
+    const sheet = panel.getBoundingClientRect(),
+      map = document.querySelector("#map").getBoundingClientRect();
+    return {
+      height: sheet.height / innerHeight,
+      topGap:
+        panel.querySelector(".screen").getBoundingClientRect().top - sheet.top,
+      visibleMap: map.top >= 0 && map.bottom <= sheet.top,
+      preview: panel.querySelector("#film").getBoundingClientRect().width,
+    };
+  });
+  assert.ok(
+    phoneMap.height <= 0.45,
+    "The compact pane must leave most of the viewport to the route map",
+  );
+  assert.ok(
+    phoneMap.topGap <= 42,
+    "The preview should start near the top of the pane",
+  );
+  assert.ok(
+    phoneMap.visibleMap,
+    "Selecting a history in the same room must reveal its map above the pane",
+  );
+  assert.ok(
+    phoneMap.preview <= 110,
+    "The compact pane should use a small preview beside its controls",
+  );
   const collapsedHeight = (await page.locator("#inspector").boundingBox())
     .height;
   await page.locator("#expand-inspector").click();
@@ -791,6 +872,17 @@ try {
     "Phone histories must not overflow the sheet",
   );
   await page.locator("#expand-inspector").click();
+  const mapVisible = await page
+    .locator("#map")
+    .evaluate(
+      (map) =>
+        map.getBoundingClientRect().bottom <=
+        document.querySelector("#inspector").getBoundingClientRect().top,
+    );
+  assert.ok(
+    mapVisible,
+    "Collapsing after playback must reveal the selected path again",
+  );
   await page.locator("#take-control").click();
   assert.equal(
     await page.locator("#expand-inspector").getAttribute("aria-expanded"),
