@@ -48,7 +48,9 @@ level brings its maps into view even after inspecting the preceding level. Game
 Complete requires all 40 bits in one history, rather than the union of separate
 branches. A budget stop is visible and does not claim a win.
 
-The attract-mode film follows frontier discoveries until the visitor interacts.
+A silent preview follows frontier discoveries until the visitor interacts. It
+never draws a replay marker while the history pane is closed; only an intentional
+branch origin remains highlighted on the search map.
 Selecting a state replays its controller history from the level-one root in a
 second emulator. Endpoint snapshots are compared byte for byte after
 canonicalizing QuickNES's three unused PPU bytes. Verification runs internally,
@@ -109,8 +111,9 @@ that room, including after expanded phone gameplay. The prefix trail to the
 fork remains visible while the pane is closed; inspecting a history shows its
 own complete trail. Each retained search has its own heat, cell history IDs,
 room discoveries, progress and origin trail. Switching restores that search's
-presentation; inactive heat continues to cool by elapsed time, and returning
-does not add a synthetic root visit. The search selector returns to
+presentation, closes the history pane and resumes exploration. A search already
+at its memory or completion limit stays stopped. Inactive heat continues to cool
+by elapsed time, and returning does not add a synthetic root visit. The search selector returns to
 any earlier search, preserving its archive and random generator. Taking control
 or forking at an earlier scrubber position discards only that new history’s
 future. Descendant histories include the original inputs, human intervention
@@ -227,7 +230,8 @@ the root snapshot and actual descendants against complete controller histories.
 The UI check covers audible wall-clock 1×/4× playback, cached late scrubbing,
 room following across Introduction/Garden/Main and into Level 2, audio
 scheduling and mute, the drawer, independent room zoom, real keyboard and touch
-inputs, human-prefix branching, returning to a paused original search, cell
+inputs, human-prefix branching, resuming an earlier search without reopening
+the pane, hidden-preview marker suppression, cell
 selection, exact replay, frame zero, cancellation of long reconstruction,
 stacked live-map selection, world browsing, tall-level layout, dragging, the
 simplified top-left toolbar/counters, restart, mobile layout, credits and source

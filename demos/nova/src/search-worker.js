@@ -113,16 +113,13 @@ onmessage = async ({ data }) => {
       if (!searches.has(data.active)) throw new Error("Unknown search branch");
       loop.pause();
       active = data.active;
-      ready(true);
-      if (searches.get(active).stats) {
-        updateMemory(searches.get(active).stats);
-        postMessage({
-          type: "batch",
-          active,
-          ...searches.get(active).stats,
-          points: [],
-        });
-      }
+      const stats = searches.get(active).stats;
+      if (stats) updateMemory(stats);
+      const stopped = !!stats?.stopped || memoryLimit();
+      ready(stopped);
+      if (stats) postMessage({ type: "batch", active, ...stats, points: [] });
+      if (stopped) postMessage({ type: "limit", won: !!stats?.won });
+      else loop.resume();
     } else if (data.type === "fork" && initialized && !busy) {
       loop.pause();
       busy = true;

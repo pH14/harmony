@@ -137,6 +137,30 @@ try {
   await page.waitForTimeout(200);
   assert.equal(await page.locator("#attempts").innerText(), attempts);
   assert.equal(await page.locator("#inspector").isVisible(), false);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".map-row canvas")].every(
+      (c) => c.dataset.markerFrame === "",
+    ),
+  );
+  assert.equal(
+    await page.locator(".map-row canvas").evaluateAll((canvases) =>
+      canvases.some((c) => {
+        const pixels = c
+          .getContext("2d")
+          .getImageData(0, 0, c.width, c.height).data;
+        for (let i = 0; i < pixels.length; i += 4)
+          if (
+            pixels[i] === 255 &&
+            pixels[i + 1] === 245 &&
+            pixels[i + 2] === 204
+          )
+            return true;
+        return false;
+      }),
+    ),
+    false,
+    "The hidden automatic preview must not highlight a replay position on the map",
+  );
   await page.locator("#inspect-open").click();
   const [x, y] = (await page.locator("#details b").first().textContent())
     .split(",")
@@ -459,9 +483,17 @@ try {
       handler = worker.onmessage;
     worker.onmessage = (event) => {
       handler(event);
-      if (event.data.type === "ready")
+      if (event.data.type === "ready") {
         window.novaTestReadyCells =
           document.querySelector("#cells").textContent;
+        window.novaTestReady = {
+          active: event.data.active,
+          cells: window.novaTestReadyCells,
+          attempts: document.querySelector("#attempts").textContent,
+          paneHidden: document.querySelector("#inspector").hidden,
+          paused: event.data.paused,
+        };
+      }
     };
   });
   await page.locator("#search-here").click();
@@ -587,33 +619,59 @@ try {
     childTape.endpoint_sha256,
     "Search descendants must include and reproduce the human input prefix",
   );
-  await page.locator("#branch-choice").selectOption("0");
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#verification").textContent === "Original game",
-  );
-  assert.equal(
-    await page.locator("#attempts").innerText(),
-    originalAttempts,
-    "Switching back must retain the original paused search",
-  );
-  assert.equal(
-    await page.locator("#cells").innerText(),
+  async function switchSearch(id, cells, attempts) {
+    await page.evaluate(() => {
+      window.novaTestReady = null;
+    });
+    await page.locator("#branch-choice").selectOption(String(id));
+    await page.waitForFunction(
+      (active) => window.novaTestReady?.active === active,
+      id,
+    );
+    const restored = await page.evaluate(() => window.novaTestReady);
+    assert.equal(
+      restored.paneHidden,
+      true,
+      "Switching branches must close the history pane",
+    );
+    assert.equal(
+      restored.paused,
+      false,
+      "Switching branches must resume exploration",
+    );
+    assert.equal(
+      restored.cells,
+      cells,
+      "Switching restores only this branch's heat without an extra root visit",
+    );
+    if (attempts !== undefined) assert.equal(restored.attempts, attempts);
+    await page.waitForFunction(
+      (before) =>
+        Number(
+          document.querySelector("#attempts").textContent.replaceAll(",", ""),
+        ) > before,
+      Number(restored.attempts.replaceAll(",", "")),
+    );
+    assert.equal(await page.locator("#inspector").isVisible(), false);
+    assert.equal(
+      await page.locator("#pause").getAttribute("aria-label"),
+      "Pause Search",
+    );
+    await page.locator("#pause").click();
+    await page.waitForTimeout(100);
+    return page.locator("#cells").innerText();
+  }
+  const resumedOriginalCells = await switchSearch(
+    0,
     originalCells,
-    "Returning to the parent must restore its cells without adding another root visit",
+    originalAttempts,
   );
-  await page.locator("#branch-choice").selectOption("1");
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#film-title").dataset.stateId === "1:0" &&
-      document.querySelector("#verification").textContent === "Exact replay ✓",
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".map-row canvas")].every(
+      (c) => c.dataset.markerFrame === "",
+    ),
   );
-  assert.equal(
-    await page.locator("#cells").innerText(),
-    branchCells,
-    "Returning to a child must restore only that child's heatmap",
-  );
-  await page.locator("#close-inspector").click();
+  await switchSearch(1, branchCells);
   await page.waitForFunction(
     () => Number(document.querySelector("#map").dataset.tracePoints) > 1,
   );
@@ -621,13 +679,11 @@ try {
     await page.locator("#map").getAttribute("data-origin-frame"),
     String(manualFrames),
   );
-  await page.locator("#branch-choice").selectOption("0");
+  await switchSearch(0, resumedOriginalCells);
   await page.waitForFunction(
     () =>
-      document.querySelector("#film-title").dataset.stateId === "0" &&
       document.querySelector("#verification").textContent === "Original game",
   );
-  assert.equal(await page.locator("#cells").innerText(), originalCells);
   await page.locator('.area-zoom[data-map="49"]').click();
   await page.locator('.area-zoom[data-map="45"]').click();
   await page.waitForFunction(
@@ -646,6 +702,7 @@ try {
   await page.locator('.area-zoom[data-map="49"]').click();
   await page.locator('.area-zoom[data-map="45"]').click();
   await page.locator('.area-zoom[data-map="45"]').click();
+  await page.locator("#inspect-open").click();
   await page.locator("#zoom").click();
   await page.waitForTimeout(50);
   assert.ok(

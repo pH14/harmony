@@ -1177,8 +1177,7 @@ function drawArea(canvas, now) {
     ctx.lineWidth = 1.5 / areaZoom;
     ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
   }
-  const o =
-    $("inspector").hidden && branchOrigin ? branchOrigin.point : markerPoint();
+  const o = $("inspector").hidden ? branchOrigin?.point : markerPoint();
   const mapOrigin =
     branchOrigin?.point?.level === mapLevel ? branchOrigin : null;
   canvas.dataset.originFrame = mapOrigin?.frame ?? "";
@@ -1186,11 +1185,13 @@ function drawArea(canvas, now) {
     drawOriginPulse(ctx, mapLevel, scale, now),
   );
   canvas.dataset.markerFrame =
-    $("inspector").hidden && branchOrigin
-      ? branchOrigin.frame
-      : seeking
-        ? requestedFrame
-        : currentFrame;
+    o?.level !== mapLevel
+      ? ""
+      : $("inspector").hidden
+        ? branchOrigin.frame
+        : seeking
+          ? requestedFrame
+          : currentFrame;
   if (o?.level === mapLevel) {
     ctx.strokeStyle = "#fff5cc";
     ctx.lineWidth = 1.5 / areaZoom;
@@ -1615,9 +1616,7 @@ $("search-here").onclick = async () => {
   }
 };
 $("branch-choice").onchange = () => {
-  stopControl();
-  music.stop();
-  playing = false;
+  closeInspector();
   userSelected = true;
   paused = true;
   branchBusy = true;
@@ -1630,7 +1629,6 @@ $("branch-choice").onchange = () => {
   ++request;
   updateSearchControl();
   updateBranchControls();
-  openInspector();
   worker.postMessage({
     type: "switch",
     active: Number($("branch-choice").value),
