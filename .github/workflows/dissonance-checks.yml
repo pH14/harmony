@@ -25,8 +25,27 @@ env:
   CARGO_PROFILE: release
 
 jobs:
+  scope:
+    name: Change Selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust_checks: ${{ steps.rust_checks.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: rust_checks
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: rust_checks
+          target: dissonance-checks.yml
+
   archive:
     name: Archive
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -58,6 +77,8 @@ jobs:
 
   scheduling:
     name: Scheduling
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -85,6 +106,8 @@ jobs:
 
   search-coordination:
     name: Search Coordination
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -112,6 +135,8 @@ jobs:
 
   campaign-recording-and-replay:
     name: Campaign Recording and Replay
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
