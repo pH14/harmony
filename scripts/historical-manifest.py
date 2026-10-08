@@ -23,6 +23,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VALID_CI_STATES = {"runnable", "deferred"}
+VALID_PANELS = {"reproduction", "discovery"}
+VALID_DISCOVERY_MODES = {"guided", "general", "ablation"}
 GITHUB_JOB_LIMIT_MINUTES = 360
 SEARCH_HEADROOM_MINUTES = 20
 
@@ -85,6 +87,21 @@ def validate(path: Path, case: dict) -> dict:
     executions = case["search"].get("executions", 0)
     if not isinstance(executions, int) or executions < 0:
         raise SystemExit(f"{path}: search.executions must be a non-negative integer")
+
+    panel = case.get("panel", "reproduction")
+    if panel not in VALID_PANELS:
+        raise SystemExit(f"{path}: panel must be reproduction or discovery")
+    mode = case.get("discovery_mode", "guided")
+    if mode not in VALID_DISCOVERY_MODES:
+        raise SystemExit(f"{path}: discovery_mode must be guided, general or ablation")
+    focused = case.get("focused_case")
+    if (panel == "discovery") != (mode != "guided"):
+        raise SystemExit(f"{path}: general and ablation cases, and only they, belong to the discovery panel")
+    if panel == "discovery":
+        if not isinstance(focused, str) or not (path.parent.parent / focused / "case.json").is_file():
+            raise SystemExit(f"{path}: a discovery case names an existing focused_case")
+    elif focused is not None:
+        raise SystemExit(f"{path}: only a discovery case names a focused_case")
 
     ci = case.get("ci", {})
     if not isinstance(ci, dict):
@@ -153,6 +170,9 @@ def validate(path: Path, case: dict) -> dict:
         "software": case["software"],
         "display_name": display_name,
         "ci_status": state,
+        "panel": panel,
+        "discovery_mode": mode,
+        "focused_case": focused or case["id"],
         "ci_reason": ci.get("reason", ""),
         "image_prefix": prefix,
         "workload_version": case["workload"]["version"],
@@ -181,7 +201,13 @@ def main() -> int:
         help="emit a matrix containing only runnable cases",
     )
     parser.add_argument("--check", action="store_true", help="validate manifests without output")
-    parser.add_argument("--case", default="", help="keep only this case id")
+    parser.add_argument("--case", default="", help="keep only these comma-separated case ids")
+    parser.add_argument(
+        "--panel",
+        choices=sorted(VALID_PANELS),
+        default="reproduction",
+        help="runnable matrix panel: reproduction cases, or discovery arms with their focused cases",
+    )
     parser.add_argument(
         "--seeds",
         default="",
@@ -189,10 +215,18 @@ def main() -> int:
     )
     args = parser.parse_args()
     entries = [validate(path, case) for path, case in cases()]
+    if args.runnable_matrix:
+        if args.panel == "discovery":
+            focused = {entry["focused_case"] for entry in entries if entry["panel"] == "discovery"}
+            entries = [entry for entry in entries if entry["panel"] == "discovery" or entry["id"] in focused]
+        else:
+            entries = [entry for entry in entries if entry["panel"] == "reproduction"]
     if args.case:
-        entries = [entry for entry in entries if entry["id"] == args.case]
-        if not entries:
-            parser.error(f"no case named {args.case}")
+        wanted = [name.strip() for name in args.case.split(",") if name.strip()]
+        unknown = sorted(set(wanted) - {entry["id"] for entry in entries})
+        if unknown:
+            parser.error(f"no case named {', '.join(unknown)}")
+        entries = [entry for entry in entries if entry["id"] in wanted]
     if args.matrix and args.runnable_matrix:
         parser.error("choose only one matrix mode")
     if args.matrix or args.runnable_matrix:

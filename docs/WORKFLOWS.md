@@ -51,7 +51,7 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
-| `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
+| `Benchmarks / Harmony Workloads / Historical Discovery` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
@@ -393,19 +393,31 @@ arm, a control version or a replay mode over a second build.
 restore the arm. A separate Historical Bugs Checks workflow does not exist; the
 full search lives in Benchmarks and pull requests do not run it.
 
-`Benchmarks / Harmony Workloads / UML` runs one historical case, etcd by
-default, on the User-mode Linux profile when an operator dispatches it.
+`Benchmarks / Harmony Workloads / Historical Discovery` is the discovery
+benchmark that [DISCOVERY.md](../workloads/bugs/historical/DISCOVERY.md)
+specifies. A case's `panel` keeps it apart from the nightly search above: the
+nightly panel runs the `reproduction` cases, and this workflow runs every
+`discovery` case (a general workload or an ablation) beside the focused case it
+names. Every arm runs on the User-mode Linux profile, one campaign job per arm
+and seed, with one wall budget (90 minutes by default) and one execution
+ceiling for every arm. A campaign replays its first confirmed finding that
+carries the case's scored assertion twice in fresh processes, and
+`scripts/historical-discovery.py` gives it exactly one outcome. A discovery, a
+miss, a confirmed violation of another assertion, and a confirmed guest crash
+(reported with a warning) pass the job, because they are measurements. An
+infrastructure failure, an unconfirmed finding, a failed fresh replay, and a
+campaign that never reached a conclusive check fail it. The Scorecard job
+renders the per-arm comparison, and every campaign's reports stay as artifacts
+for 90 days. One case and one seed is the single UML campaign:
 `scripts/historical-search.sh` and `scripts/historical-replay.sh` take
 `BACKEND=uml`, which runs the CLI through `harmony-uml-qualify exec`: the
 runner's ordinary UID with ptrace and KVM ioctls denied, with the credentials
 and denial recorded beside the report. The search fails when the campaign
-captured no snapshot or restored none. The same job then replays the search's
-`first-bug-input.json` from genesis in fresh processes, before uploading the run.
-This preserves the recorded UML host identity and executable artifact modes.
-The UML search wall is capped at 280 minutes within a 360-minute job, reserving
-20 minutes for search shutdown, 50 for finding replay and 10 for setup and uploads.
-Every replay must
-violate the case's assertion with its evidence and reach one state digest.
+captured no snapshot or restored none. `FINDING` selects which recorded
+finding the reproducer replay runs, so a guest crash recorded first does not
+stand in for the scored finding. The campaign wall is capped at 240 minutes,
+leaving room in a 360-minute job for search shutdown, two fresh replays and
+uploads.
 
 The language workflow also builds a pinned UML profile for `UML Command Replay`.
 That bounded check runs a plain OCI command and fresh replays as an ordinary

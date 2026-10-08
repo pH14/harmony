@@ -1,36 +1,40 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# A historical case's fresh search on the User-mode Linux profile, as an
-# ordinary user with ptrace and KVM ioctls denied, followed by fresh-process
-# replays of the reproducer the search recorded.
-name: Benchmarks / Harmony Workloads / UML
+# The historical discovery benchmark: independent campaigns of each focused,
+# general and ablation arm on the User-mode Linux profile at one fixed budget,
+# a fresh replay of each campaign's first scored finding, and a scorecard.
+# workloads/bugs/historical/DISCOVERY.md holds the experiment and its scoring
+# rules. A miss is a reported outcome; broken execution, a missing conclusive
+# check and an unconfirmed or unreplayable finding fail their campaign job.
+name: Benchmarks / Harmony Workloads / Historical Discovery
 
 on:
   workflow_dispatch:
     inputs:
-      case:
-        description: Historical case id
+      arms:
+        description: Comma-separated case ids (every discovery arm and its focused case when empty)
         required: false
-        default: etcd-3.5-inconsistency
         type: string
-      seed:
-        description: Search seed (the run id when empty)
+      seeds:
+        description: Comma-separated campaign seeds
         required: false
+        default: "1001,1002,1003,1004,1005,1006,1007,1008,1009,1010"
+        type: string
+      wall_minutes:
+        description: Wall budget per campaign
+        required: false
+        default: "90"
         type: string
       executions:
-        description: Execution ceiling (case default when empty)
+        description: Execution ceiling per campaign
         required: false
-        type: string
-      repeats:
-        description: Fresh replays of the reproducer
-        required: false
-        default: "3"
+        default: "1000000"
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: harmony-uml-campaign-${{ github.ref }}
+  group: harmony-historical-discovery-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:
@@ -39,28 +43,39 @@ defaults:
 
 env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
-  UML_SEARCH_WALL_LIMIT: 280
+  REPLAY_REPEATS: 2
+  REPLAY_TIMEOUT_SECONDS: 1800
 
 jobs:
   manifest:
-    name: Case Manifest
+    name: Case Manifests
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      matrix: ${{ steps.read.outputs.matrix }}
+      arms: ${{ steps.read.outputs.arms }}
+      campaigns: ${{ steps.read.outputs.campaigns }}
     steps:
       - uses: actions/checkout@v4
-      - name: Expand the case manifest
+      - name: Expand arms and seeds
         id: read
         env:
-          CASE: ${{ inputs.case }}
+          ARMS: ${{ inputs.arms }}
+          SEEDS: ${{ inputs.seeds }}
+          WALL: ${{ inputs.wall_minutes }}
+          EXECUTIONS: ${{ inputs.executions }}
         run: |
           set -euo pipefail
+          [[ "${WALL}" =~ ^[1-9][0-9]*$ && "${EXECUTIONS}" =~ ^[1-9][0-9]*$ ]]
+          (( WALL <= 240 ))
           python3 scripts/historical-manifest.py --check
-          matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case "${CASE}" --seeds "")
-          jq -e '.include | length == 1' <<<"${matrix}" >/dev/null
-          matrix=$(jq -c --argjson limit "$UML_SEARCH_WALL_LIMIT" '.include |= map(.wall_minutes = ([.wall_minutes, $limit] | min))' <<<"$matrix")
-          printf 'matrix=%s\n' "${matrix}" >>"${GITHUB_OUTPUT}"
+          arms=$(python3 scripts/historical-manifest.py --runnable-matrix --panel discovery --case "${ARMS}")
+          campaigns=$(python3 scripts/historical-manifest.py --runnable-matrix --panel discovery --case "${ARMS}" --seeds "${SEEDS}")
+          replay=$(( 2 * REPLAY_TIMEOUT_SECONDS / 60 ))
+          campaigns=$(jq -c --argjson wall "${WALL}" --argjson executions "${EXECUTIONS}" --argjson replay "${replay}" \
+            '.include |= map(.wall_minutes = $wall | .executions = $executions | .job_timeout_minutes = ($wall + 20 + $replay))' \
+            <<<"${campaigns}")
+          printf 'arms=%s\ncampaigns=%s\n' "${arms}" "${campaigns}" >>"${GITHUB_OUTPUT}"
+          jq -r '.include[] | "\(.id)\t\(.discovery_mode)\t\(.focused_case)"' <<<"${arms}"
 
   guest:
     name: Guest Runtime
@@ -95,10 +110,13 @@ jobs:
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
             --artifacts consonance/harmony-linux/build/x86_64 --output platform-provenance.json
           python3 -c 'import json; assert json.load(open("platform-provenance.json"))["scope"] == "exact-input"'
+          cp platform-provenance.json consonance/harmony-linux/build/x86_64/
       - uses: actions/upload-artifact@v4
         with:
-          name: uml-campaign-guest-${{ github.run_id }}
-          path: consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+          name: discovery-guest-${{ github.run_id }}
+          path: |
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+            consonance/harmony-linux/build/x86_64/platform-provenance.json
           if-no-files-found: error
           retention-days: 1
 
@@ -126,7 +144,7 @@ jobs:
           install -m 0755 target/release/harmony-uml-qualify "$RUNNER_TEMP/uml/"
       - uses: actions/upload-artifact@v4
         with:
-          name: uml-campaign-profile-${{ github.run_id }}
+          name: discovery-profile-${{ github.run_id }}
           path: ${{ runner.temp }}/uml
           if-no-files-found: error
           retention-days: 1
@@ -147,21 +165,22 @@ jobs:
           cp target/release/harmony tools/harmony
       - uses: actions/upload-artifact@v4
         with:
-          name: uml-campaign-tools-${{ github.run_id }}
+          name: discovery-tools-${{ github.run_id }}
           path: tools
           if-no-files-found: error
           retention-days: 1
 
-  image:
-    name: Workload Image
+  images:
+    name: Workload Image — ${{ matrix.id }}
     needs: manifest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.manifest.outputs.arms) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    strategy:
-      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build the declared workload image
+      - name: Build the arm's workload image
         env:
           CASE_DIR: ${{ matrix.dir }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
@@ -180,40 +199,45 @@ jobs:
           done
           mkdir -p oci-images
           tag="harmony-${IMAGE_PREFIX}:${version}"
-          docker build --pull "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
+          docker build "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
           docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
           (cd oci-images && sha256sum -- *.oci >MANIFEST.sha256)
       - uses: actions/upload-artifact@v4
         with:
-          name: uml-campaign-image-${{ github.run_id }}
+          name: discovery-image-${{ matrix.id }}-${{ github.run_id }}
           path: oci-images
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
-  search:
+  campaign:
     name: ${{ matrix.display_name }}
-    needs: [manifest, guest, profile, tools, image]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    needs: [manifest, guest, profile, tools, images]
+    if: >-
+      ${{ !cancelled() && needs.manifest.result == 'success' && needs.guest.result == 'success'
+      && needs.profile.result == 'success' && needs.tools.result == 'success' }}
     strategy:
-      matrix: ${{ fromJSON(needs.manifest.outputs.matrix) }}
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJSON(needs.manifest.outputs.campaigns) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: uml-campaign-guest-${{ github.run_id }}
+          name: discovery-guest-${{ github.run_id }}
           path: guest
       - uses: actions/download-artifact@v4
         with:
-          name: uml-campaign-profile-${{ github.run_id }}
+          name: discovery-profile-${{ github.run_id }}
           path: guest/uml
       - uses: actions/download-artifact@v4
         with:
-          name: uml-campaign-tools-${{ github.run_id }}
+          name: discovery-tools-${{ github.run_id }}
           path: tools
       - uses: actions/download-artifact@v4
         with:
-          name: uml-campaign-image-${{ github.run_id }}
+          name: discovery-image-${{ matrix.id }}-${{ github.run_id }}
           path: oci-images
       - name: Search as an ordinary user with ptrace and KVM denied
         env:
@@ -225,14 +249,14 @@ jobs:
           WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
           RAM_MIB: ${{ matrix.ram_mib }}
-          SEED: ${{ inputs.seed || github.run_id }}
-          EXECUTIONS: ${{ inputs.executions || matrix.executions }}
+          SEED: ${{ matrix.seed }}
+          EXECUTIONS: ${{ matrix.executions }}
           WALL_MINUTES: ${{ matrix.wall_minutes }}
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
-        run: scripts/historical-search.sh
-      - name: Replay the reproducer from genesis in fresh processes
+        run: scripts/historical-search.sh || true
+      - name: Replay the first scored finding in fresh processes
         env:
           BACKEND: uml
           CASE_ID: ${{ matrix.id }}
@@ -244,17 +268,73 @@ jobs:
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
-          REPLAY_REPEATS: ${{ inputs.repeats }}
-          MAX_REPLAY_SESSIONS: ${{ inputs.repeats }}
-          REPLAY_TIMEOUT_SECONDS: 3000
+          MAX_REPLAY_SESSIONS: ${{ env.REPLAY_REPEATS }}
         run: |
-          report_dir=reports
-          if [[ "$RUN_KEY" != "$CASE_ID" ]]; then report_dir="reports/$RUN_KEY"; fi
-          scripts/historical-replay.sh reproduce "$report_dir/${CASE_ID}.search/first-bug-input.json"
+          set -euo pipefail
+          export REPORT_DIR="reports/${RUN_KEY}"
+          search="${REPORT_DIR}/${CASE_ID}.search"
+          [[ -s "${search}/report.json" ]] || exit 0
+          finding=$(jq -r --arg id "${ORACLE_ASSERTION}" '
+            [.bugs // [] | to_entries[] | select(.value.confirmed and ((.value.violations // []) | index($id)) != null)]
+            | sort_by(.value.execution) | first | if . == null then "" else .key + 1 end' "${search}/report.json")
+          [[ -n "${finding}" ]] || { echo "no confirmed finding carries the scored assertion"; exit 0; }
+          FINDING=${finding} scripts/historical-replay.sh reproduce "${search}/bug-${finding}.json" || true
+      - name: Score the campaign
+        env:
+          CASE_ID: ${{ matrix.id }}
+          RUN_KEY: ${{ matrix.run_key }}
+        run: |
+          set -euo pipefail
+          mkdir -p "reports/${RUN_KEY}"
+          sha256sum tools/harmony guest/initramfs-oci.cpio.gz guest/uml/* oci-images/*.oci \
+            >"reports/${RUN_KEY}/identity.sha256"
+          python3 scripts/historical-discovery.py --reports "reports/${RUN_KEY}" \
+            --json "reports/${RUN_KEY}/outcome.json" >>"${GITHUB_STEP_SUMMARY}"
+          outcome=$(jq -r '.[0].outcome // "infra-failure"' "reports/${RUN_KEY}/outcome.json")
+          crashes=$(jq -r '.[0].crashes // 0' "reports/${RUN_KEY}/outcome.json")
+          echo "${CASE_ID} seed ${RUN_KEY}: ${outcome}"
+          if (( crashes > 0 )); then
+            echo "::warning::${RUN_KEY}: ${crashes} confirmed guest crash finding(s)"
+          fi
+          case "${outcome}" in
+            discovery|miss|other-violation|guest-crash) ;;
+            *) echo "::error::${RUN_KEY}: ${outcome}"; exit 1 ;;
+          esac
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: uml-campaign-search-${{ github.run_id }}
-          path: reports
+          name: discovery-campaign-${{ matrix.run_key }}-${{ github.run_id }}
+          path: |
+            reports
+            !reports/**/uml-work
+            !reports/**/checkpoints
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
+
+  scorecard:
+    name: Scorecard
+    needs: [manifest, campaign]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: discovery-campaign-*-${{ github.run_id }}
+          path: reports
+          merge-multiple: true
+      - name: Render the comparison
+        run: |
+          set -euo pipefail
+          mkdir -p scorecard
+          python3 scripts/historical-discovery.py --reports reports --json scorecard/campaigns.json \
+            | tee scorecard/scorecard.md >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: discovery-scorecard-${{ github.run_id }}
+          path: scorecard
+          if-no-files-found: warn
+          retention-days: 90

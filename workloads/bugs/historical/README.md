@@ -54,6 +54,12 @@ A manifest's `oracle.assertion` is the assertion whose violation is that bug and
 those two ids. The manifest's `ci.status` says whether the current branch has the
 workload needed to run it; deferred cases carry a reason and remain visible in
 the roster, and `ci.display_name` is the scenario's job name.
+A case's `panel` is `reproduction` (a focused case, which the nightly panel
+searches) or `discovery`. A discovery case is a general workload
+(`discovery_mode: general`) or an ablation of one focused case
+(`discovery_mode: ablation`). It names that focused case in `focused_case`, and
+`Benchmarks / Harmony Workloads / Historical Discovery` runs it beside that
+case; see [DISCOVERY.md](DISCOVERY.md).
 A case declares no seed. The run supplies one and the report records it, so the
 search budget is what has to reach the bug: any change to the workload, the
 guest or the searcher moves where a given seed lands.
@@ -64,9 +70,14 @@ reports and uploads the result, so the committed table lags the last CI run.
 <!-- render-historical-bugs:begin -->
 | bug | searched version | upstream fix | status | CI | discovery | latest sample replay | executions to first hit | replay command |
 |---|---|---|---|---|---|---|---|---|
+| [etcd-3.5-general](etcd-3.5-general/README.md) | 3.5.2 | 3.5.3 | measured | runnable | general | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 | 3.5.3 | reproduced | runnable | guided | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 | 14.4 | reproduced | runnable | guided | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
-| [sqlite-wal-reset](sqlite-wal-reset/README.md) | 3.51.2 | 3.51.3 | reproduced | deferred: the image is built and searched on arm64 hosts; the hosted workflow builds x86_64 images | guided | — | — | — |
+| [postgres-cic-fillfactor-100](postgres-cic-fillfactor-100/README.md) | 14.3 | 14.4 | measured | runnable | ablation | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [postgres-index-general](postgres-index-general/README.md) | 14.3 | 14.4 | measured | runnable | general | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [sqlite-wal-general](sqlite-wal-general/README.md) | 3.51.2 | 3.51.3 | measured | runnable | general | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [sqlite-wal-reset](sqlite-wal-reset/README.md) | 3.51.2 | 3.51.3 | reproduced | runnable | guided | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [sqlite-wal-reset-no-markers](sqlite-wal-reset-no-markers/README.md) | 3.51.2 | 3.51.3 | measured | runnable | ablation | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 <!-- render-historical-bugs:end -->
 
 The panel runs on the current default-branch build on a schedule and by manual

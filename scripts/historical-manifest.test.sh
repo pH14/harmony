@@ -10,8 +10,8 @@ python3 "${manifest}" --check
 all=$(python3 "${manifest}" --matrix)
 runnable=$(python3 "${manifest}" --runnable-matrix)
 
-test "$(jq '.include | length' <<<"${all}")" -eq 3
-test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 2
+test "$(jq '.include | length' <<<"${all}")" -eq 8
+test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 8
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .job_timeout_minutes' <<<"${all}")" -eq 230
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .job_timeout_minutes' <<<"${all}")" -eq 320
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .display_name' <<<"${all}")" = "PostgreSQL Index Corruption"
@@ -19,8 +19,16 @@ test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .display_n
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .workload_version' <<<"${all}")" = 14.3
 test "$(jq -r '[.include[] | has("arm")] | any' <<<"${all}")" = false
 test "$(jq -r '[.include[] | has("seed")] | any' <<<"${all}")" = false
-test "$(jq '.include | length' <<<"${runnable}")" -eq 2
-test "$(jq -r '[.include[].id] | sort | join(",")' <<<"${runnable}")" = etcd-3.5-inconsistency,postgres-cic-corruption
+test "$(jq '.include | length' <<<"${runnable}")" -eq 3
+test "$(jq -r '[.include[].id] | sort | join(",")' <<<"${runnable}")" = etcd-3.5-inconsistency,postgres-cic-corruption,sqlite-wal-reset
+test "$(jq -r '.include[] | select(.id == "sqlite-wal-reset") | .job_timeout_minutes' <<<"${runnable}")" -eq 260
+discovery=$(python3 "${manifest}" --runnable-matrix --panel discovery)
+test "$(jq '.include | length' <<<"${discovery}")" -eq 8
+test "$(jq -r '[.include[] | select(.discovery_mode == "general")] | length' <<<"${discovery}")" -eq 3
+test "$(jq -r '[.include[] | select(.discovery_mode == "ablation")] | length' <<<"${discovery}")" -eq 2
+test "$(jq -r '.include[] | select(.id == "postgres-index-general") | .focused_case' <<<"${discovery}")" = postgres-cic-corruption
+picked=$(python3 "${manifest}" --runnable-matrix --panel discovery --case sqlite-wal-general,sqlite-wal-reset --seeds 1001,1002)
+test "$(jq -r '[.include[].run_key] | sort | join(",")' <<<"${picked}")" = sqlite-wal-general-seed1001,sqlite-wal-general-seed1002,sqlite-wal-reset-seed1001,sqlite-wal-reset-seed1002
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .planned_replay_sessions' <<<"${runnable}")" -eq 2
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .planned_replay_sessions' <<<"${runnable}")" -eq 0
 
@@ -93,6 +101,34 @@ except SystemExit as error:
     assert "ci.display_name" in str(error)
 else:
     raise SystemExit("manifest accepted a runnable case with no scenario job name")
+
+general_path = module.ROOT / "workloads/bugs/historical/postgres-index-general/case.json"
+case = json.loads(general_path.read_text())
+del case["focused_case"]
+try:
+    module.validate(general_path, case)
+except SystemExit as error:
+    assert "focused_case" in str(error)
+else:
+    raise SystemExit("manifest accepted a general case without its focused case")
+
+case = json.loads(general_path.read_text())
+case["panel"] = "reproduction"
+try:
+    module.validate(general_path, case)
+except SystemExit as error:
+    assert "discovery panel" in str(error)
+else:
+    raise SystemExit("manifest put a general case on the reproduction panel")
+
+case = json.loads(case_path.read_text())
+case["panel"] = "discovery"
+try:
+    module.validate(case_path, case)
+except SystemExit as error:
+    assert "discovery panel" in str(error)
+else:
+    raise SystemExit("manifest put a focused case on the discovery panel")
 
 case = json.loads(case_path.read_text())
 case["search"] = copy.deepcopy(case["search"])
