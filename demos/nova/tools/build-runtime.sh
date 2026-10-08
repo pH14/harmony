@@ -38,5 +38,9 @@ git -C "$build/quicknes" archive --format=tar.gz --output="$demo/public/licenses
 cp "$demo/tools/frontend.cpp" "$demo/public/licenses/frontend.cpp"
 cp "$demo/tools/build-runtime.sh" "$demo/public/licenses/build-runtime.sh"
 
+cargo vendor --locked --manifest-path "$demo/rust/Cargo.toml" "$build/rust-dependencies" > "$build/vendor-config.toml"
+tar -czf "$demo/public/licenses/rust-dependencies.tar.gz" -C "$build" rust-dependencies
+rm -rf "$build/rust-dependencies"
+
 (cd "$demo" && node tools/build-panorama.mjs)
 git -C "$root" archive --format=tar.gz --output="$demo/public/licenses/harmony-source.tar.gz" HEAD

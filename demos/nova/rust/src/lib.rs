@@ -36,6 +36,9 @@ pub struct Observation {
     pub level: u8,
     pub selected_level: u8,
     pub chips: u8,
+    pub chips_needed: u8,
+    pub cleared_levels: [u8; 5],
+    pub available_levels: [u8; 5],
     pub ability: u8,
     pub cleared: u8,
     pub available: u8,
@@ -44,7 +47,7 @@ pub struct Observation {
 }
 
 impl ArchiveKey for Observation {
-    type Place = (u8, u8, u8, u8, u8, u16, u16);
+    type Place = (u8, u8, u8, u8, u8, bool, u16, u16);
     type Progress = ();
     type Identity = (u16, u16);
     type Lineage = ();
@@ -55,6 +58,7 @@ impl ArchiveKey for Observation {
             self.available,
             self.selected_level,
             self.level,
+            self.reload,
             self.x / 32,
             self.y / 32,
         )
@@ -110,6 +114,9 @@ pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
         level: ram[0xa7],
         selected_level: ram[0xa8],
         chips: ram[0x508],
+        chips_needed: ram[0x509],
+        cleared_levels: ram[0x271f..0x2724].try_into().unwrap(),
+        available_levels: ram[0x2727..0x272c].try_into().unwrap(),
         ability: ram[0x800 + 0x1200],
         cleared: count(0x800 + 0x1f1f),
         available: count(0x800 + 0x1f27),
@@ -162,7 +169,9 @@ struct Batch {
     states: usize,
     deaths: u32,
     frames: u64,
+    snapshot_bytes: usize,
     stopped: bool,
+    won: bool,
     points: Vec<Point>,
 }
 #[derive(Serialize)]
@@ -182,6 +191,8 @@ pub struct Explorer {
     deaths: u32,
     frames: u64,
     stopped: bool,
+    won: bool,
+    snapshot_bytes: usize,
 }
 
 fn js_error(e: impl std::fmt::Display) -> JsValue {
@@ -197,7 +208,7 @@ impl Explorer {
             return Err(js_error("Nova setup did not reach level one"));
         }
         let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
-        archive.max_entries = 4096;
+        archive.max_entries = 20064;
         archive
             .insert(
                 None,
@@ -210,14 +221,18 @@ impl Explorer {
                 (),
             )
             .map_err(js_error)?;
+        let root = miniz_oxide::deflate::compress_to_vec(&capture()?, 1);
+        let snapshot_bytes = root.len();
         Ok(Self {
             archive,
             rng: RomuDuoJrRand::with_seed(u64::from(seed)),
             executions: 0,
             deaths: 0,
             frames: 0,
-            snapshots: BTreeMap::from([(0, capture()?)]),
+            snapshots: BTreeMap::from([(0, root)]),
             stopped: false,
+            won: false,
+            snapshot_bytes,
         })
     }
 
@@ -232,11 +247,7 @@ impl Explorer {
                 .select_parent(&mut self.rng)
                 .map_err(js_error)?;
             self.archive.record_selection(parent, &selection);
-            restore(
-                self.snapshots
-                    .get(&parent)
-                    .ok_or_else(|| js_error("selected snapshot missing"))?,
-            )?;
+            restore(&self.snapshot(parent)?)?;
             let prefix = self.archive.entry_input(parent).map_err(js_error)?.actions;
             let mut frame: u32 = prefix.iter().map(|a| u32::from(a.frames)).sum();
             let mut previous = prefix.last().copied();
@@ -255,11 +266,7 @@ impl Explorer {
                 suffix.push(action);
                 previous = Some(action);
                 let obs = decode(&memory()?).map_err(js_error)?;
-                if obs.health == 0
-                    || obs.reload
-                    || (obs.level != 0 && obs.level != 40)
-                    || obs.selected_level != 0
-                {
+                if obs.health == 0 {
                     self.deaths += 1;
                     break;
                 }
@@ -281,7 +288,9 @@ impl Explorer {
                     && let std::collections::btree_map::Entry::Vacant(entry) =
                         self.snapshots.entry(id)
                 {
-                    entry.insert(capture()?);
+                    let compressed = miniz_oxide::deflate::compress_to_vec(&capture()?, 1);
+                    self.snapshot_bytes += compressed.len();
+                    entry.insert(compressed);
                 }
                 productive |= self.archive.live_entry_count() > retained_before;
                 if let Some(id) = id {
@@ -296,14 +305,22 @@ impl Explorer {
             }
             self.archive.record_selection_outcome(parent, productive);
             self.executions += 1;
-            self.stopped = self.archive.live_entry_count() >= 4000 || self.executions >= 20000;
+            self.won |= points
+                .iter()
+                .any(|p| p.observation.cleared_levels == [255; 5]);
+            self.stopped = self.won
+                || self.archive.live_entry_count() >= 20000
+                || self.executions >= 100000
+                || self.snapshot_bytes >= 128 * 1024 * 1024;
         }
         serde_json::to_string(&Batch {
             executions: self.executions,
             states: self.snapshots.len(),
             deaths: self.deaths,
             frames: self.frames,
+            snapshot_bytes: self.snapshot_bytes,
             stopped: self.stopped,
+            won: self.won,
             points,
         })
         .map_err(js_error)
@@ -326,10 +343,12 @@ impl Explorer {
     }
 
     pub fn snapshot(&self, id: usize) -> Result<Vec<u8>, JsValue> {
-        self.snapshots
+        let compressed = self
+            .snapshots
             .get(&id)
-            .cloned()
-            .ok_or_else(|| js_error("snapshot unavailable"))
+            .ok_or_else(|| js_error("snapshot unavailable"))?;
+        miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, 1048576)
+            .map_err(|_| js_error("invalid compressed snapshot"))
     }
 }
 
@@ -346,11 +365,18 @@ mod tests {
         ram[0x4b] = 4;
         ram[0x1a00] = 2;
         ram[0x271f] = 5;
+        ram[0x2723] = 128;
+        ram[0x2727] = 3;
+        ram[0x508] = 7;
+        ram[0x509] = 12;
         let state = decode(&ram).unwrap();
         assert_eq!(
             (state.x, state.y, state.health, state.ability, state.cleared),
-            (56, 148, 4, 2, 2)
+            (56, 148, 4, 2, 3)
         );
+        assert_eq!(state.cleared_levels, [5, 0, 0, 0, 128]);
+        assert_eq!(state.available_levels, [3, 0, 0, 0, 0]);
+        assert_eq!((state.chips, state.chips_needed), (7, 12));
         assert!(decode(&ram[..0x800]).is_err());
     }
     #[test]
@@ -358,6 +384,8 @@ mod tests {
         let a = decode(&vec![0; 0x2800]).unwrap();
         let b = Observation { health: 4, ..a };
         assert_eq!(a.place(), b.place());
+        let transition = Observation { reload: true, ..b };
+        assert_ne!(transition.place(), b.place());
         assert_eq!(b.preference_cmp(0, a), Ordering::Greater);
         let mut rng = RomuDuoJrRand::with_seed(1);
         let mut prev = None;

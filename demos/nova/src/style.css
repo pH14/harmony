@@ -657,3 +657,176 @@ dialog p {
     margin-left: 10px;
   }
 }
+
+[hidden] {
+  display: none !important;
+}
+.toolbar {
+  justify-content: flex-end;
+  padding: 12px 18px;
+}
+.controls {
+  align-items: center;
+}
+.controls .icon-button {
+  width: 38px;
+  height: 34px;
+  padding: 7px;
+  background: #233945;
+}
+.icon-button svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  display: block;
+}
+.goal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 20px 15px;
+  gap: 15px;
+}
+.goal > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.goal strong {
+  font-size: 16px;
+  font-weight: 500;
+}
+.goal span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.goal #completion {
+  font-size: 11px;
+  color: var(--gold);
+}
+#room-tabs {
+  display: flex;
+  gap: 5px;
+  padding: 0 20px 12px;
+  overflow: auto;
+}
+#room-tabs button,
+#worlds button {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+#room-tabs .selected,
+#worlds .selected {
+  background: #23323d;
+  color: #f4dda2;
+  border-color: #405462;
+}
+#map {
+  aspect-ratio: 1280/320;
+  touch-action: pan-y;
+}
+.atlas {
+  margin: 36px 0 28px;
+}
+.atlas .section-title {
+  align-items: center;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+#worlds {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.atlas-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.level-card {
+  background: #111b24;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 12px;
+  align-self: start;
+}
+.level-card h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.level-card.cleared {
+  border-color: #579a79;
+}
+.level-card.cleared h3 {
+  color: #85dda7;
+}
+.map-card {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  margin-bottom: 8px;
+  border-color: #273847;
+  background: #0b1722;
+}
+.map-card:last-child {
+  margin-bottom: 0;
+}
+.map-card.selected {
+  border-color: #d3bb7d;
+}
+.map-card canvas {
+  display: block;
+  width: 100%;
+  image-rendering: pixelated;
+}
+.map-card b {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 8px 9px 0;
+}
+.map-card .area-state {
+  display: block;
+  padding: 3px 9px 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+@media (max-width: 800px) {
+  .goal {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .atlas-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .toolbar {
+    padding: 10px 12px;
+  }
+  #room-tabs {
+    padding-inline: 12px;
+  }
+  .goal {
+    padding-inline: 12px;
+  }
+  .map-footer {
+    flex-wrap: wrap;
+  }
+  .map-footer #area-progress {
+    display: block;
+  }
+  #map {
+    aspect-ratio: 1280/480;
+  }
+  .map-wrap {
+    min-height: 0;
+  }
+}

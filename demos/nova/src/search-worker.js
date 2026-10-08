@@ -10,7 +10,7 @@ const loop = new SearchLoop(() => {
   try {
     const batch = JSON.parse(explorer.advance(2));
     postMessage({ type: "batch", ...batch });
-    if (batch.stopped) postMessage({ type: "limit" });
+    if (batch.stopped) postMessage({ type: "limit", won: batch.won });
     return !batch.stopped;
   } catch (e) {
     error(e);

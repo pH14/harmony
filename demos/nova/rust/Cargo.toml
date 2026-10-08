@@ -12,6 +12,7 @@ license = "AGPL-3.0-or-later"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+miniz_oxide = "=0.9.1"
 searcher = { version = "=0.1.0", path = "../../../dissonance/searcher" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.151"

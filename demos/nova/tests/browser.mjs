@@ -47,23 +47,33 @@ try {
   const [x, y] = (await page.locator("#details b").first().innerText())
     .split(",")
     .map(Number);
-  const rect = await page.locator("#map").boundingBox(),
-    mapWidth = Number(await page.locator("#map").getAttribute("width"));
-  await page.locator("#map").click({
-    position: {
-      x: (rect.width * x) / mapWidth,
-      y: (rect.height * (y - 8)) / 224,
+  const click = await page.locator("#map").evaluate(
+    (canvas, position) => {
+      const width = Number(canvas.dataset.mapWidth),
+        height = Number(canvas.dataset.mapHeight),
+        scale = Math.min(canvas.width / width, canvas.height / height),
+        rect = canvas.getBoundingClientRect();
+      const px = position.x % width,
+        py = Math.floor(position.x / width) * 224 + position.y - 8;
+      return {
+        x:
+          (rect.width * ((canvas.width - width * scale) / 2 + px * scale)) /
+          canvas.width,
+        y:
+          (rect.height * ((canvas.height - height * scale) / 2 + py * scale)) /
+          canvas.height,
+      };
     },
-  });
+    { x, y },
+  );
+  await page.locator("#map").click({ position: click });
   await page.waitForFunction(
     (expected) =>
       document.querySelector("#cell-title").textContent === expected,
     `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
   );
-  assert.match(
-    await page.locator("#selection-hint").innerText(),
-    /Choose a retained state/,
-  );
+  assert.equal(await page.locator("#selection-hint").isVisible(), false);
+  assert.equal(await page.locator("#verification").isVisible(), false);
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",
@@ -153,15 +163,13 @@ try {
       document.querySelector("#verification").textContent ===
       "Saved controller history",
   );
-  await page
-    .locator("#history-file")
-    .setInputFiles({
-      name: "root.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(
-        JSON.stringify({ ...tape, actions: [], endpoint_sha256: rootHash }),
-      ),
-    });
+  await page.locator("#history-file").setInputFiles({
+    name: "root.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(
+      JSON.stringify({ ...tape, actions: [], endpoint_sha256: rootHash }),
+    ),
+  });
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent ===
@@ -182,13 +190,17 @@ try {
     }),
     "Zoom must keep the selected ground state visible",
   );
-  await page.locator("#fit").click();
+  await page.locator("#zoom").click();
+  await page.locator("#zoom").click();
   for (const file of [
     "licenses/CREDITS.md",
     "licenses/harmony-source.tar.gz",
+    "licenses/rust-dependencies.tar.gz",
     "licenses/nova-source.tar.gz",
     "licenses/quicknes-source.tar.gz",
-    "level-one-main.png",
+    "maps/45.png",
+    "maps/49.png",
+    "maps.json",
   ]) {
     const response = await page.request.get(new URL(file, page.url()).href);
     assert.equal(response.status(), 200);
@@ -207,16 +219,75 @@ try {
     /CC BY-NC-SA 4.0/,
   );
   await page.locator("#close-info").click();
-  await page.locator("#room").selectOption("40");
-  assert.match(await page.locator("#map-label").innerText(), /MAIN ROOM/);
+  for (const text of [
+    "How it works",
+    "Everything runs in your browser",
+    "A LIVING MAP OF POSSIBILITIES",
+    "Watch the search find its way",
+    "Heat cools. Histories stay.",
+    "EXPLORATION NOTES",
+  ])
+    assert.equal(await page.getByText(text, { exact: false }).count(), 0);
+  assert.equal(
+    await page.locator("#heat-toggle,#fit,#left,#right,#seed-label").count(),
+    0,
+  );
+  assert.equal(await page.locator("#pause svg").count(), 1);
+  assert.equal(
+    await page.locator("#pause").getAttribute("aria-label"),
+    "Resume Search",
+  );
+  assert.equal(await page.locator("#reset").innerText(), "Restart Search");
+  await page.locator('#room-tabs button[data-map="45"]').click();
+  assert.equal(await page.locator("#map").getAttribute("data-map"), "45");
+  assert.match(await page.locator("#map-label").innerText(), /MAIN LEVEL/);
+  await page.locator('#room-tabs button[data-map="49"]').click();
+  assert.match(await page.locator("#map-label").innerText(), /GARDEN/);
+  await page
+    .locator("#worlds")
+    .getByRole("button", { name: "World 2", exact: true })
+    .click();
+  assert.equal(await page.locator(".level-card").count(), 8);
+  await page.locator('.map-card[data-map="13"]').click();
+  assert.equal(await page.locator("#map").getAttribute("data-map"), "13");
+  assert.ok(
+    Number(await page.locator("#map").getAttribute("data-map-height")) > 224,
+    "Tall level must retain its vertical layout",
+  );
+  await page
+    .locator("#worlds")
+    .getByRole("button", { name: "World 1", exact: true })
+    .click();
+  await page.locator('.map-card[data-map="45"]').click();
   await page.locator("#zoom").click();
-  await page.locator("#right").click();
-  await page.locator("#fit").click();
+  const before = await page.locator("#map").evaluate((c) => c.toDataURL()),
+    bounds = await page.locator("#map").boundingBox();
+  await page.mouse.move(
+    bounds.x + bounds.width / 2,
+    bounds.y + bounds.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    bounds.x + bounds.width / 2 - 100,
+    bounds.y + bounds.height / 2,
+    { steps: 5 },
+  );
+  await page.mouse.up();
+  await page.waitForTimeout(100);
+  assert.notEqual(
+    await page.locator("#map").evaluate((c) => c.toDataURL()),
+    before,
+    "Dragging the zoomed map must move the view",
+  );
   await page.locator("#reset").click();
   await page.waitForFunction(
     () =>
-      document.querySelector("#seed-label").textContent === "seed 2" &&
-      document.querySelector("#status").textContent === "Exploring",
+      document.querySelector("#status").textContent === "Exploring" &&
+      document.querySelector("#map").dataset.map === "0",
+  );
+  assert.equal(
+    await page.locator("#pause").getAttribute("aria-label"),
+    "Pause Search",
   );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
