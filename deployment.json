@@ -6,7 +6,7 @@
     "sha256": "887fa97040824fd7449d80006eb300cf4f0fc465f8d41113a82a9518fd1a640c"
   },
   "raft": {
-    "commit": "9faadbbe3",
+    "commit": "f2084765b23466b71af8c8e9e50a3f4f3ff726d2",
     "runtime": {
       "version": 1,
       "assets": [
@@ -59,7 +59,27 @@
           "bytes": 19970877
         }
       ],
-      "source": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/harmony-raft-runtime-source.tar.gz"
+      "source": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/harmony-raft-runtime-source.tar.gz",
+      "evidence": [
+        {
+          "name": "failure.json",
+          "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/failure.json",
+          "sha256": "7f790424a17b0d98a4aa72bd956908c4c8932dab5a213971b31e5abbfc47a133",
+          "bytes": 30964
+        },
+        {
+          "name": "investigation.json",
+          "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/investigation.json",
+          "sha256": "ad5cc68920bf60ac983959fbe191afdb9ba0a5dbba2b386bab3fb7f214e30cca",
+          "bytes": 25940
+        },
+        {
+          "name": "quorum.json",
+          "url": "https://github.com/pH14/harmony/releases/download/raft-browser-runtime-v1/quorum.json",
+          "sha256": "df3a4ab9a7e40c2afd2efed1b8483b9bf28ad1b00fcb25d7a4c6b1ec81cde550",
+          "bytes": 24919
+        }
+      ]
     }
   }
 }

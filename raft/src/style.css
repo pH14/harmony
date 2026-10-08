@@ -636,3 +636,12 @@ footer span {
 #cluster.paused path {
   animation-play-state: paused;
 }
+
+@media (max-width: 520px) {
+  .right {
+    display: block;
+  }
+  #logs {
+    height: 220px;
+  }
+}
