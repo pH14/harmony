@@ -1,0 +1,32 @@
+[workload]
+package = "faults"
+input = "harmony-sqlite-scenario:fixed"
+
+[workload.options]
+setup = ["/opt/python/bin/python3.14", "/opt/harmony/sqlite/workload.py", "setup"]
+ready = ["/bin/true"]
+
+[workload.options.build]
+context = "../../../../.."
+command = ["bash", "workloads/bugs/historical/sqlite-wal-reset/scenario/build.sh", "fixed"]
+
+[workload.options.nodes.checkpoint]
+command = ["/opt/python/bin/python3.14", "/opt/harmony/sqlite/workload.py", "checkpoint"]
+
+[workload.options.nodes.writer]
+command = ["/opt/python/bin/python3.14", "/opt/harmony/sqlite/workload.py", "writer"]
+
+[workload.options.hooks]
+start-checkpoint = ["/usr/bin/touch", "/run/wal-race-start"]
+start-writer = ["/usr/bin/touch", "/run/writer-start"]
+
+[runner]
+kind = "consonance"
+backend = "auto"
+
+[runner.options]
+ram_mib = 1024
+
+[search]
+seed = 1
+wall_seconds = 300
