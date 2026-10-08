@@ -23,7 +23,7 @@ try {
   await page.goto(process.env.DEMO_URL || "http://127.0.0.1:4173");
   await page.waitForFunction(
     () =>
-      document.querySelector("#verification").textContent === "Original game",
+      document.querySelector("#verification")?.textContent === "Original game",
   );
   const originImage = await page
     .locator("#film")

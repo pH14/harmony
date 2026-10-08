@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "../src/emulator.js";
+import { validateTape } from "../src/heat.js";
 import { isMapEvidence } from "../src/world.js";
 import { snapshotHash, CREDIT } from "../src/media.js";
 import init, { Explorer } from "../rust/pkg/nova_browser.js";
@@ -18,13 +19,19 @@ await init({
 });
 const catalog = JSON.parse(await readFile(new URL("maps.json", base)));
 const root = engine.boot();
+const extended = process.env.NOVA_PROGRESS_PATHS === "22000";
 await mkdir("test-results", { recursive: true });
 for (const seed of [1, 2, 3]) {
   engine.restore(root);
   const search = new Explorer(seed),
     arrivals = new Map();
   let nextLevel = false;
-  for (let tries = 0; tries < 22000 && !nextLevel; tries += 2) {
+  for (
+    let tries = 0;
+    tries < (extended ? 22000 : 6000) &&
+    (extended ? !nextLevel : arrivals.size < 2);
+    tries += 2
+  ) {
     const batch = JSON.parse(search.advance(2));
     for (const point of batch.points)
       if (
@@ -77,12 +84,49 @@ for (const seed of [1, 2, 3]) {
     `Seed ${seed} must preserve the garden-to-main door`,
   );
   assert.ok(arrivals.get(49) <= arrivals.get(45));
-  if (seed !== 1)
+  if (extended && seed !== 1)
     assert.ok(nextLevel, `Seed ${seed} must enter Level 2 after a real clear`);
   search.free();
   console.log(
-    `Seed ${seed}: Garden at ${arrivals.get(49)} paths, main area at ${arrivals.get(45)}; exact replays passed; Level 2 ${nextLevel ? "reached" : "censored at 22,000 paths"}.`,
+    `Seed ${seed}: Garden at ${arrivals.get(49)} paths, main area at ${arrivals.get(45)}; exact replays passed; Level 2 ${nextLevel ? "reached" : extended ? "censored at 22,000 paths" : "checked by recorded witnesses and archive admission"}.`,
   );
+}
+
+let checkpoint, prefix;
+for (const name of ["main-exit", "level-two-2", "level-two-3"]) {
+  const tape = JSON.parse(
+    await readFile(new URL(`fixtures/${name}.json`, import.meta.url)),
+  );
+  validateTape(tape);
+  engine.restore(root);
+  for (const action of tape.actions) engine.run(action.buttons, action.frames);
+  assert.equal(
+    await snapshotHash(engine.capture()),
+    tape.endpoint_sha256,
+    "Recorded witness must reproduce its authoritative endpoint",
+  );
+  assert.ok(isMapEvidence(engine.observation(), catalog.levels));
+  if (name === "main-exit") {
+    assert.equal(engine.observation().level, 45);
+    assert.equal(engine.observation().selected_level, 0);
+    checkpoint = engine.capture();
+    prefix = tape.actions;
+  } else {
+    assert.equal(engine.observation().selected_level, 1);
+    assert.ok(engine.observation().cleared_levels[0] & 1);
+    if (name === "level-two-2") {
+      const expected = engine.capture();
+      assert.deepEqual(tape.actions.slice(0, prefix.length), prefix);
+      engine.restore(checkpoint);
+      for (const action of tape.actions.slice(prefix.length))
+        engine.run(action.buttons, action.frames);
+      assert.deepEqual(
+        engine.capture(),
+        expected,
+        "Stored Main checkpoint plus the real suffix must exactly reproduce Level 2",
+      );
+    }
+  }
 }
 
 engine.restore(root);

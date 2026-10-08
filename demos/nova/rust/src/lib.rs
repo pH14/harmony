@@ -129,6 +129,10 @@ pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
     })
 }
 
+fn admissible(observation: Observation) -> bool {
+    observation.health != 0
+}
+
 const DIRECTIONS: [u8; 9] = [0, 0x80, 0x40, 0x10, 0x20, 0x90, 0xa0, 0x50, 0x60];
 fn below(rng: &mut RomuDuoJrRand, n: usize) -> usize {
     rng.below(std::num::NonZeroUsize::new(n).unwrap())
@@ -280,7 +284,7 @@ impl Explorer {
                 suffix.push(action);
                 previous = Some(action);
                 let obs = decode(&memory()?).map_err(js_error)?;
-                if obs.health == 0 {
+                if !admissible(obs) {
                     self.deaths += 1;
                     break;
                 }
@@ -369,6 +373,56 @@ impl Explorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recorded_next_level_is_admitted_with_its_real_input_suffix() {
+        #[derive(Deserialize)]
+        struct Tape {
+            observation: Observation,
+            actions: Vec<Action>,
+        }
+        let before: Tape =
+            serde_json::from_str(include_str!("../../tests/fixtures/main-exit.json")).unwrap();
+        let after: Tape =
+            serde_json::from_str(include_str!("../../tests/fixtures/level-two-2.json")).unwrap();
+        assert_eq!(before.observation.selected_level, 0);
+        assert_eq!(after.observation.selected_level, 1);
+        assert_eq!(after.observation.cleared_levels[0] & 1, 1);
+        assert!(admissible(before.observation));
+        assert!(admissible(after.observation));
+        assert!(after.actions.starts_with(&before.actions));
+        let suffix = after.actions[before.actions.len()..].to_vec();
+        assert!(!suffix.is_empty());
+        let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
+        let root = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: Vec::<Action>::new(),
+                    key: before.observation,
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        let id = archive
+            .insert(
+                Some(root),
+                1,
+                ArchiveCandidate {
+                    suffix: suffix.clone(),
+                    key: after.observation,
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(root, id);
+        assert_eq!(archive.entry_input(id).unwrap().actions, suffix);
+    }
+
     #[test]
     fn nova_addresses_decode_fixed_point_and_save_ram() {
         let mut ram = vec![0; 0x2800];

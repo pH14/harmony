@@ -136,10 +136,20 @@ npm run test:browser
 
 The search check requires three real seeds to reach the garden (map 49) and
 main area (map 45), and exactly replays both first-arrival tapes against their
-compressed snapshots. Across a 22,000-path three-seed diagnostic, seeds 2 and 3
-clear Level 1 and enter Level 2; seed 1 is censored without a clear. The check
-exactly replays next-level witnesses for seeds 2 and 3 and exercises a small
-snapshot-budget stop. It exports these witnesses as browser evidence. The old
+compressed snapshots within 6,000 paths per seed. Recorded whole-game Level 2
+witnesses from seeds 2 and 3 reproduce their authoritative endpoint checksums.
+A native archive check admits the real before/after observations and preserves
+this transition's recorded input suffix. Restoring the Main checkpoint and
+executing its original suffix also reproduces the same Level 2 snapshot.
+The fixtures contain controller inputs,
+not edited game state, and never affect live initialization. A small snapshot-budget stop preserves a late exact replay.
+
+`NOVA_PROGRESS_PATHS=22000 npm run test:search` runs the longer three-seed
+power-on diagnostic. Seeds 2 and 3 clear Level 1 and enter Level 2; seed 1 is
+censored without a clear at that budget. This extended run was verified locally;
+the routine CI check uses the cheaper whole-game chain plus recorded transitions and archive admission
+to fit the registered 15-minute job limit. Checks export live witnesses as browser
+evidence. The old
 admission of only maps 0 and 40 rejected the garden door; map 40 is a bonus level.
 The UI check covers cell selection, replay, frame zero, scrubbing, attributed
 PNG/JSON downloads, valid and tampered imports, cancelling a long import, stacked live-map selection, world browsing, tall-level layout, dragging, the simplified
