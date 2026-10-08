@@ -1172,6 +1172,8 @@ def check_selected_job(rel_path: str, job_id: str, job: dict, registered, select
     condition = _strip_outer_parentheses(
         str(job.get("if", "")).replace("${{", "").replace("}}", "").strip())
     wanted = f"needs.{SELECTOR_JOB_ID}.outputs.{registered.select} == 'true'"
+    if len(_split_condition(condition, "||")) > 1:
+        return problem("must require its selection with &&, never behind an || that can start it unselected")
     if wanted not in [_strip_outer_parentheses(part) for part in _split_condition(condition, "&&")]:
         return problem(f"must require its selection with && {wanted}")
     return []
@@ -1534,14 +1536,25 @@ def _miri_matrix_names(data: dict, suffix: str) -> list[str]:
     return []
 
 
-def _miri_matrix_is_selected(data: dict, suffix: str) -> bool:
-    """True when the job's matrix is the selector job's output, which `miri_scope.py` fills."""
+def _miri_matrix_is_selected(data: dict, suffix: str, owner: str) -> bool:
+    """True when the job's matrix is the owner's `miri_matrix` output, which `miri_scope.py` fills."""
     wanted = f"Miri — ${{{{ matrix.name }}}}{suffix}"
+    squeeze = lambda value: re.sub(r"\s+", "", str(value))
+    matrix = None
     for job in data["jobs"].values():
         if job.get("name") == wanted:
             matrix = (job.get("strategy") or {}).get("matrix")
-            return isinstance(matrix, str) and "fromJSON(needs.scope.outputs." in matrix
-    return False
+    if squeeze(matrix) != "${{fromJSON(needs.scope.outputs.miri_targets)}}":
+        return False
+    selector = data["jobs"].get(SELECTOR_JOB_ID) or {}
+    if squeeze((selector.get("outputs") or {}).get("miri_targets", "")) != "${{steps.miri_matrix.outputs.matrix}}":
+        return False
+    return any(isinstance(step, dict)
+               and str(step.get("uses", "")).rstrip("/").endswith(".github/actions/ci-scope")
+               and step.get("id") == "miri_matrix"
+               and (step.get("with") or {}).get("kind") == "miri_matrix"
+               and (step.get("with") or {}).get("target") == owner
+               for step in selector.get("steps", []))
 
 
 def _miri_dispatch_crates(data: dict) -> list[str]:
@@ -1588,7 +1601,7 @@ def check_miri_matrices(repo_root: Path, tracked: set[str]) -> list[Violation]:
             violations.append(Violation("ci-workflow-parse", workflow.path, 0, str(error)))
             continue
         for expected, suffix in ((bounded.get(owner, []), ""), (whole.get(owner, []), " (Whole Crate)")):
-            if _miri_matrix_is_selected(data, suffix):
+            if _miri_matrix_is_selected(data, suffix, owner):
                 continue
             listed = _miri_matrix_names(data, suffix)
             if sorted(listed) != sorted(expected):
