@@ -407,6 +407,28 @@ try {
     await page.locator("#film").getAttribute("data-audio-frames"),
   );
   await page.locator("#take-control").click();
+  await page.locator("#take-control").hover();
+  const stopContrast = await page
+    .locator("#take-control")
+    .evaluate((button) => {
+      const styles = getComputedStyle(button);
+      const luminance = (color) =>
+        color
+          .match(/\d+/g)
+          .slice(0, 3)
+          .map((n) => Number(n) / 255)
+          .map((n) => (n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4))
+          .reduce((sum, n, i) => sum + n * [0.2126, 0.7152, 0.0722][i], 0);
+      const colors = [
+        luminance(styles.color),
+        luminance(styles.backgroundColor),
+      ].sort((a, b) => b - a);
+      return (colors[0] + 0.05) / (colors[1] + 0.05);
+    });
+  assert.ok(
+    stopContrast >= 4.5,
+    "Stop playing must stay readable under the cursor",
+  );
   await page.keyboard.down("ArrowRight");
   await page.waitForTimeout(500);
   await page.keyboard.up("ArrowRight");
@@ -486,6 +508,11 @@ try {
       document.querySelector("#verification").textContent === "Exact replay ✓",
   );
   const childState = await page.evaluate(() => window.novaTestStates[0]);
+  assert.equal(
+    await page.locator("#film-title").innerText(),
+    `State #${childState.id}`,
+    "Search descendants must retain their own identity after human play",
+  );
   const childTape = {
     actions: childState.actions,
     endpoint_sha256: await snapshotHash(
@@ -728,6 +755,22 @@ try {
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
   );
+  await page.setViewportSize({ width: 320, height: 640 });
+  const compactPhone = await page.locator("#inspector").evaluate((panel) => {
+    const action = panel.querySelector("#take-control").getBoundingClientRect(),
+      sheet = panel.getBoundingClientRect();
+    return (
+      action.top >= sheet.top &&
+      action.bottom <= sheet.bottom &&
+      panel.scrollWidth <= panel.clientWidth
+    );
+  });
+  assert.equal(
+    compactPhone,
+    true,
+    "Play must be visible without scrolling on a small phone",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
   const collapsedHeight = (await page.locator("#inspector").boundingBox())
     .height;
   await page.locator("#expand-inspector").click();
@@ -747,7 +790,13 @@ try {
     true,
     "Phone histories must not overflow the sheet",
   );
+  await page.locator("#expand-inspector").click();
   await page.locator("#take-control").click();
+  assert.equal(
+    await page.locator("#expand-inspector").getAttribute("aria-expanded"),
+    "true",
+    "Playing should expand the phone sheet automatically",
+  );
   assert.equal(
     await page.locator("#search-here").innerText(),
     "↗ Let search take over",

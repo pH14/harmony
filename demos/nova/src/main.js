@@ -366,7 +366,7 @@ async function selectState(state, autoplay = false) {
   $("selection-hint").hidden = true;
   recordTrailAtRoot();
   frameCredit = 0;
-  $("film-title").textContent = state.branch?.manual
+  $("film-title").textContent = String(state.id).startsWith("manual-")
     ? "Your branch"
     : `State #${state.id}`;
   $("scrub").max = state.frames;
@@ -1326,11 +1326,13 @@ function stopControl() {
   updateBranchControls();
 }
 $("close-inspector").onclick = closeInspector;
-$("expand-inspector").onclick = () => {
-  const expanded = $("inspector").classList.toggle("expanded");
+function expandInspector(expanded) {
+  $("inspector").classList.toggle("expanded", expanded);
   $("expand-inspector").setAttribute("aria-expanded", expanded);
   $("expand-inspector").textContent = expanded ? "Collapse" : "Expand";
-};
+}
+$("expand-inspector").onclick = () =>
+  expandInspector(!$("inspector").classList.contains("expanded"));
 $("inspect-open").onclick = () => {
   userSelected = true;
   openInspector();
@@ -1372,6 +1374,7 @@ $("take-control").onclick = () => {
   $("branch-message").hidden = true;
   controller.clear();
   controlMode = true;
+  if (matchMedia("(max-width: 800px)").matches) expandInspector(true);
   timeline.trim(currentFrame);
   startAudio();
   $("play").textContent = "▶ Play history";

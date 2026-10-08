@@ -86,9 +86,10 @@ fixed interval with at most about 8,400 points for an admitted history.
 The inspector keeps the movie and a prominent 🎮 Play from here action above a
 compact retained-history picker. Frame counts and resources have separate rows
 that wrap within each button; technical Game state fields are collapsed by
-default. Play from here pauses exploration and starts a new history at the
-displayed frame,
-including frames in the middle of a recorded action. Move with arrows or WASD,
+default. The collapsed phone sheet keeps Play from here visible; playing
+expands it automatically. Play from here pauses exploration and starts a new
+history at the displayed frame, including frames in the middle of a recorded
+action. Move with arrows or WASD,
 jump with Z or Space, and use an ability with X; touch controls work on phones.
 Stop playing, Escape, loss of focus or hiding the tab releases held inputs and
 ends takeover. Start search here (Let search take over after playing) verifies

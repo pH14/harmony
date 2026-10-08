@@ -472,9 +472,11 @@ h2 {
 #take-control:hover:not(:disabled) {
   background: #f3d89d;
 }
-.controlling #take-control {
+.controlling #take-control,
+.controlling #take-control:hover:not(:disabled) {
   background: #373126;
   color: var(--gold);
+  transition: none;
 }
 #branch-hint {
   margin: 0;
@@ -865,6 +867,9 @@ dialog h2 {
   .inspector .screen {
     max-width: 270px;
     margin: auto;
+  }
+  .inspector:not(.expanded) .screen {
+    max-width: min(270px, 26dvh);
   }
   .inspector .art-credit {
     font-size: 10px;
