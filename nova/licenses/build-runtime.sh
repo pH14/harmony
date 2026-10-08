@@ -20,7 +20,7 @@ em++ -O2 -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
     "$build/quicknes/quicknes.a" -I"$build/quicknes/libretro/libretro-common/include" \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker,node \
     '-sEXPORTED_RUNTIME_METHODS=["HEAPU8"]' -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINITIAL_MEMORY=16777216 \
-    '-sEXPORTED_FUNCTIONS=["_malloc","_free","_nova_load","_nova_run","_nova_state_size","_nova_save","_nova_restore","_nova_pixels","_nova_width","_nova_height","_nova_ram","_nova_ram_size","_nova_sram","_nova_sram_size"]' \
+    '-sEXPORTED_FUNCTIONS=["_malloc","_free","_nova_load","_nova_run","_nova_state_size","_nova_save","_nova_restore","_nova_pixels","_nova_width","_nova_height","_nova_ram","_nova_ram_size","_nova_sram","_nova_sram_size","_nova_audio_enable","_nova_audio_samples","_nova_audio_count","_nova_audio_clear"]' \
     -o "$demo/public/engine/quicknes.js"
 PATH="${CC65_BIN_DIR:-}:$PATH" "$root/workloads/nes/scripts/build-nova-rom.sh" "$build/nova"
 cp "$build/nova/nova.nes" "$demo/public/nova.nes"
