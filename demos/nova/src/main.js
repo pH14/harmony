@@ -195,7 +195,7 @@ const swarm = new NovaSwarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
 );
-let visualization = "heat", swarmRooms = new Map(), ghostSprites;
+let visualization = "heat", swarmRooms = new Map();
 const sprites = new Image();
 sprites.src = new URL("nova-sprites.png", base).href;
 function setVisualization(mode) {
@@ -212,41 +212,20 @@ $("visualization").onchange = () => {
   setVisualization($("visualization").value);
 };
 function drawSwarmBackground(ctx, width, height) {
-  ctx.save();
-  ctx.globalCompositeOperation = "saturation";
-  ctx.fillStyle = "rgba(128,128,128,.85)";
+  ctx.fillStyle = "rgba(12,17,20,.24)";
   ctx.fillRect(0, 0, width, height);
-  ctx.restore();
-  ctx.fillStyle = "rgba(28,31,34,.24)";
-  ctx.fillRect(0, 0, width, height);
-}
-function novaSheet() {
-  if (visualization !== "both") return sprites;
-  if (!ghostSprites) {
-    ghostSprites = document.createElement("canvas");
-    ghostSprites.width = sprites.naturalWidth;
-    ghostSprites.height = sprites.naturalHeight;
-    const ctx = ghostSprites.getContext("2d");
-    ctx.drawImage(sprites, 0, 0);
-    ctx.globalCompositeOperation = "saturation";
-    ctx.fillStyle = "#808080";
-    ctx.fillRect(0, 0, ghostSprites.width, ghostSprites.height);
-    ctx.globalCompositeOperation = "destination-in";
-    ctx.drawImage(sprites, 0, 0);
-  }
-  return ghostSprites;
 }
 function drawNovas(ctx, level, scale) {
   if (!sprites.complete || !sprites.naturalWidth) return 0;
-  const map = maps.get(level), points = swarmRooms.get(level) || [], sheet = novaSheet();
+  const map = maps.get(level), points = swarmRooms.get(level) || [];
   ctx.save();
-  ctx.globalAlpha = visualization === "both" ? 0.6 : 1;
+  ctx.globalAlpha = 0.55;
   let count = 0;
   for (const raw of points) {
     const p = project(raw, map);
     if (p.x < 0 || p.x >= map.width || p.y < 0 || p.y >= map.height) continue;
     const size = Math.max(1, 4 / (16 * scale));
-    ctx.drawImage(sheet, Math.floor(p.pose / 2) * 16, (p.pose & 1) * 24, 16, 24,
+    ctx.drawImage(sprites, Math.floor(p.pose / 2) * 16, (p.pose & 1) * 24, 16, 24,
       p.x - (p.pose & 1 ? 0 : 8 * size), p.y + 16 - 24 * size, 16 * size, 24 * size);
     count++;
   }

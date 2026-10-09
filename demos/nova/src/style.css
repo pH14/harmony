@@ -241,10 +241,6 @@ h2 {
   touch-action: pan-y;
   cursor: crosshair;
 }
-.area-map[data-overlay="movement"],
-.map-card canvas[data-overlay="movement"] {
-  filter: saturate(.6);
-}
 .map-row {
   border-bottom: 1px solid var(--line);
 }

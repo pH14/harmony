@@ -89,6 +89,7 @@ try {
     assert.equal(await page.locator("#heat-legend").isVisible(), false);
     const target = page.locator('.map-row[data-map="0"] canvas');
     assert.equal(await target.getAttribute("data-overlay"), "movement");
+    assert.equal(await target.evaluate((c) => getComputedStyle(c).filter), "none", "Movement must retain the original map colors");
     assert.equal(await target.getAttribute("data-trace-points"), "0");
     assert.equal(await target.getAttribute("data-marker-frame"), "");
     await page.locator("#pause").click();
@@ -184,5 +185,5 @@ try {
     await page.close();
   }
   assert.deepEqual(errors, []);
-  console.log("Visualization: Heatmap, Movement and Both, preserved heat colors, animated neutral sprites, retained route inspection, branch isolation, restart, guided-tour handoff and desktop/phone layouts passed.");
+  console.log("Visualization: Heatmap, Movement and Both, preserved heat colors, animated original sprites, retained route inspection, branch isolation, restart, guided-tour handoff and desktop/phone layouts passed.");
 } finally { await browser.close(); }
