@@ -152,7 +152,7 @@ function activateSearchView(id) {
   } = view);
   searchViews.set(id, view);
   sparks = [];
-  swarmRooms = swarm.frame(id, performance.now(), reducedMotion.matches);
+  swarmRooms = swarm.frame(id, heat.clock(performance.now()), reducedMotion.matches);
   hoverCell = selectedCell = null;
   lastAuto = 0;
   return fresh;
@@ -809,7 +809,7 @@ function startSearch() {
         updateStats();
       } else if (data.type === "batch") {
         if (data.active !== activeSearch) return;
-        swarm.add(activeSearch, data.motion || []);
+        swarm.add(activeSearch, data.motion || [], heat.clock(performance.now()));
         const { motion, ...batchStats } = data;
         stats = batchStats;
         gameWon ||= data.won;
@@ -1164,7 +1164,7 @@ function renderMapRows(owner) {
   }
 }
 function drawMap(now) {
-  if (visualization !== "heat") swarmRooms = swarm.frame(activeSearch, now, reducedMotion.matches);
+  if (visualization !== "heat") swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches);
   for (const c of document.querySelectorAll(".area-map")) drawArea(c, now);
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
 }

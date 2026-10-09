@@ -40,20 +40,28 @@ tour returns to Heatmap. Both overlays the original colored sprites on the norma
 heatmap, underneath selected trails and state markers. Inspection keeps Both
 selected. The view selection survives branch changes and Restart Search.
 
-Each sprite follows one real rollout from its restored parent, rather than a
-complete root-to-state history. Runs loop independently at 60 game frames per
-second with staggered phases, so the whole map stays active even when search is
-paused. Reduced motion shows stationary sampled poses. Invalid gameplay, deaths
-and room transitions never interpolate across maps or menus. Switching branches
-shows only that branch's recordings; Restart Search releases them.
+Each sprite follows one new rollout from its restored parent, rather than a
+complete root-to-state history. Incoming two-rollout batches animate once at
+60 game frames per second from their arrival, then disappear and release their
+sample arrays. There are no loops, staggered historical phases or endpoint fade.
+This presentation follows completed search batches; it neither slows search to
+real-time gameplay nor adds an emulator. Movement uses the same branch activity
+clock as heat: pausing, human play and inactive branches freeze it. Returning to
+a branch resumes unfinished attempts, without restarting completed ones.
+Reduced motion keeps each incoming sprite at its starting pose for the same
+bounded lifetime. Invalid gameplay, deaths and room transitions never interpolate
+across maps or menus. Both uses the same one-shot attempts; changing views does
+not restart them. Expired attempts are also released as new batches arrive in
+Heatmap mode. Restart Search releases every branch's samples.
 
 One recorder samples the existing search emulator every four game frames. It
 splits silent runs into equivalent chunks without changing inputs, random draws,
 archive selection or captured endpoints; no extra emulator or snapshot is retained.
 Transferred Uint16 arrays store relative frame, room, position and pose. Their
 shared FIFO cache across all eight branches is capped at 2 MiB / 2,048 rollouts
-on phones and 8 MiB / 8,192 on desktops. The newest recordings replace the oldest
-at either limit; this is a bounded swarm, not unlimited historical retention.
+on phones and 8 MiB / 8,192 on desktops. Finished attempts are released; the
+newest recordings replace the oldest if either limit is reached first. Inactive
+branches share this same allowance.
 The worker keeps only the current two-rollout batch, whose encoded payload is
 at most 4,820 bytes before transfer. Live RAM reads use the pinned game's position, direction, ground state,
 velocity and retrace addresses; map identity uses the same bank/checkpoint rules
@@ -286,7 +294,8 @@ npm run test:browser
 The swarm check compares 128 real recorded and unrecorded rollouts, including
 every archived snapshot byte, and samples authentic door/campaign witness tapes.
 Browser checks cover moving sprites while search is paused, clean overlay and
-heat restoration, separate branch recordings, restart, tour handoff and phones.
+heat restoration, one-shot lifetimes, pause/resume, separate branch recordings,
+restart, tour handoff and phones.
 
 The search check requires three real seeds to reach the garden (map 49) and
 main area (map 45), and exactly replays both first-arrival tapes against their

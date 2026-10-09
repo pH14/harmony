@@ -86,14 +86,22 @@ export class NovaSwarm {
     this.bytes = 0;
     this.serial = 0;
   }
-  add(branch, trails) {
+  prune(branch, milliseconds) {
+    for (const [id, trail] of this.trails) {
+      if (trail.branch !== branch || milliseconds - trail.started < trail.duration / 0.06) continue;
+      this.bytes -= trail.samples.byteLength;
+      this.trails.delete(id);
+    }
+  }
+  add(branch, trails, milliseconds) {
+    this.prune(branch, milliseconds);
     for (const samples of trails) {
       if (!(samples instanceof Uint16Array) || samples.length < MOTION_STRIDE * 2 ||
           samples.length % MOTION_STRIDE || samples.byteLength > this.maxBytes) continue;
       const duration = samples.at(-MOTION_STRIDE);
       if (!duration) continue;
       const id = this.serial++;
-      this.trails.set(id, { branch, samples, duration, phase: ((id * 0.618033988749895) % 1) * duration });
+      this.trails.set(id, { branch, samples, duration, started: milliseconds });
       this.bytes += samples.byteLength;
       while (this.bytes > this.maxBytes || this.trails.size > this.maxTrails) {
         const oldest = this.trails.keys().next().value;
@@ -103,10 +111,11 @@ export class NovaSwarm {
     }
   }
   frame(branch, milliseconds, still = false) {
+    this.prune(branch, milliseconds);
     const rooms = new Map();
     for (const trail of this.trails.values()) {
       if (trail.branch !== branch) continue;
-      const frame = ((still ? 0 : milliseconds * 0.06) + trail.phase) % trail.duration;
+      const frame = still ? 0 : Math.max(0, milliseconds - trail.started) * 0.06;
       const point = swarmPoint(trail.samples, frame);
       if (!point) continue;
       if (!rooms.has(point.level)) rooms.set(point.level, []);
