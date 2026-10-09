@@ -2193,7 +2193,7 @@ $("goal-title").onclick = () => {
       card.dataset.level = level.id;
       card.setAttribute("aria-label", `World ${world} – Level ${level.id % 8 + 1}`);
       card.setAttribute("aria-current", level.id === bootLevel ? "true" : "false");
-      image.src = mapURL(level.rooms[0]); image.loading = "lazy"; image.alt = "";
+      image.src = new URL(`maps/${level.rooms[0]}-preview.png`, base).href; image.loading = "lazy"; image.alt = "";
       caption.textContent = `Level ${level.id % 8 + 1}`;
       card.append(image, caption);
       card.onclick = () => {

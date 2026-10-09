@@ -154,6 +154,13 @@ for (const [id, name] of names.entries()) {
     new URL(`maps/${id}.png`, base),
     new Uint8Array(await image.arrayBuffer()),
   );
+  const preview = new Uint8Array(256 * 96 * 4), cropWidth = Math.min(640, width), cropHeight = Math.min(224, height);
+  for (let y = 0; y < 96; y++) for (let x = 0; x < 256; x++) {
+    const source = ((height - cropHeight + Math.floor(y * cropHeight / 96)) * width + Math.floor(x * cropWidth / 256)) * 4;
+    preview.set(data.subarray(source, source + 4), (y * 256 + x) * 4);
+  }
+  const thumbnail = await creditPNG(new Blob([png(256, 96, preview)]), "Level selector thumbnail from the original map panorama");
+  await writeFile(new URL(`maps/${id}-preview.png`, base), new Uint8Array(await thumbnail.arrayBuffer()));
   console.log("Captured", id, label, width, height);
 }
 const levels = maps.slice(0, 44).map((map) => {

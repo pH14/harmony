@@ -31,6 +31,9 @@ try {
       const close = await page.locator('#close-level-picker').boundingBox();
       assert.ok(close.y >= 0 && close.y + close.height <= page.viewportSize().height, 'Level picker close stays visible when browsing the last world');
       await page.locator('.level-card[data-level="0"]').scrollIntoViewIfNeeded();
+      await page.waitForFunction(() => [...document.querySelectorAll('.level-card img')].filter(img => img.complete && img.naturalWidth).length >= 4);
+      const sizes = await page.locator('.level-card img').evaluateAll(images => images.filter(image => image.complete && image.naturalWidth).map(image => [image.naturalWidth,image.naturalHeight]));
+      for (const size of sizes) assert.deepEqual(size,[256,96], 'Gallery images must be bounded thumbnails');
       await page.screenshot({path:`test-results/levels-${phone ? 'phone' : 'desktop'}.png`});
       await page.locator(`.level-card[data-level="${level}"]`).click();
       await page.waitForFunction(level => window.novaRoot?.boot_level === level && !document.querySelector('#pause').disabled && !document.querySelector('#goal-title').disabled,level);
