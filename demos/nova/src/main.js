@@ -588,11 +588,10 @@ function inspect(cell) {
   music.stop();
   playing = false;
   ++request;
-  openInspector();
   $("inspector").dataset.empty = cell.ids.length ? "false" : "true";
   $("selection-hint").hidden = !!cell.ids.length;
   userSelected = true;
-  selectedCell = cell;
+  selectedCell = cell.ids.length ? cell : null;
   revealReplayRoom = true;
   ++replayEpoch;
   seeking = false;
@@ -607,9 +606,10 @@ function inspect(cell) {
   $("cell-visits").textContent = `${fmt(cell.visits)} visits`;
   $("selection-hint").textContent = "";
   renderStates();
-  if (cell.ids.length)
+  if (cell.ids.length) {
+    openInspector();
     worker.postMessage({ type: "states", ids: cell.ids, request: ++request });
-  else $("selection-hint").textContent = "No retained states in this cell yet.";
+  } else closeInspector({ restoreFocus: false });
 }
 function startSearch() {
   stopControl();
@@ -1437,14 +1437,14 @@ function openInspector() {
   $("inspector").hidden = false;
   $("workspace").classList.add("inspect-open");
 }
-function closeInspector() {
+function closeInspector({ restoreFocus = true } = {}) {
   stopControl();
   music.stop();
   playing = false;
   $("play").textContent = "▶ Play history";
   $("inspector").hidden = true;
   $("workspace").classList.remove("inspect-open");
-  if (inspectorReturnFocus?.isConnected)
+  if (restoreFocus && inspectorReturnFocus?.isConnected)
     inspectorReturnFocus.focus({ preventScroll: true });
 }
 function updateBranchControls() {

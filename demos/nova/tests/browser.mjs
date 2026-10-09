@@ -210,40 +210,55 @@ try {
   });
   const introMap = page.locator('.map-row[data-map="0"] canvas');
   await introMap.scrollIntoViewIfNeeded();
-  const click = await introMap.evaluate(
-    (canvas, position) => {
-      const width = Number(canvas.dataset.mapWidth),
-        height = Number(canvas.dataset.mapHeight),
-        scale = Math.min(canvas.width / width, canvas.height / height),
-        rect = canvas.getBoundingClientRect();
-      const px = Math.floor((position.x % width) / 32) * 32 + 16,
-        py =
-          Math.floor((Math.floor(position.x / width) * 224 + position.y) / 32) *
-            32 +
-          8;
-      return {
-        x:
-          (rect.width * ((canvas.width - width * scale) / 2 + px * scale)) /
-          canvas.width,
-        y:
-          (rect.height * ((canvas.height - height * scale) / 2 + py * scale)) /
-          canvas.height,
-      };
-    },
-    { x, y },
-  );
+  const clickIntroCell = async () => {
+    const click = await introMap.evaluate(
+      (canvas, position) => {
+        const width = Number(canvas.dataset.mapWidth),
+          height = Number(canvas.dataset.mapHeight),
+          scale = Math.min(canvas.width / width, canvas.height / height),
+          rect = canvas.getBoundingClientRect();
+        const px = Math.floor((position.x % width) / 32) * 32 + 16,
+          py =
+            Math.floor(
+              (Math.floor(position.x / width) * 224 + position.y) / 32,
+            ) *
+              32 +
+            8;
+        return {
+          x:
+            (rect.width * ((canvas.width - width * scale) / 2 + px * scale)) /
+            canvas.width,
+          y:
+            (rect.height *
+              ((canvas.height - height * scale) / 2 + py * scale)) /
+            canvas.height,
+        };
+      },
+      { x, y },
+    );
+    await introMap.click({ position: click });
+  };
   await introMap.click({ position: { x: 2, y: 2 } });
   assert.equal(
     await page.locator("#inspector").getAttribute("data-empty"),
     "true",
   );
   assert.equal(await page.locator("#state-list .state").count(), 0);
+  assert.equal(await page.locator("#inspector").isVisible(), false);
+  assert.equal(
+    await page
+      .locator("#workspace")
+      .evaluate((el) => el.classList.contains("inspect-open")),
+    false,
+  );
+  await introMap.click({ position: { x: 2, y: 2 } });
+  assert.equal(await page.locator("#inspector").isVisible(), false);
   await page.waitForFunction(() =>
     [...document.querySelectorAll(".map-row canvas")].every(
       (c) => c.dataset.markerFrame === "",
     ),
   );
-  await introMap.click({ position: click });
+  await clickIntroCell();
   await page.waitForFunction(
     (expected) => document.querySelector("#cell-title").title === expected,
     `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
@@ -263,6 +278,22 @@ try {
           .tracePoints,
       ) > 1,
   );
+  await introMap.click({ position: { x: 2, y: 2 } });
+  assert.equal(await page.locator("#inspector").isVisible(), false);
+  assert.equal(await page.locator("#state-list .state").count(), 0);
+  assert.equal(await page.locator("#play").isEnabled(), false);
+  assert.equal(await page.locator("#take-control").isEnabled(), false);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".map-row canvas")].every(
+      (c) => c.dataset.markerFrame === "",
+    ),
+  );
+  await clickIntroCell();
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
+  assert.equal(await page.locator("#inspector").isVisible(), true);
   const selected = await page.locator("#state-list .selected").innerText();
   assert.match(selected, /Route \d+/);
   assert.match(selected, /\d+:\d{2} replay/);
@@ -353,7 +384,7 @@ try {
     afterNumbers.length <= 13,
     "Only the latest twelve routes and the inspected history stay listed",
   );
-  await introMap.click({ position: click });
+  await clickIntroCell();
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",
@@ -930,7 +961,8 @@ try {
     true,
     "Entering a cell on a stacked map must preserve keyboard focus",
   );
-  await page.locator("#close-inspector").click();
+  if (await page.locator("#inspector").isVisible())
+    await page.locator("#close-inspector").click();
   await page.locator('.map-row[data-map="45"] .area-label').click();
   assert.equal(await page.locator("#map").getAttribute("data-map"), "45");
   assert.match(await page.locator("#map-label").innerText(), /MAIN LEVEL/);

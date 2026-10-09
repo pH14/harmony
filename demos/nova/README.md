@@ -31,9 +31,11 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life. The play/pause icon controls search;
-Restart Search resets it. Heat is always on. Clicking a cell opens a history
-inspector beside the maps, or a collapsible bottom sheet on phones. Visited cells
-list their latest twelve retained states; empty cells say so immediately. Arrow keys and Enter also select cells. Each level
+Restart Search resets it. Heat is always on. Clicking a cell with retained states
+opens a history inspector beside the maps, or a collapsible bottom sheet on phones,
+listing its latest twelve retained states. Clicking a cell with no retained states
+clears the previous selection and closes the inspector, leaving the maps visible
+and keyboard focus on the map. Arrow keys and Enter also select cells. Each level
 shows all its connected areas as stacked live maps: Introduction, Garden and
 Main Level are visible together. Area labels and the world atlas can focus any map
 immediately, including unvisited areas. Opening a visited area selects its furthest retained
