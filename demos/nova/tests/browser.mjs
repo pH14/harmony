@@ -208,7 +208,9 @@ try {
     window.novaTestRouteCells = null;
     return cell.observation;
   });
-  const click = await page.locator("#map").evaluate(
+  const introMap = page.locator('.map-row[data-map="0"] canvas');
+  await introMap.scrollIntoViewIfNeeded();
+  const click = await introMap.evaluate(
     (canvas, position) => {
       const width = Number(canvas.dataset.mapWidth),
         height = Number(canvas.dataset.mapHeight),
@@ -230,7 +232,7 @@ try {
     },
     { x, y },
   );
-  await page.locator("#map").click({ position: { x: 2, y: 2 } });
+  await introMap.click({ position: { x: 2, y: 2 } });
   assert.equal(
     await page.locator("#inspector").getAttribute("data-empty"),
     "true",
@@ -241,7 +243,7 @@ try {
       (c) => c.dataset.markerFrame === "",
     ),
   );
-  await page.locator("#map").click({ position: click });
+  await introMap.click({ position: click });
   await page.waitForFunction(
     (expected) => document.querySelector("#cell-title").title === expected,
     `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
@@ -255,7 +257,11 @@ try {
     { timeout: 60000 },
   );
   await page.waitForFunction(
-    () => Number(document.querySelector("#map").dataset.tracePoints) > 1,
+    () =>
+      Number(
+        document.querySelector('.map-row[data-map="0"] canvas').dataset
+          .tracePoints,
+      ) > 1,
   );
   const selected = await page.locator("#state-list .selected").innerText();
   assert.match(selected, /Route \d+/);
@@ -347,7 +353,7 @@ try {
     afterNumbers.length <= 13,
     "Only the latest twelve routes and the inspected history stay listed",
   );
-  await page.locator("#map").click({ position: click });
+  await introMap.click({ position: click });
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",
