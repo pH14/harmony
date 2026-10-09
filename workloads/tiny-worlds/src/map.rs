@@ -68,6 +68,10 @@ pub struct Config {
     pub shield_odds: u16,
     #[serde(default)]
     pub hit_tier: bool,
+    #[serde(default)]
+    pub rooted: bool,
+    #[serde(default)]
+    pub arena: u8,
 }
 
 fn one() -> u8 {
@@ -241,6 +245,12 @@ impl Config {
         }
         if self.hit_tier && (self.boss_stock == 0 || self.items != 1 || self.locked) {
             return Err("a map hit tier needs a boss, one item and no lock".into());
+        }
+        if self.arena > 8 || (self.arena > 0 && self.shield == 0) {
+            return Err("a map arena must be at most 8 spots and needs a shield".into());
+        }
+        if self.rooted && self.arena == 0 {
+            return Err("a rooted map needs an arena".into());
         }
         Ok(())
     }
@@ -563,7 +573,7 @@ impl Config {
     }
 
     pub fn initial(&self) -> State {
-        State {
+        let start = State {
             cell: 0,
             arm: 0,
             progress: 0,
@@ -579,6 +589,17 @@ impl Config {
             tanks: 0,
             shield: 0,
             aim: 0,
+        };
+        if !self.rooted {
+            return start;
+        }
+        let layout = self.layout();
+        State {
+            cell: layout.goal,
+            item: true,
+            stock: self.cap(),
+            health: self.health_cap(&layout),
+            ..start
         }
     }
 
@@ -598,6 +619,7 @@ impl Config {
         let gated = (cell == layout.door_cell && direction == layout.door_direction)
             || (cell == layout.entry && direction == opposite(layout.door_direction));
         layout.doors[usize::from(cell)] & (1 << direction) != 0
+            && !(self.arena > 0 && s.item && cell == layout.goal)
             && !(self.items > 1 && gated && !self.complete(s))
             && !(self.locked && gated && s.found == 0)
     }
@@ -670,11 +692,7 @@ impl Config {
             && s.hits + s.stock <= self.cap()
             && (!self.boss_hits_back || s.hits + s.health <= self.health_limit(layout, s))
             && s.tail < 1 << (2 * TAIL_ACTIONS)
-            && (self.gauntlet
-                || self.approach_drain
-                || self.late_item
-                || self.tail_slots
-                || (s.tail == 0 && !s.dead))
+            && (self.tracks_tail() || (s.tail == 0 && !s.dead))
             && (!s.dead || s.health == 0)
             && (self.boss_stock == 0 || s.item || s.stock == 0 || self.late_item)
             && (s.item || Some(s.cell) != layout.item)
@@ -682,6 +700,22 @@ impl Config {
                 || s.found == 1
                 || (Some(s.cell) != layout.key && !s.item && !layout.inner[usize::from(s.cell)]))
             && s.goal == (self.complete(s) && s.arm == 0 && s.cell == layout.goal)
+    }
+
+    fn spot(&self, cell: u8, tail: u8) -> u8 {
+        u8::try_from(self.roll(cell, tail ^ 0xc0) % u64::from(self.arena)).expect("spot fits")
+    }
+
+    fn lands(&self, s: State) -> bool {
+        if s.shield < self.shield {
+            u64::from(self.mix(s.aim, 4)).is_multiple_of(self.shield_odds.into())
+        } else {
+            self.spot(s.cell, s.tail) == self.spot(s.cell, s.hits | 0x80)
+        }
+    }
+
+    fn tracks_tail(&self) -> bool {
+        self.gauntlet || self.approach_drain || self.late_item || self.tail_slots || self.arena > 0
     }
 
     pub fn state_is_bounded(&self, s: State) -> bool {
@@ -827,7 +861,7 @@ impl Config {
             return s;
         }
         let action = (action + s.phase) % 4;
-        let tail = if self.gauntlet || self.approach_drain || self.late_item || self.tail_slots {
+        let tail = if self.tracks_tail() {
             ((s.tail << 2) | action) & ((1 << (2 * TAIL_ACTIONS)) - 1)
         } else {
             0
@@ -857,8 +891,15 @@ impl Config {
                     && s.stock > 0
                     && (!self.boss_hits_back || s.health > 0)
                 {
+                    if self.arena > 0 && hits && !self.lands(s) {
+                        return State {
+                            stock: s.stock - 1,
+                            ..s
+                        };
+                    }
                     if s.shield < self.shield {
-                        if hits
+                        if self.arena == 0
+                            && hits
                             && !u64::from(self.mix(s.aim, 4))
                                 .is_multiple_of(self.shield_odds.into())
                         {
@@ -922,7 +963,16 @@ impl Config {
         s
     }
 
-    pub fn place(s: State) -> u16 {
+    pub fn place(&self, s: State) -> u16 {
+        if self.arena > 0 && s.item && s.arm == 0 && !s.dead && s.cell == self.layout().goal {
+            let spot = if s.hits == 0 {
+                self.spot(s.cell, s.tail)
+            } else {
+                0
+            };
+            let level = u16::from(s.shield) + u16::from(s.hits);
+            return 128 * SUBPLACES + level * u16::from(self.arena) + u16::from(spot);
+        }
         if s.dead {
             return 64 * SUBPLACES + 32;
         }
@@ -943,7 +993,7 @@ impl Config {
     pub fn key(&self, s: State, broken: bool) -> Key {
         Key {
             stock: s.stock,
-            place: Self::place(s),
+            place: self.place(s),
             context: if self.tail_slots {
                 u16::from(s.tail)
             } else {
@@ -1015,6 +1065,8 @@ mod tests {
             shield: 0,
             shield_odds: 0,
             hit_tier: false,
+            rooted: false,
+            arena: 0,
         }
     }
 
@@ -1120,7 +1172,7 @@ mod tests {
         assert_eq!((s.arm, s.progress), (direction + 1, 1));
         assert_eq!(w.step(s, (direction + 1) % 4), s);
         assert_eq!(w.step(s, opposite(direction)), w.initial());
-        assert_ne!(Config::place(s), Config::place(w.initial()));
+        assert_ne!(w.place(s), w.place(w.initial()));
         for cell in (0..w.cells()).filter(|&c| Some(c) != l.item) {
             if let Some(d) = (0..4).find(|&d| l.doors[usize::from(cell)] & (1 << d) == 0) {
                 let at = State {
@@ -1290,7 +1342,7 @@ mod tests {
         assert!(dead.dead && dead.health == 0 && dead.cell == l.door_cell);
         assert!(w.state_is_bounded(dead));
         assert_eq!(w.step(dead, l.door_direction), dead);
-        assert_eq!(Config::place(dead), 64 * SUBPLACES + 32);
+        assert_eq!(w.place(dead), 64 * SUBPLACES + 32);
         assert!(!w.hit(&l, l.door_cell, hit));
     }
 
@@ -1470,10 +1522,10 @@ mod tests {
         }
         s = walk(&w, &l, s, l.goal);
         let stock = s.stock;
-        let mut places = vec![Config::place(s)];
+        let mut places = vec![w.place(s)];
         for _ in 0..2 {
             s = fire(&w, &l, s);
-            places.push(Config::place(s));
+            places.push(w.place(s));
         }
         assert_eq!((s.hits, s.stock, s.goal), (2, stock - 2, false));
         assert_eq!(w.key(s, false).tier, 1);
@@ -1816,7 +1868,7 @@ mod tests {
         );
         assert_eq!((landed.stock, landed.shield, landed.hits), (31, 1, 0));
         assert_eq!(w.advance(&l, missed, fire, false).shield, 1);
-        assert_eq!(Config::place(landed), 64 * SUBPLACES + SHIELD_PLACES + 1);
+        assert_eq!(w.place(landed), 64 * SUBPLACES + SHIELD_PLACES + 1);
         let broken = State {
             shield: 8,
             ..at_goal
@@ -1843,6 +1895,104 @@ mod tests {
         );
         assert!(Config { shield: 0, ..w }.validate().is_err());
         assert!(Config { items: 2, ..w }.validate().is_err());
+    }
+
+    #[test]
+    fn an_arena_shuts_behind_the_item_and_splits_only_undamaged_states_by_spot() {
+        let w = Config {
+            width: 8,
+            height: 8,
+            inner: 20,
+            farms: 4,
+            farm_cap: 63,
+            boss_stock: 24,
+            shield: 8,
+            shield_odds: 4,
+            tail_slots: true,
+            arena: 8,
+            rooted: true,
+            ..config(crate::test_seed())
+        };
+        let l = w.layout();
+        assert!(w.reachable().unwrap());
+        let start = w.initial();
+        assert_eq!(
+            (start.cell, start.item, start.stock, start.health),
+            (l.goal, true, 63, 63)
+        );
+        assert!(w.state_is_bounded(start) && w.tier(start) == 1);
+        for action in 0..4 {
+            let shot = w.step(start, action);
+            assert_eq!((shot.cell, shot.arm, shot.stock), (l.goal, 0, 62));
+        }
+        let landing = (0..=u16::MAX)
+            .find(|&aim| w.mix(aim, 4).is_multiple_of(4))
+            .unwrap();
+        let missing = (0..=u16::MAX)
+            .find(|&aim| !w.mix(aim, 4).is_multiple_of(4))
+            .unwrap();
+        let landed = w.advance(
+            &l,
+            State {
+                aim: landing,
+                ..start
+            },
+            0,
+            true,
+        );
+        assert_eq!((landed.stock, landed.shield), (62, 1));
+        let wasted = w.advance(
+            &l,
+            State {
+                aim: missing,
+                ..start
+            },
+            0,
+            true,
+        );
+        assert_eq!((wasted.stock, wasted.shield), (62, 0));
+        let undamaged: std::collections::BTreeSet<u16> = (0..64)
+            .map(|tail| w.place(State { tail, ..start }))
+            .collect();
+        assert!(undamaged.len() > 1 && undamaged.len() <= 8);
+        let broken = State { shield: 8, ..start };
+        let named = w.spot(l.goal, 0x80);
+        let mut damaged = std::collections::BTreeSet::new();
+        for tail in 0..64 {
+            let shot = w.advance(&l, State { tail, ..broken }, 0, true);
+            assert_eq!(shot.stock, 62);
+            assert_eq!(shot.hits == 1, w.spot(l.goal, tail) == named);
+            if shot.hits == 1 {
+                damaged.insert(w.place(shot));
+            }
+        }
+        assert_eq!(damaged.len(), 1);
+        assert!(damaged.is_disjoint(&undamaged));
+        let report = crate::run(
+            &crate::Workload {
+                config: crate::worlds::World::Map(w),
+                broken: false,
+                scale: None,
+            },
+            crate::test_seed(),
+            3000,
+            true,
+        )
+        .unwrap();
+        assert_eq!(report["verified"], true);
+        assert_eq!(report["evidence"]["map_first_stocked"], 0);
+        assert_eq!(report["evidence"]["map_first_tier"][1], 0);
+        assert!(Config { arena: 9, ..w }.validate().is_err());
+        assert!(Config { arena: 0, ..w }.validate().is_err());
+        assert!(
+            Config {
+                shield: 0,
+                shield_odds: 0,
+                ..w
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

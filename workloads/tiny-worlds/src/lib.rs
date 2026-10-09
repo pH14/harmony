@@ -789,7 +789,12 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         }
                     }
                     e.map_first_tier.resize(usize::from(w.top_tier()) + 1, None);
-                    e.map_first_tier[0] = Some(0);
+                    for first in &mut e.map_first_tier[..=usize::from(w.tier(w.initial()))] {
+                        first.get_or_insert(0);
+                    }
+                    if w.rooted {
+                        e.map_first_stocked.get_or_insert(0);
+                    }
                     if w.tier(after) > w.tier(before) {
                         e.map_first_tier[usize::from(w.tier(after))].get_or_insert(reached_work);
                     }
@@ -806,6 +811,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         && after.arm == 0
                         && after.cell == layout.goal
                         && after.stock + after.shield >= w.boss_stock + w.shield
+                        && (w.arena == 0 || after.stock == w.farm_cap)
                         && after.hits == 0
                         && (!w.boss_hits_back || after.health >= w.boss_stock)
                     {
