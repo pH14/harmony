@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_in_order_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_place_ability_identity_key_color_preferences_v13";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_in_order_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_ability_place_key_color_preferences_v14";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -44,9 +44,19 @@ pub struct NovaArchiveKey {
 }
 
 impl ArchiveKey for NovaArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, (bool, bool, bool, u8, u16), u16, u16);
+    type Place = (
+        u8,
+        u8,
+        u8,
+        u8,
+        u8,
+        (bool, bool, bool, u8, u16),
+        u16,
+        u16,
+        u8,
+    );
     type Progress = u8;
-    type Identity = (u16, u16, u8);
+    type Identity = (u16, u16);
 
     fn place(self) -> Self::Place {
         (
@@ -64,6 +74,7 @@ impl ArchiveKey for NovaArchiveKey {
             ),
             self.x / 2,
             self.y / 2,
+            self.ability,
         )
     }
 
@@ -72,7 +83,7 @@ impl ArchiveKey for NovaArchiveKey {
     }
 
     fn identity(self) -> Self::Identity {
-        (self.x, self.y, self.ability)
+        (self.x, self.y)
     }
 
     fn capacity() -> usize {
@@ -315,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn each_held_ability_keeps_its_own_holder_at_a_place() {
+    fn each_held_ability_is_its_own_place() {
         let none = archive_key(state(100, 4, 0));
         let mut nice = state(100, 4, 0);
         nice.ability = 6;
@@ -323,12 +334,12 @@ mod tests {
         burger.ability = 11;
         let keys = [none, archive_key(nice), archive_key(burger)];
         for (index, key) in keys.iter().enumerate() {
-            assert_eq!(key.place(), none.place());
+            assert_eq!(key.identity(), none.identity());
             assert_eq!(key.progress(), none.progress());
             assert!(
                 keys[index + 1..]
                     .iter()
-                    .all(|other| other.identity() != key.identity())
+                    .all(|other| other.place() != key.place())
             );
         }
     }
