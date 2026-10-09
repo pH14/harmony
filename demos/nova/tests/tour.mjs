@@ -96,8 +96,10 @@ async function watchDuringTour(page) {
   assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
   await page.locator('#play').click();
   await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause history') && Number(document.querySelector('#scrub').value) >= 10);
+  await page.locator('#play').focus();
   assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
-  await page.locator('#play').click();
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Watch history'));
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'scrub');
   await page.keyboard.press('Home');
