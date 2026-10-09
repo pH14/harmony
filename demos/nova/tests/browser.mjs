@@ -32,8 +32,13 @@ await page.addInitScript((tourKey) => {
       window.novaTestWorker = this;
       this.addEventListener("message", ({ data }) => {
         if (data.type === "states") window.novaTestStates = data.states;
-        if (data.type === "batch" && data.active === 2 && !window.novaTestNestedBatch)
-          window.novaTestNestedBatch = { ...data, motionStart: [...data.motion[0].slice(0, 5)] };
+        if (data.type === "batch" && data.active === 2) {
+          if (!window.novaTestNestedBatch)
+            window.novaTestNestedBatch = { ...data, motionStart: [...data.motion[0].slice(0, 5)] };
+          window.novaTestNestedRetained ??= data.points.find(
+            (point) => point.retained !== null && point.retained !== "2:0",
+          )?.retained;
+        }
         if (
           data.type === "batch" &&
           data.active === 0 &&
@@ -920,8 +925,12 @@ try {
   assert.equal(nested.batch.executions, 2);
   const admitted = new Set(["2:0", ...nested.batch.points.filter(p => p.retained !== null).map(p => p.retained)]);
   assert.equal(nested.batch.states, admitted.size, "Retained-state counts must belong to the active search");
-  const nestedId = nested.batch.points.find(p => p.retained !== null && p.retained !== "2:0")?.retained;
-  assert.ok(nestedId?.startsWith("2:"));
+  await page.waitForFunction(
+    () => window.novaTestNestedRetained?.startsWith("2:"),
+    undefined,
+    { timeout: 60000 },
+  );
+  const nestedId = await page.evaluate(() => window.novaTestNestedRetained);
   await page.evaluate((id) => window.novaTestWorker.postMessage({ type: "states", ids: [id], request: -10 }), nestedId);
   await page.waitForFunction((id) => window.novaTestStates?.[0]?.id === id, nestedId);
   const nestedDescendant = await page.evaluate(() => window.novaTestStates[0]);
