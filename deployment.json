@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "1cb7ac4343e5dd66874e3523755bce3476b13da3",
+    "commit": "ae34931192bd181ca42dd3469e5a697f7fc9d264",
     "build": "locally verified static build",
-    "checks": "44 helpers; desktop/phone browser, tour, visualizations, multi-touch and four nested branches",
-    "asset_manifest_sha256": "21258be098e3dc1480a4c1c1cbd65bbece53c887fe95884804cbc3692f0599f0"
+    "checks": "45 helpers; all 44 level roots and replay/fork checks; desktop/phone level picker, pinch/scroll, tour, visualizations, audio, gameplay and nested branches",
+    "asset_manifest_sha256": "cf414dcb8597978495d4bb3103978bb80b8b95379048a471e21d8eb180672a85"
   },
   "raft": {
     "commit": "28791e77a",
