@@ -31,7 +31,7 @@ const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT.title}</a> art by <a href="https://novasquirrel.com/">${CREDIT.author}</a> \u00b7 <a href="${CREDIT.license_url}" rel="license">${CREDIT.license}</a></small>`;
 document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="tour-open" disabled>Guided tour</button></header>
-<main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><label class="branch-picker">Search branch<select id="branch-choice" aria-label="Search branch" disabled><option value="0">Original search</option></select></label><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
+<main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><label class="branch-picker">Search branch<select id="branch-choice" aria-label="Search branch" disabled><option value="0">Original search</option></select></label><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
 <div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><label class="view-picker">View<select id="visualization" aria-label="Visualization"><option value="heat">Heatmap</option><option value="movement">Movement</option><option value="both">Both</option></select></label><button id="completion" hidden>Watch completion</button></div></div>
 <nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
@@ -1083,14 +1083,6 @@ function updateStats() {
   $("attempts").textContent = fmt(stats.executions);
   $("states").textContent = fmt(stats.states);
   $("cells").textContent = fmt(heat.cells.size);
-  $("distance").textContent =
-    Math.min(
-      100,
-      Math.round(
-        ((bestByMap.get(mapLevel) || 0) / maps.get(mapLevel).runtimeWidth) *
-          100,
-      ),
-    ) + "%";
   $("goal-title").textContent = gameWon
     ? "Game complete"
     : `Level ${Math.min(focusedLevel + 1, 40)}${cleared.has(focusedLevel) ? " ✓" : ""}`;
