@@ -49,3 +49,9 @@ test("tour dismissal is versioned and unavailable storage cannot block the demo"
   assert.equal(tourSeen(blocked), false);
   assert.doesNotThrow(() => rememberTour(blocked));
 });
+
+test("replay callouts leave both route maps and transport clear on phones", () => {
+  const targets = [rect(130, 540, 247, 80), rect(20, 270, 350, 120), rect(20, 440, 96, 96)],
+    p = tourPosition(targets, 340, 200, { width: 390, height: 844 });
+  for (const target of targets) assert.equal(overlap(p, 340, 200, target), 0);
+});

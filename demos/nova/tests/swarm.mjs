@@ -63,6 +63,23 @@ try {
     page.on("pageerror", (e) => errors.push(e.message));
     await page.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
     await page.goto(url);
+    await page.waitForSelector("#attempts");
+    const bakedNovaPixels = await page.evaluate(async () => {
+      const image = new Image();
+      image.src = new URL("maps/0.png", location.href);
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(40, 172, 24, 28).data;
+      let blue = 0;
+      for (let i = 0; i < pixels.length; i += 4)
+        if (pixels[i] === 65 && pixels[i + 1] === 64 && pixels[i + 2] === 255) blue++;
+      return blue;
+    });
+    assert.equal(bakedNovaPixels, 0, "The map artwork must not contain a stationary Nova at the starting position");
     await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 240);
     await page.locator("#swarm").click();
     await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 100));

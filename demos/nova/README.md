@@ -60,8 +60,12 @@ selector. The rest of the interface dims without blurring the game. The tour
 opens once after the initial search has populated a cell; Guided tour in the
 header reopens it. A versioned localStorage marker remembers dismissal; unavailable
 storage falls back to one offer per page load. Skip tour and Escape always exit.
-Native modal focus, step announcements, compact phone callouts and stationary
-spotlights support keyboard use and reduced motion. Callouts follow the actual
+The replay step keeps the route maps and gameplay fully lit and enables the
+original Watch history, scrubber, speed and sound controls. Only the callout and
+transport accept interaction: native inert isolates the rest of the page, and
+keyboard focus stays within those controls. The other steps use native modal
+focus. Step announcements, compact phone callouts and stationary spotlights
+support keyboard use and reduced motion. Callouts follow the actual
 elements through scrolling and resizing, without covering the highlighted control.
 Search continues during the heatmap introduction, then pauses while inspecting
 an authentic route. Exit restores the prior search pause state and any pre-existing human history. The tour never
@@ -246,7 +250,13 @@ This demo does not depend on Consonance.
 portal links for connected rooms. Occupied editor pages determine map extents;
 empty editor padding is trimmed. Packed horizontal runtime pages project back
 into source rows for tall levels. An offline camera captures each original map,
-with build-only RAM writes and button presses to skip dialogs. Those snapshots
+with build-only RAM writes and button presses to skip dialogs. The pinned
+PlayerInvincible symbol is checked against the ROM debug symbols, and its
+normal flicker phase hides the offline camera's player while capturing artwork.
+Two frames warm the sprite pipeline before copying pixels. This prevents a
+stationary Nova being baked into the background of the swarm. Panorama URLs
+carry a capture-recipe cache revision so existing browsers request the corrected
+artwork. These visibility writes and snapshots
 never enter live search or replay. Only non-reloading main-loop states whose map and loaded checkpoint belong to
 the selected level contribute heat or area visits. End screens and level-select
 menus still contribute clear witnesses without claiming visits to the next map.

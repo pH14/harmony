@@ -65,6 +65,56 @@ async function next(page, step) {
   await ready(page, step);
   await layout(page);
 }
+async function watchDuringTour(page) {
+  const map = page.locator('.area-map[data-trace-points]').filter({ visible: true });
+  const traced = await map.evaluateAll((canvases) => canvases.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
+  assert.notEqual(traced, undefined);
+  const canvas = page.locator(`.map-row[data-map="${traced}"] canvas`);
+  const lit = await canvas.screenshot();
+  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = 'hidden');
+  const undimmed = await canvas.screenshot();
+  const darkenedFraction = await page.evaluate(async ([before, after]) => {
+    const pixels = async (data) => {
+      const image = new Image();
+      image.src = 'data:image/png;base64,' + data;
+      await image.decode();
+      const c = document.createElement('canvas');
+      c.width = image.naturalWidth; c.height = image.naturalHeight;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(image, 0, 0);
+      return ctx.getImageData(0, 0, c.width, c.height).data;
+    };
+    const a = await pixels(before), b = await pixels(after);
+    let darkened = 0;
+    for (let i = 0; i < a.length; i += 4)
+      if ((b[i] + b[i + 1] + b[i + 2]) - (a[i] + a[i + 1] + a[i + 2]) > 60) darkened++;
+    return darkened / (a.length / 4);
+  }, [lit.toString('base64'), undimmed.toString('base64')]);
+  assert.ok(darkenedFraction < 0.01, `The selected route map must remain lit; only transient sparks may differ (${darkenedFraction})`);
+  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = '');
+  await page.screenshot({ path: `test-results/tour-live-${page.viewportSize().width}.png` });
+  assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
+  await page.locator('#play').click();
+  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause history') && Number(document.querySelector('#scrub').value) >= 10);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
+  await page.locator('#play').click();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'scrub');
+  await page.keyboard.press('Home');
+  await page.waitForFunction(() => document.querySelector('#scrub').value === '0' && document.querySelector('#frame-label').textContent.startsWith('FRAME 0'));
+  const slider = await page.locator('#scrub').boundingBox();
+  if (page.viewportSize().width < 800) await page.touchscreen.tap(slider.x + slider.width * 0.55, slider.y + slider.height / 2);
+  else await page.locator('#scrub').click({ position: { x: slider.width * 0.55, y: slider.height / 2 } });
+  await page.waitForFunction(() => {
+    const frame = document.querySelector('#scrub').value;
+    return Number(frame) > 1 && document.querySelector('#frame-label').textContent.startsWith('FRAME ' + Number(frame).toLocaleString('en-US')) &&
+      [...document.querySelectorAll('.area-map')].some((c) => c.dataset.markerFrame === frame);
+  });
+  await page.locator('#tour-next').focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
+  assert.equal(await page.locator('#guided-tour').getAttribute('data-step'), '2');
+}
 try {
   await mkdir("test-results", { recursive: true });
   const page = await open({ viewport: { width: 1440, height: 1100 } });
@@ -107,7 +157,15 @@ try {
   );
   await page.locator(".tour-shade").evaluate((e) => (e.style.visibility = ""));
   await page.screenshot({ path: "test-results/tour-desktop-routes.png" });
-  for (let step = 2; step < 6; step++) await next(page, step);
+  for (let step = 2; step < 6; step++) {
+    await next(page, step);
+    if (step === 2) await watchDuringTour(page);
+    if (step === 3) {
+      assert.match(await page.locator('#tour-copy').innerText(), /branch/);
+      assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), true);
+      assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), false);
+    }
+  }
   assert.equal(
     await page.locator("#branch-choice option").count(),
     1,
@@ -179,9 +237,12 @@ try {
   await page.locator("#tour-open").click();
   await ready(page, 0);
   await next(page, 1);
+  await next(page, 2);
+  await watchDuringTour(page);
+  await page.locator('#scrub').focus();
   const cpu = await page.context().newCDPSession(page);
   await cpu.send("Emulation.setCPUThrottlingRate", { rate: 6 });
-  await page.locator("#tour-skip").click();
+  await page.keyboard.press('Escape');
   await page.waitForFunction(
     ({ manual, manualFrame }) =>
       document.querySelector("#film-title").dataset.stateId === manual &&
@@ -192,13 +253,14 @@ try {
   assert.equal(
     await page.locator("#film").evaluate((c) => c.toDataURL()),
     manualPixels,
-    "Skipping a replayed tour must restore the existing human history and its frame",
+    "Escaping from the live scrubber must restore the existing human history and its frame",
   );
   assert.equal(
     await page.evaluate(() => document.activeElement.id),
     "tour-open",
     "Focus must return after asynchronous human-history restoration finishes",
   );
+  assert.equal(await page.locator('[inert]').count(), 0, 'Leaving replay interaction must release all temporary background isolation');
   await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   await cpu.detach();
   assert.equal(
@@ -219,6 +281,7 @@ try {
   await layout(phone);
   for (let step = 1; step < 6; step++) {
     await next(phone, step);
+    if (step === 2) await watchDuringTour(phone);
     if (step === 1 || step === 3 || step === 5)
       await phone.screenshot({ path: `test-results/tour-phone-${step}.png` });
   }
@@ -329,7 +392,7 @@ try {
   await blocked.close();
   assert.deepEqual(errors, []);
   console.log(
-    "Guided tour: authentic routes, spotlight geometry, pause restoration, keyboard exit, persistence, explicit takeover, mobile and blocked storage passed.",
+    "Guided tour: live replay and keyboard/touch scrubbing, fully lit route maps, background isolation, authentic routes, spotlight geometry, pause restoration, keyboard exit, persistence, explicit takeover, mobile and blocked storage passed.",
   );
 } finally {
   await browser.close();

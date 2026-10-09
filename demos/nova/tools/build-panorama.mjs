@@ -12,6 +12,9 @@ const commit = versions.match(/^NOVA_COMMIT=([a-f0-9]{40})$/m)?.[1];
 if (!commit) throw new Error("Missing pinned Nova source revision");
 const base = pathToFileURL(process.cwd() + "/public/"),
   source = `.build/NovaTheSquirrel-${commit}`;
+const debug = await readFile(".build/nova/nova.debug.dbg", "utf8");
+const invincible = Number(debug.match(/name="PlayerInvincible"[^\n]*val=(0x[a-f0-9]+)/i)?.[1]);
+if (invincible !== 0x4c9) throw new Error("Pinned player visibility symbol drifted");
 const table = await readFile(source + "/src/levels.s", "utf8");
 const names = [
   ...table.split("MasterLevelListH:")[0].matchAll(/<([a-z0-9_]+)/g),
@@ -112,7 +115,9 @@ for (const [id, name] of names.entries()) {
     ram[p + 0x41] = 1;
     ram[p + 0x40] = 0;
     ram[p + 0x4b] = 4;
+    ram[p + invincible] = 2;
     e.run(cameraTick++ % 2, 1, true);
+    if (cameraTick < 3) continue;
     const r = e.memory(),
       scroll = Math.floor((r[0x1f] + r[0x20] * 256) / 16),
       pix = e.pixels();

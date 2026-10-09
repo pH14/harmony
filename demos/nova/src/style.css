@@ -1118,3 +1118,11 @@ header #tour-open {
 .map-footer:has(#heat-legend[hidden]):has(#memory-limit[hidden]) {
   display: none;
 }
+
+#guided-tour.interactive {
+  z-index: 1000;
+  pointer-events: none;
+}
+#guided-tour.interactive .tour-card {
+  pointer-events: auto;
+}

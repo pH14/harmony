@@ -235,10 +235,15 @@ const music = new GameAudio(() => createEngine(base));
 const panoramas = new Map(),
   thumbnails = new Map();
 let thumbnailQueue = Promise.resolve();
+function mapURL(level) {
+  const url = new URL(maps.get(level).file, base);
+  url.searchParams.set("v", "camera-hidden-1");
+  return url.href;
+}
 function panorama(level) {
   if (!panoramas.has(level)) {
     const image = new Image();
-    image.src = new URL(maps.get(level).file, base).href;
+    image.src = mapURL(level);
     panoramas.set(level, image);
   }
   return panoramas.get(level);
@@ -253,7 +258,7 @@ function thumbnail(level) {
     const image = new Image();
     await new Promise((resolve) => {
       image.onload = image.onerror = resolve;
-      image.src = new URL(maps.get(level).file, base).href;
+      image.src = mapURL(level);
     });
     if (image.naturalWidth) {
       const scale = Math.min(
@@ -1942,12 +1947,17 @@ const tour = new GuidedTour({
     },
     {
       title: "Follow one route",
-      copy: "Choose a route to trace its path in gold. Play its history, or scrub to any frame. The game reconstructs that moment from the original controller inputs.",
-      targets: () => [document.querySelector(".transport")],
+      copy: "Watch this route’s history, or scrub to any frame. Its gold trail follows the original controller inputs across the maps.",
+      targets: () => [
+        document.querySelector(".transport"),
+        document.querySelector(".screen"),
+        ...[...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0),
+      ],
+      interactive: () => [document.querySelector(".transport")],
     },
     {
       title: "🎮 Step into the experiment",
-      copy: "Play from here gives you control at the displayed frame. Your inputs become part of a new history—like pausing a software test to debug it live.",
+      copy: "Play from here gives you control at the displayed frame. Your inputs create a branch from this moment—like pausing a software test to debug it live.",
       targets: () => [$("take-control")],
     },
     {
@@ -1981,12 +1991,18 @@ const tour = new GuidedTour({
     $("play").textContent = "▶ Watch history";
   },
   async beforeStep(index, valid) {
+    if (index !== 2) {
+      playing = false;
+      music.stop();
+      $("play").textContent = "▶ Watch history";
+    }
     if (index === 1 && !tourSession.prepared) tourSession.cell = tourCell();
     const cell = (tourSession.cell ||= tourCell());
     if (!cell) throw new Error("No retained cell yet");
-    if (mapLevel !== cell.level) setRoom(cell.level, true);
+    if (index <= 1 && mapLevel !== cell.level) setRoom(cell.level, true);
+    if (index >= 2) followReplayRoom(markerPoint());
     const view = roomView(cell.level);
-    if (view.zoom > 1) {
+    if (index <= 1 && view.zoom > 1) {
       view.x = cell.x * 32 + 16;
       view.y = cell.y * 32 + 8;
     }

@@ -28,6 +28,10 @@ export function tourPosition(rects, width, height, viewport) {
     { x: middle, y: anchor.top - height - gap },
     { x: anchor.left - width - gap, y: anchor.top },
     { x: anchor.right + gap, y: anchor.top },
+    { x: margin, y: margin },
+    { x: viewport.width - width - margin, y: margin },
+    { x: margin, y: viewport.height - height - margin },
+    { x: viewport.width - width - margin, y: viewport.height - height - margin },
   ].map((p) => ({
     x: clamp(p.x, viewport.width - width),
     y: clamp(p.y, viewport.height - height),
@@ -73,6 +77,25 @@ export class GuidedTour {
       e.preventDefault();
       this.finish();
     });
+    document.addEventListener("focusin", (e) => {
+      if (this.open && this.interactive && !this.allowed.some((node) => node.contains(e.target)))
+        this.find("tour-next").focus({ preventScroll: true });
+    });
+    document.addEventListener("keydown", (e) => {
+      if (!this.open || !this.interactive) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.finish();
+      } else if (e.key === "Tab") {
+        const controls = this.allowed.flatMap((node) => [...node.querySelectorAll("button,input,select,[tabindex]")])
+          .filter((node) => !node.matches(":disabled") && node.tabIndex >= 0 && node.getClientRects().length);
+        if (!controls.length) return;
+        const index = controls.indexOf(document.activeElement), direction = e.shiftKey ? -1 : 1;
+        e.preventDefault();
+        controls[(index + direction + controls.length) % controls.length].focus({ preventScroll: true });
+      }
+    }, true);
     this.dialog.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -80,6 +103,35 @@ export class GuidedTour {
         this.finish();
       }
     });
+  }
+  restoreInteraction() {
+    for (const [node, inert] of this.disabled || []) node.inert = inert;
+    this.disabled = [];
+    this.interactive = false;
+    this.allowed = [this.dialog];
+    this.dialog.classList.remove("interactive");
+  }
+  setInteraction(elements = []) {
+    this.restoreInteraction();
+    this.interactive = elements.length > 0;
+    this.allowed = [this.dialog, ...elements];
+    this.dialog.classList.toggle("interactive", this.interactive);
+    if (this.dialog.matches(":modal") === this.interactive) {
+      this.dialog.close();
+      if (this.interactive) this.dialog.show();
+      else this.dialog.showModal();
+    }
+    if (!this.interactive) return;
+    const restrict = (node) => {
+      if (this.allowed.includes(node)) return;
+      if (this.allowed.some((allowed) => node.contains(allowed))) {
+        for (const child of node.children) restrict(child);
+      } else {
+        this.disabled.push([node, node.inert]);
+        node.inert = true;
+      }
+    };
+    for (const child of document.body.children) restrict(child);
   }
   get open() {
     return this.dialog.open;
@@ -104,6 +156,7 @@ export class GuidedTour {
     this.ready = false;
     this.dialog.dataset.step = index;
     this.targets = [];
+    this.setInteraction();
     const step = this.steps[index];
     this.find("tour-title").textContent = step.title;
     this.find("tour-copy").textContent = step.copy;
@@ -122,6 +175,7 @@ export class GuidedTour {
       await this.beforeStep(index, () => epoch === this.epoch && this.open);
       if (epoch !== this.epoch || !this.open) return;
       this.targets = step.targets;
+      this.setInteraction(step.interactive?.() || []);
       const first = this.targets()[0];
       if (first?.scrollIntoView)
         first.scrollIntoView({
@@ -190,16 +244,19 @@ export class GuidedTour {
   async finish(intent) {
     if (!this.open) return;
     const epoch = ++this.epoch,
-      returnFocus = this.returnFocus;
+      returnFocus = this.returnFocus,
+      closingFocus = document.activeElement;
     cancelAnimationFrame(this.animation);
     this.dialog.close();
+    this.restoreInteraction();
     await this.onClose(intent);
     if (
       intent !== "play" &&
       epoch === this.epoch &&
       !this.open &&
       (document.activeElement === document.body ||
-        document.activeElement === returnFocus)
+        document.activeElement === returnFocus ||
+        document.activeElement === closingFocus)
     )
       returnFocus?.focus({ preventScroll: true });
   }
