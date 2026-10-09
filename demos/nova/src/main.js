@@ -5,6 +5,7 @@ import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, routeIds } from "./heat.js";
+import { NovaSwarm } from "./swarm.js";
 import { CREDIT, snapshotHash } from "./media.js";
 import { viewCenter } from "./view.js";
 import {
@@ -31,10 +32,10 @@ const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT
 document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="tour-open" disabled>Guided tour</button></header>
 <main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><label class="branch-picker">Search branch<select id="branch-choice" aria-label="Search branch" disabled><option value="0">Original search</option></select></label><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
-<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><button id="completion" hidden>Watch completion</button></div></div>
+<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><button id="swarm" aria-pressed="false" title="Replay recent search paths together.">All Novas</button><button id="completion" hidden>Watch completion</button></div></div>
 <nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
-<div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
+<div class="map-footer"><span id="heat-legend">Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
 ${artCredit}</section>
 <section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Watch history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" aria-describedby="branch-hint" disabled>🎮 Play from here</button><p id="branch-hint">Your original search stays in the branch menu.</p><button id="search-here" aria-describedby="branch-hint" disabled>↗ Branch search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
@@ -151,6 +152,7 @@ function activateSearchView(id) {
   } = view);
   searchViews.set(id, view);
   sparks = [];
+  swarmRooms = swarm.frame(id, performance.now(), reducedMotion.matches);
   hoverCell = selectedCell = null;
   lastAuto = 0;
   return fresh;
@@ -189,6 +191,43 @@ const budget = memoryBudget(
   navigator.deviceMemory,
   matchMedia("(pointer: coarse)").matches,
 );
+const swarm = new NovaSwarm(
+  (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
+  budget.snapshotsMiB === 32 ? 2048 : 8192,
+);
+let swarmEnabled = false, swarmRooms = new Map();
+const sprites = new Image();
+sprites.src = new URL("nova-sprites.png", base).href;
+function setSwarm(enabled) {
+  swarmEnabled = enabled;
+  $("swarm").setAttribute("aria-pressed", String(enabled));
+  $("heat-legend").hidden = enabled;
+  $("map-hint").hidden = enabled;
+  $("hover").hidden = true;
+  drawMap(performance.now());
+  drawAtlas(performance.now());
+}
+$("swarm").onclick = () => {
+  userSelected = true;
+  setSwarm(!swarmEnabled);
+};
+function drawNovas(ctx, level, scale) {
+  if (!sprites.complete || !sprites.naturalWidth) return 0;
+  const map = maps.get(level), points = swarmRooms.get(level) || [];
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  let count = 0;
+  for (const raw of points) {
+    const p = project(raw, map);
+    if (p.x < 0 || p.x >= map.width || p.y < 0 || p.y >= map.height) continue;
+    const size = Math.max(1, 4 / (16 * scale));
+    ctx.drawImage(sprites, Math.floor(p.pose / 2) * 16, (p.pose & 1) * 24, 16, 24,
+      p.x - (p.pose & 1 ? 0 : 8 * size), p.y + 16 - 24 * size, 16 * size, 24 * size);
+    count++;
+  }
+  ctx.restore();
+  return count;
+}
 const timeline = new ReplayTimeline(
   (budget.snapshotsMiB === 32 ? 2 : 4) * 1048576,
 );
@@ -588,6 +627,7 @@ function renderStates() {
   );
 }
 function inspect(cell) {
+  if (swarmEnabled) setSwarm(false);
   if (!cell || branchBusy) return;
   stopControl();
   music.stop();
@@ -633,6 +673,8 @@ function startSearch() {
   $("branch-message").hidden = true;
   if (worker) worker.terminate();
   heat = new Heatmap();
+  swarm.clear();
+  swarmRooms = new Map();
   stateCache = new StateCache();
   selectedCell = null;
   current = null;
@@ -758,7 +800,9 @@ function startSearch() {
         updateStats();
       } else if (data.type === "batch") {
         if (data.active !== activeSearch) return;
-        stats = data;
+        swarm.add(activeSearch, data.motion || []);
+        const { motion, ...batchStats } = data;
+        stats = batchStats;
         gameWon ||= data.won;
         const now = performance.now();
         for (const point of data.points) {
@@ -980,6 +1024,13 @@ function drawAtlas(now) {
       );
       context.scale(scale, scale);
     }
+    if (swarmEnabled) {
+      context.fillStyle = "rgba(12,17,20,.24)";
+      context.fillRect(0, 0, map.width, map.height);
+      drawNovas(context, id, scale * (c.clientWidth / c.width));
+      context.restore();
+      continue;
+    }
     context.fillStyle = "rgba(7,24,43,.6)";
     context.fillRect(0, 0, map.width, map.height);
     for (const cell of heat.cells.values())
@@ -1110,6 +1161,7 @@ function renderMapRows(owner) {
   }
 }
 function drawMap(now) {
+  if (swarmEnabled) swarmRooms = swarm.frame(activeSearch, now, reducedMotion.matches);
   for (const c of document.querySelectorAll(".area-map")) drawArea(c, now);
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
 }
@@ -1134,6 +1186,24 @@ function drawArea(canvas, now) {
   ctx.translate(-areaCenter, -areaCenterY);
   const image = panorama(mapLevel);
   if (image?.complete && image.naturalWidth) ctx.drawImage(image, 0, 0);
+  canvas.dataset.zoom = areaZoom;
+  canvas.dataset.centerX = areaCenter;
+  canvas.dataset.centerY = areaCenterY;
+  canvas.dataset.overlay = swarmEnabled ? "novas" : "heat";
+  const label = `${map.label} ${swarmEnabled ? "Nova swarm" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
+  if (canvas.getAttribute("aria-label") !== label)
+    canvas.setAttribute("aria-label", label);
+  if (swarmEnabled) {
+    ctx.fillStyle = "rgba(12,17,20,.24)";
+    ctx.fillRect(0, 0, mapWidth, mapHeight);
+    canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
+    canvas.dataset.tracePoints = 0;
+    canvas.dataset.markerFrame = canvas.dataset.originFrame = "";
+    canvas.dataset.originPulse = "false";
+    ctx.restore();
+    return;
+  }
+  canvas.dataset.swarmCount = 0;
   ctx.fillStyle = "rgba(7,24,43,.62)";
   ctx.fillRect(0, 0, mapWidth, mapHeight);
   {
@@ -1895,6 +1965,7 @@ const tour = new GuidedTour({
     },
   ],
   onStart() {
+    if (swarmEnabled) setSwarm(false);
     tourSession = {
       cell: tourCell(),
       wasPaused: paused,

@@ -19,7 +19,9 @@ recipe. The displayed project-day build stamp is fixed to `1788220800`; the
 original gameplay, graphics and levels are preserved. Generated gameplay media
 and level imagery are shared under CC BY-NC-SA 4.0. Credit and these notices must
 travel with exported images and histories. Level panoramas are assembled from
-gameplay screenshots; browser maps add heat overlays. Original artwork is
+gameplay screenshots; browser maps add heat overlays. The All Novas view uses
+unchanged player tiles and palette extracted from the pinned game source, arranged
+as an attributed sprite sheet, to replay actual sampled search movement. Original artwork is
 unchanged. Visible creator, source and license links accompany the live map,
 replay and atlas, in addition to the footer and Credits dialog.
 

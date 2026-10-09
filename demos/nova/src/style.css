@@ -1108,3 +1108,13 @@ header #tour-open {
     font-size: 11px;
   }
 }
+
+#swarm[aria-pressed="true"] {
+  background: var(--selection);
+  border-color: #7b9099;
+  color: #e6eff2;
+}
+
+.map-footer:has(#heat-legend[hidden]):has(#memory-limit[hidden]) {
+  display: none;
+}

@@ -29,6 +29,31 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 ## Interaction
 
+All Novas switches the map and atlas to the original level artwork with tiny
+Nova sprites replaying recorded search rollouts together. Heat, grid, trails,
+selection rings and sparks disappear in this view; the search and cell inspection
+remain available. Inspecting a cell or opening the guided tour returns to heat.
+Each sprite follows one real rollout from its restored parent, rather than a
+complete root-to-state history. Runs loop independently at 60 game frames per
+second with staggered phases, so the whole map stays active even when search is
+paused. Reduced motion shows stationary sampled poses. Invalid gameplay, deaths
+and room transitions never interpolate across maps or menus. Switching branches
+shows only that branch's recordings; Restart Search releases them.
+
+One recorder samples the existing search emulator every four game frames. It
+splits silent runs into equivalent chunks without changing inputs, random draws,
+archive selection or captured endpoints; no extra emulator or snapshot is retained.
+Transferred Uint16 arrays store relative frame, room, position and pose. Their
+shared FIFO cache across all eight branches is capped at 2 MiB / 2,048 rollouts
+on phones and 8 MiB / 8,192 on desktops. The newest recordings replace the oldest
+at either limit; this is a bounded swarm, not unlimited historical retention.
+The worker keeps only the current two-rollout batch, whose encoded payload is
+at most 4,820 bytes before transfer. Live RAM reads use the pinned game's position, direction, ground state,
+velocity and retrace addresses; map identity uses the same bank/checkpoint rules
+as exploration. The build extracts idle, four walking and jumping poses, in both
+directions, from upstream's spnova.chr and player.s, with the original palette.
+The sprite sheet carries the same NovaSquirrel CC BY-NC-SA attribution as maps.
+
 A six-step guided tour spotlights the live heatmap, a real populated cell and its
 retained routes, replay controls, human takeover, search admission and the branch
 selector. The rest of the interface dims without blurring the game. The tour
@@ -240,6 +265,11 @@ npx playwright install chromium
 # While the preview server is running:
 npm run test:browser
 ```
+
+The swarm check compares 128 real recorded and unrecorded rollouts, including
+every archived snapshot byte, and samples authentic door/campaign witness tapes.
+Browser checks cover moving sprites while search is paused, clean overlay and
+heat restoration, separate branch recordings, restart, tour handoff and phones.
 
 The search check requires three real seeds to reach the garden (map 49) and
 main area (map 45), and exactly replays both first-arrival tapes against their

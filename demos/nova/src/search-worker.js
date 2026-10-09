@@ -5,10 +5,12 @@ import { SearchLoop } from "./loop.js";
 import { validateTape } from "./heat.js";
 import { branchInfo } from "./branch.js";
 import { snapshotHash } from "./media.js";
+import { RolloutRecorder, motionPoint } from "./swarm.js";
 let initialized = false,
   wasm,
   budget,
   engine,
+  recorder,
   genesis,
   active = 0,
   generation = 0,
@@ -67,14 +69,20 @@ const loop = new SearchLoop(() => {
   if (!initialized || busy) return false;
   try {
     const search = searches.get(active);
-    const batch = JSON.parse(search.explorer.advance(2));
+    recorder.begin();
+    let batch, motion;
+    try {
+      batch = JSON.parse(search.explorer.advance(2));
+    } finally {
+      motion = recorder.finish();
+    }
     batch.points = batch.points.map((p) => ({
       ...p,
       retained: p.retained === null ? null : externalId(active, p.retained),
     }));
     updateMemory(batch);
     search.stats = batch;
-    postMessage({ type: "batch", active, ...batch });
+    postMessage({ type: "batch", active, ...batch, motion }, motion.map((trail) => trail.buffer));
     if (batch.stopped) postMessage({ type: "limit", won: batch.won });
     return !batch.stopped;
   } catch (e) {
@@ -97,6 +105,10 @@ onmessage = async ({ data }) => {
       if (gen !== generation) return;
       globalThis.harmonyEngine = engine;
       genesis = engine.boot();
+      const catalog = await (await fetch(new URL("maps.json", data.base))).json();
+      if (gen !== generation) return;
+      const owners = new Map(catalog.levels.flatMap((level) => level.rooms.map((room) => [room, level.id])));
+      recorder = new RolloutRecorder(engine, () => motionPoint(engine, owners));
       wasm = await init();
       if (gen !== generation) return;
       const explorer = new Explorer(data.seed ?? 1);

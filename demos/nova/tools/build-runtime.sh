@@ -42,5 +42,5 @@ cargo vendor --locked --manifest-path "$demo/rust/Cargo.toml" "$build/rust-depen
 tar -czf "$demo/public/licenses/rust-dependencies.tar.gz" -C "$build" rust-dependencies
 rm -rf "$build/rust-dependencies"
 
-(cd "$demo" && node tools/build-panorama.mjs)
+(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs)
 git -C "$root" archive --format=tar.gz --output="$demo/public/licenses/harmony-source.tar.gz" HEAD
