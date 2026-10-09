@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { createEngine } from "../src/emulator.js";
 import { snapshotHash } from "../src/media.js";
+import { TOUR_KEY } from "../src/tour.js";
 import { isMapEvidence } from "../src/world.js";
 const browser = await chromium.launch({
   headless: true,
@@ -20,7 +21,8 @@ page.on("response", (response) => {
   if (response.status() >= 400)
     errors.push(`${response.status()} ${response.url()}`);
 });
-await page.addInitScript(() => {
+await page.addInitScript((tourKey) => {
+  localStorage.setItem(tourKey, "seen");
   const RealWorker = window.Worker;
   window.novaTestRouteCells = new Map();
   window.Worker = class extends RealWorker {
@@ -72,7 +74,7 @@ await page.addInitScript(() => {
       super.postMessage(data, ...rest);
     }
   };
-});
+}, TOUR_KEY);
 async function openCurrentCell() {
   await page.waitForFunction(
     () =>

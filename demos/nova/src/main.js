@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "./style.css";
+import { GuidedTour, tourSeen } from "./tour.js";
 import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
@@ -28,7 +29,7 @@ const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT.title}</a> art by <a href="https://novasquirrel.com/">${CREDIT.author}</a> \u00b7 <a href="${CREDIT.license_url}" rel="license">${CREDIT.license}</a></small>`;
 document.querySelector("#app").innerHTML = `
-<header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span></header>
+<header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="tour-open" disabled>Guided tour</button></header>
 <main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><label class="branch-picker">Search branch<select id="branch-choice" aria-label="Search branch" disabled><option value="0">Original search</option></select></label><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
 <div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><button id="completion" hidden>Watch completion</button></div></div>
 <nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
@@ -795,6 +796,7 @@ function startSearch() {
           worker.postMessage({ type: "states", ids: [latestBest], request: 0 });
         }
         updateStats();
+        offerTour();
       } else if (data.type === "states") {
         for (const state of data.states) stateCache.set(state.id, state);
         if (data.request === 0) {
@@ -1452,6 +1454,8 @@ function closeInspector({ restoreFocus = true } = {}) {
     inspectorReturnFocus.focus({ preventScroll: true });
 }
 function updateBranchControls() {
+  $("tour-open").disabled =
+    !ready || !engine || controlMode || branchBusy || seeking;
   const usable =
     !!current &&
     !!engine &&
@@ -1816,6 +1820,190 @@ function animate(now) {
   }
   requestAnimationFrame(animate);
 }
+let tourSession = null,
+  tourOffered = tourSeen();
+function tourMap() {
+  return document.querySelector(
+    `.map-row[data-map="${tourSession?.cell?.level}"] canvas`,
+  );
+}
+function tourCellRect() {
+  const c = tourMap(),
+    cell = tourSession?.cell;
+  if (!c || !cell) return null;
+  const r = c.getBoundingClientRect(),
+    map = maps.get(cell.level),
+    view = roomView(cell.level),
+    scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom,
+    x = (((cell.x * 32 - view.x) * scale + c.width / 2) * r.width) / c.width,
+    y =
+      (((cell.y * 32 - 8 - view.y) * scale + c.height / 2) * r.height) /
+      c.height;
+  return {
+    left: Math.max(r.left, r.left + x),
+    top: Math.max(r.top, r.top + y),
+    right: Math.min(r.right, r.left + x + (32 * scale * r.width) / c.width),
+    bottom: Math.min(r.bottom, r.top + y + (32 * scale * r.height) / c.height),
+  };
+}
+function tourCell() {
+  if (selectedCell?.ids.length) return selectedCell;
+  return [...heat.cells.values()]
+    .filter((c) => c.ids.length > 1 && c.x * 32 >= 96)
+    .sort(
+      (a, b) =>
+        (b.level === mapLevel) - (a.level === mapLevel) ||
+        b.x - a.x ||
+        b.ids.length - a.ids.length ||
+        b.visits - a.visits,
+    )[0];
+}
+const tour = new GuidedTour({
+  steps: [
+    {
+      title: "Watch the search explore",
+      copy: "Each warm cell marks real search activity. Green, orange and red show where exploration is concentrated. Activity cools as the search moves on; visited ground stays blue.",
+      targets: () => [tourMap()],
+    },
+    {
+      title: "One spot, many histories",
+      copy: "Click a cell to inspect the states retained there. We’ve opened a real one: each route is a different history that brought Nova to this spot.",
+      targets: () => [$("state-list"), tourCellRect()],
+    },
+    {
+      title: "Follow one route",
+      copy: "Choose a route to trace its path in gold. Play its history, or scrub to any frame. The game reconstructs that moment from the original controller inputs.",
+      targets: () => [document.querySelector(".transport")],
+    },
+    {
+      title: "🎮 Step into the experiment",
+      copy: "Play from here gives you control at the displayed frame. Your inputs become part of a new history—like pausing a software test to debug it live.",
+      targets: () => [$("take-control")],
+    },
+    {
+      title: "Guide what happens next",
+      copy: "Branch search from here starts a new search at this moment, including any moves you made. Your original search stays intact. The new branch appears in the menu above.",
+      targets: () => [
+        $("search-here"),
+        document.querySelector(".branch-picker"),
+      ],
+    },
+    {
+      title: "Compare alternate futures",
+      copy: "New branches appear here. Switch back to your original search, or resume another branch. Each keeps its own retained states, routes and heatmap.",
+      targets: () => [document.querySelector(".branch-picker")],
+    },
+  ],
+  onStart() {
+    tourSession = {
+      cell: tourCell(),
+      wasPaused: paused,
+      prepared: false,
+      previousManual: String(current?.id).startsWith("manual-")
+        ? current
+        : null,
+      previousFrame: currentFrame,
+    };
+    userSelected = true;
+    playing = false;
+    music.stop();
+    $("play").textContent = "▶ Play history";
+  },
+  async beforeStep(index, valid) {
+    if (index === 1 && !tourSession.prepared) tourSession.cell = tourCell();
+    const cell = (tourSession.cell ||= tourCell());
+    if (!cell) throw new Error("No retained cell yet");
+    if (mapLevel !== cell.level) setRoom(cell.level, true);
+    const view = roomView(cell.level);
+    if (view.zoom > 1) {
+      view.x = cell.x * 32 + 16;
+      view.y = cell.y * 32 + 8;
+    }
+    if (index === 0) {
+      if (!tourSession.wasPaused && !stats.stopped && paused) {
+        paused = false;
+        worker.postMessage({ type: "resume" });
+        updateSearchControl();
+      }
+      return;
+    }
+    paused = true;
+    worker.postMessage({ type: "pause" });
+    updateSearchControl();
+    if (!tourSession.prepared) {
+      if (selectedCell?.key !== cell.key || !current || $("inspector").hidden)
+        inspect(cell);
+    }
+    const deadline = performance.now() + 15000;
+    while (valid()) {
+      if (
+        !seeking &&
+        current &&
+        cell.routes.has(current.id) &&
+        historyVerified
+      ) {
+        if (frameObservation?.health) {
+          tourSession.prepared = true;
+          break;
+        }
+        const alive = cell.ids
+          .map((id) => stateCache.get(id))
+          .find((s) => s?.observation.health);
+        if (alive) await selectState(alive);
+        else throw new Error("No playable route here");
+      }
+      if (performance.now() > deadline) throw new Error("Route not ready");
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
+    if (!valid()) return;
+    if (index === 1)
+      $("state-list")
+        .querySelector(".selected")
+        ?.scrollIntoView({ block: "nearest", behavior: "instant" });
+    if (index >= 4)
+      $("branch-choice").scrollIntoView({
+        block: "nearest",
+        behavior: "instant",
+      });
+  },
+  onClose(intent) {
+    const { previousManual: previous, previousFrame, wasPaused } = tourSession;
+    tourSession = null;
+    if (intent !== "play" && previous && current !== previous) {
+      ++request;
+      selectedCell = null;
+      selectState(previous)
+        .then((success) => {
+          if (success && currentFrame !== previousFrame)
+            return seek(previousFrame);
+        })
+        .catch(fail);
+    }
+    if (intent !== "play" && !wasPaused && !stats.stopped) {
+      paused = false;
+      worker.postMessage({ type: "resume" });
+      updateSearchControl();
+    }
+    if (intent === "play") $("take-control").click();
+  },
+});
+function beginTour() {
+  if ($("tour-open").disabled || tour.open) return;
+  tourOffered = true;
+  tour.start();
+}
+function offerTour() {
+  if (
+    !tourOffered &&
+    !userSelected &&
+    !document.hidden &&
+    !$("info").open &&
+    stats.executions >= 30 &&
+    tourCell()
+  )
+    beginTour();
+}
+$("tour-open").onclick = beginTour;
 requestAnimationFrame(animate);
 createEngine(base)
   .then((e) => {

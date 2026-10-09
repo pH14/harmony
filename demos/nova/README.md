@@ -29,6 +29,20 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 ## Interaction
 
+A six-step guided tour spotlights the live heatmap, a real populated cell and its
+retained routes, replay controls, human takeover, search admission and the branch
+selector. The rest of the interface dims without blurring the game. The tour
+opens once after the initial search has populated a cell; Guided tour in the
+header reopens it. A versioned localStorage marker remembers dismissal; unavailable
+storage falls back to one offer per page load. Skip tour and Escape always exit.
+Native modal focus, step announcements, compact phone callouts and stationary
+spotlights support keyboard use and reduced motion. Callouts follow the actual
+elements through scrolling and resizing, without covering the highlighted control.
+Search continues during the heatmap introduction, then pauses while inspecting
+an authentic route. Exit restores the prior search pause state and any pre-existing human history. The tour never
+creates a search branch or records game inputs on its own; the optional final
+Try playing button invokes normal takeover after an explicit click.
+
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life measured only while that search runs.
 Heat is a UI view of actual visits, not archive retention or parent-selection
