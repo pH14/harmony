@@ -22,6 +22,7 @@ try {
       };
     });
     await page.goto(process.env.DEMO_URL || 'http://127.0.0.1:4173/');
+    await page.locator('#goal-title').waitFor({state:'visible'});
     await page.waitForFunction(() => !document.querySelector('#goal-title').disabled);
     for (const level of [8,26,42,0]) {
       console.log(`Testing ${phone ? 'phone' : 'desktop'} level ${level}`);
