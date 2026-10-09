@@ -566,4 +566,6 @@ standalone `demos/nova/rust` adapter. It builds pinned Nova and QuickNES into
 WebAssembly, runs adapter and browser checks, verifies exact selected-history
 replays, and uploads the static `nova-browser-dist` with corresponding sources
 and `nova-browser-evidence` screenshots. The bounded browser check asserts
-liveness and replay correctness rather than a specific seed’s game progress.
+liveness, authentic starts in all 44 catalog levels, exact replay and rooted
+branching, and desktop/phone interactions rather than a specific seed’s game
+progress.

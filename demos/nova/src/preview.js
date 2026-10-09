@@ -22,16 +22,27 @@ export class RoutePreviews {
   }
   async get(state) {
     const epoch = ++this.epoch;
+    const level = state.boot_level ?? 0;
+    if (this.bootLevel !== level) {
+      this.bootLevel = level;
+      this.images.clear();
+      this.timeline.clear();
+    }
     if (this.images.has(state.id)) {
       const pixels = this.images.get(state.id);
       this.remember(state.id, pixels);
       return pixels;
     }
     this.runtime ||= this.create().then((engine) => ({
-      engine, origin: engine.boot(), pixels: engine.pixels(),
+      engine, level: null, origin: null, pixels: null,
     })).catch((error) => { this.runtime = null; throw error; });
     const runtime = await this.runtime;
     if (epoch !== this.epoch) return null;
+    if (runtime.level !== level) {
+      runtime.origin = runtime.engine.boot(level);
+      runtime.pixels = runtime.engine.pixels();
+      runtime.level = level;
+    }
     const { engine, origin } = runtime;
     this.timeline.reset(state.actions, state.frames);
     const checkpoint = this.timeline.before(state.frames);

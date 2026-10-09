@@ -31,8 +31,8 @@ const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="theme" class="theme-button" aria-label="Switch color theme">◐</button></header>
-<main><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Timeline</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Timeline">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav></aside><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div><div><b id="memory">0 MB</b><span>archive memory</span></div></div><button id="tour-open" disabled>Guided tour</button></div>
-<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><div id="visualization" class="segments" role="group" aria-label="Visualization" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button><button data-viz="both" aria-pressed="false">Both</button></div><button id="completion" hidden>Watch completion</button></div></div>
+<main><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Timeline</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Timeline">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav></aside><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div><div><b id="memory">0 MB</b><span>archive memory</span></div></div><button id="tour-open" disabled>Guided tour</button></div>
+<div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>World 1 – Level 1</button><span id="goal-status" hidden></span></div><div><div id="visualization" class="segments" role="group" aria-label="Visualization" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button><button data-viz="both" aria-pressed="false">Both</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 </section>
@@ -40,12 +40,14 @@ document.querySelector("#app").innerHTML = `
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
 <footer><span><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
 <div id="route-preview" class="route-preview" hidden><canvas width="256" height="224"></canvas><span></span></div><div id="error" role="alert" hidden></div>
+<dialog id="level-picker" aria-labelledby="level-picker-title"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><div class="level-picker-heading"><h2 id="level-picker-title">Choose a starting point</h2><p>A fresh Timeline, from any level.</p></div><div id="level-worlds"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 let heat = new Heatmap(),
   worker,
   engine,
   origin,
   originPixels,
+  bootLevel = 0,
   gameWon = false,
   paused = false,
   ready = false,
@@ -178,6 +180,15 @@ function revealBranchOrigin() {
   const bounds = row.getBoundingClientRect();
   if (bounds.top < 20 || bounds.bottom > innerHeight - 20)
     window.scrollBy({ top: bounds.top - 24, behavior: "instant" });
+}
+function roomCanvasHeight(id) {
+  const map = maps.get(id);
+  if (roomView(id).zoom > 1) {
+    const width = document.querySelector(".exploration").clientWidth || innerWidth;
+    return matchMedia("(max-width: 800px)").matches
+      ? Math.max(320, Math.round(1280 * Math.min(220, innerHeight * .3, map.height / map.width * width * roomView(id).zoom) / width)) : 320;
+  }
+  return Math.min(320, Math.max(128, Math.round(1280 / map.width * map.height)));
 }
 function roomView(id) {
   if (!views.has(id)) {
@@ -768,7 +779,13 @@ function inspect(cell) {
     worker.postMessage({ type: "states", ids: cell.ids, request: ++request });
   } else closeInspector({ restoreFocus: false });
 }
-function startSearch() {
+function startSearch(level = bootLevel) {
+  if (!catalog.levels.some((entry) => entry.id === level)) throw new Error("Unknown level");
+  bootLevel = level;
+  if (engine) {
+    origin = engine.boot(bootLevel);
+    originPixels = engine.pixels();
+  }
   stopControl();
   playSession = null;
   music.stop();
@@ -817,7 +834,7 @@ function startSearch() {
   $("state-list").replaceChildren();
   updateStats();
   sparks = [];
-  setRoom(0);
+  setRoom(bootLevel);
 
   $("error").hidden = true;
   $("memory-limit").hidden = true;
@@ -982,7 +999,7 @@ function startSearch() {
       fail(e);
     }
   };
-  worker.postMessage({ type: "init", base: base.href, seed, budget });
+  worker.postMessage({ type: "init", base: base.href, seed, budget, boot_level: bootLevel });
 }
 function updateSearchControl() {
   heat.setRunning(ready && !paused && !stats.stopped, performance.now());
@@ -1059,7 +1076,7 @@ function updateStats() {
   $("states").title =
     `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`;
   $("work").textContent = fmt(stats.frames);
-  $("memory").textContent = `${((stats.snapshot_bytes || 0) / 1048576).toFixed(1)} MB`;
+  $("memory").textContent = `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`;
   $("memory").title = "Retained snapshots across all Timeline branches";
 }
 function renderMapRows(owner) {
@@ -1086,16 +1103,7 @@ function renderMapRows(owner) {
       const c = id === mapLevel ? canvas : document.createElement("canvas");
       c.className = "area-map";
       c.width = 1280;
-      c.height =
-        roomView(id).zoom > 1
-          ? 320
-          : Math.min(
-              320,
-              Math.max(
-                128,
-                Math.round((1280 / maps.get(id).width) * maps.get(id).height),
-              ),
-            );
+      c.height = roomCanvasHeight(id);
       c.dataset.map = id;
       c.dataset.mapWidth = maps.get(id).width;
       c.dataset.mapHeight = maps.get(id).height;
@@ -1290,6 +1298,8 @@ function bindMap(c) {
       worldY: room.y + (point.y - r.top - r.height / 2) * c.height / r.height / scale };
     dragged = true;
     pointerStart = null;
+    hoverCell = null;
+    $("hover").hidden = true;
   }, { passive: false });
   c.addEventListener("touchmove", (event) => {
     if (!pinch || event.touches.length !== 2) return;
@@ -1307,7 +1317,13 @@ function bindMap(c) {
     document.querySelector(`.area-zoom[data-map="${id}"]`).textContent = room.zoom === 1 ? "Zoom in" : `${room.zoom.toFixed(1)}×`;
     drawMap(performance.now());
   }, { passive: false });
-  c.addEventListener("touchend", () => { pinch = null; pointerStart = null; });
+  c.addEventListener("touchend", () => {
+    if (pinch) {
+      c.height = roomCanvasHeight(Number(c.dataset.map));
+      drawMap(performance.now());
+    }
+    pinch = null; pointerStart = null;
+  });
   c.addEventListener("touchcancel", () => { pinch = null; pointerStart = null; });
   c.addEventListener("pointerdown", (e) => {
     const view = roomView(Number(c.dataset.map));
@@ -1353,6 +1369,7 @@ function bindMap(c) {
         return;
       }
     }
+    if (pinch || e.pointerType === "touch") return;
     hoverCell = mapCoordinates(e);
     const cell = heat.cells.get(
       `${hoverCell.level}:${hoverCell.x}:${hoverCell.y}`,
@@ -1436,13 +1453,7 @@ function zoomRoom(id) {
     view = roomView(id),
     c = document.querySelector(`.map-row[data-map="${id}"] canvas`);
   view.zoom = view.zoom < 2 ? 2 : view.zoom < 4 ? 4 : 1;
-  c.height =
-    view.zoom > 1
-      ? 320
-      : Math.min(
-          320,
-          Math.max(128, Math.round((1280 / map.width) * map.height)),
-        );
+  c.height = roomCanvasHeight(id);
   c.style.touchAction = "pan-y";
   const o =
     frameObservation?.level === id &&
@@ -1465,7 +1476,7 @@ $("pause").onclick = () => {
   paused = !paused;
   worker.postMessage({ type: paused ? "pause" : "resume" });
   updateSearchControl();
-  $("status").textContent = paused ? "Paused · heat cooling" : "Exploring";
+  $("status").textContent = paused ? "Paused" : "Exploring";
   $("status-dot").className = paused ? "paused" : "";
 };
 $("reset").onclick = () => {
@@ -1557,6 +1568,7 @@ function closeInspector({ restoreFocus = true } = {}) {
     inspectorReturnFocus.focus({ preventScroll: true });
 }
 function updateBranchControls() {
+  $("goal-title").disabled = !ready || !engine || branchBusy || controlMode;
   $("tour-open").disabled =
     !ready || !engine || controlMode || branchBusy || seeking;
   const usable =
@@ -1645,6 +1657,7 @@ $("take-control").onclick = () => {
   playSession ||= { branch: activeSearch };
   current = {
     id: `manual-${++manualId}`,
+    boot_level: bootLevel,
     actions: prefixAt(parent.actions, currentFrame),
     frames: currentFrame,
     observation: engine.observation(),
@@ -1722,6 +1735,7 @@ $("search-here").onclick = async () => {
       format: "harmony-nova-browser-v1",
       rom_sha256: ROM_SHA256,
       core_revision: CORE_REVISION,
+      boot_level: bootLevel,
       actions,
       endpoint_sha256,
       branch,
@@ -2016,7 +2030,7 @@ const tour = new GuidedTour({
     },
     {
       title: "Guide what happens next",
-      copy: "After playing, Branch search from here sends the search off from your new moment. Discard branch returns to the existing search. Your new search appears in the tree on the left.",
+      copy: "After playing, Branch search from here sends the search off from your new moment. Discard branch returns to the existing search. Your new search appears in the Timeline on the left.",
       targets: () => [
         $("search-here").hidden ? $("take-control") : $("search-here"),
         $("branches"),
@@ -2025,12 +2039,13 @@ const tour = new GuidedTour({
     },
     {
       title: "Compare alternate futures",
-      copy: "New branches appear here. Switch back to your original search, or resume another branch. Each keeps its own retained states, routes and heatmap.",
+      copy: "The Timeline keeps your branches. Switch back to your original search, or resume another branch. Each keeps its own retained states, routes and heatmap.",
       targets: () => [$("branches"), ...(branchPreview ? [...document.querySelectorAll(".area-map")] : [])],
       interactive: () => [$("branches")],
     },
   ],
   onStart() {
+    if ($("workspace").classList.contains("timeline-collapsed")) $("timeline-toggle").click();
     if (visualization !== "heat") setVisualization("heat");
     tourSession = {
       cell: tourCell(),
@@ -2157,17 +2172,50 @@ function offerTour() {
     !userSelected &&
     !document.hidden &&
     !$("info").open &&
+    !$("level-picker").open &&
     stats.executions >= 30 &&
     tourCell()
   )
     beginTour();
 }
 $("tour-open").onclick = beginTour;
+$("goal-title").onclick = () => {
+  const wasPlaying = playing;
+  if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
+  $("level-worlds").replaceChildren();
+  for (const world of [1, 2, 3, 4, 5, 6]) {
+    const section = document.createElement("section"), heading = document.createElement("h3"), grid = document.createElement("div");
+    heading.textContent = world === 6 ? "Bonus levels" : `World ${world}`;
+    grid.className = "level-grid";
+    for (const level of catalog.levels.filter((entry) => entry.world === world)) {
+      const card = document.createElement("button"), image = document.createElement("img"), caption = document.createElement("span");
+      card.className = "level-card";
+      card.dataset.level = level.id;
+      card.setAttribute("aria-label", `World ${world} – Level ${level.id % 8 + 1}`);
+      card.setAttribute("aria-current", level.id === bootLevel ? "true" : "false");
+      image.src = mapURL(level.rooms[0]); image.loading = "lazy"; image.alt = "";
+      caption.textContent = `Level ${level.id % 8 + 1}`;
+      card.append(image, caption);
+      card.onclick = () => {
+        $("level-picker").close();
+        tour.finish();
+        ++seed;
+        startSearch(level.id);
+        $("goal-title").focus({ preventScroll: true });
+      };
+      grid.append(card);
+    }
+    section.append(heading, grid);
+    $("level-worlds").append(section);
+  }
+  $("level-picker").showModal();
+};
+$("close-level-picker").onclick = () => $("level-picker").close();
 requestAnimationFrame(animate);
 createEngine(base)
   .then((e) => {
     engine = e;
-    origin = e.boot();
+    origin = e.boot(bootLevel);
     originPixels = e.pixels();
     drawFilm();
     $("verification").textContent = "Original game";

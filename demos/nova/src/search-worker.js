@@ -12,6 +12,7 @@ let initialized = false,
   engine,
   recorder,
   genesis,
+  bootLevel = 0,
   active = 0,
   generation = 0,
   busy = false;
@@ -37,6 +38,7 @@ function stateFor(branch, id) {
   state.id = externalId(branch, id);
   state.snapshot = search.explorer.snapshot(id);
   state.branch = search.branch;
+  state.boot_level = bootLevel;
   return state;
 }
 function choices() {
@@ -101,14 +103,15 @@ onmessage = async ({ data }) => {
       budget = data.budget;
       if (gen !== generation) return;
       globalThis.harmonyEngine = engine;
-      genesis = engine.boot();
+      bootLevel = data.boot_level ?? 0;
+      genesis = engine.boot(bootLevel);
       const catalog = await (await fetch(new URL("maps.json", data.base))).json();
       if (gen !== generation) return;
       const owners = new Map(catalog.levels.flatMap((level) => level.rooms.map((room) => [room, level.id])));
       recorder = new RolloutRecorder(engine, () => motionPoint(engine, owners));
       wasm = await init();
       if (gen !== generation) return;
-      const explorer = new Explorer(data.seed ?? 1);
+      const explorer = bootLevel === 0 ? new Explorer(data.seed ?? 1) : Explorer.from_history(data.seed ?? 1, "[]");
       explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
       searches.set(0, { explorer, branch: null });
       initialized = true;
@@ -139,6 +142,7 @@ onmessage = async ({ data }) => {
           );
         const tape = data.tape;
         const frames = validateTape(tape);
+        if ((tape.boot_level ?? 0) !== bootLevel) throw new Error("History starts in a different level");
         if (frames >= 200000 || tape.actions.length >= 10000)
           throw new Error(
             "This history has reached its input limit. Choose an earlier frame.",

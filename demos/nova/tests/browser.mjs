@@ -793,7 +793,7 @@ try {
   assert.equal(await page.locator("#branches").isVisible(), true);
   assert.match(
     await page.locator("#branches").textContent(),
-    /Searches/,
+    /Timeline/,
   );
   await page.waitForFunction(
     () => document.querySelector("#branch-tree button[aria-pressed=true]").dataset.search === "1",
@@ -1145,7 +1145,7 @@ try {
     await page.locator("#pause").getAttribute("aria-label"),
     "Resume Search",
   );
-  assert.equal(await page.locator("#reset").innerText(), "Restart Search");
+  assert.equal(await page.locator("#reset").getAttribute("aria-label"), "Restart Search");
   assert.equal(await page.locator(".map-row").count(), 3);
   for (const id of [0, 49, 45])
     assert.equal(
@@ -1460,6 +1460,7 @@ try {
   await page.screenshot({ path: "/tmp/nova-play-failure.png", fullPage: true });
   throw e;
 } finally {
+  await page.goto("about:blank");
   await page.close();
   await browser.close();
 }

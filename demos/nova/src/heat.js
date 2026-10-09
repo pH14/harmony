@@ -103,7 +103,9 @@ export function validateTape(tape) {
     tape.core_revision !== "26bb785c9deddb66a17717b21bb4e328f03ade32" ||
     !/^[0-9a-f]{64}$/.test(tape.endpoint_sha256 || "") ||
     !Array.isArray(tape.actions) ||
-    tape.actions.length > 10000
+    tape.actions.length > 10000 ||
+    !Number.isInteger(tape.boot_level ?? 0) ||
+    (tape.boot_level ?? 0) < 0 || (tape.boot_level ?? 0) >= 44
   )
     throw new Error("Unsupported Nova history");
   let frames = 0;

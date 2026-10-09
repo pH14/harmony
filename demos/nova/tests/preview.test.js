@@ -6,7 +6,7 @@ const snapshot = (value) => new Uint8Array(new Uint32Array([value]).buffer);
 function fakeEngine() {
   let value = 0, rendered = 0;
   return {
-    boot() { value = 0; return snapshot(value); },
+    boot(level = 0) { value = level * 1000; rendered = value; return snapshot(value); },
     restore(bytes) { value = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true); },
     capture() { return snapshot(value); },
     run(buttons, frames, render) { value += (buttons + 1) * frames; if (render) rendered = value; },
@@ -44,4 +44,13 @@ test("a newer hover cancels stale loading without interrupting the selected emul
   assert.equal(await first, null);
   assert.equal((await second).data[0], 6);
   assert.deepEqual([...previews.images.keys()], ['b']);
+});
+
+test("warping invalidates identically numbered preview states and checkpoints", async () => {
+  const previews = new RoutePreviews(async () => fakeEngine());
+  for (const level of [8, 26, 42, 0, 8]) {
+    const route = { ...state(0, [{ buttons: 1, frames: 240 }]), boot_level: level, snapshot: snapshot(level * 1000 + 480) };
+    const pixels = await previews.get(route);
+    assert.equal(pixels.data[0] + (pixels.data[1] << 8), level * 1000 + 480);
+  }
 });

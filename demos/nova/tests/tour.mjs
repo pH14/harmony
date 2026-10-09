@@ -192,7 +192,9 @@ try {
     await page.evaluate((key) => localStorage.getItem(key), TOUR_KEY),
     "seen",
   );
+  await page.locator("#timeline-toggle").click();
   await page.locator("#tour-open").click();
+  assert.equal(await page.locator("#timeline-toggle").getAttribute("aria-expanded"), "true", "The tour opens a collapsed Timeline");
   await ready(page, 0);
   await next(page, 1);
   await page.keyboard.press("Escape");
@@ -303,6 +305,16 @@ try {
   await layout(phone);
   for (let step = 1; step < 6; step++) {
     await next(phone, step);
+    if (step === 1) {
+      const route = phone.locator("#state-list .state").last();
+      await route.tap();
+      await phone.waitForFunction(() => !document.querySelector('#take-control').disabled);
+      const clips = await phone.evaluate(() => {
+        const hole = document.querySelector('#tour-rings rect').getBoundingClientRect(), pane = document.querySelector('#inspector').getBoundingClientRect();
+        return {top:hole.top,bottom:hole.bottom,paneTop:pane.top,paneBottom:pane.bottom};
+      });
+      assert.ok(clips.top >= clips.paneTop && clips.bottom <= clips.paneBottom, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
+    }
     if (step === 2) await watchDuringTour(phone);
     if (step === 1 || step === 3 || step === 5)
       await phone.screenshot({ path: `test-results/tour-phone-${step}.png` });

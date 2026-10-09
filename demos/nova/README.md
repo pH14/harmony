@@ -29,7 +29,7 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 ## Interaction
 
-The View dropdown offers Heatmap, Movement and Both. Movement is the default.
+The segmented view control offers Movement, Heatmap and Both. Movement is the default.
 Movement shows the original level artwork with tiny
 Nova sprites replaying recorded search rollouts together. Maps and sprites retain
 their original colors, with the original light background shade and 55% sprite
@@ -122,7 +122,7 @@ A silent preview follows frontier discoveries until the visitor interacts. It
 never draws a replay marker while the history pane is closed; only an intentional
 branch origin remains highlighted on the search map. Empty-cell selection also
 clears the previous replay marker.
-Selecting a state replays its controller history from the level-one root in a
+Selecting a state replays its controller history from the selected starting-level root in a
 second emulator. Endpoint snapshots are compared byte for byte after
 canonicalizing QuickNES's three unused PPU bytes. Verification runs internally,
 without an on-screen badge. Scrubbing keeps the last complete screenshot visible
@@ -200,7 +200,7 @@ own complete trail. Each retained search has its own heat, cell history IDs,
 room discoveries, progress and origin trail. Switching restores that search's
 presentation, closes the history pane and resumes exploration. A search already
 at its memory or completion limit stays stopped. Inactive heat stays frozen, and
-returning does not add a synthetic root visit. The left search pane shows Main and its actual nested descendants in a
+returning does not add a synthetic root visit. The Timeline pane shows Main and its actual nested descendants in a
 branch tree. Parent identity comes from the worker's active search at admission,
 rather than guessing from a route name or manual-history ID. Clicking resumes
 that search, including a single tap on phones. Tree indentation stops growing
@@ -210,8 +210,8 @@ inactive branch temporarily previews
 its saved heat and fork-prefix trail, including its room, without switching the
 worker, advancing that branch, or changing the selected replay. Leaving restores
 the active map. Phones show a compact scrollable tree above the maps. The lower
-world/level atlas is omitted because browsing untouched levels did not establish
-a playable search root. Actual discovery and replay still follow later levels.
+world/level atlas is replaced by a modal selector that establishes a real playable
+search root; discovery and replay still follow later levels.
 Archived states offer Play from here first; search admission is available only
 after explicit takeover. While playing, Branch search from here and Discard
 branch share one action row and replace the takeover button. Discarding or
@@ -361,7 +361,7 @@ inputs, human-prefix branching, resuming an earlier search without reopening
 the pane, hidden-preview marker suppression, cell
 selection, exact replay, frame zero, cancellation of long reconstruction,
 stacked live-map selection, dragging, the
-simplified top-left toolbar/counters, restart, mobile layout, one footer attribution and source bundles. Hover checks compare
+inline Timeline controls and memory counters, restart, mobile layout, one footer attribution and source bundles. Hover checks compare
 a preview screenshot against exact selected replay, preserve the active frame,
 verify nested tree ancestry and restore unchanged heat after branch preview. Browser-only worker interception supplies source-matched, replayed
 fixture states through the normal selected-history response boundary; no fixture
@@ -390,3 +390,11 @@ original sources and build recipes alongside the ROM and emulator.
 The Timeline and history inspector use matching sliding panels. The active search has inline pause and restart controls; restarting releases the whole Timeline. Movement, Heatmap and Both are visible segmented controls, and hovering a Timeline branch preserves that choice. The counter strip reports snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
 
 Phone maps keep vertical page scrolling available even when zoomed: one finger pans horizontally, two fingers pinch and pan the map, and each room retains its own view. Tour spotlights are clipped to scroll containers and the visual viewport so scrolling the history sheet cannot illuminate hidden controls or the map underneath. All highlighted controls remain usable.
+
+## Starting at another level
+
+Click the World / Level title to choose from all 40 campaign and four bonus levels. Choosing one replaces the current Timeline and starts a fresh Main search. This is a level-start experiment, not a campaign save: the game initializes its own health, ability and level-specific items. No cleared-level or collectible flags are fabricated. The UI, worker and hover emulator all use the same `boot_level` identity.
+
+`boot(level)` restores a power-on snapshot, sets only native level availability in SRAM before the title-screen menu selects its highest available world/level, then runs the pinned controller bootstrap. The default level-zero bootstrap stays identical. Later levels use `Explorer.from_history(seed, "[]")` at this authenticated root. Replay and forks include the starting level plus all subsequent inputs; a worker rejects tapes from a different root. Repeated warps reset archive, snapshots, map views, progress and cached replay/hover checkpoints.
+
+`tests/levels.mjs` verifies all 44 native level starts, advancing a fresh archive, exact replay, repeated bootstrap and rooted forks. `tests/levels-browser.mjs` exercises the selector on desktop and phone through four repeated warps and gameplay forks, then checks real pinch zoom and vertical scrolling of zoomed maps.

@@ -118,21 +118,27 @@ export async function createEngine(base, inputs = {}) {
         ),
       };
     },
-    boot() {
+    boot(level = 0) {
+      if (!Number.isInteger(level) || level < 0 || level >= 44)
+        throw new Error("Unknown Nova starting level");
+      this.restore(powerOn);
       for (let i = 0; i < BOOT.length; i++) {
         if (i === 3) {
           const ptr = mod._nova_sram();
           mod.HEAPU8.fill(0, ptr + 0x1f1f, ptr + 0x1f2f);
-          mod.HEAPU8[ptr + 0x1f27] = 1;
+          const world = Math.floor(level / 8);
+          for (let w = 0; w < world; w++) mod.HEAPU8[ptr + 0x1f27 + w] = 1;
+          mod.HEAPU8[ptr + 0x1f27 + world] = 1 << (level % 8);
         }
         this.run(...BOOT[i], true);
       }
       const o = this.observation();
-      if (!o.health || !o.x || !o.y || o.selected_level !== 0)
-        throw new Error("Setup did not reach Nova level one");
+      if (!o.health || !o.x || !o.y || o.selected_level !== level || o.checkpoint_level !== level || o.program_bank !== 9 || o.reload)
+        throw new Error("Setup did not reach the selected Nova level");
       return this.capture();
     },
   };
+  const powerOn = engine.capture();
   return engine;
 }
 async function checkedFetch(url) {
