@@ -231,6 +231,8 @@ holding the item, leaving it with the item, and at the goal),
 enough health when the boss hits back), and `parent_timeline`, which lists
 each job's start work, its parent's tier, and its parent place in order. A room
 is its place divided by 16; boss hit counts are places 1,024 plus the hits.
+In an arena, a boss-room place is 2,048 plus the shield level plus the hits,
+times `arena`, plus the spot, which reads 0 once a hit has landed.
 As a known limit, the map spreads draws faster than Metroid. After the item
 it leaves the item room at once and settles with 0.8–0.9 of top-tier draws
 outside the inner region, where Metroid stays on 6–12 map cells for about 0.4
@@ -258,6 +260,22 @@ feed the slot preferences and neither changes the tier.
 | `locked` | The inner region is chosen as for `item_optional`. Its door opens only while holding a key in the outer room farthest from the start other than the door room; the goal is the outer room farthest from the door other than the key room and needs the item. The key raises the tier to 1 and the item to 2. | Varia in Brinstar after the lower tier reached the Tourian shaft: the lower tier's frontier is far from the pickup, and the new tier must walk back across the map. |
 | `timing` | 0, or a period of 2–16. Every action is rotated by a hidden phase that advances by one each step modulo `timing`, so a recorded suffix replayed from a holder with another phase takes different actions. At 5, about one replayed suffix in five lands, and at 10 about one in ten. A period that is a multiple of 4 lands one in four, because rotations by phases four apart are equal. | Enemy positions and frame timing that the key does not see. |
 | `gauntlet` | Needs `items` of 2 or more and farms. The last item is the outer room nearest the door, and the farms are the outer rooms farthest from it. Every farm gives health, but only on one arrival in eight, and health stops at the entry-to-goal room count plus 2. One outer arrival in four loses one health. An inner arrival loses one health unless the room and the last three actions fall in one combination of 64, and a hit at one health or less kills the run, which then ignores every action. Each of these draws is a fixed function of the room and the last three actions. Searches build health after the last item is first picked up, by farming while holding both items. When the last item is first picked up, no holder with fewer items has health to carry there. | Tourian: the last item arrives at the entry low on energy after a long walk from the refills, and only an arrival near full energy crosses a region with no refills. |
+| `arena` | 1–8 standing spots; needs `shield`. Entering the goal room holding the item shuts its doors, so every press there is a shot that spends one stock. While the shield is up, a shot lands one time in `shield_odds`. Once the shield is down, a shot hits the boss only from the spot that the hit count names. Every other shot is wasted. The spot is a fixed function of the room and the last three actions. Before the first hit, the place is the spot and the shield level; each hit count is one place. A stocked arrival needs full stock. | Boobeam Trap in Mega Man 2: the shutter closes behind the player, every Crash Bomb spends energy, a bomb counts only where it is placed, and the places with no cannon down (positions times barrier damage) are many. |
+| `rooted` | Needs `arena`. The campaign starts in the goal room holding the item, with full stock and health, and its stocked arrival is at work 0. | A rooted segment from the full-stock state at the boss door. |
+
+The arena reproduces the direction of the Boobeam Trap loss, at smaller
+rates. In Mega Man 2, a rooted segment kills in a median 7.9 million tries,
+with 75% of the room's draws on places with a cannon down. The power-on run
+holds the same full-stock state at the door and has no kill 83 million tries
+later. In that run the room takes 13.5% of the top tier's draws, and only 32%
+of those go to places with a cannon down. The panel's shielded boss with
+`hit_tier` off and `arena` 8 measured these values over 32 layouts per arm
+at 600,000 work:
+
+| Start | Kills | Tries to the kill after the full-stock arrival (95% interval) | Room share of top-tier draws | Damaged share of room draws |
+| --- | --- | --- | --- | --- |
+| `rooted` | 32/32 | 8,500 (8,000–9,200) | 100% | 23% |
+| Room 0 | 27/32 | 32,000 (14,500–140,000), 25 runs | 38% | 12% |
 
 The graph world is sized for scaled runs. It has `nodes` states in a line,
 each also carrying stock and health from 0 to 15. Action 0 moves to the next
@@ -307,7 +325,7 @@ family's and passive clock's reachability hold by construction.
 | Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
 | Backtrack | `barriers` 1–4; `segment` 1–8; `(barriers + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
-| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
+| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 
