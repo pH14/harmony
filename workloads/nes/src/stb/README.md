@@ -200,7 +200,7 @@ qualifies all three AI levels on a schedule or a dispatch. It follows
 Nova's source-build/search/film pattern and checks full recorded campaign replay;
 scheduled and manually selected STB runs cross all three levels with registered seeds 1, 2,
 and 3. Easy and Fair run exact 2,000-execution soaks. Hard searches up to
-20,000 executions and stops after finding a victory (then drains outstanding
+60,000 executions and stops after finding a victory (then drains outstanding
 worker reservations). Every cell uses two workers, ordinary admission, the
 existing fixed input/key policy, and a 30-minute
 job timeout. The correctness probe checks controls, autonomous opposition,
@@ -250,7 +250,7 @@ HARMONY_STB_CORRECTNESS=1 HARMONY_STB_AI=hard \
 workloads/nes/target/release/stb-campaign \
   --core workloads/nes/build/stb/quicknes_libretro.so \
   --rom workloads/nes/build/stb/stb.nes --output workloads/nes/build/stb-artifact \
-  --ai hard --seed 1 --executions 20000 --workers 2
+  --ai hard --seed 1 --executions 60000 --workers 2
 ```
 
 For the Easy/Fair soak cells, select the corresponding AI, use
