@@ -100,9 +100,12 @@ def classify(
 
 
 def gh(*args: str) -> str:
-    result = subprocess.run(
-        ["gh", *args], check=True, capture_output=True, text=True
-    )
+    result = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
     return result.stdout
 
 

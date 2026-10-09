@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -119,6 +121,23 @@ class DeleteTests(unittest.TestCase):
         self.assertIn("ref=refs/heads/claude/fix #1", args)
         self.assertIn(f"before={TIP}", args)
         self.assertIn(f"after={PRUNE.NULL_OID}", args)
+
+
+class GhTests(unittest.TestCase):
+    def test_a_failed_call_reports_the_error_from_gh(self):
+        failed = subprocess.CompletedProcess(
+            ["gh", "api"], 1, stdout="", stderr="gh: Resource not accessible\n")
+        original_run, original_stderr = PRUNE.subprocess.run, sys.stderr
+        PRUNE.subprocess.run = lambda *args, **kwargs: failed
+        sys.stderr = io.StringIO()
+        try:
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                PRUNE.gh("api")
+            printed = sys.stderr.getvalue()
+        finally:
+            PRUNE.subprocess.run, sys.stderr = original_run, original_stderr
+        self.assertEqual(printed, "gh: Resource not accessible\n")
+        self.assertEqual(raised.exception.stderr, "gh: Resource not accessible\n")
 
 
 class SummaryTests(unittest.TestCase):
