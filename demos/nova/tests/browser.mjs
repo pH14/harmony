@@ -22,12 +22,48 @@ page.on("response", (response) => {
 });
 await page.addInitScript(() => {
   const RealWorker = window.Worker;
+  window.novaTestRouteCells = new Map();
   window.Worker = class extends RealWorker {
     constructor(...args) {
       super(...args);
       window.novaTestWorker = this;
       this.addEventListener("message", ({ data }) => {
         if (data.type === "states") window.novaTestStates = data.states;
+        if (
+          data.type === "batch" &&
+          data.active === 0 &&
+          window.novaTestRouteCells
+        ) {
+          const canvas = document.querySelector(
+              '.map-row[data-map="0"] canvas',
+            ),
+            width = Number(canvas?.dataset.mapWidth),
+            height = Number(canvas?.dataset.mapHeight);
+          for (const point of data.points) {
+            const o = point.observation;
+            if (
+              point.retained === null ||
+              o.level !== 0 ||
+              o.reload ||
+              o.program_bank !== 9 ||
+              o.selected_level !== 0 ||
+              o.x < 96 ||
+              o.x >= width ||
+              o.y < 0 ||
+              o.y >= height
+            )
+              continue;
+            const key = `${Math.floor(o.x / 32)}:${Math.floor(o.y / 32)}`;
+            if (!window.novaTestRouteCells.has(key))
+              window.novaTestRouteCells.set(key, {
+                ids: new Set(),
+                observation: o,
+              });
+            const cell = window.novaTestRouteCells.get(key);
+            cell.ids.add(point.retained);
+            cell.observation = o;
+          }
+        }
       });
     }
     postMessage(data, ...rest) {
@@ -131,6 +167,9 @@ try {
   await page.waitForFunction(
     () => Number(document.querySelector("#scrub").max) > 0,
   );
+  await page.waitForFunction(() =>
+    [...window.novaTestRouteCells.values()].some((cell) => cell.ids.size > 1),
+  );
   await page.locator("#pause").click();
   await page.waitForTimeout(200);
   const attempts = await page.locator("#attempts").innerText();
@@ -162,9 +201,13 @@ try {
     "The hidden automatic preview must not highlight a replay position on the map",
   );
   await page.locator("#inspect-open").click();
-  const [x, y] = (await page.locator("#details b").first().textContent())
-    .split(",")
-    .map(Number);
+  const { x, y } = await page.evaluate(() => {
+    const cell = [...window.novaTestRouteCells.values()]
+      .filter((entry) => entry.ids.size > 1)
+      .sort((a, b) => b.ids.size - a.ids.size)[0];
+    window.novaTestRouteCells = null;
+    return cell.observation;
+  });
   const click = await page.locator("#map").evaluate(
     (canvas, position) => {
       const width = Number(canvas.dataset.mapWidth),
