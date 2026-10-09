@@ -29,13 +29,13 @@ const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT.title}</a> art by <a href="https://novasquirrel.com/">${CREDIT.author}</a> \u00b7 <a href="${CREDIT.license_url}" rel="license">${CREDIT.license}</a></small>`;
 document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span></header>
-<main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><select id="branch-choice" aria-label="Search branch" hidden></select><button id="inspect-open">History</button><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
-<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><span id="goal-count">0 / 40 levels cleared</span><button id="completion" hidden>Watch completion</button></div></div>
+<main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><label class="branch-picker">Search branch<select id="branch-choice" aria-label="Search branch" disabled><option value="0">Original search</option></select></label><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
+<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><button id="completion" hidden>Watch completion</button></div></div>
 <nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
 ${artCredit}</section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" aria-describedby="branch-hint" disabled>🎮 Play from here</button><p id="branch-hint">Play a few moves, then let the search take over.</p><button id="search-here" aria-describedby="branch-hint" disabled>↗ Start search here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" aria-describedby="branch-hint" disabled>🎮 Play from here</button><p id="branch-hint">Your original search stays in the branch menu.</p><button id="search-here" aria-describedby="branch-hint" disabled>↗ Branch search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
 <section class="atlas"><div class="section-title"><h2>The game</h2><nav id="worlds" aria-label="Game worlds"></nav></div><div id="atlas" class="atlas-grid"></div>${artCredit}</section>
 <footer><span>Nova the Squirrel by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
@@ -105,6 +105,7 @@ let controlMode = false,
 const searchViews = new Map(),
   reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 function saveSearchView() {
+  heat.setRunning(false, performance.now());
   searchViews.set(activeSearch, {
     heat,
     bestByMap,
@@ -624,7 +625,7 @@ function startSearch() {
   segments = [];
   views.clear();
   closeInspector();
-  $("branch-choice").hidden = true;
+  $("branch-choice").replaceChildren(new Option("Original search", "0"));
   $("branch-message").hidden = true;
   if (worker) worker.terminate();
   heat = new Heatmap();
@@ -710,7 +711,6 @@ function startSearch() {
           }),
         );
         $("branch-choice").value = activeSearch;
-        $("branch-choice").hidden = data.searches.length < 2;
         $("memory-limit").hidden = true;
         updateStats();
         $("status").textContent = "Exploring";
@@ -747,7 +747,7 @@ function startSearch() {
           revealBranchOrigin();
           $("branch-feedback").textContent =
             `Branch ${activeSearch} is searching from this frame.`;
-          $("pause").focus({ preventScroll: true });
+          $("branch-choice").focus({ preventScroll: true });
         }
         if (engine) selectState(state, initial).catch(fail);
         updateStats();
@@ -821,6 +821,7 @@ function startSearch() {
   worker.postMessage({ type: "init", base: base.href, seed, budget });
 }
 function updateSearchControl() {
+  heat.setRunning(ready && !paused && !stats.stopped, performance.now());
   $("pause").innerHTML = paused
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';
@@ -1022,7 +1023,6 @@ function updateStats() {
           100,
       ),
     ) + "%";
-  $("goal-count").textContent = `${cleared.size} / 40 levels cleared`;
   $("goal-title").textContent = gameWon
     ? "Game complete"
     : `Level ${Math.min(focusedLevel + 1, 40)}${cleared.has(focusedLevel) ? " ✓" : ""}`;
@@ -1460,16 +1460,14 @@ function updateBranchControls() {
   $("take-control").textContent = controlMode
     ? "🎮 Stop playing"
     : "🎮 Play from here";
-  $("search-here").textContent = current?.id.startsWith?.("manual-")
-    ? "↗ Let search take over"
-    : "↗ Start search here";
+  $("search-here").textContent = "↗ Branch search from here";
   $("take-control").setAttribute("aria-pressed", controlMode);
   $("game-controls").hidden = !controlMode;
   $("scrub").disabled = !current || controlMode || branchBusy;
   $("play").disabled = !current || controlMode || branchBusy || seeking;
-  $("branch-choice").disabled = branchBusy || controlMode;
+  $("branch-choice").disabled =
+    branchBusy || controlMode || $("branch-choice").options.length < 2;
   $("sound").disabled = !current;
-  $("inspect-open").disabled = branchBusy;
   $("pause").disabled = !ready || branchBusy || controlMode || !!stats.stopped;
   $("inspector").classList.toggle("controlling", controlMode);
   for (const button of $("state-list").children)
@@ -1513,11 +1511,6 @@ function expandInspector(expanded) {
 }
 $("expand-inspector").onclick = () =>
   expandInspector(!$("inspector").classList.contains("expanded"));
-$("inspect-open").onclick = () => {
-  userSelected = true;
-  openInspector();
-  if (current && !seeking) seek(current.frames).catch(replayError);
-};
 $("take-control").onclick = () => {
   if (controlMode) {
     stopControl();

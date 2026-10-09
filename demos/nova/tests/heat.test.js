@@ -29,6 +29,36 @@ test("heat cools without discarding histories, and separates rooms", () => {
   assert.equal(cell.ids.length, 12);
   assert.equal(cell.ids[0], 15);
 });
+test("paused and inactive searches retain heat until their own clock resumes", () => {
+  const original = new Heatmap(),
+    child = new Heatmap(),
+    point = { observation: { level: 0, x: 52, y: 184 }, retained: 7 },
+    cell = original.visit(point, 100);
+  original.setRunning(false, 3100);
+  const frozen = original.value(cell, 3100);
+  child.visit({ ...point, retained: "1:0" }, 3100);
+  assert.equal(original.value(cell, 603100), frozen);
+  assert.notDeepEqual(
+    child.color(child.cells.get("0:1:5"), 603100),
+    original.color(cell, 603100),
+  );
+  original.setRunning(true, 603100);
+  original.setRunning(true, 606100);
+  assert.equal(original.value(cell, 609100), frozen / 2);
+  assert.deepEqual(cell.ids, [7]);
+  assert.equal(cell.visits, 1);
+});
+test("cooled exploration remains visible without inventing visits or states", () => {
+  const heat = new Heatmap(),
+    cell = heat.visit(
+      { observation: { level: 0, x: 52, y: 184 }, retained: null },
+      0,
+    );
+  assert.deepEqual(heat.color(cell, 600000), [64, 124, 181]);
+  assert.equal(cell.visits, 1);
+  assert.deepEqual(cell.ids, []);
+  assert.equal(heat.cells.has("0:2:5"), false);
+});
 test("route numbers survive new arrivals, the rolling window and repeat visits", () => {
   const heat = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: "1:0" },

@@ -73,6 +73,45 @@ await page.addInitScript(() => {
     }
   };
 });
+async function openCurrentCell() {
+  await page.waitForFunction(
+    () =>
+      !!document.querySelector("#details b") &&
+      !document.querySelector("#take-control").disabled,
+  );
+  const map = page.locator("#map");
+  await map.scrollIntoViewIfNeeded();
+  const point = await map.evaluate((canvas) => {
+    const [x, y] = document
+        .querySelector("#details b")
+        .textContent.split(",")
+        .map(Number),
+      width = Number(canvas.dataset.mapWidth),
+      height = Number(canvas.dataset.mapHeight),
+      scale =
+        Math.min(canvas.width / width, canvas.height / height) *
+        Number(canvas.dataset.zoom),
+      rect = canvas.getBoundingClientRect(),
+      px = Math.floor((x % width) / 32) * 32 + 16,
+      py = Math.floor((Math.floor(x / width) * 224 + y) / 32) * 32 + 8;
+    return {
+      x:
+        (((px - Number(canvas.dataset.centerX)) * scale + canvas.width / 2) *
+          rect.width) /
+        canvas.width,
+      y:
+        (((py - Number(canvas.dataset.centerY)) * scale + canvas.height / 2) *
+          rect.height) /
+        canvas.height,
+    };
+  });
+  await map.click({ position: point });
+  await page.waitForFunction(
+    () =>
+      !document.querySelector("#inspector").hidden &&
+      !document.querySelector("#take-control").disabled,
+  );
+}
 const localBase = pathToFileURL(process.cwd() + "/public/");
 const emulator = await createEngine(localBase, {
   rom: new Uint8Array(await readFile(new URL("nova.nes", localBase))),
@@ -200,7 +239,6 @@ try {
     false,
     "The hidden automatic preview must not highlight a replay position on the map",
   );
-  await page.locator("#inspect-open").click();
   const { x, y } = await page.evaluate(() => {
     const cell = [...window.novaTestRouteCells.values()]
       .filter((entry) => entry.ids.size > 1)
@@ -588,6 +626,23 @@ try {
   );
   const originalAttempts = await page.locator("#attempts").innerText();
   const originalCells = await page.locator("#cells").innerText();
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(1700);
+  const pausedHeat = await page
+    .locator("#map")
+    .evaluate((canvas) => canvas.toDataURL());
+  await page.waitForTimeout(6100);
+  assert.equal(
+    await page.locator("#map").evaluate((canvas) => canvas.toDataURL()),
+    pausedHeat,
+    "The rendered heat overlay must stay frozen while the search is paused",
+  );
+  const originalOverlay = await page
+    .locator('.map-card[data-map="0"] canvas')
+    .evaluate((canvas) => [
+      ...canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height)
+        .data,
+    ]);
   const manualAudioStart = Number(
     await page.locator("#film").getAttribute("data-audio-frames"),
   );
@@ -650,10 +705,24 @@ try {
           attempts: document.querySelector("#attempts").textContent,
           paneHidden: document.querySelector("#inspector").hidden,
           paused: event.data.paused,
+          overlay: (() => {
+            const canvas = document.querySelector(
+              '.map-card[data-map="0"] canvas',
+            );
+            return [
+              ...canvas
+                .getContext("2d")
+                .getImageData(0, 0, canvas.width, canvas.height).data,
+            ];
+          })(),
         };
       }
     };
   });
+  assert.equal(
+    await page.locator("#search-here").innerText(),
+    "↗ Branch search from here",
+  );
   await page.locator("#search-here").click();
   await page.waitForFunction(() => !!window.novaTestFork);
   const manualTape = await page.evaluate(() => window.novaTestFork.tape);
@@ -668,6 +737,11 @@ try {
     "Human inputs must reproduce the exact rendered endpoint passed to the worker",
   );
   const manualFrames = manualTape.actions.reduce((n, a) => n + a.frames, 0);
+  assert.equal(await page.locator(".branch-picker").isVisible(), true);
+  assert.match(
+    await page.locator(".branch-picker").textContent(),
+    /Search branch/,
+  );
   await page.waitForFunction(
     () => document.querySelector("#branch-choice").value === "1",
   );
@@ -715,7 +789,7 @@ try {
     Number(await page.locator("#map").getAttribute("data-trace-points")) > 1,
     "The prefix trail must outlast the origin ripple while the pane stays closed",
   );
-  await page.locator("#inspect-open").click();
+  await openCurrentCell();
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
   );
@@ -777,7 +851,7 @@ try {
     childTape.endpoint_sha256,
     "Search descendants must include and reproduce the human input prefix",
   );
-  async function switchSearch(id, cells, attempts) {
+  async function switchSearch(id, cells, attempts, overlay) {
     await page.evaluate(() => {
       window.novaTestReady = null;
     });
@@ -803,6 +877,15 @@ try {
       "Switching restores only this branch's heat without an extra root visit",
     );
     if (attempts !== undefined) assert.equal(restored.attempts, attempts);
+    if (overlay) {
+      assert.equal(restored.overlay.length, overlay.length);
+      assert.ok(
+        restored.overlay.every(
+          (channel, i) => Math.abs(channel - overlay[i]) <= 1,
+        ),
+        "Returning to the original search must restore its rendered heat, allowing only rounding during the resumed millisecond",
+      );
+    }
     await page.waitForFunction(
       (before) =>
         Number(
@@ -823,6 +906,7 @@ try {
     0,
     originalCells,
     originalAttempts,
+    originalOverlay,
   );
   await page.waitForFunction(() =>
     [...document.querySelectorAll(".map-row canvas")].every(
@@ -860,7 +944,7 @@ try {
   await page.locator('.area-zoom[data-map="49"]').click();
   await page.locator('.area-zoom[data-map="45"]').click();
   await page.locator('.area-zoom[data-map="45"]').click();
-  await page.locator("#inspect-open").click();
+  await openCurrentCell();
   await page.locator("#zoom").click();
   await page.waitForTimeout(50);
   assert.ok(
@@ -937,7 +1021,11 @@ try {
   assert.equal(await page.locator("#goal-status").isVisible(), false);
   assert.equal(await page.locator(".area-state").count(), 0);
   assert.equal(
-    await page.locator("#heat-toggle,#fit,#left,#right,#seed-label").count(),
+    await page
+      .locator(
+        "#heat-toggle,#fit,#left,#right,#seed-label,#inspect-open,#goal-count",
+      )
+      .count(),
     0,
   );
   assert.equal(await page.locator("#pause svg").count(), 1);
@@ -1050,7 +1138,7 @@ try {
   await page.locator("#memory-limit").evaluate((notice) => {
     notice.hidden = true;
   });
-  await page.locator("#inspect-open").click();
+  await openCurrentCell();
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
   );
@@ -1188,7 +1276,7 @@ try {
   );
   assert.equal(
     await page.locator("#search-here").innerText(),
-    "↗ Let search take over",
+    "↗ Branch search from here",
   );
   const touchRight = page.getByRole("button", {
     name: "Move right",

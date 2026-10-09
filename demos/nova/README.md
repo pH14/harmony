@@ -30,7 +30,10 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 ## Interaction
 
 Search starts automatically. Recent activity warms cells from blue through green,
-orange and red, with a six-second half-life. The play/pause icon controls search;
+orange and red, with a six-second half-life measured only while that search runs.
+Heat is a UI view of actual visits, not archive retention or parent-selection
+priority. Pausing, human play and switching to another branch freeze its heat;
+cooled cells remain blue to preserve the explored footprint. The play/pause icon controls search;
 Restart Search resets it. Heat is always on. Clicking a cell with retained states
 opens a history inspector beside the maps, or a collapsible bottom sheet on phones,
 listing its latest twelve retained states. Clicking a cell with no retained states
@@ -42,7 +45,7 @@ immediately, including unvisited areas. Opening a visited area selects its furth
 state. Each room has its own zoom button and independent view; dragging moves
 that room’s zoomed view.
 
-The level heading and completion counter latch actual campaign clear bits seen
+The level heading latches actual campaign clear bits seen
 across alternate histories. Green atlas cards record these witnesses; Watch Level
 Finish replays the first witness for a new clear. Reaching a door is not a clear:
 Nova needs a fresh Up press while touching it. A newly discovered next campaign
@@ -110,7 +113,7 @@ history at the displayed frame, including frames in the middle of a recorded
 action. Move with arrows or WASD, jump with Z or Space, and use an ability with
 X; touch controls work on phones.
 Stop playing, Escape, loss of focus or hiding the tab releases held inputs and
-ends takeover. Start search here (Let search take over after playing) verifies
+ends takeover. Branch search from here verifies
 that the complete controller prefix reproduces the rendered endpoint, then
 starts a separate explorer rooted there.
 It preserves health, items, level progression and emulator state through replay,
@@ -121,9 +124,11 @@ fork remains visible while the pane is closed; inspecting a history shows its
 own complete trail. Each retained search has its own heat, cell history IDs,
 room discoveries, progress and origin trail. Switching restores that search's
 presentation, closes the history pane and resumes exploration. A search already
-at its memory or completion limit stays stopped. Inactive heat continues to cool
-by elapsed time, and returning does not add a synthetic root visit. The search selector returns to
-any earlier search, preserving its archive and random generator. Taking control
+at its memory or completion limit stays stopped. Inactive heat stays frozen, and
+returning does not add a synthetic root visit. The always-visible Search branch
+selector shows Original search before any forks, becomes selectable when another
+branch is admitted, and focuses the new branch after a fork. It returns to any
+earlier search, preserving its archive and random generator. Taking control
 or forking at an earlier scrubber position discards only that new history’s
 future. Descendant histories include the original inputs, human intervention
 and subsequent search inputs, and remain exactly replayable from the original

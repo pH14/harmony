@@ -5,6 +5,18 @@ export const cellKey = (o) =>
 export class Heatmap {
   constructor() {
     this.cells = new Map();
+    this.elapsed = 0;
+    this.runningSince = 0;
+  }
+  clock(now) {
+    return (
+      this.elapsed +
+      (this.runningSince === null ? 0 : Math.max(0, now - this.runningSince))
+    );
+  }
+  setRunning(running, now) {
+    this.elapsed = this.clock(now);
+    this.runningSince = running ? now : null;
   }
   visit(point, now) {
     const key = cellKey(point.observation);
@@ -16,7 +28,7 @@ export class Heatmap {
         x: Math.floor(point.observation.x / 32),
         y: Math.floor(point.observation.y / 32),
         heat: 0,
-        time: now,
+        time: this.clock(now),
         visits: 0,
         ids: [],
         routes: new Map(),
@@ -24,7 +36,7 @@ export class Heatmap {
       this.cells.set(key, cell);
     }
     cell.heat = this.value(cell, now) + 1;
-    cell.time = now;
+    cell.time = this.clock(now);
     cell.visits++;
     if (point.retained !== null && !cell.ids.includes(point.retained)) {
       if (!cell.routes.has(point.retained))
@@ -35,11 +47,12 @@ export class Heatmap {
     return cell;
   }
   value(cell, now) {
-    return cell.heat * Math.pow(0.5, Math.max(0, now - cell.time) / 6000);
+    return (
+      cell.heat * Math.pow(0.5, Math.max(0, this.clock(now) - cell.time) / 6000)
+    );
   }
   color(cell, now) {
     const value = this.value(cell, now);
-    if (value < 0.08) return null;
     const v = Math.min(1, value / 22),
       stops = [
         [64, 124, 181],
