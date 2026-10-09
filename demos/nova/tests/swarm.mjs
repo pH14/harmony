@@ -64,6 +64,8 @@ try {
     await page.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
     await page.goto(url);
     await page.waitForSelector("#attempts");
+    assert.equal(await page.getByRole("combobox", { name: "Visualization" }).inputValue(), "heat");
+    assert.deepEqual(await page.locator("#visualization option").allTextContents(), ["Heatmap", "Movement", "Both"]);
     const bakedNovaPixels = await page.evaluate(async () => {
       const image = new Image();
       image.src = new URL("maps/0.png", location.href);
@@ -81,12 +83,12 @@ try {
     });
     assert.equal(bakedNovaPixels, 0, "The map artwork must not contain a stationary Nova at the starting position");
     await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 240);
-    await page.locator("#swarm").click();
+    await page.locator("#visualization").selectOption("movement");
     await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 100));
-    assert.equal(await page.locator("#swarm").getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#visualization").inputValue(), "movement");
     assert.equal(await page.locator("#heat-legend").isVisible(), false);
     const target = page.locator('.map-row[data-map="0"] canvas');
-    assert.equal(await target.getAttribute("data-overlay"), "novas");
+    assert.equal(await target.getAttribute("data-overlay"), "movement");
     assert.equal(await target.getAttribute("data-trace-points"), "0");
     assert.equal(await target.getAttribute("data-marker-frame"), "");
     await page.locator("#pause").click();
@@ -98,19 +100,62 @@ try {
     assert.notEqual(await pixels(), before, "Real recorded sprites must move while search is paused");
     assert.equal(await page.locator("#attempts").innerText(), attempts);
     await page.screenshot({ path: `test-results/swarm-${name}.png` });
-    await page.locator("#swarm").click();
+    await page.locator("#visualization").selectOption("heat");
     assert.equal(await target.getAttribute("data-overlay"), "heat");
     assert.equal(await target.getAttribute("data-swarm-count"), "0");
     assert.equal(await page.locator("#heat-legend").isVisible(), true);
-    await page.locator("#swarm").click();
+    await page.waitForTimeout(1700);
+    const heatPixels = await pixels();
+    await page.locator("#visualization").selectOption("both");
+    assert.equal(await target.getAttribute("data-overlay"), "both");
+    assert.ok(Number(await target.getAttribute("data-swarm-count")) > 100);
+    assert.equal(await page.locator("#heat-legend").isVisible(), true);
+    assert.equal(await target.evaluate((c) => getComputedStyle(c).filter), "none", "Both must preserve the heat colors");
+    assert.equal(await page.locator('.map-card canvas').first().getAttribute('data-overlay'), 'both');
+    const bothPixels = await pixels();
+    const preserved = await page.evaluate(async ([before, after]) => {
+      const decode = async (url) => {
+        const image = new Image(); image.src = url; await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+        const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      };
+      const a = await decode(before), b = await decode(after);
+      let equal = 0;
+      for (let i = 0; i < a.length; i += 4)
+        if (a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2]) equal++;
+      return equal / (a.length / 4);
+    }, [heatPixels, bothPixels]);
+    assert.ok(preserved > 0.8 && preserved < 1, `Both must retain the heatmap and add actual sprite pixels (${preserved})`);
+    await page.waitForTimeout(220);
+    assert.notEqual(await pixels(), bothPixels, "Movement must animate above frozen heat in Both");
+    assert.equal(await page.locator("#attempts").innerText(), attempts);
+    await page.screenshot({ path: `test-results/swarm-both-${name}.png` });
     await page.locator("#tour-open").click();
-    assert.equal(await page.locator("#swarm").getAttribute("aria-pressed"), "false");
+    assert.equal(await page.locator("#visualization").inputValue(), "heat");
     if (name === "desktop") {
       await page.locator("#tour-next").click();
       await page.waitForFunction(() => document.querySelector("#guided-tour").dataset.step === "1" && document.querySelector(".tour-card").getAttribute("aria-busy") === "false");
     }
     await page.locator("#tour-skip").click();
     if (name === "desktop") {
+      await page.locator("#visualization").selectOption("both");
+      const traced = page.locator('.area-map').filter({ visible: true });
+      const room = await traced.evaluateAll((cs) => cs.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
+      assert.notEqual(room, undefined);
+      const routeMap = page.locator(`.map-row[data-map="${room}"] canvas`);
+      await routeMap.focus();
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.querySelector('#verification').textContent === 'Exact replay ✓' && [...document.querySelectorAll('.area-map')].some((c) => Number(c.dataset.tracePoints) > 0));
+      assert.equal(await page.locator('#visualization').inputValue(), 'both', 'Inspecting a populated cell must keep Both');
+      assert.equal(await page.locator('#inspector').isVisible(), true);
+      await page.screenshot({ path: 'test-results/swarm-both-route.png' });
+      await page.locator('#visualization').selectOption('movement');
+      await routeMap.focus();
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.querySelector('#visualization').value === 'heat' && document.querySelector('#verification').textContent === 'Exact replay ✓');
+      await page.locator('#visualization').selectOption('both');
       await page.locator("#take-control").click();
       await page.keyboard.down("ArrowRight");
       await page.waitForTimeout(140);
@@ -120,7 +165,7 @@ try {
       await page.waitForFunction(() => document.querySelector("#branch-choice").value === "1" && !document.querySelector("#branch-choice").disabled && document.querySelector("#inspector").hidden);
       await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 30);
       await page.locator("#pause").click();
-      await page.locator("#swarm").click();
+      await page.locator("#visualization").selectOption("both");
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
       const branchAttempts = Number((await page.locator("#attempts").innerText()).replaceAll(",", ""));
       const ghosts = () => page.locator(".area-map").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
@@ -129,13 +174,15 @@ try {
       await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
       await page.locator("#pause").click();
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].reduce((n, c) => n + Number(c.dataset.swarmCount), 0) > 100);
-      assert.equal(await page.locator("#swarm").getAttribute("aria-pressed"), "true");
-    } else await page.locator("#swarm").click();
+      assert.equal(await page.locator("#visualization").inputValue(), "both");
+    } else await page.locator("#visualization").selectOption("both");
+    assert.equal(await page.locator("#visualization").inputValue(), "both");
     await page.locator("#reset").click();
     await page.waitForFunction(() => document.querySelector("#reset").disabled === false);
     await page.waitForFunction(() => Number(document.querySelector('.map-row[data-map="0"] canvas').dataset.swarmCount) < 100);
+    assert.equal(await page.locator("#visualization").inputValue(), "both", "Restart must preserve the chosen view");
     await page.close();
   }
   assert.deepEqual(errors, []);
-  console.log("All Novas: authentic animated sprites, clean overlay, heat restoration, restart, guided-tour handoff and desktop/phone layouts passed.");
+  console.log("Visualization: Heatmap, Movement and Both, preserved heat colors, animated neutral sprites, retained route inspection, branch isolation, restart, guided-tour handoff and desktop/phone layouts passed.");
 } finally { await browser.close(); }

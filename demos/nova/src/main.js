@@ -32,7 +32,7 @@ const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT
 document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="tour-open" disabled>Guided tour</button></header>
 <main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><label class="branch-picker">Search branch<select id="branch-choice" aria-label="Search branch" disabled><option value="0">Original search</option></select></label><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="distance">0%</b><span>furthest into this area</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
-<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><button id="swarm" aria-pressed="false" title="Replay recent search paths together.">All Novas</button><button id="completion" hidden>Watch completion</button></div></div>
+<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><label class="view-picker">View<select id="visualization" aria-label="Visualization"><option value="heat">Heatmap</option><option value="movement">Movement</option><option value="both">Both</option></select></label><button id="completion" hidden>Watch completion</button></div></div>
 <nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="heat-legend">Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
@@ -195,21 +195,21 @@ const swarm = new NovaSwarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
 );
-let swarmEnabled = false, swarmRooms = new Map();
+let visualization = "heat", swarmRooms = new Map(), ghostSprites;
 const sprites = new Image();
 sprites.src = new URL("nova-sprites.png", base).href;
-function setSwarm(enabled) {
-  swarmEnabled = enabled;
-  $("swarm").setAttribute("aria-pressed", String(enabled));
-  $("heat-legend").hidden = enabled;
-  $("map-hint").hidden = enabled;
+function setVisualization(mode) {
+  visualization = mode;
+  $("visualization").value = mode;
+  $("heat-legend").hidden = mode === "movement";
+  $("map-hint").hidden = mode === "movement";
   $("hover").hidden = true;
   drawMap(performance.now());
   drawAtlas(performance.now());
 }
-$("swarm").onclick = () => {
+$("visualization").onchange = () => {
   userSelected = true;
-  setSwarm(!swarmEnabled);
+  setVisualization($("visualization").value);
 };
 function drawSwarmBackground(ctx, width, height) {
   ctx.save();
@@ -220,17 +220,33 @@ function drawSwarmBackground(ctx, width, height) {
   ctx.fillStyle = "rgba(28,31,34,.24)";
   ctx.fillRect(0, 0, width, height);
 }
+function novaSheet() {
+  if (visualization !== "both") return sprites;
+  if (!ghostSprites) {
+    ghostSprites = document.createElement("canvas");
+    ghostSprites.width = sprites.naturalWidth;
+    ghostSprites.height = sprites.naturalHeight;
+    const ctx = ghostSprites.getContext("2d");
+    ctx.drawImage(sprites, 0, 0);
+    ctx.globalCompositeOperation = "saturation";
+    ctx.fillStyle = "#808080";
+    ctx.fillRect(0, 0, ghostSprites.width, ghostSprites.height);
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(sprites, 0, 0);
+  }
+  return ghostSprites;
+}
 function drawNovas(ctx, level, scale) {
   if (!sprites.complete || !sprites.naturalWidth) return 0;
-  const map = maps.get(level), points = swarmRooms.get(level) || [];
+  const map = maps.get(level), points = swarmRooms.get(level) || [], sheet = novaSheet();
   ctx.save();
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = visualization === "both" ? 0.6 : 1;
   let count = 0;
   for (const raw of points) {
     const p = project(raw, map);
     if (p.x < 0 || p.x >= map.width || p.y < 0 || p.y >= map.height) continue;
     const size = Math.max(1, 4 / (16 * scale));
-    ctx.drawImage(sprites, Math.floor(p.pose / 2) * 16, (p.pose & 1) * 24, 16, 24,
+    ctx.drawImage(sheet, Math.floor(p.pose / 2) * 16, (p.pose & 1) * 24, 16, 24,
       p.x - (p.pose & 1 ? 0 : 8 * size), p.y + 16 - 24 * size, 16 * size, 24 * size);
     count++;
   }
@@ -641,8 +657,8 @@ function renderStates() {
   );
 }
 function inspect(cell) {
-  if (swarmEnabled) setSwarm(false);
   if (!cell || branchBusy) return;
+  if (visualization === "movement" && cell.ids.length) setVisualization("heat");
   stopControl();
   music.stop();
   playing = false;
@@ -1019,7 +1035,7 @@ function drawAtlas(now) {
       context = c.getContext("2d"),
       image = thumbnails.get(id),
       scale = Math.min(c.width / map.width, c.height / map.height);
-    c.dataset.overlay = swarmEnabled ? "novas" : "heat";
+    c.dataset.overlay = visualization;
     context.imageSmoothingEnabled = false;
     context.fillStyle = "#211f1c";
     context.fillRect(0, 0, c.width, c.height);
@@ -1039,7 +1055,7 @@ function drawAtlas(now) {
       );
       context.scale(scale, scale);
     }
-    if (swarmEnabled) {
+    if (visualization === "movement") {
       drawSwarmBackground(context, map.width, map.height);
       drawNovas(context, id, scale * (c.clientWidth / c.width));
       context.restore();
@@ -1055,6 +1071,8 @@ function drawAtlas(now) {
           context.fillRect(cell.x * 32, cell.y * 32 - 8, 32, 32);
         }
       }
+    if (visualization === "both")
+      drawNovas(context, id, scale * (c.clientWidth / c.width));
     context.restore();
   }
   for (const article of document.querySelectorAll(".level-card")) {
@@ -1175,7 +1193,7 @@ function renderMapRows(owner) {
   }
 }
 function drawMap(now) {
-  if (swarmEnabled) swarmRooms = swarm.frame(activeSearch, now, reducedMotion.matches);
+  if (visualization !== "heat") swarmRooms = swarm.frame(activeSearch, now, reducedMotion.matches);
   for (const c of document.querySelectorAll(".area-map")) drawArea(c, now);
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
 }
@@ -1203,11 +1221,11 @@ function drawArea(canvas, now) {
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;
   canvas.dataset.centerY = areaCenterY;
-  canvas.dataset.overlay = swarmEnabled ? "novas" : "heat";
-  const label = `${map.label} ${swarmEnabled ? "Nova swarm" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
+  canvas.dataset.overlay = visualization;
+  const label = `${map.label} ${visualization === "movement" ? "Nova movement" : visualization === "both" ? "heatmap and Nova movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
   if (canvas.getAttribute("aria-label") !== label)
     canvas.setAttribute("aria-label", label);
-  if (swarmEnabled) {
+  if (visualization === "movement") {
     drawSwarmBackground(ctx, mapWidth, mapHeight);
     canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
     canvas.dataset.tracePoints = 0;
@@ -1249,6 +1267,8 @@ function drawArea(canvas, now) {
     ctx.lineTo(mapWidth, y);
     ctx.stroke();
   }
+  if (visualization === "both")
+    canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
   for (const p of sparks) {
     if (p.level !== mapLevel) continue;
     const age = (now - p.time) / 1600;
@@ -1983,7 +2003,7 @@ const tour = new GuidedTour({
     },
   ],
   onStart() {
-    if (swarmEnabled) setSwarm(false);
+    if (visualization !== "heat") setVisualization("heat");
     tourSession = {
       cell: tourCell(),
       wasPaused: paused,

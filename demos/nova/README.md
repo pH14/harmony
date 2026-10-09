@@ -29,13 +29,21 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 ## Interaction
 
-All Novas switches the map and atlas to the original level artwork with tiny
+The View dropdown offers Heatmap, Movement and Both. Heatmap is the default.
+Movement switches the map and atlas to the original level artwork with tiny
 Nova sprites replaying recorded search rollouts together. Sprites render solid
-over a subdued neutral map background, with a softer display saturation on both room maps and atlas cards, so overlapping runs do not
-blend into the terrain. The source sprite tiles and palette remain unchanged;
+over a subdued neutral map background, with a softer display saturation on both
+room maps and atlas cards, so overlapping runs do not blend into the terrain. The source sprite tiles and palette remain unchanged;
 heat and gameplay retain their normal colors. Heat, grid, trails,
 selection rings and sparks disappear in this view; the search and cell inspection
-remain available. Inspecting a cell or opening the guided tour returns to heat.
+remain available. Inspecting a populated cell in Movement or opening the guided
+tour returns to Heatmap. Both preserves the normal heat colors and overlays
+quiet, neutral Nova sprites underneath selected trails and state markers. Cell
+inspection keeps Both selected. The neutral sprite sheet is a single cached
+96×48 canvas (18 KiB of RGBA pixels), with the original transparency mask; it
+creates no extra emulator, history or per-room cache. The view selection survives
+branch changes and Restart Search.
+
 Each sprite follows one real rollout from its restored parent, rather than a
 complete root-to-state history. Runs loop independently at 60 game frames per
 second with staggered phases, so the whole map stays active even when search is

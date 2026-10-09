@@ -241,8 +241,8 @@ h2 {
   touch-action: pan-y;
   cursor: crosshair;
 }
-.area-map[data-overlay="novas"],
-.map-card canvas[data-overlay="novas"] {
+.area-map[data-overlay="movement"],
+.map-card canvas[data-overlay="movement"] {
   filter: saturate(.6);
 }
 .map-row {
@@ -1113,10 +1113,16 @@ header #tour-open {
   }
 }
 
-#swarm[aria-pressed="true"] {
-  background: var(--selection);
-  border-color: #7b9099;
-  color: #e6eff2;
+.view-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.view-picker select {
+  padding: 7px 9px;
+  color: var(--text);
 }
 
 .map-footer:has(#heat-legend[hidden]):has(#memory-limit[hidden]) {
