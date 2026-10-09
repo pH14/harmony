@@ -174,7 +174,7 @@ try {
     }
   }
   assert.equal(
-    await page.locator("#branch-tree button").count(),
+    await page.locator("#branch-tree button[data-search]").count(),
     1,
     "The tour must not create a search branch",
   );

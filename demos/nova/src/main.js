@@ -30,9 +30,9 @@ const base = new URL(import.meta.env.BASE_URL, location.href),
 const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
-<header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="tour-open" disabled>Guided tour</button></header>
-<main><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><h2>Searches</h2><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav></aside><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
-<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><label class="view-picker">View<select id="visualization" aria-label="Visualization"><option value="heat">Heatmap</option><option value="movement" selected>Movement</option><option value="both">Both</option></select></label><button id="completion" hidden>Watch completion</button></div></div>
+<header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="theme" class="theme-button" aria-label="Switch color theme">◐</button></header>
+<main><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Timeline</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Timeline">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav></aside><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div><div><b id="memory">0 MB</b><span>archive memory</span></div></div><button id="tour-open" disabled>Guided tour</button></div>
+<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><div id="visualization" class="segments" role="group" aria-label="Visualization" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button><button data-viz="both" aria-pressed="false">Both</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 </section>
@@ -199,14 +199,35 @@ const sprites = new Image();
 sprites.src = new URL("nova-sprites.png", base).href;
 function setVisualization(mode) {
   visualization = mode;
-  $("visualization").value = mode;
+  $("visualization").dataset.value = mode;
+  for (const button of $("visualization").children) button.setAttribute("aria-pressed", button.dataset.viz === mode);
   $("map-hint").hidden = mode === "movement";
   $("hover").hidden = true;
   drawMap(performance.now());
 }
-$("visualization").onchange = () => {
+for (const button of $("visualization").children) button.onclick = () => {
   userSelected = true;
-  setVisualization($("visualization").value);
+  setVisualization(button.dataset.viz);
+};
+let theme;
+try { theme = localStorage.getItem("harmony.nova.theme"); } catch {}
+function applyTheme(value) {
+  document.documentElement.dataset.theme = value;
+  $("theme").setAttribute("aria-label", `Switch to ${value === "dark" ? "light" : "dark"} mode`);
+}
+const themeMedia = matchMedia("(prefers-color-scheme: dark)");
+applyTheme(theme === "light" || theme === "dark" ? theme : themeMedia.matches ? "dark" : "light");
+themeMedia.addEventListener("change", () => { if (!theme) applyTheme(themeMedia.matches ? "dark" : "light"); });
+$("theme").onclick = () => {
+  theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  applyTheme(theme);
+  try { localStorage.setItem("harmony.nova.theme", theme); } catch {}
+};
+$("timeline-toggle").onclick = () => {
+  const collapsed = $("workspace").classList.toggle("timeline-collapsed");
+  $("timeline-toggle").setAttribute("aria-expanded", !collapsed);
+  $("timeline-toggle").setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} Timeline`);
+  $("timeline-toggle").textContent = collapsed ? "›" : "‹";
 };
 function drawSwarmBackground(ctx, width, height) {
   ctx.fillStyle = "rgba(12,17,20,.24)";
@@ -317,7 +338,16 @@ function renderBranches() {
       button.onpointerenter = (e) => { if (e.pointerType === "mouse") previewBranch(search.id); };
       button.onfocus = () => { if (button.matches(":focus-visible")) previewBranch(search.id); };
       button.onpointerleave = button.onblur = () => clearBranchPreview();
-      li.append(button);
+      const row = document.createElement("div");
+      row.className = "timeline-row";
+      row.append(button);
+      if (search.id === activeSearch) {
+        const actions = document.createElement("div");
+        actions.className = "timeline-controls";
+        actions.append($("pause"), $("reset"));
+        row.append(actions);
+      }
+      li.append(row);
       if (searchChoices.some((s) => s.parent === search.id)) li.append(list(search.id, depth + 1));
       ol.append(li);
     }
@@ -1022,13 +1052,15 @@ function updateStats() {
   $("cells").textContent = fmt(heat.cells.size);
   $("goal-title").textContent = gameWon
     ? "Game complete"
-    : `Level ${Math.min(focusedLevel + 1, 40)}${cleared.has(focusedLevel) ? " ✓" : ""}`;
+    : `World ${Math.floor(focusedLevel / 8) + 1} – Level ${focusedLevel % 8 + 1}${cleared.has(focusedLevel) ? " ✓" : ""}`;
   const witness = completionWitness();
   $("completion").hidden = !witness;
   if (witness) $("completion").textContent = witness.label;
   $("states").title =
     `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`;
   $("work").textContent = fmt(stats.frames);
+  $("memory").textContent = `${((stats.snapshot_bytes || 0) / 1048576).toFixed(1)} MB`;
+  $("memory").title = "Retained snapshots across all Timeline branches";
 }
 function renderMapRows(owner) {
   const focusedMap = document.activeElement?.closest(".map-row")?.dataset.map;
@@ -1067,7 +1099,7 @@ function renderMapRows(owner) {
       c.dataset.map = id;
       c.dataset.mapWidth = maps.get(id).width;
       c.dataset.mapHeight = maps.get(id).height;
-      c.style.touchAction = roomView(id).zoom > 1 ? "none" : "pan-y";
+      c.style.touchAction = "pan-y";
       const heading = document.createElement("div");
       heading.className = "area-heading";
       const zoomButton = document.createElement("button");
@@ -1108,7 +1140,7 @@ function drawArea(canvas, now) {
   const preview = branchPreview && searchViews.get(branchPreview.id);
   const areaHeat = preview?.heat || heat;
   const areaOrigin = preview ? preview.branchOrigin : branchOrigin;
-  const mode = preview ? "heat" : visualization;
+  const mode = visualization;
   canvas.dataset.previewSearch = preview ? branchPreview.id : "";
   const ctx = canvas.getContext("2d"),
     mapLevel = Number(canvas.dataset.map),
@@ -1175,7 +1207,7 @@ function drawArea(canvas, now) {
     }
   }
   if (mode !== "heat")
-    canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
+    canvas.dataset.swarmCount = preview ? 0 : drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
   for (const p of preview || mode === "movement" ? [] : sparks) {
     if (p.level !== mapLevel) continue;
     const age = (now - p.time) / 1600;
@@ -1241,6 +1273,42 @@ function mapCoordinates(e) {
   };
 }
 function bindMap(c) {
+  let pinch;
+  const pair = (touches) => ({
+    x: (touches[0].clientX + touches[1].clientX) / 2,
+    y: (touches[0].clientY + touches[1].clientY) / 2,
+    distance: Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY),
+  });
+  c.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 2) return;
+    event.preventDefault();
+    const room = roomView(Number(c.dataset.map)), map = maps.get(Number(c.dataset.map));
+    const point = pair(event.touches), r = c.getBoundingClientRect();
+    const scale = Math.min(c.width / map.width, c.height / map.height) * room.zoom;
+    pinch = { ...point, zoom: room.zoom,
+      worldX: room.x + (point.x - r.left - r.width / 2) * c.width / r.width / scale,
+      worldY: room.y + (point.y - r.top - r.height / 2) * c.height / r.height / scale };
+    dragged = true;
+    pointerStart = null;
+  }, { passive: false });
+  c.addEventListener("touchmove", (event) => {
+    if (!pinch || event.touches.length !== 2) return;
+    event.preventDefault();
+    const id = Number(c.dataset.map), room = roomView(id), map = maps.get(id);
+    const point = pair(event.touches), r = c.getBoundingClientRect();
+    room.zoom = Math.max(1, Math.min(6, pinch.zoom * point.distance / Math.max(1, pinch.distance)));
+    const scale = Math.min(c.width / map.width, c.height / map.height) * room.zoom;
+    const center = viewCenter(map.width, room.zoom, {
+      x: pinch.worldX - (point.x - r.left - r.width / 2) * c.width / r.width / scale,
+      y: pinch.worldY - (point.y - r.top - r.height / 2) * c.height / r.height / scale,
+    }, map.height, c);
+    room.x = center.x; room.y = center.y;
+    userSelected = dragged = true;
+    document.querySelector(`.area-zoom[data-map="${id}"]`).textContent = room.zoom === 1 ? "Zoom in" : `${room.zoom.toFixed(1)}×`;
+    drawMap(performance.now());
+  }, { passive: false });
+  c.addEventListener("touchend", () => { pinch = null; pointerStart = null; });
+  c.addEventListener("touchcancel", () => { pinch = null; pointerStart = null; });
   c.addEventListener("pointerdown", (e) => {
     const view = roomView(Number(c.dataset.map));
     pointerStart = {
@@ -1261,9 +1329,9 @@ function bindMap(c) {
     const id = Number(c.dataset.map),
       map = maps.get(id),
       room = roomView(id);
-    if (pointerStart?.canvas === c && e.buttons && room.zoom > 1) {
+    if (!pinch && pointerStart?.canvas === c && e.buttons && room.zoom > 1) {
       const dx = e.clientX - pointerStart.x,
-        dy = e.clientY - pointerStart.y;
+        dy = e.pointerType === "touch" ? 0 : e.clientY - pointerStart.y;
       if (Math.hypot(dx, dy) > 4) dragged = true;
       if (dragged) {
         userSelected = true;
@@ -1367,7 +1435,7 @@ function zoomRoom(id) {
   const map = maps.get(id),
     view = roomView(id),
     c = document.querySelector(`.map-row[data-map="${id}"] canvas`);
-  view.zoom = view.zoom === 1 ? 2 : view.zoom === 2 ? 4 : 1;
+  view.zoom = view.zoom < 2 ? 2 : view.zoom < 4 ? 4 : 1;
   c.height =
     view.zoom > 1
       ? 320
@@ -1375,7 +1443,7 @@ function zoomRoom(id) {
           320,
           Math.max(128, Math.round((1280 / map.width) * map.height)),
         );
-  c.style.touchAction = view.zoom > 1 ? "none" : "pan-y";
+  c.style.touchAction = "pan-y";
   const o =
     frameObservation?.level === id &&
     isMapEvidence(frameObservation, catalog.levels)
@@ -1513,7 +1581,7 @@ function updateBranchControls() {
   $("game-controls").hidden = !controlMode;
   $("scrub").disabled = !current || controlMode || branchBusy;
   $("play").disabled = !current || controlMode || branchBusy || seeking;
-  for (const button of $("branch-tree").querySelectorAll("button"))
+  for (const button of $("branch-tree").querySelectorAll("button[data-search]"))
     button.disabled = branchBusy || controlMode;
   $("sound").disabled = !current;
   $("pause").disabled = !ready || branchBusy || controlMode || !!stats.stopped;

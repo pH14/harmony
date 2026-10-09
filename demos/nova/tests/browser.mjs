@@ -642,7 +642,7 @@ try {
       document.querySelector("#verification").textContent ===
         "Exact replay ✓" && document.querySelector("#map").dataset.map === "1",
   );
-  assert.equal(await page.locator("#goal-title").innerText(), "Level 2");
+  assert.equal(await page.locator("#goal-title").innerText(), "World 1 – Level 2");
   await page.locator("#scrub").fill("0");
   await page.waitForFunction(
     () =>
@@ -651,7 +651,7 @@ try {
         .querySelector("#frame-label")
         .textContent.startsWith("FRAME 0 /"),
   );
-  assert.equal(await page.locator("#goal-title").innerText(), "Level 1");
+  assert.equal(await page.locator("#goal-title").innerText(), "World 1 – Level 1");
   const longFrames = await selectFixture(
     {
       actions: [
@@ -676,7 +676,7 @@ try {
       document.querySelector("#verification").textContent === "Original game" &&
       document.querySelector("#scrub").max === "0",
   );
-  await page.locator("#visualization").selectOption("heat");
+  await page.locator('[data-viz="heat"]').click();
   const originalAttempts = await page.locator("#attempts").innerText();
   const originalCells = await page.locator("#cells").innerText();
   await page.mouse.move(0, 0);
@@ -1391,7 +1391,7 @@ try {
     "Losing focus must stop manual play and release controls",
   );
   const phoneBranchId = String(
-    await page.locator("#branch-tree button").count(),
+    await page.locator("#branch-tree button[data-search]").count(),
   );
   await page.locator("#search-here").click();
   await page.waitForFunction(

@@ -38,8 +38,8 @@ export function tourPosition(rects, width, height, viewport) {
   }));
   const overlap = (p) =>
     rects.reduce(
-      (sum, r) =>
-        sum +
+      (sum, r, i) =>
+        sum + (i === 0 ? 4 : 1) *
         Math.max(
           0,
           Math.min(p.x + width, r.right + gap) - Math.max(p.x, r.left - gap),
@@ -60,7 +60,7 @@ export class GuidedTour {
     this.dialog.id = "guided-tour";
     this.dialog.setAttribute("aria-labelledby", "tour-title");
     this.dialog.setAttribute("aria-describedby", "tour-copy");
-    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g></svg><section class="tour-card"><div class="tour-top"><span id="tour-progress"></span><button id="tour-skip">Skip tour</button></div><div aria-live="polite" aria-atomic="true"><h2 id="tour-title"></h2><p id="tour-copy"></p></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><div><button id="tour-try" hidden>🎮 Try playing</button><button id="tour-next">Next</button></div></div></section>`;
+    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask" maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g></svg><section class="tour-card"><div class="tour-top"><span id="tour-progress"></span><button id="tour-skip">Skip tour</button></div><div aria-live="polite" aria-atomic="true"><h2 id="tour-title"></h2><p id="tour-copy"></p></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><div><button id="tour-try" hidden>🎮 Try playing</button><button id="tour-next">Next</button></div></div></section>`;
     document.body.append(this.dialog);
     this.find = (id) => this.dialog.querySelector(`#${id}`);
     this.card = this.dialog.querySelector(".tour-card");
@@ -199,27 +199,32 @@ export class GuidedTour {
     this.find("tour-next").focus({ preventScroll: true });
   }
   position() {
-    const viewport = { width: innerWidth, height: innerHeight };
+    const visual = window.visualViewport;
+    const viewport = { width: visual?.width || innerWidth, height: visual?.height || innerHeight };
+    const offset = { x: visual?.offsetLeft || 0, y: visual?.offsetTop || 0 };
+    Object.assign(this.dialog.style, { inset: `${offset.y}px auto auto ${offset.x}px`, width: `${viewport.width}px`, height: `${viewport.height}px` });
+    const shade = this.dialog.querySelector("svg");
+    shade.setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
     const rects = (typeof this.targets === "function" ? this.targets() : [])
       .filter(Boolean)
       .map((target) => {
-        const r = target.getBoundingClientRect
-          ? target.getBoundingClientRect()
-          : target;
-        const left = Math.max(8, r.left - 6),
-          top = Math.max(8, r.top - 6);
-        const right = Math.min(viewport.width - 8, r.right + 6),
-          bottom = Math.min(viewport.height - 8, r.bottom + 6);
-        return {
-          left,
-          top,
-          right,
-          bottom,
-          width: right - left,
-          height: bottom - top,
-        };
-      })
-      .filter((r) => r.width > 0 && r.height > 0);
+        if (target.getClientRects && !target.getClientRects().length) return null;
+        const r = target.getBoundingClientRect ? target.getBoundingClientRect() : target;
+        let left = Math.max(offset.x + 8, r.left - 6), top = Math.max(offset.y + 8, r.top - 6);
+        let right = Math.min(offset.x + viewport.width - 8, r.right + 6), bottom = Math.min(offset.y + viewport.height - 8, r.bottom + 6);
+        for (let ancestor = target.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor), bounds = ancestor.getBoundingClientRect();
+          if (/(hidden|auto|scroll|clip)/.test(style.overflowX)) {
+            left = Math.max(left, bounds.left + ancestor.clientLeft);
+            right = Math.min(right, bounds.left + ancestor.clientLeft + ancestor.clientWidth);
+          }
+          if (/(hidden|auto|scroll|clip)/.test(style.overflowY)) {
+            top = Math.max(top, bounds.top + ancestor.clientTop);
+            bottom = Math.min(bottom, bounds.top + ancestor.clientTop + ancestor.clientHeight);
+          }
+        }
+        return { left: left - offset.x, top: top - offset.y, right: right - offset.x, bottom: bottom - offset.y, width: right - left, height: bottom - top };
+      }).filter((r) => r && r.width > 0 && r.height > 0);
     this.card.style.width = `${Math.min(340, viewport.width - 24)}px`;
     const { width, height } = this.card.getBoundingClientRect();
     const p = tourPosition(rects, width, height, viewport);

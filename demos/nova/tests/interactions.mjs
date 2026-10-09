@@ -37,7 +37,7 @@ async function inspectRoot(page, touch = false) {
   if (touch) await page.touchscreen.tap(point.x, point.y);
   else await page.mouse.click(point.x, point.y);
   await page.waitForFunction(() => !document.querySelector('#inspector').hidden && !document.querySelector('#take-control').disabled);
-  assert.equal(await page.locator('#visualization').inputValue(), 'movement');
+  assert.equal(await page.locator("#visualization").getAttribute("data-value"), 'movement');
   await page.waitForFunction(() => [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.tracePoints) > 0 && c.dataset.markerFrame !== ''));
   assert.equal(await page.locator('#search-here').isVisible(), false);
   assert.equal(await page.locator('#discard-branch').isVisible(), false);
@@ -63,7 +63,7 @@ try {
   await desktop.keyboard.up('ArrowRight');
   await desktop.locator('#close-inspector').click();
   await desktop.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && document.querySelector('#inspector').hidden);
-  assert.equal(await desktop.locator('#branch-tree button').count(), 1, 'Closing a draft must resume without admitting a search');
+  assert.equal(await desktop.locator('#branch-tree button[data-search]').count(), 1, 'Closing a draft must resume without admitting a search');
   for (let id = 1; id <= 4; id++) {
     await inspectRoot(desktop);
     await play(desktop);
@@ -97,7 +97,7 @@ try {
   await phone.screenshot({path:'test-results/interaction-phone-play.png'});
   await phone.locator('#discard-branch').tap();
   await phone.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && document.querySelector('#inspector').hidden);
-  assert.equal(await phone.locator('#branch-tree button').count(), 1);
+  assert.equal(await phone.locator('#branch-tree button[data-search]').count(), 1);
   await inspectRoot(phone, true);
   await play(phone);
   await phone.waitForTimeout(100);

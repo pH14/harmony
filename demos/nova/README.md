@@ -386,3 +386,7 @@ site footer; the Credits dialog contains full notices. Full attribution, restric
 and corresponding-source links are in
 [CREDITS.md](CREDITS.md) and the site's Credits dialog. The build distributes
 original sources and build recipes alongside the ROM and emulator.
+
+The Timeline and history inspector use matching sliding panels. The active search has inline pause and restart controls; restarting releases the whole Timeline. Movement, Heatmap and Both are visible segmented controls, and hovering a Timeline branch preserves that choice. The counter strip reports snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
+
+Phone maps keep vertical page scrolling available even when zoomed: one finger pans horizontally, two fingers pinch and pan the map, and each room retains its own view. Tour spotlights are clipped to scroll containers and the visual viewport so scrolling the history sheet cannot illuminate hidden controls or the map underneath. All highlighted controls remain usable.
