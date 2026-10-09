@@ -34,9 +34,10 @@ test("paused and inactive searches retain heat until their own clock resumes", (
     child = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: 7 },
     cell = original.visit(point, 100);
-  original.setRunning(false, 3100);
-  const frozen = original.value(cell, 3100);
-  child.visit({ ...point, retained: "1:0" }, 3100);
+  original.setRunning(false, 6100);
+  const frozen = original.value(cell, 6100);
+  child.visit({ ...point, retained: "1:0" }, 6100);
+  assert.equal(original.clock(603100), 6100);
   assert.equal(original.value(cell, 603100), frozen);
   assert.notDeepEqual(
     child.color(child.cells.get("0:1:5"), 603100),
@@ -44,6 +45,7 @@ test("paused and inactive searches retain heat until their own clock resumes", (
   );
   original.setRunning(true, 603100);
   original.setRunning(true, 606100);
+  assert.equal(original.clock(609100), 12100);
   assert.equal(original.value(cell, 609100), frozen / 2);
   assert.deepEqual(cell.ids, [7]);
   assert.equal(cell.visits, 1);
