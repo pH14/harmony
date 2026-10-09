@@ -2,7 +2,7 @@
 
 A static demonstration of state-space exploration. QuickNES executes Nova the
 Squirrel's original pinned ROM in WebAssembly. A Rust worker uses the real
-Dissonance `Archive` and parent selector. The source-derived atlas contains all
+Dissonance `Archive` and parent selector. The source-derived map catalog contains all
 40 campaign levels, four bonus levels and their connected rooms. All execution
 happens on the visitor's computer; hosting requires only static files.
 
@@ -29,8 +29,8 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 ## Interaction
 
-The View dropdown offers Heatmap, Movement and Both. Heatmap is the default.
-Movement switches the map and atlas to the original level artwork with tiny
+The View dropdown offers Heatmap, Movement and Both. Movement is the default.
+Movement shows the original level artwork with tiny
 Nova sprites replaying recorded search rollouts together. Maps and sprites retain
 their original colors, with the original light background shade and 55% sprite
 opacity. There is no desaturation or grayscale sprite cache. Heat, grid, trails,
@@ -70,22 +70,22 @@ directions, from upstream's spnova.chr and player.s, with the original palette.
 The sprite sheet carries the same NovaSquirrel CC BY-NC-SA attribution as maps.
 
 A six-step guided tour spotlights the live heatmap, a real populated cell and its
-retained routes, replay controls, human takeover, search admission and the branch
-selector. The rest of the interface dims without blurring the game. The tour
-opens once after the initial search has populated a cell; Guided tour in the
-header reopens it. A versioned localStorage marker remembers dismissal; unavailable
-storage falls back to one offer per page load. Skip tour and Escape always exit.
-The replay step keeps the route maps and gameplay fully lit and enables the
-original Watch history, scrubber, speed and sound controls. Only the callout and
-transport accept interaction: native inert isolates the rest of the page, and
-keyboard focus stays within those controls. The other steps use native modal
-focus. Step announcements, compact phone callouts and stationary spotlights
-support keyboard use and reduced motion. Callouts follow the actual
-elements through scrolling and resizing, without covering the highlighted control.
-Search continues during the heatmap introduction, then pauses while inspecting
-an authentic route. Exit restores the prior search pause state and any pre-existing human history. The tour never
-creates a search branch or records game inputs on its own; the optional final
-Try playing button reveals the game and invokes normal takeover after an explicit click.
+retained routes, replay controls, human takeover, search admission and the search
+tree. Every step enables its real highlighted controls: cell and route selection,
+replay and scrubbing, keyboard/touch takeover, branching and switching searches.
+The rest of the interface dims without blurring the game. The tour opens once
+after the initial search has populated a cell; Guided tour in the header reopens
+it. A versioned localStorage marker remembers dismissal; unavailable storage
+falls back to one offer per page load. Skip tour and Escape always exit.
+Nonmodal callouts use native inert to isolate unrelated controls, contain keyboard
+focus within the enabled elements, announce steps and follow targets through
+scrolling/resizing. The replay step keeps the route maps and gameplay fully lit.
+Search continues during the heatmap introduction, then pauses while inspecting a
+route. Passive dismissal restores the prior search pause state and any existing
+human history. Explicit gameplay, pause changes and branch changes survive tour
+exit. Clicking Branch search from here performs normal verified admission and
+advances to the search-tree step. The tour itself never creates branches or inputs;
+Try playing and all real controls require an explicit visitor action.
 
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life measured only while that search runs.
@@ -99,20 +99,18 @@ warming the cell twice or inventing snapshots for transit cells.
 Heat is a UI view of actual visits, not archive retention or parent-selection
 priority. Pausing, human play and switching to another branch freeze its heat;
 cooled cells remain blue to preserve the explored footprint. The play/pause icon controls search;
-Restart Search resets it. Heat is always on. Clicking a cell with retained states
+Restart Search resets it. Heatmap and Both show the same activity overlay. Clicking a cell with retained states
 opens a history inspector beside the maps, or a collapsible bottom sheet on phones,
 listing its latest twelve retained states. Clicking a cell with no retained states
 clears the previous selection and closes the inspector, leaving the maps visible
 and keyboard focus on the map. Arrow keys and Enter also select cells. Each level
 shows all its connected areas as stacked live maps: Introduction, Garden and
-Main Level are visible together. Area labels and the world atlas can focus any map
-immediately, including unvisited areas. Opening a visited area selects its furthest retained
+Main Level are visible together. Area labels focus rooms within the current level. Opening a visited area selects its furthest retained
 state. Each room has its own zoom button and independent view; dragging moves
 that room’s zoomed view.
 
 The level heading latches actual campaign clear bits seen
-across alternate histories. Green atlas cards record these witnesses; Watch Level
-Finish replays the first witness for a new clear. Reaching a door is not a clear:
+across alternate histories. Watch Level Finish replays the first witness for a new clear. Reaching a door is not a clear:
 Nova needs a fresh Up press while touching it. A newly discovered next campaign
 level brings its maps into view even after inspecting the preceding level. Game
 Complete requires all 40 bits in one history, rather than the union of separate
@@ -150,10 +148,9 @@ tab; ending takeover also stops its sound. The AudioContext is unlocked in the
 play/watch click before any asynchronous reset. Automatic attract replay starts
 silently until the visitor chooses to watch. Save/open-history and screenshot
 controls are omitted from the interface. Search controls sit at the top left,
-with a compact counter strip above the rooms. Neutral charcoal surfaces, system
+with a compact counter strip above the rooms. Warm charcoal surfaces, softer corners, system
 typography and restrained controls keep the unchanged cold-to-hot heat colors
-prominent. Route rows and atlas levels avoid
-nested card borders; the light Play from here button remains the primary action.
+prominent. Route rows avoid nested card borders; the light Play from here button remains the primary action.
 A separate, lazily loaded emulator generates PCM because switching QuickNES
 from its silent buffer changes serialized APU bytes. Only the original silent
 emulator records controller endpoints; the reusable audio emulator never enters
@@ -163,7 +160,7 @@ follows the replay scrubber. The selected trail and one fixed origin trail per
 retained branch are sampled at a fixed interval, each with at most about 8,400 points for an admitted history.
 At most eight search presentations are retained and Restart Search releases them.
 
-Watch history replays recorded inputs; 🎮 Play from here hands control to the
+Replay replays recorded inputs; 🎮 Play from here hands control to the
 visitor at the displayed moment. The inspector keeps the movie and this primary
 action above a compact list of alternate routes to the selected spot. Route numbers are assigned
 once in discovery order within each cell and search, and rows run oldest to newest.
@@ -176,7 +173,7 @@ show replay durations and health/chips; the selected route has a checkmark.
 Internal IDs and frame counts remain in tooltips and collapsed Game state
 fields. The collapsed phone pane occupies at most 44% of the viewport, with a
 small movie beside replay and branching controls, tight header spacing, and
-visible attribution. Selecting a route or collapsing the pane brings its map
+a single site-wide attribution in the footer. Selecting a route or collapsing the pane brings its map
 above the pane, including another state in the same room. Playing expands the
 game automatically. Play from here pauses exploration and starts a new
 history at the displayed frame, including frames in the middle of a recorded
@@ -200,10 +197,16 @@ own complete trail. Each retained search has its own heat, cell history IDs,
 room discoveries, progress and origin trail. Switching restores that search's
 presentation, closes the history pane and resumes exploration. A search already
 at its memory or completion limit stays stopped. Inactive heat stays frozen, and
-returning does not add a synthetic root visit. The always-visible Search branch
-selector shows Original search before any forks, becomes selectable when another
-branch is admitted, and focuses the new branch after a fork. It returns to any
-earlier search, preserving its archive and random generator. Taking control
+returning does not add a synthetic root visit. The left search pane shows Main and its actual nested descendants in a
+branch tree. Parent identity comes from the worker's active search at admission,
+rather than guessing from a route name or manual-history ID. Clicking resumes
+that search. Hover or keyboard focus on an inactive branch temporarily previews
+its saved heat and fork-prefix trail, including its room, without switching the
+worker, advancing that branch, or changing the selected replay. Leaving restores
+the active map. Phones show a compact scrollable tree above the maps. The lower
+world/level atlas is omitted because browsing untouched levels did not establish
+a playable search root. Actual discovery and replay still follow later levels.
+Taking control
 or forking at an earlier scrubber position discards only that new history’s
 future. Descendant histories include the original inputs, human intervention
 and subsequent search inputs, and remain exactly replayable from the original
@@ -253,11 +256,19 @@ is bounded to one MiB. The UI caches at most 32 fetched histories and 2 MiB of
 estimated storage (64 bytes per action plus snapshot and record overhead);
 current replay, the bounded human controller prefix, selected trail and in-flight
 messages are separate. Branch ancestry metadata is sanitized on fork admission.
-Evicted histories remain in the worker archive and can be fetched again. Full-resolution panoramas are held
-only for the focused level's connected rooms. Atlas images are decoded one at a
-time into 320 by 96 thumbnails, at most 6.7 MiB for all 57 maps; discarded full
-images can take time to be reclaimed by the browser. Browsing every level no
-longer retains about 156 MiB of decoded panoramas.
+Evicted histories remain in the worker archive and can be fetched again.
+Full-resolution panoramas are held only for the focused level's connected rooms; discarded full images can take time to be reclaimed by the browser.
+Hovering a route, or focusing it with the keyboard on hover-capable devices,
+shows its endpoint screenshot without altering replay, audio or controller state.
+An isolated lazy 16 MiB preview emulator reconstructs its original inputs and
+compares the final snapshot exactly. It yields after approximately 8 ms and cancels
+older requests. A 90 ms dwell avoids replaying fleeting pointer movements. Current
+verified endpoints enter the image cache directly. The cache holds at most eight
+256×224 RGBA images on phones (1.75 MiB) / sixteen on desktops (3.5 MiB), plus
+one shared 1/2 MiB checkpoint cache. One preview emulator is reused. Restart
+Search clears images and checkpoints. First hover on an unrelated route can still
+require reconstruction; a pending label indicates that work. These allowances are
+separate from search, replay and audio memory.
 
 These limits do not measure total browser memory or guarantee immunity to mobile
 OOM termination. Archive structures, JS objects, in-flight histories, image
@@ -287,8 +298,8 @@ artwork. These visibility writes and snapshots
 never enter live search or replay. Only non-reloading main-loop states whose map and loaded checkpoint belong to
 the selected level contribute heat or area visits. End screens and level-select
 menus still contribute clear witnesses without claiming visits to the next map.
-Heat is actual controller-action endpoints,
-rather than interpolated or fabricated visits. The marker and film show a
+Heat uses actual sampled rollout positions and retained action endpoints,
+without interpolated or fabricated visits. The marker and film show a
 historical endpoint, rather than one continuously moving search agent.
 
 ## Verification and publishing
@@ -335,9 +346,10 @@ scheduling and mute, the drawer, independent room zoom, real keyboard and touch
 inputs, human-prefix branching, resuming an earlier search without reopening
 the pane, hidden-preview marker suppression, cell
 selection, exact replay, frame zero, cancellation of long reconstruction,
-stacked live-map selection, world browsing, tall-level layout, dragging, the
-simplified top-left toolbar/counters, restart, mobile layout, credits and source
-bundles. Browser-only worker interception supplies source-matched, replayed
+stacked live-map selection, dragging, the
+simplified top-left toolbar/counters, restart, mobile layout, one footer attribution and source bundles. Hover checks compare
+a preview screenshot against exact selected replay, preserve the active frame,
+verify nested tree ancestry and restore unchanged heat after branch preview. Browser-only worker interception supplies source-matched, replayed
 fixture states through the normal selected-history response boundary; no fixture
 or test API enters production. Nested forks verify their selected frame, fresh root/counters, first restored
 position and descendant prefix against real worker messages. Actual fork messages and actual archive responses
@@ -355,8 +367,8 @@ can place the artifact under `/nova/`. No generated assets or ROM are checked in
 Nova the Squirrel is by **NovaSquirrel**. Game code is GPL-3.0-or-later; original
 graphics, sound and gameplay imagery are CC BY-NC-SA 4.0 with upstream character
 restrictions. This is a noncommercial software demonstration.
-Creator, source and Creative Commons license links appear directly under the
-map, replay and atlas. Full attribution, restrictions, pinned source references
+Creator, game source and Creative Commons license links appear once in the
+site footer; the Credits dialog contains full notices. Full attribution, restrictions, pinned source references
 and corresponding-source links are in
 [CREDITS.md](CREDITS.md) and the site's Credits dialog. The build distributes
 original sources and build recipes alongside the ROM and emulator.

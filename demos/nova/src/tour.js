@@ -88,8 +88,8 @@ export class GuidedTour {
         e.stopPropagation();
         this.finish();
       } else if (e.key === "Tab") {
-        const controls = this.allowed.flatMap((node) => [...node.querySelectorAll("button,input,select,[tabindex]")])
-          .filter((node) => !node.matches(":disabled") && node.tabIndex >= 0 && node.getClientRects().length);
+        const controls = this.allowed.flatMap((node) => [node, ...node.querySelectorAll("button,input,select,[tabindex]")])
+          .filter((node) => node.matches("button,input,select,[tabindex]") && !node.matches(":disabled") && node.tabIndex >= 0 && node.getClientRects().length);
         if (!controls.length) return;
         const index = controls.indexOf(document.activeElement), direction = e.shiftKey ? -1 : 1;
         e.preventDefault();

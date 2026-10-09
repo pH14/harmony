@@ -95,11 +95,11 @@ async function watchDuringTour(page) {
   await page.screenshot({ path: `test-results/tour-live-${page.viewportSize().width}.png` });
   assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause history') && Number(document.querySelector('#scrub').value) >= 10);
+  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause replay') && Number(document.querySelector('#scrub').value) >= 10);
   await page.locator('#play').focus();
   assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
   await page.keyboard.press('Space');
-  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Watch history'));
+  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Replay'));
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'scrub');
   await page.keyboard.press('Home');
@@ -158,18 +158,23 @@ try {
     "Spotlighted route pixels must remain unchanged by the dimming layer",
   );
   await page.locator(".tour-shade").evaluate((e) => (e.style.visibility = ""));
+  const other = page.locator('#state-list .state:not(.selected)').first();
+  const chosen = await other.getAttribute('data-state-id');
+  await other.click();
+  await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && document.querySelector('#verification').textContent === 'Exact replay ✓', chosen);
+  assert.equal(await page.locator('#guided-tour').getAttribute('data-step'), '1');
   await page.screenshot({ path: "test-results/tour-desktop-routes.png" });
   for (let step = 2; step < 6; step++) {
     await next(page, step);
     if (step === 2) await watchDuringTour(page);
     if (step === 3) {
       assert.match(await page.locator('#tour-copy').innerText(), /branch/);
-      assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), true);
-      assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), false);
+      assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), false);
+      assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
     }
   }
   assert.equal(
-    await page.locator("#branch-choice option").count(),
+    await page.locator("#branch-tree button").count(),
     1,
     "The tour must not create a search branch",
   );
@@ -363,6 +368,32 @@ try {
   );
   await landscape.close();
 
+  const practice = await open({ viewport: { width: 1440, height: 1100 } });
+  await practice.goto(url);
+  await ready(practice, 0);
+  for (let step = 1; step <= 3; step++) await next(practice, step);
+  await practice.locator('#take-control').click();
+  assert.equal(await practice.locator('#guided-tour').isVisible(), true);
+  const start = Number(await practice.locator('#scrub').inputValue());
+  await practice.keyboard.down('ArrowRight');
+  await practice.waitForTimeout(200);
+  await practice.keyboard.up('ArrowRight');
+  await practice.waitForFunction((frame) => Number(document.querySelector('#scrub').value) > frame, start);
+  await next(practice, 4);
+  assert.equal(await practice.locator('#take-control').getAttribute('aria-pressed'), 'false');
+  await practice.locator('#search-here').click();
+  await ready(practice, 5);
+  await practice.waitForFunction(() => document.querySelector('#branch-tree button[aria-pressed=true]').dataset.search === '1' && document.querySelector('#inspector').hidden);
+  assert.equal(await practice.locator('li[data-search-node="0"] > ol > li[data-search-node="1"]').count(), 1);
+  await practice.locator('button[data-search="0"]').hover();
+  await practice.waitForFunction(() => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === '0'));
+  assert.equal(await practice.locator('button[data-search="1"]').getAttribute('aria-pressed'), 'true');
+  await practice.locator('button[data-search="0"]').click();
+  await practice.waitForFunction(() => document.querySelector('#branch-tree button[aria-pressed=true]').dataset.search === '0' && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
+  await practice.locator('#tour-next').click();
+  assert.equal(await practice.locator('[inert]').count(), 0);
+  await practice.close();
+
   const blocked = await open({ viewport: { width: 1440, height: 900 } });
   await blocked.addInitScript(() =>
     Object.defineProperty(window, "localStorage", {
@@ -394,7 +425,7 @@ try {
   await blocked.close();
   assert.deepEqual(errors, []);
   console.log(
-    "Guided tour: live replay and keyboard/touch scrubbing, fully lit route maps, background isolation, authentic routes, spotlight geometry, pause restoration, keyboard exit, persistence, explicit takeover, mobile and blocked storage passed.",
+    "Guided tour: clickable routes, real takeover/fork/tree switching, live replay and keyboard/touch scrubbing, fully lit route maps, background isolation, authentic routes, spotlight geometry, pause restoration, keyboard exit, persistence, explicit takeover, mobile and blocked storage passed.",
   );
 } finally {
   await browser.close();

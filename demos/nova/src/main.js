@@ -2,11 +2,12 @@
 import "./style.css";
 import { GuidedTour, tourSeen } from "./tour.js";
 import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
+import { RoutePreviews } from "./preview.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, routeIds } from "./heat.js";
 import { NovaSwarm } from "./swarm.js";
-import { CREDIT, snapshotHash } from "./media.js";
+import { snapshotHash } from "./media.js";
 import { viewCenter } from "./view.js";
 import {
   prefixAt,
@@ -28,20 +29,17 @@ const base = new URL(import.meta.env.BASE_URL, location.href),
   $ = (id) => document.getElementById(id);
 const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
-const artCredit = `<small class="art-credit"><a href="${CREDIT.source}">${CREDIT.title}</a> art by <a href="https://novasquirrel.com/">${CREDIT.author}</a> \u00b7 <a href="${CREDIT.license_url}" rel="license">${CREDIT.license}</a></small>`;
 document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="tour-open" disabled>Guided tour</button></header>
-<main><div class="workspace" id="workspace"><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><label class="branch-picker">Search branch<select id="branch-choice" aria-label="Search branch" disabled><option value="0">Original search</option></select></label><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
-<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><label class="view-picker">View<select id="visualization" aria-label="Visualization"><option value="heat">Heatmap</option><option value="movement">Movement</option><option value="both">Both</option></select></label><button id="completion" hidden>Watch completion</button></div></div>
-<nav id="room-tabs" aria-label="Areas in this level" hidden></nav>
+<main><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><h2>Searches</h2><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav></aside><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
+<div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><label class="view-picker">View<select id="visualization" aria-label="Visualization"><option value="heat">Heatmap</option><option value="movement" selected>Movement</option><option value="both">Both</option></select></label><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
-<div class="map-footer"><span id="heat-legend">Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
-${artCredit}</section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Watch history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" aria-describedby="branch-hint" disabled>🎮 Play from here</button><p id="branch-hint">Your original search stays in the branch menu.</p><button id="search-here" aria-describedby="branch-hint" disabled>↗ Branch search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
+<div class="map-footer"><span id="memory-limit" hidden></span></div>
+</section>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><button id="play" disabled>▶ Replay</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" disabled>↗ Branch search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
-<section class="atlas"><div class="section-title"><h2>The game</h2><nav id="worlds" aria-label="Game worlds"></nav></div><div id="atlas" class="atlas-grid"></div>${artCredit}</section>
-<footer><span>Nova the Squirrel by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
-<div id="error" role="alert" hidden></div>
+<footer><span><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
+<div id="route-preview" class="route-preview" hidden><canvas width="256" height="224"></canvas><span></span></div><div id="error" role="alert" hidden></div>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 let heat = new Heatmap(),
   worker,
@@ -69,7 +67,6 @@ let heat = new Heatmap(),
   mapWidth = 1280,
   mapHeight = 224,
   focusedLevel = 0,
-  focusedWorld = 1,
   watchRequested = false,
   pointerStart = null,
   dragged = false;
@@ -120,6 +117,7 @@ function saveSearchView() {
     latestBest,
     stats,
     branchOrigin,
+    room: mapLevel,
   });
 }
 function activateSearchView(id) {
@@ -195,17 +193,15 @@ const swarm = new NovaSwarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
 );
-let visualization = "heat", swarmRooms = new Map();
+let visualization = "movement", swarmRooms = new Map();
 const sprites = new Image();
 sprites.src = new URL("nova-sprites.png", base).href;
 function setVisualization(mode) {
   visualization = mode;
   $("visualization").value = mode;
-  $("heat-legend").hidden = mode === "movement";
   $("map-hint").hidden = mode === "movement";
   $("hover").hidden = true;
   drawMap(performance.now());
-  drawAtlas(performance.now());
 }
 $("visualization").onchange = () => {
   userSelected = true;
@@ -232,13 +228,105 @@ function drawNovas(ctx, level, scale) {
   ctx.restore();
   return count;
 }
+let searchChoices = [{ id: 0, label: "Main", parent: null }],
+  branchPreview = null,
+  routeHover = null,
+  previewTimer;
+const routePreviews = new RoutePreviews(() => createEngine(base),
+  budget.snapshotsMiB === 32 ? 8 : 16,
+  (budget.snapshotsMiB === 32 ? 1 : 2) * 1048576);
+function hideRoutePreview() {
+  clearTimeout(previewTimer);
+  routeHover = null;
+  routePreviews.cancel();
+  $("route-preview").hidden = true;
+}
+function previewRoute(id, button) {
+  if (controlMode || branchBusy || matchMedia("(hover: none)").matches) return;
+  hideRoutePreview();
+  const target = routeHover = { id, button };
+  previewTimer = setTimeout(() => {
+    if (routeHover !== target || !button.isConnected) return;
+    const state = current?.id === id ? current : stateCache.get(id);
+    if (state) showRoutePreview(state, target);
+    else worker.postMessage({ type: "states", ids: [id], request: -2001 });
+  }, 90);
+}
+async function showRoutePreview(state, target) {
+  if (!state || target !== routeHover || !target.button.isConnected) return;
+  const popup = $("route-preview"), rect = target.button.getBoundingClientRect();
+  popup.querySelector("span").textContent = `${routeName(state.id)} · Previewing…`;
+  popup.querySelector("canvas").hidden = true;
+  popup.hidden = false;
+  const width = Math.min(240, innerWidth - 24);
+  popup.style.width = `${width}px`;
+  popup.style.left = `${Math.max(12, Math.min(innerWidth - width - 12,
+    rect.left >= width + 24 ? rect.left - width - 12 : rect.right + 12))}px`;
+  popup.style.top = `${Math.max(12, Math.min(innerHeight - width * 224 / 256 - 48, rect.top))}px`;
+  try {
+    const pixels = await routePreviews.get(state);
+    if (!pixels || target !== routeHover || !target.button.isConnected) return;
+    const canvas = popup.querySelector("canvas");
+    canvas.getContext("2d").putImageData(new ImageData(pixels.data, pixels.width, pixels.height), 0, 0);
+    canvas.hidden = false;
+    popup.dataset.stateId = state.id;
+    popup.querySelector("span").textContent = `${routeName(state.id)} · ${replayTime(state.frames)}`;
+  } catch {
+    if (target === routeHover) popup.querySelector("span").textContent = "Select this route to inspect it";
+  }
+}
+function clearBranchPreview(restore = true) {
+  if (!branchPreview) return;
+  const room = branchPreview.room;
+  branchPreview = null;
+  $("branches").removeAttribute("data-preview");
+  if (restore && mapLevel !== room) setRoom(room, true);
+  drawMap(performance.now());
+}
+function previewBranch(id) {
+  if (id === activeSearch || branchBusy || controlMode) return;
+  clearBranchPreview();
+  const view = searchViews.get(id);
+  if (!view) return;
+  branchPreview = { id, room: mapLevel };
+  $("branches").dataset.preview = id;
+  const room = view.room ?? view.branchOrigin?.point?.level ?? [...view.seenMaps][0];
+  if (room !== undefined && room !== mapLevel) setRoom(room, true);
+  drawMap(performance.now());
+}
+function renderBranches() {
+  const list = (parent) => {
+    const ol = document.createElement("ol");
+    for (const search of searchChoices.filter((s) => s.parent === parent)) {
+      const li = document.createElement("li"), button = document.createElement("button");
+      li.dataset.searchNode = search.id;
+      button.dataset.search = search.id;
+      button.textContent = search.label;
+      button.setAttribute("aria-pressed", search.id === activeSearch);
+      button.title = search.branch ? `Forked at ${replayTime(search.branch.parent_frame)}` : "Original search";
+      button.disabled = branchBusy || controlMode;
+      button.onclick = () => switchSearch(search.id);
+      button.onpointerenter = button.onfocus = () => previewBranch(search.id);
+      button.onpointerleave = button.onblur = () => clearBranchPreview();
+      li.append(button);
+      if (searchChoices.some((s) => s.parent === search.id)) li.append(list(search.id));
+      ol.append(li);
+    }
+    return ol;
+  };
+  $("branch-tree").replaceChildren(...list(null).children);
+  const button = $("branch-tree").querySelector('[aria-pressed="true"]');
+  if (button) {
+    const nav = button.closest("nav"), row = button.getBoundingClientRect(), bounds = nav.getBoundingClientRect();
+    if (row.bottom > bounds.bottom) nav.scrollTop += row.bottom - bounds.bottom;
+    else if (row.top < bounds.top) nav.scrollTop -= bounds.top - row.top;
+  }
+}
 const timeline = new ReplayTimeline(
   (budget.snapshotsMiB === 32 ? 2 : 4) * 1048576,
 );
 const music = new GameAudio(() => createEngine(base));
-const panoramas = new Map(),
-  thumbnails = new Map();
-let thumbnailQueue = Promise.resolve();
+const panoramas = new Map();
 function mapURL(level) {
   const url = new URL(maps.get(level).file, base);
   url.searchParams.set("v", "camera-hidden-1");
@@ -251,37 +339,6 @@ function panorama(level) {
     panoramas.set(level, image);
   }
   return panoramas.get(level);
-}
-function thumbnail(level) {
-  if (thumbnails.has(level)) return;
-  const thumb = document.createElement("canvas");
-  thumb.width = 320;
-  thumb.height = 96;
-  thumbnails.set(level, thumb);
-  thumbnailQueue = thumbnailQueue.then(async () => {
-    const image = new Image();
-    await new Promise((resolve) => {
-      image.onload = image.onerror = resolve;
-      image.src = mapURL(level);
-    });
-    if (image.naturalWidth) {
-      const scale = Math.min(
-        320 / image.naturalWidth,
-        96 / image.naturalHeight,
-      );
-      const context = thumb.getContext("2d");
-      context.imageSmoothingEnabled = false;
-      context.drawImage(
-        image,
-        (320 - image.naturalWidth * scale) / 2,
-        (96 - image.naturalHeight * scale) / 2,
-        image.naturalWidth * scale,
-        image.naturalHeight * scale,
-      );
-    }
-    image.src = "";
-    drawAtlas(performance.now());
-  });
 }
 const canvas = $("map"),
   film = $("film").getContext("2d");
@@ -364,6 +421,7 @@ function markerPoint() {
     : null;
 }
 function followReplayRoom(point) {
+  if (branchPreview) return;
   if (!point || !userSelected || $("inspector").hidden) return;
   const changed = point.level !== mapLevel;
   if (changed) setRoom(point.level, true);
@@ -476,7 +534,7 @@ async function seek(target) {
       seeking = false;
       $("film").closest(".screen").classList.remove("updating");
       updateBranchControls();
-      $("play").textContent = "▶ Watch history";
+      $("play").textContent = "▶ Replay";
       $("scrub").value = currentFrame;
     }
   }
@@ -515,8 +573,9 @@ async function selectState(state, autoplay = false) {
   if (autoplay) {
     if (userSelected && music.context) startAudio();
     playing = true;
-    $("play").textContent = "Ⅱ Pause history";
+    $("play").textContent = "Ⅱ Pause replay";
   }
+  if (!autoplay) routePreviews.remember(state.id, state.frames === 0 ? originPixels : engine.pixels());
   renderStates();
   return true;
 }
@@ -623,7 +682,12 @@ function renderStates() {
           `${routeName(id)}, ${Math.floor(state.frames / 60)} seconds of gameplay, health ${state.observation.health} of 4, ${state.observation.chips} chips`,
         );
       button.disabled = controlMode || branchBusy;
+      button.onpointerenter = () => previewRoute(id, button);
+      button.onfocus = () => previewRoute(id, button);
+      button.onpointerleave = button.onblur = hideRoutePreview;
       button.onclick = () => {
+        hideRoutePreview();
+        if (tourSession) tourSession.interacted = true;
         userSelected = true;
         revealReplayRoom = true;
         ++request;
@@ -636,6 +700,7 @@ function renderStates() {
   );
 }
 function inspect(cell) {
+  hideRoutePreview();
   if (!cell || branchBusy) return;
   if (visualization === "movement" && cell.ids.length) setVisualization("heat");
   stopControl();
@@ -678,7 +743,11 @@ function startSearch() {
   segments = [];
   views.clear();
   closeInspector();
-  $("branch-choice").replaceChildren(new Option("Original search", "0"));
+  searchChoices = [{ id: 0, label: "Main", parent: null }];
+  branchPreview = null;
+  hideRoutePreview();
+  routePreviews.clear();
+  renderBranches();
   $("branch-message").hidden = true;
   if (worker) worker.terminate();
   heat = new Heatmap();
@@ -753,19 +822,13 @@ function startSearch() {
         pendingOrigin = null;
         ++request;
         selectedCell = hoverCell = null;
-        updateRoomTabs();
         paused = data.paused;
         branchBusy = false;
         $("branch-message").hidden = true;
-        $("branch-choice").replaceChildren(
-          ...data.searches.map((s) => {
-            const option = document.createElement("option");
-            option.value = s.id;
-            option.textContent = s.label;
-            return option;
-          }),
-        );
-        $("branch-choice").value = activeSearch;
+        searchChoices = data.searches;
+        const focusBranch = !!document.activeElement.closest("#branch-tree");
+        renderBranches();
+        if (focusBranch) $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
         $("memory-limit").hidden = true;
         updateStats();
         $("status").textContent = "Exploring";
@@ -781,8 +844,7 @@ function startSearch() {
         }
         if (isMapEvidence(state.observation, catalog.levels)) {
           seenMaps.add(state.observation.level);
-          updateRoomTabs();
-          if (fresh) {
+            if (fresh) {
             bestByMap.set(state.observation.level, state.observation.x);
             bestStates.set(state.observation.level, state.id);
             heat.visit(
@@ -803,10 +865,12 @@ function startSearch() {
           $("branch-feedback").textContent =
             `Branch ${activeSearch} is searching from this frame.`;
           updateBranchControls();
-          $("branch-choice").focus({ preventScroll: true });
+          $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
+          if (tour.open && tour.index >= 3) tour.go(5);
         }
         if (engine) selectState(state, initial).catch(fail);
         updateStats();
+        drawMap(performance.now());
       } else if (data.type === "batch") {
         if (data.active !== activeSearch) return;
         swarm.add(activeSearch, data.motion || [], heat.clock(performance.now()));
@@ -837,7 +901,6 @@ function startSearch() {
           sparks.push({ ...project(o, map), time: now });
           if (followDiscovery(o, first, focusedLevel, userSelected, cleared))
             setRoom(o.level);
-          if (first) updateRoomTabs();
         }
         sparks = sparks.slice(-120);
         if (
@@ -853,7 +916,9 @@ function startSearch() {
         offerTour();
       } else if (data.type === "states") {
         for (const state of data.states) stateCache.set(state.id, state);
-        if (data.request === 0) {
+        if (data.request === -2001) {
+          if (routeHover) showRoutePreview(stateCache.get(routeHover.id), routeHover);
+        } else if (data.request === 0) {
           if (!userSelected && data.states[0])
             selectState(data.states[0], true).catch(fail);
         } else if (data.request === request) {
@@ -907,9 +972,8 @@ function setRoom(level, preserveSelection = false) {
   hoverCell = null;
   const owner = catalog.levels.find((l) => l.rooms.includes(level));
   focusedLevel = owner?.id ?? 0;
-  focusedWorld = owner?.world ?? 1;
   $("map-label").textContent = map.label.toUpperCase();
-  renderNavigation();
+  renderMapRows(owner);
   updateStats();
   panorama(level);
 }
@@ -917,149 +981,12 @@ function browseRoom(level) {
   stopControl();
   music.stop();
   playing = false;
-  $("play").textContent = "▶ Watch history";
+  $("play").textContent = "▶ Replay";
   setRoom(level);
   const id = bestStates.get(level);
   if (id !== undefined) {
     watchRequested = false;
     worker.postMessage({ type: "states", ids: [id], request: ++request });
-  }
-}
-function updateRoomTabs() {
-  for (const button of $("room-tabs").children) {
-    const id = Number(button.dataset.map);
-    button.textContent =
-      maps.get(id).label + (seenMaps.has(id) ? " \u2713" : "");
-  }
-}
-function renderNavigation() {
-  const owner = catalog.levels.find((l) => l.id === focusedLevel);
-  $("room-tabs").replaceChildren(
-    ...(owner?.rooms || [mapLevel]).map((id) => {
-      const button = document.createElement("button");
-      button.textContent =
-        maps.get(id).label + (seenMaps.has(id) ? " \u2713" : "");
-      button.dataset.map = id;
-      button.className = id === mapLevel ? "selected" : "";
-      button.setAttribute("aria-pressed", id === mapLevel);
-      button.onclick = () => {
-        userSelected = true;
-        browseRoom(id);
-      };
-      return button;
-    }),
-  );
-  $("worlds").replaceChildren(
-    ...[1, 2, 3, 4, 5, 6].map((world) => {
-      const button = document.createElement("button");
-      button.textContent = world === 6 ? "Bonus" : `World ${world}`;
-      button.className = world === focusedWorld ? "selected" : "";
-      button.setAttribute("aria-pressed", world === focusedWorld);
-      button.onclick = () => {
-        userSelected = true;
-        stopControl();
-        music.stop();
-        playing = false;
-        $("play").textContent = "▶ Watch history";
-        focusedWorld = world;
-        renderNavigation();
-      };
-      return button;
-    }),
-  );
-  $("atlas").replaceChildren(
-    ...catalog.levels
-      .filter((l) => l.world === focusedWorld)
-      .map((level) => {
-        const article = document.createElement("article");
-        article.className = "level-card";
-        article.dataset.level = level.id;
-        const title = document.createElement("h3");
-        title.textContent =
-          level.world === 6
-            ? `Bonus ${level.id - 39}`
-            : `Level ${level.id + 1}`;
-        article.append(title);
-        for (const id of level.rooms) {
-          const button = document.createElement("button");
-          button.className = "map-card" + (id === mapLevel ? " selected" : "");
-          button.dataset.map = id;
-          button.setAttribute(
-            "aria-label",
-            `View ${maps.get(id).label}, level ${level.id + 1}`,
-          );
-          const thumb = document.createElement("canvas");
-          thumb.width = 320;
-          thumb.height = 96;
-          const label = document.createElement("b");
-          label.textContent = maps.get(id).label;
-          button.append(thumb, label);
-          button.onclick = () => {
-            userSelected = true;
-            browseRoom(id);
-          };
-          article.append(button);
-          thumbnail(id);
-        }
-        return article;
-      }),
-  );
-  renderMapRows(owner);
-  drawAtlas(performance.now());
-}
-function drawAtlas(now) {
-  for (const card of document.querySelectorAll(".map-card")) {
-    const id = Number(card.dataset.map),
-      map = maps.get(id),
-      c = card.querySelector("canvas"),
-      context = c.getContext("2d"),
-      image = thumbnails.get(id),
-      scale = Math.min(c.width / map.width, c.height / map.height);
-    c.dataset.overlay = visualization;
-    context.imageSmoothingEnabled = false;
-    context.fillStyle = "#211f1c";
-    context.fillRect(0, 0, c.width, c.height);
-    context.save();
-    context.translate(
-      (c.width - map.width * scale) / 2,
-      (c.height - map.height * scale) / 2,
-    );
-    context.scale(scale, scale);
-    if (image) {
-      context.restore();
-      context.drawImage(image, 0, 0);
-      context.save();
-      context.translate(
-        (c.width - map.width * scale) / 2,
-        (c.height - map.height * scale) / 2,
-      );
-      context.scale(scale, scale);
-    }
-    if (visualization === "movement") {
-      drawSwarmBackground(context, map.width, map.height);
-      drawNovas(context, id, scale * (c.clientWidth / c.width));
-      context.restore();
-      continue;
-    }
-    context.fillStyle = "rgba(7,24,43,.42)";
-    context.fillRect(0, 0, map.width, map.height);
-    for (const cell of heat.cells.values())
-      if (cell.level === id) {
-        const color = heat.color(cell, now);
-        if (color) {
-          context.fillStyle = `rgba(${color},.7)`;
-          context.fillRect(cell.x * 32, cell.y * 32 - 8, 32, 32);
-        }
-      }
-    if (visualization === "both")
-      drawNovas(context, id, scale * (c.clientWidth / c.width));
-    context.restore();
-  }
-  for (const article of document.querySelectorAll(".level-card")) {
-    const id = Number(article.dataset.level);
-    article.classList.toggle("cleared", cleared.has(id));
-    article.querySelector("h3").textContent =
-      `${id >= 40 ? "Bonus " + (id - 39) : "Level " + (id + 1)}${cleared.has(id) ? " ✓ Cleared" : ""}`;
   }
 }
 function completionWitness() {
@@ -1092,7 +1019,6 @@ function updateStats() {
   if (witness) $("completion").textContent = witness.label;
   $("states").title =
     `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`;
-  drawAtlas(performance.now());
   $("work").textContent = fmt(stats.frames);
 }
 function renderMapRows(owner) {
@@ -1170,6 +1096,11 @@ function drawMap(now) {
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
 }
 function drawArea(canvas, now) {
+  const preview = branchPreview && searchViews.get(branchPreview.id);
+  const areaHeat = preview?.heat || heat;
+  const areaOrigin = preview ? preview.branchOrigin : branchOrigin;
+  const mode = preview ? "heat" : visualization;
+  canvas.dataset.previewSearch = preview ? branchPreview.id : "";
   const ctx = canvas.getContext("2d"),
     mapLevel = Number(canvas.dataset.map),
     map = maps.get(mapLevel),
@@ -1193,11 +1124,11 @@ function drawArea(canvas, now) {
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;
   canvas.dataset.centerY = areaCenterY;
-  canvas.dataset.overlay = visualization;
-  const label = `${map.label} ${visualization === "movement" ? "Nova movement" : visualization === "both" ? "heatmap and Nova movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
+  canvas.dataset.overlay = mode;
+  const label = `${map.label} ${mode === "movement" ? "Nova movement" : mode === "both" ? "heatmap and Nova movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
   if (canvas.getAttribute("aria-label") !== label)
     canvas.setAttribute("aria-label", label);
-  if (visualization === "movement") {
+  if (mode === "movement") {
     drawSwarmBackground(ctx, mapWidth, mapHeight);
     canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
     canvas.dataset.tracePoints = 0;
@@ -1212,9 +1143,9 @@ function drawArea(canvas, now) {
   {
     ctx.fillStyle = "rgba(65,113,162,.11)";
     ctx.fillRect(0, 0, mapWidth, mapHeight);
-    for (const cell of heat.cells.values()) {
+    for (const cell of areaHeat.cells.values()) {
       if (cell.level !== mapLevel) continue;
-      const color = heat.color(cell, now);
+      const color = areaHeat.color(cell, now);
       if (!color) continue;
       const x = cell.x * 32,
         y = cell.y * 32 - 8;
@@ -1239,9 +1170,9 @@ function drawArea(canvas, now) {
     ctx.lineTo(mapWidth, y);
     ctx.stroke();
   }
-  if (visualization === "both")
+  if (mode === "both")
     canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
-  for (const p of sparks) {
+  for (const p of preview ? [] : sparks) {
     if (p.level !== mapLevel) continue;
     const age = (now - p.time) / 1600;
     if (age > 1) continue;
@@ -1250,32 +1181,32 @@ function drawArea(canvas, now) {
     ctx.arc(p.x, p.y - 8, 1.5 + (1 - age) * 1.5, 0, Math.PI * 2);
     ctx.fill();
   }
-  canvas.dataset.tracePoints = drawTrail(ctx, mapLevel, scale);
+  canvas.dataset.tracePoints = drawTrail(ctx, mapLevel, scale, preview ? areaOrigin?.segments || [] : undefined);
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;
   canvas.dataset.centerY = areaCenterY;
-  const focus = hoverCell || selectedCell;
+  const focus = preview ? null : hoverCell || selectedCell;
   if (focus?.level === mapLevel) {
     ctx.strokeStyle = "#fff0bd";
     ctx.lineWidth = 1.5 / areaZoom;
     ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
   }
-  const o = $("inspector").hidden
-    ? branchOrigin?.point
+  const o = preview ? areaOrigin?.point : $("inspector").hidden
+    ? areaOrigin?.point
     : current
       ? markerPoint()
       : null;
   const mapOrigin =
-    branchOrigin?.point?.level === mapLevel ? branchOrigin : null;
+    areaOrigin?.point?.level === mapLevel ? areaOrigin : null;
   canvas.dataset.originFrame = mapOrigin?.frame ?? "";
   canvas.dataset.originPulse = String(
-    drawOriginPulse(ctx, mapLevel, scale, now),
+    !preview && drawOriginPulse(ctx, mapLevel, scale, now),
   );
   canvas.dataset.markerFrame =
     o?.level !== mapLevel
       ? ""
-      : $("inspector").hidden
-        ? branchOrigin.frame
+      : preview || $("inspector").hidden
+        ? areaOrigin.frame
         : seeking
           ? requestedFrame
           : currentFrame;
@@ -1373,6 +1304,7 @@ function bindMap(c) {
     const point = mapCoordinates(e),
       cell = heat.cells.get(`${point.level}:${point.x}:${point.y}`);
     if (point.level !== mapLevel) setRoom(point.level);
+    if (tourSession) { tourSession.interacted = true; if (cell?.ids.length) tourSession.cell = cell; }
     inspect(cell || { ...point, visits: 0, ids: [] });
   });
   c.addEventListener("keydown", (e) => {
@@ -1452,6 +1384,7 @@ function zoomRoom(id) {
     view.zoom === 1 ? "Zoom in" : `${view.zoom}×`;
 }
 $("pause").onclick = () => {
+  if (tourSession) tourSession.pauseTouched = true;
   paused = !paused;
   worker.postMessage({ type: paused ? "pause" : "resume" });
   updateSearchControl();
@@ -1476,7 +1409,7 @@ $("play").onclick = async () => {
   if (playing) {
     playing = false;
     music.stop();
-    $("play").textContent = "▶ Watch history";
+    $("play").textContent = "▶ Replay";
     return;
   }
   music.unlock().catch(audioError);
@@ -1489,7 +1422,7 @@ $("play").onclick = async () => {
   playing = true;
   frameCredit = 0;
   startAudio();
-  $("play").textContent = "Ⅱ Pause history";
+  $("play").textContent = "Ⅱ Pause replay";
 };
 $("speed").onchange = () => {
   if (playing) startAudio();
@@ -1519,10 +1452,11 @@ function openInspector() {
   $("workspace").classList.add("inspect-open");
 }
 function closeInspector({ restoreFocus = true } = {}) {
+  hideRoutePreview();
   stopControl();
   music.stop();
   playing = false;
-  $("play").textContent = "▶ Watch history";
+  $("play").textContent = "▶ Replay";
   $("inspector").hidden = true;
   $("workspace").classList.remove("inspect-open");
   if (restoreFocus && inspectorReturnFocus?.isConnected)
@@ -1548,15 +1482,15 @@ function updateBranchControls() {
   $("game-controls").hidden = !controlMode;
   $("scrub").disabled = !current || controlMode || branchBusy;
   $("play").disabled = !current || controlMode || branchBusy || seeking;
-  $("branch-choice").disabled =
-    branchBusy || controlMode || $("branch-choice").options.length < 2;
+  for (const button of $("branch-tree").querySelectorAll("button"))
+    button.disabled = branchBusy || controlMode;
   $("sound").disabled = !current;
   $("pause").disabled = !ready || branchBusy || controlMode || !!stats.stopped;
   $("inspector").classList.toggle("controlling", controlMode);
   for (const button of $("state-list").children)
     button.disabled = controlMode || branchBusy;
   for (const button of document.querySelectorAll(
-    ".area-label,.area-zoom,.map-card,#worlds button",
+    ".area-label,.area-zoom",
   ))
     button.disabled = branchBusy;
 }
@@ -1595,6 +1529,8 @@ function expandInspector(expanded) {
 $("expand-inspector").onclick = () =>
   expandInspector(!$("inspector").classList.contains("expanded"));
 $("take-control").onclick = () => {
+  hideRoutePreview();
+  if (tourSession) { tourSession.interacted = true; tourSession.gameplay = true; }
   if (controlMode) {
     stopControl();
     return;
@@ -1633,12 +1569,14 @@ $("take-control").onclick = () => {
   if (matchMedia("(max-width: 800px)").matches) expandInspector(true);
   timeline.trim(currentFrame);
   startAudio();
-  $("play").textContent = "▶ Watch history";
+  $("play").textContent = "▶ Replay";
   renderStates();
   updateBranchControls();
   $("film").focus({ preventScroll: true });
 };
 $("search-here").onclick = async () => {
+  hideRoutePreview();
+  if (tourSession) tourSession.interacted = true;
   if (!current || seeking || branchBusy || !frameObservation?.health) return;
   stopControl();
   music.stop();
@@ -1697,7 +1635,11 @@ $("search-here").onclick = async () => {
     updateBranchControls();
   }
 };
-$("branch-choice").onchange = () => {
+function switchSearch(id) {
+  if (branchBusy || controlMode || id === activeSearch) return;
+  if (tourSession) tourSession.interacted = true;
+  clearBranchPreview();
+  hideRoutePreview();
   closeInspector();
   userSelected = true;
   paused = true;
@@ -1713,9 +1655,9 @@ $("branch-choice").onchange = () => {
   updateBranchControls();
   worker.postMessage({
     type: "switch",
-    active: Number($("branch-choice").value),
+    active: id,
   });
-};
+}
 function updateSoundControl() {
   const muted = music.muted,
     label = muted ? "Unmute game audio" : "Mute game audio";
@@ -1760,7 +1702,7 @@ document.addEventListener("visibilitychange", () => {
     stopControl();
     music.stop();
     playing = false;
-    $("play").textContent = "▶ Watch history";
+    $("play").textContent = "▶ Replay";
   }
 });
 for (const button of document.querySelectorAll(".touch-controls button")) {
@@ -1800,10 +1742,10 @@ function drawOriginPulse(ctx, level, scale, now) {
   ctx.restore();
   return true;
 }
-function drawTrail(ctx, level, scale) {
-  const drawnSegments = $("inspector").hidden
+function drawTrail(ctx, level, scale, override) {
+  const drawnSegments = override ?? ($("inspector").hidden
     ? branchOrigin?.segments || []
-    : segments;
+    : segments);
   let count = 0;
   ctx.save();
   ctx.lineJoin = "round";
@@ -1847,8 +1789,6 @@ function animate(now) {
   $("film")
     .closest(".screen")
     .classList.toggle("updating", seeking && now - seekStarted > 120);
-  if (Math.floor(now / 250) !== Math.floor((now - elapsed) / 250))
-    drawAtlas(now);
   if (controlMode && !seeking && current && !document.hidden) {
     frameCredit += (elapsed * 60) / 1000;
     const frames = Math.floor(frameCredit);
@@ -1888,7 +1828,7 @@ function animate(now) {
       if (currentFrame === current.frames) {
         playing = false;
         music.stop();
-        $("play").textContent = "↺ Watch again";
+        $("play").textContent = "↺ Replay again";
         verify().then(updateBranchControls).catch(replayError);
       }
     }
@@ -1939,11 +1879,13 @@ const tour = new GuidedTour({
       title: "Watch the search explore",
       copy: "Each warm cell marks real search activity. Green, orange and red show where exploration is concentrated. Activity cools as the search moves on; visited ground stays blue.",
       targets: () => [tourMap()],
+      interactive: () => [$("map-rows"), $("pause")],
     },
     {
       title: "One spot, many histories",
       copy: "Click a cell to inspect the states retained there. We’ve opened a real one: each route is a different history that brought Nova to this spot.",
-      targets: () => [$("state-list"), tourCellRect()],
+      targets: () => [$("state-list"), tourCellRect(), $("route-preview").hidden ? null : $("route-preview")],
+      interactive: () => [$("state-list"), $("map-rows"), $("route-preview")],
     },
     {
       title: "Follow one route",
@@ -1953,25 +1895,28 @@ const tour = new GuidedTour({
         document.querySelector(".screen"),
         ...[...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0),
       ],
-      interactive: () => [document.querySelector(".transport")],
+      interactive: () => [document.querySelector(".transport"), $("state-list"), $("route-preview"), $("map-rows")],
     },
     {
       title: "🎮 Step into the experiment",
       copy: "Play from here gives you control at the displayed frame. Your inputs create a branch from this moment—like pausing a software test to debug it live.",
-      targets: () => [$("take-control")],
+      targets: () => [$("take-control"), document.querySelector(".screen"), $("game-controls").hidden ? null : $("game-controls")],
+      interactive: () => [$("inspector")],
     },
     {
       title: "Guide what happens next",
-      copy: "Branch search from here starts a new search at this moment, including any moves you made. Your original search stays intact. The new branch appears in the menu above.",
+      copy: "Branch search from here starts a new search at this moment, including any moves you made. Your original search stays intact. The new branch appears in the search tree on the left.",
       targets: () => [
         $("search-here"),
-        document.querySelector(".branch-picker"),
+        $("branches"),
       ],
+      interactive: () => [$("inspector"), $("branches")],
     },
     {
       title: "Compare alternate futures",
       copy: "New branches appear here. Switch back to your original search, or resume another branch. Each keeps its own retained states, routes and heatmap.",
-      targets: () => [document.querySelector(".branch-picker")],
+      targets: () => [$("branches"), ...(branchPreview ? [...document.querySelectorAll(".area-map")] : [])],
+      interactive: () => [$("branches")],
     },
   ],
   onStart() {
@@ -1984,17 +1929,22 @@ const tour = new GuidedTour({
         ? current
         : null,
       previousFrame: currentFrame,
+      branch: activeSearch,
+      interacted: false,
     };
     userSelected = true;
     playing = false;
     music.stop();
-    $("play").textContent = "▶ Watch history";
+    $("play").textContent = "▶ Replay";
   },
   async beforeStep(index, valid) {
+    hideRoutePreview();
+    if (controlMode && index !== 3) stopControl();
+    if (index === 5) return;
     if (index !== 2) {
       playing = false;
       music.stop();
-      $("play").textContent = "▶ Watch history";
+      $("play").textContent = "▶ Replay";
     }
     if (index === 1 && !tourSession.prepared) tourSession.cell = tourCell();
     const cell = (tourSession.cell ||= tourCell());
@@ -2007,7 +1957,7 @@ const tour = new GuidedTour({
       view.y = cell.y * 32 + 8;
     }
     if (index === 0) {
-      if (!tourSession.wasPaused && !stats.stopped && paused) {
+      if (!tourSession.interacted && !tourSession.wasPaused && !stats.stopped && paused) {
         paused = false;
         worker.postMessage({ type: "resume" });
         updateSearchControl();
@@ -2017,7 +1967,7 @@ const tour = new GuidedTour({
     paused = true;
     worker.postMessage({ type: "pause" });
     updateSearchControl();
-    if (!tourSession.prepared) {
+    if (!tourSession.prepared || !current || $("inspector").hidden) {
       if (selectedCell?.key !== cell.key || !current || $("inspector").hidden)
         inspect(cell);
     }
@@ -2026,7 +1976,6 @@ const tour = new GuidedTour({
       if (
         !seeking &&
         current &&
-        cell.routes.has(current.id) &&
         historyVerified
       ) {
         if (frameObservation?.health) {
@@ -2048,16 +1997,19 @@ const tour = new GuidedTour({
         .querySelector(".selected")
         ?.scrollIntoView({ block: "nearest", behavior: "instant" });
     if (index >= 4)
-      $("branch-choice").scrollIntoView({
+      $("branches").scrollIntoView({
         block: "nearest",
         behavior: "instant",
       });
   },
   onClose(intent) {
-    const { previousManual: previous, previousFrame, wasPaused } = tourSession;
+    const { previousManual: previous, previousFrame, wasPaused, interacted, branch, gameplay, pauseTouched } = tourSession;
+    if (controlMode) stopControl();
+    clearBranchPreview();
+    hideRoutePreview();
     tourSession = null;
     let restoration;
-    if (intent !== "play" && previous && current !== previous) {
+    if (intent !== "play" && !interacted && previous && current !== previous) {
       ++request;
       selectedCell = null;
       restoration = selectState(previous)
@@ -2070,12 +2022,13 @@ const tour = new GuidedTour({
         })
         .catch(fail);
     }
-    if (intent !== "play" && !wasPaused && !stats.stopped) {
+    if (intent !== "play" && !gameplay && !pauseTouched && branch === activeSearch && !controlMode && !wasPaused && !stats.stopped) {
       paused = false;
       worker.postMessage({ type: "resume" });
       updateSearchControl();
     }
     if (intent === "play") {
+      openInspector();
       $("take-control").click();
       $("film").scrollIntoView({ block: "nearest", behavior: "instant" });
     }

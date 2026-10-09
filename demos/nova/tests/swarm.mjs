@@ -109,7 +109,7 @@ try {
     }, { key: TOUR_KEY, catalog });
     await page.goto(url);
     await page.waitForSelector("#attempts");
-    assert.equal(await page.getByRole("combobox", { name: "Visualization" }).inputValue(), "heat");
+    assert.equal(await page.getByRole("combobox", { name: "Visualization" }).inputValue(), "movement");
     assert.deepEqual(await page.locator("#visualization option").allTextContents(), ["Heatmap", "Movement", "Both"]);
     const bakedNovaPixels = await page.evaluate(async () => {
       const image = new Image();
@@ -131,7 +131,7 @@ try {
     await page.locator("#visualization").selectOption("movement");
     await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
     assert.equal(await page.locator("#visualization").inputValue(), "movement");
-    assert.equal(await page.locator("#heat-legend").isVisible(), false);
+    assert.equal(await page.locator("#heat-legend").count(), 0);
     const target = page.locator('.map-row[data-map="0"] canvas');
     assert.equal(await target.getAttribute("data-overlay"), "movement");
     assert.equal(await target.evaluate((c) => getComputedStyle(c).filter), "none", "Movement must retain the original map colors");
@@ -155,15 +155,14 @@ try {
     await page.locator("#visualization").selectOption("heat");
     assert.equal(await target.getAttribute("data-overlay"), "heat");
     assert.equal(await target.getAttribute("data-swarm-count"), "0");
-    assert.equal(await page.locator("#heat-legend").isVisible(), true);
+    assert.equal(await page.locator("#heat-legend").count(), 0);
     await page.waitForTimeout(1700);
     const heatPixels = await pixels();
     await page.locator("#visualization").selectOption("both");
     assert.equal(await target.getAttribute("data-overlay"), "both");
     assert.ok(Number(await target.getAttribute("data-swarm-count")) > 0);
-    assert.equal(await page.locator("#heat-legend").isVisible(), true);
+    assert.equal(await page.locator("#heat-legend").count(), 0);
     assert.equal(await target.evaluate((c) => getComputedStyle(c).filter), "none", "Both must preserve the heat colors");
-    assert.equal(await page.locator('.map-card canvas').first().getAttribute('data-overlay'), 'both');
     const bothPixels = await pixels();
     const preserved = await page.evaluate(async ([before, after]) => {
       const decode = async (url) => {
@@ -171,7 +170,7 @@ try {
         const canvas = document.createElement('canvas');
         canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
         const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
-        return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        return ctx.getImageData(96, 0, canvas.width - 96, canvas.height).data;
       };
       const a = await decode(before), b = await decode(after);
       let equal = 0;
@@ -218,7 +217,7 @@ try {
       await page.keyboard.up("ArrowRight");
       await page.locator("#take-control").click();
       await page.locator("#search-here").click();
-      await page.waitForFunction(() => document.querySelector("#branch-choice").value === "1" && !document.querySelector("#branch-choice").disabled && document.querySelector("#inspector").hidden);
+      await page.waitForFunction(() => document.querySelector("#branch-tree button[aria-pressed=true]").dataset.search === "1" && !document.querySelector("#branch-tree button[aria-pressed=true]").disabled && document.querySelector("#inspector").hidden);
       await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 30);
       await page.locator("#pause").click();
       await page.locator("#visualization").selectOption("both");
@@ -226,7 +225,7 @@ try {
       const branchAttempts = Number((await page.locator("#attempts").innerText()).replaceAll(",", ""));
       const ghosts = () => page.locator(".area-map").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
       assert.ok(await ghosts() <= branchAttempts + 2, "A new branch must not display the original search's Novas");
-      await page.locator("#branch-choice").selectOption("0");
+      await page.locator('#branch-tree button[data-search="0"]').click();
       await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
       await page.locator("#pause").click();
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].reduce((n, c) => n + Number(c.dataset.swarmCount), 0) > 0);

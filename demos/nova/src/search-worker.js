@@ -42,8 +42,9 @@ function stateFor(branch, id) {
 function choices() {
   return [...searches].map(([id, s]) => ({
     id,
-    label: id === 0 ? "Original search" : `Branch ${id}`,
+    label: id === 0 ? "Main" : `Branch ${id}`,
     branch: s.branch,
+    parent: s.parent ?? null,
   }));
 }
 function ready(paused = false) {
@@ -167,7 +168,7 @@ onmessage = async ({ data }) => {
         );
         explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
         const id = searches.size;
-        searches.set(id, { explorer, branch: branchInfo(tape.branch, frames) });
+        searches.set(id, { explorer, branch: branchInfo(tape.branch, frames), parent: active });
         active = id;
         busy = false;
         ready();
