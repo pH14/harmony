@@ -164,7 +164,7 @@ At most eight search presentations are retained and Restart Search releases them
 
 Replay replays recorded inputs; 🎮 Play from here hands control to the
 visitor at the displayed moment. The inspector keeps the movie and this primary
-action above a compact list of alternate routes to the selected spot. Route numbers are assigned
+action above a compact list of alternate routes to the selected location. Route numbers are assigned
 once in discovery order within each cell and search, and rows run oldest to newest.
 The most recently retained choice is selected when opening a cell. The latest twelve choices keep
 their original numbers when older choices leave the window; an inspected route
@@ -175,7 +175,7 @@ show replay durations and health/chips; the selected route has a checkmark.
 Internal IDs and frame counts remain in tooltips and collapsed Game state
 fields. The collapsed phone pane occupies at most 44% of the viewport, with a
 small movie beside replay and takeover controls, tight header spacing, and
-a single site-wide attribution in the footer. Selecting a route or collapsing the pane brings its map
+a single artwork attribution below the main game maps. Selecting a route or collapsing the pane brings its map
 above the pane, including another state in the same room. Playing expands the
 game automatically. Play from here pauses exploration and starts a new
 history at the displayed frame, including frames in the middle of a recorded
@@ -200,7 +200,7 @@ own complete trail. Each retained search has its own heat, cell history IDs,
 room discoveries, progress and origin trail. Switching restores that search's
 presentation, closes the history pane and resumes exploration. A search already
 at its memory or completion limit stays stopped. Inactive heat stays frozen, and
-returning does not add a synthetic root visit. The Timeline pane shows Main and its actual nested descendants in a
+returning does not add a synthetic root visit. The Searches pane shows Main and its actual nested descendants in a
 branch tree. Parent identity comes from the worker's active search at admission,
 rather than guessing from a route name or manual-history ID. Clicking resumes
 that search, including a single tap on phones. Tree indentation stops growing
@@ -361,7 +361,7 @@ inputs, human-prefix branching, resuming an earlier search without reopening
 the pane, hidden-preview marker suppression, cell
 selection, exact replay, frame zero, cancellation of long reconstruction,
 stacked live-map selection, dragging, the
-inline Timeline controls and memory counters, restart, mobile layout, one footer attribution and source bundles. Hover checks compare
+inline search controls and memory counters, restart, mobile layout, one attribution below the maps and source bundles. Hover checks compare
 a preview screenshot against exact selected replay, preserve the active frame,
 verify nested tree ancestry and restore unchanged heat after branch preview. Browser-only worker interception supplies source-matched, replayed
 fixture states through the normal selected-history response boundary; no fixture
@@ -381,22 +381,24 @@ can place the artifact under `/nova/`. No generated assets or ROM are checked in
 Nova the Squirrel is by **NovaSquirrel**. Game code is GPL-3.0-or-later; original
 graphics, sound and gameplay imagery are CC BY-NC-SA 4.0 with upstream character
 restrictions. This is a noncommercial software demonstration.
-Creator, game source and Creative Commons license links appear once in the
-site footer; the Credits dialog contains full notices. Full attribution, restrictions, pinned source references
+Creator, game source and Creative Commons license links appear once below the
+main game maps; the footer’s Credits & source dialog contains full notices. Full attribution, restrictions, pinned source references
 and corresponding-source links are in
 [CREDITS.md](CREDITS.md) and the site's Credits dialog. The build distributes
 original sources and build recipes alongside the ROM and emulator.
 
-The Timeline and history inspector use matching sliding panels. The active search has inline pause and restart controls; restarting releases the whole Timeline. Movement, Heatmap and Both are visible segmented controls, and hovering a Timeline branch preserves that choice. The counter strip reports snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
+The Searches and History panes use matching sliding panels. The active search has inline pause and restart controls; restarting releases the whole search tree. Movement, Heatmap and Both are visible segmented controls, and hovering a search branch preserves that choice. The counter strip reports snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
 
 Phone maps keep vertical page scrolling available even when zoomed: one finger pans horizontally, two fingers pinch and pan the map, and each room retains its own view. Tour spotlights are clipped to scroll containers and the visual viewport so scrolling the history sheet cannot illuminate hidden controls or the map underneath. All highlighted controls remain usable.
 
 ## Starting at another level
 
-Click the World / Level title to choose from all 40 campaign and four bonus levels. Choosing one replaces the current Timeline and starts a fresh Main search. This is a level-start experiment, not a campaign save: the game initializes its own health, ability and level-specific items. No cleared-level or collectible flags are fabricated. The UI, worker and hover emulator all use the same `boot_level` identity.
+Click the World / Level title to choose from all 40 campaign and four bonus levels. Choosing one replaces the current search tree and starts a fresh Main search. This is a level-start experiment, not a campaign save: the game initializes its own health, ability and level-specific items. No cleared-level or collectible flags are fabricated. The UI, worker and hover emulator all use the same `boot_level` identity.
 
 `boot(level)` restores a power-on snapshot, sets only native level availability in SRAM before the title-screen menu selects its highest available world/level, then runs the pinned controller bootstrap. The default level-zero bootstrap stays identical. Later levels use `Explorer.from_history(seed, "[]")` at this authenticated root. Replay and forks include the starting level plus all subsequent inputs; a worker rejects tapes from a different root. Repeated warps reset archive, snapshots, map views, progress and cached replay/hover checkpoints.
 
 `tests/levels.mjs` verifies all 44 native level starts, advancing a fresh archive, exact replay, repeated bootstrap and rooted forks. `tests/levels-browser.mjs` exercises the selector on desktop and phone through four repeated warps and gameplay forks, then checks real pinch zoom and vertical scrolling of zoomed maps.
 
 Level cards use 256×96 thumbnails built from the original panorama pixels, with the same embedded Creative Commons attribution. The 44 thumbnails together contain about 4.1 MiB of decoded RGBA, rather than decoding full panoramas for gallery cards. Live map panoramas remain unchanged and are retained only for the current level's rooms.
+
+The panes are labeled Searches, Exploration and History. History keeps its heading while the selected route appears beside it. The artwork attribution below the main game maps uses larger text; the footer links to Credits & source.

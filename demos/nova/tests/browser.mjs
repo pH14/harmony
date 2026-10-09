@@ -354,7 +354,7 @@ try {
   assert.match(selected, /\d+:\d{2} replay/);
   assert.equal(
     await page.locator("#cell-title").innerText(),
-    "Routes to this spot",
+    "Routes to this location",
   );
   assert.equal(
     await page.locator("#take-control").innerText(),
@@ -793,7 +793,7 @@ try {
   assert.equal(await page.locator("#branches").isVisible(), true);
   assert.match(
     await page.locator("#branches").textContent(),
-    /Timeline/,
+    /Searches/,
   );
   await page.waitForFunction(
     () => document.querySelector("#branch-tree button[aria-pressed=true]").dataset.search === "1",
@@ -1116,7 +1116,12 @@ try {
   );
   await page.locator("#close-info").click();
   assert.equal(await page.locator('.art-credit').count(), 0);
-  assert.match(await page.locator('footer').innerText(), /NovaSquirrel.*CC BY-NC-SA 4.0/);
+  assert.match(await page.locator('.exploration .game-attribution').innerText(), /NovaSquirrel.*CC BY-NC-SA 4.0/);
+  assert.equal(await page.locator('.game-attribution').count(), 1);
+  assert.equal(await page.locator('footer').innerText(), 'Credits & source');
+  assert.equal(await page.locator('.exploration-heading').innerText(), 'Exploration');
+  assert.equal(await page.locator('.history-heading h2').innerText(), 'History');
+  assert.equal(await page.getByText('Nova explorer', { exact: true }).count(), 0);
 
   for (const text of [
     "How it works",

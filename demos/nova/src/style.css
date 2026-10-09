@@ -1152,3 +1152,9 @@ dialog h2 {
 .level-picker-heading { position: sticky; top: -28px; z-index: 1; background: var(--surface); margin: -28px -28px 20px; padding: 28px 28px 1px; border-bottom: 1px solid var(--line); }
 .level-picker-heading h2 { padding-right: 28px; }
 @media (max-width: 800px) { .level-picker-heading { top: -18px; margin: -18px -12px 18px; padding: 18px 12px 1px; } }
+
+.exploration-heading { margin: 12px 0 0; font-size: 13px; font-weight: 500; color: var(--text); }
+.drawer-top > .history-heading { flex: 1; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.history-heading h2 { flex-shrink: 0; }
+#film-title { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-attribution { margin: 14px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
