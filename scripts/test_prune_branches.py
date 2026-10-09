@@ -144,6 +144,7 @@ class FakeGitHub:
         self.refs = refs
         self.connections = connections
         self.broken = set(broken)
+        self.error = f"gh: {PRUNE.RESOLVER_FAILURE} on 2026-10-09.\n"
         self.pull_request_calls = []
 
     def __call__(self, *args):
@@ -163,9 +164,10 @@ class FakeGitHub:
                  and key[1:].isdigit()}
         self.pull_request_calls.append(sorted(names.values()))
         if self.broken & set(names.values()):
-            raise subprocess.CalledProcessError(1, ["gh"], "", "went wrong")
+            raise subprocess.CalledProcessError(1, ["gh"], "", self.error)
         return json.dumps({"data": {"repository": {
-            key: {"associatedPullRequests": self.connections[name]}
+            key: None if self.connections[name] is None
+            else {"associatedPullRequests": self.connections[name]}
             for key, name in names.items()}}})
 
 
@@ -207,6 +209,24 @@ class FetchTests(unittest.TestCase):
         self.assertIn(["b05"], github.pull_request_calls)
         self.assertTrue(all(len(call) <= PRUNE.REF_BATCH
                             for call in github.pull_request_calls))
+
+
+    def test_a_branch_that_vanished_is_unreadable_and_kept(self):
+        github = FakeGitHub(["a", "gone"], {"a": connection(),
+                                            "gone": None})
+        _, _, branches = self.fetch(github)
+        gone = next(b for b in branches if b["name"] == "gone")
+        self.assertTrue(gone["unreadable"])
+        verdict, _ = classify(gone, on_default=True)
+        self.assertEqual(verdict, PRUNE.KEEP)
+
+    def test_any_other_github_failure_stops_the_run(self):
+        github = FakeGitHub(["a", "b"], {"a": connection(), "b": connection()},
+                            broken=["a"])
+        github.error = "gh: API rate limit exceeded\n"
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.fetch(github)
+        self.assertEqual(github.pull_request_calls, [["a", "b"]])
 
 
 class GhTests(unittest.TestCase):
