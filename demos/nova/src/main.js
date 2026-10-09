@@ -1974,9 +1974,12 @@ const tour = new GuidedTour({
       ++request;
       selectedCell = null;
       restoration = selectState(previous)
-        .then((success) => {
-          if (success && currentFrame !== previousFrame)
-            return seek(previousFrame);
+        .then(async (success) => {
+          if (!success) return;
+          if (currentFrame !== previousFrame && !(await seek(previousFrame)))
+            return;
+          if (!tour.open && current === previous)
+            $("film").scrollIntoView({ block: "nearest", behavior: "instant" });
         })
         .catch(fail);
     }
@@ -1985,7 +1988,10 @@ const tour = new GuidedTour({
       worker.postMessage({ type: "resume" });
       updateSearchControl();
     }
-    if (intent === "play") $("take-control").click();
+    if (intent === "play") {
+      $("take-control").click();
+      $("film").scrollIntoView({ block: "nearest", behavior: "instant" });
+    }
     return restoration;
   },
 });

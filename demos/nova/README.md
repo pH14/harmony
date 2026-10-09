@@ -41,7 +41,7 @@ elements through scrolling and resizing, without covering the highlighted contro
 Search continues during the heatmap introduction, then pauses while inspecting
 an authentic route. Exit restores the prior search pause state and any pre-existing human history. The tour never
 creates a search branch or records game inputs on its own; the optional final
-Try playing button invokes normal takeover after an explicit click.
+Try playing button reveals the game and invokes normal takeover after an explicit click.
 
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life measured only while that search runs.

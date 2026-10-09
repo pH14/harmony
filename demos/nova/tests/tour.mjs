@@ -235,6 +235,69 @@ try {
   );
   await phone.close();
 
+  const landscape = await open({
+    viewport: { width: 844, height: 390 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  await landscape.goto(url);
+  await ready(landscape, 0);
+  for (let step = 1; step < 6; step++) await next(landscape, step);
+  await landscape.locator("#tour-try").click();
+  assert.equal(
+    await landscape.locator("#take-control").getAttribute("aria-pressed"),
+    "true",
+  );
+  const gameVisible = await landscape.locator("#film").evaluate((e) => {
+    const r = e.getBoundingClientRect(),
+      pane = e.closest("#inspector").getBoundingClientRect();
+    return (
+      Math.max(
+        0,
+        Math.min(r.bottom, pane.bottom, innerHeight) -
+          Math.max(r.top, pane.top, 0),
+      ) >=
+      r.height - 1
+    );
+  });
+  assert.equal(
+    gameVisible,
+    true,
+    "Tour takeover must bring the game into view on short screens",
+  );
+  await landscape.screenshot({ path: "test-results/tour-landscape-play.png" });
+  await landscape.keyboard.press("Escape");
+  const landscapeManual = await landscape
+    .locator("#film-title")
+    .getAttribute("data-state-id");
+  await landscape.locator("#tour-open").click();
+  await ready(landscape, 0);
+  await next(landscape, 1);
+  await landscape.locator("#tour-skip").click();
+  await landscape.waitForFunction(
+    (id) =>
+      document.querySelector("#film-title").dataset.stateId === id &&
+      !document.querySelector("#take-control").disabled,
+    landscapeManual,
+  );
+  assert.equal(
+    await landscape.locator("#film").evaluate((e) => {
+      const r = e.getBoundingClientRect(),
+        pane = e.closest("#inspector").getBoundingClientRect();
+      return (
+        Math.max(
+          0,
+          Math.min(r.bottom, pane.bottom, innerHeight) -
+            Math.max(r.top, pane.top, 0),
+        ) >=
+        r.height - 1
+      );
+    }),
+    true,
+    "Restoring human gameplay must reveal its frame after leaving the tour",
+  );
+  await landscape.close();
+
   const blocked = await open({ viewport: { width: 1440, height: 900 } });
   await blocked.addInitScript(() =>
     Object.defineProperty(window, "localStorage", {
