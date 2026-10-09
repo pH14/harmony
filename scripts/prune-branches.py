@@ -23,6 +23,7 @@ KEEP = "keep"
 PULL_REQUEST_PAGE = 20
 REF_BATCH = 25
 NULL_OID = "0" * 40
+RESOLVER_FAILURE = "Something went wrong while executing your query"
 
 REFS_QUERY = """
 query($owner: String!, $name: String!, $after: String) {
@@ -165,7 +166,9 @@ def fetch_pull_requests(repo: str, names: list[str]) -> dict[str, Any]:
         args += ["-f", f"r{index}=refs/heads/{branch}"]
     try:
         data = json.loads(gh(*args))["data"]["repository"]
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as error:
+        if RESOLVER_FAILURE not in (error.stderr or ""):
+            raise
         if len(names) == 1:
             return {names[0]: None}
         middle = len(names) // 2
