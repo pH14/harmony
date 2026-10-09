@@ -21,9 +21,9 @@ The progress tier is the number of levels cleared in campaign order, the
 leading run of set bits in the cleared-level bitmap. A glitch reachable in play
 can rewrite other bits of that bitmap, and a count of every set bit would rank
 such a state above the level the run has reached. The place is the collectible and
-available counts, the level identity, the boss-fight count, the puzzle state and
-a two-bucket position; the holder identity is the exact position bucket and the
-held ability.
+available counts, the level identity, the boss-fight count, the puzzle state, a
+two-bucket position and the held ability; the holder identity is the exact
+position bucket.
 In whole-game mode the selector puts most draws on the highest tier, so
 places in levels already cleared stop taking most of the search. A level
 campaign stops at its first clear, so it has one tier.
@@ -61,9 +61,12 @@ preference keeps the state with the most keys of its color.
 Nova holds one copied ability at a time, and it carries over between levels.
 Abilities reach different spots: a burger ride climbs over a wall, and a
 fireball launches metal arrows. Nova copies an enemy's ability only while holding
-none, so swapping abilities passes through a state with no ability. The identity
-keeps one holder for each ability at a place, so a state that swapped abilities
-keeps its slot beside the states that did not.
+none, so swapping abilities passes through a state with no ability. The held
+ability is part of the place, so a state that copied a new ability opens new
+places and the selector gives its descendants the draws of a new place. Level
+3-5 has a wall that only a burger or ice ride crosses, and the burger is copied
+in 3-4. A burger holder that shares its places with holders of other abilities
+rarely gets enough draws to carry the burger into 3-5.
 
 Toggle switches flip one level-wide flag that swaps which toggle blocks are
 solid, and a carried pickup block can be set down to bridge a gap. Both change
