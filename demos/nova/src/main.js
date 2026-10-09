@@ -36,7 +36,7 @@ document.querySelector("#app").innerHTML = `
 <div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span>Recent activity <span class="gradient"></span><span class="legend">cold → busy</span></span><span id="memory-limit" hidden></span></div>
 ${artCredit}</section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Play history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" aria-describedby="branch-hint" disabled>🎮 Play from here</button><p id="branch-hint">Your original search stays in the branch menu.</p><button id="search-here" aria-describedby="branch-hint" disabled>↗ Branch search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div>${artCredit}<div class="transport"><button id="play" disabled>▶ Watch history</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" aria-describedby="branch-hint" disabled>🎮 Play from here</button><p id="branch-hint">Your original search stays in the branch menu.</p><button id="search-here" aria-describedby="branch-hint" disabled>↗ Branch search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
 <section class="atlas"><div class="section-title"><h2>The game</h2><nav id="worlds" aria-label="Game worlds"></nav></div><div id="atlas" class="atlas-grid"></div>${artCredit}</section>
 <footer><span>Nova the Squirrel by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
@@ -428,7 +428,7 @@ async function seek(target) {
       seeking = false;
       $("film").closest(".screen").classList.remove("updating");
       updateBranchControls();
-      $("play").textContent = "▶ Play history";
+      $("play").textContent = "▶ Watch history";
       $("scrub").value = currentFrame;
     }
   }
@@ -467,7 +467,7 @@ async function selectState(state, autoplay = false) {
   if (autoplay) {
     if (userSelected && music.context) startAudio();
     playing = true;
-    $("play").textContent = "Ⅱ Pause film";
+    $("play").textContent = "Ⅱ Pause history";
   }
   renderStates();
   return true;
@@ -863,7 +863,7 @@ function browseRoom(level) {
   stopControl();
   music.stop();
   playing = false;
-  $("play").textContent = "▶ Play history";
+  $("play").textContent = "▶ Watch history";
   setRoom(level);
   const id = bestStates.get(level);
   if (id !== undefined) {
@@ -906,7 +906,7 @@ function renderNavigation() {
         stopControl();
         music.stop();
         playing = false;
-        $("play").textContent = "▶ Play history";
+        $("play").textContent = "▶ Watch history";
         focusedWorld = world;
         renderNavigation();
       };
@@ -1401,7 +1401,7 @@ $("play").onclick = async () => {
   if (playing) {
     playing = false;
     music.stop();
-    $("play").textContent = "▶ Play history";
+    $("play").textContent = "▶ Watch history";
     return;
   }
   music.unlock().catch(audioError);
@@ -1414,7 +1414,7 @@ $("play").onclick = async () => {
   playing = true;
   frameCredit = 0;
   startAudio();
-  $("play").textContent = "Ⅱ Pause film";
+  $("play").textContent = "Ⅱ Pause history";
 };
 $("speed").onchange = () => {
   if (playing) startAudio();
@@ -1447,7 +1447,7 @@ function closeInspector({ restoreFocus = true } = {}) {
   stopControl();
   music.stop();
   playing = false;
-  $("play").textContent = "▶ Play history";
+  $("play").textContent = "▶ Watch history";
   $("inspector").hidden = true;
   $("workspace").classList.remove("inspect-open");
   if (restoreFocus && inspectorReturnFocus?.isConnected)
@@ -1558,7 +1558,7 @@ $("take-control").onclick = () => {
   if (matchMedia("(max-width: 800px)").matches) expandInspector(true);
   timeline.trim(currentFrame);
   startAudio();
-  $("play").textContent = "▶ Play history";
+  $("play").textContent = "▶ Watch history";
   renderStates();
   updateBranchControls();
   $("film").focus({ preventScroll: true });
@@ -1685,7 +1685,7 @@ document.addEventListener("visibilitychange", () => {
     stopControl();
     music.stop();
     playing = false;
-    $("play").textContent = "▶ Play history";
+    $("play").textContent = "▶ Watch history";
   }
 });
 for (const button of document.querySelectorAll(".touch-controls button")) {
@@ -1813,7 +1813,7 @@ function animate(now) {
       if (currentFrame === current.frames) {
         playing = false;
         music.stop();
-        $("play").textContent = "↺ Play again";
+        $("play").textContent = "↺ Watch again";
         verify().then(updateBranchControls).catch(replayError);
       }
     }
@@ -1907,7 +1907,7 @@ const tour = new GuidedTour({
     userSelected = true;
     playing = false;
     music.stop();
-    $("play").textContent = "▶ Play history";
+    $("play").textContent = "▶ Watch history";
   },
   async beforeStep(index, valid) {
     if (index === 1 && !tourSession.prepared) tourSession.cell = tourCell();

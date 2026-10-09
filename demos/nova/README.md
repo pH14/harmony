@@ -112,8 +112,9 @@ follows the replay scrubber. The selected trail and one fixed origin trail per
 retained branch are sampled at a fixed interval, each with at most about 8,400 points for an admitted history.
 At most eight search presentations are retained and Restart Search releases them.
 
-The inspector keeps the movie and a prominent 🎮 Play from here action above a
-compact list of alternate routes to the selected spot. Route numbers are assigned
+Watch history replays recorded inputs; 🎮 Play from here hands control to the
+visitor at the displayed moment. The inspector keeps the movie and this primary
+action above a compact list of alternate routes to the selected spot. Route numbers are assigned
 once in discovery order within each cell and search, and rows run oldest to newest.
 The most recently retained choice is selected when opening a cell. The latest twelve choices keep
 their original numbers when older choices leave the window; an inspected route
