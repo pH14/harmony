@@ -705,6 +705,8 @@ try {
           attempts: document.querySelector("#attempts").textContent,
           paneHidden: document.querySelector("#inspector").hidden,
           paused: event.data.paused,
+          branchFocused:
+            document.activeElement === document.querySelector("#branch-choice"),
           overlay: (() => {
             const canvas = document.querySelector(
               '.map-card[data-map="0"] canvas',
@@ -763,6 +765,11 @@ try {
   assert.match(
     await page.locator("#branch-feedback").textContent(),
     /Branch 1 is searching/,
+  );
+  assert.equal(
+    await page.evaluate(() => window.novaTestReady.branchFocused),
+    true,
+    "A newly admitted branch must focus its enabled selector",
   );
   assert.equal(
     await page.evaluate(() => window.novaTestReadyCells),

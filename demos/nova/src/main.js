@@ -747,6 +747,7 @@ function startSearch() {
           revealBranchOrigin();
           $("branch-feedback").textContent =
             `Branch ${activeSearch} is searching from this frame.`;
+          updateBranchControls();
           $("branch-choice").focus({ preventScroll: true });
         }
         if (engine) selectState(state, initial).catch(fail);
