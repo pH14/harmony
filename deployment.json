@@ -1,10 +1,9 @@
 {
   "nova": {
-    "commit": "352713e85ea3fdc5825162ffaef6fed7ac7e2782",
-    "build": "passing Nova Browser CI artifact",
-    "ci_run": 37974035612,
-    "artifact_id": 11638545522,
-    "sha256": "4f3b7030cac757634b5b960a37a07dbdfcc9b094f55f792ddbc6abc9de0aa50a"
+    "commit": "1cb7ac4343e5dd66874e3523755bce3476b13da3",
+    "build": "locally verified static build",
+    "checks": "44 helpers; desktop/phone browser, tour, visualizations, multi-touch and four nested branches",
+    "asset_manifest_sha256": "21258be098e3dc1480a4c1c1cbd65bbece53c887fe95884804cbc3692f0599f0"
   },
   "raft": {
     "commit": "28791e77a",
