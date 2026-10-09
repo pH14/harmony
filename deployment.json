@@ -1,10 +1,10 @@
 {
   "nova": {
-    "commit": "9ab1c289afe01a939f70fc23a454b5972c4ac625",
+    "commit": "352713e85ea3fdc5825162ffaef6fed7ac7e2782",
     "build": "passing Nova Browser CI artifact",
-    "ci_run": 37962797348,
-    "artifact_id": 11631489098,
-    "sha256": "b1901c78460bad0291c43515581581f34bb5e321b693cf563fb8d75ec345bbfc"
+    "ci_run": 37974035612,
+    "artifact_id": 11638545522,
+    "sha256": "4f3b7030cac757634b5b960a37a07dbdfcc9b094f55f792ddbc6abc9de0aa50a"
   },
   "raft": {
     "commit": "28791e77a",
