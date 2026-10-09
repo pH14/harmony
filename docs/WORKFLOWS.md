@@ -434,8 +434,10 @@ user, compares application and bridge evidence, and rejects a planted divergence
 deletes a remote branch when no open pull request uses it and either a merged
 pull request's head is exactly the branch tip or the tip is reachable from
 `main`. It keeps every other branch and lists it in the job summary with the
-reason: closed without merging, commits after the merged head, or no pull
-request. A manual dispatch lists the deletions and performs them only with the
+reason: closed without merging, commits after the merged head, no pull
+request, or GitHub could not list the branch's pull requests. The script lists
+branches first and then asks for their pull requests in batches, splitting a
+batch GitHub cannot execute until the failing branch is isolated. A manual dispatch lists the deletions and performs them only with the
 `apply` input.
 
 ## Naming
