@@ -1969,10 +1969,11 @@ const tour = new GuidedTour({
   onClose(intent) {
     const { previousManual: previous, previousFrame, wasPaused } = tourSession;
     tourSession = null;
+    let restoration;
     if (intent !== "play" && previous && current !== previous) {
       ++request;
       selectedCell = null;
-      selectState(previous)
+      restoration = selectState(previous)
         .then((success) => {
           if (success && currentFrame !== previousFrame)
             return seek(previousFrame);
@@ -1985,6 +1986,7 @@ const tour = new GuidedTour({
       updateSearchControl();
     }
     if (intent === "play") $("take-control").click();
+    return restoration;
   },
 });
 function beginTour() {

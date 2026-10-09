@@ -187,12 +187,20 @@ export class GuidedTour {
         .join("");
     }
   }
-  finish(intent) {
+  async finish(intent) {
     if (!this.open) return;
-    ++this.epoch;
+    const epoch = ++this.epoch,
+      returnFocus = this.returnFocus;
     cancelAnimationFrame(this.animation);
     this.dialog.close();
-    this.onClose(intent);
-    if (intent !== "play") this.returnFocus?.focus({ preventScroll: true });
+    await this.onClose(intent);
+    if (
+      intent !== "play" &&
+      epoch === this.epoch &&
+      !this.open &&
+      (document.activeElement === document.body ||
+        document.activeElement === returnFocus)
+    )
+      returnFocus?.focus({ preventScroll: true });
   }
 }

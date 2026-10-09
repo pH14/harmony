@@ -163,6 +163,7 @@ try {
     "true",
   );
   assert.equal(await page.locator("#tour-open").isDisabled(), true);
+  await page.waitForTimeout(1200);
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Escape");
   assert.equal(
@@ -178,6 +179,8 @@ try {
   await page.locator("#tour-open").click();
   await ready(page, 0);
   await next(page, 1);
+  const cpu = await page.context().newCDPSession(page);
+  await cpu.send("Emulation.setCPUThrottlingRate", { rate: 6 });
   await page.locator("#tour-skip").click();
   await page.waitForFunction(
     ({ manual, manualFrame }) =>
@@ -191,6 +194,13 @@ try {
     manualPixels,
     "Skipping a replayed tour must restore the existing human history and its frame",
   );
+  assert.equal(
+    await page.evaluate(() => document.activeElement.id),
+    "tour-open",
+    "Focus must return after asynchronous human-history restoration finishes",
+  );
+  await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  await cpu.detach();
   assert.equal(
     await page.locator("#pause").getAttribute("aria-label"),
     "Resume Search",
