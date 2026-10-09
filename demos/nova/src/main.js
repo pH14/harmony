@@ -1031,13 +1031,13 @@ function drawAtlas(now) {
       context.restore();
       continue;
     }
-    context.fillStyle = "rgba(7,24,43,.6)";
+    context.fillStyle = "rgba(7,24,43,.42)";
     context.fillRect(0, 0, map.width, map.height);
     for (const cell of heat.cells.values())
       if (cell.level === id) {
         const color = heat.color(cell, now);
         if (color) {
-          context.fillStyle = `rgba(${color},.65)`;
+          context.fillStyle = `rgba(${color},.7)`;
           context.fillRect(cell.x * 32, cell.y * 32 - 8, 32, 32);
         }
       }
@@ -1204,7 +1204,7 @@ function drawArea(canvas, now) {
     return;
   }
   canvas.dataset.swarmCount = 0;
-  ctx.fillStyle = "rgba(7,24,43,.62)";
+  ctx.fillStyle = "rgba(7,24,43,.42)";
   ctx.fillRect(0, 0, mapWidth, mapHeight);
   {
     ctx.fillStyle = "rgba(65,113,162,.11)";
@@ -1215,7 +1215,7 @@ function drawArea(canvas, now) {
       if (!color) continue;
       const x = cell.x * 32,
         y = cell.y * 32 - 8;
-      ctx.fillStyle = `rgba(${color},.48)`;
+      ctx.fillStyle = `rgba(${color},.56)`;
       ctx.fillRect(x + 1, y + 1, 30, 30);
       ctx.strokeStyle = `rgba(${color},.8)`;
       ctx.lineWidth = 0.7 / areaZoom;
