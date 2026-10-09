@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import unittest
@@ -121,6 +122,40 @@ class DeleteTests(unittest.TestCase):
         self.assertIn("ref=refs/heads/claude/fix #1", args)
         self.assertIn(f"before={TIP}", args)
         self.assertIn(f"after={PRUNE.NULL_OID}", args)
+
+
+class FetchTests(unittest.TestCase):
+    def test_branches_are_fetched_in_small_pages_until_the_last_cursor(self):
+        def page(names, cursor):
+            return json.dumps({"data": {"repository": {
+                "id": "R_1",
+                "defaultBranchRef": {"name": "main"},
+                "refs": {
+                    "pageInfo": {"hasNextPage": cursor is not None,
+                                 "endCursor": cursor},
+                    "nodes": [{"name": name, "target": {"oid": TIP},
+                               "associatedPullRequests": {
+                                   "pageInfo": {"hasNextPage": False},
+                                   "nodes": []}} for name in names],
+                },
+            }}})
+
+        replies = [page(["b"], "c1"), page(["a"], None)]
+        calls = []
+        original = PRUNE.gh
+        PRUNE.gh = lambda *args: calls.append(args) or replies.pop(0)
+        try:
+            default, repo_id, branches = PRUNE.fetch_branches("o/r")
+        finally:
+            PRUNE.gh = original
+        self.assertEqual((default, repo_id), ("main", "R_1"))
+        self.assertEqual([b["name"] for b in branches], ["a", "b"])
+        self.assertEqual(len(calls), 2)
+        for args in calls:
+            self.assertIn(f"first={PRUNE.REF_PAGE}", args)
+        self.assertLessEqual(PRUNE.REF_PAGE, 25)
+        self.assertNotIn("after=c1", calls[0])
+        self.assertIn("after=c1", calls[1])
 
 
 class GhTests(unittest.TestCase):

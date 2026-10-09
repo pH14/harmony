@@ -21,14 +21,15 @@ from typing import Any, Callable
 DELETE = "delete"
 KEEP = "keep"
 PULL_REQUEST_PAGE = 20
+REF_PAGE = 25
 NULL_OID = "0" * 40
 
 QUERY = """
-query($owner: String!, $name: String!, $after: String) {
+query($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     id
     defaultBranchRef { name }
-    refs(refPrefix: "refs/heads/", first: 100, after: $after) {
+    refs(refPrefix: "refs/heads/", first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
         name
@@ -121,6 +122,7 @@ def fetch_branches(repo: str) -> tuple[str, str, list[dict[str, Any]]]:
             "-f", f"query={QUERY}",
             "-f", f"owner={owner}",
             "-f", f"name={name}",
+            "-F", f"first={REF_PAGE}",
         ]
         if after:
             args += ["-f", f"after={after}"]
