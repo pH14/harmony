@@ -470,6 +470,27 @@ try {
         "Exact replay ✓" &&
       document.querySelector("#film-title").dataset.stateId === "fixture-main",
   );
+  const firstMainImage = await page
+    .locator("#film")
+    .evaluate((c) => c.toDataURL());
+  await selectFixture(mainTape, "fixture-main-cached");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent ===
+        "Exact replay ✓" &&
+      document.querySelector("#film-title").dataset.stateId ===
+        "fixture-main-cached",
+  );
+  assert.ok(
+    Number(await page.locator("#film").getAttribute("data-seek-start")) >
+      mainFrames / 2,
+    "Reopening a route must reuse its verified history checkpoints",
+  );
+  assert.equal(
+    await page.locator("#film").evaluate((c) => c.toDataURL()),
+    firstMainImage,
+    "A cached route must render the same endpoint pixels as replay from the root",
+  );
   const roomFrames = new Map();
   emulator.restore(emulatorRoot);
   let frame = 0;

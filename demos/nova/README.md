@@ -68,7 +68,11 @@ for the actual emulator frame. The map follows the requested room as soon as the
 the reconstructed game state. Crossing rooms or campaign levels focuses that
 room and brings it into view; zoomed rooms center on the replay position.
 Keyboard/cell selection keeps its retained-state list during this navigation.
-Replay checkpoints are cached only for the selected history, at regular intervals targeting 64 snapshots,
+Route selection keeps replay checkpoints and sampled trail points up to the exact
+shared controller prefix, including equivalent split actions. It discards the
+divergent future and immediately marks the new route selected. Reopening a route
+or selecting a sibling can resume near the endpoint instead of replaying from
+frame zero. Checkpoints remain one bounded cache across selections, at regular intervals targeting 64 snapshots,
 with a hard 2 MiB phone / 4 MiB desktop limit. Seeks resume from the closest
 preceding checkpoint or the current emulator frame, yield after approximately
 8 ms of work, and cancel when a newer request arrives. Movies follow elapsed

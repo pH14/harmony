@@ -7,6 +7,9 @@ export class ReplayTimeline {
   clear() {
     this.checkpoints = new Map();
     this.bytes = 0;
+    this.actions = [];
+    this.trail = [];
+    this.ends = [];
   }
   index(actions, frames) {
     this.actions = actions;
@@ -15,8 +18,10 @@ export class ReplayTimeline {
     this.interval = Math.max(120, Math.ceil(frames / 64 / 24) * 24);
   }
   reset(actions, frames) {
-    this.clear();
+    const shared = sharedFrames(this.actions, actions);
+    this.trim(shared);
     this.index(actions, frames);
+    return shared;
   }
   actionAt(frame) {
     let lo = 0,
@@ -63,6 +68,38 @@ export class ReplayTimeline {
         this.checkpoints.delete(f);
       }
   }
+}
+export function sharedFrames(a, b) {
+  let i = 0,
+    j = 0,
+    usedA = 0,
+    usedB = 0,
+    frames = 0;
+  while (i < a.length && j < b.length && a[i].buttons === b[j].buttons) {
+    const n = Math.min(a[i].frames - usedA, b[j].frames - usedB);
+    frames += n;
+    usedA += n;
+    usedB += n;
+    if (usedA === a[i].frames) {
+      i++;
+      usedA = 0;
+    }
+    if (usedB === b[j].frames) {
+      j++;
+      usedB = 0;
+    }
+  }
+  return frames;
+}
+export function prefixTrail(points, frames, stride) {
+  const prefix = [];
+  for (const point of points) {
+    if (point.frame > frames) break;
+    const last = prefix.at(-1);
+    if (!last || point.gap || last.gap || point.frame - last.frame >= stride)
+      prefix.push(point);
+  }
+  return prefix;
 }
 export function trailPoint(points, frame) {
   let lo = 0,

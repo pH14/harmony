@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "./style.css";
-import { ReplayTimeline, trailPoint } from "./replay.js";
+import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, routeIds } from "./heat.js";
@@ -345,6 +345,7 @@ function followReplayRoom(point) {
   }
 }
 function recordTrail() {
+  timeline.trail = trace;
   if (trace.at(-1)?.frame === currentFrame) return;
   const o = engine.observation(),
     map = maps.get(o.level);
@@ -435,13 +436,14 @@ async function selectState(state, autoplay = false) {
   if (!engine) return;
   stopControl();
   current = state;
-  timeline.reset(state.actions, state.frames);
+  const shared = timeline.reset(state.actions, state.frames);
   requestedFrame = 0;
   historyVerified = false;
-  trace = [];
-  segments = [];
-  traceMaxFrame = -1;
   traceStride = Math.max(24, Math.ceil(state.frames / 6000));
+  trace = prefixTrail(timeline.trail, shared, traceStride);
+  timeline.trail = trace;
+  segments = trailSegments(trace);
+  traceMaxFrame = trace.at(-1)?.frame ?? -1;
   $("inspector").dataset.empty = "false";
   $("selection-hint").hidden = true;
   recordTrailAtRoot();
@@ -456,6 +458,7 @@ async function selectState(state, autoplay = false) {
     state.observation.level !== mapLevel
   )
     setRoom(state.observation.level);
+  renderStates();
   const selection = seek(autoplay ? 0 : state.frames),
     epoch = replayEpoch;
   const success = await selection;
@@ -503,7 +506,7 @@ function renderDetails(observation) {
 function recordTrailAtRoot() {
   engine.restore(origin);
   currentFrame = 0;
-  recordTrail();
+  if (!trace.length) recordTrail();
 }
 function replayTime(frames) {
   const seconds = Math.floor(frames / 60);
