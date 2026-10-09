@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import test from "node:test";
+import { NO_ROOM } from "../src/swarm.js";
 import assert from "node:assert/strict";
 import { Heatmap, cellKey, routeIds, validateTape } from "../src/heat.js";
 import {
@@ -143,4 +144,48 @@ test("canonical snapshots reject missing and oversized blocks", () => {
   bytes.set(new TextEncoder().encode("PPUR"), 8);
   new DataView(bytes.buffer).setUint32(12, 100, true);
   assert.throws(() => canonicalize(bytes));
+});
+
+test("heat marks actual crossed cells once per attempt without creating routes or fake bridges", () => {
+  const heat = new Heatmap(), maps = new Map([
+    [0, { width: 320, height: 224, runtimeWidth: 320 }],
+    [49, { width: 320, height: 224, runtimeWidth: 320 }],
+  ]);
+  const trail = new Uint16Array([
+    0, 0, 8, 184, 0, 4, 0, 24, 184, 0, 8, 0, 40, 184, 0,
+    12, 0, 56, 184, 0, 16, 0, 72, 184, 0,
+    20, NO_ROOM, 0, 0, 0, 24, 49, 8, 184, 0,
+    28, 49, 24, 184, 0, 32, 49, 40, 184, 0,
+  ]);
+  const restored = new Uint16Array([0, 49, 200, 184, 0, 4, 49, 216, 184, 0]);
+  heat.visitMotion([trail, restored], maps, 100);
+  assert.deepEqual([...heat.cells.keys()], ["0:0:5", "0:1:5", "0:2:5", "49:0:5", "49:1:5", "49:6:5"]);
+  for (const cell of heat.cells.values()) {
+    assert.equal(cell.visits, 1);
+    assert.equal(cell.heat, 1);
+    assert.deepEqual(cell.ids, []);
+  }
+  assert.equal(heat.cells.has("49:2:5"), false, "A restore must not paint a connecting path");
+  const endpoint = { observation: { level: 49, x: 216, y: 184 }, retained: "1:7" };
+  heat.retain(endpoint, 100);
+  heat.retain(endpoint, 100);
+  const cell = heat.cells.get("49:6:5");
+  assert.equal(cell.heat, 1, "Retained endpoints must not count activity twice");
+  assert.deepEqual(cell.ids, ["1:7"]);
+  heat.visitMotion([restored], maps, 100);
+  assert.equal(cell.heat, 2, "A fresh attempt counts even if it visits the same cell");
+});
+
+test("motion heat projects vertical pages and excludes menus and off-map positions", () => {
+  const heat = new Heatmap(), maps = new Map([[13, { width: 256, height: 672, runtimeWidth: 768 }]]);
+  const samples = new Uint16Array([
+    0, 13, 528, 184, 0, 4, NO_ROOM, 0, 0, 0,
+    8, 13, 768, 184, 0, 12, 13, 16, 4095, 0,
+    16, 99, 16, 184, 0,
+  ]);
+  heat.visitMotion([samples], maps, 0);
+  assert.deepEqual([...heat.cells.keys()], ["13:0:19"]);
+  const retained = heat.retain({ observation: { level: 13, x: 16, y: 632 }, retained: 9 }, 0);
+  assert.equal(retained.heat, 1);
+  assert.deepEqual(retained.ids, [9]);
 });

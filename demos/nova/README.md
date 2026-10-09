@@ -89,6 +89,13 @@ Try playing button reveals the game and invokes normal takeover after an explici
 
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life measured only while that search runs.
+Activity uses the real four-frame rollout samples, including the restored start
+and cells crossed between action endpoints. Each attempt warms a cell once,
+regardless of how many samples dwell there. No interpolated bridge is painted
+across restores, room transitions or invalid/menu samples. Heatmap, Movement and
+Both use the same recorded attempts; colors and the 32-pixel position grid are
+unchanged. Retained endpoints attach their actual histories separately, without
+warming the cell twice or inventing snapshots for transit cells.
 Heat is a UI view of actual visits, not archive retention or parent-selection
 priority. Pausing, human play and switching to another branch freeze its heat;
 cooled cells remain blue to preserve the explored footprint. The play/pause icon controls search;
@@ -178,7 +185,12 @@ X; touch controls work on phones.
 Stop playing, Escape, loss of focus or hiding the tab releases held inputs and
 ends takeover. Branch search from here verifies
 that the complete controller prefix reproduces the rendered endpoint, then
-starts a separate explorer rooted there.
+starts a separate explorer rooted there. This also applies when branching from
+another branch: the new archive contains only the exact selected root, with a
+fresh random generator and zero search work. Prior controller inputs remain in
+the replay prefix, while the parent's archive and exploration stay separate.
+Paths explored, states retained and game frames executed describe the active
+search; the snapshot-memory tooltip describes the shared allowance.
 It preserves health, items, level progression and emulator state through replay,
 without teleporting Nova or changing game RAM. After successful admission, the
 pane closes and the mapped branch origin ripples for 1.2 seconds; reduced-motion visitors get a stationary ring. The map reveals
@@ -294,7 +306,8 @@ npm run test:browser
 The swarm check compares 128 real recorded and unrecorded rollouts, including
 every archived snapshot byte, and samples authentic door/campaign witness tapes.
 Browser checks cover moving sprites while search is paused, clean overlay and
-heat restoration, one-shot lifetimes, pause/resume, separate branch recordings,
+sampled-path heat without false restore bridges, heat restoration, one-shot
+lifetimes, pause/resume, separate branch recordings,
 restart, tour handoff and phones.
 
 The search check requires three real seeds to reach the garden (map 49) and
@@ -326,7 +339,8 @@ stacked live-map selection, world browsing, tall-level layout, dragging, the
 simplified top-left toolbar/counters, restart, mobile layout, credits and source
 bundles. Browser-only worker interception supplies source-matched, replayed
 fixture states through the normal selected-history response boundary; no fixture
-or test API enters production. Actual fork messages and actual archive responses
+or test API enters production. Nested forks verify their selected frame, fresh root/counters, first restored
+position and descendant prefix against real worker messages. Actual fork messages and actual archive responses
 verify human and descendant prefixes after removal of file controls. A native
 and wasm32 selector fixture checks the same recorded choices with weights above 2^32,
 including 2^56 tiers. `CHROME_CHANNEL=chrome` uses an installed Chrome;

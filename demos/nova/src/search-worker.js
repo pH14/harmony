@@ -57,10 +57,6 @@ function ready(paused = false) {
 }
 function updateMemory(batch) {
   batch.snapshot_bytes = usedSnapshots();
-  batch.states = [...searches.values()].reduce(
-    (sum, s) => sum + s.explorer.state_count(),
-    0,
-  );
   batch.wasm_bytes =
     wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength;
   batch.stopped ||= memoryLimit();

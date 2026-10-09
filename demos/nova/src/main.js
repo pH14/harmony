@@ -134,7 +134,7 @@ function activateSearchView(id) {
     wins: new Map(),
     gameWon: false,
     latestBest: null,
-    stats: {},
+    stats: { executions: 0, states: 1, frames: 0 },
     branchOrigin: null,
   };
   ({
@@ -814,6 +814,7 @@ function startSearch() {
         stats = batchStats;
         gameWon ||= data.won;
         const now = performance.now();
+        heat.visitMotion(data.motion || [], maps, now);
         for (const point of data.points) {
           const o = point.observation,
             map = maps.get(o.level);
@@ -832,7 +833,7 @@ function startSearch() {
             bestStates.set(o.level, point.retained);
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
-          heat.visit({ ...point, observation: project(o, map) }, now);
+          heat.retain({ ...point, observation: project(o, map) }, now);
           sparks.push({ ...project(o, map), time: now });
           if (followDiscovery(o, first, focusedLevel, userSelected, cleared))
             setRoom(o.level);
@@ -1090,7 +1091,7 @@ function updateStats() {
   $("completion").hidden = !witness;
   if (witness) $("completion").textContent = witness.label;
   $("states").title =
-    `${fmt(stats.snapshot_bytes / 1048576)} MiB compressed snapshots; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`;
+    `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`;
   drawAtlas(performance.now());
   $("work").textContent = fmt(stats.frames);
 }

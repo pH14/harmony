@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { createEngine } from "../src/emulator.js";
 import { snapshotHash } from "../src/media.js";
+import { prefixAt } from "../src/branch.js";
 import { TOUR_KEY } from "../src/tour.js";
 import { isMapEvidence } from "../src/world.js";
 const browser = await chromium.launch({
@@ -31,6 +32,8 @@ await page.addInitScript((tourKey) => {
       window.novaTestWorker = this;
       this.addEventListener("message", ({ data }) => {
         if (data.type === "states") window.novaTestStates = data.states;
+        if (data.type === "batch" && data.active === 2 && !window.novaTestNestedBatch)
+          window.novaTestNestedBatch = { ...data, motionStart: [...data.motion[0].slice(0, 5)] };
         if (
           data.type === "batch" &&
           data.active === 0 &&
@@ -723,6 +726,9 @@ try {
         window.novaTestReadyCells =
           document.querySelector("#cells").textContent;
         window.novaTestReady = {
+          root: { ...event.data.state, snapshot: [...event.data.state.snapshot] },
+          states: document.querySelector("#states").textContent,
+          work: document.querySelector("#work").textContent,
           active: event.data.active,
           cells: window.novaTestReadyCells,
           attempts: document.querySelector("#attempts").textContent,
@@ -751,6 +757,7 @@ try {
   await page.locator("#search-here").click();
   await page.waitForFunction(() => !!window.novaTestFork);
   const manualTape = await page.evaluate(() => window.novaTestFork.tape);
+  const manualSeed = await page.evaluate(() => window.novaTestFork.seed);
   assert.ok(manualTape.actions.some((a) => a.buttons & 128));
   assert.ok(manualTape.actions.some((a) => a.buttons & 1));
   assert.ok(manualTape.actions.reduce((n, a) => n + a.frames, 0) > 12);
@@ -881,6 +888,52 @@ try {
     childTape.endpoint_sha256,
     "Search descendants must include and reproduce the human input prefix",
   );
+  const nestedFrame = childState.frames - 1;
+  await page.locator("#scrub").fill(String(nestedFrame));
+  await page.waitForFunction((frame) =>
+    document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame} /`) &&
+    !document.querySelector("#search-here").disabled,
+    nestedFrame,
+  );
+  await page.evaluate(() => { window.novaTestFork = window.novaTestReady = null; });
+  await page.locator("#search-here").click();
+  await page.waitForFunction(() => window.novaTestReady?.active === 2 && !!window.novaTestNestedBatch);
+  const nested = await page.evaluate(() => ({ ready: window.novaTestReady, tape: window.novaTestFork.tape, seed: window.novaTestFork.seed, batch: window.novaTestNestedBatch }));
+  const nestedPrefix = prefixAt(childState.actions, nestedFrame);
+  assert.deepEqual(nested.tape.actions, nestedPrefix, "A nested fork must use the selected descendant's scrubbed frame");
+  assert.equal(nested.tape.branch.parent_state, childState.id);
+  assert.equal(nested.tape.branch.parent_frame, nestedFrame);
+  assert.equal(nested.ready.root.id, "2:0");
+  assert.equal(nested.ready.attempts, "0");
+  assert.equal(nested.ready.work, "0");
+  assert.ok(nested.seed > manualSeed, "A nested fork must have its own fresh random seed");
+  assert.equal(nested.ready.states, "1", "Nested search starts with only its new root, not the parent's archive");
+  assert.equal(nested.ready.cells, "1", "Nested search starts with fresh heat at its actual root");
+  assert.deepEqual(nested.ready.root.actions, nestedPrefix);
+  assert.equal(nested.ready.root.frames, nestedFrame);
+  emulator.restore(emulatorRoot);
+  for (const a of nestedPrefix) emulator.run(a.buttons, a.frames);
+  assert.deepEqual(new Uint8Array(nested.ready.root.snapshot), emulator.capture(), "Nested root must be the exact selected game snapshot");
+  assert.equal(await snapshotHash(emulator.capture()), nested.tape.endpoint_sha256);
+  const nestedObservation = emulator.observation();
+  assert.deepEqual(nested.batch.motionStart.slice(1, 4), [nestedObservation.level, nestedObservation.x, nestedObservation.y], "The first nested attempt must restore its new root position");
+  assert.equal(nested.batch.executions, 2);
+  const admitted = new Set(["2:0", ...nested.batch.points.filter(p => p.retained !== null).map(p => p.retained)]);
+  assert.equal(nested.batch.states, admitted.size, "Retained-state counts must belong to the active search");
+  const nestedId = nested.batch.points.find(p => p.retained !== null && p.retained !== "2:0")?.retained;
+  assert.ok(nestedId?.startsWith("2:"));
+  await page.evaluate((id) => window.novaTestWorker.postMessage({ type: "states", ids: [id], request: -10 }), nestedId);
+  await page.waitForFunction((id) => window.novaTestStates?.[0]?.id === id, nestedId);
+  const nestedDescendant = await page.evaluate(() => window.novaTestStates[0]);
+  assert.deepEqual(nestedDescendant.actions.slice(0, nestedPrefix.length), nestedPrefix);
+  assert.ok(nestedDescendant.frames > nestedFrame);
+  emulator.restore(emulatorRoot);
+  for (const a of nestedDescendant.actions) emulator.run(a.buttons, a.frames);
+  assert.deepEqual(emulator.capture(), new Uint8Array(Object.values(nestedDescendant.snapshot)), "A nested descendant must replay the complete original, human and branch prefix");
+  await page.locator("#pause").click();
+  await page.waitForTimeout(100);
+  console.log("Nested branch: exact scrubbed root, fresh archive/counters/heat, first restored position and replayable descendant passed.");
+
   async function switchSearch(id, cells, attempts, overlay) {
     await page.evaluate(() => {
       window.novaTestReady = null;

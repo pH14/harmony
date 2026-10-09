@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { MOTION_STRIDE, NO_ROOM } from "./swarm.js";
+import { project } from "./world.js";
+
 export const CELL_SIZE = 32;
 export const cellKey = (o) =>
   `${o.level}:${Math.floor(o.x / CELL_SIZE)}:${Math.floor(o.y / CELL_SIZE)}`;
@@ -18,7 +21,7 @@ export class Heatmap {
     this.elapsed = this.clock(now);
     this.runningSince = running ? now : null;
   }
-  visit(point, now) {
+  retain(point, now) {
     const key = cellKey(point.observation);
     let cell = this.cells.get(key);
     if (!cell) {
@@ -35,9 +38,6 @@ export class Heatmap {
       };
       this.cells.set(key, cell);
     }
-    cell.heat = this.value(cell, now) + 1;
-    cell.time = this.clock(now);
-    cell.visits++;
     if (point.retained !== null && !cell.ids.includes(point.retained)) {
       if (!cell.routes.has(point.retained))
         cell.routes.set(point.retained, cell.routes.size + 1);
@@ -45,6 +45,28 @@ export class Heatmap {
       cell.ids = cell.ids.slice(0, 12);
     }
     return cell;
+  }
+  visit(point, now) {
+    const cell = this.retain(point, now);
+    cell.heat = this.value(cell, now) + 1;
+    cell.time = this.clock(now);
+    cell.visits++;
+    return cell;
+  }
+  visitMotion(trails, maps, now) {
+    for (const samples of trails) {
+      const visited = new Set();
+      for (let i = 0; i < samples.length; i += MOTION_STRIDE) {
+        const level = samples[i + 1], map = maps.get(level);
+        if (level === NO_ROOM || !map || samples[i + 2] >= map.runtimeWidth) continue;
+        const observation = project({ level, x: samples[i + 2], y: samples[i + 3] }, map);
+        if (observation.x < 0 || observation.x >= map.width || observation.y < 0 || observation.y >= map.height) continue;
+        const key = cellKey(observation);
+        if (visited.has(key)) continue;
+        visited.add(key);
+        this.visit({ observation, retained: null }, now);
+      }
+    }
   }
   value(cell, now) {
     return (
