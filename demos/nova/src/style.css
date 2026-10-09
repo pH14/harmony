@@ -241,6 +241,10 @@ h2 {
   touch-action: pan-y;
   cursor: crosshair;
 }
+.area-map[data-overlay="novas"],
+.map-card canvas[data-overlay="novas"] {
+  filter: saturate(.6);
+}
 .map-row {
   border-bottom: 1px solid var(--line);
 }

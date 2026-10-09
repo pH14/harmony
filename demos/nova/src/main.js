@@ -211,11 +211,20 @@ $("swarm").onclick = () => {
   userSelected = true;
   setSwarm(!swarmEnabled);
 };
+function drawSwarmBackground(ctx, width, height) {
+  ctx.save();
+  ctx.globalCompositeOperation = "saturation";
+  ctx.fillStyle = "rgba(128,128,128,.85)";
+  ctx.fillRect(0, 0, width, height);
+  ctx.restore();
+  ctx.fillStyle = "rgba(28,31,34,.24)";
+  ctx.fillRect(0, 0, width, height);
+}
 function drawNovas(ctx, level, scale) {
   if (!sprites.complete || !sprites.naturalWidth) return 0;
   const map = maps.get(level), points = swarmRooms.get(level) || [];
   ctx.save();
-  ctx.globalAlpha = 0.55;
+  ctx.globalAlpha = 1;
   let count = 0;
   for (const raw of points) {
     const p = project(raw, map);
@@ -1010,6 +1019,7 @@ function drawAtlas(now) {
       context = c.getContext("2d"),
       image = thumbnails.get(id),
       scale = Math.min(c.width / map.width, c.height / map.height);
+    c.dataset.overlay = swarmEnabled ? "novas" : "heat";
     context.imageSmoothingEnabled = false;
     context.fillStyle = "#211f1c";
     context.fillRect(0, 0, c.width, c.height);
@@ -1030,8 +1040,7 @@ function drawAtlas(now) {
       context.scale(scale, scale);
     }
     if (swarmEnabled) {
-      context.fillStyle = "rgba(12,17,20,.24)";
-      context.fillRect(0, 0, map.width, map.height);
+      drawSwarmBackground(context, map.width, map.height);
       drawNovas(context, id, scale * (c.clientWidth / c.width));
       context.restore();
       continue;
@@ -1199,8 +1208,7 @@ function drawArea(canvas, now) {
   if (canvas.getAttribute("aria-label") !== label)
     canvas.setAttribute("aria-label", label);
   if (swarmEnabled) {
-    ctx.fillStyle = "rgba(12,17,20,.24)";
-    ctx.fillRect(0, 0, mapWidth, mapHeight);
+    drawSwarmBackground(ctx, mapWidth, mapHeight);
     canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
     canvas.dataset.tracePoints = 0;
     canvas.dataset.markerFrame = canvas.dataset.originFrame = "";

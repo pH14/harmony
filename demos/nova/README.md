@@ -30,7 +30,10 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 ## Interaction
 
 All Novas switches the map and atlas to the original level artwork with tiny
-Nova sprites replaying recorded search rollouts together. Heat, grid, trails,
+Nova sprites replaying recorded search rollouts together. Sprites render solid
+over a subdued neutral map background, with a softer display saturation on both room maps and atlas cards, so overlapping runs do not
+blend into the terrain. The source sprite tiles and palette remain unchanged;
+heat and gameplay retain their normal colors. Heat, grid, trails,
 selection rings and sparks disappear in this view; the search and cell inspection
 remain available. Inspecting a cell or opening the guided tour returns to heat.
 Each sprite follows one real rollout from its restored parent, rather than a
