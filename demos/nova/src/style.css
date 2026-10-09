@@ -56,6 +56,9 @@ button {
   border-color: transparent;
   cursor: pointer;
   padding: 9px 13px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   font-weight: 500;
   transition:
     background 0.15s,
@@ -83,7 +86,7 @@ a {
 }
 header,
 main {
-  max-width: 1440px;
+  max-width: none;
   margin: auto;
   padding-inline: 32px;
 }
@@ -441,32 +444,37 @@ h2 {
 #take-control:hover:not(:disabled) {
   background: #eadfc9;
 }
-.controlling #take-control,
-.controlling #take-control:hover:not(:disabled) {
-  background: var(--selection);
-  color: var(--text);
-  transition: none;
-}
 #search-here {
-  background: var(--selection);
-  border-color: var(--line);
-  font-size: 13px;
+  background: var(--play);
+  color: #202629;
+  border-color: transparent;
+  font-size: 12px;
   font-weight: 600;
-  min-height: 42px;
+  min-height: 48px;
+  padding-inline: 8px;
 }
+#discard-branch {
+  min-height: 48px;
+  border-color: var(--line);
+  font-size: 12px;
+  padding-inline: 8px;
+}
+#discard-branch svg { width: 15px; height: 15px; vertical-align: -3px; margin-right: 5px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.draft .branch-actions { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.draft #take-control { grid-column: 1 / -1; }
+.controlling .transport { justify-content: flex-end; margin-top: 6px; }
+.controlling #play, .controlling #scrub, .controlling #speed { display: none; }
 #branch-message {
   font-size: 12px;
   line-height: 1.5;
   color: var(--accent);
   margin-top: 10px;
 }
-#game-controls small {
-  display: block;
-  color: var(--muted);
-  margin: 12px 0;
-  font-size: 11px;
-  line-height: 1.5;
-}
+.keyboard-guide { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 14px 0; color: var(--muted); font-size: 10px; }
+.keyboard-guide > span { display: flex; align-items: center; gap: 4px; }
+kbd { font: inherit; padding: 3px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--raised); }
+.keyboard-guide > span > span { margin-left: 3px; }
+.touch-controls, .touch-controls * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }
 .touch-controls {
   display: flex;
   gap: 12px;
@@ -679,7 +687,7 @@ dialog h2 {
 @media (min-width: 1600px) {
   main,
   header {
-    max-width: 1560px;
+    max-width: none;
   }
 }
 @media (max-width: 1000px) {
@@ -825,6 +833,7 @@ dialog h2 {
   .inspector:not(.expanded) #state-list {
     max-height: 120px;
   }
+  .keyboard-guide { display: none; }
   .touch-controls {
     justify-content: center;
     gap: 20px;
@@ -1006,7 +1015,11 @@ header #tour-open {
   padding-left: 4px;
   border-left: 1px solid var(--line);
 }
+.branches nav { overflow-x: hidden; }
 .branches button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   display: block;
   width: 100%;
   text-align: left;
@@ -1015,6 +1028,8 @@ header #tour-open {
   padding: 9px 10px;
   color: var(--muted);
 }
+#branch-tree ol ol ol ol { margin-left: 0; padding-left: 0; border-left: 0; }
+.branches button small { display: block; margin-top: 3px; font-size: 9px; opacity: .75; }
 .branches button[aria-pressed="true"] {
   background: var(--selection);
   color: var(--text);
@@ -1058,8 +1073,8 @@ header #tour-open {
 @media (max-width: 800px) {
   .branches { position: static; padding: 0; }
   .branches h2 { margin: 0 0 4px; font-size: 10px; }
-  .branches nav { max-height: 100px; overflow: auto; }
-  .branches button { padding-block: 6px; }
+  .branches nav { max-height: 144px; overflow: auto; }
+  .branches button { min-height: 44px; padding-block: 10px; }
   .branches li > ol { margin-block: 0; }
   .branches[data-preview]::after { display: none; }
 }

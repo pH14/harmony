@@ -209,13 +209,13 @@ try {
       await page.locator('#visualization').selectOption('movement');
       await routeMap.focus();
       await page.keyboard.press('Enter');
-      await page.waitForFunction(() => document.querySelector('#visualization').value === 'heat' && document.querySelector('#verification').textContent === 'Exact replay ✓');
+      await page.waitForFunction(() => document.querySelector('#visualization').value === 'movement' && document.querySelector('#verification').textContent === 'Exact replay ✓' && [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.tracePoints) > 0));
       await page.locator('#visualization').selectOption('both');
       await page.locator("#take-control").click();
       await page.keyboard.down("ArrowRight");
       await page.waitForTimeout(140);
       await page.keyboard.up("ArrowRight");
-      await page.locator("#take-control").click();
+      assert.equal(await page.locator("#take-control").isVisible(), false);
       await page.locator("#search-here").click();
       await page.waitForFunction(() => document.querySelector("#branch-tree button[aria-pressed=true]").dataset.search === "1" && !document.querySelector("#branch-tree button[aria-pressed=true]").disabled && document.querySelector("#inspector").hidden);
       await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 30);

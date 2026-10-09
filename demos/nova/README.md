@@ -33,9 +33,11 @@ The View dropdown offers Heatmap, Movement and Both. Movement is the default.
 Movement shows the original level artwork with tiny
 Nova sprites replaying recorded search rollouts together. Maps and sprites retain
 their original colors, with the original light background shade and 55% sprite
-opacity. There is no desaturation or grayscale sprite cache. Heat, grid, trails,
-selection rings and sparks disappear in Movement; search and cell inspection
-remain available. Inspecting a populated cell in Movement or opening the guided
+opacity. There is no desaturation or grayscale sprite cache. Heat, grid and
+sparks disappear in Movement; selected route trails, Nova markers, fork origins
+and cell inspection remain available. Inspecting a populated cell keeps the
+selected view and draws the route and Nova marker in all three modes. Opening
+the guided
 tour returns to Heatmap. Both overlays the original colored sprites on the normal
 heatmap, underneath selected trails and state markers. Inspection keeps Both
 selected. The view selection survives branch changes and Restart Search.
@@ -172,15 +174,16 @@ one small ordinal entry to its cell, without retaining another snapshot. Rows
 show replay durations and health/chips; the selected route has a checkmark.
 Internal IDs and frame counts remain in tooltips and collapsed Game state
 fields. The collapsed phone pane occupies at most 44% of the viewport, with a
-small movie beside replay and branching controls, tight header spacing, and
+small movie beside replay and takeover controls, tight header spacing, and
 a single site-wide attribution in the footer. Selecting a route or collapsing the pane brings its map
 above the pane, including another state in the same room. Playing expands the
 game automatically. Play from here pauses exploration and starts a new
 history at the displayed frame, including frames in the middle of a recorded
 action. Move with arrows or WASD, jump with Z or Space, and use an ability with
 X; touch controls work on phones.
-Stop playing, Escape, loss of focus or hiding the tab releases held inputs and
-ends takeover. Branch search from here verifies
+Escape, loss of focus or hiding the tab releases held inputs and ends takeover;
+closing or discarding the draft resumes exploration. Branch search from here
+verifies
 that the complete controller prefix reproduces the rendered endpoint, then
 starts a separate explorer rooted there. This also applies when branching from
 another branch: the new archive contains only the exact selected root, with a
@@ -200,13 +203,22 @@ at its memory or completion limit stays stopped. Inactive heat stays frozen, and
 returning does not add a synthetic root visit. The left search pane shows Main and its actual nested descendants in a
 branch tree. Parent identity comes from the worker's active search at admission,
 rather than guessing from a route name or manual-history ID. Clicking resumes
-that search. Hover or keyboard focus on an inactive branch temporarily previews
+that search, including a single tap on phones. Tree indentation stops growing
+after three forks; deeper rows name their parent without reducing the map width.
+Desktop maps use the available window width. Mouse hover or keyboard focus on an
+inactive branch temporarily previews
 its saved heat and fork-prefix trail, including its room, without switching the
 worker, advancing that branch, or changing the selected replay. Leaving restores
 the active map. Phones show a compact scrollable tree above the maps. The lower
 world/level atlas is omitted because browsing untouched levels did not establish
 a playable search root. Actual discovery and replay still follow later levels.
-Taking control
+Archived states offer Play from here first; search admission is available only
+after explicit takeover. While playing, Branch search from here and Discard
+branch share one action row and replace the takeover button. Discarding or
+closing a gameplay draft releases inputs and resumes the existing search without
+admitting the draft. Keyboard hints use labeled keycaps; touch controls suppress
+selection/callouts across the whole controller and release captured pointers on
+cancellation. Taking control
 or forking at an earlier scrubber position discards only that new history’s
 future. Descendant histories include the original inputs, human intervention
 and subsequent search inputs, and remain exactly replayable from the original
@@ -319,7 +331,9 @@ every archived snapshot byte, and samples authentic door/campaign witness tapes.
 Browser checks cover moving sprites while search is paused, clean overlay and
 sampled-path heat without false restore bridges, heat restoration, one-shot
 lifetimes, pause/resume, separate branch recordings,
-restart, tour handoff and phones.
+restart, tour handoff and phones. Interaction checks add real two-finger touch
+capture, single-tap branch switching, gameplay-only admission, draft
+discard/close resumption and stable layout across four nested branches.
 
 The search check requires three real seeds to reach the garden (map 49) and
 main area (map 45), and exactly replays both first-arrival tapes against their

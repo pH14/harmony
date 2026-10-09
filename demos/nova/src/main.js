@@ -33,10 +33,10 @@ document.querySelector("#app").innerHTML = `
 <header><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><span class="divider">/</span><span>Nova explorer</span><button id="tour-open" disabled>Guided tour</button></header>
 <main><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><h2>Searches</h2><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav></aside><section class="exploration" aria-label="Live exploration"><div class="toolbar"><div class="controls"><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" disabled>Restart Search</button><span id="branch-feedback" class="visually-hidden" role="status"></span></div><div class="metrics"><div><b id="attempts">0</b><span>paths explored</span></div><div><b id="states">0</b><span>states retained</span></div><div><b id="cells">0</b><span>cells visited</span></div><div><b id="work">0</b><span>game frames executed</span></div></div></div>
 <div class="goal"><div><strong id="goal-title">Level 1</strong><span id="goal-status" hidden></span></div><div><label class="view-picker">View<select id="visualization" aria-label="Visualization"><option value="heat">Heatmap</option><option value="movement" selected>Movement</option><option value="both">Both</option></select></label><button id="completion" hidden>Watch completion</button></div></div>
-<div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint">Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
+<div class="map-wrap"><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a warm cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 </section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><button id="play" disabled>▶ Replay</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" disabled>↗ Branch search from here</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><small>Move ←↑↓→ / WASD · Jump Z / Space · Ability X</small><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><h2 id="film-title">History</h2><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><button id="play" disabled>▶ Replay</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>Jump</span></span><span><kbd>X</kbd><span>Ability</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
 <footer><span><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span><button id="credits">Credits & source</button></footer>
 <div id="route-preview" class="route-preview" hidden><canvas width="256" height="224"></canvas><span></span></div><div id="error" role="alert" hidden></div>
@@ -81,7 +81,8 @@ let stateCache = new StateCache(),
   stats = {};
 const views = new Map(),
   controller = new Controller();
-let controlMode = false,
+let playSession = null,
+  controlMode = false,
   branchBusy = false,
   manualId = 0,
   activeSearch = 0,
@@ -284,6 +285,7 @@ function clearBranchPreview(restore = true) {
   drawMap(performance.now());
 }
 function previewBranch(id) {
+  if (matchMedia("(hover: none)").matches) return;
   if (id === activeSearch || branchBusy || controlMode) return;
   clearBranchPreview();
   const view = searchViews.get(id);
@@ -295,21 +297,28 @@ function previewBranch(id) {
   drawMap(performance.now());
 }
 function renderBranches() {
-  const list = (parent) => {
+  const list = (parent, depth = 0) => {
     const ol = document.createElement("ol");
     for (const search of searchChoices.filter((s) => s.parent === parent)) {
       const li = document.createElement("li"), button = document.createElement("button");
       li.dataset.searchNode = search.id;
       button.dataset.search = search.id;
       button.textContent = search.label;
+      if (depth > 3) {
+        const parentLabel = searchChoices.find((s) => s.id === search.parent)?.label;
+        const ancestry = document.createElement("small");
+        ancestry.textContent = `from ${parentLabel}`;
+        button.append(ancestry);
+      }
       button.setAttribute("aria-pressed", search.id === activeSearch);
       button.title = search.branch ? `Forked at ${replayTime(search.branch.parent_frame)}` : "Original search";
       button.disabled = branchBusy || controlMode;
       button.onclick = () => switchSearch(search.id);
-      button.onpointerenter = button.onfocus = () => previewBranch(search.id);
+      button.onpointerenter = (e) => { if (e.pointerType === "mouse") previewBranch(search.id); };
+      button.onfocus = () => { if (button.matches(":focus-visible")) previewBranch(search.id); };
       button.onpointerleave = button.onblur = () => clearBranchPreview();
       li.append(button);
-      if (searchChoices.some((s) => s.parent === search.id)) li.append(list(search.id));
+      if (searchChoices.some((s) => s.parent === search.id)) li.append(list(search.id, depth + 1));
       ol.append(li);
     }
     return ol;
@@ -702,7 +711,6 @@ function renderStates() {
 function inspect(cell) {
   hideRoutePreview();
   if (!cell || branchBusy) return;
-  if (visualization === "movement" && cell.ids.length) setVisualization("heat");
   stopControl();
   music.stop();
   playing = false;
@@ -732,6 +740,7 @@ function inspect(cell) {
 }
 function startSearch() {
   stopControl();
+  playSession = null;
   music.stop();
   branchBusy = false;
   activeSearch = 0;
@@ -1128,51 +1137,46 @@ function drawArea(canvas, now) {
   const label = `${map.label} ${mode === "movement" ? "Nova movement" : mode === "both" ? "heatmap and Nova movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
   if (canvas.getAttribute("aria-label") !== label)
     canvas.setAttribute("aria-label", label);
+  canvas.dataset.swarmCount = 0;
   if (mode === "movement") {
     drawSwarmBackground(ctx, mapWidth, mapHeight);
-    canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
-    canvas.dataset.tracePoints = 0;
-    canvas.dataset.markerFrame = canvas.dataset.originFrame = "";
-    canvas.dataset.originPulse = "false";
-    ctx.restore();
-    return;
-  }
-  canvas.dataset.swarmCount = 0;
-  ctx.fillStyle = "rgba(7,24,43,.42)";
-  ctx.fillRect(0, 0, mapWidth, mapHeight);
-  {
-    ctx.fillStyle = "rgba(65,113,162,.11)";
+  } else {
+    ctx.fillStyle = "rgba(7,24,43,.42)";
     ctx.fillRect(0, 0, mapWidth, mapHeight);
-    for (const cell of areaHeat.cells.values()) {
-      if (cell.level !== mapLevel) continue;
-      const color = areaHeat.color(cell, now);
-      if (!color) continue;
-      const x = cell.x * 32,
-        y = cell.y * 32 - 8;
-      ctx.fillStyle = `rgba(${color},.56)`;
-      ctx.fillRect(x + 1, y + 1, 30, 30);
-      ctx.strokeStyle = `rgba(${color},.8)`;
-      ctx.lineWidth = 0.7 / areaZoom;
-      ctx.strokeRect(x + 1, y + 1, 30, 30);
+    {
+      ctx.fillStyle = "rgba(65,113,162,.11)";
+      ctx.fillRect(0, 0, mapWidth, mapHeight);
+      for (const cell of areaHeat.cells.values()) {
+        if (cell.level !== mapLevel) continue;
+        const color = areaHeat.color(cell, now);
+        if (!color) continue;
+        const x = cell.x * 32,
+          y = cell.y * 32 - 8;
+        ctx.fillStyle = `rgba(${color},.56)`;
+        ctx.fillRect(x + 1, y + 1, 30, 30);
+        ctx.strokeStyle = `rgba(${color},.8)`;
+        ctx.lineWidth = 0.7 / areaZoom;
+        ctx.strokeRect(x + 1, y + 1, 30, 30);
+      }
+    }
+    ctx.strokeStyle = "rgba(166,205,241,.07)";
+    ctx.lineWidth = 0.5 / areaZoom;
+    for (let x = 0; x <= mapWidth; x += 32) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, mapHeight);
+      ctx.stroke();
+    }
+    for (let y = 24; y < mapHeight; y += 32) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(mapWidth, y);
+      ctx.stroke();
     }
   }
-  ctx.strokeStyle = "rgba(166,205,241,.07)";
-  ctx.lineWidth = 0.5 / areaZoom;
-  for (let x = 0; x <= mapWidth; x += 32) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, mapHeight);
-    ctx.stroke();
-  }
-  for (let y = 24; y < mapHeight; y += 32) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(mapWidth, y);
-    ctx.stroke();
-  }
-  if (mode === "both")
+  if (mode !== "heat")
     canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
-  for (const p of preview ? [] : sparks) {
+  for (const p of preview || mode === "movement" ? [] : sparks) {
     if (p.level !== mapLevel) continue;
     const age = (now - p.time) / 1600;
     if (age > 1) continue;
@@ -1464,6 +1468,23 @@ function closeInspector({ restoreFocus = true } = {}) {
   $("play").textContent = "▶ Replay";
   $("inspector").hidden = true;
   $("workspace").classList.remove("inspect-open");
+  if (playSession) {
+    if (tourSession) tourSession.interacted = true;
+    const resume = playSession.branch === activeSearch && !branchBusy && ready && !stats.stopped;
+    playSession = null;
+    current = selectedCell = null;
+    trace = segments = [];
+    historyVerified = false;
+    ++replayEpoch;
+    seeking = false;
+    ++request;
+    if (resume) {
+      paused = false;
+      worker.postMessage({ type: "resume" });
+      updateSearchControl();
+    }
+    updateBranchControls();
+  }
   if (restoreFocus && inspectorReturnFocus?.isConnected)
     inspectorReturnFocus.focus({ preventScroll: true });
 }
@@ -1478,7 +1499,12 @@ function updateBranchControls() {
     !branchBusy &&
     !!frameObservation?.health;
   $("take-control").disabled = controlMode ? false : !usable;
-  $("search-here").disabled = !usable;
+  const draft = !!playSession && !!current?.branch?.manual;
+  $("take-control").hidden = controlMode;
+  $("search-here").hidden = $("discard-branch").hidden = !draft;
+  $("search-here").disabled = !usable || !draft;
+  $("discard-branch").disabled = branchBusy;
+  $("inspector").classList.toggle("draft", draft);
   $("take-control").textContent = controlMode
     ? "🎮 Stop playing"
     : "🎮 Play from here";
@@ -1548,6 +1574,7 @@ $("take-control").onclick = () => {
   worker.postMessage({ type: "pause" });
   updateSearchControl();
   const parent = current;
+  playSession ||= { branch: activeSearch };
   current = {
     id: `manual-${++manualId}`,
     actions: prefixAt(parent.actions, currentFrame),
@@ -1579,10 +1606,11 @@ $("take-control").onclick = () => {
   updateBranchControls();
   $("film").focus({ preventScroll: true });
 };
+$("discard-branch").onclick = () => closeInspector();
 $("search-here").onclick = async () => {
   hideRoutePreview();
   if (tourSession) tourSession.interacted = true;
-  if (!current || seeking || branchBusy || !frameObservation?.health) return;
+  if (!playSession || !current?.branch?.manual || seeking || branchBusy || !frameObservation?.health) return;
   stopControl();
   music.stop();
   playing = false;
@@ -1641,14 +1669,23 @@ $("search-here").onclick = async () => {
   }
 };
 function switchSearch(id) {
-  if (branchBusy || controlMode || id === activeSearch) return;
+  if (branchBusy || controlMode) return;
   if (tourSession) tourSession.interacted = true;
+  if (id === activeSearch) {
+    closeInspector();
+    if (ready && !stats.stopped) {
+      paused = false;
+      worker.postMessage({ type: "resume" });
+      updateSearchControl();
+    }
+    return;
+  }
   clearBranchPreview();
   hideRoutePreview();
+  branchBusy = true;
   closeInspector();
   userSelected = true;
   paused = true;
-  branchBusy = true;
   pendingOrigin = null;
   ++replayEpoch;
   seeking = false;
@@ -1711,6 +1748,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 for (const button of document.querySelectorAll(".touch-controls button")) {
+  button.addEventListener("contextmenu", (e) => e.preventDefault());
   button.addEventListener("pointerdown", (e) => {
     if (!controlMode) return;
     e.preventDefault();
@@ -1910,9 +1948,9 @@ const tour = new GuidedTour({
     },
     {
       title: "Guide what happens next",
-      copy: "Branch search from here starts a new search at this moment, including any moves you made. Your original search stays intact. The new branch appears in the search tree on the left.",
+      copy: "After playing, Branch search from here sends the search off from your new moment. Discard branch returns to the existing search. Your new search appears in the tree on the left.",
       targets: () => [
-        $("search-here"),
+        $("search-here").hidden ? $("take-control") : $("search-here"),
         $("branches"),
       ],
       interactive: () => [$("inspector"), $("branches")],
@@ -1944,7 +1982,7 @@ const tour = new GuidedTour({
   },
   async beforeStep(index, valid) {
     hideRoutePreview();
-    if (controlMode && index !== 3) stopControl();
+    if (controlMode && index !== 3 && index !== 4) stopControl();
     if (index === 5) return;
     if (index !== 2) {
       playing = false;

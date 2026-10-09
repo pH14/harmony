@@ -376,7 +376,8 @@ try {
       .backgroundColor,
   }));
   assert.equal(stateLayout.fits, true, "History metadata must fit its buttons");
-  assert.notEqual(stateLayout.primary, stateLayout.secondary);
+  assert.equal(await page.locator("#search-here").isVisible(), false, "Archived states offer gameplay before branching");
+  assert.equal(await page.locator("#discard-branch").isVisible(), false);
   const selectedRoute = await page
     .locator("#state-list .selected")
     .evaluate((row) => ({
@@ -675,6 +676,7 @@ try {
       document.querySelector("#verification").textContent === "Original game" &&
       document.querySelector("#scrub").max === "0",
   );
+  await page.locator("#visualization").selectOption("heat");
   const originalAttempts = await page.locator("#attempts").innerText();
   const originalCells = await page.locator("#cells").innerText();
   await page.mouse.move(0, 0);
@@ -695,9 +697,10 @@ try {
     await page.locator("#film").getAttribute("data-audio-frames"),
   );
   await page.locator("#take-control").click();
-  await page.locator("#take-control").hover();
+  assert.equal(await page.locator("#take-control").isVisible(), false);
+  await page.locator("#discard-branch").hover();
   const stopContrast = await page
-    .locator("#take-control")
+    .locator("#discard-branch")
     .evaluate((button) => {
       const styles = getComputedStyle(button);
       const luminance = (color) =>
@@ -715,7 +718,7 @@ try {
     });
   assert.ok(
     stopContrast >= 4.5,
-    "Stop playing must stay readable under the cursor",
+    "Discard branch must stay readable under the cursor",
   );
   await page.keyboard.down("ArrowRight");
   await page.waitForTimeout(500);
@@ -734,7 +737,7 @@ try {
     "Unmute game audio",
   );
   await page.locator("#sound").click();
-  await page.locator("#take-control").click();
+  await page.keyboard.press("Escape");
   assert.equal(
     await page.locator("#take-control").getAttribute("aria-pressed"),
     "false",
@@ -910,10 +913,14 @@ try {
   await page.locator("#scrub").fill(String(nestedFrame));
   await page.waitForFunction((frame) =>
     document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame} /`) &&
-    !document.querySelector("#search-here").disabled,
+    !document.querySelector("#take-control").disabled,
     nestedFrame,
   );
-  await page.evaluate(() => { window.novaTestFork = window.novaTestReady = null; });
+  await page.evaluate(() => {
+    document.querySelector('#take-control').click();
+    window.dispatchEvent(new KeyboardEvent('keydown', {code: 'Escape'}));
+    window.novaTestFork = window.novaTestReady = null;
+  });
   await page.locator("#search-here").click();
   await page.waitForFunction(() => window.novaTestReady?.active === 2 && !!window.novaTestNestedBatch);
   const nested = await page.evaluate(() => ({ ready: window.novaTestReady, tape: window.novaTestFork.tape, seed: window.novaTestFork.seed, batch: window.novaTestNestedBatch }));
@@ -1453,5 +1460,6 @@ try {
   await page.screenshot({ path: "/tmp/nova-play-failure.png", fullPage: true });
   throw e;
 } finally {
+  await page.close();
   await browser.close();
 }

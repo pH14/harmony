@@ -395,7 +395,7 @@ try {
   await practice.keyboard.up('ArrowRight');
   await practice.waitForFunction((frame) => Number(document.querySelector('#scrub').value) > frame, start);
   await next(practice, 4);
-  assert.equal(await practice.locator('#take-control').getAttribute('aria-pressed'), 'false');
+  assert.equal(await practice.locator('#take-control').getAttribute('aria-pressed'), 'true');
   await practice.locator('#search-here').click();
   await ready(practice, 5);
   await practice.waitForFunction(() => document.querySelector('#branch-tree button[aria-pressed=true]').dataset.search === '1' && document.querySelector('#inspector').hidden);
