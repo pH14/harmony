@@ -1148,3 +1148,7 @@ dialog h2 {
 }
 
 .workspace:not(.timeline-collapsed) .branches nav { animation: timeline-in .2s ease-out; }
+
+.level-picker-heading { position: sticky; top: -28px; z-index: 1; background: var(--surface); margin: -28px -28px 20px; padding: 28px 28px 1px; border-bottom: 1px solid var(--line); }
+.level-picker-heading h2 { padding-right: 28px; }
+@media (max-width: 800px) { .level-picker-heading { top: -18px; margin: -18px -12px 18px; padding: 18px 12px 1px; } }

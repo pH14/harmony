@@ -27,6 +27,10 @@ try {
       console.log(`Testing ${phone ? 'phone' : 'desktop'} level ${level}`);
       await page.locator('#goal-title').click();
       assert.equal(await page.locator('#level-worlds .level-card').count(),44);
+      await page.locator('.level-card[data-level="43"]').scrollIntoViewIfNeeded();
+      const close = await page.locator('#close-level-picker').boundingBox();
+      assert.ok(close.y >= 0 && close.y + close.height <= page.viewportSize().height, 'Level picker close stays visible when browsing the last world');
+      await page.locator('.level-card[data-level="0"]').scrollIntoViewIfNeeded();
       await page.screenshot({path:`test-results/levels-${phone ? 'phone' : 'desktop'}.png`});
       await page.locator(`.level-card[data-level="${level}"]`).click();
       await page.waitForFunction(level => window.novaRoot?.boot_level === level && !document.querySelector('#pause').disabled && !document.querySelector('#goal-title').disabled,level);
