@@ -19,6 +19,7 @@ export class Heatmap {
         time: now,
         visits: 0,
         ids: [],
+        routes: new Map(),
       };
       this.cells.set(key, cell);
     }
@@ -26,6 +27,8 @@ export class Heatmap {
     cell.time = now;
     cell.visits++;
     if (point.retained !== null && !cell.ids.includes(point.retained)) {
+      if (!cell.routes.has(point.retained))
+        cell.routes.set(point.retained, cell.routes.size + 1);
       cell.ids.unshift(point.retained);
       cell.ids = cell.ids.slice(0, 12);
     }
@@ -49,6 +52,12 @@ export class Heatmap {
       f = scaled - i;
     return stops[i].map((x, j) => Math.round(x + (stops[i + 1][j] - x) * f));
   }
+}
+export function routeIds(cell, selectedId) {
+  const ids = [...(cell?.ids || [])];
+  if (cell?.routes?.has(selectedId) && !ids.includes(selectedId))
+    ids.push(selectedId);
+  return ids.sort((a, b) => cell.routes.get(a) - cell.routes.get(b));
 }
 export function validateTape(tape) {
   if (

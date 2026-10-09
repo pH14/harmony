@@ -90,8 +90,14 @@ retained branch are sampled at a fixed interval, each with at most about 8,400 p
 At most eight search presentations are retained and Restart Search releases them.
 
 The inspector keeps the movie and a prominent 🎮 Play from here action above a
-compact list of alternate routes to the selected spot. Rows use local route
-numbers, replay durations and health/chips; the selected route has a checkmark.
+compact list of alternate routes to the selected spot. Route numbers are assigned
+once in discovery order within each cell and search, and rows run oldest to newest.
+The most recently retained choice is selected when opening a cell. The latest twelve choices keep
+their original numbers when older choices leave the window; an inspected route
+stays listed while selected, for at most thirteen rows. Repeat visits, reopening
+a cell and branch switches do not renumber histories. Each retained state adds
+one small ordinal entry to its cell, without retaining another snapshot. Rows
+show replay durations and health/chips; the selected route has a checkmark.
 Internal IDs and frame counts remain in tooltips and collapsed Game state
 fields. The collapsed phone pane occupies at most 44% of the viewport, with a
 small movie beside replay and branching controls, tight header spacing, and

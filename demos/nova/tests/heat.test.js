@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Heatmap, cellKey, validateTape } from "../src/heat.js";
+import { Heatmap, cellKey, routeIds, validateTape } from "../src/heat.js";
 import {
   ROM_SHA256,
   CORE_REVISION,
@@ -28,6 +28,43 @@ test("heat cools without discarding histories, and separates rooms", () => {
   for (let n = 0; n < 16; n++) heat.visit({ ...point, retained: n }, 12100);
   assert.equal(cell.ids.length, 12);
   assert.equal(cell.ids[0], 15);
+});
+test("route numbers survive new arrivals, the rolling window and repeat visits", () => {
+  const heat = new Heatmap(),
+    point = { observation: { level: 0, x: 52, y: 184 }, retained: "1:0" },
+    cell = heat.visit(point, 0);
+  heat.visit({ ...point, retained: "1:1" }, 1);
+  heat.visit(point, 2);
+  assert.equal(cell.routes.get("1:0"), 1);
+  assert.equal(cell.routes.get("1:1"), 2);
+  assert.deepEqual(routeIds(cell), ["1:0", "1:1"]);
+  for (let id = 2; id < 15; id++)
+    heat.visit({ ...point, retained: `1:${id}` }, id + 1);
+  assert.equal(cell.ids.length, 12);
+  assert.equal(cell.routes.size, 15);
+  assert.equal(cell.routes.get(routeIds(cell)[0]), 4);
+  assert.equal(cell.routes.get("1:0"), 1);
+  const pinned = routeIds(cell, "1:0");
+  assert.equal(pinned.length, 13);
+  assert.equal(pinned[0], "1:0");
+  assert.deepEqual(routeIds(cell, "unknown"), routeIds(cell));
+  assert.equal(cell.ids.length, 12);
+  heat.visit(point, 20);
+  assert.equal(cell.routes.size, 15);
+  assert.equal(cell.routes.get("1:0"), 1);
+  assert.equal(routeIds(cell)[0], "1:0");
+  const another = heat.visit(
+    {
+      ...point,
+      observation: { ...point.observation, level: 49 },
+      retained: "1:99",
+    },
+    21,
+  );
+  assert.equal(another.routes.get("1:99"), 1);
+  const otherSearch = new Heatmap().visit(point, 0);
+  assert.equal(otherSearch.routes.get("1:0"), 1);
+  assert.deepEqual(routeIds({ ids: [] }), []);
 });
 test("history admission rejects wrong identities and malformed inputs", () => {
   const tape = {

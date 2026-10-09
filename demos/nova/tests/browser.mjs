@@ -242,6 +242,73 @@ try {
   }));
   assert.equal(stateLayout.fits, true, "History metadata must fit its buttons");
   assert.notEqual(stateLayout.primary, stateLayout.secondary);
+  const selectedRoute = await page
+    .locator("#state-list .selected")
+    .evaluate((row) => ({
+      id: row.dataset.stateId,
+      name: row.querySelector(".state-name").textContent,
+    }));
+  const routeNumbers = await page
+    .locator("#state-list .state-name")
+    .allTextContents();
+  const orderedNumbers = routeNumbers.map((name) =>
+    Number(name.slice("Route ".length)),
+  );
+  assert.ok(
+    orderedNumbers.length > 1,
+    "The real cell must contain alternate histories",
+  );
+  assert.deepEqual(
+    orderedNumbers,
+    [...orderedNumbers].sort((a, b) => a - b),
+    "Routes must read oldest to newest",
+  );
+  const beforeRoutes = Number(
+    (await page.locator("#attempts").innerText()).replaceAll(",", ""),
+  );
+  await page.locator("#pause").click();
+  await page.waitForFunction(
+    (before) =>
+      Number(
+        document.querySelector("#attempts").textContent.replaceAll(",", ""),
+      ) >=
+      before + 300,
+    beforeRoutes,
+  );
+  await page.locator("#pause").click();
+  await page.waitForTimeout(100);
+  await page.locator("#state-list .selected").click();
+  await page.waitForFunction(
+    (id) =>
+      document.querySelector("#film-title").dataset.stateId === id &&
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+    selectedRoute.id,
+  );
+  assert.equal(
+    await page.locator("#film-title").innerText(),
+    selectedRoute.name,
+    "Further search must not renumber the history being watched",
+  );
+  assert.equal(
+    await page.locator("#state-list .selected .state-name").innerText(),
+    selectedRoute.name,
+  );
+  const afterNumbers = (
+    await page.locator("#state-list .state-name").allTextContents()
+  ).map((name) => Number(name.slice("Route ".length)));
+  assert.deepEqual(
+    afterNumbers,
+    [...afterNumbers].sort((a, b) => a - b),
+  );
+  assert.ok(
+    afterNumbers.length <= 13,
+    "Only the latest twelve routes and the inspected history stay listed",
+  );
+  await page.locator("#map").click({ position: click });
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
   const total = await page.locator("#scrub").getAttribute("max");
   assert.ok(Number(total) > 0);
   await page.locator("#scrub").fill("0");

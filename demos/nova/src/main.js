@@ -3,7 +3,7 @@ import "./style.css";
 import { ReplayTimeline, trailPoint } from "./replay.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
-import { Heatmap } from "./heat.js";
+import { Heatmap, routeIds } from "./heat.js";
 import { CREDIT, snapshotHash } from "./media.js";
 import { viewCenter } from "./view.js";
 import {
@@ -510,8 +510,8 @@ function replayTime(frames) {
 }
 function routeName(id) {
   if (String(id).startsWith("manual-")) return "Your branch";
-  const index = selectedCell?.ids.indexOf(id) ?? -1;
-  return index >= 0 ? `Route ${index + 1}` : "History";
+  const number = selectedCell?.routes?.get(id);
+  return number !== undefined ? `Route ${number}` : "History";
 }
 function renderStates() {
   if (current) {
@@ -520,7 +520,9 @@ function renderStates() {
     $("film-title").title =
       `State #${current.id} · ${fmt(current.frames)} frames`;
   }
-  const ids = selectedCell?.ids || [current?.id].filter((x) => x !== undefined);
+  const ids = selectedCell
+    ? routeIds(selectedCell, current?.id)
+    : [current?.id].filter((x) => x !== undefined);
   $("cell-title").textContent = selectedCell
     ? "Routes to this spot"
     : "History";
