@@ -21,32 +21,35 @@ from typing import Any, Callable
 DELETE = "delete"
 KEEP = "keep"
 PULL_REQUEST_PAGE = 20
-REF_PAGE = 25
+REF_BATCH = 25
 NULL_OID = "0" * 40
 
-QUERY = """
-query($owner: String!, $name: String!, $first: Int!, $after: String) {
+REFS_QUERY = """
+query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     id
     defaultBranchRef { name }
-    refs(refPrefix: "refs/heads/", first: $first, after: $after) {
+    refs(refPrefix: "refs/heads/", first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
         name
         target { oid }
-        associatedPullRequests(first: 20) {
-          pageInfo { hasNextPage }
-          nodes {
-            number
-            state
-            headRefOid
-            baseRefName
-            headRepository { nameWithOwner }
-            baseRepository { nameWithOwner }
-          }
-        }
       }
     }
+  }
+}
+"""
+
+PULL_REQUEST_FIELDS = """
+associatedPullRequests(first: 20) {
+  pageInfo { hasNextPage }
+  nodes {
+    number
+    state
+    headRefOid
+    baseRefName
+    headRepository { nameWithOwner }
+    baseRepository { nameWithOwner }
   }
 }
 """
@@ -76,6 +79,8 @@ def classify(
     tip = branch["oid"]
     if name == default_branch:
         return KEEP, "default branch"
+    if branch["unreadable"]:
+        return KEEP, "GitHub could not list its pull requests"
     if branch["truncated"]:
         return KEEP, f"more than {PULL_REQUEST_PAGE} associated pull requests"
     prs = [pr for pr in branch["prs"] if same_repo(pr["head_repo"], repo)]
@@ -110,46 +115,98 @@ def gh(*args: str) -> str:
     return result.stdout
 
 
-def fetch_branches(repo: str) -> tuple[str, str, list[dict[str, Any]]]:
+def fetch_refs(repo: str) -> tuple[str, str, list[dict[str, Any]]]:
     owner, name = repo.split("/", 1)
     default_branch = ""
     repo_id = ""
-    branches: list[dict[str, Any]] = []
+    refs: list[dict[str, Any]] = []
     after = None
     while True:
         args = [
             "api", "graphql",
-            "-f", f"query={QUERY}",
+            "-f", f"query={REFS_QUERY}",
             "-f", f"owner={owner}",
             "-f", f"name={name}",
-            "-F", f"first={REF_PAGE}",
         ]
         if after:
             args += ["-f", f"after={after}"]
         data = json.loads(gh(*args))["data"]["repository"]
         default_branch = data["defaultBranchRef"]["name"]
         repo_id = data["id"]
-        for node in data["refs"]["nodes"]:
-            branches.append({
-                "name": node["name"],
-                "oid": node["target"]["oid"],
-                "truncated": node["associatedPullRequests"]["pageInfo"]["hasNextPage"],
-                "prs": [
-                    {
-                        "number": pr["number"],
-                        "state": pr["state"],
-                        "head_oid": pr["headRefOid"],
-                        "base": pr["baseRefName"],
-                        "head_repo": (pr["headRepository"] or {}).get("nameWithOwner"),
-                        "base_repo": (pr["baseRepository"] or {}).get("nameWithOwner"),
-                    }
-                    for pr in node["associatedPullRequests"]["nodes"]
-                ],
-            })
+        refs += [{"name": node["name"], "oid": node["target"]["oid"]}
+                 for node in data["refs"]["nodes"]]
         page = data["refs"]["pageInfo"]
         if not page["hasNextPage"]:
             break
         after = page["endCursor"]
+    return default_branch, repo_id, refs
+
+
+def pull_request_query(count: int) -> str:
+    variables = "".join(f", $r{index}: String!" for index in range(count))
+    fields = "".join(
+        f"r{index}: ref(qualifiedName: $r{index}) {{ {PULL_REQUEST_FIELDS} }}\n"
+        for index in range(count)
+    )
+    return (f"query($owner: String!, $name: String!{variables}) {{\n"
+            f"  repository(owner: $owner, name: $name) {{\n{fields}  }}\n}}\n")
+
+
+def fetch_pull_requests(repo: str, names: list[str]) -> dict[str, Any]:
+    """Map each branch name to its pull request connection, or None when GitHub cannot list it."""
+    owner, name = repo.split("/", 1)
+    args = [
+        "api", "graphql",
+        "-f", f"query={pull_request_query(len(names))}",
+        "-f", f"owner={owner}",
+        "-f", f"name={name}",
+    ]
+    for index, branch in enumerate(names):
+        args += ["-f", f"r{index}=refs/heads/{branch}"]
+    try:
+        data = json.loads(gh(*args))["data"]["repository"]
+    except subprocess.CalledProcessError:
+        if len(names) == 1:
+            return {names[0]: None}
+        middle = len(names) // 2
+        return {**fetch_pull_requests(repo, names[:middle]),
+                **fetch_pull_requests(repo, names[middle:])}
+    return {
+        branch: (data[f"r{index}"] or {}).get("associatedPullRequests")
+        for index, branch in enumerate(names)
+    }
+
+
+def pull_requests(connection: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "number": pr["number"],
+            "state": pr["state"],
+            "head_oid": pr["headRefOid"],
+            "base": pr["baseRefName"],
+            "head_repo": (pr["headRepository"] or {}).get("nameWithOwner"),
+            "base_repo": (pr["baseRepository"] or {}).get("nameWithOwner"),
+        }
+        for pr in connection["nodes"]
+    ]
+
+
+def fetch_branches(repo: str) -> tuple[str, str, list[dict[str, Any]]]:
+    default_branch, repo_id, refs = fetch_refs(repo)
+    names = [ref["name"] for ref in refs]
+    connections: dict[str, Any] = {}
+    for start in range(0, len(names), REF_BATCH):
+        connections.update(fetch_pull_requests(repo, names[start:start + REF_BATCH]))
+    branches = []
+    for ref in refs:
+        connection = connections[ref["name"]]
+        branches.append({
+            "name": ref["name"],
+            "oid": ref["oid"],
+            "unreadable": connection is None,
+            "truncated": bool(connection) and connection["pageInfo"]["hasNextPage"],
+            "prs": pull_requests(connection) if connection else [],
+        })
     return default_branch, repo_id, sorted(branches, key=lambda branch: branch["name"])
 
 

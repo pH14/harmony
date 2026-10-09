@@ -31,8 +31,9 @@ def pr(number, state, head=TIP, base="main", head_repo=REPO, base_repo=REPO):
             "base": base, "head_repo": head_repo, "base_repo": base_repo}
 
 
-def branch(name="feature", oid=TIP, prs=(), truncated=False):
-    return {"name": name, "oid": oid, "prs": list(prs), "truncated": truncated}
+def branch(name="feature", oid=TIP, prs=(), truncated=False, unreadable=False):
+    return {"name": name, "oid": oid, "prs": list(prs), "truncated": truncated,
+            "unreadable": unreadable}
 
 
 def classify(candidate, on_default=False):
@@ -95,6 +96,11 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(verdict, PRUNE.KEEP)
         self.assertIn("more than", reason)
 
+    def test_a_branch_whose_pull_requests_cannot_be_listed_is_kept(self):
+        verdict, reason = classify(branch(unreadable=True), on_default=True)
+        self.assertEqual(verdict, PRUNE.KEEP)
+        self.assertIn("could not list", reason)
+
     def test_tip_on_default_branch_is_deleted(self):
         verdict, _ = classify(branch(), on_default=True)
         self.assertEqual(verdict, PRUNE.DELETE)
@@ -124,38 +130,83 @@ class DeleteTests(unittest.TestCase):
         self.assertIn(f"after={PRUNE.NULL_OID}", args)
 
 
-class FetchTests(unittest.TestCase):
-    def test_branches_are_fetched_in_small_pages_until_the_last_cursor(self):
-        def page(names, cursor):
-            return json.dumps({"data": {"repository": {
-                "id": "R_1",
-                "defaultBranchRef": {"name": "main"},
-                "refs": {
-                    "pageInfo": {"hasNextPage": cursor is not None,
-                                 "endCursor": cursor},
-                    "nodes": [{"name": name, "target": {"oid": TIP},
-                               "associatedPullRequests": {
-                                   "pageInfo": {"hasNextPage": False},
-                                   "nodes": []}} for name in names],
-                },
-            }}})
+def connection(*prs, truncated=False):
+    return {"pageInfo": {"hasNextPage": truncated},
+            "nodes": [{"number": number, "state": state, "headRefOid": TIP,
+                       "baseRefName": "main",
+                       "headRepository": {"nameWithOwner": REPO},
+                       "baseRepository": {"nameWithOwner": REPO}}
+                      for number, state in prs]}
 
-        replies = [page(["b"], "c1"), page(["a"], None)]
-        calls = []
+
+class FakeGitHub:
+    def __init__(self, refs, connections, broken=()):
+        self.refs = refs
+        self.connections = connections
+        self.broken = set(broken)
+        self.pull_request_calls = []
+
+    def __call__(self, *args):
+        values = dict(arg.split("=", 1) for arg in args if "=" in arg)
+        if "refs(" in values["query"]:
+            index = int(values.get("after", "0"))
+            nodes = [{"name": name, "target": {"oid": TIP}}
+                     for name in self.refs[index:index + 2]]
+            more = index + 2 < len(self.refs)
+            return json.dumps({"data": {"repository": {
+                "id": "R_1", "defaultBranchRef": {"name": "main"},
+                "refs": {"pageInfo": {"hasNextPage": more,
+                                      "endCursor": str(index + 2)},
+                         "nodes": nodes}}}})
+        names = {key: value.removeprefix("refs/heads/")
+                 for key, value in values.items() if key.startswith("r")
+                 and key[1:].isdigit()}
+        self.pull_request_calls.append(sorted(names.values()))
+        if self.broken & set(names.values()):
+            raise subprocess.CalledProcessError(1, ["gh"], "", "went wrong")
+        return json.dumps({"data": {"repository": {
+            key: {"associatedPullRequests": self.connections[name]}
+            for key, name in names.items()}}})
+
+
+class FetchTests(unittest.TestCase):
+    def fetch(self, github):
         original = PRUNE.gh
-        PRUNE.gh = lambda *args: calls.append(args) or replies.pop(0)
+        PRUNE.gh = github
         try:
-            default, repo_id, branches = PRUNE.fetch_branches("o/r")
+            return PRUNE.fetch_branches("o/r")
         finally:
             PRUNE.gh = original
+
+    def test_refs_are_paged_and_joined_with_their_pull_requests(self):
+        github = FakeGitHub(["c", "a", "b"], {
+            "a": connection((1, "MERGED")),
+            "b": connection(truncated=True),
+            "c": connection((2, "OPEN"), (3, "CLOSED")),
+        })
+        default, repo_id, branches = self.fetch(github)
         self.assertEqual((default, repo_id), ("main", "R_1"))
-        self.assertEqual([b["name"] for b in branches], ["a", "b"])
-        self.assertEqual(len(calls), 2)
-        for args in calls:
-            self.assertIn(f"first={PRUNE.REF_PAGE}", args)
-        self.assertLessEqual(PRUNE.REF_PAGE, 25)
-        self.assertNotIn("after=c1", calls[0])
-        self.assertIn("after=c1", calls[1])
+        self.assertEqual([b["name"] for b in branches], ["a", "b", "c"])
+        self.assertEqual([pr["number"] for pr in branches[0]["prs"]], [1])
+        self.assertTrue(branches[1]["truncated"])
+        self.assertEqual([pr["state"] for pr in branches[2]["prs"]],
+                         ["OPEN", "CLOSED"])
+        self.assertFalse(any(b["unreadable"] for b in branches))
+        self.assertEqual(github.pull_request_calls, [["a", "b", "c"]])
+
+    def test_a_branch_github_cannot_resolve_is_isolated_and_marked(self):
+        names = [f"b{index:02}" for index in range(PRUNE.REF_BATCH + 3)]
+        github = FakeGitHub(names, {name: connection((1, "MERGED"))
+                                    for name in names}, broken=["b05"])
+        _, _, branches = self.fetch(github)
+        unreadable = [b["name"] for b in branches if b["unreadable"]]
+        self.assertEqual(unreadable, ["b05"])
+        broken = next(b for b in branches if b["name"] == "b05")
+        self.assertEqual(broken["prs"], [])
+        self.assertTrue(all(b["prs"] for b in branches if b["name"] != "b05"))
+        self.assertIn(["b05"], github.pull_request_calls)
+        self.assertTrue(all(len(call) <= PRUNE.REF_BATCH
+                            for call in github.pull_request_calls))
 
 
 class GhTests(unittest.TestCase):
