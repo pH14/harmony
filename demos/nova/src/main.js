@@ -1342,8 +1342,13 @@ function bindMap(c) {
       e.preventDefault();
       if (level !== mapLevel) setRoom(level);
       hoverCell = point;
+      const cell = heat.cells.get(`${level}:${point.x}:${point.y}`);
+      if (tourSession) {
+        tourSession.interacted = true;
+        if (cell?.ids.length) tourSession.cell = cell;
+      }
       inspect(
-        heat.cells.get(`${level}:${point.x}:${point.y}`) || {
+        cell || {
           ...point,
           visits: 0,
           ids: [],

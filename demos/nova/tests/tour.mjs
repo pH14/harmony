@@ -270,6 +270,21 @@ try {
   assert.equal(await page.locator('[inert]').count(), 0, 'Leaving replay interaction must release all temporary background isolation');
   await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   await cpu.detach();
+  await page.locator('#tour-open').click();
+  await ready(page, 0);
+  await next(page, 1);
+  const keyboardRoute = await page.locator('#film-title').getAttribute('data-state-id');
+  assert.notEqual(keyboardRoute, manual);
+  await page.locator('#map').focus();
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && document.querySelector('#verification').textContent === 'Exact replay ✓', keyboardRoute);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#guided-tour').isVisible(), false);
+  assert.equal(await page.locator('#film-title').getAttribute('data-state-id'), keyboardRoute, 'Explicit keyboard cell selection must survive dismissal instead of restoring an older manual history');
+  assert.equal(await page.locator('[inert]').count(), 0);
+
   assert.equal(
     await page.locator("#pause").getAttribute("aria-label"),
     "Resume Search",
