@@ -99,7 +99,9 @@ the two opening steps, then pauses while inspecting a
 route. Dismissal always resumes the selected search while preserving explicit
 branch changes and any existing human history. Leaving gameplay by discarding,
 collapsing History or admitting a search visits the branch-decision step before
-Searches, even if the visitor acts early on the gameplay step. Clicking Branch
+Searches, even if the visitor acts early on the gameplay step. Admission advances
+from the step where it began; pressing Next while a branch is pending cannot
+advance the tour twice. Clicking Branch
 search from here performs normal verified admission. The tour itself never creates branches or inputs;
 Play from here and all real controls require an explicit visitor action. Moving
 from gameplay to search admission preserves the human draft and controller, even

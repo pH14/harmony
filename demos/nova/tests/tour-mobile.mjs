@@ -85,6 +85,15 @@ try {
   for (const viewport of [{width:320,height:568}, {width:390,height:844}, {width:844,height:390}]) {
     const page = await browser.newPage({viewport,isMobile:true,hasTouch:true,reducedMotion:'reduce'});
     page.on('pageerror', (e) => errors.push(e.message));
+    await page.addInitScript(() => {
+      const RealWorker = window.Worker;
+      window.Worker = class extends RealWorker {
+        postMessage(data, ...rest) {
+          if (data.type === 'fork' && window.tourForkDelay) setTimeout(() => super.postMessage(data,...rest),window.tourForkDelay);
+          else super.postMessage(data,...rest);
+        }
+      };
+    });
     await page.goto(url);
     await ready(page, 0);
     await opening(page);
@@ -185,8 +194,9 @@ try {
       await page.locator('#tour-back').tap();
       await ready(page,4);
       await play(page);
+      await page.evaluate(() => window.tourForkDelay = 1000);
       await page.locator('#search-here').tap();
-      await ready(page,5);
+      await next(page,5);
       await page.waitForFunction(() => document.querySelector('button[data-search="1"][aria-pressed="true"]') && document.querySelector('#inspector').hidden);
       assert.equal(await page.locator('#tour-title').innerText(),'To branch or not to branch','Early admission must not skip straight to Searches');
       await next(page,6);

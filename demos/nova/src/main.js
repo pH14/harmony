@@ -887,10 +887,12 @@ function startSearch(level = bootLevel) {
         ready = true;
         activeSearch = data.active;
         const fresh = activateSearchView(activeSearch),
-          handedOff = fresh && !!pendingOrigin;
+          handedOff = fresh && !!pendingOrigin,
+          handoffTourStep = pendingOrigin?.tourStep;
         originPulse = null;
         if (handedOff) {
           branchOrigin = pendingOrigin;
+          delete branchOrigin.tourStep;
           originPulse = { point: branchOrigin.point, start: performance.now() };
           saveSearchView();
         }
@@ -941,7 +943,7 @@ function startSearch(level = bootLevel) {
             `Branch ${activeSearch} is searching from this frame.`;
           updateBranchControls();
           $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
-          if (tour.open && (tour.index === 4 || tour.index === 5)) tour.go(tour.index + 1);
+          if (tour.open && [4, 5].includes(handoffTourStep) && tour.index === handoffTourStep) tour.go(handoffTourStep + 1);
         }
         if (engine) selectState(state, initial).catch(fail);
         updateStats();
@@ -1783,6 +1785,7 @@ $("search-here").onclick = async () => {
     prefix = trace.filter((p) => p.frame < branchFrame);
   prefix.push(point);
   pendingOrigin = {
+    tourStep: tour.open ? tour.index : null,
     point: point.gap ? null : point,
     frame: branchFrame,
     segments: trailSegments(prefix),
