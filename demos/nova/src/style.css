@@ -246,7 +246,7 @@ h2 {
   height: auto;
   image-rendering: pixelated;
   touch-action: pan-y;
-  cursor: crosshair;
+  cursor: default;
 }
 .map-row {
   border-bottom: 1px solid var(--line);

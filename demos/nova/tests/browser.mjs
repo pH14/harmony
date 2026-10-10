@@ -291,8 +291,12 @@ try {
       },
       { x, y },
     );
+    await introMap.hover({ position: click });
+    assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
     await introMap.click({ position: click });
   };
+  await introMap.hover({ position: { x: 2, y: 2 } });
+  assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "default");
   await introMap.click({ position: { x: 2, y: 2 } });
   assert.equal(
     await page.locator("#inspector").getAttribute("data-empty"),

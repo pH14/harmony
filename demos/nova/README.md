@@ -103,7 +103,7 @@ priority. Pausing, human play and switching to another branch freeze its heat;
 cooled cells remain blue to preserve the explored footprint. The play/pause icon controls search;
 Restart Search resets it. Heatmap and Both show the same activity overlay. Clicking a cell with retained states
 opens a history inspector beside the maps, or a collapsible bottom sheet on phones,
-listing its latest twelve retained states. Clicking a cell with no retained states
+listing its latest twelve retained states. Mouse hover outlines and the pointer cursor identify only cells with retained histories; empty ground and transit-only cells keep the ordinary cursor. Keyboard selection can still inspect any grid cell. Clicking a cell with no retained states
 clears the previous selection and closes the inspector, leaving the maps visible
 and keyboard focus on the map. Arrow keys and Enter also select cells. Each level
 shows all its connected areas as stacked live maps: Introduction, Garden and

@@ -1371,10 +1371,10 @@ function bindMap(c) {
       }
     }
     if (pinch || e.pointerType === "touch") return;
-    hoverCell = mapCoordinates(e);
-    const cell = heat.cells.get(
-      `${hoverCell.level}:${hoverCell.x}:${hoverCell.y}`,
-    );
+    const point = mapCoordinates(e),
+      cell = heat.cells.get(`${point.level}:${point.x}:${point.y}`);
+    hoverCell = cell?.ids.length ? point : null;
+    c.style.cursor = hoverCell ? "pointer" : "default";
     $("hover").hidden = false;
     $("hover").textContent =
       `${cell?.visits || 0} visits · ${cell?.ids.length || 0} states`;
@@ -1383,6 +1383,7 @@ function bindMap(c) {
     if (c.hasPointerCapture(e.pointerId)) return;
     pointerStart = null;
     hoverCell = null;
+    c.style.cursor = "default";
     $("hover").hidden = true;
   });
   c.addEventListener("click", (e) => {
