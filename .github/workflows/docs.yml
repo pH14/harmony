@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Release / Harmony / Documentation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: documentation-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+      - name: Install documentation tools
+        run: python -m pip install -r docs/requirements.txt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-documentation
+      - name: Execute the source installation example
+        run: python3 scripts/docs_examples.py host --evidence docs-host-evidence
+      - name: Check executable documentation contracts
+        run: python3 -m unittest discover -s scripts -p test_docs_examples.py
+      - name: Render and validate documentation
+        run: python -m mkdocs build --strict
+      - name: Retain a reviewable site
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-site
+          path: |
+            site/
+            docs-host-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: documentation
+    concurrency:
+      group: harmony-pages
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+      - name: Render current main for publication
+        run: |
+          python -m pip install -r docs/requirements.txt
+          cargo build --locked --release -p harmony-cli
+          python -m mkdocs build --strict
+          echo "Publishing main at $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Publish documentation
+        id: deployment
+        uses: actions/deploy-pages@v4

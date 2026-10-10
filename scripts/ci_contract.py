@@ -574,6 +574,7 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             scope="harmony_languages"),
         Job("UML Command Replay", "pr", 15, scope="harmony_languages"),
+        Job("Documentation Examples", "pr", 15, scope="harmony_languages"),
     ),
 )
 
@@ -686,8 +687,28 @@ CONSONANCE_UML = Workflow(
     ),
 )
 
+DOCUMENTATION = Workflow(
+    path=f"{WORKFLOW_DIR}/docs.yml",
+    name="Release / Harmony / Documentation",
+    owner="Harmony",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(
+        Job("Documentation", "pr", 15),
+        Job("Publish", "full", 15,
+            exception="Only trusted main runs may publish; pull requests build read-only artifacts."),
+    ),
+)
+
+# Publication may coalesce queued deployments, but never cancel a running one.
+# Check jobs keep their per-push groups. The publisher checks out current main
+# inside this shared slot, so even a late older run publishes current content.
+SERIAL_PUBLICATION_JOBS = {
+    (DOCUMENTATION.path, "publish"): "harmony-pages",
+}
+
 WORKFLOWS = (
     REPOSITORY_CHECKS,
+    DOCUMENTATION,
     HARMONY_HOST_COMPATIBILITY,
     CONSONANCE_CHECKS,
     CONSONANCE_ANALYSIS,

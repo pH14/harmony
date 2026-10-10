@@ -1,0 +1,84 @@
+site_name: Harmony
+site_description: Find bugs, inspect the evidence, and explore from a changed state.
+site_url: https://ph14.github.io/harmony/
+repo_url: https://github.com/pH14/harmony
+repo_name: pH14/harmony
+edit_uri: ''
+docs_dir: docs/user
+site_dir: site
+strict: true
+theme:
+  name: material
+  language: en
+  font: false
+  logo: assets/harmony.svg
+  favicon: assets/harmony.svg
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+plugins:
+  - search
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.details
+extra_css:
+  - assets/styles.css
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    not_found: warn
+    unrecognized_links: warn
+    anchors: warn
+hooks:
+  - docs/hooks.py
+nav:
+  - Start here:
+      - What is Harmony?: index.md
+      - Install Harmony: start/install.md
+      - Find your first bug: start/first-bug.md
+  - Test your application:
+      - Configure an application: test/application.md
+      - Prepare a language build: test/languages.md
+      - Define correctness: test/assertions.md
+      - Use an existing image: test/images.md
+  - Investigate:
+      - Investigate a finding: investigate/index.md
+      - Run longer searches: search.md
+  - How it works:
+      - Determinism and investigation: concepts/determinism.md
+      - Components and execution: concepts/architecture.md
+  - Reference:
+      - Commands: reference/cli.md
+      - Recipe: reference/recipe.md
+      - Supported environments: reference/environments.md
+      - Saved evidence: reference/evidence.md
+      - Troubleshooting: reference/troubleshooting.md
+  - NES: nes.md

@@ -258,3 +258,54 @@ jobs:
           path: uml-command-evidence
           if-no-files-found: error
           retention-days: 14
+
+  documentation-examples:
+    name: Documentation Examples
+    needs: [guest, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_languages
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-image-c
+          path: language-image
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+      - if: steps.scope.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-language-cli
+      - name: Build the documented CLI and enable KVM
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          cargo build --locked --release -p harmony-cli
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          docker load --input language-image/c.tar
+      - name: Execute the published application and investigation examples
+        if: steps.scope.outputs.enabled == 'true'
+        run: timeout -k 10 600 python3 scripts/docs_examples.py application --evidence documentation-evidence
+      - if: always() && steps.scope.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-examples
+          path: |
+            documentation-evidence/*.log
+            documentation-evidence/examples.json
+            documentation-evidence/results/
+          if-no-files-found: error
+          retention-days: 14

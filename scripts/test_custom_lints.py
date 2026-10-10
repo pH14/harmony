@@ -40,6 +40,44 @@ jobs:
 """
 
 
+class PublicDocumentationTests(unittest.TestCase):
+    def test_site_sources_and_only_named_assets_are_allowed(self):
+        self.assertFalse(LINTS.check_docs_allowlist([
+            "docs/SITE.md", "docs/requirements.txt", "docs/user/index.md",
+            "docs/hooks.py", "docs/examples/catalog.json", "docs/examples/counter.toml",
+            "docs/examples/main.c", "docs/examples/walkthrough.sh", "docs/examples/host.sh",
+            "docs/examples/inspect.sh", "docs/examples/README.md",
+            "docs/user/how-to/install.md", "docs/user/assets/styles.css",
+            "docs/user/assets/harmony.svg",
+        ]))
+        violations = LINTS.check_docs_allowlist([
+            "docs/private-notes.md", "docs/user/stray.js", "docs/user/site/index.html",
+        ])
+        self.assertEqual([v.rule for v in violations], [
+            "docs-allowlist", "docs-markdown-only", "docs-markdown-only",
+        ])
+
+
+class PublicationConcurrencyTests(unittest.TestCase):
+    def test_only_the_registered_publisher_can_share_a_group(self):
+        path = ci_contract.DOCUMENTATION.path
+        data = {"jobs": {"publish": {"concurrency": {
+            "group": "harmony-pages", "cancel-in-progress": False,
+        }}}}
+        self.assertFalse(LINTS.check_push_concurrency(path, data))
+        self.assertTrue(LINTS.check_push_concurrency(".github/workflows/other.yml", data))
+        data["jobs"]["documentation"] = data["jobs"]["publish"]
+        self.assertTrue(LINTS.check_push_concurrency(path, data))
+
+    def test_publication_must_serialize_without_canceling(self):
+        for concurrency in (None, "harmony-pages", {},
+                            {"group": "harmony-pages", "cancel-in-progress": True},
+                            {"group": "wrong", "cancel-in-progress": False}):
+            with self.subTest(concurrency=concurrency):
+                data = {"jobs": {"publish": {"concurrency": concurrency}}}
+                self.assertTrue(LINTS.check_push_concurrency(ci_contract.DOCUMENTATION.path, data))
+
+
 class RepositoryVocabularyTests(unittest.TestCase):
     def test_words_and_identifier_components_are_rejected(self):
         word = LINTS.PROHIBITED_WORD

@@ -1,0 +1,130 @@
+{
+  "application": [
+    {
+      "id": "install-runtime",
+      "cwd": "source",
+      "exit": [
+        0
+      ]
+    },
+    {
+      "id": "setup",
+      "cwd": "source",
+      "exit": [
+        0
+      ]
+    },
+    {
+      "id": "init",
+      "exit": [
+        0
+      ]
+    },
+    {
+      "id": "prepare",
+      "exit": [
+        0
+      ],
+      "timeout": 600
+    },
+    {
+      "id": "check",
+      "exit": [
+        0
+      ]
+    },
+    {
+      "id": "search",
+      "exit": [
+        1
+      ],
+      "timeout": 180,
+      "verify": "finding"
+    },
+    {
+      "id": "findings",
+      "exit": [
+        0
+      ]
+    },
+    {
+      "id": "inspect",
+      "exit": [
+        0
+      ]
+    },
+    {
+      "id": "state",
+      "exit": [
+        0,
+        1
+      ],
+      "contains": "counter, writer-0 completed, writer-1 completed:",
+      "verify": "state"
+    },
+    {
+      "id": "branch",
+      "exit": [
+        0
+      ],
+      "contains": "investigating",
+      "verify": "branch"
+    },
+    {
+      "id": "followup",
+      "exit": [
+        0,
+        1
+      ],
+      "verify": "followup"
+    },
+    {
+      "id": "resume",
+      "exit": [
+        0,
+        1
+      ],
+      "verify": "resume"
+    },
+    {
+      "id": "compare",
+      "exit": [
+        0
+      ]
+    },
+    {
+      "id": "shell",
+      "exit": [
+        0
+      ],
+      "stdin": "shell-input",
+      "contains": "investigating",
+      "verify": "shell"
+    },
+    {
+      "id": "shell-search",
+      "exit": [
+        0,
+        1
+      ],
+      "verify": "shell-search"
+    },
+    {
+      "id": "script",
+      "exit": [
+        0
+      ],
+      "contains": "investigating",
+      "verify": "script"
+    }
+  ],
+  "host": [
+    {
+      "id": "build-cli",
+      "exit": [
+        0
+      ],
+      "timeout": 600
+    }
+  ]
+}

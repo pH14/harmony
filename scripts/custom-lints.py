@@ -955,13 +955,23 @@ def check_workflow_file(repo_root: Path, rel_path: str, workflow) -> list[Violat
 
 
 def check_push_concurrency(rel_path: str, data: dict) -> list[Violation]:
-    """A push run is never cancelled or replaced by a later push."""
+    """Preserve every push check; serialize only explicitly registered publishers."""
     import ci_contract
 
-    scopes = [("workflow", data.get("concurrency"))]
-    scopes += [(f"job '{job_id}'", job.get("concurrency")) for job_id, job in data["jobs"].items()]
+    scopes = [("workflow", None, data.get("concurrency"))]
+    scopes += [(f"job '{job_id}'", job_id, job.get("concurrency"))
+               for job_id, job in data["jobs"].items()]
     violations = []
-    for owner, concurrency in scopes:
+    for owner, job_id, concurrency in scopes:
+        serial_group = ci_contract.SERIAL_PUBLICATION_JOBS.get((rel_path, job_id))
+        if serial_group is not None:
+            if (not isinstance(concurrency, dict)
+                    or concurrency.get("group") != serial_group
+                    or concurrency.get("cancel-in-progress") is not False):
+                violations.append(Violation("ci-push-concurrency", rel_path, 0,
+                    f"{owner} must serialize publication in '{serial_group}' "
+                    "without canceling a running deployment"))
+            continue
         if concurrency is None:
             continue
         group = concurrency.get("group") if isinstance(concurrency, dict) else concurrency
@@ -1600,6 +1610,7 @@ DOCS_ALLOWLIST = {
     "docs/PROTOCOL.md",
     "docs/TESTING.md",
     "docs/WORKFLOWS.md",
+    "docs/SITE.md",
 }
 
 
@@ -1607,6 +1618,25 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
     violations = []
     for rel_path in files:
         if not rel_path.startswith("docs/"):
+            continue
+        # The public site is a distinct end-user documentation tree. Keep
+        # non-Markdown exceptions exact so generated output and stray assets
+        # cannot broaden the repository documentation allowance.
+        if rel_path in {
+            "docs/requirements.txt",
+            "docs/hooks.py",
+            "docs/examples/README.md",
+            "docs/examples/catalog.json",
+            "docs/examples/counter.toml",
+            "docs/examples/host.sh",
+            "docs/examples/inspect.sh",
+            "docs/examples/main.c",
+            "docs/examples/walkthrough.sh",
+            "docs/user/assets/harmony.svg",
+            "docs/user/assets/styles.css",
+        }:
+            continue
+        if rel_path.startswith("docs/user/") and rel_path.endswith(".md"):
             continue
         if not rel_path.endswith(".md"):
             violations.append(Violation(

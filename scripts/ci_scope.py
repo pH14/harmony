@@ -40,6 +40,11 @@ def selected(paths):
     result = dict.fromkeys(SCENARIOS, False)
     for path in paths:
         path = path.strip()
+        if path.startswith(("docs/examples/", "docs/hooks.py", "scripts/docs_examples.py",
+                            "scripts/test_docs_examples.py", "dissonance/",
+                            "workloads/fault-policy/", "workloads/bugs/category/lost-update/",
+                            "workloads/bugs/interleaving.h")):
+            result["harmony_languages"] = True
         if not path or path.endswith(".md"):
             continue
         if any(fnmatch.fnmatchcase(path, pattern) for pattern in GLOBAL):

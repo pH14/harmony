@@ -1,0 +1,40 @@
+:root {
+  --md-text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #146b5e;
+  --md-accent-fg-color: #146b5e;
+  --md-default-bg-color: #fcfcf9;
+  --md-typeset-a-color: #116557;
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #173d38;
+  --md-accent-fg-color: #98dcca;
+  --md-typeset-a-color: #98dcca;
+}
+.md-header { box-shadow: none; }
+.md-tabs { border-bottom: 1px solid #ffffff24; }
+.md-typeset { font-size: .83rem; line-height: 1.7; }
+.md-typeset h1 { font-weight: 650; letter-spacing: -.035em; color: var(--md-default-fg-color); }
+.md-typeset h2 { font-weight: 600; letter-spacing: -.02em; }
+.md-typeset code { border-radius: .2rem; }
+.md-typeset pre > code { border-radius: .4rem; }
+/* Task-first pages use the same readable layout throughout. */
+.md-typeset .md-button { border-radius: .3rem; padding: .5em 1em; margin: .35rem .5rem .5rem 0; }
+.md-typeset > h1 { max-width: 34rem; line-height: 1.2; }
+.md-typeset table:not([class]) { font-size: .76rem; }
+.md-typeset pre { margin: 1.1em 0; }
+.md-nav__link--active { font-weight: 650; }
+@media (max-width: 600px) {
+  .md-typeset h1 { font-size: 1.8rem; }
+  .md-typeset .md-button { display: block; text-align: center; }
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button {
+  color: #98dcca;
+  border-color: #98dcca;
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary {
+  background-color: #98dcca;
+  color: #102d29;
+}

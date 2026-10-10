@@ -52,6 +52,7 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
+| `Release / Harmony / Documentation` | `docs.yml` | pull_request, push (main), workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
@@ -509,3 +510,27 @@ The Harmony NES Nova lane also runs `cli/tests/nes.sh` against the pinned native
 runner. It checks the shared CLI's prepared-input execution, exact replay, prefix
 branching, nonempty rooted searches, additional-budget continuation and artifact
 tamper refusal. Its evidence is uploaded with the existing Nova artifact.
+
+## User documentation
+
+`Release / Harmony / Documentation` renders the end-user site with a strict
+MkDocs build. Pull requests produce an HTML review artifact. Only runs on main
+can reach the separate Pages deployment job, which owns the write and identity
+permissions. `SERIAL_PUBLICATION_JOBS` permits only this publisher to share a
+non-canceling concurrency slot across pushes. After acquiring it, the job checks
+out and strictly builds current main rather than publishing an older artifact.
+Thus a late-arriving workflow still publishes current content even when GitHub
+replaces a pending deployment. Pull-request checks and all build
+jobs retain independent per-push groups. Its full-trigger exception expresses this trust boundary, not an
+extended runtime budget; both jobs are bounded to fifteen minutes. See
+[SITE.md](SITE.md) for preview and hosting configuration.
+
+The documentation build runs on code-only changes as well as documentation
+changes. It executes the source-build example and derives CLI reference from the
+resulting executable. `Documentation Examples` in the language workflow consumes
+the shared C image and exact guest artifacts, then executes the same example
+regions the site renders. It checks a confirmed lost-update finding, persisted
+command and shell changes, rooted search, and additional-budget continuation.
+Example, CLI, runtime, searcher, and fixture changes select this guest check.
+The strict build rejects copied code fences and examples without an execution
+owner. See [SITE.md](SITE.md) for the contract and evidence format.
