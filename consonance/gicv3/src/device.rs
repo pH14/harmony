@@ -947,6 +947,61 @@ mod tests {
     }
 
     #[test]
+    fn set_pending_writes_set_only_the_written_bits() {
+        let mut g = gic();
+        g.mmio_write(GicFrame::Dist, ISPENDR_BASE + 4, 1 << 3, 0)
+            .unwrap();
+        assert_eq!(
+            g.mmio_read(GicFrame::Dist, ISPENDR_BASE + 4, 0).unwrap(),
+            1 << 3
+        );
+
+        let sgi = SGI_FRAME_BASE;
+        g.mmio_write(GicFrame::Redist, sgi + ISPENDR_BASE, 1 << 5, 0)
+            .unwrap();
+        g.mmio_write(GicFrame::Redist, sgi + ISPENDR_BASE, 1 << 7, 0)
+            .unwrap();
+        let pending = (1 << 5) | (1 << 7);
+        assert_eq!(g.snapshot().pending[0], pending);
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, sgi + ISPENDR_BASE, 0)
+                .unwrap(),
+            pending
+        );
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, sgi + ICPENDR_BASE, 0)
+                .unwrap(),
+            pending
+        );
+    }
+
+    #[test]
+    fn redistributor_priority_window_ends_at_the_private_interrupts() {
+        let mut g = gic();
+        g.mmio_write(GicFrame::Dist, IPRIORITYR_BASE + 32, 0x8040_2010, 0)
+            .unwrap();
+        assert_eq!(
+            g.mmio_read(GicFrame::Dist, IPRIORITYR_BASE + 32, 0)
+                .unwrap(),
+            0x8040_2010
+        );
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, SGI_FRAME_BASE + IPRIORITYR_BASE + 32, 0)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn pmr_reads_back_the_programmed_mask() {
+        let mut g = gic();
+        g.set_pmr(0x80);
+        assert_eq!(g.pmr(), 0x80);
+        g.set_pmr(0);
+        assert_eq!(g.pmr(), 0);
+    }
+
+    #[test]
     fn unimplemented_intids_are_rejected_and_writes_masked() {
         let mut g = gic();
         assert_eq!(g.raise(96), Err(GicError::BadIntId(96)));
