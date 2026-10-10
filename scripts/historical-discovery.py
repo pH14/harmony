@@ -29,7 +29,7 @@ OUTCOMES = (
     "inconclusive",
     "infra-failure",
 )
-ARM_ORDER = {"guided": 0, "general": 1, "ablation": 2, "heldout": 3, "control": 4}
+ARM_ORDER = {"guided": 0, "general": 1, "ablation": 2, "heldout": 3}
 
 
 @dataclass

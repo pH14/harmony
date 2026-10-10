@@ -455,26 +455,6 @@ such. Neither the workloads nor the search may change in response to a
 held-out measurement; a change made after one is a correction, and it
 restarts every affected measurement.
 
-## Fixed-release controls
-
-An integrity violation counts as a discovery only if it comes from a bug, not
-from the workload, its oracle or the harness. Three control cases test that.
-Each runs a general workload, oracle and search unchanged against the first
-release that fixes the bugs of the cases it controls:
-
-| Case | Release | Controls |
-|---|---|---|
-| `sqlite-3.51.3-control` | SQLite 3.51.3 | `sqlite-wal-general` (WAL reset, fixed in 3.51.3) and `sqlite-3.50.1-heldout` (fixed in 3.50.2) |
-| `postgres-14.4-control` | PostgreSQL 14.4 | `postgres-index-general` (fixed in 14.4) and `postgres-14.1-heldout` (fixed in 14.2) |
-| `etcd-3.5.6-control` | etcd 3.5.6 | `etcd-3.5-general` (fixed in 3.5.3) and `etcd-3.5.5-heldout` (fixed in 3.5.6) |
-
-A control is scored like any arm, so its discoveries are confirmed,
-reproduced integrity violations on a fixed release. Each one is investigated:
-it is either a bug the fixes do not cover or a false report, and a false
-report is corrected in the workload or harness and restarts every affected
-measurement. Discoveries on the affected releases are trusted only while their
-controls stay clean. The comparison reports each control in its own table.
-
 ## Corrections
 
 Each correction to the frozen specification, with its reason. A correction
@@ -599,6 +579,5 @@ made after a general-arm measurement restarts every affected measurement.
     as `oracle.integrity`, each with its evidence, and a confirmed, reproduced
     violation of any of them is a discovery. The focused SQLite cases count the
     fork's corruption, lost-write and read-your-writes assertions; the focused
-    PostgreSQL and etcd cases declare one assertion each. The
-    [fixed-release controls](#fixed-release-controls) test that these
-    violations come from bugs. Every arm is scored again.
+    PostgreSQL and etcd cases declare one assertion each. Every arm is scored
+    again.

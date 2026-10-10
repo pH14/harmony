@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# The SQLite general workload against an official SQLite amalgamation, 3.50.1
-# unless the build arguments name another (sqlite-3.51.3-control does).
+# The SQLite general workload against the official SQLite 3.50.1 amalgamation.
 # The driver, compile flags and trace-pc-guard coverage are the
 # sqlite-wal-general case's; only the SQLite source differs. The build context
 # is the repository root.

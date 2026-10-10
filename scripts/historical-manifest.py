@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VALID_CI_STATES = {"runnable", "deferred"}
 VALID_PANELS = {"reproduction", "discovery"}
-VALID_DISCOVERY_MODES = {"guided", "general", "ablation", "heldout", "control"}
+VALID_DISCOVERY_MODES = {"guided", "general", "ablation", "heldout"}
 GITHUB_JOB_LIMIT_MINUTES = 360
 SEARCH_HEADROOM_MINUTES = 20
 
@@ -103,23 +103,11 @@ def validate(path: Path, case: dict) -> dict:
         raise SystemExit(f"{path}: panel must be reproduction or discovery")
     mode = case.get("discovery_mode", "guided")
     if mode not in VALID_DISCOVERY_MODES:
-        raise SystemExit(f"{path}: discovery_mode must be guided, general, ablation, heldout or control")
+        raise SystemExit(f"{path}: discovery_mode must be guided, general, ablation or heldout")
     focused = case.get("focused_case")
     if (panel == "discovery") != (mode != "guided"):
-        raise SystemExit(
-            f"{path}: general, ablation, heldout and control cases, and only they, belong to the discovery panel"
-        )
-    controls = case.get("controls")
-    if mode == "control":
-        if (
-            not isinstance(controls, list)
-            or not controls
-            or not all(isinstance(other, str) and (path.parent.parent / other / "case.json").is_file() for other in controls)
-        ):
-            raise SystemExit(f"{path}: a control case names the existing cases it controls")
-    elif controls is not None:
-        raise SystemExit(f"{path}: only a control case names controls")
-    if panel == "discovery" and mode not in {"heldout", "control"}:
+        raise SystemExit(f"{path}: general, ablation and heldout cases, and only they, belong to the discovery panel")
+    if panel == "discovery" and mode != "heldout":
         if not isinstance(focused, str) or not (path.parent.parent / focused / "case.json").is_file():
             raise SystemExit(f"{path}: a general or ablation case names an existing focused_case")
     elif focused is not None:

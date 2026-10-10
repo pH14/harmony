@@ -397,8 +397,8 @@ full search lives in Benchmarks and pull requests do not run it.
 benchmark that [DISCOVERY.md](../workloads/bugs/historical/DISCOVERY.md)
 specifies. A case's `panel` keeps it apart from the nightly search above: the
 nightly panel runs the `reproduction` cases, and this workflow runs every
-`discovery` case (a general workload, an ablation, a held-out case or a
-fixed-release control) beside the focused case it names. Every arm runs on the User-mode Linux profile, one campaign job per arm
+`discovery` case (a general workload, an ablation or a held-out case) beside
+the focused case it names. Every arm runs on the User-mode Linux profile, one campaign job per arm
 and seed, with one wall budget (90 minutes by default) and one execution
 ceiling for every arm. A campaign replays its first confirmed finding that
 carries the case's scored assertion or one of its integrity assertions, with
