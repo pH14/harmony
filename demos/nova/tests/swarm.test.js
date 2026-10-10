@@ -92,3 +92,14 @@ test("attempts follow each branch's activity clock through pauses and reduced mo
   assert.equal(swarm.frame(0, original.clock(11000), true).size, 0);
   assert.equal(swarm.bytes, 0);
 });
+
+test("deleting a search releases only its movement recordings", () => {
+  const swarm = new NovaSwarm(4096, 20);
+  const samples = new Uint16Array([0,0,16,100,0,24,0,48,100,0]);
+  swarm.add(1, [samples], 0);
+  swarm.add(2, [samples], 0);
+  swarm.remove(1);
+  assert.equal(swarm.bytes, samples.byteLength);
+  assert.equal(swarm.frame(1, 100).size, 0);
+  assert.equal(swarm.frame(2, 100).get(0).length, 1);
+});

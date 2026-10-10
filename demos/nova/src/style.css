@@ -1259,3 +1259,19 @@ dialog h2 {
 .tour-top, .tour-bottom { flex-shrink: 0; }
 .tour-description { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .tour-description:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+
+.room-parts { background: var(--surface); }
+.room-part { position: relative; min-width: 0; }
+.room-continuation {
+  display: flex; align-items: center; justify-content: space-between;
+  min-height: 28px; padding: 0 8px; gap: 8px;
+  font: 10px/1.4 system-ui; color: var(--muted); background: var(--surface);
+  border-top: 1px dashed var(--line);
+}
+.room-continuation::after { content: attr(data-direction); opacity: .65; position: absolute; left: calc(50% + 25px); }
+.room-continuation button { padding: 3px 12px; border: 0; background: transparent; color: var(--muted); min-height: 28px; }
+.room-continuation button:disabled { opacity: .25; }
+.vertical-room { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: start; gap: 8px; padding: 8px; }
+@media (max-width: 400px) { .vertical-room { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+@media (max-width: 800px) { .workspace.inspect-open { padding-bottom: 44dvh; } }

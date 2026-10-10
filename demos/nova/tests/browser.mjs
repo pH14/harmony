@@ -1158,10 +1158,10 @@ try {
   assert.equal(await page.locator(".map-row").count(), 3);
   for (const id of [0, 49, 45])
     assert.equal(
-      await page.locator(`.map-row[data-map="${id}"] canvas`).isVisible(),
+      await page.locator(`.map-row[data-map="${id}"] canvas`).first().isVisible(),
       true,
     );
-  await page.locator('.map-row[data-map="49"] canvas').focus();
+  await page.locator('.map-row[data-map="49"] canvas').first().focus();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
   assert.equal(await page.locator("#map").getAttribute("data-map"), "49");
@@ -1310,7 +1310,7 @@ try {
   );
   const phoneMap = await page.locator("#inspector").evaluate((panel) => {
     const sheet = panel.getBoundingClientRect(),
-      map = document.querySelector("#map").getBoundingClientRect();
+      map = document.querySelector(`.area-map[data-marker-frame="${document.querySelector("#scrub").value}"]`).getBoundingClientRect();
     return {
       height: sheet.height / innerHeight,
       topGap:
@@ -1357,7 +1357,7 @@ try {
   );
   await page.locator("#expand-inspector").click();
   const mapVisible = await page
-    .locator("#map")
+    .locator('.area-map[data-marker-frame]:not([data-marker-frame=""])').first()
     .evaluate(
       (map) =>
         map.getBoundingClientRect().bottom <=
@@ -1411,11 +1411,11 @@ try {
   );
   await page.waitForFunction(
     () =>
-      document.querySelector('.map-row[data-map="45"] canvas').dataset
+      document.querySelector('.map-row[data-map="45"] canvas[data-origin-frame]:not([data-origin-frame=""])').dataset
         .originPulse === "true",
   );
   const originRoomVisible = await page
-    .locator('.map-row[data-map="45"]')
+    .locator('.map-row[data-map="45"] .room-part:has(canvas[data-origin-frame]:not([data-origin-frame=""]))')
     .evaluate((row) => {
       const bounds = row.getBoundingClientRect();
       return bounds.top >= 0 && bounds.bottom <= innerHeight;
@@ -1423,7 +1423,7 @@ try {
   assert.equal(
     originRoomVisible,
     true,
-    "Handoff from expanded phone gameplay must reveal the actual origin room",
+    "Handoff from expanded phone gameplay must reveal the actual origin section",
   );
   await page.waitForFunction(
     () =>
@@ -1432,13 +1432,13 @@ try {
   await page.locator("#pause").click();
   await page.waitForFunction(
     () =>
-      document.querySelector('.map-row[data-map="45"] canvas').dataset
+      document.querySelector('.map-row[data-map="45"] canvas[data-origin-frame]:not([data-origin-frame=""])').dataset
         .originPulse === "false",
   );
   assert.ok(
     Number(
       await page
-        .locator('.map-row[data-map="45"] canvas')
+        .locator('.map-row[data-map="45"] canvas[data-origin-frame]:not([data-origin-frame=""])')
         .getAttribute("data-trace-points"),
     ) > 1,
   );

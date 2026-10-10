@@ -45,10 +45,13 @@ try {
       await page.locator('#pause').click();
       // Select the exact starting state in its projected map cell.
       const point = await page.evaluate(() => {
-        const o = window.novaRoot.observation, c = document.querySelector(`.map-row[data-map="${o.level}"] canvas`),r=c.getBoundingClientRect();
-        const w=Number(c.dataset.mapWidth),h=Number(c.dataset.mapHeight);
-        const worldX = o.x % w, worldY = o.y + Math.floor(o.x/w)*224;
+        const o = window.novaRoot.observation, panels=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] canvas`)];
+        const roomWidth=Number(panels[0].dataset.roomWidth);
+        const worldX=o.x%roomWidth, worldY=o.y+Math.floor(o.x/roomWidth)*224;
         const x=Math.floor(worldX/32)*32+16,y=Math.floor(worldY/32)*32+8;
+        const c=panels.find(c=>worldX>=+c.dataset.panelX && worldX<+c.dataset.panelX+c.width && worldY-8>=+c.dataset.panelY && worldY-8<+c.dataset.panelY+c.height);
+        c.scrollIntoView({block:'center',behavior:'instant'});
+        const r=c.getBoundingClientRect(),w=Number(c.dataset.mapWidth),h=Number(c.dataset.mapHeight);
         const scale=Math.min(c.width/w,c.height/h)*Number(c.dataset.zoom);
         return {x:r.left+((x-Number(c.dataset.centerX))*scale+c.width/2)*r.width/c.width,y:r.top+((y-Number(c.dataset.centerY))*scale+c.height/2)*r.height/c.height};
       });

@@ -14,6 +14,7 @@ let initialized = false,
   genesis,
   bootLevel = 0,
   active = 0,
+  nextBranch = 1,
   generation = 0,
   busy = false;
 const searches = new Map();
@@ -49,20 +50,21 @@ function choices() {
     parent: s.parent ?? null,
   }));
 }
-function ready(paused = false) {
+function ready(paused = false, deleted) {
   postMessage({
     type: "ready",
+    deleted,
     active,
     searches: choices(),
     state: stateFor(active, 0),
     paused,
   });
 }
-function updateMemory(batch) {
+function updateMemory(batch, search) {
   batch.snapshot_bytes = usedSnapshots();
   batch.wasm_bytes =
     wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength;
-  batch.stopped ||= memoryLimit();
+  batch.stopped = !!search.localStopped || memoryLimit();
 }
 const loop = new SearchLoop(() => {
   if (!initialized || busy) return false;
@@ -79,7 +81,8 @@ const loop = new SearchLoop(() => {
       ...p,
       retained: p.retained === null ? null : externalId(active, p.retained),
     }));
-    updateMemory(batch);
+    search.localStopped = batch.stopped;
+    updateMemory(batch, search);
     search.stats = batch;
     postMessage({ type: "batch", active, ...batch, motion }, motion.map((trail) => trail.buffer));
     if (batch.stopped) postMessage({ type: "limit", won: batch.won });
@@ -126,19 +129,36 @@ onmessage = async ({ data }) => {
       loop.pause();
       active = data.active;
       const stats = searches.get(active).stats;
-      if (stats) updateMemory(stats);
+      if (stats) updateMemory(stats, searches.get(active));
       const stopped = !!stats?.stopped || memoryLimit();
       ready(stopped);
       if (stats) postMessage({ type: "batch", active, ...stats, points: [] });
       if (stopped) postMessage({ type: "limit", won: !!stats?.won });
       else loop.resume();
+    } else if (data.type === "delete" && initialized && !busy) {
+      const removed = searches.get(data.id);
+      if (!data.id || !removed) throw new Error("Unknown deletable search branch");
+      loop.pause();
+      const wasActive = active === data.id;
+      if (wasActive) active = removed.parent ?? 0;
+      for (const search of searches.values()) if (search.parent === data.id) search.parent = removed.parent ?? 0;
+      searches.delete(data.id);
+      removed.explorer.free();
+      const search = searches.get(active), stats = search.stats;
+      if (stats) updateMemory(stats, search);
+      const stopped = !!stats?.stopped || memoryLimit();
+      const paused = stopped || (!wasActive && !!data.paused);
+      ready(paused, data.id);
+      if (stats) postMessage({ type: "batch", active, ...stats, points: [] });
+      if (stopped) postMessage({ type: "limit", won: !!stats?.won });
+      else if (!paused) loop.resume();
     } else if (data.type === "fork" && initialized && !busy) {
       loop.pause();
       busy = true;
       try {
         if (searches.size >= 8)
           throw new Error(
-            "Eight searches retained. Restart Search to release them before creating another.",
+            "Eight searches retained. Delete a branch or Restart Search before creating another.",
           );
         const tape = data.tape;
         const frames = validateTape(tape);
@@ -152,7 +172,7 @@ onmessage = async ({ data }) => {
           usedSnapshots() + genesis.length + 64 > budget.snapshotsMiB * 1048576
         )
           throw new Error(
-            "Search memory limit reached. Save this history and Restart Search to release the retained searches.",
+            "Search memory limit reached. Delete a branch or Restart Search to release retained snapshots.",
           );
         engine.restore(genesis);
         let chunk = 0;
@@ -171,7 +191,7 @@ onmessage = async ({ data }) => {
           JSON.stringify(tape.actions),
         );
         explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
-        const id = searches.size;
+        const id = nextBranch++;
         searches.set(id, { explorer, branch: branchInfo(tape.branch, frames), parent: active });
         active = id;
         busy = false;

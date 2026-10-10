@@ -86,6 +86,12 @@ export class NovaSwarm {
     this.bytes = 0;
     this.serial = 0;
   }
+  remove(branch) {
+    for (const [id, trail] of this.trails) if (trail.branch === branch) {
+      this.bytes -= trail.samples.byteLength;
+      this.trails.delete(id);
+    }
+  }
   prune(branch, milliseconds) {
     for (const [id, trail] of this.trails) {
       if (trail.branch !== branch || milliseconds - trail.started < trail.duration / 0.06) continue;

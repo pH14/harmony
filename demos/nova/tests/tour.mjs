@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
 import { TOUR_KEY } from "../src/tour.js";
 const browser = await chromium.launch({
   headless: true,
@@ -116,6 +116,7 @@ async function watchDuringTour(page) {
   await page.locator('.tour-shade').evaluate((e) => e.style.visibility = 'hidden');
   const undimmed = await canvas.screenshot();
   const darkenedFraction = await dimmedFraction(page, lit, undimmed);
+  if (darkenedFraction >= .01) { await writeFile('test-results/tour-map-lit.png',lit); await writeFile('test-results/tour-map-clear.png',undimmed); await page.screenshot({path:'test-results/tour-map-layout.png'}); }
   assert.ok(darkenedFraction < 0.01, `The selected route map must remain lit; only transient sparks may differ (${darkenedFraction})`);
   await page.locator('.tour-shade').evaluate((e) => e.style.visibility = '');
   await page.screenshot({ path: `test-results/tour-live-${page.viewportSize().width}.png` });

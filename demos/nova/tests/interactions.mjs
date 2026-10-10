@@ -16,6 +16,8 @@ async function open(options) {
         super(...args);
         this.addEventListener('message', ({data}) => {
           if (data.type === 'ready') window.novaReady = {active: data.active, root: data.state};
+          if (data.type === 'batch') window.novaMemory = data.snapshot_bytes;
+          if (data.type === 'paused') window.novaPaused = (window.novaPaused || 0) + 1;
         });
       }
     };
@@ -87,6 +89,28 @@ try {
   }
   assert.equal(await desktop.locator('[data-search="4"] small').innerText(), 'from Branch 3');
   await desktop.screenshot({path: 'test-results/interaction-deep-tree.png'});
+  assert.equal(await desktop.locator('[data-search-node="0"] > .timeline-row #reset').count(),1);
+  assert.equal(await desktop.locator('[data-search-node="4"] > .timeline-row [data-delete-search="4"]').count(),1);
+  assert.equal(await desktop.locator('[data-delete-search="0"]').count(),0);
+  const pauseAck = await desktop.evaluate(() => window.novaPaused || 0);
+  await desktop.locator('#pause').click();
+  await desktop.waitForFunction(n => window.novaPaused > n,pauseAck);
+  const beforeDelete = await desktop.evaluate(() => window.novaMemory);
+  await desktop.locator('[data-delete-search="2"]').click();
+  await desktop.waitForFunction(() => !document.querySelector('[data-search="2"]') && !document.querySelector('#pause').disabled);
+  assert.equal(await desktop.locator('li[data-search-node="1"] > ol > li[data-search-node="3"]').count(),1,'Deleting a parent keeps its independent child search');
+  assert.equal(await desktop.locator('#pause').getAttribute('aria-label'),'Resume Search','Deleting an inactive branch preserves pause');
+  await desktop.waitForFunction(bytes => window.novaMemory < bytes,beforeDelete);
+  await desktop.locator('[data-delete-search="4"]').click();
+  await desktop.waitForFunction(() => window.novaReady.active === 3 && !document.querySelector('#pause').disabled);
+  assert.equal(await desktop.locator('#pause').getAttribute('aria-label'),'Pause Search','Deleting the active branch resumes its parent');
+  await inspectRoot(desktop);
+  await play(desktop);
+  await desktop.waitForTimeout(100);
+  await desktop.locator('#search-here').click();
+  await desktop.waitForFunction(() => window.novaReady.active === 5 && !document.querySelector('#pause').disabled);
+  assert.equal(await desktop.locator('[data-search="5"]').innerText(),'Branch 5','Deleted branch IDs never alias old states');
+
   await desktop.close();
   const phone = await open({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, deviceScaleFactor: 1});
   assert.ok((await phone.locator('#branches').boundingBox()).height <= 60, 'A single mobile search should use one compact row');
@@ -133,6 +157,10 @@ try {
     await phone.waitForFunction(id => window.novaReady.active === id && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && !document.querySelector('#pause').disabled, id);
     assert.equal(await phone.locator('#branches').getAttribute('data-preview'), null, 'A first tap switches instead of opening a hover preview');
   }
+  await phone.locator('[data-delete-search="1"]').scrollIntoViewIfNeeded();
+  await phone.locator('[data-delete-search="1"]').tap();
+  await phone.waitForFunction(() => !document.querySelector('[data-search="1"]') && !document.querySelector('#pause').disabled);
+  assert.equal(await phone.locator('#branch-tree button[data-search]').count(),1);
   await cdp.detach();
   for (const viewport of [{width:320,height:568},{width:780,height:390}]) {
     await phone.setViewportSize(viewport);

@@ -8,7 +8,7 @@ import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, routeIds } from "./heat.js";
 import { NovaSwarm } from "./swarm.js";
 import { snapshotHash } from "./media.js";
-import { viewCenter } from "./view.js";
+import { roomPanels, panelContains, panelCenter } from "./view.js";
 import {
   prefixAt,
   appendInput,
@@ -163,40 +163,30 @@ function revealBranchOrigin() {
   const point = branchOrigin?.point;
   if (!point) return;
   setRoom(point.level, true);
-  const view = roomView(point.level),
-    row = document.querySelector(`.map-row[data-map="${point.level}"]`),
-    canvas = row?.querySelector("canvas");
-  if (!canvas) return;
-  if (view.zoom > 1) {
-    const center = viewCenter(
-      maps.get(point.level).width,
-      view.zoom,
-      { x: point.x, y: point.y - 8 },
-      maps.get(point.level).height,
-      canvas,
-    );
-    view.x = center.x;
-    view.y = center.y;
-  }
+  const c = mapCanvas(point.level, point);
+  if (!c) return;
+  const view = roomView(point.level, c);
+  Object.assign(view, panelCenter(canvasPanel(c), view.zoom, { x: point.x, y: point.y - 8 }, c));
+  const row = c.closest(".room-part");
   const bounds = row.getBoundingClientRect();
   if (bounds.top < 20 || bounds.bottom > innerHeight - 20)
     window.scrollBy({ top: bounds.top - 24, behavior: "instant" });
 }
-function roomCanvasHeight(id) {
-  const map = maps.get(id);
-  if (roomView(id).zoom > 1) {
-    const width = document.querySelector(".exploration").clientWidth || innerWidth;
-    return matchMedia("(max-width: 800px)").matches
-      ? Math.max(320, Math.round(1280 * Math.min(220, innerHeight * .3, map.height / map.width * width * roomView(id).zoom) / width)) : 320;
-  }
-  return Math.min(320, Math.max(128, Math.round(1280 / map.width * map.height)));
+function canvasPanel(c) {
+  return { x: Number(c.dataset.panelX || 0), y: Number(c.dataset.panelY || 0),
+    width: Number(c.dataset.mapWidth), height: Number(c.dataset.mapHeight) };
 }
-function roomView(id) {
-  if (!views.has(id)) {
-    const map = maps.get(id);
-    views.set(id, { zoom: 1, x: map.width / 2, y: map.height / 2 });
+function mapCanvas(id, point) {
+  const panels = [...document.querySelectorAll(`.map-row[data-map="${id}"] canvas`)];
+  return (point && panels.find(c => panelContains(canvasPanel(c), { x: point.x, y: point.y - 8 }))) || panels[0];
+}
+function roomView(id, c) {
+  const key = c ? `${id}:${c.dataset.panel}` : id;
+  if (!views.has(key)) {
+    const map = c ? canvasPanel(c) : { x: 0, y: 0, ...maps.get(id) };
+    views.set(key, { zoom: c ? roomView(id).zoom : 1, x: (map.x || 0) + map.width / 2, y: (map.y || 0) + map.height / 2 });
   }
-  return views.get(id);
+  return views.get(key);
 }
 const budget = memoryBudget(
   navigator.deviceMemory,
@@ -341,6 +331,7 @@ function previewBranch(id) {
   drawMap(performance.now());
 }
 function renderBranches() {
+  const pauseControl = $("pause"), resetControl = $("reset");
   const list = (parent, depth = 0) => {
     const ol = document.createElement("ol");
     for (const search of searchChoices.filter((s) => s.parent === parent)) {
@@ -364,12 +355,29 @@ function renderBranches() {
       const row = document.createElement("div");
       row.className = "timeline-row";
       row.append(button);
-      if (search.id === activeSearch) {
-        const actions = document.createElement("div");
-        actions.className = "timeline-controls";
-        actions.append($("pause"), $("reset"));
-        row.append(actions);
+      const actions = document.createElement("div");
+      actions.className = "timeline-controls";
+      const play = search.id === activeSearch ? pauseControl : document.createElement("button");
+      if (search.id !== activeSearch) {
+        play.className = "icon-button";
+        play.dataset.resumeSearch = search.id;
+        play.setAttribute("aria-label", `Resume ${search.label}`);
+        play.title = `Resume ${search.label}`;
+        play.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>';
+        play.onclick = () => switchSearch(search.id);
       }
+      const action = search.id === 0 ? resetControl : document.createElement("button");
+      if (search.id !== 0) {
+        action.className = "icon-button";
+        action.dataset.deleteSearch = search.id;
+        action.setAttribute("aria-label", `Delete ${search.label}`);
+        action.title = `Delete ${search.label}`;
+        action.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        action.onclick = () => deleteSearch(search.id);
+      }
+      play.disabled = action.disabled = branchBusy || controlMode || !ready;
+      actions.append(play, action);
+      row.append(actions);
       li.append(row);
       if (searchChoices.some((s) => s.parent === search.id)) li.append(list(search.id, depth + 1));
       ol.append(li);
@@ -487,24 +495,15 @@ function followReplayRoom(point) {
   if (!point || !userSelected || $("inspector").hidden) return;
   const changed = point.level !== mapLevel;
   if (changed) setRoom(point.level, true);
-  const view = roomView(point.level),
-    row = document.querySelector(`.map-row[data-map="${point.level}"]`),
-    c = row?.querySelector("canvas");
+  const c = mapCanvas(point.level, point);
   if (!c) return;
-  if (view.zoom > 1) {
-    const next = viewCenter(
-      maps.get(point.level).width,
-      view.zoom,
-      { x: point.x, y: point.y - 8 },
-      maps.get(point.level).height,
-      c,
-    );
-    view.x = next.x;
-    view.y = next.y;
-  }
+  const view = roomView(point.level, c), row = c.closest(".room-part");
+  Object.assign(view, panelCenter(canvasPanel(c), view.zoom, { x: point.x, y: point.y - 8 }, c));
+  const changedPart = row !== followReplayRoom.part;
+  followReplayRoom.part = row;
   const phone = matchMedia("(max-width: 800px)").matches;
   if (document.body.classList.contains("tour-phone")) return;
-  if (changed || (phone && revealReplayRoom)) {
+  if (changed || changedPart || (phone && revealReplayRoom)) {
     revealReplayRoom = false;
     if (phone && $("inspector").classList.contains("expanded")) return;
     const bounds = row.getBoundingClientRect(),
@@ -878,6 +877,12 @@ function startSearch(level = bootLevel) {
       if (data.type === "ready") {
         const initial = !ready;
         if (!initial) saveSearchView();
+        if (data.deleted !== undefined) {
+          searchViews.delete(data.deleted);
+          swarm.remove(data.deleted);
+          stateCache = new StateCache();
+          routePreviews.clear();
+        }
         ready = true;
         activeSearch = data.active;
         const fresh = activateSearchView(activeSearch),
@@ -1113,14 +1118,6 @@ function renderMapRows(owner) {
         userSelected = true;
         browseRoom(id);
       };
-      const c = id === mapLevel ? canvas : document.createElement("canvas");
-      c.className = "area-map";
-      c.width = 1280;
-      c.height = roomCanvasHeight(id);
-      c.dataset.map = id;
-      c.dataset.mapWidth = maps.get(id).width;
-      c.dataset.mapHeight = maps.get(id).height;
-      c.style.touchAction = "pan-y";
       const heading = document.createElement("div");
       heading.className = "area-heading";
       const zoomButton = document.createElement("button");
@@ -1128,19 +1125,51 @@ function renderMapRows(owner) {
       zoomButton.dataset.map = id;
       if (id === mapLevel) zoomButton.id = "zoom";
       zoomButton.setAttribute("aria-label", `Zoom ${maps.get(id).label}`);
-      zoomButton.textContent =
-        roomView(id).zoom === 1 ? "Zoom in" : `${roomView(id).zoom}×`;
+      zoomButton.textContent = roomView(id).zoom === 1 ? "Zoom in" : `${roomView(id).zoom}×`;
       zoomButton.onclick = () => zoomRoom(id);
       heading.append(label, zoomButton);
-      if (c !== canvas) {
+      const parts = document.createElement("div");
+      parts.className = "room-parts";
+      const map = maps.get(id), panels = roomPanels(map.width, map.height, $("map-rows").clientWidth || innerWidth);
+      parts.classList.toggle("vertical-room", panels[0].vertical && panels[0].width <= 384);
+      row.dataset.parts = panels.length;
+      panels.forEach((panel, index) => {
+        const part = document.createElement("div");
+        part.className = "room-part";
+        const c = id === mapLevel && index === 0 ? canvas : document.createElement("canvas");
+        c.className = "area-map";
+        c.width = panel.width;
+        c.height = panel.height;
+        Object.assign(c.dataset, { map: id, panel: index, panelX: panel.x, panelY: panel.y,
+          mapWidth: panel.width, mapHeight: panel.height, roomWidth: map.width, roomHeight: map.height });
+        c.style.touchAction = "pan-y";
         c.tabIndex = 0;
-        c.setAttribute(
-          "aria-label",
-          `${maps.get(id).label} heatmap. Click a warm cell to replay.`,
-        );
-        bindMap(c);
-      }
-      row.append(heading, c);
+        if (c !== canvas) bindMap(c);
+        if (panels.length > 1) {
+          const connection = document.createElement("div");
+          connection.className = "room-continuation";
+          connection.textContent = `${index + 1} / ${panels.length}`;
+          const direction = panels[index + 1]?.x > panel.x ? "→" : panel.vertical ? "↓" : "→";
+          connection.setAttribute("aria-label", `${map.label}, continuous ${panel.vertical ? "vertical" : "horizontal"} room, part ${index + 1} of ${panels.length}`);
+          connection.dataset.direction = direction;
+          const previous = document.createElement("button"), next = document.createElement("button");
+          previous.textContent = panel.vertical ? "↑" : "↖";
+          next.textContent = index === panels.length - 1 ? "—" : panel.vertical ? "↓" : "↘";
+          previous.disabled = index === 0;
+          next.disabled = index === panels.length - 1;
+          previous.setAttribute("aria-label", "Previous section of this room");
+          next.setAttribute("aria-label", "Next section of this room");
+          const jump = offset => parts.children[index + offset]?.scrollIntoView({ block: "center", behavior: reducedMotion.matches ? "instant" : "smooth" });
+          previous.onclick = () => jump(-1);
+          next.onclick = () => jump(1);
+          connection.prepend(previous);
+          connection.append(next);
+          part.append(connection);
+        }
+        part.append(c);
+        parts.append(part);
+      });
+      row.append(heading, parts);
       panorama(id);
       return row;
     }),
@@ -1168,7 +1197,7 @@ function drawArea(canvas, now) {
     map = maps.get(mapLevel),
     mapWidth = map.width,
     mapHeight = map.height,
-    view = roomView(mapLevel),
+    view = roomView(mapLevel, canvas),
     areaZoom = view.zoom,
     areaCenter = view.x,
     areaCenterY = view.y;
@@ -1178,7 +1207,7 @@ function drawArea(canvas, now) {
   ctx.save();
   ctx.translate(canvas.width / 2, canvas.height / 2);
   const scale =
-    Math.min(canvas.width / mapWidth, canvas.height / mapHeight) * areaZoom;
+    Math.min(canvas.width / Number(canvas.dataset.mapWidth), canvas.height / Number(canvas.dataset.mapHeight)) * areaZoom;
   ctx.scale(scale, scale);
   ctx.translate(-areaCenter, -areaCenterY);
   const image = panorama(mapLevel);
@@ -1255,13 +1284,13 @@ function drawArea(canvas, now) {
       ? markerPoint()
       : null;
   const mapOrigin =
-    areaOrigin?.point?.level === mapLevel ? areaOrigin : null;
+    areaOrigin?.point?.level === mapLevel && panelContains(canvasPanel(canvas), { x: areaOrigin.point.x, y: areaOrigin.point.y - 8 }) ? areaOrigin : null;
   canvas.dataset.originFrame = mapOrigin?.frame ?? "";
   canvas.dataset.originPulse = String(
-    !preview && drawOriginPulse(ctx, mapLevel, scale, now),
+    !preview && !!mapOrigin && drawOriginPulse(ctx, mapLevel, scale, now),
   );
   canvas.dataset.markerFrame =
-    o?.level !== mapLevel
+    o?.level !== mapLevel || !panelContains(canvasPanel(canvas), { x: o.x, y: o.y - 8 })
       ? ""
       : routeHover && !preview ? routeHover.frames : preview || $("inspector").hidden
         ? areaOrigin.frame
@@ -1282,12 +1311,11 @@ function drawArea(canvas, now) {
 function mapCoordinates(e) {
   const c = e.currentTarget,
     id = Number(c.dataset.map),
-    map = maps.get(id),
     rect = c.getBoundingClientRect(),
     px = ((e.clientX - rect.left) / rect.width) * c.width,
     py = ((e.clientY - rect.top) / rect.height) * c.height,
-    view = roomView(id),
-    scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom;
+    view = roomView(id, c),
+    scale = Math.min(c.width / Number(c.dataset.mapWidth), c.height / Number(c.dataset.mapHeight)) * view.zoom;
   return {
     x: Math.floor(((px - c.width / 2) / scale + view.x) / 32),
     y: Math.floor(((py - c.height / 2) / scale + view.y + 8) / 32),
@@ -1304,7 +1332,7 @@ function bindMap(c) {
   c.addEventListener("touchstart", (event) => {
     if (event.touches.length !== 2) return;
     event.preventDefault();
-    const room = roomView(Number(c.dataset.map)), map = maps.get(Number(c.dataset.map));
+    const room = roomView(Number(c.dataset.map), c), map = canvasPanel(c);
     const point = pair(event.touches), r = c.getBoundingClientRect();
     const scale = Math.min(c.width / map.width, c.height / map.height) * room.zoom;
     pinch = { ...point, zoom: room.zoom,
@@ -1318,29 +1346,26 @@ function bindMap(c) {
   c.addEventListener("touchmove", (event) => {
     if (!pinch || event.touches.length !== 2) return;
     event.preventDefault();
-    const id = Number(c.dataset.map), room = roomView(id), map = maps.get(id);
+    const id = Number(c.dataset.map), room = roomView(id, c), map = canvasPanel(c);
     const point = pair(event.touches), r = c.getBoundingClientRect();
     room.zoom = Math.max(1, Math.min(6, pinch.zoom * point.distance / Math.max(1, pinch.distance)));
     const scale = Math.min(c.width / map.width, c.height / map.height) * room.zoom;
-    const center = viewCenter(map.width, room.zoom, {
+    const center = panelCenter(map, room.zoom, {
       x: pinch.worldX - (point.x - r.left - r.width / 2) * c.width / r.width / scale,
       y: pinch.worldY - (point.y - r.top - r.height / 2) * c.height / r.height / scale,
-    }, map.height, c);
+    }, c);
     room.x = center.x; room.y = center.y;
     userSelected = dragged = true;
     document.querySelector(`.area-zoom[data-map="${id}"]`).textContent = room.zoom === 1 ? "Zoom in" : `${room.zoom.toFixed(1)}×`;
     drawMap(performance.now());
   }, { passive: false });
   c.addEventListener("touchend", () => {
-    if (pinch) {
-      c.height = roomCanvasHeight(Number(c.dataset.map));
-      drawMap(performance.now());
-    }
+    if (pinch) drawMap(performance.now());
     pinch = null; pointerStart = null;
   });
   c.addEventListener("touchcancel", () => { pinch = null; pointerStart = null; });
   c.addEventListener("pointerdown", (e) => {
-    const view = roomView(Number(c.dataset.map));
+    const view = roomView(Number(c.dataset.map), c);
     pointerStart = {
       x: e.clientX,
       y: e.clientY,
@@ -1357,8 +1382,8 @@ function bindMap(c) {
     });
   c.addEventListener("pointermove", (e) => {
     const id = Number(c.dataset.map),
-      map = maps.get(id),
-      room = roomView(id);
+      map = canvasPanel(c),
+      room = roomView(id, c);
     if (!pinch && pointerStart?.canvas === c && e.buttons && room.zoom > 1) {
       const dx = e.clientX - pointerStart.x,
         dy = e.pointerType === "touch" ? 0 : e.clientY - pointerStart.y;
@@ -1368,14 +1393,13 @@ function bindMap(c) {
         const rect = c.getBoundingClientRect(),
           scale =
             Math.min(c.width / map.width, c.height / map.height) * room.zoom;
-        const view = viewCenter(
-          map.width,
+        const view = panelCenter(
+          map,
           room.zoom,
           {
             x: pointerStart.center - (dx * c.width) / rect.width / scale,
             y: pointerStart.centerY - (dy * c.height) / rect.height / scale,
           },
-          map.height,
           { width: c.width, height: c.height },
         );
         room.x = view.x;
@@ -1417,8 +1441,8 @@ function bindMap(c) {
     const point = (hoverCell?.level === level ? hoverCell : null) ||
       (selectedCell?.level === level ? selectedCell : null) || {
         level,
-        x: 1,
-        y: 5,
+        x: Math.floor((Number(c.dataset.panelX) + 16) / 32),
+        y: Math.floor((Number(c.dataset.panelY) + Math.min(168, c.height - 8)) / 32),
       };
     if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
       e.preventDefault();
@@ -1442,6 +1466,10 @@ function bindMap(c) {
         ),
       };
     }
+    if (e.key.startsWith("Arrow") && hoverCell) {
+      const next = mapCanvas(level, { x: hoverCell.x * 32 + 16, y: hoverCell.y * 32 + 8 });
+      if (next && next !== c) { next.focus({ preventScroll: true }); next.scrollIntoView({ block: "nearest" }); }
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       if (level !== mapLevel) setRoom(level);
@@ -1464,27 +1492,20 @@ function bindMap(c) {
 bindMap(canvas);
 function zoomRoom(id) {
   userSelected = true;
-  const map = maps.get(id),
-    view = roomView(id),
-    c = document.querySelector(`.map-row[data-map="${id}"] canvas`);
+  const view = roomView(id);
   view.zoom = view.zoom < 2 ? 2 : view.zoom < 4 ? 4 : 1;
-  c.height = roomCanvasHeight(id);
-  c.style.touchAction = "pan-y";
-  const o =
-    frameObservation?.level === id &&
-    isMapEvidence(frameObservation, catalog.levels)
-      ? project(frameObservation, map)
-      : null;
-  const point = o
-    ? { x: o.x, y: o.y - 8 }
-    : selectedCell?.level === id
-      ? { x: selectedCell.x * 32 + 16, y: selectedCell.y * 32 + 8 }
-      : { x: view.x, y: view.y };
-  const next = viewCenter(map.width, view.zoom, point, map.height, c);
-  view.x = next.x;
-  view.y = next.y;
-  document.querySelector(`.area-zoom[data-map="${id}"]`).textContent =
-    view.zoom === 1 ? "Zoom in" : `${view.zoom}×`;
+  for (const c of document.querySelectorAll(`.map-row[data-map="${id}"] canvas`)) {
+    const local = roomView(id, c);
+    local.zoom = view.zoom;
+    Object.assign(local, panelCenter(canvasPanel(c), local.zoom, local, c));
+  }
+  const point = markerPoint();
+  if (point?.level === id) {
+    const c = mapCanvas(id, point);
+    Object.assign(roomView(id, c), panelCenter(canvasPanel(c), view.zoom, { x: point.x, y: point.y - 8 }, c));
+  }
+  document.querySelector(`.area-zoom[data-map="${id}"]`).textContent = view.zoom === 1 ? "Zoom in" : `${view.zoom}×`;
+  drawMap(performance.now());
 }
 $("pause").onclick = () => {
   if (tourSession) tourSession.pauseTouched = true;
@@ -1615,7 +1636,7 @@ function updateBranchControls() {
   $("game-controls").hidden = !controlMode;
   $("scrub").disabled = !current || controlMode || branchBusy;
   $("play").disabled = !current || controlMode || branchBusy || seeking;
-  for (const button of $("branch-tree").querySelectorAll("button[data-search]"))
+  for (const button of $("branch-tree").querySelectorAll("button[data-search],button[data-resume-search],button[data-delete-search]"))
     button.disabled = branchBusy || controlMode;
   $("sound").disabled = !current;
   $("pause").disabled = !ready || branchBusy || controlMode || !!stats.stopped;
@@ -1784,6 +1805,21 @@ $("search-here").onclick = async () => {
     updateBranchControls();
   }
 };
+function deleteSearch(id) {
+  if (!id || branchBusy || controlMode) return;
+  if (tourSession) tourSession.interacted = true;
+  clearBranchPreview();
+  hideRoutePreview();
+  closeInspector();
+  branchBusy = true;
+  ++request;
+  ++replayEpoch;
+  current = null;
+  trace = segments = [];
+  historyVerified = false;
+  updateBranchControls();
+  worker.postMessage({ type: "delete", id, paused });
+}
 function switchSearch(id) {
   if (branchBusy || controlMode) return;
   if (tourSession) tourSession.interacted = true;
@@ -1915,7 +1951,7 @@ function drawTrail(ctx, level, scale, override) {
   ctx.lineWidth = (hovering ? 3.4 : 2.2) / screenScale;
   for (const segment of drawnSegments) {
     if (segment[0]?.level !== level) continue;
-    count += segment.length;
+    count += segment.filter(p => panelContains(canvasPanel(ctx.canvas), { x: p.x, y: p.y - 8 })).length;
     ctx.beginPath();
     segment.forEach((p, i) =>
       i ? ctx.lineTo(p.x, p.y - 8) : ctx.moveTo(p.x, p.y - 8),
@@ -2001,20 +2037,29 @@ function animate(now) {
   }
   requestAnimationFrame(animate);
 }
+let mapLayoutWidth = 0;
+const mapResize = new ResizeObserver(([entry]) => {
+  const width = Math.round(entry.contentRect.width);
+  if (!width || Math.abs(width - mapLayoutWidth) < 32) return;
+  mapLayoutWidth = width;
+  for (const key of views.keys()) if (typeof key === "string") views.delete(key);
+  renderMapRows(catalog.levels.find(l => l.rooms.includes(mapLevel)));
+  drawMap(performance.now());
+});
+mapResize.observe($("map-rows"));
 let tourSession = null,
   tourOffered = tourSeen();
 function tourMap() {
-  return document.querySelector(
-    `.map-row[data-map="${tourSession?.cell?.level}"] canvas`,
-  );
+  const cell = tourSession?.cell;
+  return cell && mapCanvas(cell.level, { x: cell.x * 32 + 16, y: cell.y * 32 + 8 });
 }
 function tourCellRect() {
   const c = tourMap(),
     cell = tourSession?.cell;
   if (!c || !cell) return null;
   const r = c.getBoundingClientRect(),
-    map = maps.get(cell.level),
-    view = roomView(cell.level),
+    map = canvasPanel(c),
+    view = roomView(cell.level, c),
     scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom,
     x = (((cell.x * 32 - view.x) * scale + c.width / 2) * r.width) / c.width,
     y =
@@ -2156,7 +2201,7 @@ const tour = new GuidedTour({
     if (!cell) throw new Error("No retained cell yet");
     if (index <= 2 && mapLevel !== cell.level) setRoom(cell.level, true);
     if (index >= 3) followReplayRoom(markerPoint());
-    const view = roomView(cell.level);
+    const view = roomView(cell.level, tourMap());
     if (index <= 2 && view.zoom > 1) {
       view.x = cell.x * 32 + 16;
       view.y = cell.y * 32 + 8;
