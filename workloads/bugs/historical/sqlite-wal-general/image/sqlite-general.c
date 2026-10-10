@@ -14,8 +14,10 @@
 #include "sqlite3.h"
 
 #define MAX_ROWS 4096
-#define MAX_STATEMENTS 8
+#define MAX_STATEMENTS 256
 #define MAX_BODY 4096
+
+enum site { SITE_OP, SITE_STATEMENTS, SITE_THINK, SITE_KIND, SITE_BEGIN, SITE_CHECKPOINT, SITE_REOPEN, SITE_BODY };
 
 static const char *A_INTEGRITY = "sqlite integrity_check returns ok";
 static const char *A_CORRUPT = "sqlite reports no corruption";
@@ -290,14 +292,17 @@ static void open_db(struct client *c) {
 
 static void op_write(struct client *c) {
     static const char *modes[] = {"BEGIN DEFERRED", "BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"};
+    static const int64_t body_sizes[] = {0, 256, 2048, MAX_BODY};
     struct table local = c->model;
     struct txn t = {.id = c->next_txn++, .count = 0};
-    int statements = 1 + (int)gen_below(&c->rng, MAX_STATEMENTS);
-    int rc = exec(c->db, modes[gen_below(&c->rng, 3)], "begin write");
+    int level = gen_bias(&c->rng, SITE_STATEMENTS, 9);
+    int statements = level < 0 ? 1 + (int)gen_below(&c->rng, 8) : 1 << level;
+    int body_level = gen_bias(&c->rng, SITE_BODY, 4);
+    int rc = exec(c->db, modes[gen_pick(&c->rng, SITE_BEGIN, 3)], "begin write");
     if (rc != SQLITE_OK) return;
     for (int i = 0; i < statements; i++) {
         unsigned char body[MAX_BODY];
-        int kind = (int)gen_below(&c->rng, 3);
+        int kind = (int)gen_pick(&c->rng, SITE_KIND, 3);
         struct write_op op;
         sqlite3_stmt *st = NULL;
         if (local.count == 0 || local.count >= MAX_ROWS - MAX_STATEMENTS) kind = local.count == 0 ? 0 : 2;
@@ -311,7 +316,7 @@ static void op_write(struct client *c) {
             op.row = *target;
             op.row.ver = target->ver + 1;
         }
-        op.row.len = (int64_t)gen_below(&c->rng, MAX_BODY + 1);
+        op.row.len = body_level < 0 ? (int64_t)gen_below(&c->rng, MAX_BODY + 1) : body_sizes[body_level];
         for (int64_t b = 0; b < op.row.len; b++) body[b] = (unsigned char)gen_next(&c->rng);
         op.row.hash = fnv64(body, (size_t)op.row.len);
         if (op.kind == 'I')
@@ -389,7 +394,7 @@ out:
 static void op_checkpoint(struct client *c) {
     static const char *modes[] = {"PASSIVE", "FULL", "RESTART", "TRUNCATE"};
     char sql[64];
-    snprintf(sql, sizeof sql, "PRAGMA wal_checkpoint(%s)", modes[gen_below(&c->rng, 4)]);
+    snprintf(sql, sizeof sql, "PRAGMA wal_checkpoint(%s)", modes[gen_pick(&c->rng, SITE_CHECKPOINT, 4)]);
     exec(c->db, sql, "checkpoint");
 }
 
@@ -397,9 +402,10 @@ static void op_reopen(struct client *c) {
     static const int busy[] = {0, 100, 1000};
     static const char *sync[] = {"NORMAL", "FULL"};
     static const int autockpt[] = {0, 100, 1000};
-    int b = busy[gen_below(&c->rng, 3)];
-    const char *s = sync[gen_below(&c->rng, 2)];
-    int a = autockpt[gen_below(&c->rng, 3)];
+    unsigned form = gen_pick(&c->rng, SITE_REOPEN, 18);
+    int b = busy[form % 3];
+    const char *s = sync[form / 3 % 2];
+    int a = autockpt[form / 6];
     sqlite3_close_v2(c->db);
     c->db = NULL;
     open_db(c);
@@ -498,13 +504,13 @@ int main(int argc, char **argv) {
             }
         }
         gen_rng_sync(&c.rng);
-        switch (gen_below(&c.rng, 5)) {
+        switch (gen_pick(&c.rng, SITE_OP, 5)) {
             case 0: op_write(&c); break;
             case 1: op_read(&c); break;
             case 2: op_checkpoint(&c); break;
             case 3: op_reopen(&c); break;
             default: op_integrity(&c); break;
         }
-        gen_think(&c.rng);
+        gen_think_at(&c.rng, SITE_THINK);
     }
 }

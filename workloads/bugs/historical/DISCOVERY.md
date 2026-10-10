@@ -155,10 +155,12 @@ All three workloads share these rules:
   `state ^= splitmix64(choice)`. Outside Harmony the question fails and the
   PRNG runs alone.
 - **Selection**: every operation is drawn uniformly from the system's
-  vocabulary, and every parameter uniformly from the stated set or range.
+  vocabulary, and every parameter uniformly from the stated set or range,
+  except where the action's choice biases a decision site (correction 5).
 - **Pacing**: after each operation the client pauses with probability ½, for a
-  duration drawn uniformly from {1, 2, 4, 8, 16, 32, 64, 128} ms. Nothing else
-  paces the workload.
+  duration drawn uniformly from {1, 2, 4, 8, 16, 32, 64, 128} ms, unless the
+  choice biases the think-time site (correction 5). Nothing else paces the
+  workload.
 - **Ownership**: every row or key the oracle checks has exactly one owning
   client. That client's own journal of intents and outcomes defines the
   acknowledged history. Other clients may read the owned data but never write
@@ -255,6 +257,9 @@ All three workloads share these rules:
   - `ddl`: create, drop, or reindex the index on {a}, {b}, {c} or {a, b},
     `CONCURRENTLY` with probability ½.
   - `maintenance`: {`VACUUM`, `VACUUM FREEZE`, `ANALYZE`, `CHECKPOINT`}.
+  - `bulk` (correction 5): insert 2^k × 16 owned rows, k in 0–7, in one
+    statement whose values follow from a seed, or, when they would not fit the
+    model, delete that many of the owner's oldest rows.
   - `check`: `bt_index_check(index, heapallindexed => true)` on every valid,
     ready B-tree index of `items`.
   - `reconnect`: close the connection and open a new one.
@@ -468,3 +473,20 @@ made after a general-arm measurement restarts every affected measurement.
    can kill or park any PostgreSQL process. The general arm is measured again
    with it. The focused case and its ablation stay uninstrumented, as the
    reference they were measured as.
+
+5. **Decision sites and lineage choices** (after the first measurement). The
+   choice only reseeded each client's stream, so the search could not keep or
+   steer what the application did: every new action drew a fresh choice, and a
+   productive mix of operations was forgotten one action later. Each driver
+   now names its decisions as decision sites (operation, transaction size,
+   think time, and each operation's parameters), and each byte of the choice
+   can bias one site toward one option (see [general](general/README.md)). A
+   site the choice leaves alone draws as before. The search keeps a parent's
+   choice half the time, changes one byte a quarter of the time, and draws a
+   fresh one otherwise, so a regime persists along the lineage that found it.
+   The workloads still carry no weights. The vocabularies gain generic scale:
+   PostgreSQL adds a bulk operation that inserts 16 to 2,048 owned rows in one
+   statement, or deletes that many of the owner's oldest rows when the model
+   is full; a biased SQLite transaction holds 1 to 256 statements, with body
+   sizes of 0, 256, 2,048 or 4,096 bytes; and a biased etcd compaction keeps
+   0, 10, 100 or 1,000 revisions. Every general arm is measured again with it.

@@ -27,6 +27,7 @@ pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_goals_reached_tiers_assertion_
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
+pub const CHOICE_IDENTIFIER: &str = "lineage_choice_quarter_fresh_half_kept_quarter_byte_v1";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveKey {
@@ -179,6 +180,7 @@ pub fn sample_action(
     event_ready: u64,
     ticks: NonZeroU16,
     view: Option<DrawView<'_, FaultAction>>,
+    prior: Option<u64>,
 ) -> Result<FaultAction, Box<dyn Error>> {
     let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
@@ -240,7 +242,25 @@ pub fn sample_action(
     );
     Ok(
         FaultAction::new(action, NonZeroU16::new(u16::try_from(quantum)?).unwrap())
-            .with_choice(rand.next_u64()),
+            .with_choice(lineage_choice(rand, prior)?),
+    )
+}
+
+pub fn lineage_choice(rand: &mut RomuDuoJrRand, prior: Option<u64>) -> Result<u64, Box<dyn Error>> {
+    let Some(prior) = prior else {
+        return Ok(rand.next_u64());
+    };
+    Ok(
+        match rand.below(NonZeroUsize::new(4).ok_or("empty choice lineage odds")?) {
+            0 => rand.next_u64(),
+            1 | 2 => prior,
+            _ => {
+                let shift = 8 * u32::try_from(
+                    rand.below(NonZeroUsize::new(8).ok_or("empty choice byte range")?),
+                )?;
+                (prior & !(0xff_u64 << shift)) | ((rand.next_u64() & 0xff) << shift)
+            }
+        },
     )
 }
 
@@ -624,8 +644,8 @@ mod tests {
             FaultOperation::EventPark { .. } => 6,
         };
         for _ in 0..2_000 {
-            let action =
-                sample_action(&mut rand, &vocabulary, 0, TICKS, None).expect("draw an action");
+            let action = sample_action(&mut rand, &vocabulary, 0, TICKS, None, None)
+                .expect("draw an action");
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action.operation {
@@ -668,7 +688,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(19);
         let mut events = 0;
         for _ in 0..2000 {
-            match sample_action(&mut rand, &vocabulary, 0b010, TICKS, None)
+            match sample_action(&mut rand, &vocabulary, 0b010, TICKS, None, None)
                 .unwrap()
                 .operation
             {
@@ -679,7 +699,7 @@ mod tests {
                 _ => {}
             }
             assert!(!matches!(
-                sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                sample_action(&mut rand, &vocabulary, 0, TICKS, None, None)
                     .unwrap()
                     .operation,
                 FaultOperation::EventKill { .. } | FaultOperation::EventPark { .. }
@@ -703,7 +723,7 @@ mod tests {
             tables
                 .draw(None, false, |view| {
                     Ok((0..4_000)
-                        .map(|_| sample_action(&mut rand, &vocabulary, 1, TICKS, Some(view)))
+                        .map(|_| sample_action(&mut rand, &vocabulary, 1, TICKS, Some(view), None))
                         .collect::<Result<Vec<_>, _>>()?
                         .into_iter()
                         .filter_map(|action| match action.operation {
@@ -790,9 +810,10 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(3);
         let mut seen = BTreeSet::new();
         for _ in 0..2_000 {
-            if let FaultOperation::Kill(node, _) = sample_action(&mut rand, &wide, 0, TICKS, None)
-                .expect("draw")
-                .operation
+            if let FaultOperation::Kill(node, _) =
+                sample_action(&mut rand, &wide, 0, TICKS, None, None)
+                    .expect("draw")
+                    .operation
             {
                 seen.insert(node);
             }
@@ -805,7 +826,7 @@ mod tests {
         let hookless = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(4);
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &hookless, 0, TICKS, None).expect("draw");
+            let action = sample_action(&mut rand, &hookless, 0, TICKS, None, None).expect("draw");
             assert!(!matches!(action.operation, FaultOperation::Hook(..)));
         }
     }
@@ -815,7 +836,9 @@ mod tests {
         let draw = |seed| {
             let mut rand = RomuDuoJrRand::with_seed(seed);
             (0..64)
-                .map(|_| sample_action(&mut rand, &vocabulary(), 0, TICKS, None).expect("draw"))
+                .map(|_| {
+                    sample_action(&mut rand, &vocabulary(), 0, TICKS, None, None).expect("draw")
+                })
                 .collect::<Vec<_>>()
         };
         assert_eq!(draw(5), draw(5));
@@ -841,7 +864,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(23);
         let mut seen = BTreeSet::new();
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &vocabulary(), 0, TICKS, None).unwrap();
+            let action = sample_action(&mut rand, &vocabulary(), 0, TICKS, None, None).unwrap();
             let quantum = action.coverage_quantum.get();
             assert!(quantum.is_power_of_two());
             seen.insert(quantum);
@@ -854,12 +877,37 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(37);
         let choices: BTreeSet<u64> = (0..256)
             .map(|_| {
-                sample_action(&mut rand, &vocabulary(), 0, TICKS, None)
+                sample_action(&mut rand, &vocabulary(), 0, TICKS, None, None)
                     .unwrap()
                     .choice
             })
             .collect();
         assert_eq!(choices.len(), 256);
+    }
+
+    #[test]
+    fn a_drawn_choice_inherits_its_prior_or_changes_one_byte_of_it() {
+        let mut rand = RomuDuoJrRand::with_seed(41);
+        let prior = 0x0123_4567_89ab_cdef_u64;
+        let (mut kept, mut one_byte, mut fresh) = (0, 0, 0);
+        for _ in 0..4096 {
+            let choice = lineage_choice(&mut rand, Some(prior)).unwrap();
+            let changed = (0..8)
+                .filter(|byte| (choice ^ prior) >> (8 * byte) & 0xff != 0)
+                .count();
+            match changed {
+                0 => kept += 1,
+                1 => one_byte += 1,
+                _ => fresh += 1,
+            }
+        }
+        assert!((1800..2350).contains(&kept), "kept {kept}");
+        assert!((700..1100).contains(&one_byte), "one byte {one_byte}");
+        assert!((800..1250).contains(&fresh), "fresh {fresh}");
+        assert_ne!(
+            lineage_choice(&mut RomuDuoJrRand::with_seed(1), None).unwrap(),
+            lineage_choice(&mut RomuDuoJrRand::with_seed(2), None).unwrap()
+        );
     }
 
     #[test]

@@ -110,8 +110,18 @@ func (c *client) ctx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), requestTimeout)
 }
 
+const (
+	siteOp uint = iota
+	siteTarget
+	siteThink
+	siteLeaseTTL
+	siteLeaseRevoke
+	siteCompact
+	siteEndpoint
+)
+
 func (c *client) target() string {
-	if len(c.keys) == 0 || c.stream.Below(2) == 0 {
+	if len(c.keys) == 0 || c.stream.Pick(siteTarget, 2) == 0 {
 		name := fmt.Sprintf("gen/%d/%d", c.id, c.nextKey)
 		c.nextKey++
 		c.keys = append(c.keys, name)
@@ -127,7 +137,7 @@ func (c *client) value() string {
 func (c *client) run() {
 	for {
 		c.stream.Sync()
-		switch c.stream.Below(8) {
+		switch c.stream.Pick(siteOp, 8) {
 		case 0:
 			c.put()
 		case 1:
@@ -145,7 +155,7 @@ func (c *client) run() {
 		default:
 			c.compact()
 		}
-		c.stream.Think()
+		c.stream.ThinkAt(siteThink)
 	}
 }
 
@@ -253,7 +263,7 @@ func (c *client) getSerializable() {
 		return
 	}
 	name := c.keys[c.stream.Below(uint64(len(c.keys)))]
-	endpoint := endpoints[c.stream.Below(uint64(len(endpoints)))]
+	endpoint := endpoints[c.stream.Pick(siteEndpoint, uint(len(endpoints)))]
 	single := c.single[endpoint]
 	if single == nil {
 		var err error
@@ -292,7 +302,7 @@ func (c *client) lease() {
 	ttls := []int64{1, 2, 5, 10}
 	ctx, cancel := c.ctx()
 	defer cancel()
-	grant, err := c.cli.Grant(ctx, ttls[c.stream.Below(uint64(len(ttls)))])
+	grant, err := c.cli.Grant(ctx, ttls[c.stream.Pick(siteLeaseTTL, uint(len(ttls)))])
 	if err != nil {
 		return
 	}
@@ -300,7 +310,7 @@ func (c *client) lease() {
 	if _, err := c.cli.Put(ctx, name, c.value(), clientv3.WithLease(grant.ID)); err != nil {
 		return
 	}
-	if c.stream.Below(2) == 0 {
+	if c.stream.Pick(siteLeaseRevoke, 2) == 0 {
 		_, _ = c.cli.Revoke(ctx, grant.ID)
 	}
 }
@@ -312,7 +322,12 @@ func (c *client) compact() {
 	if err != nil || status.Header == nil {
 		return
 	}
-	revision := status.Header.Revision - int64(c.stream.Below(101))
+	depths := []int64{0, 10, 100, 1000}
+	depth := int64(c.stream.Below(101))
+	if level := c.stream.Bias(siteCompact, uint(len(depths))); level >= 0 {
+		depth = depths[level]
+	}
+	revision := status.Header.Revision - depth
 	if revision < 1 {
 		return
 	}

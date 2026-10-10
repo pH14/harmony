@@ -146,6 +146,45 @@ func (s *Stream) Below(n uint64) uint64 {
 	return s.Next() % n
 }
 
+// Bias returns the option the current action's choice prefers at a decision
+// site, or -1 when the choice leaves the site to the stream. The choice holds
+// one byte per site (site modulo 8): its top two bits say how often the site
+// follows the choice (never, 1 in 2, 3 in 4 or 7 in 8 draws) and its low six
+// bits name the preferred option, modulo n. The search decides which sites a
+// choice biases and toward what.
+func (s *Stream) Bias(site, n uint) int {
+	if !s.folded || n == 0 {
+		return -1
+	}
+	b := byte(s.last >> (8 * (site % 8)))
+	follow := [4]uint64{0, 4, 6, 7}[b>>6]
+	if follow == 0 || s.Below(8) >= follow {
+		return -1
+	}
+	return int(uint(b&0x3f) % n)
+}
+
+// Pick draws an option at a decision site: the choice's preference when it
+// applies, otherwise uniformly.
+func (s *Stream) Pick(site, n uint) uint64 {
+	if preferred := s.Bias(site, n); preferred >= 0 {
+		return uint64(preferred)
+	}
+	return s.Below(uint64(n))
+}
+
+// ThinkAt pauses after an operation. Option 0 is no pause and option k is
+// 2^(k-1) ms; unbiased, it pauses with probability one half for 1 to 128 ms.
+func (s *Stream) ThinkAt(site uint) {
+	level := s.Bias(site, 9)
+	switch {
+	case level < 0:
+		s.Think()
+	case level > 0:
+		time.Sleep(time.Duration(1<<(level-1)) * time.Millisecond)
+	}
+}
+
 // Think pauses with probability one half for 1 to 128 ms.
 func (s *Stream) Think() {
 	if s.Below(2) == 0 {

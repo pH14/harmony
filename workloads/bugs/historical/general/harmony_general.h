@@ -138,8 +138,35 @@ static void gen_sleep_ms(unsigned ms) {
 
 static unsigned gen_think_ms(struct gen_rng *rng) { return 1u << gen_below(rng, 8); }
 
-static void gen_think(struct gen_rng *rng) {
-    if (gen_below(rng, 2) == 0) gen_sleep_ms(gen_think_ms(rng));
+/* Decision sites. The current action's choice holds one byte for each site
+ * (site modulo 8). The byte's top two bits say how often the site follows the
+ * choice (never, 1 in 2, 3 in 4 or 7 in 8 draws) and its low six bits name the
+ * option it prefers, modulo the site's option count. A site the choice leaves
+ * alone draws exactly as it did without a choice. The search, not the
+ * workload, decides which sites a choice biases and toward what. */
+static int gen_bias(struct gen_rng *rng, unsigned site, unsigned n) {
+    static const unsigned follow[4] = {0, 4, 6, 7};
+    unsigned byte;
+    if (!rng->have_choice || n == 0) return -1;
+    byte = (unsigned)(rng->last_choice >> (8 * (site % 8))) & 0xffu;
+    if (follow[byte >> 6] == 0 || gen_below(rng, 8) >= follow[byte >> 6]) return -1;
+    return (int)((byte & 0x3fu) % n);
+}
+
+static unsigned gen_pick(struct gen_rng *rng, unsigned site, unsigned n) {
+    int preferred = gen_bias(rng, site, n);
+    return preferred >= 0 ? (unsigned)preferred : (unsigned)gen_below(rng, n);
+}
+
+/* Option 0 is no pause and option k is 2^(k-1) ms; unbiased, it pauses half
+ * the time for 1 to 128 ms. */
+static void gen_think_at(struct gen_rng *rng, unsigned site) {
+    int level = gen_bias(rng, site, 9);
+    if (level < 0) {
+        if (gen_below(rng, 2) == 0) gen_sleep_ms(gen_think_ms(rng));
+    } else if (level > 0) {
+        gen_sleep_ms(1u << (level - 1));
+    }
 }
 
 static void gen_json_string(FILE *out, const char *text) {

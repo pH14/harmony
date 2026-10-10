@@ -20,6 +20,9 @@
 #define MAX_STATEMENTS 8
 #define VALUE_RANGE 100000
 #define CONNINFO "host=/tmp user=postgres dbname=faultlab connect_timeout=10"
+#define BULK_SIZES 8
+
+enum site { SITE_OP, SITE_STATEMENTS, SITE_THINK, SITE_KIND, SITE_COLUMN, SITE_ISOLATION, SITE_DDL, SITE_BULK };
 
 static const char *A_AMCHECK = "postgres amcheck finds every heap tuple indexed";
 static const char *A_SCANS = "postgres index and sequential scans agree";
@@ -49,8 +52,7 @@ struct client {
     PGconn *conn;
     struct gen_rng rng;
     struct table model;
-    struct write_op pending[MAX_STATEMENTS];
-    int pending_count;
+    struct table pending;
     int has_pending;
     int64_t next_seq;
 };
@@ -138,8 +140,7 @@ static void compare_owned(struct client *c, struct table *seen) {
         return;
     }
     if (c->has_pending) {
-        applied = c->model;
-        for (int i = 0; i < c->pending_count; i++) apply_op(&applied, &c->pending[i]);
+        applied = c->pending;
         if (same_table(seen, &applied)) {
             c->model = applied;
             c->has_pending = 0;
@@ -208,20 +209,35 @@ static int exec_write(struct client *c, const struct write_op *op, int column) {
     return ok;
 }
 
+/* Commits the open transaction whose result is `local`. A commit whose outcome
+ * is unknown leaves `local` pending until a later read resolves it. */
+static void commit(struct client *c, const struct table *local) {
+    PGresult *r;
+    c->pending = *local;
+    c->has_pending = 1;
+    r = run(c, "COMMIT");
+    if (PQresultStatus(r) == PGRES_COMMAND_OK) {
+        c->model = *local;
+        c->has_pending = 0;
+    } else if (connected(c) && (strncmp(sqlstate(r), "40", 2) == 0 || strncmp(sqlstate(r), "23", 2) == 0 ||
+                                strncmp(sqlstate(r), "25", 2) == 0)) {
+        c->has_pending = 0;
+    }
+    PQclear(r);
+}
+
 static void op_write(struct client *c) {
     static const char *levels[] = {"READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"};
     static struct table local;
     char sql[64];
-    int statements = 1 + (int)gen_below(&c->rng, MAX_STATEMENTS);
-    PGresult *r;
+    int statements = 1 + (int)gen_pick(&c->rng, SITE_STATEMENTS, MAX_STATEMENTS);
     local = c->model;
-    c->pending_count = 0;
-    snprintf(sql, sizeof sql, "BEGIN ISOLATION LEVEL %s", levels[gen_below(&c->rng, 3)]);
+    snprintf(sql, sizeof sql, "BEGIN ISOLATION LEVEL %s", levels[gen_pick(&c->rng, SITE_ISOLATION, 3)]);
     if (!command_ok(c, sql)) return;
     for (int i = 0; i < statements; i++) {
         struct write_op op;
-        int kind = (int)gen_below(&c->rng, 3);
-        int column = (int)gen_below(&c->rng, 3);
+        int kind = (int)gen_pick(&c->rng, SITE_KIND, 3);
+        int column = (int)gen_pick(&c->rng, SITE_COLUMN, 3);
         if (local.count == 0) kind = 0;
         if (local.count >= MAX_ROWS - MAX_STATEMENTS) kind = 2;
         if (kind == 0) {
@@ -242,22 +258,79 @@ static void op_write(struct client *c) {
             return;
         }
         apply_op(&local, &op);
-        c->pending[c->pending_count++] = op;
     }
     if (gen_below(&c->rng, 8) == 0) {
         command_ok(c, "ROLLBACK");
         return;
     }
-    c->has_pending = 1;
-    r = run(c, "COMMIT");
-    if (PQresultStatus(r) == PGRES_COMMAND_OK) {
-        c->model = local;
-        c->has_pending = 0;
-    } else if (connected(c) && (strncmp(sqlstate(r), "40", 2) == 0 || strncmp(sqlstate(r), "23", 2) == 0 ||
-                                strncmp(sqlstate(r), "25", 2) == 0)) {
-        c->has_pending = 0;
+    commit(c, &local);
+}
+
+/* Inserts 16 to 2048 new owned rows in one statement, or, when the owner's
+ * rows would no longer fit the model, deletes that many of its oldest rows.
+ * The values follow from a seed and the row's position, so the model computes
+ * the same rows the server does. */
+static void op_bulk(struct client *c) {
+    static struct table local;
+    char first[32], owner[16], seed[24], count[16], sql[64];
+    const char *params[4] = {first, owner, seed, count};
+    int rows = 16 << gen_pick(&c->rng, SITE_BULK, BULK_SIZES);
+    PGresult *r;
+    int ok;
+    local = c->model;
+    snprintf(sql, sizeof sql, "BEGIN ISOLATION LEVEL %s",
+             gen_below(&c->rng, 2) ? "READ COMMITTED" : "REPEATABLE READ");
+    if (!command_ok(c, sql)) return;
+    snprintf(owner, sizeof owner, "%d", c->owner);
+    if (local.count + rows <= MAX_ROWS - MAX_STATEMENTS) {
+        int64_t base = (int64_t)(c->owner + 1) * 1000000000LL + c->next_seq;
+        uint32_t s = (uint32_t)gen_next(&c->rng);
+        snprintf(first, sizeof first, "%lld", (long long)base);
+        snprintf(seed, sizeof seed, "%u", s);
+        snprintf(count, sizeof count, "%d", rows);
+        r = PQexecParams(c->conn,
+                         "INSERT INTO items(id, owner, a, b, c) SELECT $1::bigint + g, $2::int, "
+                         "(($3::bigint + g * 7919) % 100000)::int, (($3::bigint * 31 + g * 104729) % 100000)::int, "
+                         "to_hex($3::bigint + g) FROM generate_series(0, $4::int - 1) AS g",
+                         4, NULL, params, NULL, NULL, 0);
+        ok = PQresultStatus(r) == PGRES_COMMAND_OK;
+        PQclear(r);
+        for (int g = 0; ok && g < rows; g++) {
+            struct write_op op;
+            op.kind = 'I';
+            op.row.id = base + g;
+            op.row.a = (int32_t)(((int64_t)s + (int64_t)g * 7919) % VALUE_RANGE);
+            op.row.b = (int32_t)(((int64_t)s * 31 + (int64_t)g * 104729) % VALUE_RANGE);
+            snprintf(op.row.c, sizeof op.row.c, "%llx", (unsigned long long)((int64_t)s + g));
+            apply_op(&local, &op);
+        }
+        if (ok) c->next_seq += rows;
+    } else {
+        int64_t threshold;
+        qsort(local.rows, (size_t)local.count, sizeof local.rows[0], row_order);
+        if (rows > local.count) rows = local.count;
+        if (rows == 0) {
+            command_ok(c, "ROLLBACK");
+            return;
+        }
+        threshold = local.rows[rows - 1].id;
+        snprintf(first, sizeof first, "%lld", (long long)threshold);
+        params[0] = owner;
+        params[1] = first;
+        r = PQexecParams(c->conn, "DELETE FROM items WHERE owner = $1::int AND id <= $2::bigint", 2, NULL, params,
+                         NULL, NULL, 0);
+        ok = PQresultStatus(r) == PGRES_COMMAND_OK;
+        PQclear(r);
+        if (ok) {
+            memmove(local.rows, local.rows + rows, sizeof local.rows[0] * (size_t)(local.count - rows));
+            local.count -= rows;
+        }
     }
-    PQclear(r);
+    if (!ok) {
+        command_ok(c, "ROLLBACK");
+        return;
+    }
+    commit(c, &local);
 }
 
 static int read_ids(struct client *c, const char *sql, const char *lo, const char *hi, int64_t *ids, int *count) {
@@ -280,7 +353,7 @@ static void op_read(struct client *c) {
         "SELECT id FROM items WHERE c BETWEEN $1 AND $2 ORDER BY id",
     };
     char lo[24], hi[24];
-    int column = (int)gen_below(&c->rng, 3);
+    int column = (int)gen_pick(&c->rng, SITE_COLUMN, 3);
     int index_count = 0, heap_count = 0, ok;
     if (!command_ok(c, "BEGIN ISOLATION LEVEL REPEATABLE READ")) return;
     if (!read_owned(c, &seen)) goto out;
@@ -321,9 +394,10 @@ out:
 static void op_ddl(struct client *c) {
     static const char *names[] = {"items_a_idx", "items_b_idx", "items_c_idx", "items_ab_idx"};
     static const char *columns[] = {"a", "b", "c", "a, b"};
-    int which = (int)gen_below(&c->rng, 4);
-    int kind = (int)gen_below(&c->rng, 3);
-    const char *concurrently = gen_below(&c->rng, 2) ? " CONCURRENTLY" : "";
+    int form = (int)gen_pick(&c->rng, SITE_DDL, 24);
+    int which = form % 4;
+    int kind = form / 4 % 3;
+    const char *concurrently = form / 12 ? " CONCURRENTLY" : "";
     char sql[160];
     if (kind == 0)
         snprintf(sql, sizeof sql, "CREATE INDEX%s IF NOT EXISTS %s ON items(%s)", concurrently, names[which],
@@ -405,15 +479,16 @@ static _Noreturn void run_client(int owner) {
             }
         }
         gen_rng_sync(&c.rng);
-        switch (gen_below(&c.rng, 6)) {
+        switch (gen_pick(&c.rng, SITE_OP, 7)) {
             case 0: op_write(&c); break;
             case 1: op_read(&c); break;
             case 2: op_ddl(&c); break;
             case 3: op_maintenance(&c); break;
             case 4: op_check(&c); break;
+            case 5: op_bulk(&c); break;
             default: reconnect(&c); break;
         }
-        gen_think(&c.rng);
+        gen_think_at(&c.rng, SITE_THINK);
     }
 }
 

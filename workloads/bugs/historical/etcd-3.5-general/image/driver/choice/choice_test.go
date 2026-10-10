@@ -78,3 +78,31 @@ func TestARestoredStreamDivergesUnderANewChoiceAndRepeatsUnderTheSameOne(t *test
 		t.Fatal("folding an unchanged choice changes nothing")
 	}
 }
+
+func TestASiteFollowsItsByteOfTheChoice(t *testing.T) {
+	unfolded := NewSeeded(1)
+	if unfolded.Bias(0, 4) != -1 {
+		t.Fatal("a stream without a choice biased a site")
+	}
+	s := NewSeeded(1)
+	s.Fold(uint64(0xc0|5)<<(8*3) | uint64(0x00|2)<<(8*1))
+	follows := 0
+	for i := 0; i < 8000; i++ {
+		if s.Bias(1, 4) != -1 {
+			t.Fatal("a byte with no strength biased its site")
+		}
+		switch s.Bias(3, 4) {
+		case 1:
+			follows++
+		case -1:
+		default:
+			t.Fatal("a biased site preferred an option other than its byte's")
+		}
+	}
+	if follows < 6600 || follows > 7400 {
+		t.Fatalf("a full-strength site followed its choice %d times in 8000", follows)
+	}
+	if s.Bias(11, 4) == -1 && s.Bias(11, 4) == -1 && s.Bias(11, 4) == -1 && s.Bias(11, 4) == -1 {
+		t.Fatal("site 11 did not share site 3's byte")
+	}
+}
