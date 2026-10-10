@@ -299,7 +299,7 @@ pub struct Capture {
 pub trait Endpointed: Workload {
     fn headless_endpoint(&self, input: &Input<Self::Action>) -> Result<Value, Box<dyn Error>>;
 
-    fn input_frames(&self, input: &Input<Self::Action>) -> u64;
+    fn input_frames(&self, input: &Input<Self::Action>) -> Result<u64, Box<dyn Error>>;
 }
 
 pub trait Filmable: Endpointed {

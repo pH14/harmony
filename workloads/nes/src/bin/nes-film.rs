@@ -149,7 +149,7 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
         }
     }
 
-    let input_frames = game.input_frames(&input);
+    let input_frames = game.input_frames(&input)?;
     let requested_frames = input_frames + u64::from(args.tail_frames);
     let skip_frames = requested_frames.saturating_sub(args.max_frames);
 

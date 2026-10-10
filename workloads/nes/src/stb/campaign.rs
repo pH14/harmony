@@ -742,12 +742,12 @@ impl crate::film::Endpointed for StbGame {
         Ok(serde_json::to_value(target.observe().decoded)?)
     }
 
-    fn input_frames(&self, input: &StbInput) -> u64 {
-        input
+    fn input_frames(&self, input: &StbInput) -> Result<u64, Box<dyn Error>> {
+        Ok(input
             .actions
             .iter()
             .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum()
+            .sum())
     }
 }
 

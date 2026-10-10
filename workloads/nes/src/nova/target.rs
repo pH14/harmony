@@ -20,14 +20,46 @@ const PLAYER_X_HIGH: usize = 0x26;
 const PLAYER_Y_HIGH: usize = 0x27;
 const PLAYER_Y_LOW: usize = 0x28;
 const PLAYER_HEALTH: usize = 0x4b;
+const OBJECT_TYPE: usize = 0x2d;
 const LEVEL_NUMBER: usize = 0xa7;
 const STARTED_LEVEL_NUMBER: usize = 0xa8;
 const NEED_LEVEL_RELOAD: usize = 0xa9;
+const LEVEL_VARIABLE: usize = 0x38e;
+const OBJECT_VX_HIGH: usize = 0x423;
+const OBJECT_STATE: usize = 0x463;
+const OBJECT_F3: usize = 0x473;
+const OBJECT_F4: usize = 0x483;
+const OBJECT_SLOTS: usize = 16;
+const OBJECT_STATE_INIT: u8 = 0x84;
+const BOSS_FIGHT: u8 = 0x66;
+const MOLSNO: u8 = 0x86;
+const FOREHEAD_BLOCK_GUY: u8 = 0x90;
+const FIGHTER_MAKER: u8 = 0x94;
+const JOHN: u8 = 0x9a;
+const FINAL_BOSS: u8 = 0xa8;
+const SCHEME_TEAM_FIGHT_SIZES: [u8; 2] = [12, 10];
+const JACK_STONE_FIGHT: u8 = 2;
+const JACK_STONE_HITS: u8 = 16;
+const SHOT_BOSS_HITS: u8 = 8;
+const FIGHTER_MAKER_PHASES: u8 = 3;
+const FIGHTER_MAKER_PHASE_HITS: u8 = 5;
+const FINAL_BOSS_HITS: u8 = 20;
+const CARRYING_SUN_KEY: usize = 0x500;
+const CARRYING_PICKUP_BLOCK: usize = 0x501;
+const TOGGLE_BLOCK_ENABLED: usize = 0x505;
 const CHIP_COUNT: usize = 0x508;
 const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
 const SAVE_RAM_SIZE: usize = 0x2000;
+const LEVEL_MAP_BYTES: usize = 0x1000;
+const ARROW_BLOCKS: [u8; 10] = [41, 42, 43, 44, 151, 152, 153, 154, 157, 158];
 const PLAYER_ABILITY: usize = 0x7200 - SAVE_RAM_BASE;
+const CHECKPOINT_LEVEL: usize = 0x7259 - SAVE_RAM_BASE;
+const PER_LEVEL_ITEM_TYPE: usize = 0x720d - SAVE_RAM_BASE;
+const PER_LEVEL_ITEM_AMOUNT: usize = 0x7221 - SAVE_RAM_BASE;
+const PER_LEVEL_ITEM_SLOTS: usize = 10;
+const RED_KEY_ITEM: u8 = 2;
+pub const KEY_COLORS: usize = 3;
 const LEVEL_CLEARED: usize = 0x7f1f - SAVE_RAM_BASE;
 const LEVEL_AVAILABLE: usize = 0x7f27 - SAVE_RAM_BASE;
 const COLLECTIBLE_BITS: usize = 0x7f2f - SAVE_RAM_BASE;
@@ -84,6 +116,12 @@ pub struct NovaMechanicalState {
     pub health: u8,
     pub chips: u8,
     pub chips_needed: u8,
+    pub fight: u8,
+    pub keys: [u8; KEY_COLORS],
+    pub sun_key: bool,
+    pub carrying_block: bool,
+    pub toggle: bool,
+    pub arrow_blocks: u16,
     pub ability: u8,
     pub level_reload_pending: bool,
     pub levels_cleared: [u8; PERSISTENT_BITMAP_LEN],
@@ -93,13 +131,24 @@ pub struct NovaMechanicalState {
 
 impl NovaMechanicalState {
     #[must_use]
-    pub fn cleared_count(self) -> u8 {
+    pub fn cleared(self, index: u8) -> bool {
         self.levels_cleared
-            .iter()
-            .map(|byte| byte.count_ones())
-            .sum::<u32>()
+            .get(usize::from(index / 8))
+            .is_some_and(|byte| byte & (1 << (index % 8)) != 0)
+    }
+
+    #[must_use]
+    pub fn cleared_in_order(self) -> u8 {
+        (0..NOVA_CAMPAIGN_LEVEL_COUNT)
+            .take_while(|index| self.cleared(*index))
+            .count()
             .try_into()
             .unwrap_or(u8::MAX)
+    }
+
+    #[must_use]
+    pub fn in_campaign_level(self) -> bool {
+        self.started_level == self.cleared_in_order()
     }
 
     #[must_use]
@@ -175,7 +224,7 @@ const BOOT_TO_MAIN_MENU: [ButtonChord; 3] = [
     },
 ];
 
-const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
+const MAIN_MENU_TO_PRE_LEVEL: [ButtonChord; 4] = [
     ButtonChord {
         buttons: JOYPAD_START,
         hold_frames: 6,
@@ -192,6 +241,9 @@ const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
         buttons: 0,
         hold_frames: 54,
     },
+];
+
+const PRE_LEVEL_TO_GAMEPLAY: [ButtonChord; 8] = [
     ButtonChord {
         buttons: JOYPAD_UP,
         hold_frames: 6,
@@ -226,6 +278,11 @@ const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
     },
 ];
 
+const LEVEL_END_WAIT: ButtonChord = ButtonChord {
+    buttons: 0,
+    hold_frames: 120,
+};
+
 #[derive(Debug)]
 pub struct NovaTarget<M = QuickNesMachine, P = Vec<u8>>
 where
@@ -240,7 +297,7 @@ where
     action_observations: Vec<NovaObservations>,
     failed: bool,
     snapshot_base: Option<P>,
-    genesis_cleared: u8,
+    genesis_level: u8,
     halt_on_level_clear: bool,
     execution_work: u64,
 }
@@ -251,7 +308,11 @@ where
     P: SnapshotState,
 {
     pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
-        for actions in [&BOOT_TO_MAIN_MENU[..], &MAIN_MENU_TO_GAMEPLAY[..]] {
+        for actions in [
+            &BOOT_TO_MAIN_MENU[..],
+            &MAIN_MENU_TO_PRE_LEVEL[..],
+            &PRE_LEVEL_TO_GAMEPLAY[..],
+        ] {
             machine::nes::run_actions(&mut machine, actions)?;
         }
         Self::from_machine(machine)
@@ -280,7 +341,7 @@ where
             observation,
             failed: false,
             snapshot_base: None,
-            genesis_cleared: state.cleared_count(),
+            genesis_level: state.started_level,
             halt_on_level_clear: true,
             execution_work: 0,
         })
@@ -303,7 +364,10 @@ impl NovaTarget<QuickNesMachine> {
         machine.write_save_ram(LEVEL_AVAILABLE, &available)?;
 
         let main_menu = machine.snapshot()?;
-        machine.branch(main_menu, &nes::reproducer(&MAIN_MENU_TO_GAMEPLAY))?;
+        machine.branch(
+            main_menu,
+            &nes::reproducer(&[&MAIN_MENU_TO_PRE_LEVEL[..], &PRE_LEVEL_TO_GAMEPLAY[..]].concat()),
+        )?;
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(main_menu)?;
         let (wram, save_ram) = read_memory(&machine)?;
@@ -363,12 +427,12 @@ where
 
     #[must_use]
     pub fn cleared_a_level(&self) -> bool {
-        self.observation.decoded.cleared_count() > self.genesis_cleared
+        self.observation.decoded.cleared(self.genesis_level)
     }
 
     #[must_use]
     pub fn cleared_every_level(&self) -> bool {
-        self.observation.decoded.cleared_count() >= NOVA_CAMPAIGN_LEVEL_COUNT
+        self.observation.decoded.cleared_in_order() >= NOVA_CAMPAIGN_LEVEL_COUNT
     }
 
     pub fn set_halt_on_level_clear(&mut self, halt: bool) {
@@ -377,6 +441,50 @@ where
 
     fn halted(&self) -> bool {
         self.failed || self.is_dead() || (self.halt_on_level_clear && self.cleared_a_level())
+    }
+
+    fn starts_next_level(&self, prior: NovaMechanicalState, state: NovaMechanicalState) -> bool {
+        !self.halt_on_level_clear
+            && state.cleared_in_order() > prior.cleared_in_order()
+            && state.cleared_in_order() < NOVA_CAMPAIGN_LEVEL_COUNT
+    }
+
+    fn start_next_level(&mut self) -> Result<(NovaMechanicalState, u64), MachineError> {
+        let mut frames = 0_u64;
+        let mut endpoint = None;
+        for chord in std::iter::once(LEVEL_END_WAIT).chain(PRE_LEVEL_TO_GAMEPLAY) {
+            let from = self.machine.snapshot()?;
+            let ran = self
+                .machine
+                .branch(from, &nes::reproducer(std::slice::from_ref(&chord)))
+                .and_then(|()| self.machine.run(StopConditions::default(), None));
+            self.machine.drop_snapshot(from)?;
+            if !matches!(
+                ran?,
+                machine::StopReason::Quiescent { .. } | machine::StopReason::SnapshotPoint { .. }
+            ) {
+                return Err(MachineError::Backend(
+                    "Nova level start stopped before its last menu press".to_owned(),
+                ));
+            }
+            let produced = self.machine.frames();
+            frames = frames.saturating_add(u64::try_from(produced.len()).unwrap_or(u64::MAX));
+            endpoint = produced.last().copied();
+        }
+        let wram = endpoint.ok_or_else(|| {
+            MachineError::Backend("Nova level start produced no frames".to_owned())
+        })?;
+        let save_ram = self
+            .machine
+            .read(SAVE_RAM_BASE as u64, SAVE_RAM_SIZE as u32)?;
+        let state = decode_state(&wram, &save_ram)?;
+        if read_byte(&save_ram, CHECKPOINT_LEVEL)? != state.started_level || state.health == 0 {
+            return Err(MachineError::Backend(format!(
+                "Nova did not start level {} after the exit door",
+                state.started_level
+            )));
+        }
+        Ok((state, frames))
     }
 
     #[must_use]
@@ -509,6 +617,7 @@ impl NovaTarget<QuickNesMachine> {
         let result = (|| {
             let mut metadata = None;
             let mut skip = skip_frames;
+            let mut prior = self.observation.decoded;
             for action in &input.actions {
                 self.render_action(
                     *action,
@@ -517,6 +626,23 @@ impl NovaTarget<QuickNesMachine> {
                     &mut metadata,
                     &mut skip,
                 )?;
+                if self.halt_on_level_clear {
+                    continue;
+                }
+                let (wram, save_ram) = read_memory(&self.machine)?;
+                let state = decode_state(&wram, &save_ram)?;
+                if self.starts_next_level(prior, state) {
+                    for chord in [&[LEVEL_END_WAIT][..], &PRE_LEVEL_TO_GAMEPLAY[..]].concat() {
+                        self.render_action(
+                            chord,
+                            video_output,
+                            audio_output,
+                            &mut metadata,
+                            &mut skip,
+                        )?;
+                    }
+                }
+                prior = state;
             }
             let (endpoint_wram, endpoint_save_ram) = read_memory(&self.machine)?;
             let input_endpoint = decode_state(&endpoint_wram, &endpoint_save_ram)?;
@@ -678,6 +804,7 @@ where
             return;
         }
         let prior_state = self.observation.decoded;
+        let action_start = prior_state;
         let start = self.current;
         if self
             .machine
@@ -728,6 +855,8 @@ where
             };
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
+                || state.keys != prior_state.keys
+                || state.ability != prior_state.ability
                 || state.level_reload_pending != prior_state.level_reload_pending;
             if boundary {
                 let frame_count = self
@@ -764,6 +893,17 @@ where
         }
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
+        }
+        if self.starts_next_level(action_start, self.observation.decoded) {
+            let Ok((state, frames)) = self.start_next_level() else {
+                self.failed = true;
+                return;
+            };
+            self.execution_work = self.execution_work.saturating_add(frames);
+            let observation =
+                self.make_observation(self.observation.frame_count.saturating_add(frames), state);
+            self.action_observations.push(observation.clone());
+            self.observation = observation;
         }
         let next = match self.machine.snapshot() {
             Ok(next) => next,
@@ -894,6 +1034,64 @@ fn fixed_point_pixels(high: u8, low: u8) -> u16 {
     u16::from(high) * 16 + u16::from(low >> 4)
 }
 
+fn held_keys(save_ram: &[u8]) -> Result<[u8; KEY_COLORS], MachineError> {
+    let mut keys = [0_u8; KEY_COLORS];
+    for slot in 0..PER_LEVEL_ITEM_SLOTS {
+        let item = read_byte(save_ram, PER_LEVEL_ITEM_TYPE + slot)?;
+        let Some(count) = item
+            .checked_sub(RED_KEY_ITEM)
+            .and_then(|color| keys.get_mut(usize::from(color)))
+        else {
+            continue;
+        };
+        let amount = read_byte(save_ram, PER_LEVEL_ITEM_AMOUNT + slot)?;
+        *count = count.saturating_add(amount.saturating_add(1));
+    }
+    Ok(keys)
+}
+
+fn arrow_blocks(save_ram: &[u8]) -> Result<u16, MachineError> {
+    let map = save_ram
+        .get(..LEVEL_MAP_BYTES)
+        .ok_or_else(|| MachineError::Backend("Nova level map is absent".to_owned()))?;
+    let count = map
+        .iter()
+        .filter(|block| ARROW_BLOCKS.contains(block))
+        .count();
+    Ok(u16::try_from(count).unwrap_or(u16::MAX))
+}
+
+fn fight_progress(wram: &[u8]) -> Result<u8, MachineError> {
+    for slot in 0..OBJECT_SLOTS {
+        let kind = read_byte(wram, OBJECT_TYPE + slot)? & !1;
+        let f3 = read_byte(wram, OBJECT_F3 + slot)?;
+        let f4 = read_byte(wram, OBJECT_F4 + slot)?;
+        let hits = read_byte(wram, OBJECT_VX_HIGH + slot)?;
+        let progress = match kind {
+            BOSS_FIGHT if f3 == JACK_STONE_FIGHT => hits.min(JACK_STONE_HITS),
+            BOSS_FIGHT => {
+                let Some(&size) = SCHEME_TEAM_FIGHT_SIZES.get(usize::from(f3)) else {
+                    continue;
+                };
+                if read_byte(wram, OBJECT_STATE + slot)? == OBJECT_STATE_INIT {
+                    0
+                } else {
+                    size.saturating_sub(read_byte(wram, LEVEL_VARIABLE)?)
+                }
+            }
+            MOLSNO | FOREHEAD_BLOCK_GUY | JOHN => f4.min(SHOT_BOSS_HITS),
+            FIGHTER_MAKER => {
+                f3.min(FIGHTER_MAKER_PHASES) * FIGHTER_MAKER_PHASE_HITS
+                    + f4.min(FIGHTER_MAKER_PHASE_HITS - 1)
+            }
+            FINAL_BOSS => hits.min(FINAL_BOSS_HITS),
+            _ => continue,
+        };
+        return Ok(progress);
+    }
+    Ok(0)
+}
+
 pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState, MachineError> {
     Ok(NovaMechanicalState {
         level: read_byte(wram, LEVEL_NUMBER)?,
@@ -909,6 +1107,12 @@ pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState,
         health: read_byte(wram, PLAYER_HEALTH)?,
         chips: read_byte(wram, CHIP_COUNT)?,
         chips_needed: read_byte(wram, CHIPS_NEEDED)?,
+        fight: fight_progress(wram)?,
+        keys: held_keys(save_ram)?,
+        sun_key: read_byte(wram, CARRYING_SUN_KEY)? != 0,
+        carrying_block: read_byte(wram, CARRYING_PICKUP_BLOCK)? != 0,
+        toggle: read_byte(wram, TOGGLE_BLOCK_ENABLED)? != 0,
+        arrow_blocks: arrow_blocks(save_ram)?,
         ability: read_byte(save_ram, PLAYER_ABILITY)?,
         level_reload_pending: read_byte(wram, NEED_LEVEL_RELOAD)? != 0,
         levels_cleared: read_bitmap(save_ram, LEVEL_CLEARED)?,
@@ -925,7 +1129,7 @@ pub fn spatial_bucket(state: NovaMechanicalState) -> (u8, u8, u16, u16) {
 #[must_use]
 pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8) {
     (
-        state.cleared_count(),
+        state.cleared_in_order(),
         state.collectible_count(),
         state.available_count(),
         state.ability != 0,
@@ -992,6 +1196,8 @@ mod tests {
         fail_next_drop: bool,
         reads_need_a_run: bool,
         stale_reads: bool,
+        exit_door_on_up: bool,
+        start_level_on_a: bool,
         lifecycle: Vec<&'static str>,
     }
 
@@ -1026,6 +1232,8 @@ mod tests {
                 fail_next_drop: false,
                 reads_need_a_run: false,
                 stale_reads: false,
+                exit_door_on_up: false,
+                start_level_on_a: false,
                 lifecycle: Vec::new(),
             }
         }
@@ -1101,6 +1309,19 @@ mod tests {
                 .unwrap_or(self.staged.len())
                 .min(self.staged.len());
             for action in self.staged.drain(..chord_count).collect::<Vec<_>>() {
+                let checkpoint = SAVE_RAM_BASE + CHECKPOINT_LEVEL;
+                let level = self.state[STARTED_LEVEL_NUMBER];
+                if self.exit_door_on_up
+                    && action.buttons == JOYPAD_UP
+                    && self.state[checkpoint] == level
+                {
+                    self.state[SAVE_RAM_BASE + LEVEL_CLEARED + usize::from(level / 8)] |=
+                        1 << (level % 8);
+                    self.state[STARTED_LEVEL_NUMBER] = level + 1;
+                }
+                if self.start_level_on_a && action.buttons == JOYPAD_A {
+                    self.state[checkpoint] = level;
+                }
                 for _ in 0..action.bounded_hold_frames() {
                     self.state[0] = self.state[0].wrapping_add(1);
                     if !self.zero_frames {
@@ -1115,12 +1336,17 @@ mod tests {
                     self.vtime = self.vtime.saturating_add(1);
                 }
             }
-            Ok(self
+            let stop = self
                 .run_stops
                 .pop_front()
                 .unwrap_or(machine::StopReason::Quiescent {
                     vtime: machine::Moment(self.vtime),
-                }))
+                });
+            if self.append_sentinel && !matches!(stop, machine::StopReason::SnapshotPoint { .. }) {
+                self.frames.clear();
+                self.stale_reads = true;
+            }
+            Ok(stop)
         }
 
         fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
@@ -1202,7 +1428,7 @@ mod tests {
     #[test]
     fn whole_game_policy_executes_after_a_level_clear() {
         let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
-        target.genesis_cleared = 0;
+        target.genesis_level = 0;
         target.observation.decoded.levels_cleared[0] = 1;
         assert!(target.cleared_a_level());
         assert!(!target.cleared_every_level());
@@ -1211,6 +1437,128 @@ mod tests {
         target.set_halt_on_level_clear(false);
         target.apply(&ButtonChord::new(0, 3));
         assert_eq!(target.machine.run_calls, 1);
+    }
+
+    fn exit_door_machine(cleared_before: u8) -> FakeMachine {
+        let mut machine = FakeMachine::new();
+        machine.exit_door_on_up = true;
+        machine.start_level_on_a = true;
+        let cleared = level_prefix_bitmap(cleared_before);
+        machine.state[SAVE_RAM_BASE + LEVEL_CLEARED..][..PERSISTENT_BITMAP_LEN]
+            .copy_from_slice(&cleared);
+        machine.state[STARTED_LEVEL_NUMBER] = cleared_before;
+        machine.state[SAVE_RAM_BASE + CHECKPOINT_LEVEL] = cleared_before;
+        machine
+    }
+
+    fn level_start_frames() -> u64 {
+        std::iter::once(LEVEL_END_WAIT)
+            .chain(PRE_LEVEL_TO_GAMEPLAY)
+            .map(|chord| u64::from(chord.bounded_hold_frames()))
+            .sum()
+    }
+
+    #[test]
+    fn whole_game_starts_the_next_level_after_an_exit_door() {
+        let mut target = NovaTarget::from_machine(exit_door_machine(0)).expect("genesis");
+        target.set_halt_on_level_clear(false);
+        target.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(!target.failed);
+        let state = target.mechanical_state();
+        assert_eq!((state.cleared_in_order(), state.started_level), (1, 1));
+        assert_eq!(target.observe().frame_count, 2 + level_start_frames());
+        assert_eq!(target.execution_work(), 2 + level_start_frames());
+        target.apply(&ButtonChord::new(0, 1));
+        assert!(!target.failed);
+        assert_eq!(target.observe().frame_count, 3 + level_start_frames());
+    }
+
+    #[test]
+    fn level_start_reads_each_menu_press_at_its_snapshot_point() {
+        let mut machine = exit_door_machine(0);
+        machine.max_chords_per_run = Some(1);
+        machine.append_sentinel = true;
+        let chords = 2 + PRE_LEVEL_TO_GAMEPLAY.len();
+        machine.run_stops.extend(std::iter::repeat_n(
+            machine::StopReason::SnapshotPoint {
+                vtime: machine::Moment(0),
+            },
+            chords,
+        ));
+        let mut target = NovaTarget::from_machine(machine).expect("genesis");
+        target.set_halt_on_level_clear(false);
+        target.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(!target.failed);
+        let state = target.mechanical_state();
+        assert_eq!((state.cleared_in_order(), state.started_level), (1, 1));
+        assert_eq!(target.observe().frame_count, 2 + level_start_frames());
+        assert_eq!(target.machine.vtime, 2 + level_start_frames());
+        assert_eq!(target.machine.run_calls, chords);
+    }
+
+    #[test]
+    fn a_level_that_fails_to_start_is_an_execution_failure() {
+        let mut machine = exit_door_machine(0);
+        machine.start_level_on_a = false;
+        let mut target = NovaTarget::from_machine(machine).expect("genesis");
+        target.set_halt_on_level_clear(false);
+        target.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(target.failed);
+        assert!(matches!(target.exit_kind(), ExitKind::Crash));
+    }
+
+    #[test]
+    fn a_level_clear_reads_the_selected_level_bit_alone() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.genesis_level = 20;
+        target.observation.decoded.levels_cleared = [255, 255, 140, 0, 0, 128, 0, 0];
+        assert_eq!(target.observation.decoded.cleared_in_order(), 16);
+        assert!(!target.cleared_a_level());
+        target.observation.decoded.levels_cleared[2] |= 1 << 4;
+        assert!(target.cleared_a_level());
+        assert_eq!(target.observation.decoded.cleared_in_order(), 16);
+    }
+
+    #[test]
+    fn only_the_next_level_in_order_is_the_campaign_level() {
+        let state = NovaMechanicalState {
+            started_level: 20,
+            levels_cleared: level_prefix_bitmap(20),
+            ..NovaMechanicalState::default()
+        };
+        assert!(state.in_campaign_level());
+        assert!(
+            !NovaMechanicalState {
+                started_level: 12,
+                ..state
+            }
+            .in_campaign_level()
+        );
+        assert!(
+            !NovaMechanicalState {
+                started_level: 21,
+                ..state
+            }
+            .in_campaign_level()
+        );
+        let mut stray = state;
+        stray.levels_cleared[2] |= 1 << 6;
+        assert!(stray.in_campaign_level());
+    }
+
+    #[test]
+    fn no_level_starts_after_a_level_campaign_clear_or_the_last_level() {
+        let mut level = NovaTarget::from_machine(exit_door_machine(0)).expect("genesis");
+        level.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert_eq!(level.observe().frame_count, 2);
+        assert!(level.cleared_a_level());
+        let mut game = NovaTarget::from_machine(exit_door_machine(NOVA_CAMPAIGN_LEVEL_COUNT - 1))
+            .expect("genesis");
+        game.set_halt_on_level_clear(false);
+        game.apply(&ButtonChord::new(JOYPAD_UP, 2));
+        assert!(!game.failed);
+        assert_eq!(game.observe().frame_count, 2);
+        assert!(game.cleared_every_level());
     }
 
     #[test]
@@ -1432,14 +1780,134 @@ mod tests {
         let mut save = vec![0_u8; 8 * 1024];
         save[PLAYER_ABILITY] = 6;
         save[LEVEL_CLEARED] = 0b1011;
+        save[LEVEL_CLEARED + 5] = 0x80;
         save[LEVEL_AVAILABLE] = 0xff;
         save[COLLECTIBLE_BITS + 7] = 0x80;
         let state = decode_state(&wram, &save).expect("decode fixture");
         assert_eq!((state.x, state.y), (0x34a, 0x0b8));
         assert_eq!((state.level, state.started_level), (9, 7));
         assert_eq!((state.health, state.chips, state.chips_needed), (4, 3, 5));
-        assert_eq!((state.cleared_count(), state.available_count()), (3, 8));
+        assert_eq!((state.cleared_in_order(), state.available_count()), (2, 8));
         assert_eq!(state.collectible_count(), 1);
+        assert_eq!((state.keys, state.sun_key), ([0, 0, 0], false));
+        assert_eq!((state.carrying_block, state.toggle), (false, false));
+        assert_eq!(state.arrow_blocks, 0);
+    }
+
+    #[test]
+    fn decoder_counts_arrow_puzzle_blocks_in_the_level_map() {
+        let wram = [0_u8; WRAM_SIZE];
+        let mut save = vec![0_u8; 8 * 1024];
+        for (offset, block) in [
+            (0, 41),
+            (17, 153),
+            (0x0fff, 158),
+            (0x0ffe, 157),
+            (40, 1),
+            (41, 46),
+            (42, 11),
+            (43, 45),
+            (44, 155),
+            (45, 156),
+        ] {
+            save[offset] = block;
+        }
+        save[LEVEL_MAP_BYTES] = 43;
+        let state = decode_state(&wram, &save).expect("decode fixture");
+        assert_eq!(state.arrow_blocks, 4);
+        save[..300].fill(43);
+        let many = decode_state(&wram, &save).expect("decode crowded map");
+        save[0] = 0;
+        let spent = decode_state(&wram, &save).expect("decode spent arrow");
+        assert_eq!((many.arrow_blocks, spent.arrow_blocks), (302, 301));
+        save[..LEVEL_MAP_BYTES].fill(43);
+        let full = decode_state(&wram, &save).expect("decode full map");
+        assert_eq!(full.arrow_blocks, 4096);
+    }
+
+    #[test]
+    fn decoder_counts_held_keys_by_color() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[CARRYING_SUN_KEY] = 1;
+        wram[CARRYING_PICKUP_BLOCK] = 1;
+        wram[TOGGLE_BLOCK_ENABLED] = 64;
+        let mut save = vec![0_u8; 8 * 1024];
+        for (slot, item, amount) in [(0, 4, 0), (3, 2, 1), (5, 9, 4), (9, 3, 0)] {
+            save[PER_LEVEL_ITEM_TYPE + slot] = item;
+            save[PER_LEVEL_ITEM_AMOUNT + slot] = amount;
+        }
+        let state = decode_state(&wram, &save).expect("decode fixture");
+        assert_eq!((state.keys, state.sun_key), ([2, 1, 1], true));
+        assert_eq!((state.carrying_block, state.toggle), (true, true));
+    }
+
+    #[test]
+    fn decoder_counts_progress_in_every_boss_fight() {
+        let save = vec![0_u8; 8 * 1024];
+        let fight = |setup: &dyn Fn(&mut [u8; WRAM_SIZE])| {
+            let mut wram = [0_u8; WRAM_SIZE];
+            wram[OBJECT_TYPE] = 0x20;
+            setup(&mut wram);
+            decode_state(&wram, &save).expect("decode fixture").fight
+        };
+        assert_eq!(fight(&|_| {}), 0);
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 9] = BOSS_FIGHT | 1;
+                wram[LEVEL_VARIABLE] = 7;
+            }),
+            5
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 9] = BOSS_FIGHT;
+                wram[OBJECT_STATE + 9] = OBJECT_STATE_INIT;
+            }),
+            0
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 3] = BOSS_FIGHT;
+                wram[OBJECT_F3 + 3] = 1;
+                wram[LEVEL_VARIABLE] = 10;
+            }),
+            0
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 15] = BOSS_FIGHT;
+                wram[OBJECT_F3 + 15] = JACK_STONE_FIGHT;
+                wram[OBJECT_F4 + 15] = 5;
+                wram[OBJECT_VX_HIGH + 15] = 11;
+            }),
+            11
+        );
+        for boss in [MOLSNO, FOREHEAD_BLOCK_GUY, JOHN] {
+            assert_eq!(
+                fight(&|wram| {
+                    wram[OBJECT_TYPE + 4] = boss | 1;
+                    wram[OBJECT_F3 + 4] = 90;
+                    wram[OBJECT_F4 + 4] = 6;
+                }),
+                6
+            );
+        }
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE] = FIGHTER_MAKER;
+                wram[OBJECT_F3] = 2;
+                wram[OBJECT_F4] = 3;
+            }),
+            13
+        );
+        assert_eq!(
+            fight(&|wram| {
+                wram[OBJECT_TYPE + 2] = FINAL_BOSS;
+                wram[OBJECT_STATE + 2] = 255;
+                wram[OBJECT_VX_HIGH + 2] = 30;
+            }),
+            FINAL_BOSS_HITS
+        );
     }
 
     #[test]

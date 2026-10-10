@@ -217,6 +217,10 @@ where
         self
     }
 
+    fn left_the_campaign(&self, target: &NovaTarget<M, P>) -> bool {
+        self.whole_game && !target.mechanical_state().in_campaign_level()
+    }
+
     fn terminal_reached(&self, target: &NovaTarget<M, P>) -> bool {
         if self.whole_game {
             target.cleared_every_level()
@@ -401,11 +405,12 @@ fn action_champion_key(observations: &[NovaObservations]) -> Option<NovaChampion
         let state = observation.decoded;
         (
             NovaProgressWatermark {
-                cleared: state.cleared_count(),
+                cleared: state.cleared_in_order(),
                 collectibles: state.collectible_count(),
                 available: state.available_count(),
                 started_level: state.started_level,
                 level: state.level,
+                fight: state.fight,
                 x: state.x,
                 y: state.y,
             },
@@ -506,7 +511,7 @@ where
             (
                 TERMINAL_POLICY_FIELD,
                 if self.whole_game {
-                    "every_level_cleared"
+                    "every_level_cleared_in_order_other_levels_end_the_job"
                 } else {
                     TERMINAL_POLICY_IDENTIFIER
                 },
@@ -725,7 +730,10 @@ where
     fn execution_disposition(&self, target: &NovaTarget<M, P>) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() || (!self.whole_game && target.cleared_a_level()) {
+        } else if target.is_dead()
+            || self.left_the_campaign(target)
+            || (!self.whole_game && target.cleared_a_level())
+        {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -750,7 +758,10 @@ where
             objective_reached,
             disposition: if target.exit_kind() != ExitKind::Ok {
                 ExecutionDisposition::Failed
-            } else if target.is_dead() || (!self.whole_game && objective_reached) {
+            } else if target.is_dead()
+                || self.left_the_campaign(target)
+                || (!self.whole_game && objective_reached)
+            {
                 ExecutionDisposition::Terminal
             } else {
                 ExecutionDisposition::Runnable
@@ -817,12 +828,12 @@ impl crate::film::Filmable for NovaGame<QuickNesMachine> {
     }
 }
 
-impl<M, P> crate::film::Endpointed for NovaGame<M, P>
+impl<M, P> NovaGame<M, P>
 where
     M: NovaMachineKind<P>,
     P: SnapshotState,
 {
-    fn headless_endpoint(&self, input: &NovaInput) -> Result<serde_json::Value, Box<dyn Error>> {
+    fn headless_replay(&self, input: &NovaInput) -> Result<NovaTarget<M, P>, Box<dyn Error>> {
         let mut target = self
             .new_target()
             .map_err(|error| -> Box<dyn Error> { error.into() })?;
@@ -833,15 +844,23 @@ where
                 return Err("the recorded Nova input crashed during headless replay".into());
             }
         }
-        Ok(serde_json::to_value(target.observe().decoded)?)
+        Ok(target)
+    }
+}
+
+impl<M, P> crate::film::Endpointed for NovaGame<M, P>
+where
+    M: NovaMachineKind<P>,
+    P: SnapshotState,
+{
+    fn headless_endpoint(&self, input: &NovaInput) -> Result<serde_json::Value, Box<dyn Error>> {
+        Ok(serde_json::to_value(
+            self.headless_replay(input)?.observe().decoded,
+        )?)
     }
 
-    fn input_frames(&self, input: &NovaInput) -> u64 {
-        input
-            .actions
-            .iter()
-            .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum()
+    fn input_frames(&self, input: &NovaInput) -> Result<u64, Box<dyn Error>> {
+        Ok(self.headless_replay(input)?.observe().frame_count)
     }
 }
 
