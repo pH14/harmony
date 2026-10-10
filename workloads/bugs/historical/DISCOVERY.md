@@ -545,3 +545,14 @@ made after a general-arm measurement restarts every affected measurement.
    cuts its journal back to the last complete line before appending, in the
    SQLite and etcd drivers, and SQLite prints the failed comparison to the
    console. The SQLite and etcd general and held-out arms are measured again.
+
+9. **Cheaper coverage callbacks** (after the held-out measurement). Every
+   instrumented edge called into the fault runtime, which took a
+   process-shared mutex and updated its counters with atomic
+   read-modify-writes. Run natively on one processor with events active, a
+   PostgreSQL bulk-load and index script took 40.7 seconds against 13.6 with a
+   no-op callback. A callback now takes the mutex only while a kill or park is
+   armed and otherwise uses relaxed loads and stores (see
+   [the runtime](../../faults/runtime/README.md#forked-processes)), and the
+   same script takes 23.0 seconds. Every instrumented case runs more
+   executions in the same budget, so every arm is measured again.

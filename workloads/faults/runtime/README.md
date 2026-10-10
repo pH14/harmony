@@ -113,9 +113,17 @@ that finds it full hashes its address). Its children inherit the mapping, so
 a forking server such as PostgreSQL reports the coverage of its backends and
 auxiliary processes, and an armed kill or park can fire in any of them. The
 first process keeps the only control thread; a kill claimed in a child writes
-its report to the shared channel and kills the node's process group. The
-state is guarded by a robust process-shared mutex, so a process that dies
-holding it leaves the state usable. The control thread starts with every
+its report to the shared channel and kills the node's process group. Commands,
+crossings and claimed kills and parks are guarded by a robust process-shared
+mutex, so a process that dies holding it leaves the state usable. A callback
+takes the mutex only while a kill or park is armed. Otherwise it updates its
+site's count and bucket and the callback count with relaxed loads and stores,
+without a lock or an atomic read-modify-write: the guest has one processor,
+so a callback preempted between its load and store can lose a count or
+repeat a crossing, which only perturbs counts that are already heuristic.
+Every edge of every instrumented process takes this path, and on a
+PostgreSQL bulk-load and index script it costs about a third of what a
+locked update did. The control thread starts with every
 signal blocked, so a server's process-directed signals reach its own threads.
 Module offsets use the module list of the first process at the time of the
 fork; a child's sites in a module it loaded itself hash their addresses. The

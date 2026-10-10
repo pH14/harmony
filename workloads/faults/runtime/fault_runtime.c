@@ -371,16 +371,20 @@ static uint64_t harmony_fault_event_site_before(uint64_t site,
                                                 uint8_t *crossed)
 {
     size_t slot = harmony_fault_event_site_start(site);
-    uint64_t before = harmony_fault_events->site_visits[slot];
+    uint64_t before = __atomic_load_n(&harmony_fault_events->site_visits[slot],
+                                      __ATOMIC_RELAXED);
     uint8_t bucket;
 
     *crossed = 0;
     if (before == UINT64_MAX)
         return before;
-    harmony_fault_events->site_visits[slot]++;
+    __atomic_store_n(&harmony_fault_events->site_visits[slot], before + 1,
+                     __ATOMIC_RELAXED);
     bucket = harmony_fault_event_bucket(before + 1);
-    if (bucket > harmony_fault_events->site_bucket[slot]) {
-        harmony_fault_events->site_bucket[slot] = bucket;
+    if (bucket > __atomic_load_n(&harmony_fault_events->site_bucket[slot],
+                                 __ATOMIC_RELAXED)) {
+        __atomic_store_n(&harmony_fault_events->site_bucket[slot], bucket,
+                         __ATOMIC_RELAXED);
         *crossed = bucket;
     }
     return before;
@@ -465,10 +469,12 @@ static void *harmony_fault_event_control(void *arg)
                 (second != 0 && second != 1)) {
                 valid = 0;
             } else if (second == 0) {
-                harmony_fault_events->kill_armed = 0;
+                __atomic_store_n(&harmony_fault_events->kill_armed, 0,
+                                 __ATOMIC_RELEASE);
             } else {
                 harmony_fault_events->kill_rarity = (uint8_t)first;
-                harmony_fault_events->kill_armed = 1;
+                __atomic_store_n(&harmony_fault_events->kill_armed, 1,
+                                 __ATOMIC_RELEASE);
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
             if (second != 0 &&
@@ -477,7 +483,8 @@ static void *harmony_fault_event_control(void *arg)
                                   : target_start >= target_end))) {
                 valid = 0;
             } else if (second == 0) {
-                harmony_fault_events->park_armed = 0;
+                __atomic_store_n(&harmony_fault_events->park_armed, 0,
+                                 __ATOMIC_RELEASE);
                 harmony_fault_events->park_hold_nanos = 0;
             } else {
                 harmony_fault_events->park_edges = first;
@@ -486,7 +493,8 @@ static void *harmony_fault_event_control(void *arg)
                 harmony_fault_events->park_hold_nanos = second;
                 harmony_fault_events->park_target_start = target_start;
                 harmony_fault_events->park_target_end = target_end;
-                harmony_fault_events->park_armed = 1;
+                __atomic_store_n(&harmony_fault_events->park_armed, 1,
+                                 __ATOMIC_RELEASE);
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK_STATUS) {
             memset(response, 0, sizeof(response));
@@ -504,23 +512,31 @@ static void *harmony_fault_event_control(void *arg)
             put_u64(response, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
             put_u64(response + 8, harmony_fault_events->coverage_crossings);
             put_u64(response + 16, harmony_fault_events->coverage_digest);
-            put_u64(response + 24, harmony_fault_events->coverage_callbacks);
+            put_u64(response + 24,
+                    __atomic_load_n(&harmony_fault_events->coverage_callbacks,
+                                    __ATOMIC_RELAXED));
         } else {
             valid = 0;
         }
         if (!valid || write_all(fd, response, sizeof(response)) != 0) {
-            harmony_fault_events->kill_armed = 0;
-            harmony_fault_events->park_armed = 0;
-            harmony_fault_events->initialized = 0;
+            __atomic_store_n(&harmony_fault_events->kill_armed, 0,
+                             __ATOMIC_RELEASE);
+            __atomic_store_n(&harmony_fault_events->park_armed, 0,
+                             __ATOMIC_RELEASE);
+            __atomic_store_n(&harmony_fault_events->initialized, 0,
+                             __ATOMIC_RELEASE);
             (void)pthread_mutex_unlock(&harmony_fault_events->lock);
             break;
         }
         (void)pthread_mutex_unlock(&harmony_fault_events->lock);
     }
     if (harmony_fault_lock() == 0) {
-        harmony_fault_events->kill_armed = 0;
-        harmony_fault_events->park_armed = 0;
-        harmony_fault_events->initialized = 0;
+        __atomic_store_n(&harmony_fault_events->kill_armed, 0,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(&harmony_fault_events->park_armed, 0,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(&harmony_fault_events->initialized, 0,
+                         __ATOMIC_RELEASE);
         (void)pthread_mutex_unlock(&harmony_fault_events->lock);
     }
     return NULL;
@@ -597,15 +613,19 @@ static void harmony_fault_event_init(void)
         if (harmony_fault_event_report_write(report_fd, hello,
                                              sizeof(hello)) != 0) {
             if (harmony_fault_lock() == 0) {
-                harmony_fault_events->initialized = 0;
-                harmony_fault_events->kill_armed = 0;
-                harmony_fault_events->park_armed = 0;
+                __atomic_store_n(&harmony_fault_events->initialized, 0,
+                                 __ATOMIC_RELEASE);
+                __atomic_store_n(&harmony_fault_events->kill_armed, 0,
+                                 __ATOMIC_RELEASE);
+                __atomic_store_n(&harmony_fault_events->park_armed, 0,
+                                 __ATOMIC_RELEASE);
                 (void)pthread_mutex_unlock(&harmony_fault_events->lock);
             }
             return;
         }
         if (harmony_fault_lock() == 0) {
-            harmony_fault_events->initialized = 1;
+            __atomic_store_n(&harmony_fault_events->initialized, 1,
+                             __ATOMIC_RELEASE);
             (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         }
     }
@@ -1025,24 +1045,40 @@ void harmony_fault_runtime_event(uint64_t site)
     uint64_t park_edges = 0;
     uint32_t kill_claimed = 0;
     uint32_t park_claimed = 0;
+    uint64_t callbacks;
     uint8_t crossed;
 
     harmony_fault_watch_edge();
     if (pthread_once(&harmony_fault_event_once, harmony_fault_event_init) != 0)
         return;
+    if (__atomic_load_n(&harmony_fault_events->initialized,
+                        __ATOMIC_ACQUIRE) == 0)
+        return;
+    callbacks = __atomic_load_n(&harmony_fault_events->coverage_callbacks,
+                                __ATOMIC_RELAXED);
+    if (callbacks != UINT64_MAX)
+        __atomic_store_n(&harmony_fault_events->coverage_callbacks,
+                         callbacks + 1, __ATOMIC_RELAXED);
+    before = harmony_fault_event_site_before(site, &crossed);
+    if (__atomic_load_n(&harmony_fault_events->kill_armed, __ATOMIC_RELAXED) ==
+            0 &&
+        __atomic_load_n(&harmony_fault_events->park_armed, __ATOMIC_RELAXED) ==
+            0) {
+        if (crossed != 0)
+            harmony_fault_event_note_crossing(site, crossed);
+        return;
+    }
     if (harmony_fault_lock() != 0)
         return;
     if (harmony_fault_events->initialized == 0) {
         (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         return;
     }
-    if (harmony_fault_events->coverage_callbacks != UINT64_MAX)
-        harmony_fault_events->coverage_callbacks++;
-    before = harmony_fault_event_site_before(site, &crossed);
     if (harmony_fault_events->kill_armed != 0 &&
         harmony_fault_event_rarity_allows(before,
                                           harmony_fault_events->kill_rarity)) {
-        harmony_fault_events->kill_armed = 0;
+        __atomic_store_n(&harmony_fault_events->kill_armed, 0,
+                         __ATOMIC_RELEASE);
         kill_claimed = 1;
         kill_rarity = harmony_fault_events->kill_rarity;
         kill_site = site;
@@ -1050,7 +1086,8 @@ void harmony_fault_runtime_event(uint64_t site)
     } else if (harmony_fault_events->park_armed != 0 &&
                harmony_fault_park_counts(site) &&
                harmony_fault_park_spend(before)) {
-        harmony_fault_events->park_armed = 0;
+        __atomic_store_n(&harmony_fault_events->park_armed, 0,
+                         __ATOMIC_RELEASE);
         park_edges = harmony_fault_events->park_edges;
         if (harmony_fault_events->park_fires != UINT64_MAX)
             harmony_fault_events->park_fires++;
@@ -1092,7 +1129,8 @@ void harmony_fault_runtime_event(uint64_t site)
                 harmony_fault_events->park_weight_left =
                     harmony_fault_events->park_edges
                     << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
-                harmony_fault_events->park_armed = 1;
+                __atomic_store_n(&harmony_fault_events->park_armed, 1,
+                                 __ATOMIC_RELEASE);
             }
             (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         }
