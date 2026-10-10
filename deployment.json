@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "c69006733f5fb71121c1b74f17ff670e15098276",
+    "commit": "9b8ae2beff0d3e76ed4adefa146e9622eb9602ef",
     "build": "locally verified static build",
-    "checks": "Production build and 49 helper tests; readable wrapped horizontal and vertical rooms with exact art crops, cross-seam retained-state hits and phone rotation; native branch archive release, surviving children and stable IDs; full replay/audio and phone controller checks; revised seven-step tour with a continuously rendered History cell ping, reduced-motion emphasis, compact title/Skip header and one finish action; authentic dead-gameplay draft preservation through admission; same live Movement spotlight in Welcome and Exploration; accessible long narration and real mobile replay, gameplay, branch, discard and reset; verified hovered histories with bright trails and fully lit tour maps; desktop/phone exact replay and nested branches; History collapse/reopen; mobile touch interaction matrix; unobstructed interactive tours with route selection, held controller input, rotation, discard and admission at 320px, 390px and landscape",
-    "asset_manifest_sha256": "5474733bbdbd5f820f58a2517a7266e25fe211f7dd6540b9fd1bac445d8034dc"
+    "checks": "Production build and 49 helper tests; readable wrapped horizontal and vertical rooms with exact art crops, cross-seam retained-state hits and phone rotation; native branch archive release, surviving children and stable IDs; full replay/audio and phone controller checks; revised seven-step tour with a continuously rendered History cell ping, reduced-motion emphasis, compact title/Skip header and one finish action; authentic dead-gameplay draft preservation through admission; grouped phone replay audio, sequential early gameplay exits and actual selected-search resumption after Finish or Skip; same live Movement spotlight in Welcome and Exploration; accessible long narration and real mobile replay, gameplay, branch, discard and reset; verified hovered histories with bright trails and fully lit tour maps; desktop/phone exact replay and nested branches; History collapse/reopen; mobile touch interaction matrix; unobstructed interactive tours with route selection, held controller input, rotation, discard and admission at 320px, 390px and landscape",
+    "asset_manifest_sha256": "851b402189ee8cbc921b6a60ca5cd8975b09709aaf1ec912d3b32a2acebb57cf"
   },
   "raft": {
     "commit": "28791e77a",
