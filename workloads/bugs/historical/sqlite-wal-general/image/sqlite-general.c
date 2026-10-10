@@ -274,10 +274,11 @@ static void compare_owned(struct client *c, struct table *seen) {
     gen_always(A_COMMITS, 0, detail);
 }
 
-static void apply_settings(struct client *c, int busy_ms, const char *sync, int autockpt) {
-    char sql[160];
-    snprintf(sql, sizeof sql, "PRAGMA busy_timeout=%d; PRAGMA synchronous=%s; PRAGMA wal_autocheckpoint=%d;",
-             busy_ms, sync, autockpt);
+static void apply_settings(struct client *c, int busy_ms, const char *sync, int autockpt, int cache) {
+    char sql[200];
+    snprintf(sql, sizeof sql,
+             "PRAGMA busy_timeout=%d; PRAGMA synchronous=%s; PRAGMA wal_autocheckpoint=%d; PRAGMA cache_size=%d;",
+             busy_ms, sync, autockpt, cache);
     exec(c->db, sql, "connection settings");
 }
 
@@ -293,15 +294,28 @@ static void open_db(struct client *c) {
 static void op_write(struct client *c) {
     static const char *modes[] = {"BEGIN DEFERRED", "BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"};
     static const int64_t body_sizes[] = {0, 256, 2048, MAX_BODY};
-    struct table local = c->model;
+    static struct table local, saved;
     struct txn t = {.id = c->next_txn++, .count = 0};
     int level = gen_bias(&c->rng, SITE_STATEMENTS, 9);
     int statements = level < 0 ? 1 + (int)gen_below(&c->rng, 8) : 1 << level;
     int body_level = gen_bias(&c->rng, SITE_BODY, 4);
-    int rc = exec(c->db, modes[gen_pick(&c->rng, SITE_BEGIN, 3)], "begin write");
+    unsigned form = gen_pick(&c->rng, SITE_BEGIN, 9);
+    int savepoint = (int)(form / 3);
+    int savepoint_at = savepoint ? (int)gen_below(&c->rng, (uint64_t)statements) : -1;
+    int saved_count = 0;
+    int rc = exec(c->db, modes[form % 3], "begin write");
+    local = c->model;
     if (rc != SQLITE_OK) return;
     for (int i = 0; i < statements; i++) {
         unsigned char body[MAX_BODY];
+        if (i == savepoint_at) {
+            if (exec(c->db, "SAVEPOINT sp", "savepoint") != SQLITE_OK) {
+                sqlite3_exec(c->db, "ROLLBACK", NULL, NULL, NULL);
+                return;
+            }
+            saved = local;
+            saved_count = t.count;
+        }
         int kind = (int)gen_pick(&c->rng, SITE_KIND, 3);
         struct write_op op;
         sqlite3_stmt *st = NULL;
@@ -345,8 +359,27 @@ static void op_write(struct client *c) {
         apply_op(&local, &op);
         t.ops[t.count++] = op;
     }
+    if (savepoint_at >= 0) {
+        if (savepoint == 1) {
+            if (exec(c->db, "ROLLBACK TO sp", "rollback to savepoint") != SQLITE_OK) {
+                sqlite3_exec(c->db, "ROLLBACK", NULL, NULL, NULL);
+                return;
+            }
+            local = saved;
+            t.count = saved_count;
+        }
+        if (exec(c->db, "RELEASE sp", "release savepoint") != SQLITE_OK) {
+            sqlite3_exec(c->db, "ROLLBACK", NULL, NULL, NULL);
+            return;
+        }
+    }
     if (gen_below(&c->rng, 8) == 0) {
         exec(c->db, "ROLLBACK", "rollback");
+        return;
+    }
+    if (t.count == 0) {
+        if (sqlite3_exec(c->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK && !sqlite3_get_autocommit(c->db))
+            sqlite3_exec(c->db, "ROLLBACK", NULL, NULL, NULL);
         return;
     }
     journal_pending(c, &t);
@@ -402,14 +435,16 @@ static void op_reopen(struct client *c) {
     static const int busy[] = {0, 100, 1000};
     static const char *sync[] = {"NORMAL", "FULL"};
     static const int autockpt[] = {0, 100, 1000};
-    unsigned form = gen_pick(&c->rng, SITE_REOPEN, 18);
+    static const int cache[] = {-2000, 100, 10};
+    unsigned form = gen_pick(&c->rng, SITE_REOPEN, 54);
     int b = busy[form % 3];
     const char *s = sync[form / 3 % 2];
-    int a = autockpt[form / 6];
+    int a = autockpt[form / 6 % 3];
+    int k = cache[form / 18];
     sqlite3_close_v2(c->db);
     c->db = NULL;
     open_db(c);
-    apply_settings(c, b, s, a);
+    apply_settings(c, b, s, a, k);
 }
 
 static void op_integrity(struct client *c) {
@@ -488,7 +523,7 @@ int main(int argc, char **argv) {
     c.journal = open(c.journal_path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
     if (c.journal < 0) return 1;
     open_db(&c);
-    apply_settings(&c, 1000, "FULL", 1000);
+    apply_settings(&c, 1000, "FULL", 1000, -2000);
     recovery_check(&c);
     if (strcmp(argv[1], "verify") == 0) {
         op_integrity(&c);

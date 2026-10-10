@@ -137,7 +137,7 @@ func (c *client) value() string {
 func (c *client) run() {
 	for {
 		c.stream.Sync()
-		switch c.stream.Pick(siteOp, 8) {
+		switch c.stream.Pick(siteOp, 9) {
 		case 0:
 			c.put()
 		case 1:
@@ -152,6 +152,8 @@ func (c *client) run() {
 			c.rangeOwned()
 		case 6:
 			c.lease()
+		case 7:
+			c.defragment()
 		default:
 			c.compact()
 		}
@@ -313,6 +315,13 @@ func (c *client) lease() {
 	if c.stream.Pick(siteLeaseRevoke, 2) == 0 {
 		_, _ = c.cli.Revoke(ctx, grant.ID)
 	}
+}
+
+func (c *client) defragment() {
+	endpoint := endpoints[c.stream.Pick(siteEndpoint, uint(len(endpoints)))]
+	ctx, cancel := c.ctx()
+	defer cancel()
+	_, _ = c.cli.Defragment(ctx, endpoint)
 }
 
 func (c *client) compact() {

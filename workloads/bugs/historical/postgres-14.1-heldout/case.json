@@ -1,0 +1,65 @@
+{
+  "format": "harmony-historical-case-v1",
+  "id": "postgres-14.1-heldout",
+  "title": "PostgreSQL 14.1 general workload, held out (HOT chain pruning)",
+  "software": "PostgreSQL",
+  "panel": "discovery",
+  "sources": {
+    "release_note": "https://www.postgresql.org/docs/release/14.2/",
+    "fix_commit": "https://postgr.es/c/dad1539ae"
+  },
+  "versions": {
+    "affected": "14.0-14.1",
+    "fixed": "14.2"
+  },
+  "workload": {
+    "version": "14.1",
+    "source_url": "https://ftp.postgresql.org/pub/source/v14.1/postgresql-14.1.tar.bz2",
+    "sha256": "4d3c101ea7ae38982f06bdc73758b53727fb6402ecd9382006fa5ecc7c2ca41f"
+  },
+  "image": {
+    "context": ".",
+    "dockerfile": "workloads/bugs/historical/postgres-index-general/image/Dockerfile",
+    "build_args": {
+      "PG_VERSION": "14.1",
+      "PG_SHA256": "4d3c101ea7ae38982f06bdc73758b53727fb6402ecd9382006fa5ecc7c2ca41f"
+    }
+  },
+  "kernel_profile": "faultlab",
+  "oracle": {
+    "assertion": "postgres amcheck finds every heap tuple indexed",
+    "evidence": "postgres amcheck verified an index",
+    "kind": "always",
+    "source": "the general driver's check operation",
+    "detector": "bt_index_check(index, heapallindexed => true) on every valid B-tree index of items",
+    "fires_on": "amcheck raises data_corrupted (XX001) or index_corrupted (XX002)",
+    "silent_when": [
+      "the server is down",
+      "the connection drops mid-check",
+      "an index is dropped while it is checked"
+    ]
+  },
+  "actions": [
+    "Wait",
+    "Kill",
+    "EventKill",
+    "EventPark",
+    "Pause",
+    "Restart"
+  ],
+  "run": {
+    "ram_mib": 1024,
+    "knobs": {}
+  },
+  "search": {
+    "executions": 1000000,
+    "wall_minutes": 90
+  },
+  "discovery_mode": "heldout",
+  "status": "measured",
+  "ci": {
+    "status": "runnable",
+    "display_name": "PostgreSQL 14.1 Held Out",
+    "image_prefix": "pg-general"
+  }
+}

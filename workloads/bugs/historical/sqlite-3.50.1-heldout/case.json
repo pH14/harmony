@@ -1,0 +1,57 @@
+{
+  "format": "harmony-historical-case-v1",
+  "id": "sqlite-3.50.1-heldout",
+  "title": "SQLite 3.50.1 general workload, held out (savepoint rollback after a spill)",
+  "software": "SQLite",
+  "panel": "discovery",
+  "sources": {
+    "issue": "https://sqlite.org/forum/forumpost/b490f726db",
+    "release_note": "https://sqlite.org/releaselog/3_50_2.html"
+  },
+  "versions": {
+    "affected": "3.11.0-3.50.1",
+    "fixed": "3.50.2"
+  },
+  "workload": {
+    "version": "3.50.1",
+    "source_url": "https://sqlite.org/2025/sqlite-amalgamation-3500100.zip",
+    "sha256": "41716b44ac8777188c4c3f1f370f01c9cb9e3b6428eb5c981d086c35de2d9d3f"
+  },
+  "image": {
+    "context": ".",
+    "dockerfile": "workloads/bugs/historical/sqlite-3.50.1-heldout/image/Dockerfile",
+    "build_args": {}
+  },
+  "kernel_profile": "faultlab",
+  "oracle": {
+    "assertion": "sqlite preserves acknowledged commits",
+    "evidence": "sqlite general compared committed rows",
+    "kind": "always",
+    "source": "the general driver's recovery comparison at process start and in every read",
+    "detector": "the owned rows outside a write against the client's journal of acknowledged commits",
+    "fires_on": "an acknowledged commit is missing, or a failed one is present, after recovery"
+  },
+  "actions": [
+    "Wait",
+    "Kill",
+    "EventKill",
+    "EventPark",
+    "Pause",
+    "Restart"
+  ],
+  "run": {
+    "ram_mib": 1024,
+    "knobs": {}
+  },
+  "search": {
+    "executions": 1000000,
+    "wall_minutes": 90
+  },
+  "discovery_mode": "heldout",
+  "status": "measured",
+  "ci": {
+    "status": "runnable",
+    "display_name": "SQLite 3.50.1 Held Out",
+    "image_prefix": "sqlite-general"
+  }
+}

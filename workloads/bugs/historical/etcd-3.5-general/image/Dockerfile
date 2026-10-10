@@ -56,6 +56,7 @@ WORKDIR /build
 RUN curl --fail --silent --show-error --location --retry 3 \
        --output etcd-source.tar.gz \
        "${ETCD_SOURCE_BASE}/v${ETCD_VERSION}.tar.gz" \
+    && sha256sum etcd-source.tar.gz \
     && echo "${ETCD_SOURCE_SHA256}  etcd-source.tar.gz" | sha256sum --check --strict - \
     && mkdir etcd \
     && tar -xf etcd-source.tar.gz -C etcd --strip-components=1 \

@@ -308,7 +308,7 @@ All three workloads share these rules:
   - `linearizable reads observe acknowledged writes`: `get` and `range` on keys
     with no indeterminate write outstanding return the model's value.
 - **Evidence** (Reachable): `etcd general check compared the members that answered` (correction 3).
-- **Limits**: no watches, no authentication, no membership changes, no defrag,
+- **Limits**: no watches, no authentication, no membership changes,
   and no snapshot restore. Serializable reads carry no property. Lease keys are
   not checked.
 
@@ -430,6 +430,30 @@ carries the measured values.
   transaction. After a fault, the SQLite clients run the comparison at process
   start, and the PostgreSQL clients run it on reconnect.
 
+## Held-out cases
+
+A general workload improved against the three bugs above could simply learn
+them. Three held-out cases check whether an improvement carries over to bugs
+nobody tuned for. Each runs a general workload unchanged against an affected
+release of the same software, with the same oracle, image recipe and search:
+
+| Case | Release | Bug (fixed in) | Scored assertion |
+|---|---|---|---|
+| `postgres-14.1-heldout` | PostgreSQL 14.1 | HOT chain broken when pruning sees the horizon move (14.2) | `postgres amcheck finds every heap tuple indexed` |
+| `sqlite-3.50.1-heldout` | SQLite 3.50.1 | savepoint rollback after a WAL spill loses later commits on recovery (3.50.2) | `sqlite preserves acknowledged commits` |
+| `etcd-3.5.5-heldout` | etcd 3.5.5 | crash during online defragmentation re-applies entries (3.5.6) | `every etcd member holds an acknowledged history` |
+
+They were chosen from a survey of data-integrity bugs in these systems since
+2019, as bugs that ordinary operations and process faults can reach and that a
+general oracle detects. The choice was made with that survey in view, and so was
+correction 6, which adds savepoints, page-cache sizes and defragmentation to
+the vocabularies: each is a documented operation family of its system, and
+the held-out bugs need them. That knowledge cannot be erased, so the held-out
+results are a weaker check than bugs nobody looked at, and they are reported as
+such. Neither the workloads nor the search may change in response to a
+held-out measurement; a change made after one is a correction, and it
+restarts every affected measurement.
+
 ## Corrections
 
 Each correction to the frozen specification, with its reason. A correction
@@ -490,3 +514,11 @@ made after a general-arm measurement restarts every affected measurement.
    is full; a biased SQLite transaction holds 1 to 256 statements, with body
    sizes of 0, 256, 2,048 or 4,096 bytes; and a biased etcd compaction keeps
    0, 10, 100 or 1,000 revisions. Every general arm is measured again with it.
+
+6. **Savepoints, page-cache sizes and defragmentation** (after the first
+   measurement). The vocabularies lacked three documented operation families.
+   A SQLite write transaction can now set a savepoint at a random statement and
+   either roll back to it or release it, and a reopened connection draws a page
+   cache of the default size, 100 pages or 10 pages. etcd adds `defragment` of
+   a random member. Each is reached through the existing decision sites. The
+   held-out cases need these families; see [Held-out cases](#held-out-cases).
