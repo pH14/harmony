@@ -34,7 +34,7 @@
   "kernel_profile": "faultlab",
   "oracle": {
     "assertion": "every etcd member holds an acknowledged history",
-    "evidence": "etcd general check compared every member",
+    "evidence": "etcd general check compared the members that answered",
     "kind": "always",
     "source": "the general checker run as the bundle's continuous check",
     "journal_format": "I <op> <kind> <key> <value> | A <op> <revision> <applied> | F <op>",

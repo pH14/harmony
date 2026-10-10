@@ -45,7 +45,8 @@ Each image runs its oracle's self-test while it builds, without Harmony:
 - **SQLite** runs `oracle-test.sh` against the driver and the fork's `sqlite3`
   shell.
 - **PostgreSQL** runs `oracle-test.sh` against a copy of the seeded cluster.
-- **etcd** runs `go test` for the checker's history rule and the choice frame.
+- **etcd** runs `go test` for the checker's history rule, its handling of
+  members that do not answer, and the choice frame.
 
 A clean run with process kills or restarts must report no violation and must
 reach its evidence. Deliberately invalid states must each be reported: a lost

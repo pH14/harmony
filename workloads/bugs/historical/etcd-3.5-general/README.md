@@ -29,8 +29,12 @@ checker reads each journal separately.
 ## Oracle
 
 The scored assertion is `every etcd member holds an acknowledged history`,
-with `etcd general check compared every member` as its evidence. `etcd
-members agree on the key-value hash at a common revision` (`HashKV`) and
-`linearizable reads observe acknowledged writes` are reported but are not
-scored as this case's discovery. A down member or failed read makes the whole
-check inconclusive.
+with `etcd general check compared the members that answered` as its evidence.
+Each member that answers is judged at its own read revision, so a member that
+is down or does not answer is skipped rather than making the check
+inconclusive; the check is inconclusive only when no member answers.
+`etcd general check compared every member` marks the checks that reached all
+three. `etcd members agree on the key-value hash at a common revision`
+(`HashKV`, among the members that answered) and `linearizable reads observe
+acknowledged writes` are reported but are not scored as this case's
+discovery.

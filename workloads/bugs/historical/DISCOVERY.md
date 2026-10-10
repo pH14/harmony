@@ -301,7 +301,7 @@ All three workloads share these rules:
     when every member reports the same compact revision.
   - `linearizable reads observe acknowledged writes`: `get` and `range` on keys
     with no indeterminate write outstanding return the model's value.
-- **Evidence** (Reachable): `etcd general check compared every member`.
+- **Evidence** (Reachable): `etcd general check compared the members that answered` (correction 3).
 - **Limits**: no watches, no authentication, no membership changes, no defrag,
   and no snapshot restore. Serializable reads carry no property. Lease keys are
   not checked.
@@ -446,3 +446,13 @@ made after a general-arm measurement restarts every affected measurement.
    PostgreSQL arms are measured on it. The SQLite and etcd measurements stand:
    the patch changes only executions that reach the marker, and every such
    execution panicked.
+
+3. **etcd check skips members that do not answer** (after the first
+   measurement, [#523](https://github.com/pH14/harmony/issues/523)). The
+   `check` command made the whole check inconclusive when any member could not
+   be read. The member kills that trigger the case's bug often leave a member
+   down, so in one general campaign the scored check stayed silent while two
+   live members had diverged. Each member is judged at its own read revision,
+   so the check now judges every member that answers and is inconclusive only
+   when none does. Its evidence is `etcd general check compared the members
+   that answered`. The etcd general arm is measured again with it.
