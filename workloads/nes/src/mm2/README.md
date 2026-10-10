@@ -70,9 +70,11 @@ route milestone: every stage entry, every boss fight start, every boss clear,
 each Wily 5 refight, both Wily Machine forms and the ending. Rooms report as
 `<stage>_room_<n>` so a stall has a named place; they do not trigger
 checkpoints. Each route milestone writes its first arrival to
-`campaign/milestone-inputs/<name>.json`, and the best health and best weapon
-energy at that milestone to `<name>-health.json` and `<name>-energy.json`.
-Every tape replays during verification.
+`campaign/milestone-inputs/<name>.json`. Stage entries, boss fight starts
+and Wily Machine forms also write the best health and best weapon energy seen
+there to `<name>-health.json` and `<name>-energy.json`, since those are the
+places a later segment starts from. Clears, refights and the ending have no
+stocked tapes. Every tape replays during verification.
 
 `retained_diagnostics` carries the end-of-run census of the live archive.
 `live_entries_by_screen` maps `stage:screen` to

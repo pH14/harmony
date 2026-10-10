@@ -1297,6 +1297,7 @@ impl Target for Mm2Target {
         let mut boss_intro_frames = self.observation.decoded.boss_intro_frames;
         let mut prior_frame = self.current_wram;
         let mut previous = self.observation.decoded;
+        let mut arrived = self.observation.arrived;
         let mut pending = None;
         let mut ending = false;
         let mut decoded_frames = frames.len();
@@ -1357,6 +1358,7 @@ impl Target for Mm2Target {
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
                 || encounter(state) != encounter(prior_state)
+                || state.boss_phase != prior_state.boss_phase
                 || dead != died
                 || ending
                 || pending.is_some();
@@ -1371,6 +1373,7 @@ impl Target for Mm2Target {
                 observation.fall_run = fall_run;
                 observation.dying_run = dying_run;
                 observation.ending = ending;
+                observation.arrived = std::mem::take(&mut arrived);
                 observations.push(observation);
                 prior_wram = *wram;
                 prior_state = state;
@@ -1436,6 +1439,7 @@ impl Target for Mm2Target {
             observation.dead = died;
             observation.fall_run = fall_run;
             observation.dying_run = dying_run;
+            observation.arrived = arrived;
             observations.push(observation);
         }
         self.action_observations = observations;
