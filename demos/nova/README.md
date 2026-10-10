@@ -86,7 +86,8 @@ trail and an endpoint screenshot without changing the selected emulator. The
 route-picker tour step spotlights those maps as well as the preview and route
 list. Preview tracing reuses exact shared-prefix checkpoints and keeps one
 bounded sampled trail, rather than a trail per cached screenshot. The replay
-step keeps the route maps and gameplay fully lit. On phones, the
+step keeps the route maps and gameplay fully lit. Phone replay places audio beside
+Replay in one highlighted action row; gameplay keeps audio in the pane header. On phones, the
 callout reserves its own space above the interactive stage (alongside it in
 landscape). The gameplay screen scales to leave the controller and branch actions
 uncovered; search admission pins Searches above the game. Spotlights clip to
@@ -95,10 +96,11 @@ bring the active route map into the unobstructed stage.
 Longer tour narration scrolls separately from persistent navigation, leaving
 the real game and controls visible on small screens. Search continues during
 the two opening steps, then pauses while inspecting a
-route. Passive dismissal restores the prior search pause state and any existing
-human history. Explicit gameplay, pause changes and branch changes survive tour
-exit. Clicking Branch search from here performs normal verified admission and
-advances to the search-tree step. The tour itself never creates branches or inputs;
+route. Dismissal always resumes the selected search while preserving explicit
+branch changes and any existing human history. Leaving gameplay by discarding,
+collapsing History or admitting a search visits the branch-decision step before
+Searches, even if the visitor acts early on the gameplay step. Clicking Branch
+search from here performs normal verified admission. The tour itself never creates branches or inputs;
 Play from here and all real controls require an explicit visitor action. Moving
 from gameplay to search admission preserves the human draft and controller, even
 if Nova has died; a dead endpoint can be discarded but cannot root a search. The

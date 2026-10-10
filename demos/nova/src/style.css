@@ -418,6 +418,7 @@ h2 {
   gap: 6px;
   margin-top: 13px;
 }
+.replay-actions { display: flex; align-items: center; gap: 6px; }
 .transport button {
   font-size: 11px;
   padding: 8px;
@@ -1284,3 +1285,13 @@ dialog h2 {
 .tour-ping-wave.delayed { animation-delay: -1s; }
 @keyframes tour-cell-ping { from { transform: scale(.7); opacity: .95; } to { transform: scale(4.5); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .tour-ping-wave { animation: none; opacity: .9; } .tour-ping-wave.delayed { transform: scale(2); opacity: .55; } }
+
+/* Keep the phone replay actions together, including audio, in one spotlight. */
+@media (max-width: 800px) {
+  .transport .replay-actions { grid-column: 1 / -1; min-width: 0; }
+  .transport .replay-actions #play { flex: 1; }
+  .transport .replay-actions #sound { flex: 0 0 30px; width: 30px; height: 30px; padding: 5px; }
+}
+.tour-landscape .transport .replay-actions { grid-column: 1 / -1; min-width: 0; }
+.tour-landscape .transport .replay-actions #play { flex: 1; }
+.tour-landscape .transport .replay-actions #sound { flex: 0 0 30px; width: 30px; height: 30px; padding: 5px; }

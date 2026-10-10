@@ -129,6 +129,10 @@ async function watchDuringTour(page) {
   await page.keyboard.press('Space');
   await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Replay'));
   await page.keyboard.press('Tab');
+  if (await page.locator('#sound').evaluate((node) => !!node.closest('.transport'))) {
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'sound');
+    await page.keyboard.press('Tab');
+  }
   assert.equal(await page.evaluate(() => document.activeElement.id), 'scrub');
   await page.keyboard.press('Home');
   await page.waitForFunction(() => document.querySelector('#scrub').value === '0' && document.querySelector('#frame-label').textContent.startsWith('FRAME 0'));
@@ -359,8 +363,8 @@ try {
 
   assert.equal(
     await page.locator("#pause").getAttribute("aria-label"),
-    "Resume Search",
-    "An already-paused search must remain paused after the tour",
+    "Pause Search",
+    "Tour exit must resume even an already-paused search",
   );
   await page.close();
 
@@ -575,7 +579,7 @@ try {
   await blocked.close();
   assert.deepEqual(errors, []);
   console.log(
-    "Guided tour: clickable routes, real takeover/fork/tree switching, live replay and keyboard/touch scrubbing, fully lit route maps, background isolation, authentic routes, spotlight geometry, pause restoration, keyboard exit, persistence, explicit takeover, rendered repeating cell ping, preserved authentic dead gameplay draft, mobile and blocked storage passed.",
+    "Guided tour: clickable routes, real takeover/fork/tree switching, live replay and keyboard/touch scrubbing, fully lit route maps, background isolation, authentic routes, spotlight geometry, unconditional search resumption, keyboard exit, persistence, explicit takeover, rendered repeating cell ping, preserved authentic dead gameplay draft, mobile and blocked storage passed.",
   );
 } finally {
   for (const page of browser.contexts().flatMap((context) => context.pages())) {

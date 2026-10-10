@@ -105,6 +105,12 @@ try {
     await exposed(page.locator('#play'), true);
     await exposed(page.locator('#scrub'), true);
     await exposed(page.locator('#sound'), true);
+    const audioLayout = await page.evaluate(() => {
+      const replay=document.querySelector('#play').getBoundingClientRect(), sound=document.querySelector('#sound').getBoundingClientRect();
+      return {parent:document.querySelector('#sound').parentElement.className, overlap:Math.min(replay.bottom,sound.bottom)-Math.max(replay.top,sound.top), gap:sound.left-replay.right};
+    });
+    assert.equal(audioLayout.parent,'replay-actions');
+    assert.ok(audioLayout.overlap > 0 && audioLayout.gap >= 0 && audioLayout.gap <= 10,'Audio sits beside Replay, rather than floating above it');
     const map = await page.locator('.area-map').evaluateAll((maps) => maps.find((c) => c.dataset.markerFrame && c.dataset.markerFrame !== '')?.dataset.map);
     await exposed(page.locator(`.area-map[data-map="${map}"]`), true);
     await page.screenshot({path:`test-results/tour-mobile-${viewport.width}-replay.png`});
@@ -156,9 +162,52 @@ try {
     assert.equal(await page.locator('[inert]').count(),0);
     assert.equal(await page.locator('body').evaluate((e)=>e.classList.contains('tour-phone')),false);
     assert.equal(await page.locator('body').getAttribute('data-tour-step'),null);
+    const finishedPaths = await page.locator('#attempts').innerText();
+    await page.waitForFunction((n) => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > Number(n.replaceAll(',','')), finishedPaths);
+    if (viewport.width === 390) {
+      // Visitors can choose an exit directly during gameplay, before pressing Next.
+      await page.locator('#pause').tap();
+      await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
+      await page.locator('#tour-open').tap();
+      await ready(page, 0);
+      await opening(page);
+      for (let step=2;step<=4;step++) await next(page,step);
+      await play(page);
+      await page.locator('#discard-branch').tap();
+      await ready(page,5);
+      assert.equal(await page.locator('#tour-title').innerText(),'To branch or not to branch','Early discard must visit the branch-decision step');
+      await page.locator('#tour-back').tap();
+      await ready(page,4);
+      await play(page);
+      await page.locator('#close-inspector').tap();
+      await ready(page,5);
+      assert.equal(await page.locator('#tour-title').innerText(),'To branch or not to branch','Collapsing gameplay must visit the branch-decision step');
+      await page.locator('#tour-back').tap();
+      await ready(page,4);
+      await play(page);
+      await page.locator('#search-here').tap();
+      await ready(page,5);
+      await page.waitForFunction(() => document.querySelector('button[data-search="1"][aria-pressed="true"]') && document.querySelector('#inspector').hidden);
+      assert.equal(await page.locator('#tour-title').innerText(),'To branch or not to branch','Early admission must not skip straight to Searches');
+      await next(page,6);
+      await page.locator('#pause').tap();
+      await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
+      const paths = await page.locator('#attempts').innerText();
+      await page.locator('#tour-next').tap();
+      await page.waitForFunction((n) => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > Number(n.replaceAll(',','')),paths);
+      assert.equal(await page.locator('button[data-search="1"]').getAttribute('aria-pressed'),'true','Finishing resumes the selected branch without switching to Main');
+      await page.locator('#tour-open').tap();
+      await ready(page,0);
+      await opening(page);
+      for (let step=2;step<=4;step++) await next(page,step);
+      await play(page);
+      const playingPaths = await page.locator('#attempts').innerText();
+      await page.locator('#tour-skip').tap();
+      await page.waitForFunction((n) => !document.querySelector('#inspector').classList.contains('controlling') && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search' && Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > Number(n.replaceAll(',','')),playingPaths);
+    }
     await page.goto('about:blank');
     await page.close();
   }
   assert.deepEqual(errors, []);
-  console.log('Mobile guided tour: unobstructed spotlights, real route selection/replay/scrubbing, touch gameplay, rotation, discard, branching and switching at 320px, 390px and landscape passed.');
+  console.log('Mobile guided tour: grouped replay audio, sequential early gameplay exits, actual search resumption on Finish and Skip, unobstructed spotlights, real route selection/replay/scrubbing, touch gameplay, rotation, discard, branching and switching at 320px, 390px and landscape passed.');
 } finally { await browser.close(); }

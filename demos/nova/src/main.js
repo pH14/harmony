@@ -27,6 +27,7 @@ import {
 } from "./world.js";
 const base = new URL(import.meta.env.BASE_URL, location.href),
   $ = (id) => document.getElementById(id);
+const compactReplay = matchMedia("(max-width: 800px), (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)");
 const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
@@ -37,7 +38,7 @@ document.querySelector("#app").innerHTML = `
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 <p class="game-attribution"><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
 </section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><button id="play" disabled>▶ Replay</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>Jump</span></span><span><kbd>X</kbd><span>Ability</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>Jump</span></span><span><kbd>X</kbd><span>Ability</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><button id="credits">Credits & source</button></footer>
 <div id="route-preview" class="route-preview" hidden><canvas width="256" height="224"></canvas><span></span></div><div id="error" role="alert" hidden></div>
@@ -940,7 +941,7 @@ function startSearch(level = bootLevel) {
             `Branch ${activeSearch} is searching from this frame.`;
           updateBranchControls();
           $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
-          if (tour.open && tour.index >= 4) tour.go(6);
+          if (tour.open && (tour.index === 4 || tour.index === 5)) tour.go(tour.index + 1);
         }
         if (engine) selectState(state, initial).catch(fail);
         updateStats();
@@ -1508,7 +1509,6 @@ function zoomRoom(id) {
   drawMap(performance.now());
 }
 $("pause").onclick = () => {
-  if (tourSession) tourSession.pauseTouched = true;
   paused = !paused;
   worker.postMessage({ type: paused ? "pause" : "resume" });
   updateSearchControl();
@@ -1610,7 +1610,16 @@ function closeInspector({ restoreFocus = true } = {}) {
   if (restoreFocus && inspectorReturnFocus?.isConnected)
     inspectorReturnFocus.focus({ preventScroll: true });
 }
+compactReplay.addEventListener("change", () => {
+  updateBranchControls();
+  if (tour.open && tour.ready) tour.setInteraction(tour.steps[tour.index].interactive?.() || []);
+});
 function updateBranchControls() {
+  const soundParent = document.querySelector(!controlMode && compactReplay.matches ? ".replay-actions" : ".history-controls");
+  if ($("sound").parentElement !== soundParent) {
+    if (soundParent.classList.contains("history-controls")) soundParent.prepend($("sound"));
+    else soundParent.append($("sound"));
+  }
   $("goal-title").disabled = !ready || !engine || branchBusy || controlMode;
   $("tour-open").disabled =
     !ready || !engine || controlMode || branchBusy || seeking;
@@ -1671,8 +1680,9 @@ function stopControl() {
   updateBranchControls();
 }
 $("close-inspector").onclick = () => {
-  const retained = !!current && !playSession;
+  const retained = !!current && !playSession, draft = !!playSession;
   closeInspector();
+  if (draft) leaveTourGameplay();
   if (retained) {
     $("history-rail").hidden = false;
     $("workspace").classList.add("history-collapsed");
@@ -1699,6 +1709,7 @@ $("take-control").onclick = () => {
   if (tourSession) { tourSession.interacted = true; tourSession.gameplay = true; }
   if (controlMode) {
     stopControl();
+    leaveTourGameplay();
     return;
   }
   if (!current || seeking || branchBusy || !frameObservation?.health) return;
@@ -1742,7 +1753,13 @@ $("take-control").onclick = () => {
   updateBranchControls();
   $("film").focus({ preventScroll: true });
 };
-$("discard-branch").onclick = () => closeInspector();
+function leaveTourGameplay() {
+  if (tour.open && tour.index === 4) tour.go(5);
+}
+$("discard-branch").onclick = () => {
+  closeInspector();
+  leaveTourGameplay();
+};
 $("search-here").onclick = async () => {
   hideRoutePreview();
   if (tourSession) tourSession.interacted = true;
@@ -2130,7 +2147,7 @@ const tour = new GuidedTour({
       ],
       targets: () => [
         document.querySelector(".transport"),
-        $("sound"),
+        compactReplay.matches ? null : $("sound"),
         document.querySelector(".screen"),
         ...[...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0),
       ],
@@ -2180,7 +2197,6 @@ const tour = new GuidedTour({
         ? current
         : null,
       previousFrame: currentFrame,
-      branch: activeSearch,
       interacted: false,
     };
     userSelected = true;
@@ -2198,9 +2214,9 @@ const tour = new GuidedTour({
       if (!controlMode) music.stop();
       $("play").textContent = "▶ Replay";
     }
-    if (index === 5 && playSession && current?.branch?.manual) {
-      paused = true;
-      worker.postMessage({ type: "pause" });
+    if (index === 5 && tourSession.gameplay) {
+      paused = !!playSession;
+      worker.postMessage({ type: paused ? "pause" : "resume" });
       updateSearchControl();
       followReplayRoom(markerPoint());
       return;
@@ -2262,7 +2278,7 @@ const tour = new GuidedTour({
       });
   },
   onClose() {
-    const { previousManual: previous, previousFrame, wasPaused, interacted, branch, gameplay, pauseTouched } = tourSession;
+    const { previousManual: previous, previousFrame, interacted } = tourSession;
     if (controlMode) stopControl();
     clearBranchPreview();
     hideRoutePreview();
@@ -2281,7 +2297,7 @@ const tour = new GuidedTour({
         })
         .catch(fail);
     }
-    if (!gameplay && !pauseTouched && branch === activeSearch && !controlMode && !wasPaused && !stats.stopped) {
+    if (ready && !stats.stopped) {
       paused = false;
       worker.postMessage({ type: "resume" });
       updateSearchControl();

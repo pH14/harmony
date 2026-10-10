@@ -1308,6 +1308,8 @@ try {
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
   );
+  await page.locator("#film-title").hover();
+  await page.waitForFunction(() => document.querySelector(`.area-map[data-marker-frame="${document.querySelector("#scrub").value}"]`));
   const phoneMap = await page.locator("#inspector").evaluate((panel) => {
     const sheet = panel.getBoundingClientRect(),
       map = document.querySelector(`.area-map[data-marker-frame="${document.querySelector("#scrub").value}"]`).getBoundingClientRect();
