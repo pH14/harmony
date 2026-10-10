@@ -37,8 +37,7 @@ opacity. There is no desaturation or grayscale sprite cache. Heat, grid and
 sparks disappear in Movement; selected route trails, Nova markers, fork origins
 and cell inspection remain available. Inspecting a populated cell keeps the
 selected view and draws the route and Nova marker in all three modes. Opening
-the guided
-tour returns to Heatmap. Both overlays the original colored sprites on the normal
+the guided tour starts with Movement. Both overlays the original colored sprites on the normal
 heatmap, underneath selected trails and state markers. Inspection keeps Both
 selected. The view selection survives branch changes and Restart Search.
 
@@ -71,7 +70,8 @@ as exploration. The build extracts idle, four walking and jumping poses, in both
 directions, from upstream's spnova.chr and player.s, with the original palette.
 The sprite sheet carries the same NovaSquirrel CC BY-NC-SA attribution as maps.
 
-A six-step guided tour spotlights the live heatmap, a real populated cell and its
+A seven-step guided tour opens with Welcome and Exploration on the same live
+Movement map, then spotlights a real populated cell and its
 retained routes, replay controls, human takeover, search admission and the search
 tree. Every step enables its real highlighted controls: cell and route selection,
 replay and scrubbing, keyboard/touch takeover, branching and switching searches.
@@ -92,7 +92,9 @@ landscape). The gameplay screen scales to leave the controller and branch action
 uncovered; search admission pins Searches above the game. Spotlights clip to
 visible content and exclude portions covered by other panes. Replay room changes
 bring the active route map into the unobstructed stage.
-Search continues during the heatmap introduction, then pauses while inspecting a
+Longer tour narration scrolls separately from persistent navigation, leaving
+the real game and controls visible on small screens. Search continues during
+the two opening steps, then pauses while inspecting a
 route. Passive dismissal restores the prior search pause state and any existing
 human history. Explicit gameplay, pause changes and branch changes survive tour
 exit. Clicking Branch search from here performs normal verified admission and

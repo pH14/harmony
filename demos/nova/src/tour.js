@@ -73,7 +73,7 @@ export class GuidedTour {
     this.dialog.id = "guided-tour";
     this.dialog.setAttribute("aria-labelledby", "tour-title");
     this.dialog.setAttribute("aria-describedby", "tour-copy");
-    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask" maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g></svg><section class="tour-card"><div class="tour-top"><span id="tour-progress"></span><button id="tour-skip">Skip tour</button></div><div aria-live="polite" aria-atomic="true"><h2 id="tour-title"></h2><p id="tour-copy"></p></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><div><button id="tour-try" hidden>🎮 Try playing</button><button id="tour-next">Next</button></div></div></section>`;
+    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask" maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g></svg><section class="tour-card"><div class="tour-top"><span id="tour-progress"></span><button id="tour-skip">Skip tour</button></div><div class="tour-description" tabindex="0" aria-live="polite" aria-atomic="true"><h2 id="tour-title"></h2><div id="tour-copy"></div></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><div><button id="tour-try" hidden>🎮 Try playing</button><button id="tour-next">Next</button></div></div></section>`;
     document.body.append(this.dialog);
     this.find = (id) => this.dialog.querySelector(`#${id}`);
     this.card = this.dialog.querySelector(".tour-card");
@@ -174,7 +174,12 @@ export class GuidedTour {
     this.setInteraction();
     const step = this.steps[index];
     this.find("tour-title").textContent = step.title;
-    this.find("tour-copy").textContent = step.copy;
+    this.find("tour-copy").replaceChildren(...(Array.isArray(step.copy) ? step.copy : [step.copy]).map((copy) => {
+      const paragraph = document.createElement("p");
+      paragraph.textContent = copy;
+      return paragraph;
+    }));
+    this.dialog.querySelector(".tour-description").scrollTop = 0;
     this.find("tour-progress").textContent =
       `Guided tour · ${index + 1} / ${this.steps.length}`;
     this.find("tour-back").hidden = index === 0;
@@ -225,6 +230,9 @@ export class GuidedTour {
     document.body.classList.toggle("tour-phone", phone);
     document.body.classList.toggle("tour-landscape", landscape);
     this.card.style.width = `${phone ? (landscape ? Math.min(280, viewport.width * .36) : viewport.width - 24) : Math.min(340, viewport.width - 24)}px`;
+    const playing = document.querySelector("#inspector")?.classList.contains("controlling");
+    const reserved = playing ? 280 + (this.index >= 5 ? 64 : 0) : 220;
+    this.card.style.maxHeight = `${phone && !landscape ? viewport.height - reserved - 32 : viewport.height - 24}px`;
     const { width, height } = this.card.getBoundingClientRect();
     let stage;
     if (phone) {
@@ -236,7 +244,7 @@ export class GuidedTour {
         right: offset.x + viewport.width - 8,
         bottom: offset.y + viewport.height - 8,
       };
-      const searches = this.index >= 4 ? 64 : 0;
+      const searches = this.index >= 5 ? 64 : 0;
       const variables = {
         "--tour-stage-left": stage.left,
         "--tour-stage-top": stage.top,

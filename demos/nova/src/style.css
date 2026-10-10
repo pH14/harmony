@@ -1215,8 +1215,8 @@ dialog h2 {
 .tour-phone .inspector.controlling #film { width: min(100%, max(48px, calc((var(--tour-history-height) - 244px) * 256 / 224))); }
 .tour-phone .controlling #game-controls { margin: 4px 0; }
 .tour-phone .controlling .touch-controls { padding: 4px 0; }
-.tour-phone[data-tour-step="4"] .branches,
-.tour-phone[data-tour-step="5"] .branches {
+.tour-phone[data-tour-step="5"] .branches,
+.tour-phone[data-tour-step="6"] .branches {
   position: fixed; z-index: 25; top: var(--tour-stage-top); left: var(--tour-stage-left);
   width: var(--tour-stage-width); max-height: 56px; overflow: auto; animation: none;
 }
@@ -1254,3 +1254,8 @@ dialog h2 {
 .tour-landscape .inspector:not(.controlling) .branch-actions { grid-column: 2; grid-row: 2; margin: 0; }
 .tour-landscape .inspector:not(.controlling) #take-control { min-height: 36px; padding: 5px; font-size: 13px; }
 .tour-landscape .inspector:not(.controlling) #state-list { max-height: 120px; }
+
+.tour-card { display: flex; flex-direction: column; }
+.tour-top, .tour-bottom { flex-shrink: 0; }
+.tour-description { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.tour-description:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }

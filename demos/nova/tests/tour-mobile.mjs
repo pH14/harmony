@@ -37,6 +37,29 @@ async function exposed(locator, spotlight = false) {
   assert.ok(result.reachable, `Control must receive real taps: ${JSON.stringify(result)}`);
   assert.ok(result.lit, `Control must be spotlighted: ${JSON.stringify(result)}`);
 }
+async function opening(page) {
+  assert.equal(await page.locator('#tour-title').innerText(), 'Welcome!');
+  assert.equal(await page.locator('#tour-copy p').count(), 2);
+  assert.equal(await page.locator('#visualization').getAttribute('data-value'), 'movement');
+  const openingMap = await page.locator('.area-map').evaluateAll((maps) => maps.find((map) => {
+    const r = map.getBoundingClientRect();
+    return [...document.querySelectorAll('#tour-rings rect')].some((ring) => {
+      const h = ring.getBoundingClientRect();
+      return Math.min(r.right,h.right)>Math.max(r.left,h.left) && Math.min(r.bottom,h.bottom)>Math.max(r.top,h.top);
+    });
+  })?.dataset.map);
+  await next(page, 1);
+  assert.equal(await page.locator('#tour-title').innerText(), 'Exploration');
+  assert.equal(await page.locator('#visualization').getAttribute('data-value'), 'movement');
+  const sameMapLit = await page.locator(`.area-map[data-map="${openingMap}"]`).evaluate((map) => {
+    const r=map.getBoundingClientRect();
+    return [...document.querySelectorAll('#tour-rings rect')].some((ring) => {
+      const h=ring.getBoundingClientRect();
+      return Math.min(r.right,h.right)>Math.max(r.left,h.left) && Math.min(r.bottom,h.bottom)>Math.max(r.top,h.top);
+    });
+  });
+  assert.equal(sameMapLit,true,'Welcome and Exploration spotlight the same map');
+}
 async function next(page, step) { await page.locator('#tour-next').tap(); await ready(page, step); }
 async function play(page) {
   await exposed(page.locator('#take-control'), true);
@@ -64,14 +87,15 @@ try {
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(url);
     await ready(page, 0);
-    await next(page, 1);
+    await opening(page);
+    await next(page, 2);
     const state = page.locator('#state-list .state:not(.selected)').first();
     const chosen = await state.getAttribute('data-state-id');
     await state.tap();
     await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && !document.querySelector('#take-control').disabled, chosen);
-    await ready(page, 1);
+    await ready(page, 2);
     await exposed(state, true);
-    await next(page, 2);
+    await next(page, 3);
     await exposed(page.locator('#play'), true);
     await exposed(page.locator('#scrub'), true);
     await exposed(page.locator('#sound'), true);
@@ -84,34 +108,46 @@ try {
     const scrub = await page.locator('#scrub').boundingBox();
     await page.touchscreen.tap(scrub.x + scrub.width*.6, scrub.y+scrub.height/2);
     await page.waitForFunction(() => document.querySelector('#frame-label').textContent.startsWith('FRAME ' + Number(document.querySelector('#scrub').value).toLocaleString('en-US')));
-    await next(page, 3);
+    await next(page, 4);
     await play(page);
     await page.screenshot({path:`test-results/tour-mobile-${viewport.width}-controller.png`});
     if (viewport.width === 390) {
       await page.setViewportSize({width:844,height:390});
-      await ready(page, 3);
+      await ready(page, 4);
       for (const button of await page.locator('.touch-controls button').all()) await exposed(button, true);
       await page.setViewportSize(viewport);
-      await ready(page, 3);
+      await ready(page, 4);
     }
-    await next(page, 4);
+    await next(page, 5);
+    if (viewport.width === 320) {
+      await page.locator('.tour-description').focus();
+      await page.keyboard.press('ArrowDown');
+      await page.waitForFunction(() => document.querySelector('.tour-description').scrollTop > 0);
+      const scrolled = await page.locator('.tour-description').evaluate((node) => { node.scrollTop = node.scrollHeight; return node.scrollTop > 0; });
+      assert.equal(scrolled,true,'All longer branch narration remains accessible above fixed navigation');
+      await exposed(page.locator('#tour-back'));
+      await exposed(page.locator('#tour-next'));
+    }
     await exposed(page.locator('#search-here'), true);
     await exposed(page.locator('#discard-branch'), true);
     await exposed(page.locator('button[data-search="0"]'), true);
     await page.screenshot({path:`test-results/tour-mobile-${viewport.width}-branch.png`});
     await page.locator('#discard-branch').tap();
     await page.waitForFunction(() => document.querySelector('#inspector').hidden && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
-    await ready(page, 4);
-    await page.locator('#tour-back').tap();
-    await ready(page, 3);
-    await play(page);
-    await next(page, 4);
-    await page.locator('#search-here').tap();
     await ready(page, 5);
+    await page.locator('#tour-back').tap();
+    await ready(page, 4);
+    await play(page);
+    await next(page, 5);
+    await page.locator('#search-here').tap();
+    await ready(page, 6);
     await page.waitForFunction(() => document.querySelector('button[data-search="1"][aria-pressed="true"]') && document.querySelector('#inspector').hidden);
     await exposed(page.locator('button[data-search="0"]'), true);
     await page.locator('button[data-search="0"]').tap();
     await page.waitForFunction(() => document.querySelector('button[data-search="0"][aria-pressed="true"]'));
+    await exposed(page.locator('#reset'), true);
+    await page.locator('#reset').tap();
+    await page.waitForFunction(() => document.querySelectorAll('button[data-search]').length === 1 && Number(document.querySelector('#attempts').textContent.replaceAll(',', '')) >= 30 && document.querySelector('#inspector').hidden);
     await page.locator('#tour-next').tap();
     assert.equal(await page.locator('[inert]').count(),0);
     assert.equal(await page.locator('body').evaluate((e)=>e.classList.contains('tour-phone')),false);

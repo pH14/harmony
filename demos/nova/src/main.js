@@ -935,7 +935,7 @@ function startSearch(level = bootLevel) {
             `Branch ${activeSearch} is searching from this frame.`;
           updateBranchControls();
           $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
-          if (tour.open && tour.index >= 3) tour.go(5);
+          if (tour.open && tour.index >= 4) tour.go(6);
         }
         if (engine) selectState(state, initial).catch(fail);
         updateStats();
@@ -1495,6 +1495,7 @@ $("pause").onclick = () => {
   $("status-dot").className = paused ? "paused" : "";
 };
 $("reset").onclick = () => {
+  if (tourSession) tourSession.interacted = true;
   seed++;
   startSearch();
 };
@@ -1840,7 +1841,7 @@ window.addEventListener("keydown", (e) => {
     e.ctrlKey ||
     e.metaKey ||
     e.altKey ||
-    e.target.closest("input,select,[contenteditable=true]")
+    e.target.closest("input,select,[contenteditable=true],#guided-tour")
   )
     return;
   const bit = keyButtons[e.code];
@@ -2040,19 +2041,35 @@ function tourCell() {
     )[0];
 }
 const tour = new GuidedTour({
-  occluders: () => [$("inspector"), $("route-preview"), ...(document.body.classList.contains("tour-phone") && tour.index >= 4 ? [$("branches")] : [])],
+  occluders: () => [$("inspector"), $("route-preview"), ...(document.body.classList.contains("tour-phone") && tour.index >= 5 ? [$("branches")] : [])],
   steps: [
     {
       reveal: () => tourMap(),
-      title: "Watch the search explore",
-      copy: "Each warm cell marks real search activity. Green, orange and red show where exploration is concentrated. Activity cools as the search moves on; visited ground stays blue.",
+      title: "Welcome!",
+      copy: [
+        "Harmony is a system that searches and explores software in interesting ways. Video games are software, so let’s explore the delightful platformer, Nova the Squirrel for NES together.",
+        "(Yes! A real NES emulator is now running in your browser.)",
+      ],
       targets: () => [tourMap()],
       interactive: () => [$("map-rows"), $("pause")],
     },
     {
       reveal: () => tourMap(),
-      title: "One location, many histories",
-      copy: "Click a cell to inspect its retained states. Hover a route to preview its screenshot and gold path; each history brought Nova to this same location.",
+      title: "Exploration",
+      copy: [
+        "Watch as the density of the many little Nova-the-Squirrels shifts across the map as Harmony explores this level.",
+        "Harmony explores a game, or software system, through a multiverse of possibilities. It plays tons of little actions in parallel and saves the ones that produced interesting results. It continuously adjusts its search frontier towards areas of the map that are more productive.",
+      ],
+      targets: () => [tourMap()],
+      interactive: () => [$("map-rows"), $("pause")],
+    },
+    {
+      reveal: () => tourMap(),
+      title: "History",
+      copy: [
+        "See all of the routes that Harmony has saved to lead to each part of the map. It will grow as the search continues.",
+        "Harmony considers these saved states as starting points for future search attempts.",
+      ],
       targets: () => [$("state-list"), ...(routeHover?.segments
         ? [...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0)
         : [tourCellRect()]), $("route-preview").hidden ? null : $("route-preview")],
@@ -2060,8 +2077,11 @@ const tour = new GuidedTour({
     },
     {
       reveal: () => document.querySelector(`.map-row[data-map="${markerPoint()?.level ?? tourSession?.cell?.level}"] canvas`),
-      title: "Follow one route",
-      copy: "Watch this route’s history, or scrub to any frame. Its gold trail follows the original controller inputs across the maps.",
+      title: "A singular timeline",
+      copy: [
+        "Look! We can observe any single timeline of Nova exploring the level. You can watch and rewind the gameplay for this one route if you’d like. I recommend it — the music rocks.",
+        "Harmony allows you to view and explore any one timeline within its multiverse exploration at any moment.",
+      ],
       targets: () => [
         document.querySelector(".transport"),
         $("sound"),
@@ -2072,13 +2092,19 @@ const tour = new GuidedTour({
     },
     {
       title: "🎮 Step into the experiment",
-      copy: "Play from here gives you control at the displayed frame. Your inputs create a branch from this moment—like pausing a software test to debug it live.",
+      copy: [
+        "Want to play too? You can select any moment from this timeline and hop right in — right then, right there! Give it a shot.",
+        "Harmony allows you to perform your own experiments that branch off any of its many timelines.",
+      ],
       targets: () => [$("take-control").hidden ? $("game-controls") : $("take-control"), document.querySelector(".screen")],
       interactive: () => [$("inspector")],
     },
     {
-      title: "Guide what happens next",
-      copy: "After playing, Branch search from here sends the search off from your new moment. Discard branch returns to the existing search. Your new search appears in Searches on the left.",
+      title: "To branch or not to branch",
+      copy: [
+        "Decide whether you want Harmony to start a new search fresh from where you just left off. Or not. Up to you.",
+        "Harmony’s exploration can start fresh from any moment of any timeline, including new timelines you created yourself. Combining Harmony’s autonomous exploration with your input allows it to explore scenarios that might be challenging for just one of you to reach.",
+      ],
       targets: () => [
         $("inspector").hidden ? null : document.querySelector(".branch-actions"),
         $("branches"),
@@ -2086,15 +2112,19 @@ const tour = new GuidedTour({
       interactive: () => [$("inspector"), $("branches")],
     },
     {
-      title: "Compare alternate futures",
-      copy: "The Searches pane keeps your branches. Switch back to your original search, or resume another branch. Each keeps its own retained states, routes and heatmap.",
+      title: "Searches",
+      copy: [
+        "Choose which branch of the search you want to have Harmony actively explore, or reset the whole exploration.",
+        "Harmony organizes your search branches together, showing how each branch relates to its parent.",
+        "Now, go have fun!",
+      ],
       targets: () => [$("branches"), ...(branchPreview ? [...document.querySelectorAll(".area-map")] : [])],
       interactive: () => [$("branches")],
     },
   ],
   onStart() {
     if ($("workspace").classList.contains("timeline-collapsed")) $("timeline-toggle").click();
-    if (visualization !== "heat") setVisualization("heat");
+    if (visualization !== "movement") setVisualization("movement");
     tourSession = {
       cell: tourCell(),
       wasPaused: paused,
@@ -2113,25 +2143,25 @@ const tour = new GuidedTour({
   },
   async beforeStep(index, valid) {
     hideRoutePreview();
-    if (index <= 2) expandInspector(false);
-    if (controlMode && index !== 3 && index !== 4) stopControl();
-    if (index === 5) return;
-    if (index !== 2) {
+    if (index <= 3) expandInspector(false);
+    if (controlMode && index !== 4 && index !== 5) stopControl();
+    if (index === 6) return;
+    if (index !== 3) {
       playing = false;
       music.stop();
       $("play").textContent = "▶ Replay";
     }
-    if (index === 1 && !tourSession.prepared) tourSession.cell = tourCell();
+    if (index === 2 && !tourSession.prepared) tourSession.cell = tourCell();
     const cell = (tourSession.cell ||= tourCell());
     if (!cell) throw new Error("No retained cell yet");
-    if (index <= 1 && mapLevel !== cell.level) setRoom(cell.level, true);
-    if (index >= 2) followReplayRoom(markerPoint());
+    if (index <= 2 && mapLevel !== cell.level) setRoom(cell.level, true);
+    if (index >= 3) followReplayRoom(markerPoint());
     const view = roomView(cell.level);
-    if (index <= 1 && view.zoom > 1) {
+    if (index <= 2 && view.zoom > 1) {
       view.x = cell.x * 32 + 16;
       view.y = cell.y * 32 + 8;
     }
-    if (index === 0) {
+    if (index <= 1) {
       if (!tourSession.interacted && !tourSession.wasPaused && !stats.stopped && paused) {
         paused = false;
         worker.postMessage({ type: "resume" });
@@ -2167,11 +2197,11 @@ const tour = new GuidedTour({
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
     if (!valid()) return;
-    if (index === 1)
+    if (index === 2)
       $("state-list")
         .querySelector(".selected")
         ?.scrollIntoView({ block: "nearest", behavior: "instant" });
-    if (index >= 4 && !document.body.classList.contains("tour-phone"))
+    if (index >= 5 && !document.body.classList.contains("tour-phone"))
       $("branches").scrollIntoView({
         block: "nearest",
         behavior: "instant",
