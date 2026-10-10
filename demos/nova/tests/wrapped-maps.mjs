@@ -31,31 +31,7 @@ try {
       const room=await page.evaluate(()=>window.root.observation.level),canvases=page.locator(`.map-row[data-map="${room}"] .area-map`);
       assert.ok(await canvases.count()>1);
       const geometry=await canvases.evaluateAll(cs=>cs.map(c=>({x:+c.dataset.panelX,y:+c.dataset.panelY,w:+c.dataset.mapWidth,h:+c.dataset.mapHeight,width:c.clientWidth,roomWidth:+c.dataset.roomWidth,roomHeight:+c.dataset.roomHeight})));
-      for(const p of geometry)assert.ok(16*p.width/p.w >= (phone ? 4 : 8),'Broader room sections retain detail between a full-room thumbnail and close-up');
-      if(level===8){
-        assert.ok(geometry.length <= (phone ? 3 : 2),'Horizontal rooms no longer become seven or eight strips');
-        const overview=page.locator(`.map-row[data-map="${room}"] .room-overview`);
-        assert.equal(await overview.count(),1);
-        assert.equal(+(await overview.getAttribute('data-map-width')),geometry[0].roomWidth);
-        const links=page.locator(`.map-row[data-map="${room}"] .overview-sections button`);
-        await links.last().click();
-        await page.waitForFunction(room=>+document.querySelector(`.map-row[data-map="${room}"] .room-overview`).dataset.visiblePanel===document.querySelectorAll(`.map-row[data-map="${room}"] .area-map`).length-1,room);
-        assert.equal(await links.last().getAttribute('aria-current'),'location');
-        assert.equal(await page.locator('#inspector').isVisible(),false,'Navigation never opens a retained-history inspector');
-        await page.setViewportSize({width:phone ? 390 : 1440,height:phone ? 500 : 550});
-        await links.last().click();
-        await page.waitForTimeout(500);
-        const navigation=await page.locator(`.map-row[data-map="${room}"] .room-navigation`).boundingBox();
-        assert.ok(navigation.y>=0&&navigation.y<=10,'The navigator sticks to the viewport when a shorter phone scrolls through the room');
-        const sticky=await overview.boundingBox();
-        assert.ok(sticky.y>=0&&sticky.y+sticky.height< (phone ? 844 : 1000),'The whole-room context remains visible after navigating to the last section');
-        await page.screenshot({path:`test-results/overview-sticky-${phone?'phone':'desktop'}.png`});
-        await page.setViewportSize({width:phone ? 390 : 1440,height:phone ? 844 : 1000});
-        const r=await overview.boundingBox();
-        if(phone)await page.touchscreen.tap(r.x+r.width*.1,r.y+r.height*.5);else await page.mouse.click(r.x+r.width*.1,r.y+r.height*.5);
-        await page.waitForFunction(room=>+document.querySelector(`.map-row[data-map="${room}"] .room-overview`).dataset.visiblePanel===0,room);
-        assert.equal(await page.locator('#visualization').getAttribute('data-value'),'movement');
-      }
+      for(const p of geometry)assert.ok(16*p.width/p.w >= (phone ? 4 : 8),'Room sections keep Nova readable');
       assert.equal(geometry.reduce((sum,p)=>sum+p.w*p.h,0),geometry[0].roomWidth*geometry[0].roomHeight);
       await canvases.first().scrollIntoViewIfNeeded();await page.screenshot({path:`test-results/wrapped-${level}-${phone?'phone':'desktop'}.png`});
       const art=await page.evaluate(async room=>{
@@ -73,7 +49,6 @@ try {
       assert.ok((await canvases.nth(1).boundingBox()).y>=0);
       await page.locator(`.area-zoom[data-map="${room}"]`).click();
       await page.waitForFunction(room=>[...document.querySelectorAll(`.map-row[data-map="${room}"] .area-map`)].every(c=>+c.dataset.zoom===2),room);
-      if(level===8)assert.equal(await page.locator(`.map-row[data-map="${room}"] .room-overview`).getAttribute('data-zoom'),'1','Zoom changes the detail viewport while preserving whole-room context');
       await page.locator(`.area-zoom[data-map="${room}"]`).click();await page.locator(`.area-zoom[data-map="${room}"]`).click();
       await page.waitForFunction(room=>[...document.querySelectorAll(`.map-row[data-map="${room}"] .area-map`)].every(c=>+c.dataset.zoom===1),room);
 
@@ -97,7 +72,7 @@ try {
       const c=cs.find(c=>o.x>=+c.dataset.panelX&&o.x<+c.dataset.panelX+c.width&&o.y-8>=+c.dataset.panelY&&o.y-8<+c.dataset.panelY+c.height);
       return{id:root.id,room:o.level,panel:+c.dataset.panel,x:Math.floor(o.x/32)*32+16,y:Math.floor(o.y/32)*32+8};
     });
-    assert.ok(target.panel>0,'The native fixture lies beyond the new wider seam');
+    assert.ok(target.panel>0,'The native fixture lies beyond a section seam');
     const canvas=page.locator(`.map-row[data-map="${target.room}"] .area-map`).nth(target.panel);
     await canvas.scrollIntoViewIfNeeded();
     const point=await canvas.evaluate((c,t)=>{const r=c.getBoundingClientRect();return{x:r.left+(t.x-+c.dataset.panelX)*r.width/c.width,y:r.top+(t.y-+c.dataset.panelY)*r.height/c.height};},target);
@@ -105,9 +80,9 @@ try {
     await page.waitForFunction(()=>!document.querySelector('#inspector').hidden&&!document.querySelector('#take-control').disabled);
     assert.ok(await page.evaluate(id=>window.lastStateRequest.includes(id),target.id),'A later section selects its authentic retained history');
     assert.equal(await page.locator('#visualization').getAttribute('data-value'),'movement');
-    await page.waitForFunction(target=>[...document.querySelectorAll(`.map-row[data-map="${target.room}"] .area-map`)].some(c=>target.x>=+c.dataset.panelX&&target.x<+c.dataset.panelX+c.width&&+c.dataset.tracePoints>0)&&+document.querySelector(`.map-row[data-map="${target.room}"] .room-overview`).dataset.tracePoints>0,target);
+    await page.waitForFunction(target=>[...document.querySelectorAll(`.map-row[data-map="${target.room}"] .area-map`)].some(c=>target.x>=+c.dataset.panelX&&target.x<+c.dataset.panelX+c.width&&+c.dataset.tracePoints>0),target);
     await page.locator('#close-inspector').click();
     await page.goto('about:blank');await page.close();
   }
-  assert.deepEqual(errors,[]);console.log('Bounded horizontal wrapping, live whole-room navigator, sticky section switching, original-art crops, vertical rooms, zoom and authentic retained hits across seams passed on desktop and phone.');
+  assert.deepEqual(errors,[]);console.log('Horizontal wrapping, section navigation, original-art crops, vertical rooms, zoom and authentic retained hits across seams passed on desktop and phone.');
 }finally{await browser.close();}

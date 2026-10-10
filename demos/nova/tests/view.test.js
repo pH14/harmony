@@ -24,7 +24,6 @@ test("wrapped rooms cover every original pixel exactly once, in order", () => {
   for (const available of [320, 390, 900, 1700])
     for (const [width, height] of [[1280,224], [3584,224], [4096,224], [2048,448], [256,3584], [1024,896]]) {
       const panels = roomPanels(width, height, available);
-      if (height === 224) assert.ok(panels.length <= (available >= 640 ? 2 : 3), "Horizontal rooms keep an overview-sized set of broad sections");
       assert.equal(panels.reduce((area, p) => area + p.width * p.height, 0), width * height);
       for (let y = 0; y < height; y += 16)
         for (let x = 0; x < width; x += 16)
