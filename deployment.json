@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "c04241f08e680fc80e61d6f936eed549fd17f259",
+    "commit": "ae82e5da33a8c771d00c091d66be0db299127221",
     "build": "locally verified static build",
-    "checks": "Production build; desktop/phone browser replay, audio, gameplay and nested branches; retained floor-cell selection and empty-ground hover affordances",
-    "asset_manifest_sha256": "37b6bebdefb634e482a7b7af2ae22aded7c232f40587e46f0383d599070b8e24"
+    "checks": "Production build; desktop/phone browser replay and nested branches; History collapse/reopen; 320px, 390px and landscape controller layout; live tour audio and interactions",
+    "asset_manifest_sha256": "abc1b83ad5b81334c4b2aa8223e93485e696951646d3c754bd06a358153e19da"
   },
   "raft": {
     "commit": "28791e77a",
