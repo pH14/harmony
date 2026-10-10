@@ -4,10 +4,11 @@ use std::{
     env,
     error::Error,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
+use machine::quicknes::VideoFrame;
 use nes_workload::{
     film::{FPS, Film},
     mm2::target::{Mm2Input, target_from_args},
@@ -39,41 +40,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input: Mm2Input = serde_json::from_slice(&fs::read(input_path)?)?;
     target.start_capturing();
 
-    let first_action = input.actions.first().ok_or("the input has no actions")?;
-    target.apply(first_action);
-    let opening = target.drain_frames();
-    let first = opening
-        .first()
-        .ok_or("the first action captured no video")?;
-    let (width, height) = (first.width, first.height);
-
-    let film = Arc::new(Mutex::new(Film::start(&video, width, height)?));
-    film.lock()
-        .map_err(|_| "the film lock is poisoned")?
-        .write(&opening, &target.drain_audio())?;
-    drop(opening);
-    let drive_film = Arc::clone(&film);
+    let film: SharedFilm = Arc::new(Mutex::new(None));
+    let sink_film = Arc::clone(&film);
+    let sink_video = video.clone();
     target.set_frame_sink(Some(Box::new(move |frames, audio| {
-        drive_film
-            .lock()
-            .map_err(|_| "the film lock is poisoned")?
-            .write(frames, audio)
+        write_film(&sink_film, &sink_video, frames, audio)
     })));
 
-    let mut applied = 1_usize;
-    for action in &input.actions[1..] {
+    let mut applied = 0_usize;
+    for action in &input.actions {
         if target.is_terminal() || target.exit_kind() != ExitKind::Ok {
             break;
         }
         target.apply(action);
         applied += 1;
-        let mut writer = film.lock().map_err(|_| "the film lock is poisoned")?;
-        writer.write(&target.drain_frames(), &target.drain_audio())?;
+        let (frames, audio) = (target.drain_frames(), target.drain_audio());
+        write_film(&film, &video, &frames, &audio)?;
         if applied.is_multiple_of(250) {
             eprintln!(
                 "action {applied}/{} frames={}",
                 input.actions.len(),
-                writer.frames()
+                film.lock()
+                    .map_err(|_| "the film lock is poisoned")?
+                    .as_ref()
+                    .map_or(0, Film::frames)
             );
         }
     }
@@ -83,6 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|_| "the film is still shared")?
         .into_inner()
         .map_err(|_| "the film lock is poisoned")?
+        .ok_or("the input captured no video")?
         .finish()?;
 
     println!(
@@ -104,4 +95,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
     );
     Ok(())
+}
+
+type SharedFilm = Arc<Mutex<Option<Film>>>;
+
+fn write_film(
+    film: &SharedFilm,
+    video: &Path,
+    frames: &[VideoFrame],
+    audio: &[i16],
+) -> Result<(), Box<dyn Error>> {
+    let mut film = film.lock().map_err(|_| "the film lock is poisoned")?;
+    if film.is_none() {
+        let Some(first) = frames.first() else {
+            return Ok(());
+        };
+        *film = Some(Film::start(video, first.width, first.height)?);
+    }
+    film.as_mut()
+        .ok_or("the film did not start")?
+        .write(frames, audio)
 }
