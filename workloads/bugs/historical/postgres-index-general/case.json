@@ -40,6 +40,16 @@
       "the server is down",
       "the connection drops mid-check",
       "an index is dropped while it is checked"
+    ],
+    "integrity": [
+      {
+        "assertion": "postgres index and sequential scans agree",
+        "evidence": "postgres general compared committed rows"
+      },
+      {
+        "assertion": "postgres preserves acknowledged commits",
+        "evidence": "postgres general compared committed rows"
+      }
     ]
   },
   "actions": [

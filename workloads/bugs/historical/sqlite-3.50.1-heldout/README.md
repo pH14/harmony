@@ -18,6 +18,8 @@ workload's savepoints, large transactions and small page caches reach that
 code.
 
 The scored assertion is `sqlite preserves acknowledged commits`, with `sqlite
-general compared committed rows` as its evidence; `integrity_check` is
-reported beside it. See [DISCOVERY.md](../DISCOVERY.md#held-out-cases) for how
+general compared committed rows` as its evidence. The general workload's
+other checks (`integrity_check`, corruption reports and read snapshots) are its
+integrity assertions, and a confirmed, reproduced violation of any of them is a
+discovery too. See [DISCOVERY.md](../DISCOVERY.md#held-out-cases) for how
 the held-out cases were chosen.

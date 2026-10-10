@@ -371,10 +371,10 @@ Each campaign has exactly one outcome:
 
 | Outcome | Rule |
 |---|---|
-| **discovery** | A finding violates the case's scored assertion, carries the case's evidence assertion, and passes the package's fresh self-replay (`historical-oracle.sh search` passes). The reproducer is then replayed twice more in fresh sessions on the same execution identity. |
-| **unconfirmed candidate** | A finding violates the scored assertion, but its fresh replay did not reproduce it. |
+| **discovery** | A finding violates the case's scored assertion or one of its integrity assertions (`oracle.integrity`, correction 11), carries that assertion's evidence, and passes the package's fresh self-replay. The first such reproducer is then replayed twice more in fresh sessions on the same execution identity, and must violate the same assertion each time. The campaign records which assertion it was. |
+| **unconfirmed candidate** | A finding violates the scored assertion or an integrity assertion, but its fresh replay did not reproduce it. |
 | **internal discovery** | No discovery, but a confirmed finding where a workload process aborted on the system's own C assertion inside a function the case's fix changed (`oracle.fix_functions`, correction 7). It is reported in its own column and never counted as a discovery. |
-| **other violation** | A confirmed violation of an assertion other than the scored one, with no discovery. It is reported and triaged, and is never counted as a discovery. |
+| **other violation** | A confirmed violation of an assertion outside the scored and integrity assertions, with no discovery. It is reported and triaged, and is never counted as a discovery. |
 | **miss** | The campaign completed its budget, reached at least one conclusive check (the evidence assertion passed), and found nothing. It is censored at the budget. |
 | **inconclusive** | The campaign completed but never reached a conclusive check. It is not a clean run. |
 | **infrastructure failure** | The CLI timed out or crashed, the report is missing, execution failures exceed watchdog cutoffs, or the UML search restored no snapshot. |
@@ -454,6 +454,26 @@ results are a weaker check than bugs nobody looked at, and they are reported as
 such. Neither the workloads nor the search may change in response to a
 held-out measurement; a change made after one is a correction, and it
 restarts every affected measurement.
+
+## Fixed-release controls
+
+An integrity violation counts as a discovery only if it comes from a bug, not
+from the workload, its oracle or the harness. Three control cases test that.
+Each runs a general workload, oracle and search unchanged against the first
+release that fixes the bugs of the cases it controls:
+
+| Case | Release | Controls |
+|---|---|---|
+| `sqlite-3.51.3-control` | SQLite 3.51.3 | `sqlite-wal-general` (WAL reset, fixed in 3.51.3) and `sqlite-3.50.1-heldout` (fixed in 3.50.2) |
+| `postgres-14.4-control` | PostgreSQL 14.4 | `postgres-index-general` (fixed in 14.4) and `postgres-14.1-heldout` (fixed in 14.2) |
+| `etcd-3.5.6-control` | etcd 3.5.6 | `etcd-3.5-general` (fixed in 3.5.3) and `etcd-3.5.5-heldout` (fixed in 3.5.6) |
+
+A control is scored like any arm, so its discoveries are confirmed,
+reproduced integrity violations on a fixed release. Each one is investigated:
+it is either a bug the fixes do not cover or a false report, and a false
+report is corrected in the workload or harness and restarts every affected
+measurement. Discoveries on the affected releases are trusted only while their
+controls stay clean. The comparison reports each control in its own table.
 
 ## Corrections
 
@@ -568,3 +588,17 @@ made after a general-arm measurement restarts every affected measurement.
     slot. The search policy changes for every arm, so every arm is measured
     again, against the alphabet-only measurement of correction 9's commit as
     its paired baseline.
+
+11. **Integrity assertions count** (after the held-out measurement). A
+    campaign stops at its first confirmed violation, and only the scored
+    assertion counted. In three etcd general campaigns the first violation was
+    `linearizable reads observe acknowledged writes`, and in one SQLite general
+    campaign a statement returned `SQLITE_CORRUPT` before `integrity_check`
+    ran: the search had reached the bug, and the campaign scored it as another
+    violation. Each case now declares the system's own data-integrity checks
+    as `oracle.integrity`, each with its evidence, and a confirmed, reproduced
+    violation of any of them is a discovery. The focused SQLite cases count the
+    fork's corruption, lost-write and read-your-writes assertions; the focused
+    PostgreSQL and etcd cases declare one assertion each. The
+    [fixed-release controls](#fixed-release-controls) test that these
+    violations come from bugs. Every arm is scored again.

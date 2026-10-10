@@ -10,8 +10,8 @@ python3 "${manifest}" --check
 all=$(python3 "${manifest}" --matrix)
 runnable=$(python3 "${manifest}" --runnable-matrix)
 
-test "$(jq '.include | length' <<<"${all}")" -eq 11
-test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 11
+test "$(jq '.include | length' <<<"${all}")" -eq 14
+test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 14
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .job_timeout_minutes' <<<"${all}")" -eq 230
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .job_timeout_minutes' <<<"${all}")" -eq 320
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .display_name' <<<"${all}")" = "PostgreSQL Index Corruption"
@@ -23,11 +23,16 @@ test "$(jq '.include | length' <<<"${runnable}")" -eq 3
 test "$(jq -r '[.include[].id] | sort | join(",")' <<<"${runnable}")" = etcd-3.5-inconsistency,postgres-cic-corruption,sqlite-wal-reset
 test "$(jq -r '.include[] | select(.id == "sqlite-wal-reset") | .job_timeout_minutes' <<<"${runnable}")" -eq 260
 discovery=$(python3 "${manifest}" --runnable-matrix --panel discovery)
-test "$(jq '.include | length' <<<"${discovery}")" -eq 11
+test "$(jq '.include | length' <<<"${discovery}")" -eq 14
 test "$(jq -r '[.include[] | select(.discovery_mode == "general")] | length' <<<"${discovery}")" -eq 3
 test "$(jq -r '[.include[] | select(.discovery_mode == "ablation")] | length' <<<"${discovery}")" -eq 2
 test "$(jq -r '[.include[] | select(.discovery_mode == "heldout")] | length' <<<"${discovery}")" -eq 3
 test "$(jq -r '.include[] | select(.id == "postgres-14.1-heldout") | .focused_case' <<<"${discovery}")" = postgres-14.1-heldout
+test "$(jq -r '[.include[] | select(.discovery_mode == "control")] | length' <<<"${discovery}")" -eq 3
+test "$(jq -r '.include[] | select(.id == "etcd-3.5.6-control") | .focused_case' <<<"${discovery}")" = etcd-3.5.6-control
+test "$(jq -r '.include[] | select(.id == "etcd-3.5-general") | .oracle_integrity | fromjson | map(.assertion) | join(",")' <<<"${discovery}")" \
+    = "etcd members agree on the key-value hash at a common revision,linearizable reads observe acknowledged writes"
+test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .oracle_integrity' <<<"${discovery}")" = "[]"
 test "$(jq -r '.include[] | select(.id == "postgres-index-general") | .focused_case' <<<"${discovery}")" = postgres-cic-corruption
 picked=$(python3 "${manifest}" --runnable-matrix --panel discovery --case sqlite-wal-general,sqlite-wal-reset --seeds 1001,1002)
 test "$(jq -r '[.include[].run_key] | sort | join(",")' <<<"${picked}")" = sqlite-wal-general-seed1001,sqlite-wal-general-seed1002,sqlite-wal-reset-seed1001,sqlite-wal-reset-seed1002

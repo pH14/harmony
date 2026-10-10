@@ -38,7 +38,21 @@
     ],
     "kind": "always",
     "source": "the general driver's integrity operation",
-    "detector": "PRAGMA integrity_check, drawn as one of five uniformly chosen operations"
+    "detector": "PRAGMA integrity_check, drawn as one of five uniformly chosen operations",
+    "integrity": [
+      {
+        "assertion": "sqlite reports no corruption",
+        "evidence": "sqlite general compared committed rows"
+      },
+      {
+        "assertion": "sqlite preserves acknowledged commits",
+        "evidence": "sqlite general compared committed rows"
+      },
+      {
+        "assertion": "sqlite read transaction sees one snapshot",
+        "evidence": "sqlite general compared committed rows"
+      }
+    ]
   },
   "actions": [
     "Wait",

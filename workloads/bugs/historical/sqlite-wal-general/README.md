@@ -28,8 +28,9 @@ integrity check, then exits; the self-test uses it between steps.
 The scored assertion is `sqlite integrity_check returns ok`, with
 `sqlite integrity_check completed` as its evidence. The other properties are
 `sqlite reports no corruption`, `sqlite preserves acknowledged commits` and
-`sqlite read transaction sees one snapshot`; a confirmed violation of any of
-them is reported but is not scored as this case's discovery.
+`sqlite read transaction sees one snapshot`. They are the case's integrity
+assertions: a confirmed, reproduced violation of any of them is a discovery too
+(correction 11 in [DISCOVERY.md](../DISCOVERY.md#corrections)).
 
 ## Running
 

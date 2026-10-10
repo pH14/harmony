@@ -256,7 +256,7 @@ jobs:
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
         run: scripts/historical-search.sh || true
-      - name: Replay the first scored finding in fresh processes
+      - name: Replay the first integrity finding in fresh processes
         env:
           BACKEND: uml
           CASE_ID: ${{ matrix.id }}
@@ -268,17 +268,25 @@ jobs:
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
+          ORACLE_INTEGRITY: ${{ matrix.oracle_integrity }}
           MAX_REPLAY_SESSIONS: ${{ env.REPLAY_REPEATS }}
         run: |
           set -euo pipefail
           export REPORT_DIR="reports/${RUN_KEY}"
           search="${REPORT_DIR}/${CASE_ID}.search"
           [[ -s "${search}/report.json" ]] || exit 0
-          finding=$(jq -r --arg id "${ORACLE_ASSERTION}" '
-            [.bugs // [] | to_entries[] | select(.value.confirmed and ((.value.violations // []) | index($id)) != null)]
-            | sort_by(.value.execution) | first | if . == null then "" else .key + 1 end' "${search}/report.json")
-          [[ -n "${finding}" ]] || { echo "no confirmed finding carries the scored assertion"; exit 0; }
-          FINDING=${finding} scripts/historical-replay.sh reproduce "${search}/bug-${finding}.json" || true
+          selected=$(jq -c --arg assertion "${ORACLE_ASSERTION}" --arg evidence "${ORACLE_EVIDENCE}" \
+            --argjson integrity "${ORACLE_INTEGRITY}" '
+            ([{assertion: $assertion, evidence: $evidence}] + $integrity) as $checks
+            | [.bugs // [] | to_entries[] | select(.value.confirmed) as $bug
+               | ($checks | map(select(.assertion as $id | ($bug.value.violations // []) | index($id) != null)) | first) as $check
+               | select($check != null and (($bug.value.sometimes // []) | index($check.evidence)) != null)
+               | {finding: ($bug.key + 1), execution: $bug.value.execution} + $check]
+            | sort_by(.execution) | first // empty' "${search}/report.json")
+          [[ -n "${selected}" ]] || { echo "no confirmed finding carries an integrity assertion"; exit 0; }
+          finding=$(jq -r .finding <<<"${selected}")
+          ORACLE_ASSERTION=$(jq -r .assertion <<<"${selected}") ORACLE_EVIDENCE=$(jq -r .evidence <<<"${selected}") \
+            FINDING=${finding} scripts/historical-replay.sh reproduce "${search}/bug-${finding}.json" || true
       - name: Score the campaign
         env:
           CASE_ID: ${{ matrix.id }}

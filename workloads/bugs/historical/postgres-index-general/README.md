@@ -32,8 +32,9 @@ which fails when `bt_index_check(index, heapallindexed => true)` raises
 `data_corrupted` (`XX001`) or `index_corrupted` (`XX002`); its evidence is
 `postgres amcheck verified an index`. A heap tuple without an index entry, the
 focused case's bug, is `XX001` on 14.3. `postgres index and sequential scans
-agree` and `postgres preserves acknowledged commits` are reported but are not
-scored as this case's discovery.
+agree` and `postgres preserves acknowledged commits` are its integrity
+assertions: a confirmed, reproduced violation of either is a discovery too
+(correction 11 in [DISCOVERY.md](../DISCOVERY.md#corrections)).
 
 PostgreSQL, `amcheck` and `libpq` are built with clang trace-pc-guard coverage
 and the composed fault runtime. The postmaster and every process it forks

@@ -2,8 +2,9 @@
 """Score historical discovery campaigns and render the arm comparison.
 
 Each campaign directory holds one search (``<case>.search``) and, when the
-search confirmed a finding carrying the case's scored assertion, the fresh
-replays of that finding (``<case>.reproduce-*``). Every campaign gets exactly
+search confirmed a finding carrying the case's scored assertion or one of its
+declared integrity assertions, the fresh replays of the first such finding
+(``<case>.reproduce-*``). Every campaign gets exactly
 one outcome; the rules are in workloads/bugs/historical/DISCOVERY.md.
 """
 
@@ -28,7 +29,7 @@ OUTCOMES = (
     "inconclusive",
     "infra-failure",
 )
-ARM_ORDER = {"guided": 0, "general": 1, "ablation": 2, "heldout": 3}
+ARM_ORDER = {"guided": 0, "general": 1, "ablation": 2, "heldout": 3, "control": 4}
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Campaign:
     evidence_reached: bool = False
     crashes: int = 0
     other_violations: list[str] = field(default_factory=list)
+    assertion: str = ""
     detail: str = ""
 
 
@@ -85,9 +87,21 @@ def internal_assertion(bugs: list[dict], case: dict) -> bool:
     return False
 
 
+def integrity_checks(case: dict) -> list[tuple[str, str]]:
+    oracle = case["oracle"]
+    return [(oracle["assertion"], oracle["evidence"])] + [
+        (check["assertion"], check["evidence"]) for check in oracle.get("integrity") or []
+    ]
+
+
+def carried(bug: dict, checks: list[tuple[str, str]]) -> tuple[str, str] | None:
+    violations = bug.get("violations") or []
+    return next((check for check in checks if check[0] in violations), None)
+
+
 def score(search: Path, case: dict) -> Campaign:
-    assertion = case["oracle"]["assertion"]
     evidence = case["oracle"]["evidence"]
+    checks = integrity_checks(case)
     status = load_json(search / "panel-status.json") or {}
     report = load_json(search / "report.json")
     summary = load_json(search / "campaign-summary.json") or {}
@@ -104,15 +118,19 @@ def score(search: Path, case: dict) -> Campaign:
         return campaign
     campaign.evidence_reached = bool(summary.get("assertions", {}).get(evidence, {}).get("passed"))
     bugs = report.get("bugs") or []
-    scored = [bug for bug in bugs if assertion in (bug.get("violations") or [])]
+    scored = [bug for bug in bugs if carried(bug, checks)]
     confirmed = [
         bug
         for bug in scored
         if bug.get("confirmed")
-        and evidence in (bug.get("sometimes") or [])
+        and (check := carried(bug, checks))
+        and check[1] in (bug.get("sometimes") or [])
         and (bug.get("replay") or {}).get("bug")
-        and assertion in ((bug.get("replay") or {}).get("violations") or [])
+        and check[0] in ((bug.get("replay") or {}).get("violations") or [])
     ]
+    first = min(confirmed, key=lambda bug: bug["execution"]) if confirmed else None
+    if first is not None:
+        campaign.assertion = carried(first, checks)[0]
     for bug in bugs:
         if not bug.get("confirmed"):
             continue
@@ -120,10 +138,9 @@ def score(search: Path, case: dict) -> Campaign:
         if not violations and (bug.get("replay") or {}).get("stop") == "Crash":
             campaign.crashes += 1
         for violation in violations:
-            if violation != assertion and violation not in campaign.other_violations:
+            if violation != campaign.assertion and violation not in campaign.other_violations:
                 campaign.other_violations.append(violation)
-    if confirmed:
-        first = min(confirmed, key=lambda bug: bug["execution"])
+    if first is not None:
         campaign.executions_to_first = int(first["execution"])
         campaign.seconds_to_first = seconds_at(
             search / "progress.jsonl", campaign.executions_to_first, campaign.wall_seconds

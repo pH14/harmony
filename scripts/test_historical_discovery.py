@@ -111,6 +111,16 @@ class Scoring(unittest.TestCase):
         self.assertEqual(result.outcome, "other-violation")
         self.assertEqual(result.other_violations, ["something else"])
 
+    def test_a_declared_integrity_assertion_is_a_discovery(self):
+        case = {**CASE, "oracle": {**CASE["oracle"], "integrity": [{"assertion": "toy keeps writes", "evidence": "toy checked"}]}}
+        search = self.campaign("i", bugs=[bug(80, ["toy holds"]), bug(40, ["toy keeps writes", "toy other"])], replays=["pass"])
+        result = self.outcome(search, case)
+        self.assertEqual(result.outcome, "discovery")
+        self.assertEqual(result.assertion, "toy keeps writes")
+        self.assertEqual(result.executions_to_first, 40)
+        self.assertEqual(result.other_violations, ["toy holds", "toy other"])
+        self.assertEqual(self.outcome(self.campaign("j", bugs=[bug(40, ["toy keeps writes"])])).outcome, "other-violation")
+
     def test_an_internal_assertion_at_the_fix_site_is_its_own_outcome(self):
         case = {**CASE, "oracle": {**CASE["oracle"], "fix_functions": ["walCheckpoint"]}}
         abort = bug(30, [discovery.NODE_EXIT])

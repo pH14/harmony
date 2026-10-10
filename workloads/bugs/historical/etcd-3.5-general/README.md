@@ -36,5 +36,6 @@ inconclusive; the check is inconclusive only when no member answers.
 `etcd general check compared every member` marks the checks that reached all
 three. `etcd members agree on the key-value hash at a common revision`
 (`HashKV`, among the members that answered) and `linearizable reads observe
-acknowledged writes` are reported but are not scored as this case's
-discovery.
+acknowledged writes` are its integrity assertions: a confirmed, reproduced
+violation of either is a discovery too (correction 11 in
+[DISCOVERY.md](../DISCOVERY.md#corrections)).

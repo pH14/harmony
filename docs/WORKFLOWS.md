@@ -397,11 +397,12 @@ full search lives in Benchmarks and pull requests do not run it.
 benchmark that [DISCOVERY.md](../workloads/bugs/historical/DISCOVERY.md)
 specifies. A case's `panel` keeps it apart from the nightly search above: the
 nightly panel runs the `reproduction` cases, and this workflow runs every
-`discovery` case (a general workload or an ablation) beside the focused case it
-names. Every arm runs on the User-mode Linux profile, one campaign job per arm
+`discovery` case (a general workload, an ablation, a held-out case or a
+fixed-release control) beside the focused case it names. Every arm runs on the User-mode Linux profile, one campaign job per arm
 and seed, with one wall budget (90 minutes by default) and one execution
 ceiling for every arm. A campaign replays its first confirmed finding that
-carries the case's scored assertion twice in fresh processes, and
+carries the case's scored assertion or one of its integrity assertions, with
+that assertion's evidence, twice in fresh processes, and
 `scripts/historical-discovery.py` gives it exactly one outcome. A discovery,
 an internal discovery (the system's own assertion failing in a function the
 fix changed), a miss, a confirmed violation of another assertion, and a
@@ -417,7 +418,7 @@ runner's ordinary UID with ptrace and KVM ioctls denied, with the credentials
 and denial recorded beside the report. The search fails when the campaign
 captured no snapshot or restored none. `FINDING` selects which recorded
 finding the reproducer replay runs, so a guest crash recorded first does not
-stand in for the scored finding. The campaign wall is capped at 240 minutes,
+stand in for the integrity finding. The campaign wall is capped at 240 minutes,
 leaving room in a 360-minute job for search shutdown, two fresh replays and
 uploads.
 

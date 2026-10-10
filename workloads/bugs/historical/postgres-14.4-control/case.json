@@ -1,28 +1,26 @@
 {
   "format": "harmony-historical-case-v1",
-  "id": "postgres-14.1-heldout",
-  "title": "PostgreSQL 14.1 general workload, held out (HOT chain pruning)",
+  "id": "postgres-14.4-control",
+  "title": "PostgreSQL 14.4 general workload, fixed-release control",
   "software": "PostgreSQL",
   "panel": "discovery",
   "sources": {
-    "release_note": "https://www.postgresql.org/docs/release/14.2/",
-    "fix_commit": "https://postgr.es/c/dad1539ae"
+    "release_note": "https://www.postgresql.org/docs/release/14.4/"
   },
   "versions": {
-    "affected": "14.0-14.1",
-    "fixed": "14.2"
+    "fixed": "14.4"
   },
   "workload": {
-    "version": "14.1",
-    "source_url": "https://ftp.postgresql.org/pub/source/v14.1/postgresql-14.1.tar.bz2",
-    "sha256": "4d3c101ea7ae38982f06bdc73758b53727fb6402ecd9382006fa5ecc7c2ca41f"
+    "version": "14.4",
+    "source_url": "https://ftp.postgresql.org/pub/source/v14.4/postgresql-14.4.tar.bz2",
+    "sha256": "c23b6237c5231c791511bdc79098617d6852e9e3bdf360efd8b5d15a1a3d8f6a"
   },
   "image": {
     "context": ".",
     "dockerfile": "workloads/bugs/historical/postgres-index-general/image/Dockerfile",
     "build_args": {
-      "PG_VERSION": "14.1",
-      "PG_SHA256": "4d3c101ea7ae38982f06bdc73758b53727fb6402ecd9382006fa5ecc7c2ca41f"
+      "PG_VERSION": "14.4",
+      "PG_SHA256": "c23b6237c5231c791511bdc79098617d6852e9e3bdf360efd8b5d15a1a3d8f6a"
     }
   },
   "kernel_profile": "faultlab",
@@ -65,11 +63,15 @@
     "executions": 1000000,
     "wall_minutes": 90
   },
-  "discovery_mode": "heldout",
-  "status": "measured",
+  "discovery_mode": "control",
+  "status": "new",
   "ci": {
     "status": "runnable",
-    "display_name": "PostgreSQL 14.1 Held Out",
+    "display_name": "PostgreSQL 14.4 Control",
     "image_prefix": "pg-general"
-  }
+  },
+  "controls": [
+    "postgres-index-general",
+    "postgres-14.1-heldout"
+  ]
 }

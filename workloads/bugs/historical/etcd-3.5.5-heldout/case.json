@@ -36,6 +36,16 @@
     "silent_when": [
       "no member answers",
       "a journal cannot be read"
+    ],
+    "integrity": [
+      {
+        "assertion": "etcd members agree on the key-value hash at a common revision",
+        "evidence": "etcd general check compared the members that answered"
+      },
+      {
+        "assertion": "linearizable reads observe acknowledged writes",
+        "evidence": "etcd general check compared the members that answered"
+      }
     ]
   },
   "actions": [

@@ -39,7 +39,29 @@
     ],
     "kind": "always",
     "source": "the fork's own workload assertions, unmodified",
-    "detector": "each writer's periodic sweep runs PRAGMA quick_check on three of four sweeps and PRAGMA integrity_check on the rest"
+    "detector": "each writer's periodic sweep runs PRAGMA quick_check on three of four sweeps and PRAGMA integrity_check on the rest",
+    "integrity": [
+      {
+        "assertion": "integrity-check-clean: PRAGMA integrity_check returns ok",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "no-corruption: a write transaction never reports SQLITE_CORRUPT",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "no-lost-committed-writes: all of this writer's committed rows are present with no gaps",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "read-your-writes: committed row is immediately visible to its writer",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "read-your-writes: committed counter is immediately visible to its writer",
+        "evidence": "workload: process started"
+      }
+    ]
   },
   "actions": [
     "Wait",

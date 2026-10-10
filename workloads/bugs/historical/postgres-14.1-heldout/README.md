@@ -15,6 +15,7 @@ pointing at an unrelated tuple ([release notes](https://www.postgresql.org/docs/
 of unindexed columns, `VACUUM`, and pruning reach that code.
 
 The scored assertion is the general workload's `postgres amcheck finds every
-heap tuple indexed`. `postgres index and sequential scans agree` is reported
-beside it. See [DISCOVERY.md](../DISCOVERY.md#held-out-cases) for how the
+heap tuple indexed`. Its integrity assertions are `postgres index and
+sequential scans agree` and `postgres preserves acknowledged commits`; a
+confirmed, reproduced violation of either is a discovery too. See [DISCOVERY.md](../DISCOVERY.md#held-out-cases) for how the
 held-out cases were chosen.

@@ -15,6 +15,7 @@ revisions differently from its peers ([issue](https://github.com/etcd-io/etcd/is
 defragmentation of a random member, with member kills, reaches that code.
 
 The scored assertion is the general workload's `every etcd member holds an
-acknowledged history`. `HashKV` agreement and linearizable reads are reported
-beside it. See [DISCOVERY.md](../DISCOVERY.md#held-out-cases) for how the
+acknowledged history`. Its integrity assertions are `HashKV` agreement and
+linearizable reads; a confirmed, reproduced violation of either is a discovery
+too. See [DISCOVERY.md](../DISCOVERY.md#held-out-cases) for how the
 held-out cases were chosen.

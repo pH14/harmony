@@ -73,11 +73,14 @@ reports and uploads the result, so the committed table lags the last CI run.
 | [etcd-3.5-general](etcd-3.5-general/README.md) | 3.5.2 | 3.5.3 | measured | runnable | general | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 | 3.5.3 | reproduced | runnable | guided | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [etcd-3.5.5-heldout](etcd-3.5.5-heldout/README.md) | 3.5.5 | 3.5.6 | measured | runnable | heldout | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [etcd-3.5.6-control](etcd-3.5.6-control/README.md) | 3.5.6 | 3.5.6 | new | runnable | control | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [postgres-14.1-heldout](postgres-14.1-heldout/README.md) | 14.1 | 14.2 | measured | runnable | heldout | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [postgres-14.4-control](postgres-14.4-control/README.md) | 14.4 | 14.4 | new | runnable | control | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 | 14.4 | reproduced | runnable | guided | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [postgres-cic-fillfactor-100](postgres-cic-fillfactor-100/README.md) | 14.3 | 14.4 | measured | runnable | ablation | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [postgres-index-general](postgres-index-general/README.md) | 14.3 | 14.4 | measured | runnable | general | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [sqlite-3.50.1-heldout](sqlite-3.50.1-heldout/README.md) | 3.50.1 | 3.50.2 | measured | runnable | heldout | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
+| [sqlite-3.51.3-control](sqlite-3.51.3-control/README.md) | 3.51.3 | 3.51.3 | new | runnable | control | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [sqlite-wal-general](sqlite-wal-general/README.md) | 3.51.2 | 3.51.3 | measured | runnable | general | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [sqlite-wal-reset](sqlite-wal-reset/README.md) | 3.51.2 | 3.51.3 | reproduced | runnable | guided | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
 | [sqlite-wal-reset-no-markers](sqlite-wal-reset-no-markers/README.md) | 3.51.2 | 3.51.3 | measured | runnable | ablation | — | — | `harmony debug replay RUN --finding 1 --repeat 1 --out REPLAY` |
