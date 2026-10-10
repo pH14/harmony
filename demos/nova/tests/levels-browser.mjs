@@ -45,7 +45,7 @@ try {
       await page.locator('#pause').click();
       // Select the exact starting state in its projected map cell.
       const point = await page.evaluate(() => {
-        const o = window.novaRoot.observation, panels=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] canvas`)];
+        const o = window.novaRoot.observation, panels=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] .area-map`)];
         const roomWidth=Number(panels[0].dataset.roomWidth);
         const worldX=o.x%roomWidth, worldY=o.y+Math.floor(o.x/roomWidth)*224;
         const x=Math.floor(worldX/32)*32+16,y=Math.floor(worldY/32)*32+8;
@@ -84,7 +84,7 @@ try {
     if (phone) {
       await page.setViewportSize({width:390,height:600});
       await page.locator('#pause').click();
-      const canvas=page.locator('.map-row[data-map="0"] canvas');
+      const canvas=page.locator('.map-row[data-map="0"] .area-map');
       await canvas.scrollIntoViewIfNeeded();
       const r=await canvas.boundingBox(),before=Number(await canvas.getAttribute('data-zoom'));
       const cdp=await page.context().newCDPSession(page);
@@ -92,7 +92,7 @@ try {
       await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x-30,y,id:0},{x:x+30,y,id:1}]});
       for (let i=1;i<=5;i++) await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x-30-i*7,y,id:0},{x:x+30+i*7,y,id:1}]});
       await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
-      await page.waitForFunction(() => Number(document.querySelector('.map-row[data-map="0"] canvas').dataset.zoom)>1.5);
+      await page.waitForFunction(() => Number(document.querySelector('.map-row[data-map="0"] .area-map').dataset.zoom)>1.5);
       assert.ok(Number(await canvas.getAttribute('data-zoom'))>before);
       assert.equal(await page.locator('#inspector').isVisible(),false,'Pinching must not select a cell');
       const scrollBefore=await page.evaluate(() => scrollY);

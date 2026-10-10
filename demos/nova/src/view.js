@@ -18,8 +18,12 @@ export function viewCenter(
 
 export function roomPanels(width, height, availableWidth) {
   const vertical = height > 672;
-  const span = Math.max(512, Math.min(1280, Math.floor(availableWidth / 256) * 256));
-  const columns = width > 1536 || (vertical && width > span) ? Math.ceil(width / span) : 1;
+  const span = vertical
+    ? Math.max(512, Math.min(1280, Math.floor(availableWidth / 256) * 256))
+    : Math.max(512, Math.min(2048, Math.floor(availableWidth * 1.7 / 256) * 256));
+  const maxColumns = vertical ? Infinity : availableWidth >= 640 ? 2 : 3;
+  const columns = width > 1536 || (vertical && width > span)
+    ? Math.min(maxColumns, Math.ceil(width / span)) : 1;
   const rows = vertical ? Math.ceil(height / 448) : 1;
   const w = Math.ceil(width / columns / 32) * 32;
   const h = Math.ceil(height / rows / 224) * 224;

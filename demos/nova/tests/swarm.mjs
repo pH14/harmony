@@ -132,7 +132,7 @@ try {
     await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");
     assert.equal(await page.locator("#heat-legend").count(), 0);
-    const target = page.locator('.map-row[data-map="0"] canvas');
+    const target = page.locator('.map-row[data-map="0"] .area-map');
     assert.equal(await target.getAttribute("data-overlay"), "movement");
     assert.equal(await target.evaluate((c) => getComputedStyle(c).filter), "none", "Movement must retain the original map colors");
     assert.equal(await target.getAttribute("data-trace-points"), "0");
@@ -188,10 +188,12 @@ try {
     await page.waitForTimeout(150);
     await page.screenshot({ path: `test-results/swarm-both-${name}.png` });
     await page.locator("#tour-open").click();
-    assert.equal(await page.locator("#visualization").getAttribute("data-value"), "heat");
+    assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement", "The tour opens on real Movement");
     if (name === "desktop") {
-      await page.locator("#tour-next").click();
-      await page.waitForFunction(() => document.querySelector("#guided-tour").dataset.step === "1" && document.querySelector(".tour-card").getAttribute("aria-busy") === "false");
+      for (const step of [1, 2]) {
+        await page.locator("#tour-next").click();
+        await page.waitForFunction(step => +document.querySelector("#guided-tour").dataset.step === step && document.querySelector(".tour-card").getAttribute("aria-busy") === "false", step);
+      }
     }
     await page.locator("#tour-skip").click();
     if (name === "desktop") {
@@ -199,7 +201,7 @@ try {
       const traced = page.locator('.area-map').filter({ visible: true });
       const room = await traced.evaluateAll((cs) => cs.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
       assert.notEqual(room, undefined);
-      const routeMap = page.locator(`.map-row[data-map="${room}"] canvas`);
+      const routeMap = page.locator(`.map-row[data-map="${room}"] .area-map[data-marker-frame]:not([data-marker-frame=""])`);
       await routeMap.focus();
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('#verification').textContent === 'Exact replay ✓' && [...document.querySelectorAll('.area-map')].some((c) => Number(c.dataset.tracePoints) > 0));
@@ -234,7 +236,7 @@ try {
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both");
     await page.locator("#reset").click();
     await page.waitForFunction(() => document.querySelector("#reset").disabled === false);
-    await page.waitForFunction(() => Number(document.querySelector('.map-row[data-map="0"] canvas').dataset.swarmCount) < 100);
+    await page.waitForFunction(() => Number(document.querySelector('.map-row[data-map="0"] .area-map').dataset.swarmCount) < 100);
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both", "Restart must preserve the chosen view");
     await page.close();
   }

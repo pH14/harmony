@@ -179,7 +179,7 @@ function canvasPanel(c) {
     width: Number(c.dataset.mapWidth), height: Number(c.dataset.mapHeight) };
 }
 function mapCanvas(id, point) {
-  const panels = [...document.querySelectorAll(`.map-row[data-map="${id}"] canvas`)];
+  const panels = [...document.querySelectorAll(`.map-row[data-map="${id}"] .area-map`)];
   return (point && panels.find(c => panelContains(canvasPanel(c), { x: point.x, y: point.y - 8 }))) || panels[0];
 }
 function roomView(id, c) {
@@ -1183,14 +1183,49 @@ function renderMapRows(owner) {
         part.append(c);
         parts.append(part);
       });
-      row.append(heading, parts);
+      if (panels.length > 1 && !panels[0].vertical) {
+        const navigation = document.createElement("div");
+        navigation.className = "room-navigation";
+        const overview = document.createElement("canvas");
+        overview.className = "room-overview";
+        overview.width = Math.min(1280, map.width);
+        overview.height = Math.round(map.height * overview.width / map.width);
+        Object.assign(overview.dataset, { map: id, panel: "overview", panelX: 0, panelY: 0,
+          mapWidth: map.width, mapHeight: map.height, overview: "true" });
+        overview.setAttribute("aria-label", `${map.label}, whole room overview`);
+        const links = document.createElement("nav");
+        links.className = "overview-sections";
+        links.setAttribute("aria-label", `${map.label} sections`);
+        const jump = index => {
+          userSelected = true;
+          navigation.dataset.target = index;
+          parts.children[index].scrollIntoView({ block: "start", behavior: reducedMotion.matches ? "instant" : "smooth" });
+        };
+        panels.forEach((panel, index) => {
+          const button = document.createElement("button");
+          button.textContent = index + 1;
+          button.style.flexGrow = panel.width;
+          button.setAttribute("aria-label", `Jump to ${map.label}, section ${index + 1} of ${panels.length}`);
+          button.onclick = () => jump(index);
+          links.append(button);
+        });
+        overview.onclick = event => {
+          const r = overview.getBoundingClientRect();
+          const scale = Math.min(overview.width / map.width, overview.height / map.height);
+          const x = ((event.clientX - r.left) * overview.width / r.width - overview.width / 2) / scale + map.width / 2;
+          const index = panels.findIndex(panel => x >= panel.x && x < panel.x + panel.width);
+          if (index >= 0) jump(index);
+        };
+        navigation.append(heading, overview, links);
+        row.append(navigation, parts);
+      } else row.append(heading, parts);
       panorama(id);
       return row;
     }),
   );
   if (focusedMap !== undefined) {
     const target =
-      document.querySelector(`.map-row[data-map="${focusedMap}"] canvas`) ||
+      document.querySelector(`.map-row[data-map="${focusedMap}"] .area-map`) ||
       canvas;
     target.focus({ preventScroll: true });
   }
@@ -1198,7 +1233,37 @@ function renderMapRows(owner) {
 function drawMap(now) {
   if (visualization !== "heat") swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches);
   for (const c of document.querySelectorAll(".area-map")) drawArea(c, now);
+  for (const c of document.querySelectorAll(".room-overview")) drawOverview(c, now);
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
+}
+function drawOverview(canvas, now) {
+  drawArea(canvas, now);
+  const row = canvas.closest(".map-row"), navigation = canvas.closest(".room-navigation");
+  const panels = [...row.querySelectorAll(".area-map")];
+  const top = Math.max(0, navigation.getBoundingClientRect().bottom);
+  const bottom = compactReplay.matches && !$("inspector").hidden
+    ? Math.min(innerHeight, $("inspector").getBoundingClientRect().top) : innerHeight;
+  const preferred = Number(navigation.dataset.target || 0);
+  let active = preferred, visible = 0;
+  panels.forEach((panel, index) => {
+    const r = panel.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(bottom, r.bottom) - Math.max(top, r.top)) / r.height;
+    if (fraction > visible || (fraction === visible && index === preferred)) { active = index; visible = fraction; }
+  });
+  canvas.dataset.visiblePanel = active;
+  const ctx = canvas.getContext("2d"), map = maps.get(Number(canvas.dataset.map));
+  const scale = Math.min(canvas.width / map.width, canvas.height / map.height);
+  const panel = panels[active], view = roomView(Number(canvas.dataset.map), panel);
+  const bounds = canvasPanel(panel);
+  const x = canvas.width / 2 + (view.x - bounds.width / view.zoom / 2 - map.width / 2) * scale;
+  const y = canvas.height / 2 + (view.y - bounds.height / view.zoom / 2 - map.height / 2) * scale;
+  ctx.strokeStyle = "#f5f1df";
+  ctx.lineWidth = 1.5 * canvas.width / canvas.clientWidth;
+  ctx.strokeRect(x + ctx.lineWidth / 2, y + ctx.lineWidth / 2,
+    bounds.width * scale / view.zoom - ctx.lineWidth,
+    bounds.height * scale / view.zoom - ctx.lineWidth);
+  navigation.querySelectorAll(".overview-sections button").forEach((button, index) =>
+    button.setAttribute("aria-current", index === active && visible > 0 ? "location" : "false"));
 }
 function drawArea(canvas, now) {
   const preview = branchPreview && searchViews.get(branchPreview.id);
@@ -1211,7 +1276,7 @@ function drawArea(canvas, now) {
     map = maps.get(mapLevel),
     mapWidth = map.width,
     mapHeight = map.height,
-    view = roomView(mapLevel, canvas),
+    view = canvas.dataset.overview ? { zoom: 1, x: mapWidth / 2, y: mapHeight / 2 } : roomView(mapLevel, canvas),
     areaZoom = view.zoom,
     areaCenter = view.x,
     areaCenterY = view.y;
@@ -1231,7 +1296,7 @@ function drawArea(canvas, now) {
   canvas.dataset.centerX = areaCenter;
   canvas.dataset.centerY = areaCenterY;
   canvas.dataset.overlay = mode;
-  const label = `${map.label} ${mode === "movement" ? "Nova movement" : mode === "both" ? "heatmap and Nova movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
+  const label = canvas.dataset.overview ? `${map.label}, whole room ${mode === "movement" ? "Nova movement" : mode === "both" ? "heatmap and Nova movement" : "heatmap"}. Click to jump to a section.` : `${map.label} ${mode === "movement" ? "Nova movement" : mode === "both" ? "heatmap and Nova movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
   if (canvas.getAttribute("aria-label") !== label)
     canvas.setAttribute("aria-label", label);
   canvas.dataset.swarmCount = 0;
@@ -1508,7 +1573,7 @@ function zoomRoom(id) {
   userSelected = true;
   const view = roomView(id);
   view.zoom = view.zoom < 2 ? 2 : view.zoom < 4 ? 4 : 1;
-  for (const c of document.querySelectorAll(`.map-row[data-map="${id}"] canvas`)) {
+  for (const c of document.querySelectorAll(`.map-row[data-map="${id}"] .area-map`)) {
     const local = roomView(id, c);
     local.zoom = view.zoom;
     Object.assign(local, panelCenter(canvasPanel(c), local.zoom, local, c));
@@ -1978,7 +2043,7 @@ function drawTrail(ctx, level, scale, override) {
   ctx.lineCap = "round";
   const screenScale = scale * ctx.canvas.clientWidth / ctx.canvas.width;
   ctx.strokeStyle = "#fff0b3";
-  ctx.lineWidth = (hovering ? 3.4 : 2.2) / screenScale;
+  ctx.lineWidth = (ctx.canvas.dataset.overview ? 1 : hovering ? 3.4 : 2.2) / screenScale;
   for (const segment of drawnSegments) {
     if (segment[0]?.level !== level) continue;
     count += segment.filter(p => panelContains(canvasPanel(ctx.canvas), { x: p.x, y: p.y - 8 })).length;
@@ -1988,7 +2053,7 @@ function drawTrail(ctx, level, scale, override) {
     );
     ctx.save();
     ctx.strokeStyle = "rgba(22,30,36,.5)";
-    ctx.lineWidth = (hovering ? 5.4 : 4) / screenScale;
+    ctx.lineWidth = (ctx.canvas.dataset.overview ? 2 : hovering ? 5.4 : 4) / screenScale;
     ctx.stroke();
     ctx.restore();
     ctx.stroke();
@@ -2158,7 +2223,7 @@ const tour = new GuidedTour({
       interactive: () => [$("state-list"), $("map-rows")],
     },
     {
-      reveal: () => document.querySelector(`.map-row[data-map="${markerPoint()?.level ?? tourSession?.cell?.level}"] canvas`),
+      reveal: () => { const point = markerPoint(); return point ? mapCanvas(point.level, point) : tourMap(); },
       title: "A singular timeline",
       copy: [
         "Look! We can observe any single timeline of Nova exploring the level. You can watch and rewind the gameplay for this one route if you’d like. I recommend it — the music rocks.",

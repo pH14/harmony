@@ -52,7 +52,7 @@ await page.addInitScript((tourKey) => {
           window.novaTestRouteCells
         ) {
           const canvas = document.querySelector(
-              '.map-row[data-map="0"] canvas',
+              '.map-row[data-map="0"] .area-map',
             ),
             width = Number(canvas?.dataset.mapWidth),
             height = Number(canvas?.dataset.mapHeight);
@@ -233,12 +233,12 @@ try {
   assert.equal(await page.locator("#attempts").innerText(), attempts);
   assert.equal(await page.locator("#inspector").isVisible(), false);
   await page.waitForFunction(() =>
-    [...document.querySelectorAll(".map-row canvas")].every(
+    [...document.querySelectorAll(".map-row .area-map")].every(
       (c) => c.dataset.markerFrame === "",
     ),
   );
   assert.equal(
-    await page.locator(".map-row canvas").evaluateAll((canvases) =>
+    await page.locator(".map-row .area-map").evaluateAll((canvases) =>
       canvases.some((c) => {
         const pixels = c
           .getContext("2d")
@@ -263,7 +263,7 @@ try {
     window.novaTestRouteCells = null;
     return cell.observation;
   });
-  const introMap = page.locator('.map-row[data-map="0"] canvas');
+  const introMap = page.locator('.map-row[data-map="0"] .area-map');
   await introMap.scrollIntoViewIfNeeded();
   const clickIntroCell = async () => {
     const click = await introMap.evaluate(
@@ -313,7 +313,7 @@ try {
   await introMap.click({ position: { x: 2, y: 2 } });
   assert.equal(await page.locator("#inspector").isVisible(), false);
   await page.waitForFunction(() =>
-    [...document.querySelectorAll(".map-row canvas")].every(
+    [...document.querySelectorAll(".map-row .area-map")].every(
       (c) => c.dataset.markerFrame === "",
     ),
   );
@@ -333,7 +333,7 @@ try {
   await page.waitForFunction(
     () =>
       Number(
-        document.querySelector('.map-row[data-map="0"] canvas').dataset
+        document.querySelector('.map-row[data-map="0"] .area-map').dataset
           .tracePoints,
       ) > 1,
   );
@@ -343,7 +343,7 @@ try {
   assert.equal(await page.locator("#play").isEnabled(), false);
   assert.equal(await page.locator("#take-control").isEnabled(), false);
   await page.waitForFunction(() =>
-    [...document.querySelectorAll(".map-row canvas")].every(
+    [...document.querySelectorAll(".map-row .area-map")].every(
       (c) => c.dataset.markerFrame === "",
     ),
   );
@@ -706,7 +706,7 @@ try {
     "The rendered heat overlay must stay frozen while the search is paused",
   );
   const originalOverlay = await page
-    .locator('.map-row[data-map="0"] canvas')
+    .locator('.map-row[data-map="0"] .area-map')
     .evaluate((canvas) => window.novaTestHeatPixels(canvas));
   const manualAudioStart = Number(
     await page.locator("#film").getAttribute("data-audio-frames"),
@@ -778,7 +778,7 @@ try {
             document.activeElement === document.querySelector("#branch-tree button[aria-pressed=true]"),
           overlay: (() => {
             const canvas = document.querySelector(
-              '.map-row[data-map="0"] canvas',
+              '.map-row[data-map="0"] .area-map',
             );
             return window.novaTestHeatPixels(canvas);
           })(),
@@ -1051,7 +1051,7 @@ try {
     originalOverlay,
   );
   await page.waitForFunction(() =>
-    [...document.querySelectorAll(".map-row canvas")].every(
+    [...document.querySelectorAll(".map-row .area-map")].every(
       (c) => c.dataset.markerFrame === "",
     ),
   );
@@ -1072,9 +1072,9 @@ try {
   await page.locator('.area-zoom[data-map="45"]').click();
   await page.waitForFunction(
     () =>
-      document.querySelector('.map-row[data-map="49"] canvas').dataset.zoom ===
+      document.querySelector('.map-row[data-map="49"] .area-map').dataset.zoom ===
         "2" &&
-      document.querySelector('.map-row[data-map="45"] canvas').dataset.zoom ===
+      document.querySelector('.map-row[data-map="45"] .area-map').dataset.zoom ===
         "2",
   );
   assert.equal(
@@ -1169,10 +1169,10 @@ try {
   assert.equal(await page.locator(".map-row").count(), 3);
   for (const id of [0, 49, 45])
     assert.equal(
-      await page.locator(`.map-row[data-map="${id}"] canvas`).first().isVisible(),
+      await page.locator(`.map-row[data-map="${id}"] .area-map`).first().isVisible(),
       true,
     );
-  await page.locator('.map-row[data-map="49"] canvas').first().focus();
+  await page.locator('.map-row[data-map="49"] .area-map').first().focus();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
   assert.equal(await page.locator("#map").getAttribute("data-map"), "49");
@@ -1424,7 +1424,7 @@ try {
   );
   await page.waitForFunction(
     () =>
-      document.querySelector('.map-row[data-map="45"] canvas[data-origin-frame]:not([data-origin-frame=""])').dataset
+      document.querySelector('.map-row[data-map="45"] .area-map[data-origin-frame]:not([data-origin-frame=""])').dataset
         .originPulse === "true",
   );
   const originRoomVisible = await page
@@ -1445,13 +1445,13 @@ try {
   await page.locator("#pause").click();
   await page.waitForFunction(
     () =>
-      document.querySelector('.map-row[data-map="45"] canvas[data-origin-frame]:not([data-origin-frame=""])').dataset
+      document.querySelector('.map-row[data-map="45"] .area-map[data-origin-frame]:not([data-origin-frame=""])').dataset
         .originPulse === "false",
   );
   assert.ok(
     Number(
       await page
-        .locator('.map-row[data-map="45"] canvas[data-origin-frame]:not([data-origin-frame=""])')
+        .locator('.map-row[data-map="45"] .area-map[data-origin-frame]:not([data-origin-frame=""])')
         .getAttribute("data-trace-points"),
     ) > 1,
   );

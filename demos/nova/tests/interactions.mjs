@@ -29,10 +29,10 @@ async function open(options) {
 async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
   const room = await page.evaluate(() => window.novaReady.root.observation.level);
-  await page.locator(`.map-row[data-map="${room}"] canvas`).scrollIntoViewIfNeeded();
+  await page.locator(`.map-row[data-map="${room}"] .area-map`).scrollIntoViewIfNeeded();
   const point = await page.evaluate(() => {
     const o = window.novaReady.root.observation;
-    const c = document.querySelector(`.map-row[data-map="${o.level}"] canvas`), r = c.getBoundingClientRect();
+    const c = document.querySelector(`.map-row[data-map="${o.level}"] .area-map`), r = c.getBoundingClientRect();
     const scale = Math.min(c.width / Number(c.dataset.mapWidth), c.height / Number(c.dataset.mapHeight)) * Number(c.dataset.zoom);
     const x = Math.floor(o.x / 32) * 32 + 16, y = Math.floor(o.y / 32) * 32 + 8;
     return {room: o.level, x: r.left + ((x - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width / c.width,
@@ -103,16 +103,16 @@ try {
       for (const mode of ['movement','both','heat']) {
         await desktop.locator(`[data-viz="${mode}"]`).click();
         await desktop.locator('[data-search="0"]').hover();
-        await desktop.waitForFunction(mode => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === '0' && c.dataset.overlay === mode) && (mode === 'heat' || [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.swarmCount) > 0)),mode);
+        await desktop.waitForFunction(mode => [...document.querySelectorAll('.area-map, .room-overview')].every(c => c.dataset.previewSearch === '0' && c.dataset.overlay === mode) && (mode === 'heat' || [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.swarmCount) > 0)),mode);
         assert.equal(await desktop.locator('#visualization').getAttribute('data-value'),mode);
         assert.equal(await desktop.locator('[data-search="1"]').getAttribute('aria-pressed'),'true');
-        const frozen = await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL()));
+        const frozen = await desktop.locator('.area-map, .room-overview').evaluateAll(maps => maps.map(c => c.toDataURL()));
         const attempts = Number((await desktop.locator('#attempts').innerText()).replaceAll(',',''));
         await desktop.waitForTimeout(300);
-        assert.deepEqual(await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL())),frozen,'Hovered Novas and branch overlays stay frozen while the active search runs');
+        assert.deepEqual(await desktop.locator('.area-map, .room-overview').evaluateAll(maps => maps.map(c => c.toDataURL())),frozen,'Hovered Novas and branch overlays stay frozen while the active search runs');
         await desktop.waitForFunction(n => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > n,attempts);
         await desktop.mouse.move(0,0);
-        await desktop.waitForFunction(() => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === ''));
+        await desktop.waitForFunction(() => [...document.querySelectorAll('.area-map, .room-overview')].every(c => c.dataset.previewSearch === ''));
       }
       await desktop.locator('[data-viz="movement"]').click();
     }
