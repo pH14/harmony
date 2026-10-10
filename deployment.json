@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "d713ab07",
+    "commit": "75516b2",
     "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests and every npm run test:browser check (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, wrapped-maps, browser) in Chromium. Hero with live totals; first-visit and Take the tour opening camera; age-faded, ghost-trailed, branch-tinted sprites; five-step tour with traced route reveal; fork camera, ripple, toast and tree animation; phone camera viewport with room tabs and Whole room/Follow toggle.",
-    "asset_manifest_sha256": "9a009a4541ad158b15acd2d94cf4616f553d8498a7e90e9d94160869a8f9ed92"
+    "checks": "Production build, 52 helper tests and every npm run test:browser check (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, wrapped-maps, browser) in Chromium. Hero with live totals; first-visit and Take the tour opening camera; age-faded, ghost-trailed, branch-tinted sprites; five-step tour with traced route reveal; fork camera, ripple, toast and tree animation; phone camera viewport with room tabs and Whole room/Follow toggle; smoothed 60 Hz follow camera.",
+    "asset_manifest_sha256": "6eeee42f72642ac84e249c5172c741ea47db6ba77515821eca1e590042f095a1"
   },
   "raft": {
     "commit": "28791e77a",
