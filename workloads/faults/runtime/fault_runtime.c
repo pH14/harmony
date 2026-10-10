@@ -17,6 +17,7 @@
 
 #if defined(__linux__)
 #include <link.h>
+#include <sys/mman.h>
 #endif
 
 #if defined(__linux__) && (defined(__aarch64__) || defined(__x86_64__))
@@ -45,6 +46,7 @@ void fuzz_json_data(const char *data, size_t size);
 #endif
 
 #define HARMONY_FAULT_MODULE_LIMIT 4096
+#define HARMONY_FAULT_DEFERRED_LIMIT 4096
 #define HARMONY_FAULT_PARK_WEIGHT_SHIFT 20
 #define HARMONY_FAULT_WATCH_EDGES UINT64_C(50)
 #define HARMONY_FAULT_WATCH_RANGE_LIMIT 16
@@ -87,22 +89,33 @@ struct harmony_fault_event_state {
     uint64_t coverage_crossings;
     uint64_t coverage_digest;
     uint64_t coverage_callbacks;
-    struct harmony_fault_crossing *deferred;
     size_t deferred_count;
-    size_t deferred_capacity;
+    struct harmony_fault_crossing deferred[HARMONY_FAULT_DEFERRED_LIMIT];
     uint64_t site_visits[HARMONY_FAULT_EVENT_SITE_TABLE_SIZE];
     uint8_t site_bucket[HARMONY_FAULT_EVENT_SITE_TABLE_SIZE];
 };
 
-static struct harmony_fault_event_state harmony_fault_events = {
+static struct harmony_fault_event_state harmony_fault_events_private = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .control_fd = -1,
     .report_fd = -1
 };
+static struct harmony_fault_event_state *harmony_fault_events =
+    &harmony_fault_events_private;
+static uintptr_t harmony_fault_events_shared;
 static pthread_once_t harmony_fault_event_once = PTHREAD_ONCE_INIT;
 static struct harmony_fault_module
     harmony_fault_modules[HARMONY_FAULT_MODULE_LIMIT];
 static size_t harmony_fault_module_count;
+
+static int harmony_fault_lock(void)
+{
+    int result = pthread_mutex_lock(&harmony_fault_events->lock);
+
+    if (result == EOWNERDEAD)
+        result = pthread_mutex_consistent(&harmony_fault_events->lock);
+    return result;
+}
 
 static void put_u64(unsigned char *out, uint64_t value)
 {
@@ -203,11 +216,11 @@ static int harmony_fault_park_spend(uint64_t before)
 
     if (weight == 0)
         weight = 1;
-    if (harmony_fault_events.park_weight_left <= weight) {
-        harmony_fault_events.park_weight_left = 0;
+    if (harmony_fault_events->park_weight_left <= weight) {
+        harmony_fault_events->park_weight_left = 0;
         return 1;
     }
-    harmony_fault_events.park_weight_left -= weight;
+    harmony_fault_events->park_weight_left -= weight;
     return 0;
 }
 
@@ -278,11 +291,11 @@ static int harmony_fault_park_counts(uint64_t site)
 {
     uint64_t offset;
 
-    if (harmony_fault_events.park_target_end == 0)
+    if (harmony_fault_events->park_target_end == 0)
         return 1;
     offset = harmony_fault_site_offset(site);
-    return offset >= harmony_fault_events.park_target_start &&
-           offset < harmony_fault_events.park_target_end;
+    return offset >= harmony_fault_events->park_target_start &&
+           offset < harmony_fault_events->park_target_end;
 }
 
 #if defined(__linux__)
@@ -358,16 +371,16 @@ static uint64_t harmony_fault_event_site_before(uint64_t site,
                                                 uint8_t *crossed)
 {
     size_t slot = harmony_fault_event_site_start(site);
-    uint64_t before = harmony_fault_events.site_visits[slot];
+    uint64_t before = harmony_fault_events->site_visits[slot];
     uint8_t bucket;
 
     *crossed = 0;
     if (before == UINT64_MAX)
         return before;
-    harmony_fault_events.site_visits[slot]++;
+    harmony_fault_events->site_visits[slot]++;
     bucket = harmony_fault_event_bucket(before + 1);
-    if (bucket > harmony_fault_events.site_bucket[slot]) {
-        harmony_fault_events.site_bucket[slot] = bucket;
+    if (bucket > harmony_fault_events->site_bucket[slot]) {
+        harmony_fault_events->site_bucket[slot] = bucket;
         *crossed = bucket;
     }
     return before;
@@ -380,24 +393,13 @@ static uint64_t harmony_fault_crossing_hash(uint64_t offset, uint8_t bucket)
 
 static int harmony_fault_crossing_defer(uint64_t site, uint8_t bucket)
 {
-    if (harmony_fault_events.deferred_count ==
-        harmony_fault_events.deferred_capacity) {
-        size_t capacity = harmony_fault_events.deferred_capacity == 0
-                              ? 64
-                              : harmony_fault_events.deferred_capacity * 2;
-        struct harmony_fault_crossing *grown =
-            realloc(harmony_fault_events.deferred,
-                    capacity * sizeof(*grown));
-        if (grown == NULL)
-            return -1;
-        harmony_fault_events.deferred = grown;
-        harmony_fault_events.deferred_capacity = capacity;
-    }
-    harmony_fault_events.deferred[harmony_fault_events.deferred_count].site =
+    if (harmony_fault_events->deferred_count == HARMONY_FAULT_DEFERRED_LIMIT)
+        return -1;
+    harmony_fault_events->deferred[harmony_fault_events->deferred_count].site =
         site;
-    harmony_fault_events.deferred[harmony_fault_events.deferred_count].bucket =
+    harmony_fault_events->deferred[harmony_fault_events->deferred_count].bucket =
         bucket;
-    harmony_fault_events.deferred_count++;
+    harmony_fault_events->deferred_count++;
     return 0;
 }
 
@@ -405,13 +407,13 @@ static void harmony_fault_crossings_resolve(void)
 {
     size_t index;
 
-    for (index = 0; index < harmony_fault_events.deferred_count; index++) {
+    for (index = 0; index < harmony_fault_events->deferred_count; index++) {
         const struct harmony_fault_crossing *crossing =
-            &harmony_fault_events.deferred[index];
-        harmony_fault_events.coverage_digest += harmony_fault_crossing_hash(
+            &harmony_fault_events->deferred[index];
+        harmony_fault_events->coverage_digest += harmony_fault_crossing_hash(
             harmony_fault_site_offset(crossing->site), crossing->bucket);
     }
-    harmony_fault_events.deferred_count = 0;
+    harmony_fault_events->deferred_count = 0;
 }
 
 static void harmony_fault_event_note_crossing(uint64_t site, uint8_t bucket)
@@ -419,16 +421,16 @@ static void harmony_fault_event_note_crossing(uint64_t site, uint8_t bucket)
     uint64_t offset;
     int resolved = harmony_fault_site_lookup(site, &offset);
 
-    if (pthread_mutex_lock(&harmony_fault_events.lock) != 0)
+    if (harmony_fault_lock() != 0)
         return;
-    harmony_fault_events.coverage_crossings++;
+    harmony_fault_events->coverage_crossings++;
     if (resolved != 0)
-        harmony_fault_events.coverage_digest +=
+        harmony_fault_events->coverage_digest +=
             harmony_fault_crossing_hash(offset, bucket);
     else if (harmony_fault_crossing_defer(site, bucket) != 0)
-        harmony_fault_events.coverage_digest +=
+        harmony_fault_events->coverage_digest +=
             harmony_fault_crossing_hash(site, bucket);
-    (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+    (void)pthread_mutex_unlock(&harmony_fault_events->lock);
 }
 
 static void *harmony_fault_event_control(void *arg)
@@ -455,7 +457,7 @@ static void *harmony_fault_event_control(void *arg)
         target_start = get_u64(request + 24);
         target_end = get_u64(request + 32);
         memcpy(response, request, sizeof(response));
-        if (pthread_mutex_lock(&harmony_fault_events.lock) != 0)
+        if (harmony_fault_lock() != 0)
             break;
         harmony_fault_crossings_resolve();
         if (kind == HARMONY_FAULT_EVENT_CMD_KILL) {
@@ -463,10 +465,10 @@ static void *harmony_fault_event_control(void *arg)
                 (second != 0 && second != 1)) {
                 valid = 0;
             } else if (second == 0) {
-                harmony_fault_events.kill_armed = 0;
+                harmony_fault_events->kill_armed = 0;
             } else {
-                harmony_fault_events.kill_rarity = (uint8_t)first;
-                harmony_fault_events.kill_armed = 1;
+                harmony_fault_events->kill_rarity = (uint8_t)first;
+                harmony_fault_events->kill_armed = 1;
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
             if (second != 0 &&
@@ -475,53 +477,83 @@ static void *harmony_fault_event_control(void *arg)
                                   : target_start >= target_end))) {
                 valid = 0;
             } else if (second == 0) {
-                harmony_fault_events.park_armed = 0;
-                harmony_fault_events.park_hold_nanos = 0;
+                harmony_fault_events->park_armed = 0;
+                harmony_fault_events->park_hold_nanos = 0;
             } else {
-                harmony_fault_events.park_edges = first;
-                harmony_fault_events.park_weight_left =
+                harmony_fault_events->park_edges = first;
+                harmony_fault_events->park_weight_left =
                     first << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
-                harmony_fault_events.park_hold_nanos = second;
-                harmony_fault_events.park_target_start = target_start;
-                harmony_fault_events.park_target_end = target_end;
-                harmony_fault_events.park_armed = 1;
+                harmony_fault_events->park_hold_nanos = second;
+                harmony_fault_events->park_target_start = target_start;
+                harmony_fault_events->park_target_end = target_end;
+                harmony_fault_events->park_armed = 1;
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK_STATUS) {
             memset(response, 0, sizeof(response));
             put_u64(response, HARMONY_FAULT_EVENT_CMD_PARK_STATUS);
-            put_u64(response + 8, harmony_fault_events.park_fires);
+            put_u64(response + 8, harmony_fault_events->park_fires);
             put_u64(response + 16,
-                    (harmony_fault_events.park_armed != 0
+                    (harmony_fault_events->park_armed != 0
                          ? HARMONY_FAULT_EVENT_PARK_STATUS_ARMED
                          : 0) |
-                        (harmony_fault_events.park_inflight != 0
+                        (harmony_fault_events->park_inflight != 0
                              ? HARMONY_FAULT_EVENT_PARK_STATUS_HELD
                              : 0));
         } else if (kind == HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS) {
             memset(response, 0, sizeof(response));
             put_u64(response, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
-            put_u64(response + 8, harmony_fault_events.coverage_crossings);
-            put_u64(response + 16, harmony_fault_events.coverage_digest);
-            put_u64(response + 24, harmony_fault_events.coverage_callbacks);
+            put_u64(response + 8, harmony_fault_events->coverage_crossings);
+            put_u64(response + 16, harmony_fault_events->coverage_digest);
+            put_u64(response + 24, harmony_fault_events->coverage_callbacks);
         } else {
             valid = 0;
         }
         if (!valid || write_all(fd, response, sizeof(response)) != 0) {
-            harmony_fault_events.kill_armed = 0;
-            harmony_fault_events.park_armed = 0;
-            harmony_fault_events.initialized = 0;
-            (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+            harmony_fault_events->kill_armed = 0;
+            harmony_fault_events->park_armed = 0;
+            harmony_fault_events->initialized = 0;
+            (void)pthread_mutex_unlock(&harmony_fault_events->lock);
             break;
         }
-        (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+        (void)pthread_mutex_unlock(&harmony_fault_events->lock);
     }
-    if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
-        harmony_fault_events.kill_armed = 0;
-        harmony_fault_events.park_armed = 0;
-        harmony_fault_events.initialized = 0;
-        (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+    if (harmony_fault_lock() == 0) {
+        harmony_fault_events->kill_armed = 0;
+        harmony_fault_events->park_armed = 0;
+        harmony_fault_events->initialized = 0;
+        (void)pthread_mutex_unlock(&harmony_fault_events->lock);
     }
     return NULL;
+}
+
+static void harmony_fault_events_share(void)
+{
+#if defined(__linux__)
+    struct harmony_fault_event_state *shared;
+    pthread_mutexattr_t attributes;
+    void *mapping = mmap(NULL, sizeof(*shared), PROT_READ | PROT_WRITE,
+                         MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+
+    if (mapping == MAP_FAILED)
+        return;
+    shared = mapping;
+    if (pthread_mutexattr_init(&attributes) != 0) {
+        (void)munmap(mapping, sizeof(*shared));
+        return;
+    }
+    if (pthread_mutexattr_setpshared(&attributes, PTHREAD_PROCESS_SHARED) != 0 ||
+        pthread_mutexattr_setrobust(&attributes, PTHREAD_MUTEX_ROBUST) != 0 ||
+        pthread_mutex_init(&shared->lock, &attributes) != 0) {
+        (void)pthread_mutexattr_destroy(&attributes);
+        (void)munmap(mapping, sizeof(*shared));
+        return;
+    }
+    (void)pthread_mutexattr_destroy(&attributes);
+    shared->control_fd = -1;
+    shared->report_fd = -1;
+    harmony_fault_events_shared = (uintptr_t)mapping;
+    harmony_fault_events = shared;
+#endif
 }
 
 static void harmony_fault_event_init(void)
@@ -530,21 +562,30 @@ static void harmony_fault_event_init(void)
     int report_fd = harmony_fault_parse_fd("HARMONY_EVENT_REPORT_FD");
     pthread_t thread;
 
+    sigset_t blocked;
+    sigset_t previous;
+    int created;
+
     if (control_fd < 0 || report_fd < 0)
         return;
-    if (pthread_mutex_lock(&harmony_fault_events.lock) != 0)
+    harmony_fault_events_share();
+    if (harmony_fault_lock() != 0)
         return;
-    harmony_fault_events.control_fd = control_fd;
-    harmony_fault_events.report_fd = report_fd;
-    if (pthread_create(&thread, NULL, harmony_fault_event_control,
-                       &harmony_fault_events.control_fd) != 0) {
-        harmony_fault_events.control_fd = -1;
-        harmony_fault_events.report_fd = -1;
-        (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+    harmony_fault_events->control_fd = control_fd;
+    harmony_fault_events->report_fd = report_fd;
+    (void)sigfillset(&blocked);
+    (void)pthread_sigmask(SIG_SETMASK, &blocked, &previous);
+    created = pthread_create(&thread, NULL, harmony_fault_event_control,
+                             &harmony_fault_events->control_fd);
+    (void)pthread_sigmask(SIG_SETMASK, &previous, NULL);
+    if (created != 0) {
+        harmony_fault_events->control_fd = -1;
+        harmony_fault_events->report_fd = -1;
+        (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         return;
     }
     (void)pthread_detach(thread);
-    (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+    (void)pthread_mutex_unlock(&harmony_fault_events->lock);
 #if HARMONY_FAULT_WATCH_SUPPORTED
     (void)pthread_atfork(NULL, NULL, harmony_fault_watch_after_fork);
 #endif
@@ -555,17 +596,17 @@ static void harmony_fault_event_init(void)
         put_u64(hello + 8, HARMONY_FAULT_EVENT_PROTOCOL_VERSION);
         if (harmony_fault_event_report_write(report_fd, hello,
                                              sizeof(hello)) != 0) {
-            if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
-                harmony_fault_events.initialized = 0;
-                harmony_fault_events.kill_armed = 0;
-                harmony_fault_events.park_armed = 0;
-                (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+            if (harmony_fault_lock() == 0) {
+                harmony_fault_events->initialized = 0;
+                harmony_fault_events->kill_armed = 0;
+                harmony_fault_events->park_armed = 0;
+                (void)pthread_mutex_unlock(&harmony_fault_events->lock);
             }
             return;
         }
-        if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
-            harmony_fault_events.initialized = 1;
-            (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+        if (harmony_fault_lock() == 0) {
+            harmony_fault_events->initialized = 1;
+            (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         }
     }
 }
@@ -723,7 +764,8 @@ static int harmony_fault_watch_snapshot(void)
             break;
         *next = '\0';
         if (sscanf(line, "%lx-%lx %4s", &start, &end, perms) == 3 &&
-            strcmp(perms, "rw-s") == 0 && end > start)
+            strcmp(perms, "rw-s") == 0 && end > start &&
+            (uintptr_t)start != harmony_fault_events_shared)
             harmony_fault_watch_add_range((uintptr_t)start, (uintptr_t)end);
         line = next + 1;
     }
@@ -988,33 +1030,33 @@ void harmony_fault_runtime_event(uint64_t site)
     harmony_fault_watch_edge();
     if (pthread_once(&harmony_fault_event_once, harmony_fault_event_init) != 0)
         return;
-    if (pthread_mutex_lock(&harmony_fault_events.lock) != 0)
+    if (harmony_fault_lock() != 0)
         return;
-    if (harmony_fault_events.initialized == 0) {
-        (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+    if (harmony_fault_events->initialized == 0) {
+        (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         return;
     }
-    if (harmony_fault_events.coverage_callbacks != UINT64_MAX)
-        harmony_fault_events.coverage_callbacks++;
+    if (harmony_fault_events->coverage_callbacks != UINT64_MAX)
+        harmony_fault_events->coverage_callbacks++;
     before = harmony_fault_event_site_before(site, &crossed);
-    if (harmony_fault_events.kill_armed != 0 &&
+    if (harmony_fault_events->kill_armed != 0 &&
         harmony_fault_event_rarity_allows(before,
-                                          harmony_fault_events.kill_rarity)) {
-        harmony_fault_events.kill_armed = 0;
+                                          harmony_fault_events->kill_rarity)) {
+        harmony_fault_events->kill_armed = 0;
         kill_claimed = 1;
-        kill_rarity = harmony_fault_events.kill_rarity;
+        kill_rarity = harmony_fault_events->kill_rarity;
         kill_site = site;
-        kill_report_fd = harmony_fault_events.report_fd;
-    } else if (harmony_fault_events.park_armed != 0 &&
+        kill_report_fd = harmony_fault_events->report_fd;
+    } else if (harmony_fault_events->park_armed != 0 &&
                harmony_fault_park_counts(site) &&
                harmony_fault_park_spend(before)) {
-        harmony_fault_events.park_armed = 0;
-        park_edges = harmony_fault_events.park_edges;
-        if (harmony_fault_events.park_fires != UINT64_MAX)
-            harmony_fault_events.park_fires++;
+        harmony_fault_events->park_armed = 0;
+        park_edges = harmony_fault_events->park_edges;
+        if (harmony_fault_events->park_fires != UINT64_MAX)
+            harmony_fault_events->park_fires++;
         park_claimed = 1;
-        harmony_fault_events.park_inflight++;
-        park_hold_nanos = harmony_fault_events.park_hold_nanos;
+        harmony_fault_events->park_inflight++;
+        park_hold_nanos = harmony_fault_events->park_hold_nanos;
     }
     if (kill_claimed != 0) {
         unsigned char report[HARMONY_FAULT_EVENT_REPORT_SIZE];
@@ -1023,14 +1065,14 @@ void harmony_fault_runtime_event(uint64_t site)
         if (kill_report_fd < 0 ||
             harmony_fault_event_report_write(kill_report_fd, report,
                                              sizeof(report)) != 0) {
-            (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+            (void)pthread_mutex_unlock(&harmony_fault_events->lock);
             return;
         }
         (void)HARMONY_KILL(0, SIGKILL);
-        (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+        (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         return;
     }
-    (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+    (void)pthread_mutex_unlock(&harmony_fault_events->lock);
     if (crossed != 0)
         harmony_fault_event_note_crossing(site, crossed);
     if (park_claimed != 0) {
@@ -1041,18 +1083,18 @@ void harmony_fault_runtime_event(uint64_t site)
         harmony_fault_event_sleep(park_hold_nanos);
         if (watching != 0)
             harmony_fault_watch_start(site);
-        if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
-            harmony_fault_events.park_inflight--;
-            if (harmony_fault_events.initialized != 0 &&
-                harmony_fault_events.park_inflight == 0 &&
-                harmony_fault_events.park_armed == 0 &&
-                harmony_fault_events.park_hold_nanos != 0) {
-                harmony_fault_events.park_weight_left =
-                    harmony_fault_events.park_edges
+        if (harmony_fault_lock() == 0) {
+            harmony_fault_events->park_inflight--;
+            if (harmony_fault_events->initialized != 0 &&
+                harmony_fault_events->park_inflight == 0 &&
+                harmony_fault_events->park_armed == 0 &&
+                harmony_fault_events->park_hold_nanos != 0) {
+                harmony_fault_events->park_weight_left =
+                    harmony_fault_events->park_edges
                     << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
-                harmony_fault_events.park_armed = 1;
+                harmony_fault_events->park_armed = 1;
             }
-            (void)pthread_mutex_unlock(&harmony_fault_events.lock);
+            (void)pthread_mutex_unlock(&harmony_fault_events->lock);
         }
     }
 }

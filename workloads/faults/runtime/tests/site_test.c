@@ -30,23 +30,23 @@ int main(void)
 #endif
         assert(harmony_fault_site_offset(code) == code);
         harmony_fault_event_note_crossing(code, 3);
-        assert(harmony_fault_events.coverage_crossings == 1);
-        assert(harmony_fault_events.coverage_digest == 0);
-        assert(harmony_fault_events.deferred_count == 1);
+        assert(harmony_fault_events->coverage_crossings == 1);
+        assert(harmony_fault_events->coverage_digest == 0);
+        assert(harmony_fault_events->deferred_count == 1);
         harmony_fault_modules_refresh();
         assert(harmony_fault_site_offset(code) == expected);
         assert(harmony_fault_site_offset(9) == 9);
         harmony_fault_crossings_resolve();
-        assert(harmony_fault_events.deferred_count == 0);
-        assert(harmony_fault_events.coverage_digest ==
+        assert(harmony_fault_events->deferred_count == 0);
+        assert(harmony_fault_events->coverage_digest ==
                harmony_fault_crossing_hash(expected, 3));
         harmony_fault_event_note_crossing(code, 4);
         harmony_fault_crossings_resolve();
-        assert(harmony_fault_events.coverage_digest ==
+        assert(harmony_fault_events->coverage_digest ==
                harmony_fault_crossing_hash(expected, 3) +
                    harmony_fault_crossing_hash(expected, 4));
-        harmony_fault_events.coverage_crossings = 0;
-        harmony_fault_events.coverage_digest = 0;
+        harmony_fault_events->coverage_crossings = 0;
+        harmony_fault_events->coverage_digest = 0;
     }
 
 #if defined(__linux__)
@@ -80,18 +80,18 @@ int main(void)
     assert(harmony_fault_event_site_before(saturated_site, &crossed) == 0);
     assert(harmony_fault_event_site_before(saturated_site, &crossed) == 1);
     slot = harmony_fault_event_site_start(saturated_site);
-    harmony_fault_events.site_visits[slot] = UINT64_MAX - 1;
+    harmony_fault_events->site_visits[slot] = UINT64_MAX - 1;
     assert(harmony_fault_event_site_before(saturated_site, &crossed) == UINT64_MAX - 1);
     assert(harmony_fault_event_site_before(saturated_site, &crossed) == UINT64_MAX);
     assert(harmony_fault_event_site_before(saturated_site, &crossed) == UINT64_MAX);
 
-    memset(harmony_fault_events.site_visits, 0,
-           sizeof(harmony_fault_events.site_visits));
+    memset(harmony_fault_events->site_visits, 0,
+           sizeof(harmony_fault_events->site_visits));
     for (index = 0; index < 4096; index++)
         (void)harmony_fault_event_site_before((uint64_t)index, &crossed);
     for (index = 4096; index < 8192; index++) {
         slot = harmony_fault_event_site_start((uint64_t)index);
-        if (harmony_fault_events.site_visits[slot] == 0)
+        if (harmony_fault_events->site_visits[slot] == 0)
             break;
     }
     assert(index < 8192);
@@ -122,10 +122,10 @@ int main(void)
         const uint64_t site = 77;
         uint64_t crossings = 0;
         uint64_t digest;
-        memset(harmony_fault_events.site_visits, 0,
-               sizeof(harmony_fault_events.site_visits));
-        memset(harmony_fault_events.site_bucket, 0,
-               sizeof(harmony_fault_events.site_bucket));
+        memset(harmony_fault_events->site_visits, 0,
+               sizeof(harmony_fault_events->site_visits));
+        memset(harmony_fault_events->site_bucket, 0,
+               sizeof(harmony_fault_events->site_bucket));
         for (index = 0; index < 200; index++) {
             (void)harmony_fault_event_site_before(site, &crossed);
             if (crossed != 0) {
@@ -135,10 +135,10 @@ int main(void)
         }
         assert(crossings == 8);
         assert(crossed == 0);
-        assert(harmony_fault_events.coverage_crossings == 8);
-        assert(harmony_fault_events.deferred_count == 8);
+        assert(harmony_fault_events->coverage_crossings == 8);
+        assert(harmony_fault_events->deferred_count == 8);
         harmony_fault_crossings_resolve();
-        digest = harmony_fault_events.coverage_digest;
+        digest = harmony_fault_events->coverage_digest;
         assert(digest != 0);
         for (index = 0; index < 1000; index++) {
             (void)harmony_fault_event_site_before(site, &crossed);
@@ -147,9 +147,9 @@ int main(void)
         (void)harmony_fault_event_site_before(site + 1, &crossed);
         assert(crossed == 1);
         harmony_fault_event_note_crossing(site + 1, crossed);
-        assert(harmony_fault_events.coverage_crossings == 9);
+        assert(harmony_fault_events->coverage_crossings == 9);
         harmony_fault_crossings_resolve();
-        assert(harmony_fault_events.coverage_digest ==
+        assert(harmony_fault_events->coverage_digest ==
                digest + harmony_fault_crossing_hash(site + 1, 1));
     }
     return 0;

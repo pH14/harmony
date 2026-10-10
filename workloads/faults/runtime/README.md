@@ -82,7 +82,7 @@ Kill rarity is evaluated per instrumentation site. Before each callback the runt
 uses the site's saturating visit count; rarity `r` is eligible only while that
 count is below `1 << r`, so rarity zero selects a site's first visit and rarity
 63 remains well-defined for large counts. Counts live in a fixed table of 524,288 hashed `u64` counters
-(4 MiB per instrumented process). Each callback performs one lookup. Colliding
+(4 MiB per node, shared by its forked processes; see [Forked processes](#forked-processes)). Each callback performs one lookup. Colliding
 sites share a saturating count, so a collision can make a site look hotter but
 cannot make it look rarer. New sites remain eligible after startup rather than
 being excluded by a full exact-site table.
@@ -101,6 +101,29 @@ They cover the process since it started. Module offsets make each crossing's
 hash independent of where the loader placed the module. Slots are chosen by
 address, so which sites share a slot can change with placement. Another 512 KiB
 of bucket bytes holds the levels.
+
+## Forked processes
+
+A node's process and every process it forks without `exec` share one event
+state. The process that makes the first callback with the event file
+descriptors in its environment maps the state with `MAP_SHARED`: the site
+table, the coverage counters and digest, the armed kill and park, the park
+counters, and the queue of unresolved crossings (4,096 entries; a crossing
+that finds it full hashes its address). Its children inherit the mapping, so
+a forking server such as PostgreSQL reports the coverage of its backends and
+auxiliary processes, and an armed kill or park can fire in any of them. The
+first process keeps the only control thread; a kill claimed in a child writes
+its report to the shared channel and kills the node's process group. The
+state is guarded by a robust process-shared mutex, so a process that dies
+holding it leaves the state usable. The control thread starts with every
+signal blocked, so a server's process-directed signals reach its own threads.
+Module offsets use the module list of the first process at the time of the
+fork; a child's sites in a module it loaded itself hash their addresses. The
+shared-memory watch skips the event state's own mapping. If the mapping
+cannot be created, the state stays private to the first process.
+`tests/fork_test.c` checks child coverage, a park and a kill claimed in a
+child, a child that dies holding the lock, and the control thread's signal
+mask.
 
 `tests/language_park_launcher.c` runs a language fixture, parks one of its
 threads at a coverage site, and requires the callback count to grow while the
