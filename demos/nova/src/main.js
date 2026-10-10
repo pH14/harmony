@@ -343,6 +343,7 @@ function stopCamera() {
   updateCameraToggle();
 }
 function followSearch() {
+  camera.target = null;
   camera.follow = true;
   camera.focus = null;
   updateCameraToggle();
@@ -356,6 +357,7 @@ $("camera-toggle").onclick = () => {
 };
 function beginCamera() {
   camera.introStart = camera.last = camera.emptySince = camera.jumped = 0;
+  camera.target = null;
   camera.focus = null;
   camera.follow = phoneLayout.matches || (!reducedMotion.matches && !tourSeen());
   camera.introDone = !camera.follow;
@@ -380,7 +382,7 @@ function updateCamera(now) {
     }
     const viewport = c.dataset.viewport === "true", hold = 2600, release = viewport || reducedMotion.matches ? 0 : 1400;
     const zoom = viewport ? closeUpZoom(c) : reducedMotion.matches ? 1 : age < hold ? 2.2 : 2.2 - 1.2 * ease(Math.min(1, (age - hold) / 1400));
-    steerCamera(point.level, c, { x: point.x, y: point.y - 8 }, zoom, age < 60 ? 1 : smooth(0.35), age < 60 ? 1 : smooth(0.35));
+    steerCamera(point.level, c, { x: point.x, y: point.y - 8 }, zoom, smooth(0.45), smooth(0.4));
     if (age >= hold + release) {
       camera.focus = null;
       if (viewport) camera.follow = true;
@@ -390,7 +392,7 @@ function updateCamera(now) {
     return;
   }
   if (!camera.follow || paused) return;
-  const point = frontier(mapLevel);
+  let point = frontier(mapLevel);
   if (!point) {
     camera.emptySince ||= now;
     const owner = catalog.levels.find((level) => level.rooms.includes(mapLevel));
@@ -404,18 +406,24 @@ function updateCamera(now) {
   camera.emptySince = 0;
   const c = mapCanvas(mapLevel, point);
   if (!c) return;
+  const view = roomView(mapLevel, c);
+  if (camera.target?.level !== mapLevel || camera.target.canvas !== c) camera.target = { level: mapLevel, canvas: c, x: view.x, y: view.y };
+  const settle = reducedMotion.matches ? 1 : 1 - Math.exp(-dt / 1.1);
+  camera.target.x += (point.x - camera.target.x) * settle;
+  camera.target.y += (point.y - camera.target.y) * settle;
+  point = camera.target;
   if (c.dataset.viewport === "true") {
     camera.introStart ||= now;
     if (now - camera.introStart > 5000) camera.introDone = true;
     if (reducedMotion.matches && now - camera.jumped < 2000) return;
     camera.jumped = now;
-    steerCamera(mapLevel, c, point, closeUpZoom(c), smooth(0.5), smooth(0.8));
+    steerCamera(mapLevel, c, point, closeUpZoom(c), smooth(0.5), smooth(0.35));
     return;
   }
   camera.introStart ||= now;
   const t = now - camera.introStart;
-  if (t < 4200) steerCamera(mapLevel, c, point, INTRO_ZOOM, smooth(0.5), t < 60 ? 1 : smooth(0.8));
-  else if (t < 5800) steerCamera(mapLevel, c, point, INTRO_ZOOM + (1 - INTRO_ZOOM) * ease((t - 4200) / 1600), 1, smooth(0.8));
+  if (t < 4200) steerCamera(mapLevel, c, point, INTRO_ZOOM, smooth(0.6), smooth(0.35));
+  else if (t < 5800) steerCamera(mapLevel, c, point, INTRO_ZOOM + (1 - INTRO_ZOOM) * ease((t - 4200) / 1600), 1, smooth(0.35));
   else {
     overview(mapLevel);
     camera.follow = false;
@@ -1450,11 +1458,10 @@ function drawArea(canvas, now) {
   ctx.fillStyle = "#122b42";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.save();
-  ctx.translate(canvas.width / 2, canvas.height / 2);
   const scale =
     Math.min(canvas.width / Number(canvas.dataset.mapWidth), canvas.height / Number(canvas.dataset.mapHeight)) * areaZoom;
+  ctx.translate(Math.round(canvas.width / 2 - areaCenter * scale), Math.round(canvas.height / 2 - areaCenterY * scale));
   ctx.scale(scale, scale);
-  ctx.translate(-areaCenter, -areaCenterY);
   const image = panorama(mapLevel);
   if (image?.complete && image.naturalWidth) ctx.drawImage(image, 0, 0);
   canvas.dataset.previewRoute = !preview && routeHover?.segments ? routeHover.id : "";
@@ -2298,7 +2305,8 @@ function animate(now) {
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);
   lastTime = now;
-  if (now - lastMapPaint >= 1000 / 30) {
+  const cameraMoving = (camera.follow && !paused) || !!camera.focus;
+  if (cameraMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;
   }
@@ -2620,7 +2628,7 @@ function replayOpening() {
   const c = mapCanvas(mapLevel);
   if (phoneLayout.matches || reducedMotion.matches || paused || !c || c.dataset.viewport === "true" || !frontier(mapLevel)) return beginTour();
   if (visualization !== "movement") setVisualization("movement");
-  Object.assign(camera, { follow: true, focus: null, introDone: false, introStart: 0, tourAfter: true });
+  Object.assign(camera, { follow: true, focus: null, introDone: false, introStart: 0, tourAfter: true, target: null });
   updateCameraToggle();
   updateBranchControls();
   c.closest(".map-row").scrollIntoView({ block: "nearest", behavior: "smooth" });
