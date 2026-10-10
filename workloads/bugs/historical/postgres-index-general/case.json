@@ -45,6 +45,8 @@
   "actions": [
     "Wait",
     "Kill",
+    "EventKill",
+    "EventPark",
     "Pause",
     "Restart"
   ],

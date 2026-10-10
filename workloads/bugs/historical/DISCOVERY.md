@@ -231,7 +231,8 @@ All three workloads share these rules:
 ### PostgreSQL general (`postgres-index-general`)
 
 - **Image**: the same 14.3 source build, `amcheck` and configuration overlay as
-  the focused case, except that `autovacuum` keeps its default (on). The seed
+  the focused case, except that `autovacuum` keeps its default (on), and
+  PostgreSQL is built with trace-pc-guard coverage (correction 4). The seed
   table is unchanged by the overlay.
 - **Initial state**: `items(id bigint PRIMARY KEY, owner int NOT NULL,
   a int NOT NULL, b int NOT NULL, c text NOT NULL)` at the default fillfactor,
@@ -456,3 +457,14 @@ made after a general-arm measurement restarts every affected measurement.
    so the check now judges every member that answers and is inconclusive only
    when none does. Its evidence is `etcd general check compared the members
    that answered`. The etcd general arm is measured again with it.
+
+4. **PostgreSQL general is instrumented** (after the first measurement). The
+   general image was uninstrumented, like the focused case's, so the search
+   saw no coverage and could not draw event actions. Its only progress signal
+   was two Reachable assertions, and a 90-minute campaign kept about ten
+   archive states. The fault runtime now shares its event state with forked
+   processes, and the image builds PostgreSQL, `amcheck` and `libpq` with
+   trace-pc-guard coverage, so the search sees every backend's coverage and
+   can kill or park any PostgreSQL process. The general arm is measured again
+   with it. The focused case and its ablation stay uninstrumented, as the
+   reference they were measured as.

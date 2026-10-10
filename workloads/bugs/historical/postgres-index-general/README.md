@@ -35,5 +35,9 @@ focused case's bug, is `XX001` on 14.3. `postgres index and sequential scans
 agree` and `postgres preserves acknowledged commits` are reported but are not
 scored as this case's discovery.
 
-The image is uninstrumented, like the focused case's, so the search has no
-event actions here.
+PostgreSQL, `amcheck` and `libpq` are built with clang trace-pc-guard coverage
+and the composed fault runtime. The postmaster and every process it forks
+share one event state (see `workloads/faults/runtime`), so the search sees the
+coverage of backends and auxiliary processes, and can kill or park any of them
+at an instrumented edge. `/symbols` holds an unstripped copy and a symbol table
+for each native file, and `harmony-instrumented-events` attests them.
