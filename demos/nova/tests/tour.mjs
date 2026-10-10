@@ -65,15 +65,8 @@ async function next(page, step) {
   await ready(page, step);
   await layout(page);
 }
-async function watchDuringTour(page) {
-  const map = page.locator('.area-map[data-trace-points]').filter({ visible: true });
-  const traced = await map.evaluateAll((canvases) => canvases.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
-  assert.notEqual(traced, undefined);
-  const canvas = page.locator(`.map-row[data-map="${traced}"] canvas`);
-  const lit = await canvas.screenshot();
-  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = 'hidden');
-  const undimmed = await canvas.screenshot();
-  const darkenedFraction = await page.evaluate(async ([before, after]) => {
+async function dimmedFraction(page, lit, undimmed) {
+  return await page.evaluate(async ([before, after]) => {
     const pixels = async (data) => {
       const image = new Image();
       image.src = 'data:image/png;base64,' + data;
@@ -90,6 +83,16 @@ async function watchDuringTour(page) {
       if ((b[i] + b[i + 1] + b[i + 2]) - (a[i] + a[i + 1] + a[i + 2]) > 60) darkened++;
     return darkened / (a.length / 4);
   }, [lit.toString('base64'), undimmed.toString('base64')]);
+}
+async function watchDuringTour(page) {
+  const map = page.locator('.area-map[data-trace-points]').filter({ visible: true });
+  const traced = await map.evaluateAll((canvases) => canvases.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
+  assert.notEqual(traced, undefined);
+  const canvas = page.locator(`.map-row[data-map="${traced}"] canvas`);
+  const lit = await canvas.screenshot();
+  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = 'hidden');
+  const undimmed = await canvas.screenshot();
+  const darkenedFraction = await dimmedFraction(page, lit, undimmed);
   assert.ok(darkenedFraction < 0.01, `The selected route map must remain lit; only transient sparks may differ (${darkenedFraction})`);
   await page.locator('.tour-shade').evaluate((e) => e.style.visibility = '');
   await page.screenshot({ path: `test-results/tour-live-${page.viewportSize().width}.png` });
@@ -160,6 +163,24 @@ try {
   await page.locator(".tour-shade").evaluate((e) => (e.style.visibility = ""));
   const other = page.locator('#state-list .state:not(.selected)').first();
   const chosen = await other.getAttribute('data-state-id');
+  const selectedBeforeHover = await page.locator('#film-title').getAttribute('data-state-id');
+  const selectedFrameBeforeHover = await page.locator('#scrub').inputValue();
+  await other.hover();
+  await page.waitForFunction((id) => document.querySelector('#route-preview').dataset.stateId === id && !document.querySelector('#route-preview canvas').hidden && [...document.querySelectorAll('.area-map')].some((c) => c.dataset.previewRoute === id && Number(c.dataset.tracePoints) > 0), chosen);
+  assert.equal(await page.locator('#film-title').getAttribute('data-state-id'), selectedBeforeHover);
+  assert.equal(await page.locator('#scrub').inputValue(), selectedFrameBeforeHover);
+  const hoverMap = page.locator('.area-map').filter({visible:true});
+  const mapId = await hoverMap.evaluateAll((canvases) => canvases.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
+  const hoveredCanvas = page.locator(`.area-map[data-map="${mapId}"]`);
+  const litHover = await hoveredCanvas.screenshot();
+  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = 'hidden');
+  const dimmedHover = await dimmedFraction(page, litHover, await hoveredCanvas.screenshot());
+  assert.ok(dimmedHover < .01, `The hovered history path and its map must be fully lit (${dimmedHover})`);
+  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = '');
+  await page.screenshot({path:'test-results/tour-hover-path.png'});
+  await page.locator('#tour-title').hover();
+  await page.waitForFunction(() => [...document.querySelectorAll('.area-map')].every((c) => c.dataset.previewRoute === ''));
+  assert.equal(await page.locator('#film-title').getAttribute('data-state-id'),selectedBeforeHover);
   await other.click();
   await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && document.querySelector('#verification').textContent === 'Exact replay ✓', chosen);
   assert.equal(await page.locator('#guided-tour').getAttribute('data-step'), '1');

@@ -54,3 +54,32 @@ test("warping invalidates identically numbered preview states and checkpoints", 
     assert.equal(pixels.data[0] + (pixels.data[1] << 8), level * 1000 + 480);
   }
 });
+
+
+test("hover trails follow exact divergent inputs and retain only the current bounded trail", async () => {
+  let runs = 0;
+  const previews = new RoutePreviews(async () => {
+    const engine = fakeEngine(), run = engine.run;
+    engine.run = (...args) => { runs++; run(...args); };
+    return engine;
+  }, 2, 8, (engine, frame) => ({level: 0, x: new DataView(engine.capture().buffer).getUint32(0, true), y: 32, frame}));
+  const a = state('a', [{buttons:1,frames:120},{buttons:2,frames:120}]);
+  const b = state('b', [{buttons:1,frames:120},{buttons:3,frames:120}]);
+  await previews.get(a);
+  const prefix = previews.timeline.trail.filter((p) => p.frame <= 120);
+  assert.deepEqual(previews.timeline.trail.at(-1), {level:0,x:600,y:32,frame:240});
+  await previews.get(b);
+  assert.equal(previews.trailId, 'b');
+  assert.deepEqual(previews.timeline.trail.filter((p) => p.frame <= 120), prefix);
+  assert.equal(previews.timeline.trail.at(-1).x, 720);
+  const before = runs;
+  await previews.get(b);
+  assert.equal(runs, before, 'The latest verified image and trail share the cache');
+  await previews.get(a);
+  assert.equal(previews.timeline.trail.at(-1).x,600,'An older cached screenshot cannot reuse a different route trail');
+  await previews.get(state('long', [{buttons:0,frames:200000}]));
+  assert.ok(previews.timeline.trail.length <= 6002);
+  previews.clear();
+  assert.equal(previews.trailId,null);
+  assert.equal(previews.timeline.trail.length,0);
+});

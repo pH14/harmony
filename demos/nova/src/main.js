@@ -268,7 +268,13 @@ let searchChoices = [{ id: 0, label: "Main", parent: null }],
   previewTimer;
 const routePreviews = new RoutePreviews(() => createEngine(base),
   budget.snapshotsMiB === 32 ? 8 : 16,
-  (budget.snapshotsMiB === 32 ? 1 : 2) * 1048576);
+  (budget.snapshotsMiB === 32 ? 1 : 2) * 1048576,
+  (previewEngine, frame) => {
+    const observation = previewEngine.observation(), map = maps.get(observation.level);
+    return map && isMapEvidence(observation, catalog.levels)
+      ? { ...project(observation, map), frame }
+      : { gap: true, frame };
+  });
 function hideRoutePreview() {
   clearTimeout(previewTimer);
   routeHover = null;
@@ -300,6 +306,11 @@ async function showRoutePreview(state, target) {
   try {
     const pixels = await routePreviews.get(state);
     if (!pixels || target !== routeHover || !target.button.isConnected) return;
+    target.segments = trailSegments(routePreviews.timeline.trail);
+    target.point = isMapEvidence(state.observation, catalog.levels)
+      ? project(state.observation, maps.get(state.observation.level)) : null;
+    target.frames = state.frames;
+    drawMap(performance.now());
     const canvas = popup.querySelector("canvas");
     canvas.getContext("2d").putImageData(new ImageData(pixels.data, pixels.width, pixels.height), 0, 0);
     canvas.hidden = false;
@@ -1172,6 +1183,7 @@ function drawArea(canvas, now) {
   ctx.translate(-areaCenter, -areaCenterY);
   const image = panorama(mapLevel);
   if (image?.complete && image.naturalWidth) ctx.drawImage(image, 0, 0);
+  canvas.dataset.previewRoute = !preview && routeHover?.segments ? routeHover.id : "";
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;
   canvas.dataset.centerY = areaCenterY;
@@ -1237,7 +1249,7 @@ function drawArea(canvas, now) {
     ctx.lineWidth = 1.5 / areaZoom;
     ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
   }
-  const o = preview ? areaOrigin?.point : $("inspector").hidden
+  const o = preview ? areaOrigin?.point : routeHover ? routeHover.point : $("inspector").hidden
     ? areaOrigin?.point
     : current
       ? markerPoint()
@@ -1251,7 +1263,7 @@ function drawArea(canvas, now) {
   canvas.dataset.markerFrame =
     o?.level !== mapLevel
       ? ""
-      : preview || $("inspector").hidden
+      : routeHover && !preview ? routeHover.frames : preview || $("inspector").hidden
         ? areaOrigin.frame
         : seeking
           ? requestedFrame
@@ -1891,14 +1903,15 @@ function drawOriginPulse(ctx, level, scale, now) {
 function drawTrail(ctx, level, scale, override) {
   const drawnSegments = override ?? ($("inspector").hidden
     ? branchOrigin?.segments || []
-    : segments);
+    : routeHover ? routeHover.segments || [] : segments);
+  const hovering = !override && !!routeHover?.segments;
   let count = 0;
   ctx.save();
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   const screenScale = scale * ctx.canvas.clientWidth / ctx.canvas.width;
   ctx.strokeStyle = "#fff0b3";
-  ctx.lineWidth = 2.2 / screenScale;
+  ctx.lineWidth = (hovering ? 3.4 : 2.2) / screenScale;
   for (const segment of drawnSegments) {
     if (segment[0]?.level !== level) continue;
     count += segment.length;
@@ -1908,7 +1921,7 @@ function drawTrail(ctx, level, scale, override) {
     );
     ctx.save();
     ctx.strokeStyle = "rgba(22,30,36,.5)";
-    ctx.lineWidth = 4 / screenScale;
+    ctx.lineWidth = (hovering ? 5.4 : 4) / screenScale;
     ctx.stroke();
     ctx.restore();
     ctx.stroke();
@@ -2039,8 +2052,10 @@ const tour = new GuidedTour({
     {
       reveal: () => tourMap(),
       title: "One location, many histories",
-      copy: "Click a cell to inspect the states retained there. We’ve opened a real one: each route is a different history that brought Nova to this location.",
-      targets: () => [$("state-list"), tourCellRect(), $("route-preview").hidden ? null : $("route-preview")],
+      copy: "Click a cell to inspect its retained states. Hover a route to preview its screenshot and gold path; each history brought Nova to this same location.",
+      targets: () => [$("state-list"), ...(routeHover?.segments
+        ? [...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0)
+        : [tourCellRect()]), $("route-preview").hidden ? null : $("route-preview")],
       interactive: () => [$("state-list"), $("map-rows"), $("route-preview")],
     },
     {

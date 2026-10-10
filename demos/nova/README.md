@@ -81,7 +81,12 @@ it. A versioned localStorage marker remembers dismissal; unavailable storage
 falls back to one offer per page load. Skip tour and Escape always exit.
 Nonmodal callouts use native inert to isolate unrelated controls, contain keyboard
 focus within the enabled elements, announce steps and follow targets through
-scrolling/resizing. The replay step keeps the route maps and gameplay fully lit. On phones, the
+scrolling/resizing. Hovering a retained route previews its verified history as a stronger gold map
+trail and an endpoint screenshot without changing the selected emulator. The
+route-picker tour step spotlights those maps as well as the preview and route
+list. Preview tracing reuses exact shared-prefix checkpoints and keeps one
+bounded sampled trail, rather than a trail per cached screenshot. The replay
+step keeps the route maps and gameplay fully lit. On phones, the
 callout reserves its own space above the interactive stage (alongside it in
 landscape). The gameplay screen scales to leave the controller and branch actions
 uncovered; search admission pins Searches above the game. Spotlights clip to
