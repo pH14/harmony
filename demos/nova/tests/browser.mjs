@@ -355,7 +355,8 @@ try {
   assert.equal(await page.locator("#inspector").isVisible(), true);
   const selected = await page.locator("#state-list .selected").innerText();
   assert.match(selected, /Route \d+/);
-  assert.match(selected, /\d+:\d{2} replay/);
+  assert.match(selected, /\d+:\d{2}/);
+  assert.doesNotMatch(selected, / replay/);
   assert.equal(
     await page.locator("#cell-title").innerText(),
     "Routes to this location",
@@ -391,11 +392,21 @@ try {
   const sibling = page.locator('#state-list .state:not(.selected)').first();
   const siblingId = await sibling.getAttribute('data-state-id');
   const selectedFrameBeforePreview = await page.locator('#scrub').inputValue();
+  const selectedPixelsBeforePreview = await page.locator('#film').evaluate(c => c.toDataURL());
   await sibling.hover();
-  await page.waitForFunction((id) => !document.querySelector('#route-preview').hidden && document.querySelector('#route-preview').dataset.stateId === id && !document.querySelector('#route-preview canvas').hidden, siblingId);
+  await page.waitForFunction((id) => document.querySelector('#film').dataset.previewRoute === id, siblingId);
+  assert.equal(await page.locator('#route-preview,#cell-visits').count(),0);
+  assert.equal(await page.locator('.screen canvas').count(),1,'Hover reuses the existing History screen');
   assert.equal(await page.locator('#film-title').getAttribute('data-state-id'), selectedRoute.id);
   assert.equal(await page.locator('#scrub').inputValue(), selectedFrameBeforePreview);
-  const previewPixels = await page.locator('#route-preview canvas').evaluate(c => c.toDataURL());
+  const previewPixels = await page.locator('#film').evaluate(c => c.toDataURL());
+  await page.locator('#film-title').hover();
+  await page.waitForFunction(() => document.querySelector('#film').dataset.previewRoute === '');
+  assert.equal(await page.locator('#film').evaluate(c=>c.toDataURL()),selectedPixelsBeforePreview,'Leaving a hover restores the selected screenshot');
+  await sibling.hover();
+  await page.waitForFunction((id) => document.querySelector('#film').dataset.previewRoute === id,siblingId);
+  const compactRow = await sibling.evaluate(row=>{const spans=[...row.querySelector('.state-summary').children].map(e=>e.getBoundingClientRect());return {overlap:Math.min(...spans.map(r=>r.bottom))-Math.max(...spans.map(r=>r.top)),height:row.getBoundingClientRect().height};});
+  assert.ok(compactRow.overlap > 0 && compactRow.height <= 36,'Route name and time share a compact single row');
   await sibling.click();
   await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && document.querySelector('#verification').textContent === 'Exact replay ✓', siblingId);
   assert.equal(await page.locator('#film').evaluate(c => c.toDataURL()), previewPixels, 'Hover must show the exact retained endpoint without altering selection');

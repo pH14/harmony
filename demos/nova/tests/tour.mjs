@@ -206,7 +206,12 @@ try {
   const selectedBeforeHover = await page.locator('#film-title').getAttribute('data-state-id');
   const selectedFrameBeforeHover = await page.locator('#scrub').inputValue();
   await other.hover();
-  await page.waitForFunction((id) => document.querySelector('#route-preview').dataset.stateId === id && !document.querySelector('#route-preview canvas').hidden && [...document.querySelectorAll('.area-map')].some((c) => c.dataset.previewRoute === id && Number(c.dataset.tracePoints) > 0), chosen);
+  await page.waitForFunction((id) => document.querySelector('#film').dataset.previewRoute === id && [...document.querySelectorAll('.area-map')].some((c) => c.dataset.previewRoute === id && Number(c.dataset.tracePoints) > 0), chosen);
+  assert.equal(await page.locator('#route-preview').count(),0,'Tour hover must use History instead of a separate popup');
+  const litScreen = await page.locator('.screen').screenshot();
+  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = 'hidden');
+  assert.deepEqual(await page.locator('.screen').screenshot(),litScreen,'The existing History preview is fully lit during route browsing');
+  await page.locator('.tour-shade').evaluate((e) => e.style.visibility = '');
   assert.equal(await page.locator('#film-title').getAttribute('data-state-id'), selectedBeforeHover);
   assert.equal(await page.locator('#scrub').inputValue(), selectedFrameBeforeHover);
   const hoverMap = page.locator('.area-map').filter({visible:true});

@@ -82,9 +82,12 @@ falls back to one offer per page load. Skip tour and Escape always exit.
 Nonmodal callouts use native inert to isolate unrelated controls, contain keyboard
 focus within the enabled elements, announce steps and follow targets through
 scrolling/resizing. Hovering a retained route previews its verified history as a stronger gold map
-trail and an endpoint screenshot without changing the selected emulator. The
-route-picker tour step spotlights those maps as well as the preview and route
-list. Preview tracing reuses exact shared-prefix checkpoints and keeps one
+trail and an endpoint screenshot in the existing History screen, without
+changing the selected emulator or adding a floating preview. Leaving the route
+restores the selected frame; clicking commits that route. Route names, durations
+and resources share one compact row, without a separate route count. The
+route-picker tour step spotlights those maps as well as the existing History
+screen and route list. Preview tracing reuses exact shared-prefix checkpoints and keeps one
 bounded sampled trail, rather than a trail per cached screenshot. The replay
 step keeps the route maps and gameplay fully lit. Phone replay places audio beside
 Replay in one highlighted action row; gameplay keeps audio in the pane header. On phones, the

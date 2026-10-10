@@ -39,9 +39,9 @@ document.querySelector("#app").innerHTML = `
 <p class="game-attribution"><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
 </section>
 <section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>Jump</span></span><span><kbd>X</kbd><span>Ability</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
-<aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
+<aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><button id="credits">Credits & source</button></footer>
-<div id="route-preview" class="route-preview" hidden><canvas width="256" height="224"></canvas><span></span></div><div id="error" role="alert" hidden></div>
+<div id="error" role="alert" hidden></div>
 <dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Choose a starting point</h2><p>A fresh search, from any level.</p></div><div id="level-worlds"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 let heat = new Heatmap(),
@@ -268,9 +268,10 @@ const routePreviews = new RoutePreviews(() => createEngine(base),
   });
 function hideRoutePreview() {
   clearTimeout(previewTimer);
+  const painted = !!routeHover?.pixels;
   routeHover = null;
   routePreviews.cancel();
-  $("route-preview").hidden = true;
+  if (painted) paintFilm();
 }
 function previewRoute(id, button) {
   if (controlMode || branchBusy || matchMedia("(hover: none)").matches) return;
@@ -285,15 +286,6 @@ function previewRoute(id, button) {
 }
 async function showRoutePreview(state, target) {
   if (!state || target !== routeHover || !target.button.isConnected) return;
-  const popup = $("route-preview"), rect = target.button.getBoundingClientRect();
-  popup.querySelector("span").textContent = `${routeName(state.id)} · Previewing…`;
-  popup.querySelector("canvas").hidden = true;
-  popup.hidden = false;
-  const width = Math.min(240, innerWidth - 24);
-  popup.style.width = `${width}px`;
-  popup.style.left = `${Math.max(12, Math.min(innerWidth - width - 12,
-    rect.left >= width + 24 ? rect.left - width - 12 : rect.right + 12))}px`;
-  popup.style.top = `${Math.max(12, Math.min(innerHeight - width * 224 / 256 - 48, rect.top))}px`;
   try {
     const pixels = await routePreviews.get(state);
     if (!pixels || target !== routeHover || !target.button.isConnected) return;
@@ -302,13 +294,10 @@ async function showRoutePreview(state, target) {
       ? project(state.observation, maps.get(state.observation.level)) : null;
     target.frames = state.frames;
     drawMap(performance.now());
-    const canvas = popup.querySelector("canvas");
-    canvas.getContext("2d").putImageData(new ImageData(pixels.data, pixels.width, pixels.height), 0, 0);
-    canvas.hidden = false;
-    popup.dataset.stateId = state.id;
-    popup.querySelector("span").textContent = `${routeName(state.id)} · ${replayTime(state.frames)}`;
+    target.pixels = pixels;
+    paintFilm();
   } catch {
-    if (target === routeHover) popup.querySelector("span").textContent = "Select this route to inspect it";
+    if (target === routeHover) hideRoutePreview();
   }
 }
 function clearBranchPreview(restore = true) {
@@ -432,6 +421,16 @@ function fail(error) {
   updateSearchControl();
   $("status-dot").className = "paused";
 }
+function paintFilm() {
+  if (!engine) return;
+  const preview = routeHover?.pixels,
+    p = preview || (currentFrame === 0 && originPixels ? originPixels : engine.pixels());
+  film.putImageData(new ImageData(p.data, p.width, p.height), 0, 0);
+  $("film").dataset.previewRoute = preview ? routeHover.id : "";
+  $("frame-label").textContent = preview
+    ? `${routeName(routeHover.id)} · ${replayTime(routeHover.frames)}`
+    : `FRAME ${fmt(currentFrame)} / ${fmt(current?.frames)}`;
+}
 function drawFilm() {
   frameObservation = engine?.observation();
   if (
@@ -443,10 +442,7 @@ function drawFilm() {
     updateBranchControls();
   }
   if (!playing && !controlMode) updateBranchControls();
-  const p = currentFrame === 0 && originPixels ? originPixels : engine.pixels();
-  film.putImageData(new ImageData(p.data, p.width, p.height), 0, 0);
-  $("frame-label").textContent =
-    `FRAME ${fmt(currentFrame)} / ${fmt(current?.frames)}`;
+  paintFilm();
   renderedFrame = currentFrame;
   followReplayRoom(
     frameObservation && isMapEvidence(frameObservation, catalog.levels)
@@ -704,10 +700,6 @@ function renderStates() {
   $("cell-title").title = selectedCell
     ? `Cell ${selectedCell.x}, ${selectedCell.y}`
     : "";
-  $("cell-visits").textContent = selectedCell ? ids.length : "";
-  $("cell-visits").title = selectedCell
-    ? `${fmt(selectedCell.visits)} search visits; ${ids.length} retained routes`
-    : "";
   $("state-list").replaceChildren(
     ...ids.map((id) => {
       const state = current?.id === id ? current : stateCache.get(id),
@@ -730,7 +722,7 @@ function renderStates() {
       name.className = "state-name";
       name.textContent = routeName(id);
       duration.textContent = state
-        ? `${replayTime(state.frames)} replay`
+        ? replayTime(state.frames)
         : "Loading…";
       summary.append(name, duration);
       resources.className = "state-resources";
@@ -784,7 +776,6 @@ function inspect(cell) {
   $("film-title").textContent = "History";
   updateBranchControls();
   $("cell-title").textContent = `Cell ${cell.x}, ${cell.y}`;
-  $("cell-visits").textContent = `${fmt(cell.visits)} visits`;
   $("selection-hint").textContent = "";
   renderStates();
   if (cell.ids.length) {
@@ -1742,7 +1733,6 @@ $("take-control").onclick = () => {
   segments = trailSegments(trace);
   selectedCell = null;
   $("cell-title").textContent = "Your branch";
-  $("cell-visits").textContent = `From frame ${fmt(currentFrame)}`;
   $("film-title").textContent = "History";
   $("branch-message").hidden = true;
   controller.clear();
@@ -2106,7 +2096,7 @@ function tourCell() {
     )[0];
 }
 const tour = new GuidedTour({
-  occluders: () => [$("inspector"), $("route-preview"), ...(document.body.classList.contains("tour-phone") && tour.index >= 5 ? [$("branches")] : [])],
+  occluders: () => [$("inspector"), ...(document.body.classList.contains("tour-phone") && tour.index >= 5 ? [$("branches")] : [])],
   steps: [
     {
       reveal: () => tourMap(),
@@ -2138,8 +2128,8 @@ const tour = new GuidedTour({
       ],
       targets: () => [$("state-list"), ...(routeHover?.segments
         ? [...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0)
-        : [tourCellRect()]), $("route-preview").hidden ? null : $("route-preview")],
-      interactive: () => [$("state-list"), $("map-rows"), $("route-preview")],
+        : [tourCellRect()]), routeHover?.pixels ? document.querySelector(".screen") : null],
+      interactive: () => [$("state-list"), $("map-rows")],
     },
     {
       reveal: () => document.querySelector(`.map-row[data-map="${markerPoint()?.level ?? tourSession?.cell?.level}"] canvas`),
@@ -2154,7 +2144,7 @@ const tour = new GuidedTour({
         document.querySelector(".screen"),
         ...[...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0),
       ],
-      interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("route-preview"), $("map-rows")],
+      interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("map-rows")],
     },
     {
       title: "🎮 Step into the experiment",

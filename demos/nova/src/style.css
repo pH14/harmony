@@ -533,13 +533,9 @@ kbd { font: inherit; padding: 3px 5px; border: 1px solid var(--line); border-rad
   gap: 8px;
   color: var(--muted);
 }
-.state-picker h2,
-#cell-visits {
+.state-picker h2 {
   font-size: 11px;
   font-weight: 400;
-}
-#cell-visits {
-  text-align: right;
 }
 #state-list {
   display: grid;
@@ -555,7 +551,8 @@ kbd { font: inherit; padding: 3px 5px; border: 1px solid var(--line); border-rad
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 8px 10px;
+  min-height: 34px;
+  padding: 5px 8px;
   border-radius: 8px;
   text-align: left;
   font-size: 11px;
@@ -571,18 +568,25 @@ kbd { font: inherit; padding: 3px 5px; border: 1px solid var(--line); border-rad
 }
 .state-summary {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   min-width: 0;
 }
 .state-name {
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .state-summary > span:last-child {
+  flex-shrink: 0;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 10px;
 }
 .state-resources {
+  white-space: nowrap;
   color: var(--muted);
   font:
     10px ui-monospace,
@@ -1049,29 +1053,6 @@ dialog h2 {
   margin-right: 8px;
 }
 
-.route-preview {
-  position: fixed;
-  z-index: 30;
-  pointer-events: none;
-  padding: 6px;
-  border-radius: 10px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  box-shadow: 0 8px 30px #0005;
-}
-.route-preview canvas {
-  display: block;
-  width: 100%;
-  height: auto;
-  image-rendering: pixelated;
-  border-radius: 5px;
-}
-.route-preview span {
-  display: block;
-  padding: 7px 4px 2px;
-  font-size: 11px;
-  color: var(--muted);
-}
 @media (max-width: 800px) {
   .branches { position: static; padding: 0; }
   .branches h2 { margin: 0 0 4px; font-size: 10px; }
@@ -1295,3 +1276,5 @@ dialog h2 {
 .tour-landscape .transport .replay-actions { grid-column: 1 / -1; min-width: 0; }
 .tour-landscape .transport .replay-actions #play { flex: 1; }
 .tour-landscape .transport .replay-actions #sound { flex: 0 0 30px; width: 30px; height: 30px; padding: 5px; }
+
+@media (hover: none) { .state { min-height: 40px; } }
