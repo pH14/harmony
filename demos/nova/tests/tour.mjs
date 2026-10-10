@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { TOUR_KEY } from "../src/tour.js";
+import { createEngine } from "../src/emulator.js";
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.CHROME_CHANNEL
@@ -176,6 +177,16 @@ try {
     "Resume Search",
   );
   assert.equal(await page.locator("#tour-holes rect").count(), 2);
+  assert.equal(await page.locator('#tour-ping').getAttribute('visibility'), 'visible');
+  assert.ok(await page.locator('#tour-ping-bounds rect').count() > 0);
+  const wave = page.locator('.tour-ping-wave').first();
+  const phase = await wave.evaluate((node) => node.getAnimations()[0].currentTime);
+  await page.waitForTimeout(150);
+  assert.ok(await wave.evaluate((node) => node.getAnimations()[0].currentTime) > phase, 'The History ping repeats without resetting each redraw');
+  const center = await page.locator('.tour-ping-core').evaluate((node) => { const r = node.getBoundingClientRect(); return { x: Math.floor(r.left + r.width / 2), y: Math.floor(r.top + r.height / 2) }; });
+  const pixel = await page.screenshot({clip:{...center,width:1,height:1}});
+  const rgba = await page.evaluate(async (data) => { const image = new Image(); image.src = 'data:image/png;base64,' + data; await image.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const ctx = c.getContext('2d'); ctx.drawImage(image,0,0); return [...ctx.getImageData(0,0,1,1).data]; }, pixel.toString('base64'));
+  assert.deepEqual(rgba, [255,240,174,255], 'The History cell ping is actually rendered above the shade');
   const highlightedRows = await page.locator("#state-list").screenshot();
   await page
     .locator(".tour-shade")
@@ -277,7 +288,10 @@ try {
   await ready(page, 0);
   await opening(page);
   for (let step = 2; step < 7; step++) await next(page, step);
-  await page.locator("#tour-try").click();
+  assert.equal(await page.locator("#tour-next").innerText(), "Let’s go explore!");
+  assert.equal(await page.locator("#tour-try, #tour-progress").count(), 0);
+  await page.locator("#tour-next").click();
+  await page.locator("#take-control").click();
   assert.equal(await page.locator("#guided-tour").isVisible(), false);
   assert.equal(
     await page.locator("#take-control").getAttribute("aria-pressed"),
@@ -376,7 +390,10 @@ try {
     if (step === 2 || step === 4 || step === 6)
       await phone.screenshot({ path: `test-results/tour-phone-${step}.png` });
   }
-  await phone.locator("#tour-try").click();
+  assert.equal(await phone.locator("#tour-next").innerText(), "Let’s go explore!");
+  assert.equal(await phone.locator("#tour-try, #tour-progress").count(), 0);
+  await phone.locator("#tour-next").click();
+  await phone.locator("#take-control").click();
   assert.equal(
     await phone.locator("#take-control").getAttribute("aria-pressed"),
     "true",
@@ -398,7 +415,10 @@ try {
   await ready(landscape, 0);
   await opening(landscape);
   for (let step = 2; step < 7; step++) await next(landscape, step);
-  await landscape.locator("#tour-try").click();
+  assert.equal(await landscape.locator("#tour-next").innerText(), "Let’s go explore!");
+  assert.equal(await landscape.locator("#tour-try, #tour-progress").count(), 0);
+  await landscape.locator("#tour-next").click();
+  await landscape.locator("#take-control").click();
   assert.equal(
     await landscape.locator("#take-control").getAttribute("aria-pressed"),
     "true",
@@ -481,6 +501,47 @@ try {
   assert.equal(await practice.locator('[inert]').count(), 0);
   await practice.close();
 
+  const death = await open({ viewport: { width: 1440, height: 1100 } });
+  await death.addInitScript(() => {
+    const RealWorker = window.Worker;
+    window.Worker = class extends RealWorker {
+      constructor(...args) { super(...args); window.tourTestWorker = this; }
+      postMessage(data, ...rest) { if (data.type === 'states' && data.request > 0) window.tourTestRequest = data.request; super.postMessage(data, ...rest); }
+    };
+  });
+  await death.goto(url);
+  await ready(death, 0);
+  await opening(death);
+  for (let step = 2; step <= 4; step++) await next(death, step);
+  const base = new URL('../public/', import.meta.url);
+  const emulator = await createEngine(base, {rom:await readFile(new URL('nova.nes',base)), wasmBinary:await readFile(new URL('engine/quicknes.wasm',base))});
+  emulator.boot();
+  const tape = JSON.parse(await readFile(new URL('fixtures/level-two-2.json', import.meta.url)));
+  const actions = [...tape.actions, {buttons:130,frames:100}];
+  for (const action of actions) emulator.run(action.buttons,action.frames);
+  assert.ok(emulator.observation().health, 'The recorded controller history reaches a living near-death state');
+  const state = {id:'tour-near-death', actions, frames:actions.reduce((sum,a)=>sum+a.frames,0), observation:emulator.observation(), snapshot:[...emulator.capture()]};
+  await death.evaluate((state) => {
+    state.snapshot = new Uint8Array(state.snapshot);
+    window.tourTestWorker.onmessage({data:{type:'states',request:window.tourTestRequest,states:[state]}});
+  }, state);
+  await death.waitForFunction(() => document.querySelector('#film-title').dataset.stateId === 'tour-near-death' && !document.querySelector('#take-control').disabled);
+  await death.locator('#take-control').click();
+  const draftId = await death.locator('#film-title').getAttribute('data-state-id');
+  await death.keyboard.down('ArrowRight');
+  await death.keyboard.down('x');
+  await death.waitForFunction(() => [...document.querySelectorAll('#details div')].some(node => node.firstElementChild.textContent === 'Health' && node.lastElementChild.textContent === '0 / 4'), null, {timeout:10000});
+  await next(death, 5);
+  await death.keyboard.up('x');
+  await death.keyboard.up('ArrowRight');
+  assert.equal(await death.locator('#film-title').getAttribute('data-state-id'),draftId,'Admission must preserve the played draft even when Nova dies');
+  assert.equal(await death.locator('#take-control').isVisible(),false);
+  assert.equal(await death.locator('#game-controls').isVisible(),true);
+  assert.equal(await death.locator('#discard-branch').isVisible(),true);
+  await death.locator('#discard-branch').click();
+  await death.locator('#tour-skip').click();
+  await death.close();
+
   const blocked = await open({ viewport: { width: 1440, height: 900 } });
   await blocked.addInitScript(() =>
     Object.defineProperty(window, "localStorage", {
@@ -514,8 +575,12 @@ try {
   await blocked.close();
   assert.deepEqual(errors, []);
   console.log(
-    "Guided tour: clickable routes, real takeover/fork/tree switching, live replay and keyboard/touch scrubbing, fully lit route maps, background isolation, authentic routes, spotlight geometry, pause restoration, keyboard exit, persistence, explicit takeover, mobile and blocked storage passed.",
+    "Guided tour: clickable routes, real takeover/fork/tree switching, live replay and keyboard/touch scrubbing, fully lit route maps, background isolation, authentic routes, spotlight geometry, pause restoration, keyboard exit, persistence, explicit takeover, rendered repeating cell ping, preserved authentic dead gameplay draft, mobile and blocked storage passed.",
   );
 } finally {
+  for (const page of browser.contexts().flatMap((context) => context.pages())) {
+    await page.goto("about:blank");
+    await page.close();
+  }
   await browser.close();
 }

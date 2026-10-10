@@ -72,7 +72,7 @@ The sprite sheet carries the same NovaSquirrel CC BY-NC-SA attribution as maps.
 
 A seven-step guided tour opens with Welcome and Exploration on the same live
 Movement map, then spotlights a real populated cell and its
-retained routes, replay controls, human takeover, search admission and the search
+retained routes with a repeating cell ping, replay controls, human takeover, search admission and the search
 tree. Every step enables its real highlighted controls: cell and route selection,
 replay and scrubbing, keyboard/touch takeover, branching and switching searches.
 The rest of the interface dims without blurring the game. The tour opens once
@@ -99,7 +99,10 @@ route. Passive dismissal restores the prior search pause state and any existing
 human history. Explicit gameplay, pause changes and branch changes survive tour
 exit. Clicking Branch search from here performs normal verified admission and
 advances to the search-tree step. The tour itself never creates branches or inputs;
-Try playing and all real controls require an explicit visitor action.
+Play from here and all real controls require an explicit visitor action. Moving
+from gameplay to search admission preserves the human draft and controller, even
+if Nova has died; a dead endpoint can be discarded but cannot root a search. The
+callout keeps Skip tour beside its title and finishes with Let’s go explore!
 
 Search starts automatically. Recent activity warms cells from blue through green,
 orange and red, with a six-second half-life measured only while that search runs.

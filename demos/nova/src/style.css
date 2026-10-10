@@ -938,13 +938,16 @@ dialog h2 {
   gap: 8px;
 }
 .tour-top {
-  margin-bottom: 16px;
-  font-size: 11px;
-  color: var(--muted);
+  margin-bottom: 4px;
+  color: var(--text);
 }
 #tour-skip {
-  padding: 3px 0 3px 8px;
-  background: transparent;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--muted);
   font-size: 11px;
 }
 .tour-card h2 {
@@ -1275,3 +1278,9 @@ dialog h2 {
 @media (max-width: 400px) { .vertical-room { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 @media (max-width: 800px) { .workspace.inspect-open { padding-bottom: 44dvh; } }
+
+.tour-ping-core { fill: #fff0ae; stroke: #493715; stroke-width: 1.5; }
+.tour-ping-wave { fill: none; stroke: #ffe29a; stroke-width: 2; animation: tour-cell-ping 2s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+.tour-ping-wave.delayed { animation-delay: -1s; }
+@keyframes tour-cell-ping { from { transform: scale(.7); opacity: .95; } to { transform: scale(4.5); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .tour-ping-wave { animation: none; opacity: .9; } .tour-ping-wave.delayed { transform: scale(2); opacity: .55; } }

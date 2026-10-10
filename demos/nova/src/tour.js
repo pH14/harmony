@@ -73,7 +73,7 @@ export class GuidedTour {
     this.dialog.id = "guided-tour";
     this.dialog.setAttribute("aria-labelledby", "tour-title");
     this.dialog.setAttribute("aria-describedby", "tour-copy");
-    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask" maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g></svg><section class="tour-card"><div class="tour-top"><span id="tour-progress"></span><button id="tour-skip">Skip tour</button></div><div class="tour-description" tabindex="0" aria-live="polite" aria-atomic="true"><h2 id="tour-title"></h2><div id="tour-copy"></div></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><div><button id="tour-try" hidden>🎮 Try playing</button><button id="tour-next">Next</button></div></div></section>`;
+    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask" maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g><defs><clipPath id="tour-ping-bounds" clipPathUnits="userSpaceOnUse"></clipPath></defs><g clip-path="url(#tour-ping-bounds)"><g id="tour-ping" visibility="hidden"><circle class="tour-ping-core" r="5"/><circle class="tour-ping-wave" r="10"/><circle class="tour-ping-wave delayed" r="10"/></g></g></svg><section class="tour-card"><div class="tour-top"><h2 id="tour-title"></h2><button id="tour-skip">Skip tour</button></div><div class="tour-description" tabindex="0" aria-live="polite" aria-atomic="true"><div id="tour-copy"></div></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><div><button id="tour-next">Next</button></div></div></section>`;
     document.body.append(this.dialog);
     this.find = (id) => this.dialog.querySelector(`#${id}`);
     this.card = this.dialog.querySelector(".tour-card");
@@ -85,7 +85,6 @@ export class GuidedTour {
         : this.index === steps.length - 1
           ? this.finish()
           : this.go(this.index + 1);
-    this.find("tour-try").onclick = () => this.finish("play");
     this.dialog.addEventListener("cancel", (e) => {
       e.preventDefault();
       this.finish();
@@ -180,13 +179,10 @@ export class GuidedTour {
       return paragraph;
     }));
     this.dialog.querySelector(".tour-description").scrollTop = 0;
-    this.find("tour-progress").textContent =
-      `Guided tour · ${index + 1} / ${this.steps.length}`;
     this.find("tour-back").hidden = index === 0;
-    this.find("tour-try").hidden = true;
     this.find("tour-next").disabled = true;
     this.find("tour-next").textContent =
-      index === this.steps.length - 1 ? "Explore on your own" : "Next";
+      index === this.steps.length - 1 ? "Let’s go explore!" : "Next";
     this.find("tour-loading").hidden = index === 0;
     this.find("tour-loading").textContent = "Opening a retained route…";
     this.card.setAttribute("aria-busy", "true");
@@ -205,7 +201,6 @@ export class GuidedTour {
         });
       this.ready = true;
       this.find("tour-loading").hidden = true;
-      this.find("tour-try").hidden = index !== this.steps.length - 1;
     } catch {
       if (epoch !== this.epoch || !this.open) return;
       this.find("tour-loading").hidden = false;
@@ -304,6 +299,26 @@ export class GuidedTour {
       this.card.style.left = `${p.x}px`;
       this.card.style.top = `${p.y}px`;
     }
+    const ping = this.find("tour-ping"), target = this.ready && this.steps[this.index].ping?.();
+    ping.setAttribute("visibility", target ? "visible" : "hidden");
+    if (target) {
+      const bounds = target.element.getBoundingClientRect();
+      const area = {
+        left: Math.max(bounds.left, stage?.left ?? offset.x + 8),
+        top: Math.max(bounds.top, stage?.top ?? offset.y + 8),
+        right: Math.min(bounds.right, stage?.right ?? offset.x + viewport.width - 8),
+        bottom: Math.min(bounds.bottom, stage?.bottom ?? offset.y + viewport.height - 8),
+      };
+      const covers = (this.occluders?.() || []).filter((node) => !node.hidden && !node.contains(target.element)).map((node) => node.getBoundingClientRect());
+      covers.push(this.card.getBoundingClientRect());
+      const pieces = area.right > area.left && area.bottom > area.top ? uncoveredRects(area, covers) : [];
+      const clip = pieces.map((r) => `<rect x="${r.left - offset.x}" y="${r.top - offset.y}" width="${r.right - r.left}" height="${r.bottom - r.top}"/>`).join("");
+      if (clip !== this.pingClip) {
+        this.pingClip = clip;
+        this.find("tour-ping-bounds").innerHTML = clip;
+      }
+      ping.setAttribute("transform", `translate(${(target.left + target.right) / 2 - offset.x} ${(target.top + target.bottom) / 2 - offset.y})`);
+    }
     const shape = (r) =>
       `x="${r.left}" y="${r.top}" width="${r.width}" height="${r.height}" rx="5"`;
     const signature = JSON.stringify(rects);
@@ -326,7 +341,7 @@ export class GuidedTour {
       document.body.style.removeProperty(`--tour-stage-${key}`);
     document.body.style.removeProperty("--tour-history-height");
   }
-  async finish(intent) {
+  async finish() {
     if (!this.open) return;
     const epoch = ++this.epoch,
       returnFocus = this.returnFocus,
@@ -336,9 +351,8 @@ export class GuidedTour {
     this.restoreInteraction();
     this.clearStage();
     delete document.body.dataset.tourStep;
-    await this.onClose(intent);
+    await this.onClose();
     if (
-      intent !== "play" &&
       epoch === this.epoch &&
       !this.open &&
       (document.activeElement === document.body ||

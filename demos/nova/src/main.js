@@ -2111,6 +2111,7 @@ const tour = new GuidedTour({
     {
       reveal: () => tourMap(),
       title: "History",
+      ping: () => tourCellRect(),
       copy: [
         "See all of the routes that Harmony has saved to lead to each part of the map. It will grow as the search continues.",
         "Harmony considers these saved states as starting points for future search attempts.",
@@ -2147,12 +2148,13 @@ const tour = new GuidedTour({
     {
       title: "To branch or not to branch",
       copy: [
-        "Decide whether you want Harmony to start a new search fresh from where you just left off. Or not. Up to you.",
-        "Harmony’s exploration can start fresh from any moment of any timeline, including new timelines you created yourself. Combining Harmony’s autonomous exploration with your input allows it to explore scenarios that might be challenging for just one of you to reach.",
+        "Decide whether you want Harmony to start a new search fresh from where you just left off.",
+        "Combining Harmony’s autonomous exploration with your input allows it to explore scenarios that might be challenging for just one of you to reach.",
       ],
       targets: () => [
         $("inspector").hidden ? null : document.querySelector(".branch-actions"),
         $("branches"),
+        ...(controlMode ? [$("game-controls"), document.querySelector(".screen")] : []),
       ],
       interactive: () => [$("inspector"), $("branches")],
     },
@@ -2160,7 +2162,7 @@ const tour = new GuidedTour({
       title: "Searches",
       copy: [
         "Choose which branch of the search you want to have Harmony actively explore, or reset the whole exploration.",
-        "Harmony organizes your search branches together, showing how each branch relates to its parent.",
+        "Harmony organizes many searches together, showing how each branch relates to its parent.",
         "Now, go have fun!",
       ],
       targets: () => [$("branches"), ...(branchPreview ? [...document.querySelectorAll(".area-map")] : [])],
@@ -2193,8 +2195,15 @@ const tour = new GuidedTour({
     if (index === 6) return;
     if (index !== 3) {
       playing = false;
-      music.stop();
+      if (!controlMode) music.stop();
       $("play").textContent = "▶ Replay";
+    }
+    if (index === 5 && playSession && current?.branch?.manual) {
+      paused = true;
+      worker.postMessage({ type: "pause" });
+      updateSearchControl();
+      followReplayRoom(markerPoint());
+      return;
     }
     if (index === 2 && !tourSession.prepared) tourSession.cell = tourCell();
     const cell = (tourSession.cell ||= tourCell());
@@ -2252,14 +2261,14 @@ const tour = new GuidedTour({
         behavior: "instant",
       });
   },
-  onClose(intent) {
+  onClose() {
     const { previousManual: previous, previousFrame, wasPaused, interacted, branch, gameplay, pauseTouched } = tourSession;
     if (controlMode) stopControl();
     clearBranchPreview();
     hideRoutePreview();
     tourSession = null;
     let restoration;
-    if (intent !== "play" && !interacted && previous && current !== previous) {
+    if (!interacted && previous && current !== previous) {
       ++request;
       selectedCell = null;
       restoration = selectState(previous)
@@ -2272,15 +2281,10 @@ const tour = new GuidedTour({
         })
         .catch(fail);
     }
-    if (intent !== "play" && !gameplay && !pauseTouched && branch === activeSearch && !controlMode && !wasPaused && !stats.stopped) {
+    if (!gameplay && !pauseTouched && branch === activeSearch && !controlMode && !wasPaused && !stats.stopped) {
       paused = false;
       worker.postMessage({ type: "resume" });
       updateSearchControl();
-    }
-    if (intent === "play") {
-      openInspector();
-      $("take-control").click();
-      $("film").scrollIntoView({ block: "nearest", behavior: "instant" });
     }
     return restoration;
   },

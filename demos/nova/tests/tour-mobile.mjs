@@ -89,6 +89,12 @@ try {
     await ready(page, 0);
     await opening(page);
     await next(page, 2);
+    assert.equal(await page.locator('#tour-ping').getAttribute('visibility'), 'visible');
+    assert.ok(await page.locator('#tour-ping-bounds rect').count() > 0);
+    assert.equal(await page.locator('.tour-ping-wave').first().evaluate((node) => getComputedStyle(node).animationName), 'none', 'Reduced motion keeps the cell emphasis static');
+    const header = await page.evaluate(() => { const title=document.querySelector('#tour-title').getBoundingClientRect(), skip=document.querySelector('#tour-skip').getBoundingClientRect(); return Math.min(title.bottom,skip.bottom)-Math.max(title.top,skip.top); });
+    assert.ok(header > 0,'Skip tour shares the title row');
+    assert.equal(await page.locator('#tour-progress,#tour-try').count(),0);
     const state = page.locator('#state-list .state:not(.selected)').first();
     const chosen = await state.getAttribute('data-state-id');
     await state.tap();
@@ -119,15 +125,12 @@ try {
       await ready(page, 4);
     }
     await next(page, 5);
-    if (viewport.width === 320) {
-      await page.locator('.tour-description').focus();
-      await page.keyboard.press('ArrowDown');
-      await page.waitForFunction(() => document.querySelector('.tour-description').scrollTop > 0);
-      const scrolled = await page.locator('.tour-description').evaluate((node) => { node.scrollTop = node.scrollHeight; return node.scrollTop > 0; });
-      assert.equal(scrolled,true,'All longer branch narration remains accessible above fixed navigation');
-      await exposed(page.locator('#tour-back'));
-      await exposed(page.locator('#tour-next'));
-    }
+    assert.equal(await page.locator('#take-control').isVisible(), false);
+    assert.equal(await page.locator('#game-controls').isVisible(), true);
+    for (const button of await page.locator('.touch-controls button').all()) await exposed(button, true);
+    assert.equal(await page.locator('#tour-copy p').first().innerText(), 'Decide whether you want Harmony to start a new search fresh from where you just left off.');
+    await exposed(page.locator('#tour-back'));
+    await exposed(page.locator('#tour-next'));
     await exposed(page.locator('#search-here'), true);
     await exposed(page.locator('#discard-branch'), true);
     await exposed(page.locator('button[data-search="0"]'), true);
@@ -148,6 +151,7 @@ try {
     await exposed(page.locator('#reset'), true);
     await page.locator('#reset').tap();
     await page.waitForFunction(() => document.querySelectorAll('button[data-search]').length === 1 && Number(document.querySelector('#attempts').textContent.replaceAll(',', '')) >= 30 && document.querySelector('#inspector').hidden);
+    assert.equal(await page.locator('#tour-next').innerText(), "Let’s go explore!");
     await page.locator('#tour-next').tap();
     assert.equal(await page.locator('[inert]').count(),0);
     assert.equal(await page.locator('body').evaluate((e)=>e.classList.contains('tour-phone')),false);
