@@ -402,9 +402,11 @@ names. Every arm runs on the User-mode Linux profile, one campaign job per arm
 and seed, with one wall budget (90 minutes by default) and one execution
 ceiling for every arm. A campaign replays its first confirmed finding that
 carries the case's scored assertion twice in fresh processes, and
-`scripts/historical-discovery.py` gives it exactly one outcome. A discovery, a
-miss, a confirmed violation of another assertion, and a confirmed guest crash
-(reported with a warning) pass the job, because they are measurements. An
+`scripts/historical-discovery.py` gives it exactly one outcome. A discovery,
+an internal discovery (the system's own assertion failing in a function the
+fix changed), a miss, a confirmed violation of another assertion, and a
+confirmed guest crash (reported with a warning) pass the job, because they are
+measurements. An
 infrastructure failure, an unconfirmed finding, a failed fresh replay, and a
 campaign that never reached a conclusive check fail it. The Scorecard job
 renders the per-arm comparison, and every campaign's reports stay as artifacts

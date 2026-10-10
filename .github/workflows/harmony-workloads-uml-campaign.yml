@@ -297,7 +297,7 @@ jobs:
             echo "::warning::${RUN_KEY}: ${crashes} confirmed guest crash finding(s)"
           fi
           case "${outcome}" in
-            discovery|miss|other-violation|guest-crash) ;;
+            discovery|internal-discovery|miss|other-violation|guest-crash) ;;
             *) echo "::error::${RUN_KEY}: ${outcome}"; exit 1 ;;
           esac
       - uses: actions/upload-artifact@v4
