@@ -28,6 +28,7 @@ async function open(options) {
 }
 async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
+  if (touch && await page.locator('#camera-toggle').getAttribute('aria-pressed') === 'true') await page.locator('#camera-toggle').tap();
   const room = await page.evaluate(() => window.novaReady.root.observation.level);
   await page.locator(`.map-row[data-map="${room}"] .area-map`).scrollIntoViewIfNeeded();
   const point = await page.evaluate(() => {
@@ -107,7 +108,7 @@ try {
         assert.equal(await desktop.locator('#visualization').getAttribute('data-value'),mode);
         assert.equal(await desktop.locator('[data-search="1"]').getAttribute('aria-pressed'),'true');
         const frozen = await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL()));
-        const attempts = Number((await desktop.locator('#attempts').innerText()).replaceAll(',',''));
+        const attempts = Number((await desktop.locator('#attempts').textContent()).replaceAll(',',''));
         await desktop.waitForTimeout(300);
         assert.deepEqual(await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL())),frozen,'Hovered Novas and branch overlays stay frozen while the active search runs');
         await desktop.waitForFunction(n => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > n,attempts);

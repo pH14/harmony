@@ -117,3 +117,13 @@ test("bounded frozen previews retain real positions after recordings expire", ()
   assert.equal(frozen.get(0)[0].x,46,'The preview cannot move or disappear when live recordings expire');
   assert.equal(swarm.frame(2,500).get(0).length,1,'Previewing another branch does not advance its clock');
 });
+
+test("detailed frames report rollout age and same-room ghosts", () => {
+  const swarm = new NovaSwarm(1 << 20, 16);
+  swarm.add(0, [new Uint16Array([0, 0, 10, 100, 0, 30, 0, 70, 100, 0])], 0);
+  const [point] = swarm.frame(0, 250, false, 16, true).get(0);
+  assert.ok(point.life > 0.4 && point.life < 0.6);
+  assert.equal(point.ghosts.length, 2);
+  assert.ok(point.ghosts.every((ghost) => ghost.x < point.x));
+  assert.deepEqual(swarm.frame(0, 250, true, 16, true).get(0)[0].ghosts, []);
+});

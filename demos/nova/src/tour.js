@@ -73,7 +73,7 @@ export class GuidedTour {
     this.dialog.id = "guided-tour";
     this.dialog.setAttribute("aria-labelledby", "tour-title");
     this.dialog.setAttribute("aria-describedby", "tour-copy");
-    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask" maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g><defs><clipPath id="tour-ping-bounds" clipPathUnits="userSpaceOnUse"></clipPath></defs><g clip-path="url(#tour-ping-bounds)"><g id="tour-ping" visibility="hidden"><circle class="tour-ping-core" r="5"/><circle class="tour-ping-wave" r="10"/><circle class="tour-ping-wave delayed" r="10"/></g></g></svg><section class="tour-card"><div class="tour-top"><h2 id="tour-title"></h2><button id="tour-skip">Skip tour</button></div><div class="tour-description" tabindex="0" aria-live="polite" aria-atomic="true"><div id="tour-copy"></div></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><div><button id="tour-next">Next</button></div></div></section>`;
+    this.dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tour-mask" maskUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="white"/><g id="tour-holes"></g></mask></defs><rect width="100%" height="100%" fill="rgba(8,10,12,.74)" mask="url(#tour-mask)"/><g id="tour-rings"></g><defs><clipPath id="tour-ping-bounds" clipPathUnits="userSpaceOnUse"></clipPath></defs><g clip-path="url(#tour-ping-bounds)"><g id="tour-ping" visibility="hidden"><circle class="tour-ping-core" r="5"/><circle class="tour-ping-wave" r="10"/><circle class="tour-ping-wave delayed" r="10"/></g></g></svg><section class="tour-card"><div class="tour-top"><h2 id="tour-title"></h2><button id="tour-skip">Skip tour</button></div><div class="tour-description" tabindex="0" aria-live="polite" aria-atomic="true"><div id="tour-copy"></div></div><p id="tour-loading" role="status" hidden>Opening a retained route…</p><div class="tour-bottom"><button id="tour-back">Back</button><ol class="tour-dots" aria-hidden="true"></ol><div><button id="tour-next">Next</button></div></div></section>`;
     document.body.append(this.dialog);
     this.find = (id) => this.dialog.querySelector(`#${id}`);
     this.card = this.dialog.querySelector(".tour-card");
@@ -167,7 +167,13 @@ export class GuidedTour {
     this.index = index;
     this.ready = false;
     this.dialog.dataset.step = index;
-    document.body.dataset.tourStep = index;
+    document.body.dataset.tourStep = this.steps[index].id ?? index;
+    this.dialog.querySelector(".tour-dots").replaceChildren(...this.steps.map((_, i) => {
+      const dot = document.createElement("li");
+      if (i === index) dot.className = "current";
+      else if (i < index) dot.className = "done";
+      return dot;
+    }));
     this.revealKey = null;
     this.targets = [];
     this.setInteraction();
@@ -226,7 +232,8 @@ export class GuidedTour {
     document.body.classList.toggle("tour-landscape", landscape);
     this.card.style.width = `${phone ? (landscape ? Math.min(280, viewport.width * .36) : viewport.width - 24) : Math.min(340, viewport.width - 24)}px`;
     const playing = document.querySelector("#inspector")?.classList.contains("controlling");
-    const reserved = playing ? 280 + (this.index >= 5 ? 64 : 0) : 220;
+    const searchesPinned = !!this.steps[this.index]?.searches;
+    const reserved = playing ? 280 + (searchesPinned ? 64 : 0) : 220;
     this.card.style.maxHeight = `${phone && !landscape ? viewport.height - reserved - 32 : viewport.height - 24}px`;
     const { width, height } = this.card.getBoundingClientRect();
     let stage;
@@ -239,7 +246,7 @@ export class GuidedTour {
         right: offset.x + viewport.width - 8,
         bottom: offset.y + viewport.height - 8,
       };
-      const searches = this.index >= 5 ? 64 : 0;
+      const searches = searchesPinned ? 64 : 0;
       const variables = {
         "--tour-stage-left": stage.left,
         "--tour-stage-top": stage.top,

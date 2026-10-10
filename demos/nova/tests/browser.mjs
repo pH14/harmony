@@ -194,21 +194,24 @@ try {
     0,
   );
   assert.equal(await page.locator(".brand").innerText(), "harmony");
-  const toolbarLayout = await page.locator(".exploration").evaluate((panel) => {
-    const controls = panel.querySelector(".controls").getBoundingClientRect(),
-      counters = panel.querySelector(".metrics").getBoundingClientRect(),
-      goal = panel.querySelector(".goal").getBoundingClientRect(),
-      panelRect = panel.getBoundingClientRect();
+  const heroLayout = await page.evaluate(() => {
+    const totals = document.querySelector(".hero-stats").getBoundingClientRect(),
+      goal = document.querySelector(".goal").getBoundingClientRect(),
+      maps = document.querySelector("#map-rows").getBoundingClientRect(),
+      details = document.querySelector(".search-details");
     return {
-      left: controls.left - panelRect.left,
-      countersBottom: counters.bottom,
+      totalsBottom: totals.bottom,
       goalTop: goal.top,
-      size: getComputedStyle(panel.querySelector(".metrics b")).fontSize,
+      mapsBottom: maps.bottom,
+      detailsTop: details.getBoundingClientRect().top,
+      detailsOpen: details.open,
+      heading: document.querySelector("#hero-title").textContent,
     };
   });
-  assert.ok(toolbarLayout.left < 30);
-  assert.ok(toolbarLayout.countersBottom <= toolbarLayout.goalTop);
-  assert.ok(parseFloat(toolbarLayout.size) <= 14);
+  assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
+  assert.ok(heroLayout.detailsTop >= heroLayout.mapsBottom, "Per-search counters sit below the maps");
+  assert.equal(heroLayout.detailsOpen, false, "Per-search counters start collapsed");
+  assert.equal(heroLayout.heading, "One game. Thousands of timelines.");
   const originImage = await page
     .locator("#film")
     .evaluate((c) => c.toDataURL());
@@ -228,9 +231,9 @@ try {
   );
   await page.locator("#pause").click();
   await page.waitForTimeout(200);
-  const attempts = await page.locator("#attempts").innerText();
+  const attempts = await page.locator("#attempts").textContent();
   await page.waitForTimeout(200);
-  assert.equal(await page.locator("#attempts").innerText(), attempts);
+  assert.equal(await page.locator("#attempts").textContent(), attempts);
   assert.equal(await page.locator("#inspector").isVisible(), false);
   await page.waitForFunction(() =>
     [...document.querySelectorAll(".map-row .area-map")].every(
@@ -354,12 +357,12 @@ try {
   );
   assert.equal(await page.locator("#inspector").isVisible(), true);
   const selected = await page.locator("#state-list .selected").innerText();
-  assert.match(selected, /Route \d+/);
+  assert.match(selected, /Timeline \d+/);
   assert.match(selected, /\d+:\d{2}/);
   assert.doesNotMatch(selected, / replay/);
   assert.equal(
     await page.locator("#cell-title").innerText(),
-    "Routes to this location",
+    "Timelines that reached this spot",
   );
   assert.equal(
     await page.locator("#take-control").innerText(),
@@ -428,7 +431,7 @@ try {
     "Routes must read oldest to newest",
   );
   const beforeRoutes = Number(
-    (await page.locator("#attempts").innerText()).replaceAll(",", ""),
+    (await page.locator("#attempts").textContent()).replaceAll(",", ""),
   );
   await page.locator("#pause").click();
   await page.waitForFunction(
@@ -692,8 +695,8 @@ try {
       document.querySelector("#scrub").max === "0",
   );
   await page.locator('[data-viz="heat"]').click();
-  const originalAttempts = await page.locator("#attempts").innerText();
-  const originalCells = await page.locator("#cells").innerText();
+  const originalAttempts = await page.locator("#attempts").textContent();
+  const originalCells = await page.locator("#cells").textContent();
   await page.mouse.move(0, 0);
   await page.waitForTimeout(1700);
   const pausedHeat = await page
@@ -854,7 +857,7 @@ try {
   );
   await page.locator("#pause").click();
   await page.waitForTimeout(100);
-  const branchCells = await page.locator("#cells").innerText();
+  const branchCells = await page.locator("#cells").textContent();
   await page.waitForFunction(
     () => document.querySelector("#map").dataset.originPulse === "false",
   );
@@ -980,14 +983,15 @@ try {
 
   assert.equal(await page.locator('li[data-search-node="1"] > ol > li[data-search-node="2"]').count(), 1, 'Nested branches must retain their actual parent in the tree');
   await page.mouse.move(0, 0);
-  await page.waitForTimeout(1800);
+  await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera === 'idle' && [...document.querySelectorAll('.area-map')].every(c => c.dataset.originPulse !== 'true'), null, { timeout: 10000 });
+  await page.waitForTimeout(200);
   const activeBranchBeforeHover = await page.locator('#branch-tree button[aria-pressed=true]').getAttribute('data-search');
-  const branchAttemptsBeforeHover = await page.locator('#attempts').innerText();
+  const branchAttemptsBeforeHover = await page.locator('#attempts').textContent();
   const branchImageBeforeHover = await page.locator('#map').evaluate(c => c.toDataURL());
   await page.locator('button[data-search="1"]').hover();
   await page.waitForFunction(() => document.querySelector('#map').dataset.previewSearch === '1' && Number(document.querySelector('#map').dataset.tracePoints) > 1);
   assert.equal(await page.locator('#branch-tree button[aria-pressed=true]').getAttribute('data-search'), activeBranchBeforeHover);
-  assert.equal(await page.locator('#attempts').innerText(), branchAttemptsBeforeHover);
+  assert.equal(await page.locator('#attempts').textContent(), branchAttemptsBeforeHover);
   await page.mouse.move(0, 0);
   await page.waitForFunction(() => document.querySelector('#map').dataset.previewSearch === '');
   assert.equal(await page.locator('#map').evaluate(c => c.toDataURL()), branchImageBeforeHover, 'Previewing another branch must restore the untouched active heat and origin trail');
@@ -1042,7 +1046,7 @@ try {
     );
     await page.locator("#pause").click();
     await page.waitForTimeout(100);
-    return page.locator("#cells").innerText();
+    return page.locator("#cells").textContent();
   }
   const resumedOriginalCells = await switchSearch(
     0,

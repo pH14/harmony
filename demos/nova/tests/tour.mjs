@@ -62,27 +62,23 @@ async function layout(page) {
   assert.equal(await page.locator("#tour-next").isVisible(), true);
 }
 async function opening(page) {
-  assert.equal(await page.locator('#tour-title').innerText(), 'Welcome!');
+  assert.equal(await page.locator('#tour-title').innerText(), 'Thousands of Novas');
   assert.equal(await page.locator('#tour-copy p').count(), 2);
+  assert.equal(await page.locator('.tour-dots li').count(), 5);
+  assert.equal(await page.locator('.tour-dots li.current').count(), 1);
   assert.equal(await page.locator('#visualization').getAttribute('data-value'), 'movement');
-  const openingMap = await page.locator('.area-map').evaluateAll((maps) => maps.find((map) => {
+  const lit = await page.locator('.area-map').evaluateAll((maps) => maps.some((map) => {
     const r = map.getBoundingClientRect();
     return [...document.querySelectorAll('#tour-rings rect')].some((ring) => {
       const h = ring.getBoundingClientRect();
       return Math.min(r.right,h.right)>Math.max(r.left,h.left) && Math.min(r.bottom,h.bottom)>Math.max(r.top,h.top);
     });
-  })?.dataset.map);
-  await next(page, 1);
-  assert.equal(await page.locator('#tour-title').innerText(), 'Exploration');
-  assert.equal(await page.locator('#visualization').getAttribute('data-value'), 'movement');
-  const sameMapLit = await page.locator(`.area-map[data-map="${openingMap}"]`).evaluate((map) => {
-    const r=map.getBoundingClientRect();
-    return [...document.querySelectorAll('#tour-rings rect')].some((ring) => {
-      const h=ring.getBoundingClientRect();
-      return Math.min(r.right,h.right)>Math.max(r.left,h.left) && Math.min(r.bottom,h.bottom)>Math.max(r.top,h.top);
-    });
-  });
-  assert.equal(sameMapLit,true,'Welcome and Exploration spotlight the same map');
+  }));
+  assert.equal(lit, true, 'The opening step spotlights the live map');
+}
+async function routeStep(page) {
+  assert.equal(await page.locator('#tour-title').innerText(), 'Follow one timeline');
+  await page.waitForFunction(() => document.querySelector('#tour-ping').getAttribute('visibility') === 'visible' && [...document.querySelectorAll('.area-map')].some((c) => Number(c.dataset.tracePoints) > 0));
 }
 async function next(page, step) {
   await page.locator("#tour-next").click();
@@ -147,7 +143,7 @@ async function watchDuringTour(page) {
   await page.locator('#tour-next').focus();
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
-  assert.equal(await page.locator('#guided-tour').getAttribute('data-step'), '3');
+  assert.equal(await page.locator('#guided-tour').getAttribute('data-step'), '1');
 }
 try {
   await mkdir("test-results", { recursive: true });
@@ -165,12 +161,13 @@ try {
     "tour-next",
   );
   await page.screenshot({ path: "test-results/tour-desktop-heat.png" });
-  const initial = await page.locator("#attempts").innerText();
+  const initial = await page.locator("#attempts").textContent();
   await page.waitForFunction(
     (n) => document.querySelector("#attempts").textContent !== n,
     initial,
   );
-  await next(page, 2);
+  await next(page, 1);
+  await routeStep(page);
   assert.ok((await page.locator("#state-list .state").count()) >= 2);
   assert.equal(
     await page.locator("#verification").innerText(),
@@ -180,7 +177,7 @@ try {
     await page.locator("#pause").getAttribute("aria-label"),
     "Resume Search",
   );
-  assert.equal(await page.locator("#tour-holes rect").count(), 2);
+  assert.ok(await page.locator("#tour-holes rect").count() >= 4, "The route step lights the film, transport, route list and traced map");
   assert.equal(await page.locator('#tour-ping').getAttribute('visibility'), 'visible');
   assert.ok(await page.locator('#tour-ping-bounds rect').count() > 0);
   const wave = page.locator('.tour-ping-wave').first();
@@ -228,19 +225,17 @@ try {
   assert.equal(await page.locator('#film-title').getAttribute('data-state-id'),selectedBeforeHover);
   await other.click();
   await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && document.querySelector('#verification').textContent === 'Exact replay ✓', chosen);
-  assert.equal(await page.locator('#guided-tour').getAttribute('data-step'), '2');
+  assert.equal(await page.locator('#guided-tour').getAttribute('data-step'), '1');
   await page.screenshot({ path: "test-results/tour-desktop-routes.png" });
-  for (let step = 3; step < 7; step++) {
+  await page.locator('#sound').click();
+  assert.equal(await page.locator('#sound').getAttribute('aria-pressed'), 'true');
+  await page.locator('#sound').click();
+  assert.equal(await page.locator('#sound').getAttribute('aria-pressed'), 'false');
+  await watchDuringTour(page);
+  for (let step = 2; step < 5; step++) {
     await next(page, step);
-    if (step === 3) {
-      await page.locator('#sound').click();
-      assert.equal(await page.locator('#sound').getAttribute('aria-pressed'), 'true');
-      await page.locator('#sound').click();
-      assert.equal(await page.locator('#sound').getAttribute('aria-pressed'), 'false');
-      await watchDuringTour(page);
-    }
-    if (step === 4) {
-      assert.match(await page.locator('#tour-copy').innerText(), /branch/);
+    if (step === 2) {
+      assert.match(await page.locator('#tour-copy').innerText(), /Play from here/);
       assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), false);
       assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
     }
@@ -251,9 +246,9 @@ try {
     "The tour must not create a search branch",
   );
   await page.locator("#tour-back").click();
-  await ready(page, 5);
+  await ready(page, 3);
   await layout(page);
-  await next(page, 6);
+  await next(page, 4);
   await page.locator("#tour-next").click();
   assert.equal(await page.locator("#guided-tour").isVisible(), false);
   assert.equal(
@@ -269,7 +264,7 @@ try {
   assert.equal(await page.locator("#timeline-toggle").getAttribute("aria-expanded"), "true", "The tour opens a collapsed Timeline");
   await ready(page, 0);
   await opening(page);
-  await next(page, 2);
+  await next(page, 1);
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("#guided-tour").isVisible(), false);
   assert.equal(
@@ -296,7 +291,7 @@ try {
   await page.locator("#tour-open").click();
   await ready(page, 0);
   await opening(page);
-  for (let step = 2; step < 7; step++) await next(page, step);
+  for (let step = 1; step < 5; step++) await next(page, step);
   assert.equal(await page.locator("#tour-next").innerText(), "Let’s go explore!");
   assert.equal(await page.locator("#tour-try, #tour-progress").count(), 0);
   await page.locator("#tour-next").click();
@@ -323,8 +318,7 @@ try {
   await page.locator("#tour-open").click();
   await ready(page, 0);
   await opening(page);
-  await next(page, 2);
-  await next(page, 3);
+  await next(page, 1);
   await watchDuringTour(page);
   await page.locator('#scrub').focus();
   const cpu = await page.context().newCDPSession(page);
@@ -353,7 +347,7 @@ try {
   await page.locator('#tour-open').click();
   await ready(page, 0);
   await opening(page);
-  await next(page, 2);
+  await next(page, 1);
   const keyboardRoute = await page.locator('#film-title').getAttribute('data-state-id');
   assert.notEqual(keyboardRoute, manual);
   await page.locator('#map').focus();
@@ -383,9 +377,9 @@ try {
   await ready(phone, 0);
   await opening(phone);
   await layout(phone);
-  for (let step = 2; step < 7; step++) {
+  for (let step = 1; step < 5; step++) {
     await next(phone, step);
-    if (step === 2) {
+    if (step === 1) {
       const route = phone.locator("#state-list .state").last();
       await route.tap();
       await phone.waitForFunction(() => !document.querySelector('#take-control').disabled);
@@ -395,8 +389,8 @@ try {
       });
       assert.ok(clips.top >= clips.paneTop && clips.bottom <= clips.paneBottom, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
     }
-    if (step === 3) await watchDuringTour(phone);
-    if (step === 2 || step === 4 || step === 6)
+    if (step === 1) await watchDuringTour(phone);
+    if (step === 1 || step === 2 || step === 4)
       await phone.screenshot({ path: `test-results/tour-phone-${step}.png` });
   }
   assert.equal(await phone.locator("#tour-next").innerText(), "Let’s go explore!");
@@ -423,7 +417,7 @@ try {
   await landscape.goto(url);
   await ready(landscape, 0);
   await opening(landscape);
-  for (let step = 2; step < 7; step++) await next(landscape, step);
+  for (let step = 1; step < 5; step++) await next(landscape, step);
   assert.equal(await landscape.locator("#tour-next").innerText(), "Let’s go explore!");
   assert.equal(await landscape.locator("#tour-try, #tour-progress").count(), 0);
   await landscape.locator("#tour-next").click();
@@ -457,7 +451,7 @@ try {
   await landscape.locator("#tour-open").click();
   await ready(landscape, 0);
   await opening(landscape);
-  await next(landscape, 2);
+  await next(landscape, 1);
   await landscape.locator("#tour-skip").click();
   await landscape.waitForFunction(
     (id) =>
@@ -487,7 +481,7 @@ try {
   await practice.goto(url);
   await ready(practice, 0);
   await opening(practice);
-  for (let step = 2; step <= 4; step++) await next(practice, step);
+  for (let step = 1; step <= 2; step++) await next(practice, step);
   await practice.locator('#take-control').click();
   assert.equal(await practice.locator('#guided-tour').isVisible(), true);
   const start = Number(await practice.locator('#scrub').inputValue());
@@ -495,10 +489,12 @@ try {
   await practice.waitForTimeout(200);
   await practice.keyboard.up('ArrowRight');
   await practice.waitForFunction((frame) => Number(document.querySelector('#scrub').value) > frame, start);
-  await next(practice, 5);
+  await next(practice, 3);
   assert.equal(await practice.locator('#take-control').getAttribute('aria-pressed'), 'true');
   await practice.locator('#search-here').click();
-  await ready(practice, 6);
+  await ready(practice, 4);
+  await practice.waitForFunction(() => !document.querySelector('#map-toast').hidden && document.querySelector('#map-toast').textContent.includes('Your branch is live'));
+  assert.ok(await practice.locator('#tour-rings rect').count() >= 2, 'The final step keeps the new branch on the map lit');
   await practice.waitForFunction(() => document.querySelector('#branch-tree button[aria-pressed=true]').dataset.search === '1' && document.querySelector('#inspector').hidden);
   assert.equal(await practice.locator('li[data-search-node="0"] > ol > li[data-search-node="1"]').count(), 1);
   await practice.locator('button[data-search="0"]').hover();
@@ -521,7 +517,7 @@ try {
   await death.goto(url);
   await ready(death, 0);
   await opening(death);
-  for (let step = 2; step <= 4; step++) await next(death, step);
+  for (let step = 1; step <= 2; step++) await next(death, step);
   const base = new URL('../public/', import.meta.url);
   const emulator = await createEngine(base, {rom:await readFile(new URL('nova.nes',base)), wasmBinary:await readFile(new URL('engine/quicknes.wasm',base))});
   emulator.boot();
@@ -540,7 +536,7 @@ try {
   await death.keyboard.down('ArrowRight');
   await death.keyboard.down('x');
   await death.waitForFunction(() => [...document.querySelectorAll('#details div')].some(node => node.firstElementChild.textContent === 'Health' && node.lastElementChild.textContent === '0 / 4'), null, {timeout:10000});
-  await next(death, 5);
+  await next(death, 3);
   await death.keyboard.up('x');
   await death.keyboard.up('ArrowRight');
   assert.equal(await death.locator('#film-title').getAttribute('data-state-id'),draftId,'Admission must preserve the played draft even when Nova dies');
@@ -563,7 +559,7 @@ try {
   await ready(blocked, 0);
   await opening(blocked);
   await blocked.locator("#tour-skip").click();
-  const paths = await blocked.locator("#attempts").innerText();
+  const paths = await blocked.locator("#attempts").textContent();
   await blocked.waitForFunction(
     (n) =>
       Number(

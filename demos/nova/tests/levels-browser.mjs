@@ -44,12 +44,13 @@ try {
       await page.waitForFunction(() => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) >= 4);
       await page.locator('#pause').click();
       // Select the exact starting state in its projected map cell.
+      if (phone && await page.locator('#camera-toggle').getAttribute('aria-pressed') === 'true') await page.locator('#camera-toggle').tap();
       const point = await page.evaluate(() => {
         const o = window.novaRoot.observation, panels=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] .area-map`)];
         const roomWidth=Number(panels[0].dataset.roomWidth);
         const worldX=o.x%roomWidth, worldY=o.y+Math.floor(o.x/roomWidth)*224;
         const x=Math.floor(worldX/32)*32+16,y=Math.floor(worldY/32)*32+8;
-        const c=panels.find(c=>worldX>=+c.dataset.panelX && worldX<+c.dataset.panelX+c.width && worldY-8>=+c.dataset.panelY && worldY-8<+c.dataset.panelY+c.height);
+        const c=panels.find(c=>worldX>=+c.dataset.panelX && worldX<+c.dataset.panelX+ +c.dataset.mapWidth && worldY-8>=+c.dataset.panelY && worldY-8<+c.dataset.panelY+ +c.dataset.mapHeight);
         c.scrollIntoView({block:'center',behavior:'instant'});
         const r=c.getBoundingClientRect(),w=Number(c.dataset.mapWidth),h=Number(c.dataset.mapHeight);
         const scale=Math.min(c.width/w,c.height/h)*Number(c.dataset.zoom);
@@ -86,6 +87,7 @@ try {
       await page.locator('#pause').click();
       const canvas=page.locator('.map-row[data-map="0"] .area-map');
       await canvas.scrollIntoViewIfNeeded();
+      await canvas.evaluate(c=>window.scrollBy({top:c.getBoundingClientRect().bottom-innerHeight+12,behavior:'instant'}));
       const r=await canvas.boundingBox(),before=Number(await canvas.getAttribute('data-zoom'));
       const cdp=await page.context().newCDPSession(page);
       const x=r.x+r.width/2,y=r.y+r.height/2;

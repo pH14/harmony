@@ -29,6 +29,18 @@ try {
       await page.waitForFunction(()=>Number(document.querySelector('#attempts').textContent.replaceAll(',',''))>=12);
       await page.locator('#pause').click();
       const room=await page.evaluate(()=>window.root.observation.level),canvases=page.locator(`.map-row[data-map="${room}"] .area-map`);
+      if(phone){
+        assert.equal(await canvases.count(),1,'Phones show each room through one camera viewport');
+        const view=await canvases.first().evaluate(c=>({viewport:c.dataset.viewport,w:+c.dataset.mapWidth,h:+c.dataset.mapHeight,rw:+c.dataset.roomWidth,rh:+c.dataset.roomHeight,visible:c.getBoundingClientRect().height>0}));
+        assert.ok(view.viewport==='true'&&view.w===view.rw&&view.h===view.rh&&view.visible,`The phone camera covers the whole room: ${JSON.stringify(view)}`);
+        if(await page.locator('#camera-toggle').getAttribute('aria-pressed')==='true')await page.locator('#camera-toggle').tap();
+        await page.waitForFunction(room=>+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.zoom===1,room);
+        assert.equal(await page.locator('#camera-toggle').innerText(),'Follow the search');
+        await page.locator('#camera-toggle').tap();
+        assert.equal(await page.locator('#camera-toggle').getAttribute('aria-pressed'),'true');
+        await canvases.first().scrollIntoViewIfNeeded();await page.screenshot({path:`test-results/wrapped-${level}-phone.png`});
+        continue;
+      }
       assert.ok(await canvases.count()>1);
       const geometry=await canvases.evaluateAll(cs=>cs.map(c=>({x:+c.dataset.panelX,y:+c.dataset.panelY,w:+c.dataset.mapWidth,h:+c.dataset.mapHeight,width:c.clientWidth,roomWidth:+c.dataset.roomWidth,roomHeight:+c.dataset.roomHeight})));
       for(const p of geometry)assert.ok(16*p.width/p.w >= (phone ? 4 : 8),'Room sections keep Nova readable');
@@ -59,6 +71,8 @@ try {
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'Rotation never creates page-wide horizontal scrolling');
       const coverage=await page.locator('.area-map').evaluateAll(cs=>cs.reduce((n,c)=>n+c.width*c.height,0));
       assert.equal(coverage,1024*896,'Responsive reflow retains every pixel of the tall room');
+      await page.setViewportSize({width:390,height:844});
+      await page.waitForTimeout(200);
     }
     // Use a recorded, hash-verified native history so selection beyond the broader
     // seam does not depend on how quickly the random search crosses this room.
@@ -67,22 +81,23 @@ try {
     await page.evaluate(tape=>window.testWorker.postMessage({type:'fork',tape,seed:3}),tape);
     await page.waitForFunction(()=>window.root?.id==='1:0'&&!document.querySelector('#pause').disabled);
     await page.locator('#pause').click();
+    if(phone&&await page.locator('#camera-toggle').getAttribute('aria-pressed')==='true')await page.locator('#camera-toggle').tap();
     const target=await page.evaluate(()=>{
       const root=window.root,o=root.observation,cs=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] .area-map`)];
-      const c=cs.find(c=>o.x>=+c.dataset.panelX&&o.x<+c.dataset.panelX+c.width&&o.y-8>=+c.dataset.panelY&&o.y-8<+c.dataset.panelY+c.height);
+      const c=cs.find(c=>o.x>=+c.dataset.panelX&&o.x<+c.dataset.panelX+ +c.dataset.mapWidth&&o.y-8>=+c.dataset.panelY&&o.y-8<+c.dataset.panelY+ +c.dataset.mapHeight);
       return{id:root.id,room:o.level,panel:+c.dataset.panel,x:Math.floor(o.x/32)*32+16,y:Math.floor(o.y/32)*32+8};
     });
-    assert.ok(target.panel>0,'The native fixture lies beyond a section seam');
+    if(!phone)assert.ok(target.panel>0,'The native fixture lies beyond a section seam');
     const canvas=page.locator(`.map-row[data-map="${target.room}"] .area-map`).nth(target.panel);
     await canvas.scrollIntoViewIfNeeded();
-    const point=await canvas.evaluate((c,t)=>{const r=c.getBoundingClientRect();return{x:r.left+(t.x-+c.dataset.panelX)*r.width/c.width,y:r.top+(t.y-+c.dataset.panelY)*r.height/c.height};},target);
+    const point=await canvas.evaluate((c,t)=>{const r=c.getBoundingClientRect(),scale=Math.min(c.width/+c.dataset.mapWidth,c.height/+c.dataset.mapHeight)*+c.dataset.zoom;return{x:r.left+((t.x-+c.dataset.centerX)*scale+c.width/2)*r.width/c.width,y:r.top+((t.y-+c.dataset.centerY)*scale+c.height/2)*r.height/c.height};},target);
     if(phone)await page.touchscreen.tap(point.x,point.y);else await page.mouse.click(point.x,point.y);
     await page.waitForFunction(()=>!document.querySelector('#inspector').hidden&&!document.querySelector('#take-control').disabled);
     assert.ok(await page.evaluate(id=>window.lastStateRequest.includes(id),target.id),'A later section selects its authentic retained history');
     assert.equal(await page.locator('#visualization').getAttribute('data-value'),'movement');
-    await page.waitForFunction(target=>[...document.querySelectorAll(`.map-row[data-map="${target.room}"] .area-map`)].some(c=>target.x>=+c.dataset.panelX&&target.x<+c.dataset.panelX+c.width&&+c.dataset.tracePoints>0),target);
+    await page.waitForFunction(target=>[...document.querySelectorAll(`.map-row[data-map="${target.room}"] .area-map`)].some(c=>target.x>=+c.dataset.panelX&&target.x<+c.dataset.panelX+ +c.dataset.mapWidth&&+c.dataset.tracePoints>0),target);
     await page.locator('#close-inspector').click();
     await page.goto('about:blank');await page.close();
   }
-  assert.deepEqual(errors,[]);console.log('Horizontal wrapping, section navigation, original-art crops, vertical rooms, zoom and authentic retained hits across seams passed on desktop and phone.');
+  assert.deepEqual(errors,[]);console.log('Desktop horizontal wrapping, section navigation, original-art crops, vertical rooms and zoom; phone camera viewports with whole-room and follow modes; authentic retained hits across seams on desktop and phone passed.');
 }finally{await browser.close();}

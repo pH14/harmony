@@ -30,10 +30,16 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 ## Interaction
 
 The segmented view control offers Movement, Heatmap and Both. Movement is the default.
-Movement shows the original level artwork with tiny
-Nova sprites replaying recorded search rollouts together. Maps and sprites retain
-their original colors, with the original light background shade and 55% sprite
-opacity. There is no desaturation or grayscale sprite cache. Heat, grid and
+Movement shows the original level artwork with
+Nova sprites replaying recorded search rollouts together. Maps retain their
+original colors and the original light background shade. Each sprite fades in
+as its rollout starts and eases from nearly opaque to about two-thirds opacity
+as it finishes, followed by two faint dots at its position six and twelve game
+frames earlier. Sprites are drawn at least 18 CSS pixels tall, up to 2.5 times
+their native size, so whole-room views stay legible. Main uses the original
+palette; each branch recolors its sprites with its own tint (gold, pink, cyan,
+green, violet, orange, teal) by blending hue onto the original luminance. The
+same tint marks that branch in Searches, its fork ripple and its admission toast. Heat, grid and
 sparks disappear in Movement; selected route trails, Nova markers, fork origins
 and cell inspection remain available. Inspecting a populated cell keeps the
 selected view and draws the route and Nova marker in all three modes. Opening
@@ -70,14 +76,28 @@ as exploration. The build extracts idle, four walking and jumping poses, in both
 directions, from upstream's spnova.chr and player.s, with the original palette.
 The sprite sheet carries the same NovaSquirrel CC BY-NC-SA attribution as maps.
 
-A seven-step guided tour opens with Welcome and Exploration on the same live
-Movement map, then spotlights a real populated cell and its
-retained routes with a repeating cell ping, replay controls, human takeover, search admission and the search
-tree. Every step enables its real highlighted controls: cell and route selection,
+The page opens with a one-line pitch and two live totals: timelines tried and
+gameplay time executed, summed across every search branch. The per-search
+counters (timelines tried, moments saved, map cells reached, game frames played
+and snapshot memory) sit in a collapsed Search details disclosure below the
+maps.
+
+On a visitor's first desktop visit the camera opens at 2.6× on the boot room,
+follows the search frontier (the 80th-percentile x of live sprites, smoothed)
+for about four seconds, then eases back to the whole level over 1.6 seconds.
+The tour waits for that opening to finish. Returning visitors, reduced-motion
+visitors and any manual pan, pinch, zoom or cell selection skip or end it.
+
+A five-step guided tour follows the story many, one, you, fork and tree:
+Thousands of Novas on the live Movement map; Follow one timeline, which spotlights a populated cell, draws its selected route in gold
+over 1.8 seconds with a moving head, and lights the History film, replay
+controls and route list together; Your turn for takeover; Hand it back to
+Harmony for search admission; and A tree of searches for the tree.
+Each step has one or two short sentences and a row of progress dots. Every step enables its real highlighted controls: cell and route selection,
 replay and scrubbing, keyboard/touch takeover, branching and switching searches.
 The rest of the interface dims without blurring the game. The tour opens once
-after the initial search has populated a cell; Guided tour in the header reopens
-it. A versioned localStorage marker remembers dismissal; unavailable storage
+after the opening camera finishes and the search has populated a cell; Take the
+tour beside the live totals reopens it. A versioned localStorage marker remembers dismissal; unavailable storage
 falls back to one offer per page load. Skip tour and Escape always exit.
 Nonmodal callouts use native inert to isolate unrelated controls, contain keyboard
 focus within the enabled elements, announce steps and follow targets through
@@ -86,9 +106,10 @@ trail and an endpoint screenshot in the existing History screen, without
 changing the selected emulator or adding a floating preview. Leaving the route
 restores the selected frame; clicking commits that route. Route names, durations
 and resources share one compact row, without a separate route count. The
-route-picker tour step spotlights those maps as well as the existing History
-screen and route list. Preview tracing reuses exact shared-prefix checkpoints and keeps one
-bounded sampled trail, rather than a trail per cached screenshot. The replay
+route step spotlights those maps as well as the existing History screen and
+route list. Selecting any cell or route outside the tour draws its trail the
+same way. Preview tracing reuses exact shared-prefix checkpoints and keeps one
+bounded sampled trail, rather than a trail per cached screenshot. The route
 step keeps the route maps and gameplay fully lit. Phone replay places audio beside
 Replay in one highlighted action row; gameplay keeps audio in the pane header. On phones, the
 callout reserves its own space above the interactive stage (alongside it in
@@ -98,13 +119,13 @@ visible content and exclude portions covered by other panes. Replay room changes
 bring the active route map into the unobstructed stage.
 Longer tour narration scrolls separately from persistent navigation, leaving
 the real game and controls visible on small screens. Search continues during
-the two opening steps, then pauses while inspecting a
+the opening step, then pauses while inspecting a
 route. Dismissal always resumes the selected search while preserving explicit
 branch changes and any existing human history. Leaving gameplay by discarding,
 collapsing History or admitting a search visits the branch-decision step before
 Searches, even if the visitor acts early on the gameplay step. The branch-decision
-step highlights only Branch/Discard while a draft is open; its game screen and
-controller remain usable without competing outlines. After the draft closes,
+step highlights Branch/Discard and the game screen while a draft is open; the
+controller remains usable. After the draft closes,
 the spotlight moves to Searches. The pinned phone Searches pane keeps its list
 in a 44px scroll viewport, rather than letting a multi-branch list overflow the
 56px pane. Its spotlight follows the actual rounded pane boundary without
@@ -190,8 +211,8 @@ rate. Audio stops on pause, seeking, selection, restart, completion, or a hidden
 tab; ending takeover also stops its sound. The AudioContext is unlocked in the
 play/watch click before any asynchronous reset. Automatic attract replay starts
 silently until the visitor chooses to watch. Save/open-history and screenshot
-controls are omitted from the interface. Search controls sit at the top left,
-with a compact counter strip above the rooms. Warm charcoal surfaces, softer corners, system
+controls are omitted from the interface. Search controls sit in the Searches pane; the
+live totals sit beside the pitch above the maps. Warm charcoal surfaces, softer corners, system
 typography and restrained controls keep the unchanged cold-to-hot heat colors
 prominent. Route rows avoid nested card borders; the light Play from here button remains the primary action.
 A separate, lazily loaded emulator generates PCM because switching QuickNES
@@ -205,7 +226,7 @@ At most eight search presentations are retained and Restart Search releases them
 
 Replay replays recorded inputs; 🎮 Play from here hands control to the
 visitor at the displayed moment. The inspector keeps the movie and this primary
-action above a compact list of alternate routes to the selected location. Route numbers are assigned
+action above a compact list of alternate routes to the selected location. Routes are named Timeline 1, Timeline 2 and so on, numbered
 once in discovery order within each cell and search, and rows run oldest to newest.
 The most recently retained choice is selected when opening a cell. The latest twelve choices keep
 their original numbers when older choices leave the window; an inspected route
@@ -234,7 +255,11 @@ Paths explored, states retained and game frames executed describe the active
 search; the snapshot-memory tooltip describes the shared allowance.
 It preserves health, items, level progression and emulator state through replay,
 without teleporting Nova or changing game RAM. After successful admission, the
-pane closes and the mapped branch origin ripples for 1.2 seconds; reduced-motion visitors get a stationary ring. The map reveals
+pane closes and the mapped branch origin ripples three times in the branch tint for 2.4 seconds; reduced-motion visitors get a stationary ring.
+The camera centers the fork, holding a 2.2× close-up on desktop for 2.6 seconds
+before easing back to the whole level, and a toast reports that the branch is
+live. The new row slides into Searches with its tint. The final tour step keeps
+that map and toast lit. The map reveals
 that room, including after expanded phone gameplay. The prefix trail to the
 fork remains visible while the pane is closed; inspecting a history shows its
 own complete trail. Each retained search has its own heat, cell history IDs,
@@ -250,7 +275,7 @@ Desktop maps use the available window width. Mouse hover or keyboard focus on an
 inactive branch temporarily previews
 its saved heat and fork-prefix trail, including its room, without switching the
 worker, advancing that branch, or changing the selected replay. Leaving restores
-the active map. Phones show a compact scrollable tree above the maps. The lower
+the active map. Phones show a compact scrollable tree below the maps. The lower
 world/level atlas is replaced by a modal selector that establishes a real playable
 search root; discovery and replay still follow later levels.
 Archived states offer Play from here first; search admission is available only
@@ -432,9 +457,9 @@ and corresponding-source links are in
 [CREDITS.md](CREDITS.md) and the site's Credits dialog. The build distributes
 original sources and build recipes alongside the ROM and emulator.
 
-The Searches and History panes use matching sliding panels. Each search has inline play/pause controls. Main has a restart control that releases the whole search tree; other branches have delete controls that free their native snapshot archive, heat view and movement recordings. Deleting an active branch resumes its parent. Independent child branches keep their own complete input histories and move up the tree. Branch IDs are never reused within a search session. Movement, Heatmap and Both are visible segmented controls, and hovering a search branch preserves that choice. The counter strip reports snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
+The Searches and History panes use matching sliding panels. Each search has inline play/pause controls. Main has a restart control that releases the whole search tree; other branches have delete controls that free their native snapshot archive, heat view and movement recordings. Deleting an active branch resumes its parent. Independent child branches keep their own complete input histories and move up the tree. Branch IDs are never reused within a search session. Movement, Heatmap and Both are visible segmented controls, and hovering a search branch preserves that choice. Search details report snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
 
-Phone maps keep vertical page scrolling available even when zoomed: one finger pans horizontally, two fingers pinch and pan the map, and each room retains its own view. Tour spotlights are clipped to scroll containers and the visual viewport so scrolling the history sheet cannot illuminate hidden controls or the map underneath. All highlighted controls remain usable.
+Phones show one room at a time through a 2:1 camera viewport instead of stacked, wrapped sections. Room tabs above the map switch rooms and mark rooms the search has reached. The camera holds one room height on screen (about 0.8 CSS pixels per game pixel) and follows the search frontier; when the current room empties for 2.5 seconds and another room in the level has at least six live sprites, it moves there unless the visitor chose a room. Whole room fits the entire room in the viewport and stops following; Follow the search resumes. Any drag, pinch or cell selection stops following. Switching search branches and finishing the tour resume it. Phone maps keep vertical page scrolling available even when zoomed: one finger pans horizontally, two fingers pinch and pan the map, and each room retains its own view. Tour spotlights are clipped to scroll containers and the visual viewport so scrolling the history sheet cannot illuminate hidden controls or the map underneath. All highlighted controls remain usable.
 
 ## Starting at another level
 
@@ -450,4 +475,4 @@ The panes are labeled Searches, Exploration and History. History keeps its headi
 
 Overview route strokes stay bright gold at a constant screen width, with a dark edge for contrast at small map scales. Retained histories collapse into a reopen control; dismissing human play still discards its draft and resumes the existing search. On phones, Searches places its heading and short scrollable tree in one row. During human play, History places audio in the header, then the screen, a spaced controller and Branch/Discard actions; the retained-route list stays hidden.
 
-Long rooms wrap into contiguous sections under one room heading. The section width adapts to the Exploration pane, aligning seams to original tile boundaries; short rooms keep their overview. Small numbered continuation links connect the sections of the same room. Tall rooms use an ordered grid of vertical sections. Artwork, heat, movement and selected trails use the same original world coordinates in every section; no visits or connecting routes are invented at a wrap. Replay follows its actual section, and selection, keyboard navigation, dragging and pinch zoom use that section's transform. A room's zoom button applies to all its sections, while gestures can adjust a single section. `tests/wrapped-maps.mjs` exercises later horizontal and vertical rooms, original-art crops, tile hits beyond the first section, section navigation, zoom and responsive reflow on desktop and phone. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.
+On desktop, long rooms wrap into contiguous sections under one room heading. The section width adapts to the Exploration pane, aligning seams to original tile boundaries; short rooms keep their overview. Small numbered continuation links connect the sections of the same room. Tall rooms use an ordered grid of vertical sections. Artwork, heat, movement and selected trails use the same original world coordinates in every section; no visits or connecting routes are invented at a wrap. Replay follows its actual section, and selection, keyboard navigation, dragging and pinch zoom use that section's transform. A room's zoom button applies to all its sections, while gestures can adjust a single section. `tests/wrapped-maps.mjs` exercises later horizontal and vertical rooms, original-art crops, tile hits beyond the first section, section navigation, zoom and responsive reflow on desktop and phone. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.

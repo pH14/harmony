@@ -16,7 +16,10 @@ export function viewCenter(
   };
 }
 
-export function roomPanels(width, height, availableWidth) {
+export const CAMERA_VIEWPORT = { width: 640, height: 320 };
+
+export function roomPanels(width, height, availableWidth, camera = false) {
+  if (camera) return [{ index: 0, x: 0, y: 0, width, height, vertical: false, viewport: true }];
   const vertical = height > 672;
   const span = Math.max(512, Math.min(1280, Math.floor(availableWidth / 256) * 256));
   const columns = width > 1536 || (vertical && width > span) ? Math.ceil(width / span) : 1;

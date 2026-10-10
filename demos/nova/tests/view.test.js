@@ -42,3 +42,7 @@ test("wrapped rooms cover every original pixel exactly once, in order", () => {
       }
     }
 });
+
+test("phone cameras show a whole room through one viewport", () => {
+  assert.deepEqual(roomPanels(3584, 224, 360, true), [{ index: 0, x: 0, y: 0, width: 3584, height: 224, vertical: false, viewport: true }]);
+});

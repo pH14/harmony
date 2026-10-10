@@ -108,7 +108,7 @@ try {
       };
     }, { key: TOUR_KEY, catalog });
     await page.goto(url);
-    await page.waitForSelector("#attempts");
+    await page.waitForSelector("#attempts", { state: "attached" });
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");
     assert.deepEqual(await page.locator("#visualization button").allTextContents(), ["Movement", "Heatmap", "Both"]);
     const bakedNovaPixels = await page.evaluate(async () => {
@@ -139,7 +139,7 @@ try {
     assert.equal(await target.getAttribute("data-marker-frame"), "");
     await page.locator("#pause").click();
     await page.waitForTimeout(150);
-    const attempts = await page.locator("#attempts").innerText();
+    const attempts = await page.locator("#attempts").textContent();
     const coverage = await page.evaluate(() => {
       const cells = window.novaTestHeat.get(0);
       return { expected: new Set([...cells.motion, ...cells.endpoints]).size, transit: [...cells.motion].filter(k => !cells.endpoints.has(k)).length, actual: Number(document.querySelector("#cells").textContent.replaceAll(",", "")) };
@@ -150,7 +150,7 @@ try {
     const before = await pixels();
     await page.waitForTimeout(220);
     assert.equal(await pixels(), before, "Paused search must freeze the actual incoming attempts");
-    assert.equal(await page.locator("#attempts").innerText(), attempts);
+    assert.equal(await page.locator("#attempts").textContent(), attempts);
     await page.screenshot({ path: `test-results/swarm-${name}.png` });
     await page.locator('[data-viz="heat"]').click();
     assert.equal(await target.getAttribute("data-overlay"), "heat");
@@ -190,7 +190,7 @@ try {
     await page.locator("#tour-open").click();
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement", "The tour opens on real Movement");
     if (name === "desktop") {
-      for (const step of [1, 2]) {
+      for (const step of [1]) {
         await page.locator("#tour-next").click();
         await page.waitForFunction(step => +document.querySelector("#guided-tour").dataset.step === step && document.querySelector(".tour-card").getAttribute("aria-busy") === "false", step);
       }
@@ -224,7 +224,7 @@ try {
       await page.locator("#pause").click();
       await page.locator('[data-viz="both"]').click();
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
-      const branchAttempts = Number((await page.locator("#attempts").innerText()).replaceAll(",", ""));
+      const branchAttempts = Number((await page.locator("#attempts").textContent()).replaceAll(",", ""));
       const ghosts = () => page.locator(".area-map").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
       assert.ok(await ghosts() <= branchAttempts + 2, "A new branch must not display the original search's Novas");
       await page.locator('#branch-tree button[data-search="0"]').click();
