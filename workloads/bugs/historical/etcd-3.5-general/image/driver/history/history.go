@@ -73,18 +73,22 @@ func AckLine(id uint64, revision int64, applied bool) string {
 
 func FailLine(id uint64) string { return fmt.Sprintf("F %d\n", id) }
 
-// Read parses complete lines. A torn final line is ignored: its intent was
-// not yet sent, or its outcome is unknown and the op stays indeterminate.
-func (j *Journal) Read(r io.Reader) error {
+// Read parses complete lines and returns their length in bytes. A torn final
+// line is ignored: its intent was not yet sent, or its outcome is unknown and
+// the op stays indeterminate. A writer must cut the journal to that length
+// before appending, or its next line would join the torn one.
+func (j *Journal) Read(r io.Reader) (int64, error) {
 	reader := bufio.NewReader(r)
+	var complete int64
 	for {
 		line, err := reader.ReadString('\n')
 		if err == io.EOF {
-			return nil
+			return complete, nil
 		}
 		if err != nil {
-			return err
+			return complete, err
 		}
+		complete += int64(len(line))
 		j.apply(strings.Fields(line))
 	}
 }

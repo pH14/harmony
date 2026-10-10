@@ -124,7 +124,7 @@ func load(dir string) (history.Journals, error) {
 			return nil, err
 		}
 		journal := history.NewJournal()
-		err = journal.Read(file)
+		_, err = journal.Read(file)
 		file.Close()
 		if err != nil {
 			return nil, err

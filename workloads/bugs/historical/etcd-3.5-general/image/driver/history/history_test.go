@@ -10,7 +10,7 @@ import (
 func journal(t *testing.T, lines ...string) *Journal {
 	t.Helper()
 	j := NewJournal()
-	if err := j.Read(strings.NewReader(strings.Join(lines, ""))); err != nil {
+	if _, err := j.Read(strings.NewReader(strings.Join(lines, ""))); err != nil {
 		t.Fatal(err)
 	}
 	return j
@@ -173,5 +173,20 @@ func TestClientsNumberTheirOpsIndependently(t *testing.T) {
 	}
 	if keys := all.Keys(); len(keys) != 2 {
 		t.Fatal(keys)
+	}
+}
+
+func TestReadCountsOnlyCompleteLines(t *testing.T) {
+	whole := IntentLine(1, Put, "k", "a") + AckLine(1, 10, true)
+	j := NewJournal()
+	complete, err := j.Read(strings.NewReader(whole + "I 2 put k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete != int64(len(whole)) {
+		t.Fatalf("complete length %d, want %d", complete, len(whole))
+	}
+	if ops := j.OnKey("k"); len(ops) != 1 || ops[0].Outcome != Acknowledged {
+		t.Fatalf("the torn intent became an op: %+v", ops)
 	}
 }

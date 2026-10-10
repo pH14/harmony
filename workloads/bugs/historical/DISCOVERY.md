@@ -533,3 +533,15 @@ made after a general-arm measurement restarts every affected measurement.
    console names a function in the case's `oracle.fix_functions` (the SQLite
    WAL cases list `walCheckpoint`). It uses knowledge of the fix only to score,
    is reported beside discoveries, and is never counted as one.
+
+8. **Torn journal lines** (after the held-out measurement). Each general
+   client journals its intents and outcomes and reads the journal back after a
+   restart, ignoring a torn final line. A kill can tear a line, and the next
+   process appended its first line to the fragment, so the joined line hid the
+   history after it and a later comparison reported acknowledged commits that
+   were never lost. One SQLite general campaign on 3.51.2, which carries the
+   held-out bug's fix, reported `sqlite preserves acknowledged commits`, so the
+   held-out SQLite discoveries could have been this artifact. A client now
+   cuts its journal back to the last complete line before appending, in the
+   SQLite and etcd drivers, and SQLite prints the failed comparison to the
+   console. The SQLite and etcd general and held-out arms are measured again.

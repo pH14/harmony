@@ -74,8 +74,14 @@ func open(w int) (*client, error) {
 	c := &client{id: w, path: path, stream: choice.New(), nextOp: 1, history: history.NewJournal(),
 		single: map[string]*clientv3.Client{}}
 	if existing, err := os.Open(path); err == nil {
-		_ = c.history.Read(existing)
+		complete, err := c.history.Read(existing)
 		existing.Close()
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Truncate(path, complete); err != nil {
+			return nil, err
+		}
 		for _, name := range c.history.Keys() {
 			c.keys = append(c.keys, name)
 			for _, op := range c.history.OnKey(name) {

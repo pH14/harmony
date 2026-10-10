@@ -4,7 +4,8 @@
 # client kills must evaluate its properties without a violation, resolved
 # indeterminate commits and absent failed commits must pass, and a mismatched
 # indeterminate commit, an applied failed commit, a lost acknowledged write and
-# corrupted page headers must each be reported.
+# corrupted page headers must each be reported. A torn journal line must not
+# hide the commits journaled after it.
 #
 #   oracle-test.sh SQLITE_GENERAL SQLITE3_SHELL
 set -euo pipefail
@@ -79,6 +80,16 @@ echo "indeterminate commits: unapplied and applied resolve, a mismatch is report
 
 "$shell" "$db" "DELETE FROM kv WHERE k = $((key + 2))"
 "$driver" verify 1 "$db" 2>/dev/null
+
+before=$(hits "sqlite preserves acknowledged commits" false)
+printf 'A 9' >>"$work/journal-1"
+"$driver" verify 1 "$db" 2>/dev/null
+printf 'P 900006 1 I:%d:1:0:%s\n' "$((key + 5))" "$empty_hash" >>"$work/journal-1"
+"$shell" "$db" "INSERT INTO kv(k, owner, ver, body) VALUES($((key + 5)), 1, 1, x'')"
+"$driver" verify 1 "$db" 2>/dev/null
+(( $(hits "sqlite preserves acknowledged commits" false) == before )) || fail "a torn journal line hid the commit after it"
+grep -q "^R 900006 1$" "$work/journal-1" || fail "the commit after a torn line was not resolved"
+echo "torn journal line: cut before the next append"
 before=$(hits "sqlite preserves acknowledged commits" false)
 printf 'P 900004 1 I:%d:1:0:%s\nF 900004\n' "$((key + 3))" "$empty_hash" >>"$work/journal-1"
 "$driver" verify 1 "$db" 2>/dev/null

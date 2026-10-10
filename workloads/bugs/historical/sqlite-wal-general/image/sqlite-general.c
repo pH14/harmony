@@ -169,10 +169,13 @@ static int parse_pending(char *text, struct txn *t) {
 }
 
 /* Replays the journal into the model. Only complete lines count: a torn
- * pending line never had its COMMIT issued. */
+ * pending line never had its COMMIT issued. A kill can tear a line, so the
+ * journal is cut back to its last complete line before anything is appended;
+ * otherwise the next line would join the torn one and hide the history after it. */
 static void load_journal(struct client *c) {
     FILE *file = fopen(c->journal_path, "r");
     char line[MAX_STATEMENTS * 96 + 64];
+    long good = 0;
     memset(&c->model, 0, sizeof c->model);
     c->has_pending = 0;
     c->next_seq = 1;
@@ -206,6 +209,17 @@ static void load_journal(struct client *c) {
                     for (int i = 0; i < c->pending.count; i++) apply_op(&c->model, &c->pending.ops[i]);
                 c->has_pending = 0;
             }
+        } else {
+            break;
+        }
+        good = ftell(file);
+    }
+    fseek(file, 0, SEEK_END);
+    if (ftell(file) != good) {
+        fprintf(stderr, "sqlite-general: client %d journal cut from %ld to %ld bytes\n", c->id, ftell(file), good);
+        if (truncate(c->journal_path, good) != 0) {
+            fprintf(stderr, "sqlite-general: journal truncate failed\n");
+            exit(1);
         }
     }
     fclose(file);
@@ -270,6 +284,7 @@ static void compare_owned(struct client *c, struct table *seen) {
     }
     snprintf(detail, sizeof detail, "client %d saw %d owned rows, history has %d", c->id, seen->count,
              c->model.count);
+    fprintf(stderr, "sqlite-general: %s, pending %lld\n", detail, c->has_pending ? (long long)c->pending.id : -1LL);
     gen_reached(R_COMPARED);
     gen_always(A_COMMITS, 0, detail);
 }
