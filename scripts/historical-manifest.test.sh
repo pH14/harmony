@@ -10,8 +10,8 @@ python3 "${manifest}" --check
 all=$(python3 "${manifest}" --matrix)
 runnable=$(python3 "${manifest}" --runnable-matrix)
 
-test "$(jq '.include | length' <<<"${all}")" -eq 8
-test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 8
+test "$(jq '.include | length' <<<"${all}")" -eq 11
+test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 11
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .job_timeout_minutes' <<<"${all}")" -eq 230
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .job_timeout_minutes' <<<"${all}")" -eq 320
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .display_name' <<<"${all}")" = "PostgreSQL Index Corruption"
@@ -23,9 +23,11 @@ test "$(jq '.include | length' <<<"${runnable}")" -eq 3
 test "$(jq -r '[.include[].id] | sort | join(",")' <<<"${runnable}")" = etcd-3.5-inconsistency,postgres-cic-corruption,sqlite-wal-reset
 test "$(jq -r '.include[] | select(.id == "sqlite-wal-reset") | .job_timeout_minutes' <<<"${runnable}")" -eq 260
 discovery=$(python3 "${manifest}" --runnable-matrix --panel discovery)
-test "$(jq '.include | length' <<<"${discovery}")" -eq 8
+test "$(jq '.include | length' <<<"${discovery}")" -eq 11
 test "$(jq -r '[.include[] | select(.discovery_mode == "general")] | length' <<<"${discovery}")" -eq 3
 test "$(jq -r '[.include[] | select(.discovery_mode == "ablation")] | length' <<<"${discovery}")" -eq 2
+test "$(jq -r '[.include[] | select(.discovery_mode == "heldout")] | length' <<<"${discovery}")" -eq 3
+test "$(jq -r '.include[] | select(.id == "postgres-14.1-heldout") | .focused_case' <<<"${discovery}")" = postgres-14.1-heldout
 test "$(jq -r '.include[] | select(.id == "postgres-index-general") | .focused_case' <<<"${discovery}")" = postgres-cic-corruption
 picked=$(python3 "${manifest}" --runnable-matrix --panel discovery --case sqlite-wal-general,sqlite-wal-reset --seeds 1001,1002)
 test "$(jq -r '[.include[].run_key] | sort | join(",")' <<<"${picked}")" = sqlite-wal-general-seed1001,sqlite-wal-general-seed1002,sqlite-wal-reset-seed1001,sqlite-wal-reset-seed1002
@@ -62,6 +64,16 @@ except SystemExit as error:
     assert "aggregate replay count" in str(error)
 else:
     raise SystemExit("manifest accepted a replay cap below its aggregate plan")
+
+heldout_path = module.ROOT / "workloads/bugs/historical/postgres-14.1-heldout/case.json"
+heldout = json.loads(heldout_path.read_text())
+heldout["focused_case"] = "postgres-cic-corruption"
+try:
+    module.validate(heldout_path, heldout)
+except SystemExit as error:
+    assert "only a general or ablation case names a focused_case" in str(error)
+else:
+    raise SystemExit("manifest accepted a held-out case with a focused case")
 
 case = json.loads(case_path.read_text())
 case["arms"] = {"vulnerable": {"version": "14.3"}, "control": {"version": "14.4"}}

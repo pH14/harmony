@@ -91,6 +91,7 @@ jobs:
           scripts/historical-replay.test.sh
           scripts/historical-search.test.sh
           python3 -m unittest discover -s scripts -p test_historical_discovery.py
+          python3 -m unittest discover -s scripts -p test_historical_reach.py
           python3 scripts/render-historical-bugs.py --check
       - name: Guest runtime and admission tooling
         if: ${{ !cancelled() }}
