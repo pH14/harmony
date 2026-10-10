@@ -2181,11 +2181,7 @@ const tour = new GuidedTour({
         "Decide whether you want Harmony to start a new search fresh from where you just left off.",
         "Combining Harmony’s autonomous exploration with your input allows it to explore scenarios that might be challenging for just one of you to reach.",
       ],
-      targets: () => [
-        $("inspector").hidden ? null : document.querySelector(".branch-actions"),
-        $("branches"),
-        ...(controlMode ? [$("game-controls"), document.querySelector(".screen")] : []),
-      ],
+      targets: () => [$("inspector").hidden ? $("branches") : document.querySelector(".branch-actions")],
       interactive: () => [$("inspector"), $("branches")],
     },
     {

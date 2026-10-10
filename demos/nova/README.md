@@ -102,7 +102,13 @@ the two opening steps, then pauses while inspecting a
 route. Dismissal always resumes the selected search while preserving explicit
 branch changes and any existing human history. Leaving gameplay by discarding,
 collapsing History or admitting a search visits the branch-decision step before
-Searches, even if the visitor acts early on the gameplay step. Admission advances
+Searches, even if the visitor acts early on the gameplay step. The branch-decision
+step highlights only Branch/Discard while a draft is open; its game screen and
+controller remain usable without competing outlines. After the draft closes,
+the spotlight moves to Searches. `npm run test:tour-webkit` is an optional
+Safari-engine regression check after installing Playwright WebKit; it compares
+the action pixels with and without the shade in dark mode, verifies real tap
+targets, and resizes through phone toolbar heights and landscape. Admission advances
 from the step where it began; pressing Next while a branch is pending cannot
 advance the tour twice. Clicking Branch
 search from here performs normal verified admission. The tour itself never creates branches or inputs;
