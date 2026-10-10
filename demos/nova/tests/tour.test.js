@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tourPosition, tourSeen, rememberTour, TOUR_KEY } from "../src/tour.js";
+import { tourPosition, tourSeen, rememberTour, TOUR_KEY, uncoveredRects } from "../src/tour.js";
 const rect = (left, top, width, height) => ({
   left,
   top,
@@ -54,4 +54,15 @@ test("replay callouts leave both route maps and transport clear on phones", () =
   const targets = [rect(130, 540, 247, 80), rect(20, 270, 350, 120), rect(20, 440, 96, 96)],
     p = tourPosition(targets, 340, 200, { width: 390, height: 844 });
   for (const target of targets) assert.equal(overlap(p, 340, 200, target), 0);
+});
+
+
+test("spotlights only expose map portions outside covering panes", () => {
+  const map = rect(20, 180, 350, 160);
+  const pane = rect(0, 260, 390, 300);
+  assert.deepEqual(uncoveredRects(map, [pane]), [{left:20,top:180,right:370,bottom:260}]);
+  const pieces = uncoveredRects(rect(0,0,100,100), [rect(30,30,40,40)]);
+  assert.equal(pieces.reduce((sum,r) => sum+(r.right-r.left)*(r.bottom-r.top),0),8400);
+  for (const piece of pieces) assert.equal(overlap({x:piece.left,y:piece.top},piece.right-piece.left,piece.bottom-piece.top,rect(30,30,40,40)),0);
+  assert.deepEqual(uncoveredRects(map, [rect(0,0,400,600)]), []);
 });

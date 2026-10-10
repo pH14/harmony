@@ -81,7 +81,12 @@ it. A versioned localStorage marker remembers dismissal; unavailable storage
 falls back to one offer per page load. Skip tour and Escape always exit.
 Nonmodal callouts use native inert to isolate unrelated controls, contain keyboard
 focus within the enabled elements, announce steps and follow targets through
-scrolling/resizing. The replay step keeps the route maps and gameplay fully lit.
+scrolling/resizing. The replay step keeps the route maps and gameplay fully lit. On phones, the
+callout reserves its own space above the interactive stage (alongside it in
+landscape). The gameplay screen scales to leave the controller and branch actions
+uncovered; search admission pins Searches above the game. Spotlights clip to
+visible content and exclude portions covered by other panes. Replay room changes
+bring the active route map into the unobstructed stage.
 Search continues during the heatmap introduction, then pauses while inspecting a
 route. Passive dismissal restores the prior search pause state and any existing
 human history. Explicit gameplay, pause changes and branch changes survive tour
@@ -333,7 +338,11 @@ sampled-path heat without false restore bridges, heat restoration, one-shot
 lifetimes, pause/resume, separate branch recordings,
 restart, tour handoff and phones. Interaction checks add real two-finger touch
 capture, single-tap branch switching, gameplay-only admission, draft
-discard/close resumption and stable layout across four nested branches.
+discard/close resumption and stable layout across four nested branches. Mobile
+tour checks perform real route selection, replay/scrubbing, held touch inputs,
+rotation, discard, search admission and branch switching at 320px, 390px and
+landscape. They check every spotlight against the callout and hit-test controls
+to detect occlusion by sticky headers and other panes.
 
 The search check requires three real seeds to reach the garden (map 49) and
 main area (map 45), and exactly replays both first-arrival tapes against their

@@ -1198,3 +1198,59 @@ dialog h2 {
   .controlling #game-controls { grid-column: 2; grid-row: 1; margin: 0; }
   .controlling .branch-actions { grid-column: 2; grid-row: 2; }
 }
+
+/* Phone tours reserve a stage for the real UI instead of floating over it. */
+.tour-phone .inspector {
+  inset: auto auto var(--tour-stage-bottom) var(--tour-stage-left);
+  width: var(--tour-stage-width);
+  max-height: min(44dvh, calc(var(--tour-history-height) * .65));
+  border-radius: 14px;
+  animation: none; scroll-padding-block: 44px 8px;
+}
+.tour-phone .inspector.expanded { height: var(--tour-history-height); max-height: var(--tour-history-height); }
+.tour-phone .inspector.controlling {
+  height: auto; max-height: var(--tour-history-height); padding: 8px; gap: 6px;
+}
+.tour-phone .inspector.controlling .screen { padding: 4px; }
+.tour-phone .inspector.controlling #film { width: min(100%, max(48px, calc((var(--tour-history-height) - 244px) * 256 / 224))); }
+.tour-phone .controlling #game-controls { margin: 4px 0; }
+.tour-phone .controlling .touch-controls { padding: 4px 0; }
+.tour-phone[data-tour-step="4"] .branches,
+.tour-phone[data-tour-step="5"] .branches {
+  position: fixed; z-index: 25; top: var(--tour-stage-top); left: var(--tour-stage-left);
+  width: var(--tour-stage-width); max-height: 56px; overflow: auto; animation: none;
+}
+.tour-phone main { padding-bottom: 100dvh; }
+.tour-landscape main { width: var(--tour-stage-width); margin-left: var(--tour-stage-left); padding-inline: 0; }
+.tour-landscape .workspace, .tour-landscape .workspace.inspect-open,
+.tour-landscape .workspace.timeline-collapsed.inspect-open { grid-template-columns: minmax(0, 1fr); }
+.tour-landscape .inspector { position: fixed; padding: 6px; gap: 4px; }
+.tour-landscape .inspector .keyboard-guide { display: none; }
+.tour-landscape #expand-inspector { display: none; }
+.tour-landscape .inspector.controlling .film {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr); gap: 8px 12px; align-items: center;
+}
+.tour-landscape .inspector.controlling .screen { grid-column: 1; grid-row: 1 / 3; }
+.tour-landscape .inspector.controlling #film { width: min(100%, calc((var(--tour-history-height) - 62px) * 256 / 224)); }
+.tour-landscape .controlling #game-controls { grid-column: 2; grid-row: 1; margin: 0; }
+.tour-landscape .controlling .branch-actions { grid-column: 2; grid-row: 2; margin: 0; }
+.tour-landscape .controlling .action-buttons button { width: 44px; height: 44px; }
+.tour-landscape .branches { display: grid; grid-template-columns: auto minmax(0, 1fr) 28px; padding: 4px 8px; align-items: center; gap: 6px; }
+.tour-landscape .branches .pane-heading { display: contents; }
+.tour-landscape .branches h2 { grid-column: 1; grid-row: 1; margin: 0; }
+.tour-landscape .branches #timeline-toggle { grid-column: 3; grid-row: 1; height: 40px; }
+.tour-landscape .branches nav { grid-column: 2; grid-row: 1; max-height: 92px; }
+.tour-landscape .branches .timeline-controls button { height: 40px; }
+.tour-landscape .tour-card { padding: 11px; }
+.tour-landscape .tour-card h2 { font-size: 16px; }
+.tour-landscape .tour-card p { font-size: 12px; line-height: 1.4; margin: 7px 0 10px; }
+.tour-landscape .tour-top { margin-bottom: 8px; }
+
+.tour-landscape .inspector:not(.controlling) .film { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 4px 8px; }
+.tour-landscape .inspector:not(.controlling) .screen { grid-column: 1; grid-row: 1 / 3; padding: 4px; width: 100%; margin: 0; }
+.tour-landscape .inspector:not(.controlling) #frame-label { padding: 2px; font-size: 8px; }
+.tour-landscape .inspector:not(.controlling) .transport { grid-column: 2; grid-row: 1; display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 4px; margin: 0; }
+.tour-landscape .inspector:not(.controlling) #play { grid-column: 1 / -1; padding: 5px; }
+.tour-landscape .inspector:not(.controlling) .branch-actions { grid-column: 2; grid-row: 2; margin: 0; }
+.tour-landscape .inspector:not(.controlling) #take-control { min-height: 36px; padding: 5px; font-size: 13px; }
+.tour-landscape .inspector:not(.controlling) #state-list { max-height: 120px; }

@@ -52,9 +52,22 @@ export function tourPosition(rects, width, height, viewport) {
     );
   return candidates.sort((a, b) => overlap(a) - overlap(b))[0];
 }
+export function uncoveredRects(rect, occluders) {
+  return occluders.reduce((pieces, cover) => pieces.flatMap((r) => {
+    const left = Math.max(r.left, cover.left), right = Math.min(r.right, cover.right);
+    const top = Math.max(r.top, cover.top), bottom = Math.min(r.bottom, cover.bottom);
+    if (left >= right || top >= bottom) return [r];
+    return [
+      { left: r.left, top: r.top, right: r.right, bottom: top },
+      { left: r.left, top: bottom, right: r.right, bottom: r.bottom },
+      { left: r.left, top, right: left, bottom },
+      { left: right, top, right: r.right, bottom },
+    ].filter((piece) => piece.right > piece.left && piece.bottom > piece.top);
+  }), [rect]);
+}
 export class GuidedTour {
-  constructor({ steps, beforeStep, onStart, onClose }) {
-    Object.assign(this, { steps, beforeStep, onStart, onClose });
+  constructor({ steps, beforeStep, onStart, onClose, occluders }) {
+    Object.assign(this, { steps, beforeStep, onStart, onClose, occluders });
     this.epoch = 0;
     this.dialog = document.createElement("dialog");
     this.dialog.id = "guided-tour";
@@ -155,6 +168,8 @@ export class GuidedTour {
     this.index = index;
     this.ready = false;
     this.dialog.dataset.step = index;
+    document.body.dataset.tourStep = index;
+    this.revealKey = null;
     this.targets = [];
     this.setInteraction();
     const step = this.steps[index];
@@ -205,14 +220,57 @@ export class GuidedTour {
     Object.assign(this.dialog.style, { inset: `${offset.y}px auto auto ${offset.x}px`, width: `${viewport.width}px`, height: `${viewport.height}px` });
     const shade = this.dialog.querySelector("svg");
     shade.setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
+    const phone = matchMedia("(max-width: 800px), (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)").matches;
+    const landscape = phone && viewport.width > viewport.height;
+    document.body.classList.toggle("tour-phone", phone);
+    document.body.classList.toggle("tour-landscape", landscape);
+    this.card.style.width = `${phone ? (landscape ? Math.min(280, viewport.width * .36) : viewport.width - 24) : Math.min(340, viewport.width - 24)}px`;
+    const { width, height } = this.card.getBoundingClientRect();
+    let stage;
+    if (phone) {
+      this.card.style.left = "12px";
+      this.card.style.top = "12px";
+      stage = {
+        left: offset.x + (landscape ? width + 24 : 8),
+        top: offset.y + (landscape ? 12 : height + 24),
+        right: offset.x + viewport.width - 8,
+        bottom: offset.y + viewport.height - 8,
+      };
+      const searches = this.index >= 4 ? 64 : 0;
+      const variables = {
+        "--tour-stage-left": stage.left,
+        "--tour-stage-top": stage.top,
+        "--tour-stage-width": stage.right - stage.left,
+        "--tour-stage-height": stage.bottom - stage.top,
+        "--tour-stage-bottom": innerHeight - stage.bottom,
+        "--tour-history-height": stage.bottom - stage.top - searches,
+      };
+      for (const [key, value] of Object.entries(variables))
+        document.body.style.setProperty(key, `${value}px`);
+      const reveal = this.ready && this.steps[this.index].reveal?.();
+      if (reveal) {
+        const covers = (this.occluders?.() || []).filter((node) => !node.hidden && !node.contains(reveal));
+        const bottom = Math.min(stage.bottom, ...covers.map((node) => node.getBoundingClientRect().top).filter((y) => y > stage.top));
+        const key = `${this.index}:${reveal.dataset.map}:${Math.round(stage.top)}:${Math.round(bottom)}:${Math.round(stage.left)}`;
+        if (key !== this.revealKey) {
+          this.revealKey = key;
+          const r = reveal.getBoundingClientRect();
+          if (r.top < stage.top + 8 || r.bottom > bottom - 8)
+            window.scrollBy({ top: r.top - stage.top - 8, behavior: "instant" });
+        }
+      }
+    } else {
+      this.clearStage();
+    }
     const rects = (typeof this.targets === "function" ? this.targets() : [])
       .filter(Boolean)
-      .map((target) => {
-        if (target.getClientRects && !target.getClientRects().length) return null;
+      .flatMap((target) => {
+        const element = target.element || target;
+        if (element.getClientRects && !element.getClientRects().length) return [];
         const r = target.getBoundingClientRect ? target.getBoundingClientRect() : target;
-        let left = Math.max(offset.x + 8, r.left - 6), top = Math.max(offset.y + 8, r.top - 6);
-        let right = Math.min(offset.x + viewport.width - 8, r.right + 6), bottom = Math.min(offset.y + viewport.height - 8, r.bottom + 6);
-        for (let ancestor = target.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+        let left = Math.max(stage?.left || offset.x + 8, r.left - 6), top = Math.max(stage?.top || offset.y + 8, r.top - 6);
+        let right = Math.min(stage?.right || offset.x + viewport.width - 8, r.right + 6), bottom = Math.min(stage?.bottom || offset.y + viewport.height - 8, r.bottom + 6);
+        for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
           const style = getComputedStyle(ancestor), bounds = ancestor.getBoundingClientRect();
           if (/(hidden|auto|scroll|clip)/.test(style.overflowX)) {
             left = Math.max(left, bounds.left + ancestor.clientLeft);
@@ -223,13 +281,21 @@ export class GuidedTour {
             bottom = Math.min(bottom, bounds.top + ancestor.clientTop + ancestor.clientHeight);
           }
         }
-        return { left: left - offset.x, top: top - offset.y, right: right - offset.x, bottom: bottom - offset.y, width: right - left, height: bottom - top };
-      }).filter((r) => r && r.width > 0 && r.height > 0);
-    this.card.style.width = `${Math.min(340, viewport.width - 24)}px`;
-    const { width, height } = this.card.getBoundingClientRect();
-    const p = tourPosition(rects, width, height, viewport);
-    this.card.style.left = `${p.x}px`;
-    this.card.style.top = `${p.y}px`;
+        if (right <= left || bottom <= top) return [];
+        const covers = (this.occluders?.() || [])
+          .filter((node) => !node.hidden && !node.contains(element) && !element.contains?.(node))
+          .map((node) => node.getBoundingClientRect());
+        return uncoveredRects({ left, top, right, bottom }, covers).map((piece) => ({
+          left: piece.left - offset.x, top: piece.top - offset.y,
+          right: piece.right - offset.x, bottom: piece.bottom - offset.y,
+          width: piece.right - piece.left, height: piece.bottom - piece.top,
+        }));
+      });
+    if (!phone) {
+      const p = tourPosition(rects, width, height, viewport);
+      this.card.style.left = `${p.x}px`;
+      this.card.style.top = `${p.y}px`;
+    }
     const shape = (r) =>
       `x="${r.left}" y="${r.top}" width="${r.width}" height="${r.height}" rx="5"`;
     const signature = JSON.stringify(rects);
@@ -246,6 +312,12 @@ export class GuidedTour {
         .join("");
     }
   }
+  clearStage() {
+    document.body.classList.remove("tour-phone", "tour-landscape");
+    for (const key of ["left", "top", "width", "height", "bottom"])
+      document.body.style.removeProperty(`--tour-stage-${key}`);
+    document.body.style.removeProperty("--tour-history-height");
+  }
   async finish(intent) {
     if (!this.open) return;
     const epoch = ++this.epoch,
@@ -254,6 +326,8 @@ export class GuidedTour {
     cancelAnimationFrame(this.animation);
     this.dialog.close();
     this.restoreInteraction();
+    this.clearStage();
+    delete document.body.dataset.tourStep;
     await this.onClose(intent);
     if (
       intent !== "play" &&

@@ -492,6 +492,7 @@ function followReplayRoom(point) {
     view.y = next.y;
   }
   const phone = matchMedia("(max-width: 800px)").matches;
+  if (document.body.classList.contains("tour-phone")) return;
   if (changed || (phone && revealReplayRoom)) {
     revealReplayRoom = false;
     if (phone && $("inspector").classList.contains("expanded")) return;
@@ -2006,6 +2007,7 @@ function tourCellRect() {
       (((cell.y * 32 - 8 - view.y) * scale + c.height / 2) * r.height) /
       c.height;
   return {
+    element: c,
     left: Math.max(r.left, r.left + x),
     top: Math.max(r.top, r.top + y),
     right: Math.min(r.right, r.left + x + (32 * scale * r.width) / c.width),
@@ -2025,20 +2027,24 @@ function tourCell() {
     )[0];
 }
 const tour = new GuidedTour({
+  occluders: () => [$("inspector"), $("route-preview"), ...(document.body.classList.contains("tour-phone") && tour.index >= 4 ? [$("branches")] : [])],
   steps: [
     {
+      reveal: () => tourMap(),
       title: "Watch the search explore",
       copy: "Each warm cell marks real search activity. Green, orange and red show where exploration is concentrated. Activity cools as the search moves on; visited ground stays blue.",
       targets: () => [tourMap()],
       interactive: () => [$("map-rows"), $("pause")],
     },
     {
+      reveal: () => tourMap(),
       title: "One location, many histories",
       copy: "Click a cell to inspect the states retained there. We’ve opened a real one: each route is a different history that brought Nova to this location.",
       targets: () => [$("state-list"), tourCellRect(), $("route-preview").hidden ? null : $("route-preview")],
       interactive: () => [$("state-list"), $("map-rows"), $("route-preview")],
     },
     {
+      reveal: () => document.querySelector(`.map-row[data-map="${markerPoint()?.level ?? tourSession?.cell?.level}"] canvas`),
       title: "Follow one route",
       copy: "Watch this route’s history, or scrub to any frame. Its gold trail follows the original controller inputs across the maps.",
       targets: () => [
@@ -2052,14 +2058,14 @@ const tour = new GuidedTour({
     {
       title: "🎮 Step into the experiment",
       copy: "Play from here gives you control at the displayed frame. Your inputs create a branch from this moment—like pausing a software test to debug it live.",
-      targets: () => [$("take-control"), document.querySelector(".screen"), $("game-controls").hidden ? null : $("game-controls")],
+      targets: () => [$("take-control").hidden ? $("game-controls") : $("take-control"), document.querySelector(".screen")],
       interactive: () => [$("inspector")],
     },
     {
       title: "Guide what happens next",
       copy: "After playing, Branch search from here sends the search off from your new moment. Discard branch returns to the existing search. Your new search appears in Searches on the left.",
       targets: () => [
-        $("search-here").hidden ? $("take-control") : $("search-here"),
+        $("inspector").hidden ? null : document.querySelector(".branch-actions"),
         $("branches"),
       ],
       interactive: () => [$("inspector"), $("branches")],
@@ -2092,6 +2098,7 @@ const tour = new GuidedTour({
   },
   async beforeStep(index, valid) {
     hideRoutePreview();
+    if (index <= 2) expandInspector(false);
     if (controlMode && index !== 3 && index !== 4) stopControl();
     if (index === 5) return;
     if (index !== 2) {
@@ -2149,7 +2156,7 @@ const tour = new GuidedTour({
       $("state-list")
         .querySelector(".selected")
         ?.scrollIntoView({ block: "nearest", behavior: "instant" });
-    if (index >= 4)
+    if (index >= 4 && !document.body.classList.contains("tour-phone"))
       $("branches").scrollIntoView({
         block: "nearest",
         behavior: "instant",
