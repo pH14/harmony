@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "ae82e5da33a8c771d00c091d66be0db299127221",
+    "commit": "9461e5fabc8b326867e70504b34016b4c467e179",
     "build": "locally verified static build",
-    "checks": "Production build; desktop/phone browser replay and nested branches; History collapse/reopen; 320px, 390px and landscape controller layout; live tour audio and interactions",
-    "asset_manifest_sha256": "abc1b83ad5b81334c4b2aa8223e93485e696951646d3c754bd06a358153e19da"
+    "checks": "Production build and 46 helper tests; desktop/phone exact replay and nested branches; History collapse/reopen; mobile touch interaction matrix; unobstructed interactive tours with route selection, held controller input, rotation, discard and admission at 320px, 390px and landscape",
+    "asset_manifest_sha256": "1709281109fa52f5b5f99ae93ef0a67751bbfa97b4efd4b09f837a8deec77ae0"
   },
   "raft": {
     "commit": "28791e77a",
