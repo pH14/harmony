@@ -1278,3 +1278,11 @@ dialog h2 {
 .tour-landscape .transport .replay-actions #sound { flex: 0 0 30px; width: 30px; height: 30px; padding: 5px; }
 
 @media (hover: none) { .state { min-height: 40px; } }
+
+.timeline-row > button[data-search] { font-size: 11px; font-variant-numeric: tabular-nums; }
+.branches li > ol { margin-left: 3px; padding-left: 3px; }
+.branches button .search-origin { margin-top: 2px; font-size: 10px; opacity: 1; overflow: hidden; text-overflow: ellipsis; }
+.branches button .search-parent { overflow: hidden; text-overflow: ellipsis; }
+
+.search-time { display: inline-block; white-space: nowrap; }
+.branches button[aria-pressed="true"]:has(.search-origin)::before { content: none; }

@@ -253,7 +253,7 @@ function drawNovas(ctx, level, scale) {
   ctx.restore();
   return count;
 }
-let searchChoices = [{ id: 0, label: "Main", parent: null }],
+let searchChoices = [{ id: 0, parent: null }],
   branchPreview = null,
   routeHover = null,
   previewTimer;
@@ -320,6 +320,12 @@ function previewBranch(id) {
   if (room !== undefined && room !== mapLevel) setRoom(room, true);
   drawMap(performance.now());
 }
+function searchTime(search) {
+  return `${replayTime(search.origin.frames)}.${Math.floor(search.origin.frames % 60 / 6)}`;
+}
+function searchLabel(search) {
+  return search.id === 0 ? "Main" : `${maps.get(search.origin.level)?.label ?? "Gameplay"} at ${searchTime(search)}`;
+}
 function renderBranches() {
   const pauseControl = $("pause"), resetControl = $("reset");
   const list = (parent, depth = 0) => {
@@ -328,15 +334,28 @@ function renderBranches() {
       const li = document.createElement("li"), button = document.createElement("button");
       li.dataset.searchNode = search.id;
       button.dataset.search = search.id;
-      button.textContent = search.label;
+      const label = searchLabel(search);
+      button.textContent = search.id === 0 ? "Main" : "";
+      if (search.id !== 0) {
+        const time = document.createElement("span");
+        time.className = "search-time";
+        time.textContent = `↳ ${searchTime(search)}`;
+        button.append(time);
+        const room = document.createElement("small");
+        room.className = "search-origin";
+        room.textContent = maps.get(search.origin.level)?.label ?? "Gameplay";
+        button.append(room);
+        button.setAttribute("aria-label", `Search from ${label}, branch ${search.id}`);
+      }
       if (depth > 3) {
-        const parentLabel = searchChoices.find((s) => s.id === search.parent)?.label;
+        const parentSearch = searchChoices.find((s) => s.id === search.parent);
         const ancestry = document.createElement("small");
-        ancestry.textContent = `from ${parentLabel}`;
+        ancestry.className = "search-parent";
+        ancestry.textContent = `from ${parentSearch?.id ? searchTime(parentSearch) : "Main"}`;
         button.append(ancestry);
       }
       button.setAttribute("aria-pressed", search.id === activeSearch);
-      button.title = search.branch ? `Forked at ${replayTime(search.branch.parent_frame)}` : "Original search";
+      button.title = search.origin ? `Search from ${label} · frame ${fmt(search.origin.frames)} · branch ${search.id}` : "Original search";
       button.disabled = branchBusy || controlMode;
       button.onclick = () => switchSearch(search.id);
       button.onpointerenter = (e) => { if (e.pointerType === "mouse") previewBranch(search.id); };
@@ -351,8 +370,8 @@ function renderBranches() {
       if (search.id !== activeSearch) {
         play.className = "icon-button";
         play.dataset.resumeSearch = search.id;
-        play.setAttribute("aria-label", `Resume ${search.label}`);
-        play.title = `Resume ${search.label}`;
+        play.setAttribute("aria-label", `Resume ${label}`);
+        play.title = `Resume ${label}`;
         play.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>';
         play.onclick = () => switchSearch(search.id);
       }
@@ -360,8 +379,8 @@ function renderBranches() {
       if (search.id !== 0) {
         action.className = "icon-button";
         action.dataset.deleteSearch = search.id;
-        action.setAttribute("aria-label", `Delete ${search.label}`);
-        action.title = `Delete ${search.label}`;
+        action.setAttribute("aria-label", `Delete ${label}`);
+        action.title = `Delete ${label}`;
         action.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
         action.onclick = () => deleteSearch(search.id);
       }
@@ -803,7 +822,7 @@ function startSearch(level = bootLevel) {
   segments = [];
   views.clear();
   closeInspector();
-  searchChoices = [{ id: 0, label: "Main", parent: null }];
+  searchChoices = [{ id: 0, parent: null }];
   branchPreview = null;
   hideRoutePreview();
   routePreviews.clear();
@@ -931,7 +950,7 @@ function startSearch(level = bootLevel) {
           closeInspector();
           revealBranchOrigin();
           $("branch-feedback").textContent =
-            `Branch ${activeSearch} is searching from this frame.`;
+            `${searchLabel(searchChoices.find((s) => s.id === activeSearch))} is searching from this frame.`;
           updateBranchControls();
           $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
           if (tour.open && [4, 5].includes(handoffTourStep) && tour.index === handoffTourStep) tour.go(handoffTourStep + 1);

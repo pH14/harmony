@@ -15,7 +15,7 @@ async function open(options) {
       constructor(...args) {
         super(...args);
         this.addEventListener('message', ({data}) => {
-          if (data.type === 'ready') window.novaReady = {active: data.active, root: data.state};
+          if (data.type === 'ready') window.novaReady = {active: data.active, root: data.state, searches: data.searches};
           if (data.type === 'batch') window.novaMemory = data.snapshot_bytes;
           if (data.type === 'paused') window.novaPaused = (window.novaPaused || 0) + 1;
         });
@@ -85,9 +85,23 @@ try {
     await desktop.locator('#search-here').click();
     await desktop.waitForFunction(id => window.novaReady.active === id && document.querySelector('#inspector').hidden && !document.querySelector('#pause').disabled, id);
     assert.equal(await desktop.locator(`li[data-search-node="${id-1}"] > ol > li[data-search-node="${id}"]`).count(), 1);
+    const origin = await desktop.evaluate(() => window.novaReady.searches.find(s => s.id === window.novaReady.active).origin);
+    const nativeRoot = await desktop.evaluate(() => window.novaReady.root);
+    assert.equal(origin.frames,nativeRoot.frames,'Branch time is its exact verified search root after gameplay');
+    assert.equal(origin.level,nativeRoot.observation.level);
+    const time = `${Math.floor(origin.frames/3600)}:${String(Math.floor(origin.frames/60)%60).padStart(2,'0')}.${Math.floor(origin.frames%60/6)}`;
+    const label = desktop.locator(`[data-search="${id}"]`);
+    assert.ok((await label.innerText()).startsWith(`↳ ${time}\n`));
+    assert.equal(await label.locator('.search-origin').innerText(), await desktop.locator(`.map-row[data-map="${origin.level}"] .area-label`).innerText());
+    assert.match(await label.getAttribute('title'),new RegExp(`frame ${origin.frames.toLocaleString('en-US')} · branch ${id}`));
+    assert.equal(await label.evaluate(b => {
+      const r=b.querySelector('.search-time').getBoundingClientRect();
+      return r.right <= b.getBoundingClientRect().right - parseFloat(getComputedStyle(b).paddingRight) + 1;
+    }),true,'The complete starting timestamp stays readable through deep nesting');
     assert.ok(Math.abs(await desktop.locator('.exploration').evaluate(e => e.getBoundingClientRect().width) - width) < 1, 'Tree depth must not resize the maps');
   }
-  assert.equal(await desktop.locator('[data-search="4"] small').innerText(), 'from Branch 3');
+  const parentTime = (await desktop.locator('[data-search="3"]').innerText()).split('\n')[0].replace('↳ ','');
+  assert.equal(await desktop.locator('[data-search="4"] .search-parent').innerText(), `from ${parentTime}`);
   await desktop.screenshot({path: 'test-results/interaction-deep-tree.png'});
   assert.equal(await desktop.locator('[data-search-node="0"] > .timeline-row #reset').count(),1);
   assert.equal(await desktop.locator('[data-search-node="4"] > .timeline-row [data-delete-search="4"]').count(),1);
@@ -109,7 +123,7 @@ try {
   await desktop.waitForTimeout(100);
   await desktop.locator('#search-here').click();
   await desktop.waitForFunction(() => window.novaReady.active === 5 && !document.querySelector('#pause').disabled);
-  assert.equal(await desktop.locator('[data-search="5"]').innerText(),'Branch 5','Deleted branch IDs never alias old states');
+  assert.match(await desktop.locator('[data-search="5"]').getAttribute('aria-label'), /branch 5$/, 'Deleted branch IDs never alias old states');
 
   await desktop.close();
   const phone = await open({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, deviceScaleFactor: 1});

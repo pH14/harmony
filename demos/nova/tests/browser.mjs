@@ -830,7 +830,7 @@ try {
   );
   assert.match(
     await page.locator("#branch-feedback").textContent(),
-    /Branch 1 is searching/,
+    / at \d+:\d{2}\.\d is searching/,
   );
   assert.equal(
     await page.evaluate(() => window.novaTestReady.branchFocused),

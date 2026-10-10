@@ -142,7 +142,12 @@ branches. A budget stop is visible and does not claim a win.
 
 A silent preview follows frontier discoveries until the visitor interacts. It
 never draws a replay marker while the history pane is closed; only an intentional
-branch origin remains highlighted on the search map. Empty-cell selection also
+branch origin remains highlighted on the search map. Searches identifies each
+branch with a fork arrow, its immutable starting gameplay time (to a tenth of a
+second) and room. These come from the verified native branch root, rather than
+the selected replay or moving search frontier. Main keeps its name; exact frames
+and stable IDs remain in accessible labels/tooltips, with parent-time context
+when the tree exceeds three nested levels. Empty-cell selection also
 clears the previous replay marker.
 Selecting a state replays its controller history from the selected starting-level root in a
 second emulator. Endpoint snapshots are compared byte for byte after
