@@ -10,7 +10,8 @@ use crate::{
     },
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        MM2_WEAPONS, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Tier, preference_tuple,
+        MM2_WEAPONS, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Tier,
+        preference_tuple,
     },
     search::archive::{
         Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
@@ -48,10 +49,7 @@ pub struct Mm2ArchiveKey {
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
-    type Place = (
-        (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool),
-        (u8, u8, u8),
-    );
+    type Place = ((u8, u8, u8, u8, u8, u8, u8, u8, u8, bool), (u8, u8, u8));
     type Progress = Mm2Tier;
     type Identity = (u8, u8, u8, u8);
 
@@ -375,7 +373,14 @@ mod tests {
             robot_masters: 3,
             ..first.tier
         };
-        assert!(Mm2ArchiveKey { tier: more, ..first }.progress() > first.progress());
+        assert!(
+            Mm2ArchiveKey {
+                tier: more,
+                ..first
+            }
+            .progress()
+                > first.progress()
+        );
     }
 
     #[test]

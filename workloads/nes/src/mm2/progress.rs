@@ -108,12 +108,18 @@ impl NamedProgress {
         }
         for stage in 0..MM2_STAGE_COUNT {
             if state.weapons_obtained & (1 << stage) != 0 {
-                names.push(format!("{}_defeated", stage_name(stage).unwrap_or_default()));
+                names.push(format!(
+                    "{}_defeated",
+                    stage_name(stage).unwrap_or_default()
+                ));
             }
         }
         if state.weapons_obtained == u8::MAX {
             for cleared in MM2_FIRST_WILY_STAGE..state.stage.min(MM2_FIRST_WILY_STAGE + 6) {
-                names.push(format!("{}_defeated", stage_name(cleared).unwrap_or_default()));
+                names.push(format!(
+                    "{}_defeated",
+                    stage_name(cleared).unwrap_or_default()
+                ));
             }
         }
         let Some(here) = stage_name(state.stage) else {
@@ -131,7 +137,9 @@ impl NamedProgress {
             && state.boss_fight_underway()
             && state.boss_phase >= 2;
         if state.stage == WILY5 {
-            for (bit, refight) in (0..MM2_STAGE_COUNT).filter_map(|bit| Some((bit, stage_name(bit)?))) {
+            for (bit, refight) in
+                (0..MM2_STAGE_COUNT).filter_map(|bit| Some((bit, stage_name(bit)?)))
+            {
                 if state.refights & (1 << bit) != 0 {
                     names.push(format!("{here}_{refight}_refight"));
                 }
@@ -153,7 +161,9 @@ impl NamedProgress {
             if !is_route_milestone(&name) || self.first_seen.contains_key(&name) {
                 self.first_seen.insert(name, seen);
             } else {
-                return Err(format!("search checkpoint names an unknown milestone {name}"));
+                return Err(format!(
+                    "search checkpoint names an unknown milestone {name}"
+                ));
             }
         }
         Ok(())
@@ -236,7 +246,12 @@ mod tests {
         let mut hub = playing(12, u8::MAX);
         hub.refights = 0x81;
         let names = NamedProgress::reached(&at(hub));
-        for name in ["wily4_defeated", "wily1_defeated", "wily5_heat_refight", "wily5_crash_refight"] {
+        for name in [
+            "wily4_defeated",
+            "wily1_defeated",
+            "wily5_heat_refight",
+            "wily5_crash_refight",
+        ] {
             assert!(names.contains(&name.to_owned()), "{name}");
         }
         assert!(!names.contains(&"wily5_defeated".to_owned()));
@@ -247,7 +262,10 @@ mod tests {
         let mut ending = at(playing(5, u8::MAX));
         ending.ending = true;
         ending.dead = true;
-        assert_eq!(NamedProgress::reached(&ending), vec!["wily6_defeated", "ending"]);
+        assert_eq!(
+            NamedProgress::reached(&ending),
+            vec!["wily6_defeated", "ending"]
+        );
     }
 
     #[test]
@@ -264,6 +282,10 @@ mod tests {
             ])
             .expect("restore");
         assert_eq!(progress.first_seen["crash_room_7"], stamp);
-        assert!(progress.restore(vec![("kraid_room".to_owned(), stamp)]).is_err());
+        assert!(
+            progress
+                .restore(vec![("kraid_room".to_owned(), stamp)])
+                .is_err()
+        );
     }
 }

@@ -23,7 +23,12 @@ fn report(index: usize, target: &Mm2Target) -> Result<(), Box<dyn Error>> {
         state.stage,
         state.tier().robot_masters,
         state.refights,
-        u8::from(target.last_action_observations().iter().any(|obs| obs.arrived)),
+        u8::from(
+            target
+                .last_action_observations()
+                .iter()
+                .any(|obs| obs.arrived)
+        ),
         state.screen,
         state.room,
         state.x,
