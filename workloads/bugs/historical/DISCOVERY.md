@@ -556,3 +556,15 @@ made after a general-arm measurement restarts every affected measurement.
    [the runtime](../../faults/runtime/README.md#forked-processes)), and the
    same script takes 23.0 seconds. Every instrumented case runs more
    executions in the same budget, so every arm is measured again.
+
+10. **Learned fault mix** (after the held-out measurement). The fault search
+    drew every suffix action uniformly from the alphabet, so about half of all
+    draws killed or restarted a process whatever that had produced, and no
+    action that had opened a new archive slot was ever drawn again. Searches
+    now use the searcher's energy-splice mixture (see
+    [faults](../../faults/README.md)): a fresh alphabet draw, a step from the
+    actions of retained inputs, or a splice of another slot holder's route,
+    each with a share that decays with the work it spends without opening a
+    slot. The search policy changes for every arm, so every arm is measured
+    again, against the alphabet-only measurement of correction 9's commit as
+    its paired baseline.

@@ -298,7 +298,11 @@ drawn from the retained-input table is held to the same rule and falls through
 to the alphabet when its node is not ready, so the readiness a run recorded
 bounds every draw rather than the alphabet alone. The adapter supplies that
 alphabet and the duration each drawn action carries; the searcher owns the suffix draw and the
-retained-input table. The continuous client and oracle remain image-owned
+retained-input table. Searches use the searcher's energy-splice mixture, so the
+mix of fault kinds is learned rather than uniform: each strategy (a fresh
+alphabet draw, a step drawn from actions that opened new archive slots, or a
+splice of another slot holder's route) keeps a share that decays with the work
+it spends without opening a slot. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 
