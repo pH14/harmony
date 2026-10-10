@@ -52,7 +52,11 @@ fn metroid_game(
 
 fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Result<Option<I>> {
     root_input
-        .map(|path| Ok(serde_json::from_reader(BufReader::new(fs::File::open(path)?))?))
+        .map(|path| {
+            Ok(serde_json::from_reader(BufReader::new(fs::File::open(
+                path,
+            )?))?)
+        })
         .transpose()
 }
 
@@ -84,9 +88,7 @@ fn main() -> Result<()> {
                     || (request.whole_game && request.stage.is_some())
                     || (!request.whole_game && request.root_input.is_some()) =>
             {
-                return Err(
-                    "MM2 takes a stage, or whole_game with an optional root_input".into(),
-                );
+                return Err("MM2 takes a stage, or whole_game with an optional root_input".into());
             }
             "stb" if request.level.is_some() || request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());

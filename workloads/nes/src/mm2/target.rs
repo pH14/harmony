@@ -261,8 +261,7 @@ impl Mm2MechanicalState {
     }
 
     fn last_castle_boss(self) -> bool {
-        self.stage != WILY5_STAGE
-            || (self.refights == u8::MAX && self.current_boss == WILY_MACHINE)
+        self.stage != WILY5_STAGE || (self.refights == u8::MAX && self.current_boss == WILY_MACHINE)
     }
 
     #[must_use]
@@ -430,7 +429,8 @@ fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
             let hit = *current.get(ENEMY_HIT_TABLE + enemy)? != 0;
             let id = *current.get(OBJECT_ID_TABLE + object)?;
             let same = *prior.get(OBJECT_ID_TABLE + object)? == id
-                && prior.get(ENEMY_INDEX_TABLE + enemy)? == current.get(ENEMY_INDEX_TABLE + enemy)?;
+                && prior.get(ENEMY_INDEX_TABLE + enemy)?
+                    == current.get(ENEMY_INDEX_TABLE + enemy)?;
             let killed = after == 0 && id == ENEMY_KILLED_ID;
             (active && hit && (same || killed) && after < before)
                 .then(|| before.saturating_sub(after).min(ENEMY_HIT_CAP))
@@ -489,7 +489,11 @@ pub fn preference_tuple(state: Mm2MechanicalState) -> (Mm2Tier, u8, u16) {
 
 #[must_use]
 pub fn encounter(state: Mm2MechanicalState) -> (u8, u8, u8) {
-    (state.refights, state.refight_boss(), state.boss_intro_step())
+    (
+        state.refights,
+        state.refight_boss(),
+        state.boss_intro_step(),
+    )
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -532,7 +536,7 @@ fn transition(state: Mm2MechanicalState) -> Option<Transition> {
     ((MM2_FIRST_WILY_STAGE..MM2_LAST_WILY_STAGE).contains(&state.stage)
         && state.boss_phase == BOSS_PHASE_CLEARED
         && state.last_castle_boss())
-        .then_some(Transition::Castle(state.stage))
+    .then_some(Transition::Castle(state.stage))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1316,7 +1320,8 @@ impl Target for Mm2Target {
             } else {
                 state.lives < genesis.lives || state.stage < genesis.stage
             };
-            ending = whole_game && previous.stage == MM2_LAST_WILY_STAGE && state.final_stage_cleared();
+            ending =
+                whole_game && previous.stage == MM2_LAST_WILY_STAGE && state.final_stage_cleared();
             previous = state;
             if state.screen != prior_state.screen || state.stage != prior_state.stage {
                 enemy_damage = 0;
@@ -1325,7 +1330,11 @@ impl Target for Mm2Target {
                 .saturating_add(enemy_damage_between(&prior_frame, wram))
                 .min(ENEMY_DAMAGE_CAP);
             state.enemy_damage = enemy_damage;
-            boss_intro_frames = if state.boss_intro() { boss_intro_frames.saturating_add(1) } else { 0 };
+            boss_intro_frames = if state.boss_intro() {
+                boss_intro_frames.saturating_add(1)
+            } else {
+                0
+            };
             state.boss_intro_frames = boss_intro_frames;
             prior_frame = *wram;
             let escaped = prior_state.boss_phase >= BOSS_PHASE_FIGHTING
@@ -1599,7 +1608,12 @@ mod tests {
         assert_eq!((borrowed.stage, borrowed.refights), (WILY5_STAGE, 0x80));
         assert_eq!(decode_state(&wram).expect("decode").stage, 4);
         wram[0x2c] = PLAYER_STATE_STANDING;
-        assert_eq!(decode_state_after(&wram, Some(WILY5_STAGE)).expect("decode").stage, 4);
+        assert_eq!(
+            decode_state_after(&wram, Some(WILY5_STAGE))
+                .expect("decode")
+                .stage,
+            4
+        );
     }
 
     #[test]

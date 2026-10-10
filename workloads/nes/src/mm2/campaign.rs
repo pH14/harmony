@@ -303,12 +303,20 @@ impl Mm2CampaignEvidence {
                 continue;
             }
             let by_health = (state.health, state.weapon_energy);
-            if self.best_health.get(&name).is_none_or(|best| by_health > *best) {
+            if self
+                .best_health
+                .get(&name)
+                .is_none_or(|best| by_health > *best)
+            {
                 self.best_health.insert(name.clone(), by_health);
                 improved.push(format!("{name}-health"));
             }
             let by_energy = (state.weapon_energy, state.health);
-            if self.best_energy.get(&name).is_none_or(|best| by_energy > *best) {
+            if self
+                .best_energy
+                .get(&name)
+                .is_none_or(|best| by_energy > *best)
+            {
                 self.best_energy.insert(name.clone(), by_energy);
                 improved.push(format!("{name}-energy"));
             }
@@ -946,7 +954,10 @@ impl Evaluation for Mm2Game {
             || (action.milestones.defeated_boss && evidence.first_inputs.first_clear.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() || !discoveries.is_empty() || !improved.is_empty()
+        if first_input_needed
+            || champion.is_some()
+            || !discoveries.is_empty()
+            || !improved.is_empty()
         {
             let input = input()?;
             self.publish_inputs(discoveries.into_iter().chain(improved), &input)?;
