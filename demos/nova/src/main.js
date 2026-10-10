@@ -37,8 +37,8 @@ document.querySelector("#app").innerHTML = `
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 <p class="game-attribution"><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
 </section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2>History</h2><span id="film-title"></span></div><div><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-label="Close history inspector">×</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><button id="play" disabled>▶ Replay</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>Jump</span></span><span><kbd>X</kbd><span>Ability</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div>
-<aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Nova gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><button id="play" disabled>▶ Replay</button><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>Jump</span></span><span><kbd>X</kbd><span>Ability</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="Use ability">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
+<aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Retained history</h2><span id="cell-visits">Live</span></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><button id="credits">Credits & source</button></footer>
 <div id="route-preview" class="route-preview" hidden><canvas width="256" height="224"></canvas><span></span></div><div id="error" role="alert" hidden></div>
 <dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Choose a starting point</h2><p>A fresh search, from any level.</p></div><div id="level-worlds"></div></dialog>
@@ -606,7 +606,7 @@ async function selectState(state, autoplay = false) {
   $("selection-hint").hidden = true;
   recordTrailAtRoot();
   frameCredit = 0;
-  $("film-title").textContent = routeName(state.id);
+  $("film-title").textContent = "History";
   $("film-title").dataset.stateId = state.id;
   $("film-title").title = `State #${state.id} · ${fmt(state.frames)} frames`;
   $("scrub").max = state.frames;
@@ -678,7 +678,7 @@ function routeName(id) {
 }
 function renderStates() {
   if (current) {
-    $("film-title").textContent = routeName(current.id);
+    $("film-title").textContent = "History";
     $("film-title").dataset.stateId = current.id;
     $("film-title").title =
       `State #${current.id} · ${fmt(current.frames)} frames`;
@@ -769,7 +769,7 @@ function inspect(cell) {
   segments = [];
   trace = [];
   $("verification").textContent = "Loading selected history";
-  $("film-title").textContent = "Loading history…";
+  $("film-title").textContent = "History";
   updateBranchControls();
   $("cell-title").textContent = `Cell ${cell.x}, ${cell.y}`;
   $("cell-visits").textContent = `${fmt(cell.visits)} visits`;
@@ -1533,7 +1533,12 @@ $("credits").onclick = () =>
   showInfo(
     `<span class="eyebrow">CREDITS & LICENSING</span><h2>Nova the Squirrel</h2><p>Created by <a href="https://novasquirrel.com/">NovaSquirrel</a>. <a href="https://novasquirrel.itch.io/nova-the-squirrel">Play the original game</a>.</p><p>The game’s code is GPL-3.0-or-later. Its original graphics, sound and the gameplay imagery shown here are <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>. This is a noncommercial software demonstration, not endorsed by NovaSquirrel. The original character designs and gameplay are preserved. Level panoramas are assembled from gameplay screenshots; browser maps add heat overlays. Original artwork is unchanged.</p><p>QuickNES library sources: LGPL-2.1-or-later. The compiled libretro browser core is distributed under GPL-2.0 terms with a GPL-2.0-or-later C++ shim. The separate Harmony browser interface and Rust search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits and restrictions</a> · <a href="licenses/nova-source.tar.gz">Nova corresponding source</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> \u00b7 <a href="licenses/rust-dependencies.tar.gz">Rust dependency sources and notices</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
   );
+function hideHistoryRail() {
+  $("history-rail").hidden = true;
+  $("workspace").classList.remove("history-collapsed");
+}
 function openInspector() {
+  hideHistoryRail();
   if ($("inspector").hidden) {
     inspectorReturnFocus = document.activeElement;
     revealReplayRoom = true;
@@ -1542,6 +1547,7 @@ function openInspector() {
   $("workspace").classList.add("inspect-open");
 }
 function closeInspector({ restoreFocus = true } = {}) {
+  hideHistoryRail();
   hideRoutePreview();
   stopControl();
   music.stop();
@@ -1629,7 +1635,19 @@ function stopControl() {
   }
   updateBranchControls();
 }
-$("close-inspector").onclick = closeInspector;
+$("close-inspector").onclick = () => {
+  const retained = !!current && !playSession;
+  closeInspector();
+  if (retained) {
+    $("history-rail").hidden = false;
+    $("workspace").classList.add("history-collapsed");
+    $("history-reopen").focus({ preventScroll: true });
+  }
+};
+$("history-reopen").onclick = () => {
+  openInspector();
+  $("close-inspector").focus({ preventScroll: true });
+};
 function expandInspector(expanded) {
   $("inspector").classList.toggle("expanded", expanded);
   $("expand-inspector").setAttribute("aria-expanded", expanded);
@@ -1677,7 +1695,7 @@ $("take-control").onclick = () => {
   selectedCell = null;
   $("cell-title").textContent = "Your branch";
   $("cell-visits").textContent = `From frame ${fmt(currentFrame)}`;
-  $("film-title").textContent = "Your branch";
+  $("film-title").textContent = "History";
   $("branch-message").hidden = true;
   controller.clear();
   controlMode = true;
@@ -1877,8 +1895,9 @@ function drawTrail(ctx, level, scale, override) {
   ctx.save();
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
-  ctx.strokeStyle = "rgba(255,218,142,.85)";
-  ctx.lineWidth = 1.8 / scale;
+  const screenScale = scale * ctx.canvas.clientWidth / ctx.canvas.width;
+  ctx.strokeStyle = "#fff0b3";
+  ctx.lineWidth = 2.2 / screenScale;
   for (const segment of drawnSegments) {
     if (segment[0]?.level !== level) continue;
     count += segment.length;
@@ -1886,6 +1905,11 @@ function drawTrail(ctx, level, scale, override) {
     segment.forEach((p, i) =>
       i ? ctx.lineTo(p.x, p.y - 8) : ctx.moveTo(p.x, p.y - 8),
     );
+    ctx.save();
+    ctx.strokeStyle = "rgba(22,30,36,.5)";
+    ctx.lineWidth = 4 / screenScale;
+    ctx.stroke();
+    ctx.restore();
     ctx.stroke();
   }
   for (let i = 1; i < drawnSegments.length; i++) {
@@ -2019,10 +2043,11 @@ const tour = new GuidedTour({
       copy: "Watch this route’s history, or scrub to any frame. Its gold trail follows the original controller inputs across the maps.",
       targets: () => [
         document.querySelector(".transport"),
+        $("sound"),
         document.querySelector(".screen"),
         ...[...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0),
       ],
-      interactive: () => [document.querySelector(".transport"), $("state-list"), $("route-preview"), $("map-rows")],
+      interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("route-preview"), $("map-rows")],
     },
     {
       title: "🎮 Step into the experiment",

@@ -401,4 +401,6 @@ Click the World / Level title to choose from all 40 campaign and four bonus leve
 
 Level cards use 256×96 thumbnails built from the original panorama pixels, with the same embedded Creative Commons attribution. The 44 thumbnails together contain about 4.1 MiB of decoded RGBA, rather than decoding full panoramas for gallery cards. Live map panoramas remain unchanged and are retained only for the current level's rooms.
 
-The panes are labeled Searches, Exploration and History. History keeps its heading while the selected route appears beside it. The artwork attribution below the main game maps uses larger text; the footer links to Credits & source.
+The panes are labeled Searches, Exploration and History. History keeps its heading; route names appear only in the retained-history list. The artwork attribution below the main game maps uses larger text; the footer links to Credits & source.
+
+Overview route strokes stay bright gold at a constant screen width, with a dark edge for contrast at small map scales. Retained histories collapse into a reopen control; dismissing human play still discards its draft and resumes the existing search. On phones, Searches places its heading and short scrollable tree in one row. During human play, History places audio in the header, then the screen, a spaced controller and Branch/Discard actions; the retained-route list stays hidden.

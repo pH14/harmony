@@ -166,7 +166,13 @@ try {
   await page.screenshot({ path: "test-results/tour-desktop-routes.png" });
   for (let step = 2; step < 6; step++) {
     await next(page, step);
-    if (step === 2) await watchDuringTour(page);
+    if (step === 2) {
+      await page.locator('#sound').click();
+      assert.equal(await page.locator('#sound').getAttribute('aria-pressed'), 'true');
+      await page.locator('#sound').click();
+      assert.equal(await page.locator('#sound').getAttribute('aria-pressed'), 'false');
+      await watchDuringTour(page);
+    }
     if (step === 3) {
       assert.match(await page.locator('#tour-copy').innerText(), /branch/);
       assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), false);

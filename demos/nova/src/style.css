@@ -1044,13 +1044,7 @@ dialog h2 {
   font-size: 8px;
   margin-right: 8px;
 }
-.branches[data-preview]::after {
-  content: "Previewing branch";
-  display: block;
-  margin: 12px 10px 0;
-  font-size: 10px;
-  color: var(--muted);
-}
+
 .route-preview {
   position: fixed;
   z-index: 30;
@@ -1080,7 +1074,6 @@ dialog h2 {
   .branches nav { max-height: 144px; overflow: auto; }
   .branches button { min-height: 44px; padding-block: 10px; }
   .branches li > ol { margin-block: 0; }
-  .branches[data-preview]::after { display: none; }
 }
 
 .theme-button { margin-left: auto; background: transparent; font-size: 20px; padding: 6px 10px; }
@@ -1156,5 +1149,52 @@ dialog h2 {
 .exploration-heading { margin: 12px 0 0; font-size: 13px; font-weight: 500; color: var(--text); }
 .drawer-top > .history-heading { flex: 1; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .history-heading h2 { flex-shrink: 0; }
-#film-title { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .game-attribution { margin: 14px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
+
+.history-controls { display: flex; align-items: center; gap: 6px; }
+.history-controls #sound { width: 30px; height: 30px; }
+.history-controls #close-inspector { width: 28px; height: 30px; padding: 0; font-size: 22px; }
+.action-buttons { display: flex; gap: 14px; align-items: center; }
+.controlling .transport, .controlling .state-picker { display: none; }
+.history-rail { position: sticky; top: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 8px 4px; box-shadow: 0 8px 28px #0002; }
+.history-rail button { width: 32px; padding: 2px; font-size: 20px; background: transparent; }
+.history-rail span { display: none; }
+.workspace.history-collapsed { grid-template-columns: 160px minmax(0, 1fr) 42px; }
+.workspace.timeline-collapsed.history-collapsed { grid-template-columns: 42px minmax(0, 1fr) 42px; }
+@media (max-width: 800px) {
+  .branches { display: grid; grid-template-columns: auto minmax(0, 1fr) 28px; align-items: center; gap: 6px; padding: 4px 8px; }
+  .branches .pane-heading { display: contents; }
+  .branches .pane-heading h2 { grid-column: 1; grid-row: 1; margin: 0; }
+  .branches #timeline-toggle { grid-column: 3; grid-row: 1; min-height: 40px; height: 40px; }
+  .branches nav { grid-column: 2; grid-row: 1; max-height: 92px; min-width: 0; }
+  .branches button { padding-block: 6px; }
+  .branches .timeline-controls button { height: 40px; }
+  .timeline-collapsed .branches { display: flex; justify-content: space-between; padding: 4px 8px; }
+  .timeline-collapsed .pane-heading { display: contents; }
+  .workspace.history-collapsed, .workspace.timeline-collapsed.history-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .history-rail { position: fixed; z-index: 20; bottom: 8px; right: 8px; top: auto; padding: 0; border-radius: 12px; }
+  .history-rail button { width: auto; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 6px 12px; }
+  .history-rail span { display: inline; font-size: 13px; }
+  .history-controls #close-inspector { transform: rotate(90deg); }
+  .inspector:not(.expanded) .transport { grid-template-columns: minmax(0, 1fr) 38px; }
+  .inspector.controlling.expanded { height: auto; max-height: calc(100dvh - 12px); padding: 12px; gap: 10px; }
+  .controlling #expand-inspector { display: none; }
+  .inspector.controlling .screen { max-width: none; width: 100%; margin: 0; padding: 10px; }
+  .inspector.controlling #film { width: min(100%, calc((100dvh - 280px) * 256 / 224)); }
+  .controlling #game-controls { margin: 2px 0 6px; }
+  .controlling .touch-controls { justify-content: space-between; gap: clamp(10px, 3vw, 18px); padding: 8px clamp(0px, calc((100vw - 340px) / 5), 10px) 12px; }
+  .controlling .action-buttons { gap: 14px; }
+  .controlling .action-buttons button { width: 50px; height: 50px; border-radius: 50%; background: var(--raised); box-shadow: 0 3px 0 var(--line); font-weight: 600; }
+  .controlling .action-buttons button:first-child { transform: translateY(8px); }
+  .controlling .action-buttons button:last-child { transform: translateY(-8px); }
+  .controlling .branch-actions { margin: 0; gap: 8px; }
+  .controlling .branch-actions button { line-height: 1.35; }
+}
+
+@media (max-width: 800px) and (max-height: 500px) {
+  .inspector.controlling .film { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 20px; align-items: center; }
+  .inspector.controlling .screen { grid-column: 1; grid-row: 1 / 3; }
+  .inspector.controlling #film { width: min(100%, calc((100dvh - 120px) * 256 / 224)); }
+  .controlling #game-controls { grid-column: 2; grid-row: 1; margin: 0; }
+  .controlling .branch-actions { grid-column: 2; grid-row: 2; }
+}

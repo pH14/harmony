@@ -9,7 +9,7 @@ async function open(options) {
   const page = await browser.newPage(options);
   page.on('pageerror', e => errors.push(e.message));
   await page.addInitScript(key => {
-    localStorage.setItem(key, 'seen');
+    try { localStorage.setItem(key, 'seen'); } catch {}
     const WorkerClass = window.Worker;
     window.Worker = class extends WorkerClass {
       constructor(...args) {
@@ -26,6 +26,8 @@ async function open(options) {
 }
 async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
+  const room = await page.evaluate(() => window.novaReady.root.observation.level);
+  await page.locator(`.map-row[data-map="${room}"] canvas`).scrollIntoViewIfNeeded();
   const point = await page.evaluate(() => {
     const o = window.novaReady.root.observation;
     const c = document.querySelector(`.map-row[data-map="${o.level}"] canvas`), r = c.getBoundingClientRect();
@@ -57,6 +59,14 @@ try {
   const width = await desktop.locator('.exploration').evaluate(e => e.getBoundingClientRect().width);
   assert.ok(width > 1650, 'Large windows should use their available horizontal space');
   await inspectRoot(desktop);
+  assert.equal(await desktop.locator('#film-title').innerText(), 'History');
+  const collapsedFrame = await desktop.locator('#scrub').inputValue();
+  await desktop.locator('#close-inspector').click();
+  assert.equal(await desktop.locator('#inspector').isVisible(), false);
+  assert.equal(await desktop.locator('#history-reopen').isVisible(), true);
+  await desktop.locator('#history-reopen').click();
+  assert.equal(await desktop.locator('#inspector').isVisible(), true);
+  assert.equal(await desktop.locator('#scrub').inputValue(), collapsedFrame);
   await play(desktop);
   await desktop.keyboard.down('ArrowRight');
   await desktop.waitForTimeout(160);
@@ -79,8 +89,22 @@ try {
   await desktop.screenshot({path: 'test-results/interaction-deep-tree.png'});
   await desktop.close();
   const phone = await open({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, deviceScaleFactor: 1});
+  assert.ok((await phone.locator('#branches').boundingBox()).height <= 60, 'A single mobile search should use one compact row');
   await inspectRoot(phone, true);
   await play(phone);
+  assert.equal(await phone.locator('.state-picker').isVisible(), false, 'Playing hides the retained-route list');
+  assert.equal(await phone.locator('.transport').isVisible(), false, 'Replay controls take no space while playing');
+  assert.equal(await phone.locator('#sound').isVisible(), true, 'Audio remains available in the header');
+  const layout = await phone.evaluate(() => {
+    const box = q => document.querySelector(q).getBoundingClientRect();
+    const screen=box('.screen'), controller=box('#game-controls'), actions=box('.branch-actions'), header=box('.drawer-top'), sound=box('#sound'), b=box('[data-button="2"]'), a=box('[data-button="1"]');
+    return {screenBottom:screen.bottom, controllerTop:controller.top, controllerBottom:controller.bottom, actionsTop:actions.top, soundTop:sound.top, soundBottom:sound.bottom, headerTop:header.top, headerBottom:header.bottom, actionGap:a.left-b.right, overflow:document.documentElement.scrollWidth>innerWidth};
+  });
+  assert.ok(layout.controllerTop >= layout.screenBottom && layout.controllerTop-layout.screenBottom <= 24);
+  assert.ok(layout.actionsTop >= layout.controllerBottom);
+  assert.ok(layout.soundTop >= layout.headerTop && layout.soundBottom <= layout.headerBottom);
+  assert.ok(layout.actionGap >= 12, 'The A and B buttons need comfortable separation');
+  assert.equal(layout.overflow, false);
   const cdp = await phone.context().newCDPSession(phone);
   const right = await phone.getByRole('button', {name: 'Move right', exact: true}).boundingBox();
   const jump = await phone.getByRole('button', {name: 'Jump', exact: true}).boundingBox();
@@ -110,6 +134,22 @@ try {
     assert.equal(await phone.locator('#branches').getAttribute('data-preview'), null, 'A first tap switches instead of opening a hover preview');
   }
   await cdp.detach();
+  for (const viewport of [{width:320,height:568},{width:780,height:390}]) {
+    await phone.setViewportSize(viewport);
+    await inspectRoot(phone, true);
+    await play(phone);
+    const geometry = await phone.evaluate(() => ({
+      overflow:document.documentElement.scrollWidth>innerWidth,
+      controls:[...document.querySelectorAll('.touch-controls button,.branch-actions button:not([hidden]),#sound')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};}),
+      width:innerWidth,height:innerHeight,
+    }));
+    assert.equal(geometry.overflow,false);
+    for (const r of geometry.controls) assert.ok(r.left>=0 && r.right<=geometry.width && r.top>=0 && r.bottom<=geometry.height, `Controls must remain visible at ${viewport.width}×${viewport.height}`);
+    await phone.screenshot({path:`test-results/interaction-phone-play-${viewport.width}.png`});
+    await phone.locator('#discard-branch').tap();
+    await phone.waitForFunction(()=>document.querySelector('#inspector').hidden && document.querySelector('#pause').getAttribute('aria-label')==='Pause Search');
+  }
+  await phone.goto('about:blank');
   await phone.close();
   assert.deepEqual(errors, []);
   console.log('Movement trails, gameplay-only branching, discard/close resumption, depth-four stable layout, two-finger controller capture and single-tap mobile branch switching passed.');

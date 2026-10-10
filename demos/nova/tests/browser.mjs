@@ -439,8 +439,8 @@ try {
   );
   assert.equal(
     await page.locator("#film-title").innerText(),
-    selectedRoute.name,
-    "Further search must not renumber the history being watched",
+    "History",
+    "The History pane keeps its heading while search advances",
   );
   assert.equal(
     await page.locator("#state-list .selected .state-name").innerText(),
@@ -888,8 +888,8 @@ try {
   const childState = await page.evaluate(() => window.novaTestStates[0]);
   assert.equal(
     await page.locator("#film-title").innerText(),
-    await page.locator("#state-list .selected .state-name").innerText(),
-    "Search descendants must match their selected route after human play",
+    "History",
+    "The History pane keeps its heading for search descendants",
   );
   const childTape = {
     actions: childState.actions,
