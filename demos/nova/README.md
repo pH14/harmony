@@ -105,7 +105,10 @@ collapsing History or admitting a search visits the branch-decision step before
 Searches, even if the visitor acts early on the gameplay step. The branch-decision
 step highlights only Branch/Discard while a draft is open; its game screen and
 controller remain usable without competing outlines. After the draft closes,
-the spotlight moves to Searches. `npm run test:tour-webkit` is an optional
+the spotlight moves to Searches. The pinned phone Searches pane keeps its list
+in a 44px scroll viewport, rather than letting a multi-branch list overflow the
+56px pane. Its spotlight follows the actual rounded pane boundary without
+illuminating the map below. `npm run test:tour-webkit` is an optional
 Safari-engine regression check after installing Playwright WebKit; it compares
 the action pixels with and without the shade in dark mode, verifies real tap
 targets, and resizes through phone toolbar heights and landscape. Admission advances

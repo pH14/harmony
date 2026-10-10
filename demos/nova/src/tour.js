@@ -271,8 +271,9 @@ export class GuidedTour {
         const element = target.element || target;
         if (element.getClientRects && !element.getClientRects().length) return [];
         const r = target.getBoundingClientRect ? target.getBoundingClientRect() : target;
-        let left = Math.max(stage?.left || offset.x + 8, r.left - 6), top = Math.max(stage?.top || offset.y + 8, r.top - 6);
-        let right = Math.min(stage?.right || offset.x + viewport.width - 8, r.right + 6), bottom = Math.min(stage?.bottom || offset.y + viewport.height - 8, r.bottom + 6);
+        const padding = target.padding ?? 6;
+        let left = Math.max(stage?.left || offset.x + 8, r.left - padding), top = Math.max(stage?.top || offset.y + 8, r.top - padding);
+        let right = Math.min(stage?.right || offset.x + viewport.width - 8, r.right + padding), bottom = Math.min(stage?.bottom || offset.y + viewport.height - 8, r.bottom + padding);
         for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
           const style = getComputedStyle(ancestor), bounds = ancestor.getBoundingClientRect();
           if (/(hidden|auto|scroll|clip)/.test(style.overflowX)) {
@@ -291,7 +292,7 @@ export class GuidedTour {
         return uncoveredRects({ left, top, right, bottom }, covers).map((piece) => ({
           left: piece.left - offset.x, top: piece.top - offset.y,
           right: piece.right - offset.x, bottom: piece.bottom - offset.y,
-          width: piece.right - piece.left, height: piece.bottom - piece.top,
+          width: piece.right - piece.left, height: piece.bottom - piece.top, radius: target.radius ?? 5,
         }));
       });
     if (!phone) {
@@ -320,7 +321,7 @@ export class GuidedTour {
       ping.setAttribute("transform", `translate(${(target.left + target.right) / 2 - offset.x} ${(target.top + target.bottom) / 2 - offset.y})`);
     }
     const shape = (r) =>
-      `x="${r.left}" y="${r.top}" width="${r.width}" height="${r.height}" rx="5"`;
+      `x="${r.left}" y="${r.top}" width="${r.width}" height="${r.height}" rx="${r.radius}"`;
     const signature = JSON.stringify(rects);
     if (signature !== this.signature) {
       this.signature = signature;

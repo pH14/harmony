@@ -2115,6 +2115,12 @@ function tourCell() {
         b.visits - a.visits,
     )[0];
 }
+function searchesSpotlight() {
+  const element = $("branches");
+  return { element, padding: 0, radius: 14,
+    getBoundingClientRect: () => element.getBoundingClientRect(),
+    scrollIntoView: (options) => element.scrollIntoView(options) };
+}
 const tour = new GuidedTour({
   occluders: () => [$("inspector"), ...(document.body.classList.contains("tour-phone") && tour.index >= 5 ? [$("branches")] : [])],
   steps: [
@@ -2181,7 +2187,7 @@ const tour = new GuidedTour({
         "Decide whether you want Harmony to start a new search fresh from where you just left off.",
         "Combining Harmony’s autonomous exploration with your input allows it to explore scenarios that might be challenging for just one of you to reach.",
       ],
-      targets: () => [$("inspector").hidden ? $("branches") : document.querySelector(".branch-actions")],
+      targets: () => [$("inspector").hidden ? searchesSpotlight() : document.querySelector(".branch-actions")],
       interactive: () => [$("inspector"), $("branches")],
     },
     {
@@ -2191,7 +2197,7 @@ const tour = new GuidedTour({
         "Harmony organizes many searches together, showing how each branch relates to its parent.",
         "Now, go have fun!",
       ],
-      targets: () => [$("branches"), ...(branchPreview ? [...document.querySelectorAll(".area-map")] : [])],
+      targets: () => [searchesSpotlight(), ...(branchPreview ? [...document.querySelectorAll(".area-map")] : [])],
       interactive: () => [$("branches")],
     },
   ],

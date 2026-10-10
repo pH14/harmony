@@ -1205,6 +1205,9 @@ dialog h2 {
   position: fixed; z-index: 25; top: var(--tour-stage-top); left: var(--tour-stage-left);
   width: var(--tour-stage-width); max-height: 56px; overflow: auto; animation: none;
 }
+.tour-phone[data-tour-step="5"] .branches nav,
+.tour-phone[data-tour-step="6"] .branches nav { max-height: 44px; animation: none; }
+.tour-phone .branches .search-parent { display: none; }
 .tour-phone main { padding-bottom: 100dvh; }
 .tour-landscape main { width: var(--tour-stage-width); margin-left: var(--tour-stage-left); padding-inline: 0; }
 .tour-landscape .workspace, .tour-landscape .workspace.inspect-open,

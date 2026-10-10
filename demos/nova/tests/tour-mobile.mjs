@@ -165,6 +165,7 @@ try {
     await page.locator('#search-here').tap();
     await ready(page, 6);
     await page.waitForFunction(() => document.querySelector('button[data-search="1"][aria-pressed="true"]') && document.querySelector('#inspector').hidden);
+    await page.locator('button[data-search="0"]').scrollIntoViewIfNeeded();
     await exposed(page.locator('button[data-search="0"]'), true);
     await page.locator('button[data-search="0"]').tap();
     await page.waitForFunction(() => document.querySelector('button[data-search="0"][aria-pressed="true"]'));
