@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "ea5e0054fb06c22cd0af18405483a4355707c582",
+    "commit": "78db43688e2ad24bbedfbcc1a432483cec348d35",
     "build": "locally verified static build",
-    "checks": "Production build and 47 helper tests; revised seven-step tour; same live Movement spotlight in Welcome and Exploration; accessible long narration and real mobile replay, gameplay, branch, discard and reset; verified hovered histories with bright trails and fully lit tour maps; desktop/phone exact replay and nested branches; History collapse/reopen; mobile touch interaction matrix; unobstructed interactive tours with route selection, held controller input, rotation, discard and admission at 320px, 390px and landscape",
-    "asset_manifest_sha256": "fd71b84b02f9ebe66ca27117f1dd15d27bcca600e4b1090f59350cc4c8e941db"
+    "checks": "Production build and 49 helper tests; readable wrapped horizontal and vertical rooms with exact art crops, cross-seam retained-state hits and phone rotation; native branch archive release, surviving children and stable IDs; full replay/audio and phone controller checks; revised seven-step tour; same live Movement spotlight in Welcome and Exploration; accessible long narration and real mobile replay, gameplay, branch, discard and reset; verified hovered histories with bright trails and fully lit tour maps; desktop/phone exact replay and nested branches; History collapse/reopen; mobile touch interaction matrix; unobstructed interactive tours with route selection, held controller input, rotation, discard and admission at 320px, 390px and landscape",
+    "asset_manifest_sha256": "acb1c124d8f38b35e5370ba75ffec6b72b952a748dd54aa2e530f5613322280d"
   },
   "raft": {
     "commit": "28791e77a",
