@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "78db43688e2ad24bbedfbcc1a432483cec348d35",
+    "commit": "c69006733f5fb71121c1b74f17ff670e15098276",
     "build": "locally verified static build",
-    "checks": "Production build and 49 helper tests; readable wrapped horizontal and vertical rooms with exact art crops, cross-seam retained-state hits and phone rotation; native branch archive release, surviving children and stable IDs; full replay/audio and phone controller checks; revised seven-step tour; same live Movement spotlight in Welcome and Exploration; accessible long narration and real mobile replay, gameplay, branch, discard and reset; verified hovered histories with bright trails and fully lit tour maps; desktop/phone exact replay and nested branches; History collapse/reopen; mobile touch interaction matrix; unobstructed interactive tours with route selection, held controller input, rotation, discard and admission at 320px, 390px and landscape",
-    "asset_manifest_sha256": "acb1c124d8f38b35e5370ba75ffec6b72b952a748dd54aa2e530f5613322280d"
+    "checks": "Production build and 49 helper tests; readable wrapped horizontal and vertical rooms with exact art crops, cross-seam retained-state hits and phone rotation; native branch archive release, surviving children and stable IDs; full replay/audio and phone controller checks; revised seven-step tour with a continuously rendered History cell ping, reduced-motion emphasis, compact title/Skip header and one finish action; authentic dead-gameplay draft preservation through admission; same live Movement spotlight in Welcome and Exploration; accessible long narration and real mobile replay, gameplay, branch, discard and reset; verified hovered histories with bright trails and fully lit tour maps; desktop/phone exact replay and nested branches; History collapse/reopen; mobile touch interaction matrix; unobstructed interactive tours with route selection, held controller input, rotation, discard and admission at 320px, 390px and landscape",
+    "asset_manifest_sha256": "5474733bbdbd5f820f58a2517a7266e25fe211f7dd6540b9fd1bac445d8034dc"
   },
   "raft": {
     "commit": "28791e77a",
