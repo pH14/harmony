@@ -111,6 +111,18 @@ class Scoring(unittest.TestCase):
         self.assertEqual(result.outcome, "other-violation")
         self.assertEqual(result.other_violations, ["something else"])
 
+    def test_an_internal_assertion_at_the_fix_site_is_its_own_outcome(self):
+        case = {**CASE, "oracle": {**CASE["oracle"], "fix_functions": ["walCheckpoint"]}}
+        abort = bug(30, [discovery.NODE_EXIT])
+        abort["replay"]["timeline"] = [
+            {"console": "w: sqlite3.c:1: int walCheckpoint(Wal *): Assertion `x' failed.\nHS: 9 node 1 ended"}
+        ]
+        elsewhere = bug(30, [discovery.NODE_EXIT])
+        elsewhere["replay"]["timeline"] = [{"console": "w: a.c:1: int other(void): Assertion `x' failed."}]
+        self.assertEqual(self.outcome(self.campaign("a", bugs=[abort]), case).outcome, "internal-discovery")
+        self.assertEqual(self.outcome(self.campaign("b", bugs=[elsewhere]), case).outcome, "other-violation")
+        self.assertEqual(self.outcome(self.campaign("c", bugs=[abort])).outcome, "other-violation")
+
     def test_a_miss_needs_a_conclusive_check(self):
         self.assertEqual(self.outcome(self.campaign("a")).outcome, "miss")
         self.assertEqual(self.outcome(self.campaign("b", evidence=False)).outcome, "inconclusive")

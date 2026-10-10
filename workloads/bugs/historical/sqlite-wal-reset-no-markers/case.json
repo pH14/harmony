@@ -34,6 +34,9 @@
   "oracle": {
     "assertion": "integrity-check-clean: PRAGMA quick_check returns ok",
     "evidence": "workload: process started",
+    "fix_functions": [
+      "walCheckpoint"
+    ],
     "kind": "always",
     "source": "the fork's own workload assertions, unmodified",
     "detector": "each writer's periodic sweep runs PRAGMA quick_check on three of four sweeps and PRAGMA integrity_check on the rest"

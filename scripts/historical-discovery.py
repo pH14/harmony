@@ -21,13 +21,14 @@ OUTCOMES = (
     "discovery",
     "replay-failure",
     "unconfirmed",
+    "internal-discovery",
     "other-violation",
     "guest-crash",
     "miss",
     "inconclusive",
     "infra-failure",
 )
-ARM_ORDER = {"guided": 0, "general": 1, "ablation": 2}
+ARM_ORDER = {"guided": 0, "general": 1, "ablation": 2, "heldout": 3}
 
 
 @dataclass
@@ -66,6 +67,22 @@ def seconds_at(progress: Path, execution: int, fallback: float) -> float:
         if record.get("executions", 0) >= execution:
             return record.get("search_elapsed_millis", 0) / 1000
     return fallback
+
+
+NODE_EXIT = "workload node ends only by a fault the search injected"
+
+
+def internal_assertion(bugs: list[dict], case: dict) -> bool:
+    functions = case["oracle"].get("fix_functions") or []
+    for bug in bugs:
+        replay = bug.get("replay") or {}
+        if not (bug.get("confirmed") and NODE_EXIT in (bug.get("violations") or [])):
+            continue
+        consoles = [step.get("console") or "" for step in replay.get("timeline") or []]
+        for line in "\n".join(consoles).splitlines():
+            if "Assertion `" in line and any(f" {name}(" in line for name in functions):
+                return True
+    return False
 
 
 def score(search: Path, case: dict) -> Campaign:
@@ -124,6 +141,8 @@ def score(search: Path, case: dict) -> Campaign:
         return campaign
     if scored:
         campaign.outcome = "unconfirmed"
+    elif internal_assertion(bugs, case):
+        campaign.outcome = "internal-discovery"
     elif campaign.other_violations:
         campaign.outcome = "other-violation"
     elif campaign.crashes:

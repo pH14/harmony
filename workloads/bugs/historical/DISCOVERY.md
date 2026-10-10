@@ -373,6 +373,7 @@ Each campaign has exactly one outcome:
 |---|---|
 | **discovery** | A finding violates the case's scored assertion, carries the case's evidence assertion, and passes the package's fresh self-replay (`historical-oracle.sh search` passes). The reproducer is then replayed twice more in fresh sessions on the same execution identity. |
 | **unconfirmed candidate** | A finding violates the scored assertion, but its fresh replay did not reproduce it. |
+| **internal discovery** | No discovery, but a confirmed finding where a workload process aborted on the system's own C assertion inside a function the case's fix changed (`oracle.fix_functions`, correction 7). It is reported in its own column and never counted as a discovery. |
 | **other violation** | A confirmed violation of an assertion other than the scored one, with no discovery. It is reported and triaged, and is never counted as a discovery. |
 | **miss** | The campaign completed its budget, reached at least one conclusive check (the evidence assertion passed), and found nothing. It is censored at the budget. |
 | **inconclusive** | The campaign completed but never reached a conclusive check. It is not a clean run. |
@@ -522,3 +523,13 @@ made after a general-arm measurement restarts every affected measurement.
    cache of the default size, 100 pages or 10 pages. etcd adds `defragment` of
    a random member. Each is reached through the existing decision sites. The
    held-out cases need these families; see [Held-out cases](#held-out-cases).
+
+7. **Internal assertions at the fix site** (after the first measurement,
+   [#524](https://github.com/pH14/harmony/issues/524)). One SQLite ablation
+   campaign aborted a writer on `SQLITE_DEBUG`'s
+   `pInfo->nBackfill==pWal->hdr.mxFrame` in `walCheckpoint`, the function the
+   3.51.3 fix changed, before any corruption reached `integrity_check`. Such
+   a finding is now its own outcome, internal discovery, when the abort's
+   console names a function in the case's `oracle.fix_functions` (the SQLite
+   WAL cases list `walCheckpoint`). It uses knowledge of the fix only to score,
+   is reported beside discoveries, and is never counted as one.

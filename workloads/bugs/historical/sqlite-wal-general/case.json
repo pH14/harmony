@@ -33,6 +33,9 @@
   "oracle": {
     "assertion": "sqlite integrity_check returns ok",
     "evidence": "sqlite integrity_check completed",
+    "fix_functions": [
+      "walCheckpoint"
+    ],
     "kind": "always",
     "source": "the general driver's integrity operation",
     "detector": "PRAGMA integrity_check, drawn as one of five uniformly chosen operations"
