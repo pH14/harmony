@@ -99,6 +99,23 @@ try {
       return r.right <= b.getBoundingClientRect().right - parseFloat(getComputedStyle(b).paddingRight) + 1;
     }),true,'The complete starting timestamp stays readable through deep nesting');
     assert.ok(Math.abs(await desktop.locator('.exploration').evaluate(e => e.getBoundingClientRect().width) - width) < 1, 'Tree depth must not resize the maps');
+    if (id === 1) {
+      for (const mode of ['movement','both','heat']) {
+        await desktop.locator(`[data-viz="${mode}"]`).click();
+        await desktop.locator('[data-search="0"]').hover();
+        await desktop.waitForFunction(mode => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === '0' && c.dataset.overlay === mode) && (mode === 'heat' || [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.swarmCount) > 0)),mode);
+        assert.equal(await desktop.locator('#visualization').getAttribute('data-value'),mode);
+        assert.equal(await desktop.locator('[data-search="1"]').getAttribute('aria-pressed'),'true');
+        const frozen = await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL()));
+        const attempts = Number((await desktop.locator('#attempts').innerText()).replaceAll(',',''));
+        await desktop.waitForTimeout(300);
+        assert.deepEqual(await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL())),frozen,'Hovered Novas and branch overlays stay frozen while the active search runs');
+        await desktop.waitForFunction(n => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > n,attempts);
+        await desktop.mouse.move(0,0);
+        await desktop.waitForFunction(() => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === ''));
+      }
+      await desktop.locator('[data-viz="movement"]').click();
+    }
   }
   const parentTime = (await desktop.locator('[data-search="3"]').innerText()).split('\n')[0].replace('↳ ','');
   assert.equal(await desktop.locator('[data-search="4"] .search-parent').innerText(), `from ${parentTime}`);

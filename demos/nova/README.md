@@ -147,7 +147,12 @@ branch with a fork arrow, its immutable starting gameplay time (to a tenth of a
 second) and room. These come from the verified native branch root, rather than
 the selected replay or moving search frontier. Main keeps its name; exact frames
 and stable IDs remain in accessible labels/tooltips, with parent-time context
-when the tree exceeds three nested levels. Empty-cell selection also
+when the tree exceeds three nested levels. Hovering a different search keeps
+the chosen visualization mode: Movement and Both show its frozen last movement
+frame, while heat and the branch-origin trail come from that same search.
+Frozen poses are independent of the expiring rollout recordings and capped at
+256 per phone branch / 1,024 per desktop branch (eight searches maximum).
+Previewing never advances or switches a search. Empty-cell selection also
 clears the previous replay marker.
 Selecting a state replays its controller history from the selected starting-level root in a
 second emulator. Endpoint snapshots are compared byte for byte after

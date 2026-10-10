@@ -116,16 +116,19 @@ export class NovaSwarm {
       }
     }
   }
-  frame(branch, milliseconds, still = false) {
+  frame(branch, milliseconds, still = false, maxPoints = this.maxTrails) {
     this.prune(branch, milliseconds);
     const rooms = new Map();
+    let count = 0;
     for (const trail of this.trails.values()) {
+      if (count >= maxPoints) break;
       if (trail.branch !== branch) continue;
       const frame = still ? 0 : Math.max(0, milliseconds - trail.started) * 0.06;
       const point = swarmPoint(trail.samples, frame);
       if (!point) continue;
       if (!rooms.has(point.level)) rooms.set(point.level, []);
       rooms.get(point.level).push(point);
+      count++;
     }
     return rooms;
   }

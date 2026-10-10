@@ -103,3 +103,17 @@ test("deleting a search releases only its movement recordings", () => {
   assert.equal(swarm.frame(1, 100).size, 0);
   assert.equal(swarm.frame(2, 100).get(0).length, 1);
 });
+
+
+test("bounded frozen previews retain real positions after recordings expire", () => {
+  const swarm = new NovaSwarm(4096, 20);
+  const trail = new Uint16Array([0,0,16,100,0,60,0,76,100,2]);
+  swarm.add(1, [trail, trail, trail], 0);
+  swarm.add(2, [trail], 0);
+  const frozen = swarm.frame(1, 500, false, 2);
+  assert.equal(frozen.get(0).length,2);
+  assert.deepEqual(frozen.get(0)[0], {level:0,x:46,y:100,pose:0});
+  assert.equal(swarm.frame(1,1500).size,0);
+  assert.equal(frozen.get(0)[0].x,46,'The preview cannot move or disappear when live recordings expire');
+  assert.equal(swarm.frame(2,500).get(0).length,1,'Previewing another branch does not advance its clock');
+});

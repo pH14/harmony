@@ -112,6 +112,7 @@ function saveSearchView() {
   heat.setRunning(false, performance.now());
   searchViews.set(activeSearch, {
     heat,
+    movement: swarm.frame(activeSearch, heat.clock(performance.now()), reducedMotion.matches, swarm.maxTrails / 8),
     bestByMap,
     bestStates,
     arrivals,
@@ -236,9 +237,9 @@ function drawSwarmBackground(ctx, width, height) {
   ctx.fillStyle = "rgba(12,17,20,.24)";
   ctx.fillRect(0, 0, width, height);
 }
-function drawNovas(ctx, level, scale) {
+function drawNovas(ctx, level, scale, rooms = swarmRooms) {
   if (!sprites.complete || !sprites.naturalWidth) return 0;
-  const map = maps.get(level), points = swarmRooms.get(level) || [];
+  const map = maps.get(level), points = rooms?.get(level) || [];
   ctx.save();
   ctx.globalAlpha = 0.55;
   let count = 0;
@@ -1271,7 +1272,7 @@ function drawArea(canvas, now) {
     }
   }
   if (mode !== "heat")
-    canvas.dataset.swarmCount = preview ? 0 : drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width));
+    canvas.dataset.swarmCount = drawNovas(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width), preview ? preview.movement ?? null : swarmRooms);
   for (const p of preview || mode === "movement" ? [] : sparks) {
     if (p.level !== mapLevel) continue;
     const age = (now - p.time) / 1600;
