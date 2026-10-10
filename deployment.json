@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "b40a3c2a80de31dee39dcebe5f15021cebbfbc8d",
+    "commit": "c04241f08e680fc80e61d6f936eed549fd17f259",
     "build": "locally verified static build",
-    "checks": "Production build; desktop/phone browser replay, audio, gameplay and nested branches; interactive tour; pane labels and artwork attribution below maps",
-    "asset_manifest_sha256": "d78a76d07e043f63b8aba8d1ec4ab1420ebb2282c33a3107e4d9d4f776cb1f14"
+    "checks": "Production build; desktop/phone browser replay, audio, gameplay and nested branches; retained floor-cell selection and empty-ground hover affordances",
+    "asset_manifest_sha256": "37b6bebdefb634e482a7b7af2ae22aded7c232f40587e46f0383d599070b8e24"
   },
   "raft": {
     "commit": "28791e77a",
