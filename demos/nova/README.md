@@ -85,7 +85,8 @@ maps.
 On a visitor's first desktop visit the camera opens at 2.6× on the boot room,
 follows the search frontier (the 80th-percentile x of live sprites, smoothed)
 for about four seconds, then eases back to the whole level over 1.6 seconds.
-The tour waits for that opening to finish. Returning visitors, reduced-motion
+The tour waits for that opening to finish. Take the tour replays the same
+opening on desktop before starting the tour, unless the search is paused. Returning visitors, reduced-motion
 visitors and any manual pan, pinch, zoom or cell selection skip or end it.
 
 A five-step guided tour follows the story many, one, you, fork and tree:

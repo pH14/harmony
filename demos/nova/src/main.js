@@ -336,6 +336,7 @@ function updateCameraToggle() {
   $("camera-toggle").title = following ? "Show the whole room" : "Follow the search frontier";
 }
 function stopCamera() {
+  camera.tourAfter = false;
   camera.follow = false;
   camera.focus = null;
   camera.introDone = true;
@@ -420,6 +421,12 @@ function updateCamera(now) {
     camera.follow = false;
     camera.introDone = true;
     updateCameraToggle();
+    if (camera.tourAfter) {
+      camera.tourAfter = false;
+      updateBranchControls();
+      $("tour-open").focus({ preventScroll: true });
+      beginTour();
+    }
   }
 }
 let searchChoices = [{ id: 0, parent: null }],
@@ -1865,7 +1872,7 @@ function updateBranchControls() {
   }
   $("goal-title").disabled = !ready || !engine || branchBusy || controlMode;
   $("tour-open").disabled =
-    !ready || !engine || controlMode || branchBusy || seeking;
+    !ready || !engine || controlMode || branchBusy || seeking || !!camera.tourAfter;
   const usable =
     !!current &&
     !!engine &&
@@ -2608,7 +2615,17 @@ function offerTour() {
   )
     beginTour();
 }
-$("tour-open").onclick = beginTour;
+function replayOpening() {
+  if ($("tour-open").disabled || tour.open) return;
+  const c = mapCanvas(mapLevel);
+  if (phoneLayout.matches || reducedMotion.matches || paused || !c || c.dataset.viewport === "true" || !frontier(mapLevel)) return beginTour();
+  if (visualization !== "movement") setVisualization("movement");
+  Object.assign(camera, { follow: true, focus: null, introDone: false, introStart: 0, tourAfter: true });
+  updateCameraToggle();
+  updateBranchControls();
+  c.closest(".map-row").scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+$("tour-open").onclick = replayOpening;
 $("goal-title").onclick = () => {
   const wasPlaying = playing;
   if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }

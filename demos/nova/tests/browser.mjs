@@ -865,6 +865,7 @@ try {
     Number(await page.locator("#map").getAttribute("data-trace-points")) > 1,
     "The prefix trail must outlast the origin ripple while the pane stays closed",
   );
+  await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera === 'idle', null, { timeout: 10000 });
   await openCurrentCell();
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,

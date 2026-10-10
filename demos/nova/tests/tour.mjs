@@ -261,8 +261,11 @@ try {
   );
   await page.locator("#timeline-toggle").click();
   await page.locator("#tour-open").click();
-  assert.equal(await page.locator("#timeline-toggle").getAttribute("aria-expanded"), "true", "The tour opens a collapsed Timeline");
+  await page.waitForFunction(() => document.querySelector(".map-wrap").dataset.camera === "follow" && Number(document.querySelector("#map").dataset.zoom) > 2, null, { timeout: 10000 });
+  assert.equal(await page.locator("#tour-open").isDisabled(), true, "Take the tour replays the opening before starting");
   await ready(page, 0);
+  assert.equal(await page.locator("#map").getAttribute("data-zoom"), "1", "The replayed opening ends on the whole level");
+  assert.equal(await page.locator("#timeline-toggle").getAttribute("aria-expanded"), "true", "The tour opens a collapsed Timeline");
   await opening(page);
   await next(page, 1);
   await page.keyboard.press("Escape");
