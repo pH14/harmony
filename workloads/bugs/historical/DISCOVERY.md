@@ -581,3 +581,12 @@ made after a general-arm measurement restarts every affected measurement.
     fork's corruption, lost-write and read-your-writes assertions; the focused
     PostgreSQL and etcd cases declare one assertion each. Every arm is scored
     again.
+
+12. **Address-ordered site table** (after the held-out measurement). The fault
+    runtime chose each site's slot in its 4 MiB visit table by hash, so every
+    execution wrote pages scattered across the table, and a search restores and
+    captures every page an execution writes. Slots now follow site addresses
+    (see [the runtime](../../faults/runtime/README.md)). Two six-minute local
+    PostgreSQL general searches on the same seeds spent 9 and 16 percent less
+    wall time per guest tick. Every instrumented arm runs more executions in the
+    same budget, so every arm is measured again.

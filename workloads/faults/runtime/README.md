@@ -81,8 +81,13 @@ stop placed between reading and using that state.
 Kill rarity is evaluated per instrumentation site. Before each callback the runtime
 uses the site's saturating visit count; rarity `r` is eligible only while that
 count is below `1 << r`, so rarity zero selects a site's first visit and rarity
-63 remains well-defined for large counts. Counts live in a fixed table of 524,288 hashed `u64` counters
-(4 MiB per node, shared by its forked processes; see [Forked processes](#forked-processes)). Each callback performs one lookup. Colliding
+63 remains well-defined for large counts. Counts live in a fixed table of 524,288 `u64` counters
+(4 MiB per node, shared by its forked processes; see [Forked processes](#forked-processes)). Each callback performs one lookup. A
+site's slot is its address divided by four, with the address's two low bits
+choosing a quarter of the table, so sites close together in code share pages
+of the table. A search restores and captures every page an execution writes,
+and on a PostgreSQL general search hashed slots cost about a tenth more wall
+time per guest tick than these. Colliding
 sites share a saturating count, so a collision can make a site look hotter but
 cannot make it look rarer. New sites remain eligible after startup rather than
 being excluded by a full exact-site table.

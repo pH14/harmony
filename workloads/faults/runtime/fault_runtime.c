@@ -236,7 +236,8 @@ static uint64_t harmony_fault_event_mix(uint64_t value)
 
 static size_t harmony_fault_event_site_start(uint64_t site)
 {
-    return (size_t)(harmony_fault_event_mix(site) &
+    return (size_t)(((site >> 2) ^
+                     ((site & 3) * (HARMONY_FAULT_EVENT_SITE_TABLE_SIZE / 4))) &
                     (HARMONY_FAULT_EVENT_SITE_TABLE_SIZE - 1));
 }
 
