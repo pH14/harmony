@@ -429,9 +429,7 @@ static void harmony_fault_event_note_crossing(uint64_t site, uint8_t bucket)
     if (harmony_fault_lock() != 0)
         return;
     harmony_fault_events->coverage_crossings++;
-    if (bucket != 1)
-        ;
-    else if (resolved != 0)
+    if (resolved != 0)
         harmony_fault_events->coverage_digest +=
             harmony_fault_crossing_hash(offset, bucket);
     else if (harmony_fault_crossing_defer(site, bucket) != 0)

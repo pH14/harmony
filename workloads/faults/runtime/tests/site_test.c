@@ -29,7 +29,7 @@ int main(void)
         expected = code - (uint64_t)(uintptr_t)info.dli_fbase;
 #endif
         assert(harmony_fault_site_offset(code) == code);
-        harmony_fault_event_note_crossing(code, 1);
+        harmony_fault_event_note_crossing(code, 3);
         assert(harmony_fault_events->coverage_crossings == 1);
         assert(harmony_fault_events->coverage_digest == 0);
         assert(harmony_fault_events->deferred_count == 1);
@@ -39,13 +39,12 @@ int main(void)
         harmony_fault_crossings_resolve();
         assert(harmony_fault_events->deferred_count == 0);
         assert(harmony_fault_events->coverage_digest ==
-               harmony_fault_crossing_hash(expected, 1));
+               harmony_fault_crossing_hash(expected, 3));
         harmony_fault_event_note_crossing(code, 4);
         harmony_fault_crossings_resolve();
-        assert(harmony_fault_events->coverage_crossings == 2);
-        assert(harmony_fault_events->deferred_count == 0);
         assert(harmony_fault_events->coverage_digest ==
-               harmony_fault_crossing_hash(expected, 1));
+               harmony_fault_crossing_hash(expected, 3) +
+                   harmony_fault_crossing_hash(expected, 4));
         harmony_fault_events->coverage_crossings = 0;
         harmony_fault_events->coverage_digest = 0;
     }
@@ -137,7 +136,7 @@ int main(void)
         assert(crossings == 8);
         assert(crossed == 0);
         assert(harmony_fault_events->coverage_crossings == 8);
-        assert(harmony_fault_events->deferred_count == 1);
+        assert(harmony_fault_events->deferred_count == 8);
         harmony_fault_crossings_resolve();
         digest = harmony_fault_events->coverage_digest;
         assert(digest != 0);

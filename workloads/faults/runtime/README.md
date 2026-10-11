@@ -95,10 +95,8 @@ being excluded by a full exact-site table.
 The same table gives the process bucketed edge coverage. Each slot remembers
 the highest AFL hit-count bucket its count has entered: 1, 2, 3, 4-7, 8-15,
 16-31, 32-127, and 128 or more. When a count enters a higher bucket, the
-runtime adds one crossing. A site's first visit also adds a hash of the site's
-module offset to a wrapping sum, the digest; later buckets do not, because a
-process that only runs longer crosses them on the code it already ran, and the
-digest names the state the search keeps. A crossing whose module is missing from the list
+runtime adds one crossing and adds a hash of the site's module offset and the
+bucket to a wrapping sum. A crossing whose module is missing from the list
 waits in a queue that the control thread resolves after its next module
 listing, before it answers any command. A crossing in a module that unloads
 before then hashes its address. A coverage-status command returns both values
