@@ -573,6 +573,8 @@ static void harmony_fault_events_share(void)
 #endif
 }
 
+static _Thread_local int harmony_fault_event_initializer;
+
 static void harmony_fault_event_init(void)
 {
     int control_fd = harmony_fault_parse_fd("HARMONY_EVENT_KILL_FD");
@@ -583,6 +585,7 @@ static void harmony_fault_event_init(void)
     sigset_t previous;
     int created;
 
+    harmony_fault_event_initializer = 1;
     if (control_fd < 0 || report_fd < 0)
         return;
     harmony_fault_events_share();
@@ -1049,9 +1052,13 @@ void harmony_fault_runtime_event(uint64_t site)
     uint64_t callbacks;
     uint8_t crossed;
 
+    int initializer;
+
     harmony_fault_watch_edge();
     if (pthread_once(&harmony_fault_event_once, harmony_fault_event_init) != 0)
         return;
+    initializer = harmony_fault_event_initializer;
+    harmony_fault_event_initializer = 0;
     if (__atomic_load_n(&harmony_fault_events->initialized,
                         __ATOMIC_ACQUIRE) == 0)
         return;
@@ -1061,10 +1068,11 @@ void harmony_fault_runtime_event(uint64_t site)
         __atomic_store_n(&harmony_fault_events->coverage_callbacks,
                          callbacks + 1, __ATOMIC_RELAXED);
     before = harmony_fault_event_site_before(site, &crossed);
-    if (__atomic_load_n(&harmony_fault_events->kill_armed, __ATOMIC_RELAXED) ==
-            0 &&
-        __atomic_load_n(&harmony_fault_events->park_armed, __ATOMIC_RELAXED) ==
-            0) {
+    if (initializer != 0 ||
+        (__atomic_load_n(&harmony_fault_events->kill_armed, __ATOMIC_RELAXED) ==
+             0 &&
+         __atomic_load_n(&harmony_fault_events->park_armed, __ATOMIC_RELAXED) ==
+             0)) {
         if (crossed != 0)
             harmony_fault_event_note_crossing(site, crossed);
         return;

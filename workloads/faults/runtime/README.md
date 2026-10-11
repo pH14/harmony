@@ -23,6 +23,9 @@ inactive, while the host agent still receives the normal coverage and SDK
 behavior.
 
 The agent waits for the runtime's 16-byte hello before sending event commands.
+The callback that starts the runtime sends the hello and counts its own visit,
+but never claims a kill or park, so an event armed in answer to the hello fires
+at a later callback.
 Commands use five little-endian `u64` words in a 40-byte frame. The runtime
 writes the acknowledgement while holding the callback lock, so an armed
 callback cannot fire before its acknowledgement has entered the channel. Kill reports
