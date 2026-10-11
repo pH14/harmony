@@ -74,3 +74,10 @@ The historical-image workflow passes this argument itself. Run
 The image uses the pinned Bookworm base that the language images use, so it
 shares their reviewed entropy sites. Trixie's coreutils pulls in OpenSSL, which
 adds RDRAND sites that would need their own review.
+
+## Authored regression
+
+[`scenario/`](scenario/README.md) reproduces the same race with an authored
+schedule instead of a search. A Python test parks the checkpointer at the
+vulnerable checkpoint call, lets a writer commit, and checks that the committed
+row is lost.

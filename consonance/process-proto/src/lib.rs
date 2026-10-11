@@ -257,7 +257,7 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
         EVENT_PARK => {
             let edges = reader.u32()?;
             let hold_nanos = reader.u64()?;
-            if edges == 0 || edges > events::EVENT_PARK_EDGE_LIMIT || hold_nanos == 0 {
+            if !events::valid_park_selector(edges) || hold_nanos == 0 {
                 return Err(WireError::Malformed);
             }
             let target = match reader.u8()? {
@@ -504,6 +504,24 @@ mod tests {
         let mut unknown = longest.encode();
         *unknown.last_mut().expect("presence byte") = 2;
         assert_eq!(ProcessAction::decode(&unknown), None);
+    }
+
+    #[test]
+    fn named_site_selectors_round_trip_but_zero_is_invalid() {
+        for site in [1, 42, 0x7fff_ffff] {
+            let action = ProcessAction::EventPark {
+                edges: events::EVENT_SITE_PARK_FLAG | site,
+                hold_nanos: 1,
+                target: None,
+            };
+            assert_eq!(ProcessAction::decode(&action.encode()), Some(action));
+        }
+        let invalid = ProcessAction::EventPark {
+            edges: events::EVENT_SITE_PARK_FLAG,
+            hold_nanos: 1,
+            target: None,
+        };
+        assert_eq!(ProcessAction::decode(&invalid.encode()), None);
     }
 
     #[test]

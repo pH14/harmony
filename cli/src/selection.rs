@@ -8,6 +8,20 @@ pub struct Selection {
     pub finding: Option<usize>,
 }
 #[derive(Clone, Debug, Default, clap::Args)]
+pub struct BranchOrigin {
+    #[arg(
+        value_name = "NAME",
+        help = "Saved origin; otherwise use the recipe's initial state"
+    )]
+    pub run: Option<String>,
+    #[arg(long, requires = "run")]
+    pub finding: Option<usize>,
+    #[arg(long, conflicts_with_all = ["run", "config_toml"])]
+    pub config: Option<std::path::PathBuf>,
+    #[arg(long, conflicts_with_all = ["run", "config"], help = "Inline TOML recipe")]
+    pub config_toml: Option<String>,
+}
+#[derive(Clone, Debug, Default, clap::Args)]
 pub struct Point {
     #[arg(long, help="Select the boundary after this many recorded actions", conflicts_with_all=["rewind", "rewind_time"])]
     pub step: Option<usize>,

@@ -114,8 +114,12 @@ impl Package for Nes {
             );
             return Ok(0);
         }
-        let run_input = if request.operation == Operation::Run {
-            if !request.command.is_empty() {
+        let run_input = if matches!(request.operation, Operation::Run | Operation::Branch) {
+            if !request.command.is_empty()
+                || request.exec.is_some()
+                || request.exec_file.is_some()
+                || request.shell
+            {
                 return Err("NES executes typed controller inputs, not shell commands".into());
             }
             if request.repeat == 0 {
@@ -125,7 +129,7 @@ impl Package for Nes {
                 request
                     .actions
                     .as_ref()
-                    .ok_or("NES run requires --actions INPUT.json")?,
+                    .ok_or("NES requires --actions INPUT.json")?,
             )?)?;
             if !input["actions"].is_array() {
                 return Err("NES input must contain an actions array".into());
@@ -149,7 +153,13 @@ impl Package for Nes {
         let out = request.destination.create()?;
         let mut m = Manifest::new(
             request.config,
-            if run_input.is_some() { "run" } else { "search" },
+            if request.operation == Operation::Branch {
+                "branch"
+            } else if run_input.is_some() {
+                "run"
+            } else {
+                "search"
+            },
         )?;
         m.store(&out, "input", &rom)?;
         if let Some(input) = run_input {

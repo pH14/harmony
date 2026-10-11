@@ -470,7 +470,11 @@ static void *harmony_fault_event_control(void *arg)
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
             if (second != 0 &&
-                (first == 0 || first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT ||
+                (first == 0 ||
+                 (first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT &&
+                  (first > UINT32_MAX ||
+                   (first & HARMONY_FAULT_EVENT_SITE_PARK_FLAG) == 0 ||
+                   (first & ~HARMONY_FAULT_EVENT_SITE_PARK_FLAG) == 0)) ||
                  (target_end == 0 ? target_start != 0
                                   : target_start >= target_end))) {
                 valid = 0;
@@ -1006,8 +1010,9 @@ void harmony_fault_runtime_event(uint64_t site)
         kill_site = site;
         kill_report_fd = harmony_fault_events.report_fd;
     } else if (harmony_fault_events.park_armed != 0 &&
-               harmony_fault_park_counts(site) &&
-               harmony_fault_park_spend(before)) {
+               ((harmony_fault_events.park_edges & HARMONY_FAULT_EVENT_SITE_PARK_FLAG) != 0
+                    ? site == (harmony_fault_events.park_edges & ~HARMONY_FAULT_EVENT_SITE_PARK_FLAG)
+                    : harmony_fault_park_counts(site) && harmony_fault_park_spend(before))) {
         harmony_fault_events.park_armed = 0;
         park_edges = harmony_fault_events.park_edges;
         if (harmony_fault_events.park_fires != UINT64_MAX)
@@ -1046,7 +1051,8 @@ void harmony_fault_runtime_event(uint64_t site)
             if (harmony_fault_events.initialized != 0 &&
                 harmony_fault_events.park_inflight == 0 &&
                 harmony_fault_events.park_armed == 0 &&
-                harmony_fault_events.park_hold_nanos != 0) {
+                harmony_fault_events.park_hold_nanos != 0 &&
+                (harmony_fault_events.park_edges & HARMONY_FAULT_EVENT_SITE_PARK_FLAG) == 0) {
                 harmony_fault_events.park_weight_left =
                     harmony_fault_events.park_edges
                     << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
