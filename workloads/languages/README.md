@@ -69,4 +69,4 @@ builds one language layer and composes the current runtime onto it. Each
 rebuild every layer without the cache.
 
 The [preparing-workloads skill](../../.agents/skills/preparing-workloads/SKILL.md)
-has one reference per language, written from these recipes.
+has references for compiled languages (C and Rust), Go, Java and Python, written from these recipes.

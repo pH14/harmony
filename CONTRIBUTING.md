@@ -38,7 +38,9 @@ cargo deny check
 
 The pre-push hook runs the fast subset. Each component owns its own bounded
 pull request check, and each component's `Analysis` workflow owns its coverage,
-Miri, mutation testing and proofs on a schedule or a manual dispatch.
+Miri, mutation testing and proofs. Whole-crate Miri, coverage and mutation
+testing run on a schedule or a manual dispatch, and bounded Miri and proofs also
+run on pull requests and pushes where `docs/WORKFLOWS.md` lists them.
 [docs/WORKFLOWS.md](docs/WORKFLOWS.md) is the contract, and
 `scripts/ci_contract.py` is the registry it describes.
 The mutation jobs use cargo-mutants 27.1.0 and round-robin shards; the local
