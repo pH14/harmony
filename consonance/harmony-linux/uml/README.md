@@ -167,7 +167,7 @@ and asserts the symbols the profile depends on.
   children, checks their exit codes and powers off; `hang` spins without system
   calls; `flood` writes the console forever; `orphans` leaves 16 sleeping
   children and spins; `exit` returns from init so the kernel panics.
-  Three modes write their observations to `/dev/harmony` as events: `values`
+  Four modes write their observations to `/dev/harmony` as events: `values`
   reports clocks, counters, random values, addresses, IDs, the auxiliary
   vector and the `/proc` files a program reads at startup, then runs
   `fixture-registers.c` to report the startup registers and the

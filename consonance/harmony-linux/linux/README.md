@@ -222,7 +222,7 @@ the standard OCI runtime configuration.
 Workload image recipes and their pins live under `workloads/guest-images` and
 own their fetch entrypoint. Other workload packages own their inputs in the
 same way. The platform fetch entrypoint downloads only the kernel, BusyBox,
-arm64 musl source, the runc source, and the Go arm64 bootstrap archive.
+musl source, the runc source, and the amd64 and arm64 Go bootstrap archives.
 
 The reproducibility manifest records the patch series, configuration inputs,
 and generated artifact hashes. Build transcripts are evidence, not inputs.
