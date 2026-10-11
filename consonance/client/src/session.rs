@@ -350,6 +350,20 @@ impl SparseSnapshot {
             .saturating_mul(4096)
             .saturating_add(self.sidecar.memory_charge())
     }
+
+    pub fn logical_identity(&self) -> Result<Self, String> {
+        #[cfg(target_arch = "x86_64")]
+        let sidecar = vmm_core::portable_snapshot::logical_x86_sparse_sidecar(&self.sidecar())
+            .map_err(|error| error.to_string())?;
+        #[cfg(not(target_arch = "x86_64"))]
+        let sidecar = self.sidecar();
+        Ok(Self {
+            base: self.base,
+            image_identity: self.image_identity,
+            pages: self.pages.clone(),
+            sidecar: SharedState::from_bytes(sidecar, None),
+        })
+    }
 }
 
 #[derive(Deserialize, Serialize)]

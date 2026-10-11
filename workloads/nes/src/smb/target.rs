@@ -52,6 +52,15 @@ pub struct SmbSnapshot<P: SnapshotState = Vec<u8>> {
     failed: bool,
 }
 
+impl<P: SnapshotState> crate::witness::EndpointIdentity for SmbSnapshot<P> {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        crate::witness::postcard_sha256(&Self {
+            emulator_state: self.emulator_state.logical_identity()?,
+            ..self.clone()
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct SnapshotObservation {
     frame_count: u64,
