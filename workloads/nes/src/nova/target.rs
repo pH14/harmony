@@ -19,6 +19,8 @@ const PLAYER_X_LOW: usize = 0x25;
 const PLAYER_X_HIGH: usize = 0x26;
 const PLAYER_Y_HIGH: usize = 0x27;
 const PLAYER_Y_LOW: usize = 0x28;
+const PLAYER_X_SPEED_HIGH: usize = 0x29;
+const PLAYER_X_SPEED_LOW: usize = 0x2a;
 const PLAYER_HEALTH: usize = 0x4b;
 const OBJECT_TYPE: usize = 0x2d;
 const LEVEL_NUMBER: usize = 0xa7;
@@ -113,6 +115,7 @@ pub struct NovaMechanicalState {
     pub started_level: u8,
     pub x: u16,
     pub y: u16,
+    pub x_speed: i16,
     pub health: u8,
     pub chips: u8,
     pub chips_needed: u8,
@@ -1106,6 +1109,10 @@ pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState,
             read_byte(wram, PLAYER_Y_HIGH)?,
             read_byte(wram, PLAYER_Y_LOW)?,
         ),
+        x_speed: i16::from_le_bytes([
+            read_byte(wram, PLAYER_X_SPEED_LOW)?,
+            read_byte(wram, PLAYER_X_SPEED_HIGH)?,
+        ]),
         health: read_byte(wram, PLAYER_HEALTH)?,
         chips: read_byte(wram, CHIP_COUNT)?,
         chips_needed: read_byte(wram, CHIPS_NEEDED)?,
@@ -1775,6 +1782,8 @@ mod tests {
         wram[PLAYER_X_LOW] = 0xa0;
         wram[PLAYER_Y_HIGH] = 0x0b;
         wram[PLAYER_Y_LOW] = 0x80;
+        wram[PLAYER_X_SPEED_HIGH] = 0xff;
+        wram[PLAYER_X_SPEED_LOW] = 0xc0;
         wram[PLAYER_HEALTH] = 4;
         wram[LEVEL_NUMBER] = 9;
         wram[STARTED_LEVEL_NUMBER] = 7;
@@ -1788,6 +1797,7 @@ mod tests {
         save[COLLECTIBLE_BITS + 7] = 0x80;
         let state = decode_state(&wram, &save).expect("decode fixture");
         assert_eq!((state.x, state.y), (0x34a, 0x0b8));
+        assert_eq!(state.x_speed, -64);
         assert_eq!((state.level, state.started_level), (9, 7));
         assert_eq!((state.health, state.chips, state.chips_needed), (4, 3, 5));
         assert_eq!((state.cleared_in_order(), state.available_count()), (2, 8));

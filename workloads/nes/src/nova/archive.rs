@@ -17,9 +17,10 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_in_order_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_ability_place_key_color_preferences_v14";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_in_order_cleared_tiers_level_fight_puzzle_arrow_state_spatial_32_ability_place_key_color_preferences_running_identity_v15";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
+const WALK_SPEED: i16 = 32;
 
 pub type NovaArchive = Archive<ButtonChord, NovaArchiveKey, NovaMilestones, NovaSnapshot>;
 
@@ -41,6 +42,7 @@ pub struct NovaArchiveKey {
     pub arrow_blocks: u16,
     pub x: u16,
     pub y: u16,
+    pub running: i8,
 }
 
 impl ArchiveKey for NovaArchiveKey {
@@ -56,7 +58,7 @@ impl ArchiveKey for NovaArchiveKey {
         u8,
     );
     type Progress = u8;
-    type Identity = (u16, u16);
+    type Identity = (u16, u16, i8);
 
     fn place(self) -> Self::Place {
         (
@@ -83,7 +85,7 @@ impl ArchiveKey for NovaArchiveKey {
     }
 
     fn identity(self) -> Self::Identity {
-        (self.x, self.y)
+        (self.x, self.y, self.running)
     }
 
     fn capacity() -> usize {
@@ -143,6 +145,15 @@ pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
         arrow_blocks: state.arrow_blocks,
         x: state.x / 16,
         y: state.y / 16,
+        running: running(state.x_speed),
+    }
+}
+
+fn running(x_speed: i16) -> i8 {
+    match x_speed {
+        speed if speed > WALK_SPEED => 1,
+        speed if speed < -WALK_SPEED => -1,
+        _ => 0,
     }
 }
 
@@ -342,6 +353,28 @@ mod tests {
                     .all(|other| other.place() != key.place())
             );
         }
+    }
+
+    #[test]
+    fn running_faster_than_walking_is_its_own_holder() {
+        let speeds = [-64, -33, -32, 0, 32, 33, 64];
+        let keys = speeds.map(|x_speed| {
+            archive_key(NovaMechanicalState {
+                x_speed,
+                ..state(100, 4, 0)
+            })
+        });
+        for key in keys {
+            assert_eq!(key.place(), keys[3].place());
+            assert_eq!(key.preference_cmp(0, keys[3]), Ordering::Equal);
+        }
+        assert_eq!(keys[0].identity(), keys[1].identity());
+        assert_eq!(keys[2].identity(), keys[3].identity());
+        assert_eq!(keys[3].identity(), keys[4].identity());
+        assert_eq!(keys[5].identity(), keys[6].identity());
+        assert_ne!(keys[1].identity(), keys[2].identity());
+        assert_ne!(keys[4].identity(), keys[5].identity());
+        assert_ne!(keys[0].identity(), keys[6].identity());
     }
 
     #[test]

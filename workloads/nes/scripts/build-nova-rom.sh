@@ -76,6 +76,8 @@ verify_symbol PlayerPXL 0x25
 verify_symbol PlayerPXH 0x26
 verify_symbol PlayerPYH 0x27
 verify_symbol PlayerPYL 0x28
+verify_symbol PlayerVXH 0x29
+verify_symbol PlayerVXL 0x2A
 verify_symbol PlayerHealth 0x4B
 verify_symbol LevelNumber 0xA7
 verify_symbol StartedLevelNumber 0xA8

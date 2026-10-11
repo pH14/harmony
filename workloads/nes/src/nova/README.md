@@ -23,7 +23,7 @@ can rewrite other bits of that bitmap, and a count of every set bit would rank
 such a state above the level the run has reached. The place is the collectible and
 available counts, the level identity, the boss-fight count, the puzzle state, a
 two-bucket position and the held ability; the holder identity is the exact
-position bucket.
+position bucket and the running direction.
 In whole-game mode the selector puts most draws on the highest tier, so
 places in levels already cleared stop taking most of the search. A level
 campaign stops at its first clear, so it has one tier.
@@ -67,6 +67,13 @@ places and the selector gives its descendants the draws of a new place. Level
 3-5 has a wall that only a burger or ice ride crosses, and the burger is copied
 in 3-4. A burger holder that shares its places with holders of other abilities
 rarely gets enough draws to carry the burger into 3-5.
+
+Nova walks at 2 pixels per frame and runs at up to 4, and a jump's reach
+depends on the speed at takeoff. Level 5-4 has a gap that only a fast jump off a
+burger ride crosses. A slot that keeps the earliest arrival at a spot would keep
+a slow state over a faster one that arrived later. The running direction is
+left or right when the horizontal speed in `PlayerVXH`/`PlayerVXL` is above
+walking speed, and none otherwise, so a running state keeps its own slot.
 
 Toggle switches flip one level-wide flag that swaps which toggle blocks are
 solid, and a carried pickup block can be set down to bridge a gap. Both change
