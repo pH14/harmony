@@ -176,8 +176,7 @@ resources. Player stock losses remain in milestones and observations.
 
 Policy `stb_local_ai_peer_places_spatial_32_place_preference_v4` fixes the
 unsolved-champion ordering and uses floor division for the place bucket,
-including negative coordinates. The stream format is v3 and the checkpoint format is v4 because the progress report
-schema also changed. Recordings from the earlier v2 policy require the previous
+including negative coordinates. The stream format is v3 and the checkpoint format is v4. Recordings from the earlier v2 policy require the previous
 implementation; the PR preserves that history and its qualification evidence.
 Compare searcher changes only with the same recorded adapter policy.
 
