@@ -28,8 +28,8 @@ async function open(options) {
 }
 async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
-  if (touch && await page.locator('#camera-toggle').getAttribute('aria-pressed') === 'true') await page.locator('#camera-toggle').tap();
   await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus', null, { timeout: 10000 });
+  if (await page.locator('#camera-toggle').getAttribute('aria-pressed') === 'true') await (touch ? page.locator('#camera-toggle').tap() : page.locator('#camera-toggle').click());
   const room = await page.evaluate(() => window.novaReady.root.observation.level);
   await page.locator(`.map-row[data-map="${room}"] .area-map`).scrollIntoViewIfNeeded();
   const point = await page.evaluate(() => {
@@ -93,7 +93,8 @@ try {
     assert.equal(origin.level,nativeRoot.observation.level);
     const time = `${Math.floor(origin.frames/3600)}:${String(Math.floor(origin.frames/60)%60).padStart(2,'0')}.${Math.floor(origin.frames%60/6)}`;
     const label = desktop.locator(`[data-search="${id}"]`);
-    assert.ok((await label.innerText()).startsWith(`↳ ${time}\n`));
+    assert.ok((await label.innerText()).startsWith(`${time}\n`));
+    assert.equal(await label.locator('.branch-icon').count(), 1, 'Each branch shows a squirrel in its own color');
     assert.equal(await label.locator('.search-origin').innerText(), await desktop.locator(`.map-row[data-map="${origin.level}"] .area-label`).innerText());
     assert.match(await label.getAttribute('title'),new RegExp(`frame ${origin.frames.toLocaleString('en-US')} · branch ${id}`));
     assert.equal(await label.evaluate(b => {
@@ -146,7 +147,7 @@ try {
 
   await desktop.close();
   const phone = await open({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, deviceScaleFactor: 1});
-  assert.ok((await phone.locator('#branches').boundingBox()).height <= 60, 'A single mobile search should use one compact row');
+  assert.ok((await phone.locator('#branches nav').boundingBox()).height <= 60, 'A single mobile search should use one compact row');
   await inspectRoot(phone, true);
   await play(phone);
   assert.equal(await phone.locator('.state-picker').isVisible(), false, 'Playing hides the retained-route list');

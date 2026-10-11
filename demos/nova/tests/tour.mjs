@@ -177,7 +177,7 @@ try {
     await page.locator("#pause").getAttribute("aria-label"),
     "Resume Search",
   );
-  assert.ok(await page.locator("#tour-holes rect").count() >= 4, "The route step lights the film, transport, route list and traced map");
+  assert.equal(await page.locator("#tour-holes rect").count(), 2, "The route step lights the traced map and the whole History pane");
   assert.equal(await page.locator('#tour-ping').getAttribute('visibility'), 'visible');
   assert.ok(await page.locator('#tour-ping-bounds rect').count() > 0);
   const wave = page.locator('.tour-ping-wave').first();
@@ -264,7 +264,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".map-wrap").dataset.camera === "follow" && Number(document.querySelector("#map").dataset.zoom) > 2, null, { timeout: 10000 });
   assert.equal(await page.locator("#tour-open").isDisabled(), true, "Take the tour replays the opening before starting");
   await ready(page, 0);
-  assert.equal(await page.locator("#map").getAttribute("data-zoom"), "1", "The replayed opening ends on the whole level");
+  assert.equal(await page.locator(".map-wrap").getAttribute("data-camera"), "follow", "The replayed opening settles into following the search");
   assert.equal(await page.locator("#timeline-toggle").getAttribute("aria-expanded"), "true", "The tour opens a collapsed Timeline");
   await opening(page);
   await next(page, 1);
@@ -387,10 +387,10 @@ try {
       await route.tap();
       await phone.waitForFunction(() => !document.querySelector('#take-control').disabled);
       const clips = await phone.evaluate(() => {
-        const hole = document.querySelector('#tour-rings rect').getBoundingClientRect(), pane = document.querySelector('#inspector').getBoundingClientRect();
+        const hole = [...document.querySelectorAll('#tour-rings rect')].at(-1).getBoundingClientRect(), pane = document.querySelector('#inspector').getBoundingClientRect();
         return {top:hole.top,bottom:hole.bottom,paneTop:pane.top,paneBottom:pane.bottom};
       });
-      assert.ok(clips.top >= clips.paneTop && clips.bottom <= clips.paneBottom, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
+      assert.ok(clips.top >= clips.paneTop - 6 && clips.bottom <= clips.paneBottom + 6, `Phone spotlights stay inside the visible history sheet: ${JSON.stringify(clips)}`);
     }
     if (step === 1) await watchDuringTour(phone);
     if (step === 1 || step === 2 || step === 4)

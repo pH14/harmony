@@ -16,20 +16,10 @@ export function viewCenter(
   };
 }
 
-export const CAMERA_VIEWPORT = { width: 640, height: 320 };
+export const CAMERA_VIEWPORT = { phone: { width: 640, height: 320 }, desktop: { width: 1280, height: 320 } };
 
-export function roomPanels(width, height, availableWidth, camera = false) {
-  if (camera) return [{ index: 0, x: 0, y: 0, width, height, vertical: false, viewport: true }];
-  const vertical = height > 672;
-  const span = Math.max(512, Math.min(1280, Math.floor(availableWidth / 256) * 256));
-  const columns = width > 1536 || (vertical && width > span) ? Math.ceil(width / span) : 1;
-  const rows = vertical ? Math.ceil(height / 448) : 1;
-  const w = Math.ceil(width / columns / 32) * 32;
-  const h = Math.ceil(height / rows / 224) * 224;
-  return Array.from({ length: columns * rows }, (_, index) => {
-    const x = (index % columns) * w, y = Math.floor(index / columns) * h;
-    return { index, x, y, width: Math.min(w, width - x), height: Math.min(h, height - y), vertical };
-  });
+export function roomPanels(width, height) {
+  return [{ index: 0, x: 0, y: 0, width, height, viewport: true }];
 }
 export function panelContains(panel, point) {
   return point.x >= panel.x && point.x < panel.x + panel.width &&

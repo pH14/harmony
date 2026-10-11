@@ -151,6 +151,7 @@ export class GuidedTour {
   start() {
     if (this.open) return;
     this.returnFocus = document.activeElement;
+    this.phoneCardHeight = 0;
     this.onStart();
     rememberTour();
     this.dialog.showModal();
@@ -167,6 +168,7 @@ export class GuidedTour {
     this.index = index;
     this.ready = false;
     this.dialog.dataset.step = index;
+    if (index === 0) this.phoneCardHeight = 0;
     document.body.dataset.tourStep = this.steps[index].id ?? index;
     this.dialog.querySelector(".tour-dots").replaceChildren(...this.steps.map((_, i) => {
       const dot = document.createElement("li");
@@ -235,6 +237,11 @@ export class GuidedTour {
     const searchesPinned = !!this.steps[this.index]?.searches;
     const reserved = playing ? 280 + (searchesPinned ? 64 : 0) : 220;
     this.card.style.maxHeight = `${phone && !landscape ? viewport.height - reserved - 32 : viewport.height - 24}px`;
+    this.card.style.minHeight = "";
+    if (phone && !landscape) {
+      if (this.ready) this.phoneCardHeight = Math.max(this.phoneCardHeight || 0, this.card.getBoundingClientRect().height);
+      this.card.style.minHeight = `${Math.min(this.phoneCardHeight, parseFloat(this.card.style.maxHeight))}px`;
+    }
     const { width, height } = this.card.getBoundingClientRect();
     let stage;
     if (phone) {

@@ -36,3 +36,12 @@ export async function snapshotHash(bytes) {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+export function snapshotDigest(bytes) {
+  let a = 0x811c9dc5, b = 0x01c93a75;
+  for (let i = 0; i < bytes.length; i++) {
+    a = Math.imul(a ^ bytes[i], 0x01000193) >>> 0;
+    const c = Math.imul(b ^ bytes[i], 0x01000193) >>> 0;
+    b = ((c << 5) | (c >>> 27)) >>> 0;
+  }
+  return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+}

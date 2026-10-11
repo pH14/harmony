@@ -36,10 +36,9 @@ original colors and the original light background shade. Each sprite fades in
 as its rollout starts and eases from nearly opaque to about two-thirds opacity
 as it finishes, followed by two faint dots at its position six and twelve game
 frames earlier. Sprites are drawn at least 18 CSS pixels tall, up to 2.5 times
-their native size, so whole-room views stay legible. Main uses the original
-palette; each branch recolors its sprites with its own tint (gold, pink, cyan,
-green, violet, orange, teal) by blending hue onto the original luminance. The
-same tint marks that branch in Searches, its fork ripple and its admission toast. Heat, grid and
+their native size, so whole-room views stay legible. Every search keeps the
+original palette; only one search's squirrels are on screen at a time, and each
+Searches row shows the same idle Nova sprite as its icon. Heat, grid and
 sparks disappear in Movement; selected route trails, Nova markers, fork origins
 and cell inspection remain available. Inspecting a populated cell keeps the
 selected view and draws the route and Nova marker in all three modes. Opening
@@ -79,15 +78,26 @@ The sprite sheet carries the same NovaSquirrel CC BY-NC-SA attribution as maps.
 The page opens with a one-line pitch and two live totals: timelines tried and
 gameplay time executed, summed across every search branch. The per-search
 counters (timelines tried, moments saved, map cells reached, game frames played
-and snapshot memory) sit in a collapsed Search details disclosure below the
-maps.
+and snapshot memory) sit in a collapsed Details disclosure at the bottom of the
+Searches pane. There is no page header; the footer carries the Harmony link,
+Credits & source and the Dark mode / Light mode switch.
 
-On a visitor's first desktop visit the camera opens at 2.6× on the boot room,
-follows the search frontier (the 80th-percentile x of live sprites, smoothed)
-for about four seconds, then eases back to the whole level over 1.6 seconds.
-The tour waits for that opening to finish. Take the tour replays the same
-opening on desktop before starting the tour, unless the search is paused. Returning visitors, reduced-motion
-visitors and any manual pan, pinch, zoom or cell selection skip or end it.
+Every room, on every screen size, shows through one camera viewport: a 4:1
+strip on desktop and a 2:1 view on phones. Desktop stacks all of a level's
+rooms; phones show one at a time with room tabs. Each room's camera holds one
+room height on screen and follows that room's search frontier (the
+80th-percentile x of live sprites, low-pass filtered), or the furthest cell the
+search has reached there, or the room's start. Following pauses while the mouse
+is over a map and for 2.5 seconds after a touch. Whole room fits every visible
+room and stops following; Follow the search resumes. Any drag, pinch or cell
+selection also stops following. Maps repaint every frame while the camera moves
+and at 30 Hz otherwise, and drawing snaps to whole canvas pixels.
+
+On a first visit the camera opens at 1.8 times the room-height close-up,
+follows for about four seconds, then eases to the close-up over 1.6 seconds and
+keeps following. The tour waits for that opening. Take the tour replays it
+before starting the tour unless the search is paused. Returning and
+reduced-motion visitors start at the close-up.
 
 A five-step guided tour follows the story many, one, you, fork and tree:
 Thousands of Novas on the live Movement map; Follow one timeline, which spotlights a populated cell, draws its selected route in gold
@@ -161,8 +171,8 @@ clears the previous selection and closes the inspector, leaving the maps visible
 and keyboard focus on the map. Arrow keys and Enter also select cells. Each level
 shows all its connected areas as stacked live maps: Introduction, Garden and
 Main Level are visible together. Area labels focus rooms within the current level. Opening a visited area selects its furthest retained
-state. Each room has its own zoom button and independent view; dragging moves
-that room’s zoomed view.
+state. Each room has its own independent view; dragging moves it, and phones
+can also pinch. There are no zoom buttons.
 
 The level heading latches actual campaign clear bits seen
 across alternate histories. Watch Level Finish replays the first witness for a new clear. Reaching a door is not a clear:
@@ -202,10 +212,13 @@ divergent future and immediately marks the new route selected. Reopening a route
 or selecting a sibling can resume near the endpoint instead of replaying from
 frame zero. Checkpoints remain one bounded cache across selections, at regular intervals targeting 64 snapshots,
 with a hard 2 MiB phone / 4 MiB desktop limit. Seeks resume from the closest
-preceding checkpoint or the current emulator frame, yield after approximately
-8 ms of work, and cancel when a newer request arrives. Movies follow elapsed
+preceding checkpoint or the current emulator frame, yield through a
+MessageChannel after approximately 12 ms of work, and cancel when a newer
+request arrives. The gold trail grows on the map while a selected path replays;
+the 1.8-second drawn reveal plays only when reconstruction finished within
+350 ms. Movies follow elapsed
 wall time, render only their final presented frame, and update details at most
-about seven times per second. Maps refresh at 30 Hz. Playback defaults to 1×.
+about seven times per second. Playback defaults to 1×.
 User-started histories and takeover play the original music and sound effects,
 with one mute control. Faster movies accelerate audio by the selected playback
 rate. Audio stops on pause, seeking, selection, restart, completion, or a hidden
@@ -227,7 +240,7 @@ At most eight search presentations are retained and Restart Search releases them
 
 Replay replays recorded inputs; 🎮 Play from here hands control to the
 visitor at the displayed moment. The inspector keeps the movie and this primary
-action above a compact list of alternate routes to the selected location. Routes are named Timeline 1, Timeline 2 and so on, numbered
+action above a compact list of alternate routes to the selected location. Rows are named Path 1, Path 2 and so on under "Saved paths to this spot", numbered
 once in discovery order within each cell and search, and rows run oldest to newest.
 The most recently retained choice is selected when opening a cell. The latest twelve choices keep
 their original numbers when older choices leave the window; an inspected route
@@ -256,10 +269,10 @@ Paths explored, states retained and game frames executed describe the active
 search; the snapshot-memory tooltip describes the shared allowance.
 It preserves health, items, level progression and emulator state through replay,
 without teleporting Nova or changing game RAM. After successful admission, the
-pane closes and the mapped branch origin ripples three times in the branch tint for 2.4 seconds; reduced-motion visitors get a stationary ring.
-The camera centers the fork, holding a 2.2× close-up on desktop for 2.6 seconds
-before easing back to the whole level, and a toast reports that the branch is
-live. The new row slides into Searches with its tint. The final tour step keeps
+pane closes and the mapped branch origin ripples three times in gold for 2.4 seconds; reduced-motion visitors get a stationary ring.
+The camera centers the fork at the room-height close-up for 2.6 seconds, then
+resumes following, and a toast reports that the branch is live and searching.
+The new row slides into Searches. The final tour step keeps
 that map and toast lit. The map reveals
 that room, including after expanded phone gameplay. The prefix trail to the
 fork remains visible while the pane is closed; inspecting a history shows its
@@ -306,16 +319,23 @@ one to eight controller actions rather than adaptive campaign coordination,
 continuation banks and checkpoints. Its seed determines search choices; wall
 time changes only animation, heat decay and presentation. Restart increments
 the seed from an initial seed of 2, which has a recorded Level 2 witness under
-the desktop budget. The smaller phone budget pauses this default run before
-Level 2; phones can inspect and replay the retained exploration but are not
-promised that transition within their budget.
+the desktop budget. Phones search within a smaller snapshot budget and are not
+promised that transition.
 Seed 1 is retained in regression diagnostics as a censored run, not described
 as a successful clear. A history is bounded to 10,000 actions and 200,000 frames, matching
-controller-history admission. Runs stop after 100,000 paths, approximately 20,000 historical
-entries per search, or a shared compressed snapshot budget. Up to eight searches
-are retained in one worker, with only one advancing at a time. Earlier searches
-remain inspectable; their snapshots count toward the same global budget. The
-final two-rollout batch can retain up to fourteen additional entries. Phones/coarse-pointer devices and devices reporting at most
+controller-history admission. Runs stop after 100,000 paths or 400,000 archive
+history entries, or when the search WASM buffers reach their limit; the
+compressed snapshot budget no longer stops a search. Instead, every entry the
+archive retires (by cell replacement or its population cap) releases its
+snapshot at the end of each rollout, and whenever resident snapshots exceed the
+budget the adapter lowers the archive's public `max_entries` cap by about 1.5%
+(never below 256 active entries), so each further admission retires an older
+entry. The archive only selects active entries, so restoring a parent never
+needs a released snapshot. Each admitted state also records a 64-bit digest of
+its raw snapshot, so replays of retired paths still verify exactly. Up to eight
+searches are retained in one worker, with only one advancing at a time; the
+advancing search receives the global budget minus the bytes held by the others,
+with a 2 MiB floor. Phones/coarse-pointer devices and devices reporting at most
 4 GiB of RAM use 32 MiB of snapshots and 96 MiB of search WASM buffers; other
 devices use 128 MiB and 192 MiB. The buffer check includes both worker-side Rust
 and QuickNES memories, happens after each two-rollout batch, and can overshoot
@@ -326,11 +346,12 @@ in chunks of at most 12 game frames and drains after each chunk, including
 12× movies on 30 Hz displays; queued playback
 is bounded, flushed on release, and is not a recording of past audio.
 In recorded desktop seeds, 11,400 snapshots occupied about 80 MiB compressed and
-89 MiB of Rust linear memory. The 32 MiB phone snapshot budget therefore retains
-roughly 4,000--5,000 similar states, not a guaranteed count.
+89 MiB of Rust linear memory. `tests/search.mjs` runs a 2 MiB budget for 3,000
+rollouts and checks that the search keeps going, resident snapshots stay within
+about one batch of the budget, and retained histories still replay exactly.
 
 Raw DEFLATE preserves every snapshot byte. Boxed slices discard spare compressor
-capacity; retired selector entries still retain their snapshots. Decompression
+capacity; retired entries keep only their digest. Decompression
 is bounded to one MiB. The UI caches at most 32 fetched histories and 2 MiB of
 estimated storage (64 bytes per action plus snapshot and record overhead);
 current replay, the bounded human controller prefix, selected trail and in-flight
@@ -414,7 +435,7 @@ A native archive check admits the real before/after observations and preserves
 this transition's recorded input suffix. Restoring the Main checkpoint and
 executing its original suffix also reproduces the same Level 2 snapshot.
 The fixtures contain controller inputs,
-not edited game state, and never affect live initialization. A small snapshot-budget stop preserves a late exact replay.
+not edited game state, and never affect live initialization. A small snapshot budget keeps searching and preserves exact replay.
 
 `NOVA_PROGRESS_PATHS=22000 npm run test:search` runs the longer three-seed
 power-on diagnostic. Seeds 2 and 3 clear Level 1 and enter Level 2; seed 1 is
@@ -458,9 +479,9 @@ and corresponding-source links are in
 [CREDITS.md](CREDITS.md) and the site's Credits dialog. The build distributes
 original sources and build recipes alongside the ROM and emulator.
 
-The Searches and History panes use matching sliding panels. Each search has inline play/pause controls. Main has a restart control that releases the whole search tree; other branches have delete controls that free their native snapshot archive, heat view and movement recordings. Deleting an active branch resumes its parent. Independent child branches keep their own complete input histories and move up the tree. Branch IDs are never reused within a search session. Movement, Heatmap and Both are visible segmented controls, and hovering a search branch preserves that choice. Search details report snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
+The Searches and History panes use matching sliding panels. Each search has inline play/pause controls. Main has a restart control that releases the whole search tree; other branches have delete controls that free their native snapshot archive, heat view and movement recordings. Deleting an active branch resumes its parent. Independent child branches keep their own complete input histories and move up the tree. Branch IDs are never reused within a search session. Movement, Heatmap and Both are visible segmented controls, and hovering a search branch preserves that choice. Details report snapshot archive memory shared across branches. Light and dark UI palettes follow ph14.dev; game pixels and heat colors are unchanged. The theme follows the OS until a visitor chooses one.
 
-Phones show one room at a time through a 2:1 camera viewport instead of stacked, wrapped sections. Room tabs above the map switch rooms and mark rooms the search has reached. The camera holds one room height on screen (about 0.8 CSS pixels per game pixel) and follows the search frontier; when the current room empties for 2.5 seconds and another room in the level has at least six live sprites, it moves there unless the visitor chose a room. Whole room fits the entire room in the viewport and stops following; Follow the search resumes. Any drag, pinch or cell selection stops following. Switching search branches and finishing the tour resume it. Phone maps keep vertical page scrolling available even when zoomed: one finger pans horizontally, two fingers pinch and pan the map, and each room retains its own view. Tour spotlights are clipped to scroll containers and the visual viewport so scrolling the history sheet cannot illuminate hidden controls or the map underneath. All highlighted controls remain usable.
+Phone maps keep vertical page scrolling available even when zoomed: one finger pans horizontally, two fingers pinch and pan the map, and each room retains its own view. Tour spotlights are clipped to scroll containers and the visual viewport so scrolling the history sheet cannot illuminate hidden controls or the map underneath. All highlighted controls remain usable.
 
 ## Starting at another level
 
@@ -476,4 +497,4 @@ The panes are labeled Searches, Exploration and History. History keeps its headi
 
 Overview route strokes stay bright gold at a constant screen width, with a dark edge for contrast at small map scales. Retained histories collapse into a reopen control; dismissing human play still discards its draft and resumes the existing search. On phones, Searches places its heading and short scrollable tree in one row. During human play, History places audio in the header, then the screen, a spaced controller and Branch/Discard actions; the retained-route list stays hidden.
 
-On desktop, long rooms wrap into contiguous sections under one room heading. The section width adapts to the Exploration pane, aligning seams to original tile boundaries; short rooms keep their overview. Small numbered continuation links connect the sections of the same room. Tall rooms use an ordered grid of vertical sections. Artwork, heat, movement and selected trails use the same original world coordinates in every section; no visits or connecting routes are invented at a wrap. Replay follows its actual section, and selection, keyboard navigation, dragging and pinch zoom use that section's transform. A room's zoom button applies to all its sections, while gestures can adjust a single section. `tests/wrapped-maps.mjs` exercises later horizontal and vertical rooms, original-art crops, tile hits beyond the first section, section navigation, zoom and responsive reflow on desktop and phone. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.
+Room headings name the room and its position ("Introduction · Room 1 of 3"). `tests/room-cameras.mjs` checks one viewport per room on desktop and phone, Whole room and Follow modes, rotation, and an authentic retained-state hit at the far end of a long room using a hash-verified native history. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.

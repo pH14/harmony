@@ -26,18 +26,23 @@ function usedSnapshots() {
   );
 }
 function memoryLimit() {
-  return (
-    usedSnapshots() >= budget.snapshotsMiB * 1048576 ||
-    wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength >=
-      budget.searchMiB * 1048576
-  );
+  return wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength >= budget.searchMiB * 1048576;
+}
+function shareSnapshotBudget(search) {
+  const others = usedSnapshots() - search.explorer.snapshot_bytes();
+  search.explorer.set_snapshot_budget(Math.max(0, budget.snapshotsMiB * 1048576 - others));
 }
 function stateFor(branch, id) {
   const search = searches.get(branch);
   if (!search) throw new Error("Unknown search branch");
   const state = JSON.parse(search.explorer.state(id));
   state.id = externalId(branch, id);
-  state.snapshot = search.explorer.snapshot(id);
+  state.digest = search.explorer.digest(id);
+  try {
+    state.snapshot = search.explorer.snapshot(id);
+  } catch {
+    state.snapshot = null;
+  }
   state.branch = search.branch;
   state.boot_level = bootLevel;
   return state;
@@ -70,6 +75,7 @@ const loop = new SearchLoop(() => {
   if (!initialized || busy) return false;
   try {
     const search = searches.get(active);
+    shareSnapshotBudget(search);
     recorder.begin();
     let batch, motion;
     try {
@@ -167,12 +173,9 @@ onmessage = async ({ data }) => {
           throw new Error(
             "This history has reached its input limit. Choose an earlier frame.",
           );
-        if (
-          memoryLimit() ||
-          usedSnapshots() + genesis.length + 64 > budget.snapshotsMiB * 1048576
-        )
+        if (memoryLimit())
           throw new Error(
-            "Search memory limit reached. Delete a branch or Restart Search to release retained snapshots.",
+            "Search memory limit reached. Delete a branch or Restart Search to release memory.",
           );
         engine.restore(genesis);
         let chunk = 0;

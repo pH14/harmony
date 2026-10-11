@@ -90,12 +90,19 @@ await page.addInitScript((tourKey) => {
     }
   };
 }, TOUR_KEY);
+async function wholeRoom() {
+  await page.waitForFunction(() => document.querySelector(".map-wrap")?.dataset.camera !== "focus", null, { timeout: 10000 });
+  if ((await page.locator("#camera-toggle").getAttribute("aria-pressed")) === "true")
+    await page.locator("#camera-toggle").click();
+  await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].filter((c) => c.offsetParent).every((c) => c.dataset.zoom === "1"));
+}
 async function openCurrentCell() {
   await page.waitForFunction(
     () =>
       !!document.querySelector("#details b") &&
       !document.querySelector("#take-control").disabled,
   );
+  await wholeRoom();
   const map = page.locator("#map");
   await map.scrollIntoViewIfNeeded();
   const point = await map.evaluate((canvas) => {
@@ -188,6 +195,8 @@ try {
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
   );
+  await page.waitForFunction(() => !document.querySelector("#pause").disabled);
+  await wholeRoom();
   assert.equal(await page.locator("#speed").inputValue(), "1");
   assert.equal(
     await page.locator("#screenshot,#export,#import,#history-file").count(),
@@ -209,7 +218,7 @@ try {
     };
   });
   assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
-  assert.ok(heroLayout.detailsTop >= heroLayout.mapsBottom, "Per-search counters sit below the maps");
+  assert.equal(await page.locator("#branches .search-details").count(), 1, "Per-search counters sit in the Searches pane");
   assert.equal(heroLayout.detailsOpen, false, "Per-search counters start collapsed");
   assert.equal(heroLayout.heading, "One game. Thousands of timelines.");
   const originImage = await page
@@ -357,12 +366,12 @@ try {
   );
   assert.equal(await page.locator("#inspector").isVisible(), true);
   const selected = await page.locator("#state-list .selected").innerText();
-  assert.match(selected, /Timeline \d+/);
+  assert.match(selected, /Path \d+/);
   assert.match(selected, /\d+:\d{2}/);
   assert.doesNotMatch(selected, / replay/);
   assert.equal(
     await page.locator("#cell-title").innerText(),
-    "Timelines that reached this spot",
+    "Saved paths to this spot",
   );
   assert.equal(
     await page.locator("#take-control").innerText(),
@@ -865,13 +874,13 @@ try {
     Number(await page.locator("#map").getAttribute("data-trace-points")) > 1,
     "The prefix trail must outlast the origin ripple while the pane stays closed",
   );
-  await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera === 'idle', null, { timeout: 10000 });
   await openCurrentCell();
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
   );
   const position = await page.locator("#details b").first().textContent();
   const [bx, by] = position.split(",").map(Number);
+  await wholeRoom();
   const branchClick = await page.locator("#map").evaluate(
     (c, p) => {
       const r = c.getBoundingClientRect(),
@@ -984,7 +993,7 @@ try {
 
   assert.equal(await page.locator('li[data-search-node="1"] > ol > li[data-search-node="2"]').count(), 1, 'Nested branches must retain their actual parent in the tree');
   await page.mouse.move(0, 0);
-  await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera === 'idle' && [...document.querySelectorAll('.area-map')].every(c => c.dataset.originPulse !== 'true'), null, { timeout: 10000 });
+  await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus' && [...document.querySelectorAll('.area-map')].every(c => c.dataset.originPulse !== 'true'), null, { timeout: 10000 });
   await page.waitForTimeout(200);
   const activeBranchBeforeHover = await page.locator('#branch-tree button[aria-pressed=true]').getAttribute('data-search');
   const branchAttemptsBeforeHover = await page.locator('#attempts').textContent();
@@ -1049,6 +1058,7 @@ try {
     await page.waitForTimeout(100);
     return page.locator("#cells").textContent();
   }
+  await wholeRoom();
   const resumedOriginalCells = await switchSearch(
     0,
     originalCells,
@@ -1073,27 +1083,7 @@ try {
     () =>
       document.querySelector("#verification").textContent === "Original game",
   );
-  await page.locator('.area-zoom[data-map="49"]').click();
-  await page.locator('.area-zoom[data-map="45"]').click();
-  await page.waitForFunction(
-    () =>
-      document.querySelector('.map-row[data-map="49"] .area-map').dataset.zoom ===
-        "2" &&
-      document.querySelector('.map-row[data-map="45"] .area-map').dataset.zoom ===
-        "2",
-  );
-  assert.equal(
-    await page.locator("#map").getAttribute("data-zoom"),
-    "1",
-    "Zooming another room must leave Introduction at overview scale",
-  );
-  await page.locator('.area-zoom[data-map="49"]').click();
-  await page.locator('.area-zoom[data-map="49"]').click();
-  await page.locator('.area-zoom[data-map="45"]').click();
-  await page.locator('.area-zoom[data-map="45"]').click();
   await openCurrentCell();
-  await page.locator("#zoom").click();
-  await page.waitForTimeout(50);
   assert.ok(
     await page.locator("#map").evaluate((canvas) => {
       const data = canvas
@@ -1104,10 +1094,9 @@ try {
           return true;
       return false;
     }),
-    "Zoom must keep the selected ground state visible",
+    "The selected ground state is marked on the map",
   );
-  await page.locator("#zoom").click();
-  await page.locator("#zoom").click();
+  assert.equal(await page.locator(".area-zoom").count(), 0, "Desktop maps have no manual zoom buttons");
   for (const file of [
     "licenses/CREDITS.md",
     "licenses/harmony-source.tar.gz",
@@ -1138,7 +1127,7 @@ try {
   assert.equal(await page.locator('.art-credit').count(), 0);
   assert.match(await page.locator('.exploration .game-attribution').innerText(), /NovaSquirrel.*CC BY-NC-SA 4.0/);
   assert.equal(await page.locator('.game-attribution').count(), 1);
-  assert.equal(await page.locator('footer').innerText(), 'Credits & source');
+  assert.match(await page.locator('footer').innerText(), /^harmony\nCredits & source\n(Dark|Light) mode$/);
   assert.equal(await page.locator('.exploration-heading').innerText(), 'Exploration');
   assert.equal(await page.locator('.history-heading h2').innerText(), 'History');
   assert.equal(await page.getByText('Nova explorer', { exact: true }).count(), 0);
@@ -1195,26 +1184,6 @@ try {
   assert.match(await page.locator("#map-label").innerText(), /GARDEN/);
   assert.equal(await page.locator('#worlds,.atlas,.map-card').count(), 0);
   await page.locator('.map-row[data-map="45"] .area-label').click();
-  await page.locator("#zoom").click();
-  await page.locator("#map").scrollIntoViewIfNeeded();
-  const before = await page.locator("#map").evaluate((c) => c.toDataURL()),
-    bounds = await page.locator("#map").boundingBox();
-  await page.mouse.move(
-    bounds.x + bounds.width / 2,
-    bounds.y + bounds.height / 2,
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    bounds.x + bounds.width / 2 - 100,
-    bounds.y + bounds.height / 2,
-    { steps: 5 },
-  );
-  await page.mouse.up();
-  await page.waitForTimeout(100);
-  assert.ok(
-    (await page.locator("#map").evaluate((c) => c.toDataURL())) !== before,
-    "Dragging the zoomed map must move the view",
-  );
   await page.locator("#reset").click();
   await page.waitForFunction(
     () =>
@@ -1271,6 +1240,7 @@ try {
   const phonePosition = (await page.locator("#details b").first().textContent())
     .split(",")
     .map(Number);
+  await wholeRoom();
   const phoneCell = await page.locator("#map").evaluate((canvas, position) => {
     const w = Number(canvas.dataset.mapWidth),
       h = Number(canvas.dataset.mapHeight),

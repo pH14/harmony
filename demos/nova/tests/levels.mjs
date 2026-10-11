@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from 'node:assert/strict';
+import { snapshotDigest } from '../src/media.js';
 import { readFile } from 'node:fs/promises';
 import { createEngine } from '../src/emulator.js';
 import { isMapEvidence } from '../src/world.js';
@@ -28,12 +29,12 @@ for (const level of catalog.levels) {
   for (let n = 0; n < 15; n++) batch = JSON.parse(search.advance(2));
   assert.equal(batch.executions, 30, `Level ${level.id} must actually search`);
   const id = batch.points.findLast(p => p.retained !== null)?.retained ?? 0;
-  const state = JSON.parse(search.state(id)), snapshot = search.snapshot(id);
+  const state = JSON.parse(search.state(id)), snapshot = search.digest(id);
   assert.deepEqual(engine.boot(level.id), root, 'Repeated bootstrap is byte deterministic');
   for (const action of state.actions) engine.run(action.buttons, action.frames);
-  assert.deepEqual(engine.capture(), snapshot, `Level ${level.id} archive must replay exactly`);
+  assert.equal(snapshotDigest(engine.capture()), snapshot, `Level ${level.id} archive must replay exactly`);
   const child = Explorer.from_history(3, JSON.stringify(state.actions));
-  assert.deepEqual(child.snapshot(0), snapshot, 'Fork is rooted at the replayed endpoint');
+  assert.equal(child.digest(0), snapshot, 'Fork is rooted at the replayed endpoint');
   assert.equal(JSON.parse(child.advance(2)).executions, 2);
   child.free(); search.free();
 }

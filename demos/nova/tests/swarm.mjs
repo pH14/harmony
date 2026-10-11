@@ -20,7 +20,7 @@ const owners = new Map(catalog.levels.flatMap((level) => level.rooms.map((room) 
 const original = new Explorer(2), expected = [];
 for (let i = 0; i < 64; i++) {
   const batch = JSON.parse(original.advance(2));
-  expected.push({ batch, snapshots: batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, original.snapshot(p.retained)]) });
+  expected.push({ batch, snapshots: batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, original.digest(p.retained)]) });
 }
 original.free();
 engine.restore(root);
@@ -32,7 +32,7 @@ for (const before of expected) {
   const batch = JSON.parse(recorded.advance(2)), trails = recorder.finish();
   assert.deepEqual(batch, before.batch, "Sampling must preserve all random choices, work counts and retained states");
   for (const [id, snapshot] of before.snapshots)
-    assert.deepEqual(recorded.snapshot(id), snapshot, "Sampling must preserve every archived endpoint byte");
+    assert.equal(recorded.digest(id), snapshot, "Sampling must preserve every archived endpoint byte");
   assert.equal(trails.length, 2);
   assert.ok(trails.every((trail) => trail.length <= 1205));
   recordedPoints += trails.reduce((n, t) => n + t.length / 5, 0);

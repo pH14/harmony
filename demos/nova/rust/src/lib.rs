@@ -216,6 +216,7 @@ struct State {
 pub struct Explorer {
     archive: Archive<Action, Observation, (), ()>,
     snapshots: BTreeMap<usize, Box<[u8]>>,
+    digests: BTreeMap<usize, u64>,
     rng: RomuDuoJrRand,
     executions: u32,
     deaths: u32,
@@ -224,7 +225,24 @@ pub struct Explorer {
     won: bool,
     snapshot_bytes: usize,
     max_snapshot_bytes: usize,
+    retired_snapshots: u32,
     prefix: Vec<Action>,
+}
+
+const MIN_SNAPSHOT_BUDGET: usize = 2 * 1024 * 1024;
+const MIN_ACTIVE_ENTRIES: usize = 256;
+const MAX_ARCHIVE_HISTORY: usize = 400_000;
+
+fn snapshot_digest(bytes: &[u8]) -> u64 {
+    let mut a: u32 = 0x811c_9dc5;
+    let mut b: u32 = 0x01c9_3a75;
+    for &byte in bytes {
+        a = (a ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+        b = (b ^ u32::from(byte))
+            .wrapping_mul(0x0100_0193)
+            .rotate_left(5);
+    }
+    (u64::from(a) << 32) | u64::from(b)
 }
 
 fn compress_snapshot(bytes: &[u8]) -> Box<[u8]> {
@@ -265,7 +283,6 @@ impl Explorer {
             return Err(js_error("Nova setup did not reach level one"));
         }
         let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
-        archive.max_entries = 20064;
         archive
             .insert(
                 None,
@@ -282,7 +299,8 @@ impl Explorer {
         let stopped = won
             || prefix.len() >= 10000
             || prefix.iter().map(|a| u32::from(a.frames)).sum::<u32>() >= 200000;
-        let root = compress_snapshot(&capture()?);
+        let raw = capture()?;
+        let root = compress_snapshot(&raw);
         let snapshot_bytes = root.len();
         Ok(Self {
             archive,
@@ -291,10 +309,12 @@ impl Explorer {
             deaths: 0,
             frames: 0,
             snapshots: BTreeMap::from([(0, root)]),
+            digests: BTreeMap::from([(0, snapshot_digest(&raw))]),
             stopped,
             won,
             snapshot_bytes,
             max_snapshot_bytes: 128 * 1024 * 1024,
+            retired_snapshots: 0,
             prefix,
         })
     }
@@ -306,7 +326,35 @@ impl Explorer {
     }
 
     pub fn set_snapshot_budget(&mut self, bytes: u32) {
-        self.max_snapshot_bytes = (bytes as usize).clamp(16 * 1024 * 1024, 128 * 1024 * 1024);
+        self.max_snapshot_bytes = (bytes as usize).clamp(MIN_SNAPSHOT_BUDGET, 128 * 1024 * 1024);
+    }
+
+    pub fn retired_snapshots(&self) -> u32 {
+        self.retired_snapshots
+    }
+
+    fn release_retired_snapshots(&mut self) {
+        let active = &self.archive.active;
+        let mut freed = 0;
+        let mut released = 0;
+        self.snapshots.retain(|&id, bytes| {
+            let keep = id == 0 || active.get(id).copied().unwrap_or(false);
+            if !keep {
+                freed += bytes.len();
+                released += 1;
+            }
+            keep
+        });
+        self.snapshot_bytes -= freed;
+        self.retired_snapshots += released;
+    }
+
+    fn enforce_snapshot_budget(&mut self) {
+        self.release_retired_snapshots();
+        if self.snapshot_bytes > self.max_snapshot_bytes {
+            let live = self.archive.active_count();
+            self.archive.max_entries = live.saturating_sub(live / 64 + 1).max(MIN_ACTIVE_ENTRIES);
+        }
     }
 
     pub fn advance(&mut self, jobs: u32) -> Result<String, JsValue> {
@@ -361,9 +409,11 @@ impl Explorer {
                     && let std::collections::btree_map::Entry::Vacant(entry) =
                         self.snapshots.entry(id)
                 {
-                    let compressed = compress_snapshot(&capture()?);
+                    let raw = capture()?;
+                    let compressed = compress_snapshot(&raw);
                     self.snapshot_bytes += compressed.len();
                     entry.insert(compressed);
+                    self.digests.insert(id, snapshot_digest(&raw));
                 }
                 productive |= self.archive.live_entry_count() > retained_before;
                 if let Some(id) = id {
@@ -377,14 +427,14 @@ impl Explorer {
                 });
             }
             self.archive.record_selection_outcome(parent, productive);
+            self.enforce_snapshot_budget();
             self.executions += 1;
             self.won |= points
                 .iter()
                 .any(|p| p.observation.cleared_levels == [255; 5]);
             self.stopped = self.won
-                || self.archive.live_entry_count() >= 20000
-                || self.executions >= 100000
-                || self.snapshot_bytes >= self.max_snapshot_bytes;
+                || self.archive.live_entry_count() >= MAX_ARCHIVE_HISTORY
+                || self.executions >= 100000;
         }
         serde_json::to_string(&Batch {
             executions: self.executions,
@@ -415,6 +465,13 @@ impl Explorer {
         .map_err(js_error)
     }
 
+    pub fn digest(&self, id: usize) -> Result<String, JsValue> {
+        self.digests
+            .get(&id)
+            .map(|digest| format!("{digest:016x}"))
+            .ok_or_else(|| js_error("digest unavailable"))
+    }
+
     pub fn snapshot(&self, id: usize) -> Result<Vec<u8>, JsValue> {
         let compressed = self
             .snapshots
@@ -428,6 +485,12 @@ impl Explorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_digest_matches_the_browser_reference() {
+        assert_eq!(snapshot_digest(&[]), 0x811c_9dc5_01c9_3a75);
+        assert_eq!(snapshot_digest(b"nova"), 0x8193_e2df_c1eb_c4ee);
+        assert_ne!(snapshot_digest(b"nova"), snapshot_digest(b"novb"));
+    }
     #[test]
     fn recorded_next_level_is_admitted_with_its_real_input_suffix() {
         #[derive(Deserialize)]
