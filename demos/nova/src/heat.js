@@ -3,8 +3,10 @@ import { MOTION_STRIDE, NO_ROOM } from "./swarm.js";
 import { project } from "./world.js";
 
 export const CELL_SIZE = 32;
+export const cellRow = (y) => Math.floor((y + 7) / CELL_SIZE);
+export const cellTop = (row) => row * CELL_SIZE + 8;
 export const cellKey = (o) =>
-  `${o.level}:${Math.floor(o.x / CELL_SIZE)}:${Math.floor(o.y / CELL_SIZE)}`;
+  `${o.level}:${Math.floor(o.x / CELL_SIZE)}:${cellRow(o.y)}`;
 export class Heatmap {
   constructor() {
     this.cells = new Map();
@@ -29,7 +31,7 @@ export class Heatmap {
         key,
         level: point.observation.level,
         x: Math.floor(point.observation.x / 32),
-        y: Math.floor(point.observation.y / 32),
+        y: cellRow(point.observation.y),
         heat: 0,
         time: this.clock(now),
         visits: 0,

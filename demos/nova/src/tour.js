@@ -39,6 +39,19 @@ export function tourPosition(rects, width, height, viewport) {
   const overlap = (p) => cardOverlap(p, rects, width, height);
   return candidates.sort((a, b) => overlap(a) - overlap(b))[0];
 }
+export function mergeOverlaps(rects) {
+  const merged = [...rects];
+  for (let i = 0; i < merged.length; i++)
+    for (let j = i + 1; j < merged.length; j++) {
+      const a = merged[i], b = merged[j];
+      if (a.left >= b.right || b.left >= a.right || a.top >= b.bottom || b.top >= a.bottom) continue;
+      const left = Math.min(a.left, b.left), top = Math.min(a.top, b.top), right = Math.max(a.right, b.right), bottom = Math.max(a.bottom, b.bottom);
+      merged[i] = { left, top, right, bottom, width: right - left, height: bottom - top, radius: Math.max(a.radius, b.radius) };
+      merged.splice(j, 1);
+      j = i;
+    }
+  return merged;
+}
 export function cardOverlap(p, rects, width, height) {
   const gap = 16;
   return rects.reduce((sum, r, i) => sum + (i === 0 ? 4 : 1) *
@@ -272,7 +285,7 @@ export class GuidedTour {
     } else {
       this.clearStage();
     }
-    const rects = (typeof this.targets === "function" ? this.targets() : [])
+    const rects = mergeOverlaps((typeof this.targets === "function" ? this.targets() : [])
       .filter(Boolean)
       .flatMap((target) => {
         const element = target.element || target;
@@ -301,7 +314,7 @@ export class GuidedTour {
           right: piece.right - offset.x, bottom: piece.bottom - offset.y,
           width: piece.right - piece.left, height: piece.bottom - piece.top, radius: target.radius ?? 5,
         }));
-      });
+      }));
     if (!phone) {
       const key = `${this.index}:${this.ready}:${Math.round(viewport.width)}:${Math.round(viewport.height)}:${Math.round(width)}:${Math.round(height)}`;
       const spot = this.cardSpot;

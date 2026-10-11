@@ -75,7 +75,7 @@ try {
     await page.locator('#pause').click();
     await page.waitForFunction(()=>document.querySelector('.map-wrap').dataset.camera!=='focus',null,{timeout:10000});
     await camera(page,phone,'room');
-    const target=await page.evaluate(()=>{const o=window.root.observation;return{id:window.root.id,room:o.level,x:Math.floor(o.x/32)*32+16,y:Math.floor(o.y/32)*32+8};});
+    const target=await page.evaluate(()=>{const o=window.root.observation;return{id:window.root.id,room:o.level,x:Math.floor(o.x/32)*32+16,y:Math.floor((o.y+7)/32)*32+24};});
     if(phone&&await page.locator(`#room-tabs button[data-map="${target.room}"]`).getAttribute('aria-pressed')!=='true')await page.locator(`#room-tabs button[data-map="${target.room}"]`).tap();
     await camera(page,phone,'room');
     const canvas=page.locator(`.map-row[data-map="${target.room}"] .area-map`);

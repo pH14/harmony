@@ -49,7 +49,7 @@ try {
         const o = window.novaRoot.observation, panels=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] .area-map`)];
         const roomWidth=Number(panels[0].dataset.roomWidth);
         const worldX=o.x%roomWidth, worldY=o.y+Math.floor(o.x/roomWidth)*224;
-        const x=Math.floor(worldX/32)*32+16,y=Math.floor(worldY/32)*32+8;
+        const x=Math.floor(worldX/32)*32+16,y=Math.floor((worldY+7)/32)*32+24;
         const c=panels.find(c=>worldX>=+c.dataset.panelX && worldX<+c.dataset.panelX+ +c.dataset.mapWidth && worldY-8>=+c.dataset.panelY && worldY-8<+c.dataset.panelY+ +c.dataset.mapHeight);
         c.scrollIntoView({block:'center',behavior:'instant'});
         const r=c.getBoundingClientRect(),w=Number(c.dataset.mapWidth),h=Number(c.dataset.mapHeight);

@@ -36,7 +36,7 @@ async function inspectRoot(page, touch = false) {
     const o = window.novaReady.root.observation;
     const c = document.querySelector(`.map-row[data-map="${o.level}"] .area-map`), r = c.getBoundingClientRect();
     const scale = Math.min(c.width / Number(c.dataset.mapWidth), c.height / Number(c.dataset.mapHeight)) * Number(c.dataset.zoom);
-    const x = Math.floor(o.x / 32) * 32 + 16, y = Math.floor(o.y / 32) * 32 + 8;
+    const x = Math.floor(o.x / 32) * 32 + 16, y = Math.floor((o.y + 7) / 32) * 32 + 24;
     return {room: o.level, x: r.left + ((x - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width / c.width,
       y: r.top + ((y - Number(c.dataset.centerY)) * scale + c.height / 2) * r.height / c.height};
   });

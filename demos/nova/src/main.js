@@ -5,7 +5,7 @@ import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
 import { RoutePreviews } from "./preview.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
-import { Heatmap, routeIds } from "./heat.js";
+import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { NovaSwarm } from "./swarm.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT } from "./view.js";
@@ -284,6 +284,22 @@ function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
   return Math.max(1, c.height / 224 / fit);
 }
+function frameRoute() {
+  for (const room of cameraRooms()) {
+    const c = mapCanvas(room), points = trace.filter((p) => !p.gap && p.level === room);
+    if (!c || !points.length) {
+      overview(room);
+      continue;
+    }
+    const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+    const left = Math.min(...xs) - 48, right = Math.max(...xs) + 48, top = Math.min(...ys) - 56, bottom = Math.max(...ys) + 40;
+    const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
+    const zoom = Math.min(closeUpZoom(c), Math.max(1, Math.min(c.width / (fit * (right - left)), c.height / (fit * (bottom - top)))));
+    const view = roomView(room, c);
+    roomView(room).zoom = view.zoom = zoom;
+    Object.assign(view, panelCenter(panel, zoom, { x: (left + right) / 2, y: (top + bottom) / 2 }, c));
+  }
+}
 function maxZoom(c) {
   return c?.dataset.viewport === "true" ? Math.max(6, closeUpZoom(c) * 2.5) : 6;
 }
@@ -301,7 +317,7 @@ function reachedFrontier(level) {
   let best = null;
   for (const cell of heat.cells.values())
     if (cell.level === level && (!best || cell.x > best.x)) best = cell;
-  return best ? { x: best.x * 32 + 16, y: best.y * 32 + 8 } : { x: 0, y: map.height };
+  return best ? { x: best.x * 32 + 16, y: cellTop(best.y) + 16 } : { x: 0, y: map.height };
 }
 function steerCamera(level, c, target, zoom, zoomRate, panRate) {
   const view = roomView(level, c);
@@ -1561,7 +1577,7 @@ function drawArea(canvas, now) {
         const color = areaHeat.color(cell, now);
         if (!color) continue;
         const x = cell.x * 32,
-          y = cell.y * 32 - 8;
+          y = cellTop(cell.y);
         ctx.fillStyle = `rgba(${color},.56)`;
         ctx.fillRect(x + 1, y + 1, 30, 30);
         ctx.strokeStyle = `rgba(${color},.8)`;
@@ -1577,7 +1593,7 @@ function drawArea(canvas, now) {
       ctx.lineTo(x, mapHeight);
       ctx.stroke();
     }
-    for (let y = 24; y < mapHeight; y += 32) {
+    for (let y = 8; y < mapHeight; y += 32) {
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(mapWidth, y);
@@ -1603,7 +1619,7 @@ function drawArea(canvas, now) {
   if (focus?.level === mapLevel) {
     ctx.strokeStyle = "#fff0bd";
     ctx.lineWidth = 1.5 / areaZoom;
-    ctx.strokeRect(focus.x * 32 + 1, focus.y * 32 - 8 + 1, 30, 30);
+    ctx.strokeRect(focus.x * 32 + 1, cellTop(focus.y) + 1, 30, 30);
   }
   const o = preview ? areaOrigin?.point : routeHover ? routeHover.point : $("inspector").hidden
     ? areaOrigin?.point
@@ -1645,7 +1661,7 @@ function mapCoordinates(e) {
     scale = Math.min(c.width / Number(c.dataset.mapWidth), c.height / Number(c.dataset.mapHeight)) * view.zoom;
   return {
     x: Math.floor(((px - c.width / 2) / scale + view.x) / 32),
-    y: Math.floor(((py - c.height / 2) / scale + view.y + 8) / 32),
+    y: Math.floor(((py - c.height / 2) / scale + view.y - 8) / 32),
     level: id,
   };
 }
@@ -1782,7 +1798,7 @@ function bindMap(c) {
       (selectedCell?.level === level ? selectedCell : null) || {
         level,
         x: Math.floor((Number(c.dataset.panelX) + 16) / 32),
-        y: Math.floor((Number(c.dataset.panelY) + Math.min(168, c.height - 8)) / 32),
+        y: Math.floor((Number(c.dataset.panelY) + Math.min(152, c.height - 24)) / 32),
       };
     if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
       e.preventDefault();
@@ -1807,7 +1823,7 @@ function bindMap(c) {
       };
     }
     if (e.key.startsWith("Arrow") && hoverCell) {
-      const next = mapCanvas(level, { x: hoverCell.x * 32 + 16, y: hoverCell.y * 32 + 8 });
+      const next = mapCanvas(level, { x: hoverCell.x * 32 + 16, y: cellTop(hoverCell.y) + 16 });
       if (next && next !== c) { next.focus({ preventScroll: true }); next.scrollIntoView({ block: "nearest" }); }
     }
     if (e.key === "Enter") {
@@ -2369,7 +2385,7 @@ function animate(now) {
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);
   lastTime = now;
-  const cameraMoving = (camera.follow && !paused) || !!camera.focus || !!panHold;
+  const cameraMoving = (camera.follow && !paused) || !!camera.focus || !!panHold || playing || controlMode;
   if (cameraMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;
@@ -2395,7 +2411,7 @@ function animate(now) {
       engine.run(controller.buttons(), 1, true);
       music.advance(controller.buttons());
       currentFrame++;
-      if (currentFrame % traceStride === 0) recordTrail();
+      if (currentFrame % 8 === 0) recordTrail();
     }
     $("film").dataset.audioFrames = music.samples;
     current.frames = currentFrame;
@@ -2430,6 +2446,7 @@ const mapResize = new ResizeObserver(([entry]) => {
   mapLayoutWidth = width;
   for (const key of views.keys()) if (typeof key === "string") views.delete(key);
   renderMapRows(catalog.levels.find(l => l.rooms.includes(mapLevel)));
+  if (!camera.follow && !camera.focus) for (const room of cameraRooms()) overview(room);
   drawMap(performance.now());
 });
 mapResize.observe($("map-rows"));
@@ -2437,7 +2454,7 @@ let tourSession = null,
   tourOffered = tourSeen();
 function tourMap() {
   const cell = tourSession?.cell;
-  return cell && mapCanvas(cell.level, { x: cell.x * 32 + 16, y: cell.y * 32 + 8 });
+  return cell && mapCanvas(cell.level, { x: cell.x * 32 + 16, y: cellTop(cell.y) + 16 });
 }
 function tourCellRect() {
   const c = tourMap(),
@@ -2449,7 +2466,7 @@ function tourCellRect() {
     scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom,
     x = (((cell.x * 32 - view.x) * scale + c.width / 2) * r.width) / c.width,
     y =
-      (((cell.y * 32 - 8 - view.y) * scale + c.height / 2) * r.height) /
+      (((cellTop(cell.y) - view.y) * scale + c.height / 2) * r.height) /
       c.height;
   return {
     element: c,
@@ -2470,6 +2487,16 @@ function tourCell(prefer = camera.introRoom ?? mapLevel) {
         b.ids.length - a.ids.length ||
         b.visits - a.visits,
     )[0];
+}
+function activeRoomSpotlights() {
+  const rooms = cameraRooms(), runs = [];
+  rooms.forEach((room, i) => {
+    if (!swarmRooms.get(room)?.length) return;
+    if (runs.at(-1)?.end === i - 1) runs.at(-1).end = i;
+    else runs.push({ start: i, end: i });
+  });
+  if (!runs.length) return [rowsSpotlight([tourMap()])];
+  return runs.map(({ start, end }) => rowsSpotlight(rooms.slice(start, end + 1).map((room) => mapCanvas(room))));
 }
 function rowsSpotlight(canvases) {
   const rows = [...new Set(canvases.map((c) => c?.closest(".map-row")).filter(Boolean))];
@@ -2503,7 +2530,7 @@ const tour = new GuidedTour({
         "Every squirrel is Harmony trying a different move in a real NES running in your browser.",
         "It keeps any attempt that reaches somewhere new, then pushes onward from there.",
       ],
-      targets: () => [rowsSpotlight([tourMap()])],
+      targets: () => activeRoomSpotlights(),
       interactive: () => [$("map-rows"), $("pause")],
     },
     {
@@ -2516,9 +2543,9 @@ const tour = new GuidedTour({
         "Other saved paths to the same spot are listed too.",
       ],
       targets: () => [
-        ...(routeHover?.segments || Number(tourMap()?.dataset.tracePoints) > 0
-          ? [rowsSpotlight([...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0))]
-          : [tourCellRect()]),
+        segments.length
+          ? rowsSpotlight([...new Set([tourSession?.cell?.level, ...segments.flat().map((p) => p.level)])].map((room) => mapCanvas(room)))
+          : tourCellRect(),
         $("inspector"),
       ],
       interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("map-rows")],
@@ -2551,7 +2578,6 @@ const tour = new GuidedTour({
       ],
       targets: () => [
         searchesSpotlight(),
-        ...(branchPreview ? [...document.querySelectorAll(".area-map")] : [mapCanvas(branchOrigin?.point?.level ?? mapLevel, branchOrigin?.point)]),
         $("map-toast").hidden ? null : $("map-toast"),
       ],
       interactive: () => [$("branches")],
@@ -2577,6 +2603,10 @@ const tour = new GuidedTour({
   },
   async beforeStep(index, valid) {
     hideRoutePreview();
+    if (index <= STEP.you && tourSession.gameplay && playSession) {
+      closeInspector({ restoreFocus: false });
+      tourSession.prepared = tourSession.gameplay = false;
+    }
     if (index <= STEP.one) expandInspector(false);
     if (controlMode && index !== STEP.you && index !== STEP.fork) stopControl();
     if (index === STEP.tree) return;
@@ -2605,11 +2635,7 @@ const tour = new GuidedTour({
       }
       return;
     }
-    const view = roomView(cell.level, tourMap());
-    if (index === STEP.one && view.zoom > 1) {
-      stopCamera();
-      Object.assign(view, panelCenter(canvasPanel(tourMap()), view.zoom, { x: cell.x * 32 + 16, y: cell.y * 32 + 8 }, tourMap()));
-    }
+    if (index === STEP.one) stopCamera();
     paused = true;
     worker.postMessage({ type: "pause" });
     updateSearchControl();
@@ -2640,6 +2666,7 @@ const tour = new GuidedTour({
     }
     if (!valid()) return;
     if (index === STEP.one) {
+      frameRoute();
       $("state-list")
         .querySelector(".selected")
         ?.scrollIntoView({ block: "nearest", behavior: "instant" });

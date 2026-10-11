@@ -70,7 +70,7 @@ await page.addInitScript((tourKey) => {
               o.y >= height
             )
               continue;
-            const key = `${Math.floor(o.x / 32)}:${Math.floor(o.y / 32)}`;
+            const key = `${Math.floor(o.x / 32)}:${Math.floor((o.y + 7) / 32)}`;
             if (!window.novaTestRouteCells.has(key))
               window.novaTestRouteCells.set(key, {
                 ids: new Set(),
@@ -116,7 +116,7 @@ async function openCurrentCell() {
         Number(canvas.dataset.zoom),
       rect = canvas.getBoundingClientRect(),
       px = Math.floor((x % width) / 32) * 32 + 16,
-      py = Math.floor((Math.floor(x / width) * 224 + y) / 32) * 32 + 8;
+      py = Math.floor((Math.floor(x / width) * 224 + y + 7) / 32) * 32 + 24;
     return {
       x:
         (((px - Number(canvas.dataset.centerX)) * scale + canvas.width / 2) *
@@ -286,10 +286,10 @@ try {
         const px = Math.floor((position.x % width) / 32) * 32 + 16,
           py =
             Math.floor(
-              (Math.floor(position.x / width) * 224 + position.y) / 32,
+              (Math.floor(position.x / width) * 224 + position.y + 7) / 32,
             ) *
               32 +
-            8;
+            24;
         return {
           x:
             (rect.width * ((canvas.width - width * scale) / 2 + px * scale)) /
@@ -331,7 +331,7 @@ try {
   await clickIntroCell();
   await page.waitForFunction(
     (expected) => document.querySelector("#cell-title").title === expected,
-    `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
+    `Cell ${Math.floor(x / 32)}, ${Math.floor((y + 7) / 32)}`,
   );
   assert.equal(await page.locator("#inspector").isVisible(), true);
   assert.equal(await page.locator("#selection-hint").isVisible(), false);
@@ -887,7 +887,7 @@ try {
         h = Number(c.dataset.mapHeight),
         scale = Math.min(c.width / w, c.height / h) * Number(c.dataset.zoom),
         px = Math.floor((p.x % w) / 32) * 32 + 16,
-        py = Math.floor((Math.floor(p.x / w) * 224 + p.y) / 32) * 32 + 8;
+        py = Math.floor((Math.floor(p.x / w) * 224 + p.y + 7) / 32) * 32 + 24;
       return {
         x:
           (((px - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width) /
@@ -1247,9 +1247,9 @@ try {
       rect = canvas.getBoundingClientRect();
     const x = Math.floor((position[0] % w) / 32) * 32 + 16,
       y =
-        Math.floor((Math.floor(position[0] / w) * 224 + position[1]) / 32) *
+        Math.floor((Math.floor(position[0] / w) * 224 + position[1] + 7) / 32) *
           32 +
-        8;
+        24;
     return {
       x:
         (rect.width * ((canvas.width - w * scale) / 2 + x * scale)) /
@@ -1319,8 +1319,8 @@ try {
     "Selecting a history in the same room must reveal its map above the pane",
   );
   assert.ok(
-    phoneMap.preview <= 110,
-    "The compact pane should use a small preview beside its controls",
+    phoneMap.preview <= 180,
+    "The compact pane should show its preview beside its controls",
   );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())

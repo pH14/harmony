@@ -774,7 +774,7 @@ dialog h2 {
   }
   .inspector:not(.expanded) .film {
     display: grid;
-    grid-template-columns: 108px minmax(0, 1fr);
+    grid-template-columns: max(108px, min(46%, 100vw - 230px)) minmax(0, 1fr);
     gap: 4px 8px;
   }
   .inspector:not(.expanded) .screen {

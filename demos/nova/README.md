@@ -88,15 +88,22 @@ rooms; phones show one at a time with room tabs. Each room's camera holds one
 room height on screen and follows that room's search frontier (the
 80th-percentile x of live sprites, low-pass filtered), or the furthest cell the
 search has reached there, or the room's start. Following pauses while the mouse
-is over a map and for 2.5 seconds after a touch. Whole room fits every visible
-room and stops following; Follow the search resumes. Any drag, pinch or cell
+is over a map and for 2.5 seconds after a touch. A two-option control beside
+the visualization choice switches between Follow search and Whole room. Whole
+room fits every visible room and stops following. On phones, Follow search also
+switches to the newest room that has live Novas: it moves forward as soon as the
+search reaches a later room, and back only after the current room has been empty
+for 2.5 seconds. Tapping a room tab keeps that room on screen until Follow search
+is chosen again. When the map width changes while the camera is not following,
+every room returns to the whole-room view. Any drag, pinch or cell
 selection also stops following. When a room is wider than its view, hovering it
 shows soft chevrons at the left and right edges; resting on one pans that way,
 easing up to most of a screen per second, and a tap on touch screens glides
 about half a screen. Panning by hand stops following like a drag. A thin track
 along the bottom of each room shows which part of the room is on screen, with a
 gold dot at the point the camera is chasing while it follows. Maps repaint every
-frame while the camera or an edge pan moves and at 30 Hz otherwise, and drawing
+frame while the camera or an edge pan moves, a replay plays or a visitor plays,
+and at 30 Hz otherwise. A visitor's own trail extends every 8 frames. Drawing
 snaps to whole canvas pixels.
 
 On a first visit the camera opens at 1.8 times the room-height close-up in the
@@ -109,14 +116,18 @@ moves. Returning and
 reduced-motion visitors start at the close-up.
 
 A five-step guided tour follows the story many, one, you, fork and tree:
-Thousands of Novas on the live Movement map; Follow one timeline, which spotlights a populated cell, draws its selected route in gold
+Thousands of Novas, which spotlights every room with live Novas; Follow one timeline, which
+zooms each room to fit its part of the selected route, spotlights the rooms the route visits, draws it in gold
 over 1.8 seconds with a moving head, and lights the History film, replay
 controls and route list together; Your turn for takeover; Hand it back to
-Harmony for search admission; and A tree of searches for the tree.
+Harmony for search admission; and A tree of searches, which spotlights only Searches.
+Going back from a later step to Your turn or earlier discards gameplay played
+during the tour, so those steps show Play from here again.
 Each step has one or two short sentences and a row of progress dots. Every step enables its real highlighted controls: cell and route selection,
 replay and scrubbing, keyboard/touch takeover, branching and switching searches.
 The rest of the interface dims without blurring the game. Map spotlights cover
-whole room rows, headings included, as one block. On desktop the callout keeps
+whole room rows, headings included, as one block, and overlapping spotlights
+merge into one box. On desktop the callout keeps
 its place for the whole step and moves only when a highlighted target would
 cover it and a less covered spot exists. The tour opens once
 after the opening camera finishes and the search has populated a cell; Take the
@@ -170,8 +181,10 @@ Activity uses the real four-frame rollout samples, including the restored start
 and cells crossed between action endpoints. Each attempt warms a cell once,
 regardless of how many samples dwell there. No interpolated bridge is painted
 across restores, room transitions or invalid/menu samples. Heatmap, Movement and
-Both use the same recorded attempts; colors and the 32-pixel position grid are
-unchanged. Retained endpoints attach their actual histories separately, without
+Both use the same recorded attempts and the same 32-pixel position grid. Grid
+rows start 8 pixels below a 32-pixel boundary, matching the 16-pixel tiles, so a
+Nova standing on most floors sits inside one cell. The search archive uses the
+same rows. Retained endpoints attach their actual histories separately, without
 warming the cell twice or inventing snapshots for transit cells.
 Heat is a UI view of actual visits, not archive retention or parent-selection
 priority. Pausing, human play and switching to another branch freeze its heat;
@@ -285,7 +298,7 @@ pane closes and the mapped branch origin ripples three times in gold for 2.4 sec
 The camera centers the fork at the room-height close-up for 2.6 seconds, then
 resumes following, and a toast reports that the branch is live and searching.
 The new row slides into Searches. The final tour step keeps
-that map and toast lit. The map reveals
+the toast lit. The map reveals
 that room, including after expanded phone gameplay. The prefix trail to the
 fork remains visible while the pane is closed; inspecting a history shows its
 own complete trail. Each retained search has its own heat, cell history IDs,

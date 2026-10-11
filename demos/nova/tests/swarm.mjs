@@ -82,7 +82,7 @@ try {
       const owners = new Map(catalog.levels.flatMap(l => l.rooms.map(r => [r, l.id])));
       const RealWorker = window.Worker;
       window.novaTestHeat = new Map();
-      const cellKey = p => `${p.level}:${Math.floor((p.x % maps.get(p.level).width) / 32)}:${Math.floor((Math.floor(p.x / maps.get(p.level).width) * 224 + p.y) / 32)}`;
+      const cellKey = p => `${p.level}:${Math.floor((p.x % maps.get(p.level).width) / 32)}:${Math.floor((Math.floor(p.x / maps.get(p.level).width) * 224 + p.y + 7) / 32)}`;
       window.Worker = class extends RealWorker {
         constructor(...args) {
           super(...args);

@@ -62,7 +62,7 @@ impl ArchiveKey for Observation {
             self.level,
             self.reload,
             self.x / 32,
-            self.y / 32,
+            (self.y + 7) / 32,
         )
     }
     fn progress(self) -> Self::Progress {}
