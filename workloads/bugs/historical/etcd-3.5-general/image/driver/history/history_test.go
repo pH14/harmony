@@ -129,6 +129,19 @@ func TestAValueMustMatchTheWriteAtItsRevision(t *testing.T) {
 	}
 }
 
+func TestAnAcknowledgedValueAtAnotherRevisionIsAViolation(t *testing.T) {
+	j := journal(t, IntentLine(1, Put, "k", "a"), AckLine(1, 10, true))
+	if got := Explain(j.OnKey("k"), 12, present("a", 12)); got == "" {
+		t.Fatal("a member that applied the write again at revision 12 diverged from the acknowledged revision 10")
+	}
+	if got := Explain(j.OnKey("k"), 12, present("a", 9)); got == "" {
+		t.Fatal("a member that numbered the write 9 diverged from the acknowledged revision 10")
+	}
+	if got := Explain(j.OnKey("k"), 12, present("a", 10)); got != "" {
+		t.Fatal(got)
+	}
+}
+
 func TestATornLineIsIgnoredAndLeavesTheOpIndeterminate(t *testing.T) {
 	j := journal(t, IntentLine(1, Put, "k", "a"), "A 1 10")
 	ops := j.OnKey("k")
