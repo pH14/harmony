@@ -105,9 +105,7 @@ async function dimmedFraction(page, lit, undimmed) {
   }, [lit.toString('base64'), undimmed.toString('base64')]);
 }
 async function watchDuringTour(page) {
-  const map = page.locator('.area-map[data-trace-points]').filter({ visible: true });
-  const traced = await map.evaluateAll((canvases) => canvases.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
-  assert.notEqual(traced, undefined);
+  const traced = await (await page.waitForFunction(() => [...document.querySelectorAll('.area-map[data-trace-points]')].find((c) => c.getClientRects().length && Number(c.dataset.tracePoints) > 0)?.dataset.map)).jsonValue();
   const canvas = page.locator(`.map-row[data-map="${traced}"] .area-map`);
   const lit = await canvas.screenshot();
   await page.locator('.tour-shade').evaluate((e) => e.style.visibility = 'hidden');
