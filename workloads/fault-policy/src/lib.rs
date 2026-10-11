@@ -21,8 +21,8 @@ pub use process::{decode_process_target, process_target};
 pub use recorded::{EnvSpec, RecordedEnv, StandingFault};
 pub use seeded::SeededEnv;
 pub use standing::{
-    STANDING_NAMESPACE, StandingEntry, StandingIter, StandingWindow, decode_windows,
-    encode_standing, encode_windows, parse_standing,
+    APPLICATION_CHOICE_NAMESPACE, STANDING_NAMESPACE, StandingEntry, StandingIter, StandingWindow,
+    decode_windows, encode_standing, encode_windows, parse_standing,
 };
 
 pub const CATALOG_VERSION: u16 = 7;

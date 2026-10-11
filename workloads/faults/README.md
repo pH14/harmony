@@ -64,6 +64,21 @@ instrumented target.
 
 ## Actions
 
+Every action also records a 64-bit `choice` that the search draws with it and
+keys into the action's prefix. A choice follows its lineage: an action drawn
+after a parent keeps the parent's last choice half the time, replaces one of
+its eight bytes with a random byte a quarter of the time, and draws a fresh
+choice otherwise; an action with no parent draws a fresh one. Each byte is one
+of the workload's decision sites, so the search keeps the application behavior
+that led to a retained state and varies it one site at a time
+(`choice_policy` `lineage_choice_quarter_fresh_half_kept_quarter_byte_v1`). The standing service answers SDK opaque service
+namespace 11 (`APPLICATION_CHOICE_NAMESPACE`) with the choice of the action
+whose window holds the current moment, so a workload driver can draw its own
+operations from it: sibling branches of one snapshot then do different work,
+and a replay installs the same choices. Workloads that never ask are
+unaffected. The [general-discovery contract](../bugs/historical/general/README.md)
+describes the guest side.
+
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
 10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
 search draws one duration per suffix from the adaptive duration policy, and
@@ -283,7 +298,11 @@ drawn from the retained-input table is held to the same rule and falls through
 to the alphabet when its node is not ready, so the readiness a run recorded
 bounds every draw rather than the alphabet alone. The adapter supplies that
 alphabet and the duration each drawn action carries; the searcher owns the suffix draw and the
-retained-input table. The continuous client and oracle remain image-owned
+retained-input table. Searches use the searcher's energy-splice mixture, so the
+mix of fault kinds is learned rather than uniform: each strategy (a fresh
+alphabet draw, a step drawn from actions that opened new archive slots, or a
+splice of another slot holder's route) keeps a share that decays with the work
+it spends without opening a slot. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 

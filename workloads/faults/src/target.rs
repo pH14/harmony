@@ -164,12 +164,13 @@ impl FaultOperation {
     }
 }
 
-pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2;
+pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2 + 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultAction {
     pub operation: FaultOperation,
     pub coverage_quantum: NonZeroU16,
+    pub choice: u64,
 }
 
 impl FaultAction {
@@ -177,7 +178,13 @@ impl FaultAction {
         Self {
             operation,
             coverage_quantum,
+            choice: 0,
         }
+    }
+
+    #[must_use]
+    pub fn with_choice(self, choice: u64) -> Self {
+        Self { choice, ..self }
     }
 
     pub fn ticks(&self) -> u64 {
@@ -194,7 +201,9 @@ impl FaultAction {
     pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
         let mut bytes = [0; ACTION_KEY_WIDTH];
         bytes[..OPERATION_KEY_WIDTH].copy_from_slice(&self.operation.key_bytes());
-        bytes[OPERATION_KEY_WIDTH..].copy_from_slice(&self.coverage_quantum.get().to_le_bytes());
+        bytes[OPERATION_KEY_WIDTH..OPERATION_KEY_WIDTH + 2]
+            .copy_from_slice(&self.coverage_quantum.get().to_le_bytes());
+        bytes[OPERATION_KEY_WIDTH + 2..].copy_from_slice(&self.choice.to_le_bytes());
         bytes
     }
 }
@@ -733,6 +742,22 @@ mod tests {
     }
 
     #[test]
+    fn choice_is_keyed_serialized_and_preserved_when_duration_changes() {
+        let action = FaultAction::new(FaultOperation::Wait(ticks(4)), ticks(8)).with_choice(7);
+        assert_ne!(action.key_bytes(), action.with_choice(8).key_bytes());
+        assert_eq!(action.with_ticks(ticks(9)).choice, 7);
+        let encoded = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            serde_json::from_str::<FaultAction>(&encoded).unwrap(),
+            action
+        );
+        assert!(
+            serde_json::from_str::<FaultAction>(r#"{"operation":{"Wait":4},"coverage_quantum":8}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn coverage_quantum_is_keyed_serialized_and_preserved_when_duration_changes() {
         let operation = FaultOperation::Wait(ticks(4));
         let action = FaultAction::new(operation, ticks(64));
@@ -747,8 +772,10 @@ mod tests {
             action
         );
         assert!(
-            serde_json::from_str::<FaultAction>(r#"{"operation":{"Wait":4},"coverage_quantum":0}"#)
-                .is_err()
+            serde_json::from_str::<FaultAction>(
+                r#"{"operation":{"Wait":4},"coverage_quantum":0,"choice":0}"#
+            )
+            .is_err()
         );
         assert!(serde_json::from_str::<FaultAction>(r#"{"operation":{"Wait":4}}"#).is_err());
     }
@@ -891,17 +918,17 @@ mod tests {
 
     #[test]
     fn an_event_park_target_is_a_nonempty_range_in_json() {
-        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":null}},"coverage_quantum":1}"#;
+        let untargeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":null}},"coverage_quantum":1,"choice":0}"#;
         let action: FaultAction = serde_json::from_str(untargeted).unwrap();
         assert_eq!(serde_json::to_string(&action).unwrap(), untargeted);
-        let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1}"#;
+        let targeted = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":16}}},"coverage_quantum":1,"choice":0}"#;
         let action: FaultAction = serde_json::from_str(targeted).unwrap();
         assert!(matches!(
             action.operation,
             FaultOperation::EventPark { target: Some(target), .. } if target == ParkTarget::new(8, 16).unwrap()
         ));
         assert_eq!(serde_json::to_string(&action).unwrap(), targeted);
-        let empty = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":8}}},"coverage_quantum":1}"#;
+        let empty = r#"{"operation":{"EventPark":{"node":0,"edges":1,"hold_us":5,"ticks":1,"target":{"start":8,"end":8}}},"coverage_quantum":1,"choice":0}"#;
         assert!(serde_json::from_str::<FaultAction>(empty).is_err());
     }
 

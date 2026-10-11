@@ -1,0 +1,79 @@
+{
+  "format": "harmony-historical-case-v1",
+  "id": "etcd-3.5.5-heldout",
+  "title": "etcd 3.5.5 general workload, held out (crash during online defragmentation)",
+  "software": "etcd",
+  "panel": "discovery",
+  "sources": {
+    "issue": "https://github.com/etcd-io/etcd/issues/14685",
+    "fix_commit": "https://github.com/etcd-io/etcd/pull/14733"
+  },
+  "versions": {
+    "affected": "3.5.0-3.5.5",
+    "fixed": "3.5.6"
+  },
+  "workload": {
+    "version": "3.5.5",
+    "source_sha256": "1a16ab899c2381f3ed68f7c38ab878edd391397f7ff987b22a9cd50aab092b79"
+  },
+  "image": {
+    "context": ".",
+    "dockerfile": "workloads/bugs/historical/etcd-3.5-general/image/Dockerfile",
+    "build_args": {
+      "ETCD_VERSION": "3.5.5",
+      "ETCD_SOURCE_SHA256": "1a16ab899c2381f3ed68f7c38ab878edd391397f7ff987b22a9cd50aab092b79"
+    }
+  },
+  "kernel_profile": "faultlab",
+  "oracle": {
+    "assertion": "every etcd member holds an acknowledged history",
+    "evidence": "etcd general check compared the members that answered",
+    "kind": "always",
+    "source": "the general checker run as the bundle's continuous check",
+    "journal_format": "I <op> <kind> <key> <value> | A <op> <revision> <applied> | F <op>",
+    "detector": "serializable reads of gen/ from every member against the clients' journals",
+    "fires_on": "a member's owned key at read revision R is not explained by the last acknowledged write at or below R or by an indeterminate write",
+    "silent_when": [
+      "no member answers",
+      "a journal cannot be read"
+    ],
+    "integrity": [
+      {
+        "assertion": "etcd members agree on the key-value hash at a common revision",
+        "evidence": "etcd general check compared the members that answered"
+      },
+      {
+        "assertion": "linearizable reads observe acknowledged writes",
+        "evidence": "etcd general check compared the members that answered"
+      }
+    ]
+  },
+  "actions": [
+    "Wait",
+    "Kill",
+    "EventKill",
+    "EventPark",
+    "Pause",
+    "Restart"
+  ],
+  "run": {
+    "ram_mib": 1024,
+    "knobs": {}
+  },
+  "search": {
+    "executions": 1000000,
+    "wall_minutes": 90
+  },
+  "discovery_mode": "heldout",
+  "status": "measured",
+  "ci": {
+    "status": "runnable",
+    "display_name": "etcd 3.5.5 Held Out",
+    "image_prefix": "etcd-general"
+  },
+  "instrumentation": {
+    "tool": "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec",
+    "version": "0.8.0",
+    "license": "MIT"
+  }
+}

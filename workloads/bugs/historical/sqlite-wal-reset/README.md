@@ -49,14 +49,21 @@ the rest. The rows a writer committed can still be present, so
 
 ## Running
 
-The image builds for arm64 and the case searches on arm64 hosts, so its CI
-status is deferred. Build it from the repository root:
+The image builds natively for x86-64 and arm64. On x86-64 it installs the
+reviewed Bookworm allowlist, and `harmony prepare` admits it as a complete
+instrumented target: the base image's RDRAND and RDSEED sites in libgcrypt and
+libstdc++ are reviewed, and the case's own binary has none. The case is
+runnable on the hosted x86-64 workflows. Build it from the repository root:
 
 ```sh
-docker buildx build --platform linux/arm64 \
-  -f workloads/bugs/historical/sqlite-wal-reset/image/Dockerfile \
-  --output type=oci,dest=sqlite-3.51.2.oci .
+docker build --build-arg "HARMONY_RUNTIME_IMAGE=$runtime" \
+  -f workloads/bugs/historical/sqlite-wal-reset/image/Dockerfile -t harmony-sqlite:3.51.2 .
 ```
+
+`SQLITE_ANTITHESIS=0` builds the same harness with the fork's in-source WAL
+markers compiled out; the
+[sqlite-wal-reset-no-markers](../sqlite-wal-reset-no-markers/README.md)
+ablation uses it, and the default of 1 is this case.
 
 ## Shared instrumentation runtime
 
