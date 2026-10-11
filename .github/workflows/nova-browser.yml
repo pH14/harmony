@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Dissonance Workloads / Nova Browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-browser-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nova-browser:
+    name: Nova Browser
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: demos/nova/package-lock.json
+      - name: Install Rust and browser build tools
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustup default 1.97.0
+          cargo install wasm-pack --version 0.14.0 --locked
+          git clone --depth 1 --branch V2.19 https://github.com/cc65/cc65.git "$RUNNER_TEMP/cc65"
+          make -C "$RUNNER_TEMP/cc65" -j4
+          echo "CC65_BIN_DIR=$RUNNER_TEMP/cc65/bin" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 4.0.15
+          "$RUNNER_TEMP/emsdk/emsdk" activate 4.0.15
+      - name: Build pinned runtime and static site
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          cd demos/nova
+          npm ci
+          ./tools/build-runtime.sh
+          npm run build
+      - name: Lint and test the browser adapter
+        run: |
+          cargo clippy --locked --manifest-path demos/nova/rust/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path demos/nova/rust/Cargo.toml
+          wasm-pack test --node demos/nova/rust
+          cd demos/nova
+          npm test
+      - name: Execute the browser and verify exact films
+        run: |
+          cd demos/nova
+          npx playwright install --with-deps chromium
+          npm run preview -- --port 4173 > "$RUNNER_TEMP/nova-preview.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:4173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          npm run test:browser
+      - name: Static demo and corresponding source
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-browser-dist
+          path: demos/nova/dist
+          if-no-files-found: error
+      - name: Browser evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-browser-evidence
+          path: demos/nova/test-results
+          if-no-files-found: ignore

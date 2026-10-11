@@ -594,3 +594,12 @@ The Harmony NES Nova lane also runs `cli/tests/nes.sh` against the pinned native
 runner. It checks the shared CLI's prepared-input execution, exact replay, prefix
 branching, nonempty rooted searches, additional-budget continuation and artifact
 tamper refusal. Its evidence is uploaded with the existing Nova artifact.
+
+The Nova browser lane (`Checks / Dissonance Workloads / Nova Browser`) owns the
+standalone `demos/nova/rust` adapter. It builds pinned Nova and QuickNES into
+WebAssembly, runs adapter and browser checks, verifies exact selected-history
+replays, and uploads the static `nova-browser-dist` with corresponding sources
+and `nova-browser-evidence` screenshots. The bounded browser check asserts
+liveness, authentic starts in all 44 catalog levels, exact replay and rooted
+branching, and desktop/phone interactions rather than a specific seed’s game
+progress.

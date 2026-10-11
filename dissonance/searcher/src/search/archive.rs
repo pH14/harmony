@@ -6,7 +6,7 @@ use std::{
     error::Error,
     fmt::Debug,
     mem::size_of,
-    num::NonZeroUsize,
+    num::{NonZeroU64, NonZeroUsize},
     sync::Arc,
 };
 
@@ -184,8 +184,8 @@ fn draw_weighted(
     let total = weights
         .clone()
         .fold(0_u64, |sum, weight| sum.saturating_add(weight));
-    let total = NonZeroUsize::new(usize::try_from(total)?).ok_or("weighted draw over nothing")?;
-    let mut draw = u64::try_from(rand.below(total))?;
+    let total = NonZeroU64::new(total).ok_or("weighted draw over nothing")?;
+    let mut draw = rand.below_u64(total);
     for (index, weight) in weights.enumerate() {
         if draw < weight {
             return Ok(index);
@@ -610,9 +610,8 @@ fn draw_member<T: Copy + Ord>(
     rand: &mut RomuDuoJrRand,
     set: &WeightedSet<T>,
 ) -> Result<T, Box<dyn Error>> {
-    let total =
-        NonZeroUsize::new(usize::try_from(set.total())?).ok_or("weighted draw over nothing")?;
-    let draw = u64::try_from(rand.below(total))?;
+    let total = NonZeroU64::new(set.total()).ok_or("weighted draw over nothing")?;
+    let draw = rand.below_u64(total);
     set.find(draw)
         .ok_or_else(|| "weighted draw exceeded its total".into())
 }
@@ -2047,6 +2046,10 @@ where
     #[must_use]
     pub fn lineage(&self, id: usize) -> Option<&K::Lineage> {
         self.lineages.get(id)
+    }
+
+    pub fn entry_input(&self, id: usize) -> Result<Input<A>, &'static str> {
+        self.materialize_input(id)
     }
 
     #[must_use]
@@ -3672,7 +3675,8 @@ mod tests {
         assert_eq!(copies.get(), 1);
         assert_eq!(insert(&[4, 5], 20, Some(0)).unwrap(), Some(1));
         assert_eq!(copies.get(), 2);
-        assert_eq!(archive.materialize_input(1).unwrap().actions, [1, 4, 5]);
+        assert_eq!(archive.entry_input(1).unwrap().actions, [1, 4, 5]);
+        assert!(archive.entry_input(usize::MAX).is_err());
         assert_eq!(archive.entries[1].input_suffix.capacity(), 2);
     }
 
