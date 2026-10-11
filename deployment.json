@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "09be184",
+    "commit": "272eb12",
     "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests and every npm run test:browser check in Chromium (tour, tour-mobile, swarm, interactions, levels-browser, room-cameras, browser rerun after this change). Edge chevrons pan wide rooms on hover or tap, with a room track and follow-target dot; the opening zooms only the busiest room and the tour starts there; tour map spotlights cover whole room rows and the desktop callout stays put through hovers.",
-    "asset_manifest_sha256": "aa155071c068b49892f7e487988e411ff698fbb0d94085d448597e8596489fbb"
+    "checks": "Production build, 52 helper tests, the Rust wasm tests and every npm run test:browser check in Chromium (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, room-cameras, browser). Follow search and Whole room are a two-option control and phones follow the newest room; heat cell rows line up with floors in both the map and the search archive; tour steps highlight active rooms, the route's rooms and Searches only, merge overlapping highlights, frame the route, and discard tour gameplay when going back; the phone History screen is larger and maps repaint every frame during play.",
+    "asset_manifest_sha256": "546154bbb3444127bc27087646e4ab2e75aec019d80996299b1ff33970dc7d03"
   },
   "raft": {
     "commit": "28791e77a",
