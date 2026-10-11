@@ -92,8 +92,7 @@ await page.addInitScript((tourKey) => {
 }, TOUR_KEY);
 async function wholeRoom() {
   await page.waitForFunction(() => document.querySelector(".map-wrap")?.dataset.camera !== "focus", null, { timeout: 10000 });
-  if ((await page.locator("#camera-toggle").getAttribute("aria-pressed")) === "true")
-    await page.locator("#camera-toggle").click();
+  await page.locator('#camera-toggle [data-camera="room"]').click();
   await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].filter((c) => c.offsetParent).every((c) => c.dataset.zoom === "1"));
 }
 async function openCurrentCell() {

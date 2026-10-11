@@ -32,8 +32,8 @@ const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">One game. Thousands of timelines.</h1><p class="hero-lede"><span class="lede-wide">Harmony is playing <a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> on a real NES emulator in your browser, trying thousands of moves and keeping every one that reaches somewhere new. </span><span class="lede-narrow">Harmony plays <a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> on a real NES in your browser. </span>Each little squirrel is a different timeline.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div><div><b id="hero-playtime">0s</b><span>of gameplay</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
-<div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>World 1 – Level 1</button><span id="goal-status" hidden></span></div><div><div id="visualization" class="segments" role="group" aria-label="Visualization" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button><button data-viz="both" aria-pressed="false">Both</button></div><button id="completion" hidden>Watch completion</button></div></div>
-<div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Rooms in this level"></nav><button id="camera-toggle" aria-pressed="true">Whole room</button></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a warm cell to watch its history</div><div id="hover" hidden></div><div id="map-toast" role="status" hidden></div></div>
+<div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>World 1 – Level 1</button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search frontier">Follow search</button><button data-camera="room" aria-pressed="false" title="Show the whole room">Whole room</button></div><div id="visualization" class="segments" role="group" aria-label="Visualization" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button><button data-viz="both" aria-pressed="false">Both</button></div><button id="completion" hidden>Watch completion</button></div></div>
+<div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Rooms in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a warm cell to watch its history</div><div id="hover" hidden></div><div id="map-toast" role="status" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 <p class="game-attribution"><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
 </section>
@@ -278,7 +278,7 @@ function drawNovas(ctx, level, screenScale, rooms = swarmRooms, panel = null) {
 }
 const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.8;
-const camera = { follow: false, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
+const camera = { follow: false, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
@@ -322,10 +322,9 @@ function overview(level) {
   }
 }
 function updateCameraToggle() {
-  const following = camera.follow || !!camera.focus;
-  $("camera-toggle").textContent = following ? "Whole room" : "Follow the search";
-  $("camera-toggle").setAttribute("aria-pressed", following);
-  $("camera-toggle").title = following ? "Show the whole room" : "Follow the search frontier";
+  const value = camera.follow || camera.focus ? "follow" : "room";
+  $("camera-toggle").dataset.value = value;
+  for (const button of $("camera-toggle").children) button.setAttribute("aria-pressed", button.dataset.camera === value);
 }
 function stopCamera() {
   camera.tourAfter = false;
@@ -349,13 +348,22 @@ function cameraRooms() {
 function drivenRooms() {
   return cameraRooms().filter((room) => camera.only == null || room === camera.only);
 }
-$("camera-toggle").onclick = () => {
-  if (camera.follow || camera.focus) {
+for (const button of $("camera-toggle").children) button.onclick = () => {
+  if (button.dataset.camera === "room") {
     stopCamera();
     for (const room of cameraRooms()) overview(room);
-  } else followSearch();
+  } else {
+    camera.pinned = null;
+    followSearch();
+    const latest = latestRoom();
+    if (phoneLayout.matches && latest != null && latest !== mapLevel) setRoom(latest, true);
+  }
   drawMap(performance.now());
 };
+function latestRoom() {
+  const rooms = catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
+  return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
+}
 function actionRoom() {
   const rooms = cameraRooms();
   const [busiest, count] = rooms.map((id) => [id, swarmRooms.get(id)?.length || 0]).sort((a, b) => b[1] - a[1])[0] || [];
@@ -404,18 +412,20 @@ function updateCamera(now) {
   }
   if (reducedMotion.matches && now - camera.jumped < 2000) return;
   camera.jumped = now;
+  if (phoneLayout.matches && camera.pinned == null) {
+    const rooms = catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
+    const latest = latestRoom();
+    if (swarmRooms.get(mapLevel)?.length) camera.emptySince = 0;
+    else camera.emptySince ||= now;
+    const ahead = rooms.indexOf(latest) > rooms.indexOf(mapLevel);
+    if (latest != null && latest !== mapLevel && (ahead || now - camera.emptySince > 2500)) {
+      setRoom(latest, true);
+      camera.emptySince = 0;
+      return;
+    }
+  }
   for (const room of drivenRooms()) {
     let point = frontier(room);
-    if (!point && room === mapLevel && phoneLayout.matches) {
-      camera.emptySince ||= now;
-      const owner = catalog.levels.find((level) => level.rooms.includes(mapLevel));
-      const [busiest, count] = (owner?.rooms || []).map((id) => [id, swarmRooms.get(id)?.length || 0]).sort((a, b) => b[1] - a[1])[0] || [];
-      if (!userSelected && now - camera.emptySince > 2500 && count >= 6 && busiest !== mapLevel) {
-        setRoom(busiest, true);
-        camera.emptySince = 0;
-        return;
-      }
-    } else if (room === mapLevel) camera.emptySince = 0;
     point ||= reachedFrontier(room);
     const c = mapCanvas(room, point);
     if (!c) continue;
@@ -1055,6 +1065,7 @@ function startSearch(level = bootLevel) {
   replayEpoch++;
   playing = false;
   userSelected = false;
+  camera.pinned = null;
   gameWon = false;
   paused = false;
   ready = false;
@@ -1346,13 +1357,7 @@ function updateStats() {
   $("memory").textContent = `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`;
   $("memory").title = "Retained snapshots across all search branches";
 }
-function placeCameraToggle() {
-  const parent = phoneLayout.matches ? document.querySelector(".room-bar") : document.querySelector(".goal > div:last-child");
-  if ($("camera-toggle").parentElement !== parent) parent.prepend($("camera-toggle"));
-  if (phoneLayout.matches) parent.append($("camera-toggle"));
-}
 function renderMapRows(owner) {
-  placeCameraToggle();
   const focusedMap = document.activeElement?.closest(".map-row")?.dataset.map;
   const rooms = owner?.rooms || [mapLevel];
   for (const [id, image] of panoramas)
@@ -1370,6 +1375,7 @@ function renderMapRows(owner) {
       userSelected = true;
       if (id !== mapLevel) browseRoom(id);
       followSearch();
+      camera.pinned = id === latestRoom() ? null : id;
     };
     return tab;
   }));

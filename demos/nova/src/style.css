@@ -1277,7 +1277,6 @@ footer .brand { color: var(--text); font-size: 15px; }
 footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
 .room-bar { display: none; }
 #room-tabs { display: none; }
-#camera-toggle { padding: 7px 12px; border-color: var(--line); background: var(--background); font-size: 12px; }
 #map-toast {
   position: absolute; z-index: 3; top: 14px; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100% - 24px);
@@ -1321,7 +1320,6 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
   #room-tabs button { flex-shrink: 0; padding: 8px 10px; background: transparent; color: var(--muted); font-size: 14px; font-weight: 500; white-space: nowrap; }
   #room-tabs button[aria-pressed="true"] { background: var(--selection); color: var(--text); }
   #room-tabs button.visited::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: #ffb547; vertical-align: 1px; }
-  #camera-toggle { flex-shrink: 0; padding: 8px 10px; border-color: var(--line); background: var(--background); font-size: 12px; }
   .map-row:not([data-current="true"]) { display: none; }
   .map-row .area-heading { display: none; }
   .map-row { border: 0; }

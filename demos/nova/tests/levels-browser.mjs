@@ -44,7 +44,7 @@ try {
       await page.waitForFunction(() => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) >= 4);
       await page.locator('#pause').click();
       // Select the exact starting state in its projected map cell.
-      if (await page.locator('#camera-toggle').getAttribute('aria-pressed') === 'true') await (phone ? page.locator('#camera-toggle').tap() : page.locator('#camera-toggle').click());
+      await (phone ? page.locator('#camera-toggle [data-camera="room"]').tap() : page.locator('#camera-toggle [data-camera="room"]').click());
       const point = await page.evaluate(() => {
         const o = window.novaRoot.observation, panels=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] .area-map`)];
         const roomWidth=Number(panels[0].dataset.roomWidth);

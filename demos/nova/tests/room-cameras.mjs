@@ -6,7 +6,8 @@ const tape=JSON.parse(await readFile(new URL('./fixtures/main-exit.json',import.
 const browserType=process.env.BROWSER==='webkit'?webkit:chromium;
 const browser=await browserType.launch({headless:true,...(browserType===chromium&&process.env.CHROME_CHANNEL?{channel:process.env.CHROME_CHANNEL}:{})}),errors=[];
 await mkdir('test-results',{recursive:true});
-const toggle=async(page,phone)=>phone?page.locator('#camera-toggle').tap():page.locator('#camera-toggle').click();
+const camera=async(page,phone,mode)=>{const b=page.locator(`#camera-toggle [data-camera="${mode}"]`);await(phone?b.tap():b.click());};
+const cameraMode=page=>page.locator('#camera-toggle').getAttribute('data-value');
 try {
   for(const phone of [false,true]) {
     const page=await browser.newPage({viewport:phone?{width:390,height:844}:{width:1440,height:1000},hasTouch:phone,isMobile:phone});
@@ -45,15 +46,16 @@ try {
         const edge=part.locator(`.pan-edge[data-dir="${dir}"]`);
         if(phone)await edge.tap();else{await canvases.first().hover();await edge.hover();}
         await page.waitForFunction(([room,before,dir])=>dir*(+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.centerX-before)>8,[room,before,dir]);
-        assert.equal(await page.locator('#camera-toggle').innerText(),'Follow the search','Panning from a room edge hands the camera to the visitor');
+        assert.equal(await cameraMode(page),'room','Panning from a room edge hands the camera to the visitor');
         if(!phone)await page.mouse.move(0,0);
-        await toggle(page,phone);
+        await camera(page,phone,'follow');
       }
-      if(await page.locator('#camera-toggle').getAttribute('aria-pressed')==='true')await toggle(page,phone);
+      await camera(page,phone,'room');
       await page.waitForFunction(room=>+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.zoom===1,room);
-      assert.equal(await page.locator('#camera-toggle').innerText(),'Follow the search');
-      await toggle(page,phone);
-      assert.equal(await page.locator('#camera-toggle').getAttribute('aria-pressed'),'true');
+      assert.equal(await cameraMode(page),'room');
+      await camera(page,phone,'follow');
+      assert.equal(await cameraMode(page),'follow');
+      assert.equal(await page.locator('#camera-toggle [data-camera="follow"]').getAttribute('aria-pressed'),'true');
       await canvases.first().scrollIntoViewIfNeeded();await page.screenshot({path:`test-results/room-camera-${level}-${phone?'phone':'desktop'}.png`});
     }
     assert.ok(panned>0,'At least one long room offers edge panning');
@@ -72,10 +74,10 @@ try {
     await page.waitForFunction(()=>window.root?.id==='1:0'&&!document.querySelector('#pause').disabled);
     await page.locator('#pause').click();
     await page.waitForFunction(()=>document.querySelector('.map-wrap').dataset.camera!=='focus',null,{timeout:10000});
-    if(await page.locator('#camera-toggle').getAttribute('aria-pressed')==='true')await toggle(page,phone);
+    await camera(page,phone,'room');
     const target=await page.evaluate(()=>{const o=window.root.observation;return{id:window.root.id,room:o.level,x:Math.floor(o.x/32)*32+16,y:Math.floor(o.y/32)*32+8};});
     if(phone&&await page.locator(`#room-tabs button[data-map="${target.room}"]`).getAttribute('aria-pressed')!=='true')await page.locator(`#room-tabs button[data-map="${target.room}"]`).tap();
-    if(await page.locator('#camera-toggle').getAttribute('aria-pressed')==='true')await toggle(page,phone);
+    await camera(page,phone,'room');
     const canvas=page.locator(`.map-row[data-map="${target.room}"] .area-map`);
     await canvas.scrollIntoViewIfNeeded();
     const point=await canvas.evaluate((c,t)=>{const r=c.getBoundingClientRect(),scale=Math.min(c.width/+c.dataset.mapWidth,c.height/+c.dataset.mapHeight)*+c.dataset.zoom;return{x:r.left+((t.x-+c.dataset.centerX)*scale+c.width/2)*r.width/c.width,y:r.top+((t.y-+c.dataset.centerY)*scale+c.height/2)*r.height/c.height};},target);

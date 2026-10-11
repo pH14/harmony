@@ -29,7 +29,7 @@ async function open(options) {
 async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
   await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus', null, { timeout: 10000 });
-  if (await page.locator('#camera-toggle').getAttribute('aria-pressed') === 'true') await (touch ? page.locator('#camera-toggle').tap() : page.locator('#camera-toggle').click());
+  await (touch ? page.locator('#camera-toggle [data-camera="room"]').tap() : page.locator('#camera-toggle [data-camera="room"]').click());
   const room = await page.evaluate(() => window.novaReady.root.observation.level);
   await page.locator(`.map-row[data-map="${room}"] .area-map`).scrollIntoViewIfNeeded();
   const point = await page.evaluate(() => {
