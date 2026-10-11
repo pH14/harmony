@@ -95,7 +95,7 @@ current server implements the whole-state digest. An unavailable scope returns
 ## Intervention plane
 
 `Perturb` stages a bounded mechanical effect at a `Moment`: memory write or memory
-XOR. Protocol version 11 and input format version 5 bind
+XOR. Protocol version 12 and input format version 5 bind
 this vocabulary to the negotiated contract. Workload fault tooling translates
 its fault definitions into these operations. `Exec` injects an interactive
 serial command and runs to a completion marker or deadline. Each operation has

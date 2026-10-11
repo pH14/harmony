@@ -117,8 +117,7 @@ zero-stock frame therefore still respawns; the terminal underflow is the
 additional final loss. With the declared initial count of four, a completed
 match has five observed losses for the player who reaches game-over.
 
-The decoded observation also records the changed RAM indices for an action's
-interior boundaries. Progress watermarks fold every decoded boundary so a hit
+Progress watermarks fold every decoded boundary so a hit
 inside a held chord is retained as evidence; the input tape remains the
 reproducible witness for that event.
 
@@ -177,8 +176,7 @@ resources. Player stock losses remain in milestones and observations.
 
 Policy `stb_local_ai_peer_places_spatial_32_place_preference_v4` fixes the
 unsolved-champion ordering and uses floor division for the place bucket,
-including negative coordinates. Stream/checkpoint formats are v3 because the progress report
-schema also changed. Recordings from the earlier v2 policy require the previous
+including negative coordinates. The stream format is v3 and the checkpoint format is v4. Recordings from the earlier v2 policy require the previous
 implementation; the PR preserves that history and its qualification evidence.
 Compare searcher changes only with the same recorded adapter policy.
 
