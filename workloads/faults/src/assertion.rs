@@ -338,7 +338,10 @@ mod tests {
             .into_bytes()
         };
         let (id, first) = decode(&failing("key k read v1, history says v2", false));
-        assert_eq!(first.failure.as_deref(), Some(r#"{"detail":"key k read v1, history says v2"}"#));
+        assert_eq!(
+            first.failure.as_deref(),
+            Some(r#"{"detail":"key k read v1, history says v2"}"#)
+        );
         let (_, passing) = decode(&failing("ignored", true));
         assert_eq!(passing.failure, None);
         let (_, second) = decode(&failing("a later failure", false));
@@ -352,7 +355,10 @@ mod tests {
         );
         let long = "x".repeat(3 * FAILURE_LIMIT);
         let (_, bounded) = decode(&failing(&long, false));
-        assert_eq!(bounded.failure.map(|failure| failure.len()), Some(FAILURE_LIMIT));
+        assert_eq!(
+            bounded.failure.map(|failure| failure.len()),
+            Some(FAILURE_LIMIT)
+        );
     }
 
     #[test]
