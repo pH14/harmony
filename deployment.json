@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "75516b2",
+    "commit": "76496e3",
     "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests and every npm run test:browser check (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, wrapped-maps, browser) in Chromium. Hero with live totals; first-visit and Take the tour opening camera; age-faded, ghost-trailed, branch-tinted sprites; five-step tour with traced route reveal; fork camera, ripple, toast and tree animation; phone camera viewport with room tabs and Whole room/Follow toggle; smoothed 60 Hz follow camera.",
-    "asset_manifest_sha256": "6eeee42f72642ac84e249c5172c741ea47db6ba77515821eca1e590042f095a1"
+    "checks": "Production build, 52 helper tests, Rust unit tests and every npm run test:browser check (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, room-cameras, browser) in Chromium. One camera viewport per room on desktop and phone that follows each room's search frontier and holds while hovered; search keeps running inside the 32/128 MiB snapshot budget by retiring inactive snapshots, verified by snapshot digests; untinted sprites; Path naming; search details in the Searches pane; footer theme toggle and credits; steadier phone tour card.",
+    "asset_manifest_sha256": "fc0b2bf2064f72b9e35961f17a649096f2c9f2ada798e89c51f82958e5493797"
   },
   "raft": {
     "commit": "28791e77a",
