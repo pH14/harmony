@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, fs, path::PathBuf};
+use std::{collections::BTreeMap, error::Error, fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -49,6 +49,8 @@ pub struct BugSummary {
     pub actions: Vec<FaultAction>,
     pub stop: FaultStop,
     pub violations: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub failures: BTreeMap<String, String>,
     pub sometimes: Vec<String>,
     pub state_hash: String,
     #[serde(default)]
@@ -83,6 +85,8 @@ pub struct ReplaySummary {
     #[serde(default)]
     pub state_hash_encoding: StateHashEncoding,
     pub violations: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub failures: BTreeMap<String, String>,
     pub sometimes: Vec<String>,
     pub actions_applied: u64,
     pub settle_actions: u64,
@@ -148,6 +152,7 @@ impl ReplaySummary {
             state_hash: state_digest_hex(&state_digest),
             state_hash_encoding: StateHashEncoding::EngineDigest,
             violations: observation.violations().into_iter().collect(),
+            failures: observation.failures(),
             sometimes: observation.sometimes().into_iter().collect(),
             actions_applied,
             settle_actions: 0,
@@ -592,6 +597,7 @@ mod live {
                 actions: bug.actions.clone(),
                 stop: bug.observations.stop,
                 violations,
+                failures: bug.observations.failures(),
                 sometimes: bug.observations.sometimes().into_iter().collect(),
                 state_hash: witness
                     .as_ref()
@@ -912,6 +918,7 @@ mod tests {
             state_hash: "hash".to_owned(),
             state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
             violations: ids(violations),
+            failures: BTreeMap::new(),
             sometimes: ids(&[24]),
             actions_applied: 3,
             settle_actions: 0,
@@ -928,6 +935,7 @@ mod tests {
             actions: vec![FaultOperation::Hook(3, std::num::NonZeroU16::new(50).unwrap()).into()],
             stop: FaultStop::Assertion { point: 2 },
             violations: ids(&[2]),
+            failures: BTreeMap::new(),
             sometimes: ids(&[24]),
             state_hash: "hash".to_owned(),
             state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,

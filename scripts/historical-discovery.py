@@ -45,6 +45,7 @@ class Campaign:
     crashes: int = 0
     other_violations: list[str] = field(default_factory=list)
     assertion: str = ""
+    evidence: str = ""
     detail: str = ""
 
 
@@ -131,6 +132,7 @@ def score(search: Path, case: dict) -> Campaign:
     first = min(confirmed, key=lambda bug: bug["execution"]) if confirmed else None
     if first is not None:
         campaign.assertion = carried(first, checks)[0]
+        campaign.evidence = (first.get("failures") or {}).get(campaign.assertion, "")
     for bug in bugs:
         if not bug.get("confirmed"):
             continue

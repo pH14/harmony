@@ -261,6 +261,12 @@ Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
+Each bug and each replay outcome lists its violated assertions and, under
+`failures`, the `details` of the first failing record of each one, as compact
+JSON truncated to 2,048 bytes. A workload's checker puts the contradiction it
+saw there, so a finding can be checked by reading its evidence rather than by
+replaying it.
+
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
 Reports written by earlier versions omit that marker and contain SHA-256 of

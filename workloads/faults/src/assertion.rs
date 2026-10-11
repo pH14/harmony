@@ -39,6 +39,8 @@ pub struct AssertionOutcome {
     pub location: String,
     pub passed: bool,
     pub failed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
 }
 
 impl AssertionOutcome {
@@ -71,6 +73,9 @@ impl AssertionOutcome {
     pub fn merge(&mut self, other: &Self) {
         self.passed |= other.passed;
         self.failed |= other.failed;
+        if self.failure.is_none() {
+            self.failure.clone_from(&other.failure);
+        }
     }
 }
 
@@ -113,6 +118,15 @@ impl Assertions {
             .iter()
             .filter(|(_, outcome)| outcome.violated())
             .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn failures(&self) -> BTreeMap<String, String> {
+        self.0
+            .iter()
+            .filter(|(_, outcome)| outcome.violated())
+            .filter_map(|(id, outcome)| Some((id.clone(), outcome.failure.clone()?)))
             .collect()
     }
 
@@ -203,6 +217,7 @@ struct RawAssert {
     #[serde(default = "must_hit_default")]
     must_hit: bool,
     location: Option<RawLocation>,
+    details: Option<serde_json::Value>,
 }
 
 fn must_hit_default() -> bool {
@@ -219,6 +234,16 @@ struct RawLocation {
 #[derive(Deserialize)]
 struct RawAttribution {
     pid: Option<u64>,
+}
+
+const FAILURE_LIMIT: usize = 2048;
+
+fn bounded_failure(text: &str) -> String {
+    let mut end = text.len().min(FAILURE_LIMIT);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 #[must_use]
@@ -254,6 +279,10 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
             AssertionKind::Reachable | AssertionKind::Unreachable => (record.hit, false),
             _ => (passed, failed),
         };
+        let failure = record
+            .details
+            .filter(|details| failed && !details.is_null())
+            .map(|details| bounded_failure(&details.to_string()));
         Some((
             id,
             AssertionOutcome {
@@ -262,6 +291,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
                 location,
                 passed,
                 failed,
+                failure,
             },
         ))
     });
@@ -297,6 +327,32 @@ mod tests {
         decode_json_event(bytes)
             .and_then(|event| event.assertion)
             .expect("an assertion")
+    }
+
+    #[test]
+    fn a_violation_keeps_its_first_failure_details() {
+        let failing = |detail: &str, condition: bool| {
+            format!(
+                r#"{{"antithesis_assert":{{"hit":true,"must_hit":true,"assert_type":"always","message":"keeps writes","condition":{condition},"id":"keeps writes","details":{{"detail":"{detail}"}}}}}}"#
+            )
+            .into_bytes()
+        };
+        let (id, first) = decode(&failing("key k read v1, history says v2", false));
+        assert_eq!(first.failure.as_deref(), Some(r#"{"detail":"key k read v1, history says v2"}"#));
+        let (_, passing) = decode(&failing("ignored", true));
+        assert_eq!(passing.failure, None);
+        let (_, second) = decode(&failing("a later failure", false));
+        let mut assertions = Assertions::default();
+        assertions.record(id.clone(), passing);
+        assertions.record(id.clone(), first);
+        assertions.record(id.clone(), second);
+        assert_eq!(
+            assertions.failures().get(&id).map(String::as_str),
+            Some(r#"{"detail":"key k read v1, history says v2"}"#)
+        );
+        let long = "x".repeat(3 * FAILURE_LIMIT);
+        let (_, bounded) = decode(&failing(&long, false));
+        assert_eq!(bounded.failure.map(|failure| failure.len()), Some(FAILURE_LIMIT));
     }
 
     #[test]

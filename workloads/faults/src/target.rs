@@ -514,6 +514,7 @@ pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, S
                         location: String::new(),
                         passed,
                         failed: !passed,
+                        failure: None,
                     },
                 );
             }
@@ -671,6 +672,11 @@ impl FaultObservations {
     #[must_use]
     pub fn violations(&self) -> BTreeSet<String> {
         self.assertions.violations()
+    }
+
+    #[must_use]
+    pub fn failures(&self) -> BTreeMap<String, String> {
+        self.assertions.failures()
     }
 
     #[must_use]

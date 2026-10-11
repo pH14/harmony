@@ -113,10 +113,12 @@ class Scoring(unittest.TestCase):
 
     def test_a_declared_integrity_assertion_is_a_discovery(self):
         case = {**CASE, "oracle": {**CASE["oracle"], "integrity": [{"assertion": "toy keeps writes", "evidence": "toy checked"}]}}
-        search = self.campaign("i", bugs=[bug(80, ["toy holds"]), bug(40, ["toy keeps writes", "toy other"])], replays=["pass"])
+        found = {**bug(40, ["toy keeps writes", "toy other"]), "failures": {"toy keeps writes": '{"detail":"k lost v2"}'}}
+        search = self.campaign("i", bugs=[bug(80, ["toy holds"]), found], replays=["pass"])
         result = self.outcome(search, case)
         self.assertEqual(result.outcome, "discovery")
         self.assertEqual(result.assertion, "toy keeps writes")
+        self.assertEqual(result.evidence, '{"detail":"k lost v2"}')
         self.assertEqual(result.executions_to_first, 40)
         self.assertEqual(result.other_violations, ["toy holds", "toy other"])
         self.assertEqual(self.outcome(self.campaign("j", bugs=[bug(40, ["toy keeps writes"])])).outcome, "other-violation")
