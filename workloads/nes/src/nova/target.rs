@@ -459,16 +459,19 @@ where
                 .branch(from, &nes::reproducer(std::slice::from_ref(&chord)))
                 .and_then(|()| self.machine.run(StopConditions::default(), None));
             self.machine.drop_snapshot(from)?;
+            let stop = ran?;
+            let produced = self.machine.frames();
+            let produced_frames = u64::try_from(produced.len()).unwrap_or(u64::MAX);
+            frames = frames.saturating_add(produced_frames);
+            self.execution_work = self.execution_work.saturating_add(produced_frames);
             if !matches!(
-                ran?,
+                stop,
                 machine::StopReason::Quiescent { .. } | machine::StopReason::SnapshotPoint { .. }
             ) {
                 return Err(MachineError::Backend(
                     "Nova level start stopped before its last menu press".to_owned(),
                 ));
             }
-            let produced = self.machine.frames();
-            frames = frames.saturating_add(u64::try_from(produced.len()).unwrap_or(u64::MAX));
             endpoint = produced.last().copied();
         }
         let wram = endpoint.ok_or_else(|| {
@@ -899,7 +902,6 @@ where
                 self.failed = true;
                 return;
             };
-            self.execution_work = self.execution_work.saturating_add(frames);
             let observation =
                 self.make_observation(self.observation.frame_count.saturating_add(frames), state);
             self.action_observations.push(observation.clone());
@@ -1505,6 +1507,7 @@ mod tests {
         target.apply(&ButtonChord::new(JOYPAD_UP, 2));
         assert!(target.failed);
         assert!(matches!(target.exit_kind(), ExitKind::Crash));
+        assert_eq!(target.execution_work(), 2 + level_start_frames());
     }
 
     #[test]
