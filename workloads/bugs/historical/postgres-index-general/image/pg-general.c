@@ -90,10 +90,12 @@ static int same_table(struct table *x, struct table *y) {
     return 1;
 }
 
-/* Names the first rows where two sorted tables differ. */
-static void describe_difference(const struct table *seen, const struct table *expected, char *out, size_t size) {
+/* Names the first rows where two tables differ, sorting both by key. */
+static void describe_difference(struct table *seen, struct table *expected, char *out, size_t size) {
     int i = 0, j = 0, named = 0;
     size_t at = 0;
+    qsort(seen->rows, (size_t)seen->count, sizeof seen->rows[0], row_order);
+    qsort(expected->rows, (size_t)expected->count, sizeof expected->rows[0], row_order);
     out[0] = 0;
     while ((i < seen->count || j < expected->count) && named < 4 && at < size) {
         const struct row *s = i < seen->count ? &seen->rows[i] : NULL;
@@ -160,7 +162,7 @@ static int read_owned(struct client *c, struct table *out) {
 
 static void compare_owned(struct client *c, struct table *seen) {
     static struct table expected, applied;
-    char detail[640];
+    char detail[1024];
     expected = c->model;
     if (same_table(seen, &expected)) {
         c->has_pending = 0;
@@ -181,6 +183,10 @@ static void compare_owned(struct client *c, struct table *seen) {
     snprintf(detail, sizeof detail, "owner %d saw %d rows, history has %d%s", c->owner, seen->count,
              c->model.count, c->has_pending ? ", one commit unresolved" : "");
     describe_difference(seen, &expected, detail + strlen(detail), sizeof detail - strlen(detail));
+    if (c->has_pending && strlen(detail) + 32 < sizeof detail) {
+        strcat(detail, "; if it applied");
+        describe_difference(seen, &applied, detail + strlen(detail), sizeof detail - strlen(detail));
+    }
     gen_reached(R_COMPARED);
     gen_always(A_COMMITS, 0, detail);
 }

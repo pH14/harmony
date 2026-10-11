@@ -43,7 +43,10 @@ echo "clean run with a restart: no violation, $(hits "postgres amcheck verified 
 
 victim=$(psql -c "SELECT max(id) FROM items WHERE owner = 0")
 psql -c "DELETE FROM items WHERE id = $victim"
-sleep 10
+for _ in $(seq 1 60); do
+    (( $(hits "postgres preserves acknowledged commits" false) > 0 )) && break
+    sleep 1
+done
 kill -9 -- "-$driver_pid" 2>/dev/null || true
 wait 2>/dev/null || true
 sleep 1

@@ -120,10 +120,12 @@ static int same_table(struct table *a, struct table *b) {
     return memcmp(a->rows, b->rows, sizeof a->rows[0] * (size_t)a->count) == 0;
 }
 
-/* Names the first rows where two sorted tables differ. */
-static void describe_difference(const struct table *seen, const struct table *expected, char *out, size_t size) {
+/* Names the first rows where two tables differ, sorting both by key. */
+static void describe_difference(struct table *seen, struct table *expected, char *out, size_t size) {
     int i = 0, j = 0, named = 0;
     size_t at = 0;
+    qsort(seen->rows, (size_t)seen->count, sizeof seen->rows[0], row_order);
+    qsort(expected->rows, (size_t)expected->count, sizeof expected->rows[0], row_order);
     out[0] = 0;
     while ((i < seen->count || j < expected->count) && named < 4 && at < size) {
         const struct row *s = i < seen->count ? &seen->rows[i] : NULL;
@@ -286,7 +288,8 @@ static int read_owned(struct client *c, struct table *out) {
  * indeterminate transaction. */
 static void compare_owned(struct client *c, struct table *seen) {
     struct table expected = c->model;
-    char detail[640];
+    static struct table applied;
+    char detail[1024];
     if (same_table(seen, &expected)) {
         if (c->has_pending) {
             char line[64];
@@ -299,7 +302,7 @@ static void compare_owned(struct client *c, struct table *seen) {
         return;
     }
     if (c->has_pending) {
-        struct table applied = c->model;
+        applied = c->model;
         for (int i = 0; i < c->pending.count; i++) apply_op(&applied, &c->pending.ops[i]);
         if (same_table(seen, &applied)) {
             char line[64];
@@ -315,6 +318,10 @@ static void compare_owned(struct client *c, struct table *seen) {
     snprintf(detail, sizeof detail, "client %d saw %d owned rows, history has %d, pending txn %lld", c->id,
              seen->count, c->model.count, c->has_pending ? (long long)c->pending.id : -1LL);
     describe_difference(seen, &expected, detail + strlen(detail), sizeof detail - strlen(detail));
+    if (c->has_pending && strlen(detail) + 32 < sizeof detail) {
+        strcat(detail, "; if the pending txn applied");
+        describe_difference(seen, &applied, detail + strlen(detail), sizeof detail - strlen(detail));
+    }
     fprintf(stderr, "sqlite-general: %s\n", detail);
     gen_reached(R_COMPARED);
     gen_always(A_COMMITS, 0, detail);
