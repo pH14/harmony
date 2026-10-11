@@ -46,8 +46,8 @@ MP4. `nes-film` renders the evaluation matrices of both compositions. It reads t
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
-A witness's `snapshot_sha256` hashes the endpoint snapshot after
-`SnapshotState::logical_identity`. On Intel KVM hosts a whole-VM endpoint's raw
+A witness's `snapshot_sha256` and the SMB campaign's job-result digest hash
+snapshots after `SnapshotState::logical_identity`. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,
 so the raw bytes cannot serve as a replay identity.
 

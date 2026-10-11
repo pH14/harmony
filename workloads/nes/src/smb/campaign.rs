@@ -237,7 +237,7 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
             core_path: PathBuf::new(),
             core_sha256: String::new(),
             identity: format!(
-                "{};result_digest=postcard-1.1.3-sha256-hex-v3",
+                "{};result_digest=postcard-1.1.3-logical-xsave-sha256-hex-v4",
                 consonance_identity(kernel, initramfs),
             ),
             backend: SmbBackend::Consonance {
@@ -519,7 +519,15 @@ where
         "frames"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        postcard_result_sha256(result)
+        let mut logical = result.clone();
+        for candidate in logical
+            .actions
+            .iter_mut()
+            .filter_map(|action| action.candidate.as_mut())
+        {
+            candidate.snapshot = candidate.snapshot.logical_identity()?;
+        }
+        postcard_result_sha256(&logical)
     }
 
     fn archive_report(
