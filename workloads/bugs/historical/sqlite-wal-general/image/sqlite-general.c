@@ -120,6 +120,36 @@ static int same_table(struct table *a, struct table *b) {
     return memcmp(a->rows, b->rows, sizeof a->rows[0] * (size_t)a->count) == 0;
 }
 
+/* Names the first rows where two sorted tables differ. */
+static void describe_difference(const struct table *seen, const struct table *expected, char *out, size_t size) {
+    int i = 0, j = 0, named = 0;
+    size_t at = 0;
+    out[0] = 0;
+    while ((i < seen->count || j < expected->count) && named < 4 && at < size) {
+        const struct row *s = i < seen->count ? &seen->rows[i] : NULL;
+        const struct row *e = j < expected->count ? &expected->rows[j] : NULL;
+        int n = 0;
+        if (s && (!e || s->key < e->key)) {
+            n = snprintf(out + at, size - at, "; unexpected key %lld ver %lld", (long long)s->key, (long long)s->ver);
+            i++;
+        } else if (e && (!s || e->key < s->key)) {
+            n = snprintf(out + at, size - at, "; missing key %lld ver %lld", (long long)e->key, (long long)e->ver);
+            j++;
+        } else {
+            if (s->ver != e->ver || s->len != e->len || s->hash != e->hash)
+                n = snprintf(out + at, size - at, "; key %lld has ver %lld len %lld, history ver %lld len %lld",
+                             (long long)s->key, (long long)s->ver, (long long)s->len, (long long)e->ver,
+                             (long long)e->len);
+            i++;
+            j++;
+        }
+        if (n > 0) {
+            at += (size_t)n;
+            named++;
+        }
+    }
+}
+
 static void journal_line(struct client *c, const char *line) {
     size_t length = strlen(line);
     if (write(c->journal, line, length) != (ssize_t)length) {
@@ -256,7 +286,7 @@ static int read_owned(struct client *c, struct table *out) {
  * indeterminate transaction. */
 static void compare_owned(struct client *c, struct table *seen) {
     struct table expected = c->model;
-    char detail[160];
+    char detail[640];
     if (same_table(seen, &expected)) {
         if (c->has_pending) {
             char line[64];
@@ -282,9 +312,10 @@ static void compare_owned(struct client *c, struct table *seen) {
             return;
         }
     }
-    snprintf(detail, sizeof detail, "client %d saw %d owned rows, history has %d", c->id, seen->count,
-             c->model.count);
-    fprintf(stderr, "sqlite-general: %s, pending %lld\n", detail, c->has_pending ? (long long)c->pending.id : -1LL);
+    snprintf(detail, sizeof detail, "client %d saw %d owned rows, history has %d, pending txn %lld", c->id,
+             seen->count, c->model.count, c->has_pending ? (long long)c->pending.id : -1LL);
+    describe_difference(seen, &expected, detail + strlen(detail), sizeof detail - strlen(detail));
+    fprintf(stderr, "sqlite-general: %s\n", detail);
     gen_reached(R_COMPARED);
     gen_always(A_COMMITS, 0, detail);
 }

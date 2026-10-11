@@ -41,13 +41,15 @@ done
 (( $(hits "postgres general compared committed rows" true) > 0 )) || fail "no comparison evidence"
 echo "clean run with a restart: no violation, $(hits "postgres amcheck verified an index" true) index checks"
 
-psql -c "DELETE FROM items WHERE id = (SELECT max(id) FROM items WHERE owner = 0)"
+victim=$(psql -c "SELECT max(id) FROM items WHERE owner = 0")
+psql -c "DELETE FROM items WHERE id = $victim"
 sleep 10
 kill -9 -- "-$driver_pid" 2>/dev/null || true
 wait 2>/dev/null || true
 sleep 1
 (( $(hits "postgres preserves acknowledged commits" false) > 0 )) || fail "a lost acknowledged row was not reported"
-echo "lost acknowledged write: reported"
+grep -qF "missing id $victim " "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" || fail "the report does not name the lost row $victim"
+echo "lost acknowledged write: reported, naming the row"
 
 server restart -m fast
 psql -c "DROP INDEX IF EXISTS items_a_idx" \

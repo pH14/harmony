@@ -90,6 +90,35 @@ static int same_table(struct table *x, struct table *y) {
     return 1;
 }
 
+/* Names the first rows where two sorted tables differ. */
+static void describe_difference(const struct table *seen, const struct table *expected, char *out, size_t size) {
+    int i = 0, j = 0, named = 0;
+    size_t at = 0;
+    out[0] = 0;
+    while ((i < seen->count || j < expected->count) && named < 4 && at < size) {
+        const struct row *s = i < seen->count ? &seen->rows[i] : NULL;
+        const struct row *e = j < expected->count ? &expected->rows[j] : NULL;
+        int n = 0;
+        if (s && (!e || s->id < e->id)) {
+            n = snprintf(out + at, size - at, "; unexpected id %lld (%d, %d, %s)", (long long)s->id, s->a, s->b, s->c);
+            i++;
+        } else if (e && (!s || e->id < s->id)) {
+            n = snprintf(out + at, size - at, "; missing id %lld (%d, %d, %s)", (long long)e->id, e->a, e->b, e->c);
+            j++;
+        } else {
+            if (s->a != e->a || s->b != e->b || strcmp(s->c, e->c) != 0)
+                n = snprintf(out + at, size - at, "; id %lld is (%d, %d, %s), history (%d, %d, %s)",
+                             (long long)s->id, s->a, s->b, s->c, e->a, e->b, e->c);
+            i++;
+            j++;
+        }
+        if (n > 0) {
+            at += (size_t)n;
+            named++;
+        }
+    }
+}
+
 static int connected(struct client *c) { return c->conn && PQstatus(c->conn) == CONNECTION_OK; }
 
 static PGresult *run(struct client *c, const char *sql) { return PQexec(c->conn, sql); }
@@ -131,7 +160,7 @@ static int read_owned(struct client *c, struct table *out) {
 
 static void compare_owned(struct client *c, struct table *seen) {
     static struct table expected, applied;
-    char detail[160];
+    char detail[640];
     expected = c->model;
     if (same_table(seen, &expected)) {
         c->has_pending = 0;
@@ -149,8 +178,9 @@ static void compare_owned(struct client *c, struct table *seen) {
             return;
         }
     }
-    snprintf(detail, sizeof detail, "owner %d saw %d rows, history has %d", c->owner, seen->count,
-             c->model.count);
+    snprintf(detail, sizeof detail, "owner %d saw %d rows, history has %d%s", c->owner, seen->count,
+             c->model.count, c->has_pending ? ", one commit unresolved" : "");
+    describe_difference(seen, &expected, detail + strlen(detail), sizeof detail - strlen(detail));
     gen_reached(R_COMPARED);
     gen_always(A_COMMITS, 0, detail);
 }
@@ -386,9 +416,14 @@ static void op_read(struct client *c) {
     if (!read_ids(c, queries[column], lo, hi, by_heap, &heap_count)) goto out;
     ok = index_count == heap_count && memcmp(by_index, by_heap, sizeof by_index[0] * (size_t)index_count) == 0;
     {
-        char detail[128];
-        snprintf(detail, sizeof detail, "column %d range: index path %d rows, heap path %d rows", column,
-                 index_count, heap_count);
+        char detail[192];
+        int first = 0;
+        while (first < index_count && first < heap_count && by_index[first] == by_heap[first]) first++;
+        snprintf(detail, sizeof detail,
+                 "column %d range: index path %d rows, heap path %d rows, first difference at row %d: index id %lld, "
+                 "heap id %lld",
+                 column, index_count, heap_count, first, first < index_count ? (long long)by_index[first] : -1LL,
+                 first < heap_count ? (long long)by_heap[first] : -1LL);
         gen_always(A_SCANS, ok, detail);
     }
 out:

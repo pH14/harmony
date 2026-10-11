@@ -107,7 +107,8 @@ victim=$("$shell" "$db" "SELECT max(k) FROM kv WHERE owner = $owner")
 "$shell" "$db" "DELETE FROM kv WHERE k = $victim"
 "$driver" verify "$owner" "$db" 2>/dev/null
 (( $(hits "sqlite preserves acknowledged commits" false) > before )) || fail "a lost acknowledged row was not reported"
-echo "lost acknowledged write: reported"
+grep -qF "missing key $victim " "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" || fail "the report does not name the lost row $victim"
+echo "lost acknowledged write: reported, naming the row"
 
 "$shell" "$db" "PRAGMA wal_checkpoint(TRUNCATE)" >/dev/null
 pages=$(( $(stat -c %s "$db") / 4096 ))
