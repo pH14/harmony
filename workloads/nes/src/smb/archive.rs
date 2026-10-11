@@ -50,21 +50,13 @@ pub struct SmbArchiveKey {
     pub progress: u16,
     pub player_y_bucket: u8,
     pub loop_on_path: bool,
-    #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
+    #[serde(default)]
     pub room_x_bucket: u8,
     #[serde(default)]
     pub time_bucket: u8,
     pub clock: u16,
-    #[serde(default, skip_serializing_if = "room_is_absent")]
+    #[serde(default)]
     pub room: SmbRoomIdentity,
-}
-
-fn room_is_absent(room: &SmbRoomIdentity) -> bool {
-    *room == SmbRoomIdentity::default()
-}
-
-fn room_x_bucket_is_absent(bucket: &u8) -> bool {
-    *bucket == 0
 }
 
 impl ArchiveKey for SmbArchiveKey {
