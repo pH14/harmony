@@ -1,7 +1,7 @@
 # Workload validation tools
 
-These composition binaries exercise the platform with concrete NES and Postgres
-workloads. Build with `cargo build --manifest-path workloads/tools/Cargo.toml
+This composition binary exercises the platform with the concrete Nova NES
+workload. Build with `cargo build --manifest-path workloads/tools/Cargo.toml
 --release`. The execution core remains independently buildable; tool-specific
 startup and evidence conventions live here.
 
@@ -78,7 +78,8 @@ reordering covers 50 edges; broader randomized exploration remains outside
 the bounded postpass.
 
 Set `HARMONY_CONSONANCE_ORACLE_REPORT_DIR` to retain expected and actual raw
-artifacts on a mismatch. The PR smoke enforces a 240-second execution bound and
+artifacts on a mismatch. The scheduled `Benchmarks / Harmony Workloads / NES` job enforces a 600-second
+execution bound and
 requires all 200 history comparisons, eight complete-state cold controls, and
 the single A/B1/B3/C/D/E postpass (`a_controls=1 b1_controls=1 b3_controls=1
 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 e_controls=50
