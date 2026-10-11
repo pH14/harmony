@@ -36,7 +36,8 @@ vector. Reserved vectors are rejected by `raise`.
 
 ## State and integration
 
-`LapicState` is the versioned plain-data snapshot consumed by `vm-state`. It
+`LapicState` is the versioned plain-data snapshot that `vmm-core` serializes
+into the VM-state device section. It
 contains the register arrays and timer anchors needed to restore identical
 readbacks and deadlines; derived deadlines are not stored. Restore validates
 the state version, timer frequency, register masks, and timer invariants.

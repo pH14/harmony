@@ -196,7 +196,7 @@ python3 consonance/vmm-core/qualification/qualify-sha256.py
 
 `--check` compares digests across padding boundaries, streaming chunk sizes,
 unaligned inputs, cloned prefix states, and complete VMM state hashes. The
-Snapshot and Restore and both ARM Host Compatibility CI jobs run it without
+Snapshot and Restore and the macOS Arm64 and Linux Arm64 jobs of Harmony Host Compatibility run it without
 timing thresholds. Backend selection is checked against the features reported
 by the compiler artifacts for the actual build, including cached artifacts. The full run
 also reports nine alternating software/native timing pairs for small and large
@@ -257,8 +257,7 @@ it creates only one VM at a time. Both modes compare the canonical hashes
 returned by portable snapshot export, which hashes the stored RAM and the
 actual snapshot suffix, as well as standalone VMM hashes. Live HVF
 stored sidecars may differ because the hardware virtual counter advances
-between captures. Portable checks run in Snapshot and Restore and both ARM
-Host Compatibility CI jobs without timing thresholds. Hosted macOS runners
+between captures. Portable checks run in Snapshot and Restore and the macOS Arm64 and Linux Arm64 jobs of Harmony Host Compatibility without timing thresholds. Hosted macOS runners
 cannot run the live HVF qualification because nested HVF is unavailable.
 
 The SDK-capture qualification compares request-local SDK capture reuse against
@@ -279,7 +278,7 @@ setup, VM creation, export, and independent hash reads are outside the timing.
 Nine alternating pairs report host snapshot cost, not guest throughput. Live
 HVF uses one VM at a time and compares canonical hashes; advancing hardware
 counters prevent raw sidecar comparison. CI runs portable checks without timing
-thresholds in Snapshot and Restore and both ARM Host Compatibility jobs.
+thresholds in Snapshot and Restore and the macOS Arm64 and Linux Arm64 jobs of Harmony Host Compatibility.
 
 The SDK capture driver also accepts `--encoding` to compare direct encoding into
 the canonical hash suffix with the original intermediate-buffer encoder. Both
@@ -342,7 +341,7 @@ payloads of 256 bytes each. The full run reports nine alternating timing pairs. 
 repeats just the small-state cases. Timing includes the complete control restore operation; construction, source
 snapshot capture, and output comparisons are outside the measured loop. These
 measure host restore work above mock backends, not live hypervisor or guest
-throughput. Snapshot and Restore and both ARM Host Compatibility CI jobs run
+throughput. Snapshot and Restore and the macOS Arm64 and Linux Arm64 jobs of Harmony Host Compatibility run
 `--check` without timing thresholds.
 
 The x86 exit dispatcher finishes the current instruction's device-access chain

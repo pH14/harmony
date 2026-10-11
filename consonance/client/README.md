@@ -84,11 +84,6 @@ The embedded complete and sparse portable snapshots use format version 6.
 Older embedded versions are rejected. The outer sparse archive layout remains
 version 2.
 
-On x86, `Session::new_controlled_with_config_and_payloads` requires exact reviewed
-kernel, initramfs, RAM and command-line inputs before boot. It binds the session
-image identity to the profile, launch configuration and ordered setup payloads,
-and rejects an identity-tag override. Ordinary constructors
-still accept other inputs, retaining strict raw identity for unknown profiles.
 For matched profiles, logical identity excludes only validated init x87/SSE raw
 presence metadata; exported artifacts retain those bytes and checksum them.
 The guest execution restrictions and import boundary are documented in the
