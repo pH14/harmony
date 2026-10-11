@@ -4,8 +4,8 @@
 
 `harmony-linux` contains the guest-side environment for consonance: pinned
 Linux sources and image builders, the `/dev/harmony` integration, guest agents,
-and the no-std SDK used by those agents. Bare-metal acceptance payloads and
-instruction audit tables live alongside the scripts in this component.
+and the no-std SDK used by those agents. Instruction audit tables and scanners
+live in `scripts/`.
 
 ## Entry points
 

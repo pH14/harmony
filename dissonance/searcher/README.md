@@ -38,7 +38,7 @@ and skip. Parent selection does not change the archive, so replay reaches the
 same archive state without repeating selection. The final report selects no
 more parents, so its compaction releases metadata pins and the liveness anchor
 and then requires the compacted archive to fit the memory limit. Campaign streams require
-schedule policy version 3
+schedule policy version 5
 and the current bounded progress policy; recordings from superseded policy
 namespaces are rejected before replay because their snapshot accounting differs.
 
