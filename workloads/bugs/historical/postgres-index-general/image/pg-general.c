@@ -209,15 +209,19 @@ static int exec_write(struct client *c, const struct write_op *op, int column) {
     return ok;
 }
 
-/* Commits the open transaction whose result is `local`. A commit whose outcome
- * is unknown leaves `local` pending until a later read resolves it. */
+/* Commits the open transaction whose result is `local`. A COMMIT of a
+ * transaction the server already aborted succeeds with the tag ROLLBACK and
+ * applied nothing. A commit whose outcome is unknown leaves `local` pending
+ * until a later read resolves it. */
 static void commit(struct client *c, const struct table *local) {
     PGresult *r;
     c->pending = *local;
     c->has_pending = 1;
     r = run(c, "COMMIT");
-    if (PQresultStatus(r) == PGRES_COMMAND_OK) {
+    if (PQresultStatus(r) == PGRES_COMMAND_OK && strcmp(PQcmdStatus(r), "COMMIT") == 0) {
         c->model = *local;
+        c->has_pending = 0;
+    } else if (PQresultStatus(r) == PGRES_COMMAND_OK) {
         c->has_pending = 0;
     } else if (connected(c) && (strncmp(sqlstate(r), "40", 2) == 0 || strncmp(sqlstate(r), "23", 2) == 0 ||
                                 strncmp(sqlstate(r), "25", 2) == 0)) {

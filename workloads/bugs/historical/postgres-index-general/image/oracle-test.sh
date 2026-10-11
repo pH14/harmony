@@ -49,6 +49,7 @@ sleep 1
 (( $(hits "postgres preserves acknowledged commits" false) > 0 )) || fail "a lost acknowledged row was not reported"
 echo "lost acknowledged write: reported"
 
+server restart -m fast
 psql -c "DROP INDEX IF EXISTS items_a_idx" \
     -c "UPDATE items SET a = 1515870810 WHERE id = (SELECT min(id) FROM items)" \
     -c "CREATE INDEX items_a_idx ON items(a)" -c "CHECKPOINT"
