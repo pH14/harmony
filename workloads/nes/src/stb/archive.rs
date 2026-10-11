@@ -97,8 +97,8 @@ impl ArchiveKey for StbArchiveKey {
     fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct StbChampionKey {
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct StbChampionKey {
     progress: (u8, u8, u8),
     preference: (u8, u8, u8, u8, u8),
 }

@@ -5,6 +5,7 @@ pub mod admission;
 pub mod allocator;
 pub mod chord;
 pub mod eval;
+pub mod evidence;
 pub mod film;
 pub mod nes_backend;
 pub mod nova;

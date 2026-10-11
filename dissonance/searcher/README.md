@@ -674,6 +674,8 @@ every reservation between the next admission and the last reservation, whether
 queued, running or finished, and the resumed run dispatches them again, so it
 may use a different worker count. Workloads opt in through
 `Reporting::evidence_checkpoint` and `Reporting::evidence_from_checkpoint`.
+`search_checkpoint_evidence` returns the evidence bytes a checkpoint file
+holds, which `Reporting::evidence_from_checkpoint` decodes.
 
 
 ## Host hashing

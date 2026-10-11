@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
+    evidence::{NesCampaignEvidence, NesEvidence},
     nes_backend::{NesBackend, SnapshotState},
     nova::{
         archive::{
@@ -239,16 +240,8 @@ where
 #[derive(Clone, Copy, Debug)]
 pub struct NovaCampaignRun;
 
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct NovaCampaignEvidence {
-    aggregate: NovaMilestones,
-    watermark: NovaProgressWatermark,
-    first_reached: NovaMilestoneTimes,
-    first_inputs: NovaMilestoneInputs,
-    champion_input: NovaInput,
-    champion_milestones: NovaMilestones,
-    champion_key: Option<NovaChampionKey>,
-}
+pub type NovaCampaignEvidence<M = QuickNesMachine, P = Vec<u8>> =
+    NesCampaignEvidence<NovaGame<M, P>>;
 
 pub type NovaCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> = CampaignOrigin<NovaGame<M, P>>;
 pub type NovaCampaignCheckpoint<P = Vec<u8>> = CampaignCheckpoint<NovaSnapshot<P>>;
@@ -425,9 +418,53 @@ where
     type Progress = NovaProgressWatermark;
     type Snapshot = NovaSnapshot<P>;
     type Observations = NovaObservations;
-    type Evidence = NovaCampaignEvidence;
+    type Evidence = NovaCampaignEvidence<M, P>;
     type ArchiveReport = NovaArchiveReport;
     type Run = NovaCampaignRun;
+}
+
+impl<M, P> NesEvidence for NovaGame<M, P>
+where
+    M: NovaMachineKind<P>,
+    P: SnapshotState,
+{
+    type MilestoneTimes = NovaMilestoneTimes;
+    type MilestoneInputs = NovaMilestoneInputs;
+    type ChampionKey = NovaChampionKey;
+    type Extras = ();
+
+    fn milestone_rank(milestones: NovaMilestones) -> impl Ord {
+        milestone_key(milestones)
+    }
+    fn merge_watermark(watermark: &mut NovaProgressWatermark, observations: &[NovaObservations]) {
+        merge_progress_watermark(watermark, observations);
+    }
+    fn champion_key(
+        observations: &[NovaObservations],
+        _milestones: NovaMilestones,
+    ) -> Option<NovaChampionKey> {
+        action_champion_key(observations)
+    }
+    fn record_first_reached(
+        times: &mut NovaMilestoneTimes,
+        inputs: &mut NovaMilestoneInputs,
+        _extras: &(),
+        milestones: NovaMilestones,
+        sequence: u64,
+        input: &NovaInput,
+    ) {
+        update_first_inputs(times, inputs, milestones, sequence, input);
+    }
+    fn first_reached_count(times: &NovaMilestoneTimes) -> usize {
+        [
+            times.first_clear,
+            times.first_collectible,
+            times.first_ability,
+        ]
+        .into_iter()
+        .flatten()
+        .count()
+    }
 }
 
 impl<M, P> Reporting for NovaGame<M, P>
@@ -436,10 +473,13 @@ where
     P: SnapshotState,
 {
     fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(serde_json::to_vec(evidence)?)
+        evidence.checkpoint()
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
-        Ok(serde_json::from_slice(bytes)?)
+        NesCampaignEvidence::from_checkpoint(bytes)
+    }
+    fn checkpoint_marks(evidence: &Self::Evidence) -> usize {
+        evidence.checkpoint_marks()
     }
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
@@ -465,7 +505,7 @@ where
 
     fn archive_report(
         &self,
-        evidence: &NovaCampaignEvidence,
+        evidence: &NovaCampaignEvidence<M, P>,
         state: ArchiveReportState<Self>,
     ) -> NovaArchiveReport {
         NovaArchiveReport {
@@ -619,22 +659,22 @@ where
     fn merge_milestones(&self, into: &mut NovaMilestones, from: NovaMilestones) {
         merge_milestones(into, from);
     }
-    fn aggregate_milestones(evidence: &NovaCampaignEvidence) -> NovaMilestones {
+    fn aggregate_milestones(evidence: &NovaCampaignEvidence<M, P>) -> NovaMilestones {
         evidence.aggregate
     }
-    fn aggregate_progress(evidence: &NovaCampaignEvidence) -> NovaProgressWatermark {
+    fn aggregate_progress(evidence: &NovaCampaignEvidence<M, P>) -> NovaProgressWatermark {
         evidence.watermark
     }
     fn merge_origin_evidence(
         &self,
-        evidence: &mut NovaCampaignEvidence,
+        evidence: &mut NovaCampaignEvidence<M, P>,
         source: &NovaArchiveReport,
     ) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
+        evidence.merge_origin(source.progress_watermark);
     }
     fn merge_snapshot_root_evidence(
         &self,
-        evidence: &mut NovaCampaignEvidence,
+        evidence: &mut NovaCampaignEvidence<M, P>,
         target: &NovaTarget<M, P>,
     ) -> Result<(), Box<dyn Error>> {
         let observation = NovaObservations {
@@ -647,26 +687,15 @@ where
     }
     fn merge_import_evidence(
         &self,
-        evidence: &mut NovaCampaignEvidence,
+        evidence: &mut NovaCampaignEvidence<M, P>,
         value: NovaMilestones,
         input: &NovaInput,
     ) {
-        merge_milestones(&mut evidence.aggregate, value);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            value,
-            0,
-            input,
-        );
-        if milestone_key(value) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = value;
-            evidence.champion_input = input.clone();
-        }
+        evidence.merge_import(self, value, input);
     }
     fn merge_action_evidence<F>(
         &self,
-        evidence: &mut NovaCampaignEvidence,
+        evidence: &mut NovaCampaignEvidence<M, P>,
         action: &NovaCampaignActionResult<M, P>,
         sequence: u64,
         input: F,
@@ -674,32 +703,7 @@ where
     where
         F: FnOnce() -> Result<NovaInput, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let first_input_needed = (action.milestones.cleared > 0
-            && evidence.first_inputs.first_clear.is_none())
-            || (action.milestones.collectibles > 0
-                && evidence.first_inputs.first_collectible.is_none())
-            || (action.milestones.acquired_ability
-                && evidence.first_inputs.first_ability.is_none());
-        let champion = action_champion_key(&action.observations)
-            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
-            let input = input()?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                sequence,
-                &input,
-            );
-            if let Some(key) = champion {
-                evidence.champion_key = Some(key);
-                evidence.champion_milestones = action.milestones;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+        evidence.merge_action(self, action, sequence, false, input, |_, _| Ok(()))
     }
     fn source_entries<'a>(
         &self,
@@ -941,33 +945,6 @@ mod tests {
         assert_ne!(
             nova_result_sha256(&first).expect("first digest"),
             nova_result_sha256(&second).expect("changed digest"),
-        );
-    }
-}
-
-#[cfg(test)]
-mod evidence_checkpoint_tests {
-    use super::*;
-    #[test]
-    fn evidence_round_trip_preserves_all_serialized_fields_and_rejects_truncation() {
-        let mut evidence = NovaCampaignEvidence::default();
-        evidence.aggregate.cleared = 1;
-        evidence.watermark.x = 123;
-        evidence.first_reached.first_clear = Some(17);
-        evidence.champion_key = Some((evidence.watermark, (1, 2, 3, true, 4, 5)));
-        evidence.champion_input.actions.push(ButtonChord {
-            buttons: 1,
-            hold_frames: 2,
-        });
-        evidence.champion_milestones = evidence.aggregate;
-        let bytes = <NovaGame as Reporting>::evidence_checkpoint(&evidence).unwrap();
-        let restored = <NovaGame as Reporting>::evidence_from_checkpoint(&bytes).unwrap();
-        assert_eq!(
-            serde_json::to_value(&evidence).unwrap(),
-            serde_json::to_value(&restored).unwrap()
-        );
-        assert!(
-            <NovaGame as Reporting>::evidence_from_checkpoint(&bytes[..bytes.len() - 1]).is_err()
         );
     }
 }
