@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "76496e3",
+    "commit": "09be184",
     "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests, Rust unit tests and every npm run test:browser check (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, room-cameras, browser) in Chromium. One camera viewport per room on desktop and phone that follows each room's search frontier and holds while hovered; search keeps running inside the 32/128 MiB snapshot budget by retiring inactive snapshots, verified by snapshot digests; untinted sprites; Path naming; search details in the Searches pane; footer theme toggle and credits; steadier phone tour card.",
-    "asset_manifest_sha256": "fc0b2bf2064f72b9e35961f17a649096f2c9f2ada798e89c51f82958e5493797"
+    "checks": "Production build, 52 helper tests and every npm run test:browser check in Chromium (tour, tour-mobile, swarm, interactions, levels-browser, room-cameras, browser rerun after this change). Edge chevrons pan wide rooms on hover or tap, with a room track and follow-target dot; the opening zooms only the busiest room and the tour starts there; tour map spotlights cover whole room rows and the desktop callout stays put through hovers.",
+    "asset_manifest_sha256": "aa155071c068b49892f7e487988e411ff698fbb0d94085d448597e8596489fbb"
   },
   "raft": {
     "commit": "28791e77a",
