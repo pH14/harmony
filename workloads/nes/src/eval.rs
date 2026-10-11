@@ -121,6 +121,7 @@ pub fn evaluate<G: Workload>(
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Snapshot: crate::witness::EndpointIdentity,
 {
     let full = request.verification == "campaign";
     if request.verification != "witness" && !full {

@@ -198,6 +198,16 @@ pub struct NovaSnapshot<P = Vec<u8>> {
     pub(crate) failed: bool,
 }
 
+impl<P: SnapshotState> crate::witness::EndpointIdentity for NovaSnapshot<P> {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        crate::witness::postcard_sha256(&Self {
+            emulator_state: self.emulator_state.logical_identity()?,
+            observation: self.observation.clone(),
+            failed: self.failed,
+        })
+    }
+}
+
 impl<P> NovaSnapshot<P> {
     #[must_use]
     pub fn state(&self) -> NovaMechanicalState {
@@ -1158,6 +1168,10 @@ mod tests {
         fn memory_charge(&self) -> usize {
             self.0.len()
         }
+
+        fn logical_identity(&self) -> Result<Self, MachineError> {
+            Ok(Self(self.0.iter().take(1).copied().collect()))
+        }
     }
 
     impl NesBackend<FakePortable> for FakeMachine {
@@ -1407,6 +1421,34 @@ mod tests {
         fn frames(&self) -> &[[u8; WRAM_SIZE]] {
             &self.frames
         }
+    }
+
+    #[test]
+    fn endpoint_identity_hashes_the_logical_emulator_state() {
+        use crate::witness::EndpointIdentity;
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).unwrap();
+        let snapshot = target.snapshot().unwrap();
+        let with_state = |state: Vec<u8>| NovaSnapshot {
+            emulator_state: FakePortable(state),
+            ..snapshot.clone()
+        };
+        let (raw, other_raw, other_logical) = (
+            with_state(vec![1, 2]),
+            with_state(vec![1, 3]),
+            with_state(vec![4, 2]),
+        );
+        assert_ne!(
+            postcard::to_allocvec(&raw).unwrap(),
+            postcard::to_allocvec(&other_raw).unwrap()
+        );
+        assert_eq!(
+            raw.endpoint_sha256().unwrap(),
+            other_raw.endpoint_sha256().unwrap()
+        );
+        assert_ne!(
+            raw.endpoint_sha256().unwrap(),
+            other_logical.endpoint_sha256().unwrap()
+        );
     }
 
     #[test]

@@ -508,17 +508,7 @@ impl Reporting for NestedWorkload {
         let mut canonical = result.clone();
         for action in &mut canonical.actions {
             if let Some(candidate) = &mut action.candidate {
-                let snapshot = &mut candidate.snapshot;
-                let sidecar = vmm_core::portable_snapshot::logical_x86_sparse_sidecar(
-                    &snapshot.state.sidecar(),
-                )?;
-                snapshot.state = SparseSnapshot::from_parts(
-                    snapshot.state.base(),
-                    snapshot.state.image_identity(),
-                    snapshot.state.pages().to_vec(),
-                    &sidecar,
-                    None,
-                )?;
+                candidate.snapshot.state = candidate.snapshot.state.logical_identity()?;
             }
         }
         campaign::postcard_result_sha256(&canonical)

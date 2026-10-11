@@ -385,6 +385,8 @@ pub struct MetroidSnapshot {
     failed: bool,
 }
 
+impl crate::witness::EndpointIdentity for MetroidSnapshot {}
+
 impl MetroidSnapshot {
     #[cfg(test)]
     pub(crate) fn for_census_tests(decoded: MetroidMechanicalState) -> Self {

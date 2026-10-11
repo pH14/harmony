@@ -557,6 +557,8 @@ pub struct Mm2Snapshot {
     failed: bool,
 }
 
+impl crate::witness::EndpointIdentity for Mm2Snapshot {}
+
 impl Mm2Snapshot {
     #[cfg(test)]
     pub(crate) fn for_census_tests(decoded: Mm2MechanicalState) -> Self {
