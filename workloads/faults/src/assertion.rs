@@ -39,7 +39,7 @@ pub struct AssertionOutcome {
     pub location: String,
     pub passed: bool,
     pub failed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub failure: Option<String>,
 }
 
@@ -327,6 +327,25 @@ mod tests {
         decode_json_event(bytes)
             .and_then(|event| event.assertion)
             .expect("an assertion")
+    }
+
+    #[test]
+    fn outcomes_round_trip_through_the_checkpoint_encoding() {
+        for failure in [None, Some(r#"{"detail":"k"}"#.to_owned())] {
+            let outcome = AssertionOutcome {
+                kind: AssertionKind::Always,
+                message: "m".to_owned(),
+                location: String::new(),
+                passed: false,
+                failed: true,
+                failure,
+            };
+            let mut assertions = Assertions::default();
+            assertions.record("m".to_owned(), outcome);
+            let bytes = postcard::to_allocvec(&assertions).expect("encode");
+            let decoded: Assertions = postcard::from_bytes(&bytes).expect("decode");
+            assert_eq!(decoded, assertions);
+        }
     }
 
     #[test]

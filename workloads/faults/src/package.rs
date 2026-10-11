@@ -49,7 +49,7 @@ pub struct BugSummary {
     pub actions: Vec<FaultAction>,
     pub stop: FaultStop,
     pub violations: Vec<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub failures: BTreeMap<String, String>,
     pub sometimes: Vec<String>,
     pub state_hash: String,
@@ -85,7 +85,7 @@ pub struct ReplaySummary {
     #[serde(default)]
     pub state_hash_encoding: StateHashEncoding,
     pub violations: Vec<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub failures: BTreeMap<String, String>,
     pub sometimes: Vec<String>,
     pub actions_applied: u64,
