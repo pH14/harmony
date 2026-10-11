@@ -320,6 +320,13 @@ try {
   await ready(page, 0);
   await opening(page);
   await next(page, 1);
+  const cardAt = () => page.locator('.tour-card').evaluate((c) => { const r = c.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top)]; });
+  const resting = await cardAt();
+  for (const row of (await page.locator('#state-list button').all()).slice(0, 3)) {
+    await row.hover();
+    await page.waitForTimeout(300);
+    assert.deepEqual(await cardAt(), resting, 'Hovering saved paths keeps the tour card in place');
+  }
   await watchDuringTour(page);
   await page.locator('#scrub').focus();
   const cpu = await page.context().newCDPSession(page);

@@ -329,12 +329,14 @@ function updateCameraToggle() {
 }
 function stopCamera() {
   camera.tourAfter = false;
+  camera.only = null;
   camera.follow = false;
   camera.focus = null;
   camera.introDone = true;
   updateCameraToggle();
 }
 function followSearch() {
+  camera.only = null;
   camera.targets = new Map();
   camera.follow = true;
   camera.focus = null;
@@ -344,6 +346,9 @@ function cameraRooms() {
   if (phoneLayout.matches) return [mapLevel];
   return catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
 }
+function drivenRooms() {
+  return cameraRooms().filter((room) => camera.only == null || room === camera.only);
+}
 $("camera-toggle").onclick = () => {
   if (camera.follow || camera.focus) {
     stopCamera();
@@ -351,11 +356,17 @@ $("camera-toggle").onclick = () => {
   } else followSearch();
   drawMap(performance.now());
 };
-function beginCamera(intro = !reducedMotion.matches && !tourSeen()) {
-  Object.assign(camera, { introStart: 0, last: 0, emptySince: 0, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro });
-  for (const room of cameraRooms()) {
+function actionRoom() {
+  const rooms = cameraRooms();
+  const [busiest, count] = rooms.map((id) => [id, swarmRooms.get(id)?.length || 0]).sort((a, b) => b[1] - a[1])[0] || [];
+  return count ? busiest : rooms.includes(mapLevel) ? mapLevel : rooms[0];
+}
+function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
+  const introRoom = intro ? actionRoom() : null;
+  Object.assign(camera, { introStart: 0, last: 0, emptySince: 0, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
+  for (const room of drivenRooms()) {
     const c = mapCanvas(room);
-    if (c) steerCamera(room, c, { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (intro ? INTRO_SCALE : 1), 1, 1);
+    if (c) steerCamera(room, c, { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
   }
   updateCameraToggle();
 }
@@ -393,7 +404,7 @@ function updateCamera(now) {
   }
   if (reducedMotion.matches && now - camera.jumped < 2000) return;
   camera.jumped = now;
-  for (const room of cameraRooms()) {
+  for (const room of drivenRooms()) {
     let point = frontier(room);
     if (!point && room === mapLevel && phoneLayout.matches) {
       camera.emptySince ||= now;
@@ -414,7 +425,7 @@ function updateCamera(now) {
     const settle = reducedMotion.matches ? 1 : 1 - Math.exp(-dt / 1.1);
     target.x += (point.x - target.x) * settle;
     target.y += (point.y - target.y) * settle;
-    steerCamera(room, c, target, closeUpZoom(c) * scale, smooth(0.6), smooth(0.35));
+    steerCamera(room, c, target, closeUpZoom(c) * (room === camera.introRoom ? scale : 1), smooth(0.6), smooth(0.35));
   }
 }
 let searchChoices = [{ id: 0, parent: null }],
@@ -1400,7 +1411,11 @@ function renderMapRows(owner) {
         c.style.touchAction = "pan-y";
         c.tabIndex = 0;
         if (c !== canvas) bindMap(c);
-        part.append(c);
+        const track = document.createElement("div");
+        track.className = "room-track";
+        track.setAttribute("aria-hidden", "true");
+        track.append(document.createElement("i"), document.createElement("b"));
+        part.append(c, panEdge(c, -1), panEdge(c, 1), track);
         parts.append(part);
       });
       row.append(heading, parts);
@@ -1415,10 +1430,82 @@ function renderMapRows(owner) {
     target.focus({ preventScroll: true });
   }
 }
+let panHold = null, panLast = 0;
+function panEdge(c, dir) {
+  const edge = document.createElement("button");
+  edge.className = "pan-edge";
+  edge.dataset.dir = dir;
+  edge.tabIndex = -1;
+  edge.setAttribute("aria-label", dir < 0 ? "Look left" : "Look right");
+  edge.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${dir < 0 ? "M14.5 5.5 8 12l6.5 6.5" : "M9.5 5.5 16 12l-6.5 6.5"}"/></svg>`;
+  const start = () => {
+    if (panHold?.canvas !== c || panHold.dir !== dir) panHold = { canvas: c, dir, since: performance.now() };
+    panHold.until = 0;
+  };
+  const end = () => {
+    if (panHold?.canvas !== c || panHold.dir !== dir) return;
+    if (performance.now() - panHold.since < 300) panHold.until = performance.now() + 450;
+    else panHold = null;
+  };
+  edge.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") start(); });
+  edge.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && panHold?.canvas === c && panHold.dir === dir) panHold = null; });
+  edge.addEventListener("pointerdown", (e) => { e.preventDefault(); if (e.pointerType !== "mouse") start(); });
+  edge.addEventListener("pointerup", (e) => { if (e.pointerType !== "mouse") end(); });
+  edge.addEventListener("pointercancel", () => { if (panHold?.canvas === c) panHold = null; });
+  edge.addEventListener("click", (e) => {
+    if (e.pointerType) return;
+    start();
+    panHold.since -= 300;
+    panHold.until = performance.now() + 450;
+  });
+  return edge;
+}
+function updatePan(now) {
+  const dt = Math.min(0.05, panLast ? (now - panLast) / 1000 : 0);
+  panLast = now;
+  if (!panHold) return;
+  const c = panHold.canvas;
+  if (!c.isConnected || (panHold.until && now > panHold.until)) return (panHold = null);
+  const id = Number(c.dataset.map), map = canvasPanel(c), view = roomView(id, c);
+  const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom;
+  const ramp = ((now - panHold.since) / 1000 - 0.12) / 0.45;
+  if (ramp <= 0) return;
+  if (!panHold.moved) {
+    panHold.moved = true;
+    userSelected = true;
+    stopCamera();
+  }
+  const speed = (c.width / scale) * 0.85 * ease(Math.min(1, ramp));
+  Object.assign(view, panelCenter(map, view.zoom, { x: view.x + panHold.dir * speed * dt, y: view.y }, c));
+}
+function updateRoomChrome(c) {
+  const part = c.parentElement;
+  if (!part) return;
+  const id = Number(c.dataset.map), map = canvasPanel(c), view = roomView(id, c);
+  const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom, half = c.width / 2 / scale;
+  const before = view.x - half - map.x, after = map.x + map.width - view.x - half;
+  const target = camera.follow && !camera.focus ? camera.targets.get(id) : null;
+  const state = [before > 1, after > 1, (Math.max(0, before) / map.width).toFixed(4), Math.min(1, (2 * half) / map.width).toFixed(4),
+    target?.canvas === c ? ((target.x - map.x) / map.width).toFixed(3) : ""];
+  const key = state.join();
+  if (part.dataset.chrome === key) return;
+  part.dataset.chrome = key;
+  part.dataset.panLeft = state[0];
+  part.dataset.panRight = state[1];
+  part.dataset.scroll = Number(state[3]) < 0.995;
+  part.style.setProperty("--view-left", `${state[2] * 100}%`);
+  part.style.setProperty("--view-span", `${state[3] * 100}%`);
+  part.dataset.following = state[4] !== "";
+  if (state[4] !== "") part.style.setProperty("--frontier", `${Math.max(0, Math.min(1, state[4])) * 100}%`);
+}
 function drawMap(now) {
   swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, undefined, true);
+  updatePan(now);
   updateCamera(now);
-  for (const c of document.querySelectorAll(".area-map")) drawArea(c, now);
+  for (const c of document.querySelectorAll(".area-map")) {
+    drawArea(c, now);
+    updateRoomChrome(c);
+  }
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
 }
 function drawArea(canvas, now) {
@@ -2276,7 +2363,7 @@ function animate(now) {
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);
   lastTime = now;
-  const cameraMoving = (camera.follow && !paused) || !!camera.focus;
+  const cameraMoving = (camera.follow && !paused) || !!camera.focus || !!panHold;
   if (cameraMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;
@@ -2366,17 +2453,31 @@ function tourCellRect() {
     bottom: Math.min(r.bottom, r.top + y + (32 * scale * r.height) / c.height),
   };
 }
-function tourCell() {
+function tourCell(prefer = camera.introRoom ?? mapLevel) {
   if (selectedCell?.ids.length) return selectedCell;
   return [...heat.cells.values()]
     .filter((c) => c.ids.length > 1 && c.x * 32 >= 96)
     .sort(
       (a, b) =>
-        (b.level === mapLevel) - (a.level === mapLevel) ||
+        (b.level === prefer) - (a.level === prefer) ||
         b.x - a.x ||
         b.ids.length - a.ids.length ||
         b.visits - a.visits,
     )[0];
+}
+function rowsSpotlight(canvases) {
+  const rows = [...new Set(canvases.map((c) => c?.closest(".map-row")).filter(Boolean))];
+  if (!rows.length) return null;
+  return {
+    element: $("map-rows"), padding: 4,
+    getBoundingClientRect() {
+      const boxes = rows.map((row) => row.getBoundingClientRect());
+      const left = Math.min(...boxes.map((r) => r.left)), top = Math.min(...boxes.map((r) => r.top));
+      const right = Math.max(...boxes.map((r) => r.right)), bottom = Math.max(...boxes.map((r) => r.bottom));
+      return { left, top, right, bottom, width: right - left, height: bottom - top };
+    },
+    scrollIntoView: (options) => rows[0].scrollIntoView(options),
+  };
 }
 function searchesSpotlight() {
   const element = $("branches");
@@ -2396,7 +2497,7 @@ const tour = new GuidedTour({
         "Every squirrel is Harmony trying a different move in a real NES running in your browser.",
         "It keeps any attempt that reaches somewhere new, then pushes onward from there.",
       ],
-      targets: () => [tourMap()],
+      targets: () => [rowsSpotlight([tourMap()])],
       interactive: () => [$("map-rows"), $("pause")],
     },
     {
@@ -2410,7 +2511,7 @@ const tour = new GuidedTour({
       ],
       targets: () => [
         ...(routeHover?.segments || Number(tourMap()?.dataset.tracePoints) > 0
-          ? [...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0)
+          ? [rowsSpotlight([...document.querySelectorAll(".area-map")].filter((canvas) => Number(canvas.dataset.tracePoints) > 0))]
           : [tourCellRect()]),
         $("inspector"),
       ],
@@ -2592,11 +2693,12 @@ function offerTour() {
 }
 function replayOpening() {
   if ($("tour-open").disabled || tour.open) return;
-  const c = mapCanvas(mapLevel);
-  if (reducedMotion.matches || paused || !c || !frontier(mapLevel)) return beginTour();
+  const room = actionRoom(), c = mapCanvas(room);
+  camera.introRoom = room;
+  if (reducedMotion.matches || paused || !c || !frontier(room)) return beginTour();
   if (visualization !== "movement") setVisualization("movement");
   closeInspector({ restoreFocus: false });
-  beginCamera(true);
+  beginCamera(true, camera.follow || camera.focus ? null : room);
   camera.tourAfter = true;
   updateBranchControls();
   c.closest(".map-row").scrollIntoView({ block: "nearest", behavior: "smooth" });

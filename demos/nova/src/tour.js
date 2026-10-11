@@ -36,21 +36,14 @@ export function tourPosition(rects, width, height, viewport) {
     x: clamp(p.x, viewport.width - width),
     y: clamp(p.y, viewport.height - height),
   }));
-  const overlap = (p) =>
-    rects.reduce(
-      (sum, r, i) =>
-        sum + (i === 0 ? 4 : 1) *
-        Math.max(
-          0,
-          Math.min(p.x + width, r.right + gap) - Math.max(p.x, r.left - gap),
-        ) *
-          Math.max(
-            0,
-            Math.min(p.y + height, r.bottom + gap) - Math.max(p.y, r.top - gap),
-          ),
-      0,
-    );
+  const overlap = (p) => cardOverlap(p, rects, width, height);
   return candidates.sort((a, b) => overlap(a) - overlap(b))[0];
+}
+export function cardOverlap(p, rects, width, height) {
+  const gap = 16;
+  return rects.reduce((sum, r, i) => sum + (i === 0 ? 4 : 1) *
+    Math.max(0, Math.min(p.x + width, r.right + gap) - Math.max(p.x, r.left - gap)) *
+    Math.max(0, Math.min(p.y + height, r.bottom + gap) - Math.max(p.y, r.top - gap)), 0);
 }
 export function uncoveredRects(rect, occluders) {
   return occluders.reduce((pieces, cover) => pieces.flatMap((r) => {
@@ -310,9 +303,15 @@ export class GuidedTour {
         }));
       });
     if (!phone) {
-      const p = tourPosition(rects, width, height, viewport);
-      this.card.style.left = `${p.x}px`;
-      this.card.style.top = `${p.y}px`;
+      const key = `${this.index}:${this.ready}:${Math.round(viewport.width)}:${Math.round(viewport.height)}:${Math.round(width)}:${Math.round(height)}`;
+      const spot = this.cardSpot;
+      if (!spot || spot.key !== key) this.cardSpot = { ...tourPosition(rects, width, height, viewport), key };
+      else if (cardOverlap(spot, rects, width, height) > 0) {
+        const better = tourPosition(rects, width, height, viewport);
+        if (cardOverlap(better, rects, width, height) < cardOverlap(spot, rects, width, height)) this.cardSpot = { ...better, key };
+      }
+      this.card.style.left = `${this.cardSpot.x}px`;
+      this.card.style.top = `${this.cardSpot.y}px`;
     }
     const ping = this.find("tour-ping"), target = this.ready && this.steps[this.index].ping?.();
     ping.setAttribute("visibility", target ? "visible" : "hidden");

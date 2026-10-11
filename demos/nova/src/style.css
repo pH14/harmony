@@ -1220,7 +1220,7 @@ dialog h2 {
 .tour-description:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 .room-parts { background: var(--surface); }
-.room-part { position: relative; min-width: 0; }
+.room-part { position: relative; min-width: 0; isolation: isolate; }
 
 @media (max-width: 800px) { .workspace.inspect-open { padding-bottom: 44dvh; } }
 
@@ -1327,3 +1327,26 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
   .map-row { border: 0; }
   #map-toast { top: auto; bottom: 12px; font-size: 12px; }
 }
+
+.pan-edge { position: absolute; top: 0; bottom: 0; z-index: 2; width: 64px; display: flex; align-items: center; padding: 0 10px; border: 0; border-radius: 0; color: #fff; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+.pan-edge[data-dir="-1"] { left: 0; justify-content: flex-start; background: linear-gradient(90deg, rgba(8, 14, 22, .42), rgba(8, 14, 22, 0)); }
+.pan-edge[data-dir="1"] { right: 0; justify-content: flex-end; background: linear-gradient(270deg, rgba(8, 14, 22, .42), rgba(8, 14, 22, 0)); }
+.pan-edge svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .55)); transition: transform .25s ease; }
+.pan-edge:hover { opacity: 1; }
+.pan-edge[data-dir="-1"]:hover svg { transform: translateX(-3px); }
+.pan-edge[data-dir="1"]:hover svg { transform: translateX(3px); }
+@media (hover: hover) {
+  .room-part:hover[data-pan-left="true"] .pan-edge[data-dir="-1"], .room-part:hover[data-pan-right="true"] .pan-edge[data-dir="1"] { opacity: .6; pointer-events: auto; }
+  .room-part:hover[data-pan-left="true"] .pan-edge[data-dir="-1"]:hover, .room-part:hover[data-pan-right="true"] .pan-edge[data-dir="1"]:hover { opacity: 1; }
+}
+@media (hover: none) {
+  .pan-edge { width: 44px; padding: 0 6px; }
+  .room-part[data-pan-left="true"] .pan-edge[data-dir="-1"], .room-part[data-pan-right="true"] .pan-edge[data-dir="1"] { opacity: .55; pointer-events: auto; }
+}
+.room-track { position: absolute; left: 14px; right: 14px; bottom: 7px; z-index: 1; height: 3px; border-radius: 3px; background: rgba(255, 255, 255, .22); opacity: 0; pointer-events: none; transition: opacity .35s ease; }
+.room-part[data-scroll="true"] .room-track { opacity: .8; }
+.room-part:hover .room-track { opacity: 1; }
+.room-track i { position: absolute; top: 0; bottom: 0; left: var(--view-left, 0); width: var(--view-span, 100%); border-radius: 3px; background: rgba(255, 255, 255, .9); box-shadow: 0 0 0 1px rgba(8, 14, 22, .25); }
+.room-track b { position: absolute; top: 50%; left: var(--frontier, 0); width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; background: #ffd96a; box-shadow: 0 0 0 1.5px rgba(8, 14, 22, .45), 0 0 8px rgba(255, 217, 106, .8); opacity: 0; transition: opacity .3s ease; }
+.room-part[data-following="true"] .room-track b { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .pan-edge, .pan-edge svg, .room-track, .room-track b { transition: none; } }

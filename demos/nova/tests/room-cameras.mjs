@@ -24,6 +24,7 @@ try {
     });
     await page.goto(process.env.DEMO_URL||'http://127.0.0.1:4173/');
     await page.waitForFunction(()=>!document.querySelector('#goal-title').disabled);
+    let panned=0;
     for(const level of [8,13,26]) {
       await page.locator('#goal-title').click();await page.locator(`.level-card[data-level="${level}"]`).click();
       await page.waitForFunction(level=>window.root?.boot_level===level&&!document.querySelector('#pause').disabled,level);
@@ -36,6 +37,18 @@ try {
       assert.equal(view.ratio,phone?2:4,'Phones use a 2:1 viewport and desktops a 4:1 strip');
       assert.ok(view.zoom>=1,'The camera opens on a room-height close-up');
       assert.equal(await page.locator('.area-zoom,.room-continuation').count(),0,'Rooms no longer wrap into sections or offer zoom buttons');
+      const part=page.locator(`.map-row[data-map="${room}"] .room-part`);
+      if(await part.evaluate(p=>p.dataset.panLeft==='true'||p.dataset.panRight==='true')){
+        panned++;
+        const dir=await part.evaluate(p=>p.dataset.panRight==='true'?1:-1),before=+await canvases.first().getAttribute('data-center-x');
+        assert.equal(await part.locator('.room-track').count(),1,'Each room camera shows where it sits within the room');
+        const edge=part.locator(`.pan-edge[data-dir="${dir}"]`);
+        if(phone)await edge.tap();else{await canvases.first().hover();await edge.hover();}
+        await page.waitForFunction(([room,before,dir])=>dir*(+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.centerX-before)>8,[room,before,dir]);
+        assert.equal(await page.locator('#camera-toggle').innerText(),'Follow the search','Panning from a room edge hands the camera to the visitor');
+        if(!phone)await page.mouse.move(0,0);
+        await toggle(page,phone);
+      }
       if(await page.locator('#camera-toggle').getAttribute('aria-pressed')==='true')await toggle(page,phone);
       await page.waitForFunction(room=>+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.zoom===1,room);
       assert.equal(await page.locator('#camera-toggle').innerText(),'Follow the search');
@@ -43,6 +56,7 @@ try {
       assert.equal(await page.locator('#camera-toggle').getAttribute('aria-pressed'),'true');
       await canvases.first().scrollIntoViewIfNeeded();await page.screenshot({path:`test-results/room-camera-${level}-${phone?'phone':'desktop'}.png`});
     }
+    assert.ok(panned>0,'At least one long room offers edge panning');
     if(phone) {
       await page.setViewportSize({width:844,height:390});
       await page.waitForTimeout(200);
@@ -73,5 +87,5 @@ try {
     await page.locator('#close-inspector').click();
     await page.goto('about:blank');await page.close();
   }
-  assert.deepEqual(errors,[]);console.log('Room cameras: one viewport per room on desktop and phone, whole-room and follow modes, rotation, and authentic retained hits at the far end of a long room passed.');
+  assert.deepEqual(errors,[]);console.log('Room cameras: one viewport per room on desktop and phone, whole-room and follow modes, edge panning, rotation, and authentic retained hits at the far end of a long room passed.');
 }finally{await browser.close();}

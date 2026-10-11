@@ -90,13 +90,22 @@ room height on screen and follows that room's search frontier (the
 search has reached there, or the room's start. Following pauses while the mouse
 is over a map and for 2.5 seconds after a touch. Whole room fits every visible
 room and stops following; Follow the search resumes. Any drag, pinch or cell
-selection also stops following. Maps repaint every frame while the camera moves
-and at 30 Hz otherwise, and drawing snaps to whole canvas pixels.
+selection also stops following. When a room is wider than its view, hovering it
+shows soft chevrons at the left and right edges; resting on one pans that way,
+easing up to most of a screen per second, and a tap on touch screens glides
+about half a screen. Panning by hand stops following like a drag. A thin track
+along the bottom of each room shows which part of the room is on screen, with a
+gold dot at the point the camera is chasing while it follows. Maps repaint every
+frame while the camera or an edge pan moves and at 30 Hz otherwise, and drawing
+snaps to whole canvas pixels.
 
-On a first visit the camera opens at 1.8 times the room-height close-up,
-follows for about four seconds, then eases to the close-up over 1.6 seconds and
-keeps following. The tour waits for that opening. Take the tour replays it
-before starting the tour unless the search is paused. Returning and
+On a first visit the camera opens at 1.8 times the room-height close-up in the
+room with the most live squirrels (the first room on a fresh page), follows for
+about four seconds, then eases to the close-up over 1.6 seconds and keeps
+following. Other rooms keep their ordinary view. The tour waits for that opening
+and starts in the same room. Take the tour replays it before starting the tour
+unless the search is paused; when Whole room is showing, only the opening room
+moves. Returning and
 reduced-motion visitors start at the close-up.
 
 A five-step guided tour follows the story many, one, you, fork and tree:
@@ -106,7 +115,10 @@ controls and route list together; Your turn for takeover; Hand it back to
 Harmony for search admission; and A tree of searches for the tree.
 Each step has one or two short sentences and a row of progress dots. Every step enables its real highlighted controls: cell and route selection,
 replay and scrubbing, keyboard/touch takeover, branching and switching searches.
-The rest of the interface dims without blurring the game. The tour opens once
+The rest of the interface dims without blurring the game. Map spotlights cover
+whole room rows, headings included, as one block. On desktop the callout keeps
+its place for the whole step and moves only when a highlighted target would
+cover it and a less covered spot exists. The tour opens once
 after the opening camera finishes and the search has populated a cell; Take the
 tour beside the live totals reopens it. A versioned localStorage marker remembers dismissal; unavailable storage
 falls back to one offer per page load. Skip tour and Escape always exit.
@@ -497,4 +509,4 @@ The panes are labeled Searches, Exploration and History. History keeps its headi
 
 Overview route strokes stay bright gold at a constant screen width, with a dark edge for contrast at small map scales. Retained histories collapse into a reopen control; dismissing human play still discards its draft and resumes the existing search. On phones, Searches places its heading and short scrollable tree in one row. During human play, History places audio in the header, then the screen, a spaced controller and Branch/Discard actions; the retained-route list stays hidden.
 
-Room headings name the room and its position ("Introduction · Room 1 of 3"). `tests/room-cameras.mjs` checks one viewport per room on desktop and phone, Whole room and Follow modes, rotation, and an authentic retained-state hit at the far end of a long room using a hash-verified native history. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.
+Room headings name the room and its position ("Introduction · Room 1 of 3"). `tests/room-cameras.mjs` checks one viewport per room on desktop and phone, Whole room and Follow modes, edge panning and the room track, rotation, and an authentic retained-state hit at the far end of a long room using a hash-verified native history. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.
