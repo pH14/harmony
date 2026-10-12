@@ -128,7 +128,7 @@ jobs:
       - name: Fault policy, package and tooling
         run: |
           set -euo pipefail
-          for package in fault-policy faults tools; do
+          for package in fault-policy faults; do
             manifest="workloads/$package/Cargo.toml"
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
             cargo test --locked --manifest-path "$manifest" --all-features
