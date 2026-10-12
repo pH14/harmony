@@ -35,17 +35,6 @@
       }
     },
     {
-      "id": "nova-level-1",
-      "game": "nova",
-      "level": 1,
-      "origin": "level 1 gameplay genesis",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 100000,
-        "frames": 5000000
-      }
-    },
-    {
       "id": "mm2-metal",
       "game": "mm2",
       "stage": 6,
@@ -72,62 +61,6 @@
         "executions": 20000,
         "frames": 3000000
       }
-    },
-    {
-      "id": "nova-level-9",
-      "game": "nova",
-      "level": 9,
-      "origin": "isolated level 9 setup; no gameplay tape",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 100000,
-        "frames": 5000000
-      }
-    },
-    {
-      "id": "nova-level-17",
-      "game": "nova",
-      "level": 17,
-      "origin": "isolated level 17 setup; no gameplay tape",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 100000,
-        "frames": 5000000
-      }
-    },
-    {
-      "id": "nova-level-25",
-      "game": "nova",
-      "level": 25,
-      "origin": "isolated level 25 setup; no gameplay tape",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 100000,
-        "frames": 5000000
-      }
-    },
-    {
-      "id": "nova-level-33",
-      "game": "nova",
-      "level": 33,
-      "origin": "isolated level 33 setup; no gameplay tape",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 100000,
-        "frames": 5000000
-      }
-    },
-    {
-      "id": "nova-full",
-      "game": "nova",
-      "level": 1,
-      "origin": "power-on level 1 genesis; all 40 level flags required",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 500000,
-        "frames": 40000000
-      },
-      "whole_game": true
     },
     {
       "id": "mm2-heat",

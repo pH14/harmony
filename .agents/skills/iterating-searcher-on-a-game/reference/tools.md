@@ -68,7 +68,7 @@ ladder exist for Metroid only today; another game adds them in step 1.
   per place. A stopped run writes no census.
 - Film the witness and the milestone tapes with the game's film tool, and read
   bytes with its probe, both in `workloads/nes/src/bin`. `eval.py film` renders
-  the Nova and STB benchmarks only.
+  the STB benchmarks only.
 - A run keeps inputs only for the witness and the milestone tapes. Filming
   other archive states needs their inputs written out.
 

@@ -32,17 +32,6 @@
       }
     },
     {
-      "id": "nova-level-1",
-      "game": "nova",
-      "level": 1,
-      "origin": "level 1 gameplay genesis",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 100000,
-        "frames": 5000000
-      }
-    },
-    {
       "id": "mm2-metal",
       "game": "mm2",
       "stage": 6,
@@ -69,18 +58,6 @@
         "executions": 20000,
         "frames": 3000000
       }
-    },
-    {
-      "id": "nova-full",
-      "game": "nova",
-      "level": 1,
-      "origin": "power-on level 1 genesis; all 40 level flags required",
-      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
-      "search": {
-        "executions": 300000,
-        "frames": 40000000
-      },
-      "whole_game": true
     }
   ]
 }

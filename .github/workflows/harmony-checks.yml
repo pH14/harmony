@@ -99,9 +99,9 @@ jobs:
           set -euo pipefail
           manifest=workloads/nes-guest/Cargo.toml
           cargo clippy --manifest-path "$manifest" --all-features --all-targets -- -D warnings
-          # The static QuickNES feature needs the pinned external archive the
-          # Nova guest image build supplies, so the integration and binary tests
-          # run through the archive-free dynamic-core profile instead.
+          # The static QuickNES feature needs a pinned external archive, so the
+          # integration and binary tests run through the archive-free
+          # dynamic-core profile instead.
           cargo test --manifest-path "$manifest" --all-features --lib
           cargo test --manifest-path "$manifest" --no-default-features --test agent --bin play-agent
           cargo build --manifest-path "$manifest" --bin play-agent
@@ -125,7 +125,6 @@ jobs:
           workspaces: |
             workloads/fault-policy -> target
             workloads/faults -> target
-            workloads/tools -> target
       - name: Fault policy, package and tooling
         run: |
           set -euo pipefail

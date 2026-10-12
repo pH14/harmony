@@ -98,25 +98,23 @@ impl BillboardLayout {
     }
 }
 
-pub const NOVA_BILLBOARD_LAYOUT_VERSION: u16 = 2;
-pub const NOVA_HEADER_LEN: usize = 32;
-pub const NOVA_SAVE_RAM_LEN: usize = 8 * 1024;
-pub const NOVA_WORK_RAM_RING_LEN: usize = MAX_HOLD_FRAMES as usize * WORK_RAM_LEN;
+pub const BILLBOARD_VERSION: u16 = 2;
+pub const V2_HEADER_LEN: usize = 32;
+pub const V2_SAVE_RAM_LEN: usize = 8 * 1024;
+pub const V2_WORK_RAM_RING_LEN: usize = MAX_HOLD_FRAMES as usize * WORK_RAM_LEN;
 
-const NOVA_DEAD_FLAG: u16 = 1 << 0;
-const NOVA_CLEARED_FLAG: u16 = 1 << 1;
-const NOVA_WORK_RAM_OFFSET: usize = NOVA_HEADER_LEN;
-const NOVA_SAVE_RAM_OFFSET: usize = NOVA_WORK_RAM_OFFSET + NOVA_WORK_RAM_RING_LEN;
-const NOVA_SAVESTATE_OFFSET: usize = NOVA_SAVE_RAM_OFFSET + NOVA_SAVE_RAM_LEN;
+const V2_WORK_RAM_OFFSET: usize = V2_HEADER_LEN;
+const V2_SAVE_RAM_OFFSET: usize = V2_WORK_RAM_OFFSET + V2_WORK_RAM_RING_LEN;
+const V2_SAVESTATE_OFFSET: usize = V2_SAVE_RAM_OFFSET + V2_SAVE_RAM_LEN;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct NovaBillboardLayout {
+pub struct BillboardLayoutV2 {
     savestate_len: u32,
 }
 
-impl NovaBillboardLayout {
+impl BillboardLayoutV2 {
     pub fn new(savestate_len: usize) -> Result<Self, BillboardError> {
-        let fixed_len = NOVA_SAVESTATE_OFFSET;
+        let fixed_len = V2_SAVESTATE_OFFSET;
         let len32 = u32::try_from(savestate_len)
             .ok()
             .filter(|len| (*len as u64) + (fixed_len as u64) <= u64::from(u32::MAX))
@@ -133,27 +131,27 @@ impl NovaBillboardLayout {
 
     #[must_use]
     pub const fn work_ram_offset(&self) -> usize {
-        NOVA_WORK_RAM_OFFSET
+        V2_WORK_RAM_OFFSET
     }
 
     #[must_use]
     pub const fn work_ram_ring_len(&self) -> usize {
-        NOVA_WORK_RAM_RING_LEN
+        V2_WORK_RAM_RING_LEN
     }
 
     #[must_use]
     pub const fn save_ram_offset(&self) -> usize {
-        NOVA_SAVE_RAM_OFFSET
+        V2_SAVE_RAM_OFFSET
     }
 
     #[must_use]
     pub const fn save_ram_len(&self) -> usize {
-        NOVA_SAVE_RAM_LEN
+        V2_SAVE_RAM_LEN
     }
 
     #[must_use]
     pub const fn savestate_offset(&self) -> usize {
-        NOVA_SAVE_RAM_OFFSET + NOVA_SAVE_RAM_LEN
+        V2_SAVE_RAM_OFFSET + V2_SAVE_RAM_LEN
     }
 
     #[must_use]
@@ -167,8 +165,6 @@ impl NovaBillboardLayout {
         frame: u32,
         joypad: u8,
         frames_run: u8,
-        dead: bool,
-        cleared: bool,
     ) -> Result<(), BillboardError> {
         if buf.len() < self.total_len() {
             return Err(BillboardError::BufferTooSmall {
@@ -176,39 +172,32 @@ impl NovaBillboardLayout {
                 need: self.total_len(),
             });
         }
-        let mut flags = 0_u16;
-        if dead {
-            flags |= NOVA_DEAD_FLAG;
-        }
-        if cleared {
-            flags |= NOVA_CLEARED_FLAG;
-        }
         buf[0..4].copy_from_slice(&BILLBOARD_MAGIC);
-        buf[4..6].copy_from_slice(&NOVA_BILLBOARD_LAYOUT_VERSION.to_le_bytes());
-        buf[6..8].copy_from_slice(&flags.to_le_bytes());
+        buf[4..6].copy_from_slice(&BILLBOARD_VERSION.to_le_bytes());
+        buf[6..8].fill(0);
         buf[8..12].copy_from_slice(&frame.to_le_bytes());
         buf[12] = joypad;
         buf[13] = frames_run;
         buf[14..16].fill(0);
-        buf[16..20].copy_from_slice(&(NOVA_WORK_RAM_OFFSET as u32).to_le_bytes());
-        buf[20..24].copy_from_slice(&(NOVA_WORK_RAM_RING_LEN as u32).to_le_bytes());
-        buf[24..28].copy_from_slice(&(NOVA_SAVE_RAM_OFFSET as u32).to_le_bytes());
-        buf[28..32].copy_from_slice(&(NOVA_SAVE_RAM_LEN as u32).to_le_bytes());
+        buf[16..20].copy_from_slice(&(V2_WORK_RAM_OFFSET as u32).to_le_bytes());
+        buf[20..24].copy_from_slice(&(V2_WORK_RAM_RING_LEN as u32).to_le_bytes());
+        buf[24..28].copy_from_slice(&(V2_SAVE_RAM_OFFSET as u32).to_le_bytes());
+        buf[28..32].copy_from_slice(&(V2_SAVE_RAM_LEN as u32).to_le_bytes());
         Ok(())
     }
 
     pub fn work_ram_ring_mut<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
         let len = buf.len();
-        let start = NOVA_WORK_RAM_OFFSET;
-        let end = start + NOVA_WORK_RAM_RING_LEN;
+        let start = V2_WORK_RAM_OFFSET;
+        let end = start + V2_WORK_RAM_RING_LEN;
         &mut buf[start.min(len)..end.min(len)]
     }
 
     pub fn work_ram_slot_mut<'a>(&self, buf: &'a mut [u8], slot: usize) -> &'a mut [u8] {
-        if slot >= NOVA_WORK_RAM_RING_LEN / WORK_RAM_LEN {
+        if slot >= V2_WORK_RAM_RING_LEN / WORK_RAM_LEN {
             return &mut buf[0..0];
         }
-        let Some(start) = NOVA_WORK_RAM_OFFSET.checked_add(slot * WORK_RAM_LEN) else {
+        let Some(start) = V2_WORK_RAM_OFFSET.checked_add(slot * WORK_RAM_LEN) else {
             return &mut buf[0..0];
         };
         let end = start + WORK_RAM_LEN;
@@ -218,8 +207,8 @@ impl NovaBillboardLayout {
 
     pub fn save_ram_mut<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
         let len = buf.len();
-        let start = NOVA_SAVE_RAM_OFFSET;
-        let end = start + NOVA_SAVE_RAM_LEN;
+        let start = V2_SAVE_RAM_OFFSET;
+        let end = start + V2_SAVE_RAM_LEN;
         &mut buf[start.min(len)..end.min(len)]
     }
 
@@ -229,25 +218,7 @@ impl NovaBillboardLayout {
         let end = start + self.savestate_len();
         &mut buf[start.min(len)..end.min(len)]
     }
-
-    #[must_use]
-    pub fn dead_flag(buf: &[u8]) -> bool {
-        buf.get(6..8)
-            .and_then(|bytes| bytes.try_into().ok())
-            .map(|bytes| u16::from_le_bytes(bytes) & NOVA_DEAD_FLAG != 0)
-            .unwrap_or(false)
-    }
-
-    #[must_use]
-    pub fn cleared_flag(buf: &[u8]) -> bool {
-        buf.get(6..8)
-            .and_then(|bytes| bytes.try_into().ok())
-            .map(|bytes| u16::from_le_bytes(bytes) & NOVA_CLEARED_FLAG != 0)
-            .unwrap_or(false)
-    }
 }
-
-pub type BillboardLayoutV2 = NovaBillboardLayout;
 
 #[cfg(test)]
 mod tests {
@@ -351,43 +322,36 @@ mod tests {
     }
 
     #[test]
-    fn nova_v2_header_and_regions_are_fixed_and_bounded() {
-        let layout = NovaBillboardLayout::new(64).unwrap();
-        assert_eq!(layout.work_ram_offset(), NOVA_HEADER_LEN);
+    fn v2_header_and_regions_are_fixed_and_bounded() {
+        let layout = BillboardLayoutV2::new(64).unwrap();
+        assert_eq!(layout.work_ram_offset(), V2_HEADER_LEN);
         assert_eq!(layout.work_ram_ring_len(), 120 * WORK_RAM_LEN);
-        assert_eq!(
-            layout.save_ram_offset(),
-            NOVA_HEADER_LEN + 120 * WORK_RAM_LEN
-        );
-        assert_eq!(layout.save_ram_len(), NOVA_SAVE_RAM_LEN);
+        assert_eq!(layout.save_ram_offset(), V2_HEADER_LEN + 120 * WORK_RAM_LEN);
+        assert_eq!(layout.save_ram_len(), V2_SAVE_RAM_LEN);
         assert_eq!(
             layout.savestate_offset(),
-            layout.save_ram_offset() + NOVA_SAVE_RAM_LEN
+            layout.save_ram_offset() + V2_SAVE_RAM_LEN
         );
         assert_eq!(
             layout.total_len(),
-            NOVA_HEADER_LEN + 120 * WORK_RAM_LEN + NOVA_SAVE_RAM_LEN + 64
+            V2_HEADER_LEN + 120 * WORK_RAM_LEN + V2_SAVE_RAM_LEN + 64
         );
 
         let mut buf = vec![0_u8; layout.total_len()];
-        layout
-            .write_header(&mut buf, 7, 0xA5, 3, true, true)
-            .unwrap();
+        layout.write_header(&mut buf, 7, 0xA5, 3).unwrap();
         assert_eq!(&buf[0..4], b"HBBD");
         assert_eq!(
             u16::from_le_bytes(buf[4..6].try_into().unwrap()),
-            NOVA_BILLBOARD_LAYOUT_VERSION
+            BILLBOARD_VERSION
         );
-        assert_eq!(u16::from_le_bytes(buf[6..8].try_into().unwrap()), 3);
+        assert_eq!(u16::from_le_bytes(buf[6..8].try_into().unwrap()), 0);
         assert_eq!(buf[12], 0xA5);
         assert_eq!(buf[13], 3);
-        assert!(NovaBillboardLayout::dead_flag(&buf));
-        assert!(NovaBillboardLayout::cleared_flag(&buf));
     }
 
     #[test]
-    fn nova_v2_ring_slots_and_short_accessors_never_panic() {
-        let layout = NovaBillboardLayout::new(64).unwrap();
+    fn v2_ring_slots_and_short_accessors_never_panic() {
+        let layout = BillboardLayoutV2::new(64).unwrap();
         let mut buf = vec![0_u8; layout.total_len()];
         layout.work_ram_slot_mut(&mut buf, 0)[0] = 0x11;
         layout.work_ram_slot_mut(&mut buf, 119)[WORK_RAM_LEN - 1] = 0x22;
@@ -398,19 +362,18 @@ mod tests {
         );
         assert!(layout.work_ram_slot_mut(&mut buf, 120).is_empty());
 
-        let mut tiny = vec![0_u8; NOVA_HEADER_LEN + 3];
+        let mut tiny = vec![0_u8; V2_HEADER_LEN + 3];
         assert_eq!(layout.work_ram_ring_mut(&mut tiny).len(), 3);
         assert!(layout.save_ram_mut(&mut tiny).is_empty());
         assert!(layout.savestate_mut(&mut tiny).is_empty());
     }
 }
 
-pub const BILLBOARD_VERSION: u16 = NOVA_BILLBOARD_LAYOUT_VERSION;
-pub const BILLBOARD_WORK_RAM_OFFSET: usize = NOVA_WORK_RAM_OFFSET;
-pub const BILLBOARD_WORK_RAM_LEN: usize = NOVA_WORK_RAM_RING_LEN;
-pub const BILLBOARD_SAVE_RAM_OFFSET: usize = NOVA_SAVE_RAM_OFFSET;
-pub const BILLBOARD_SAVE_RAM_LEN: usize = NOVA_SAVE_RAM_LEN;
-pub const BILLBOARD_OBSERVATION_LEN: usize = NOVA_SAVE_RAM_OFFSET + NOVA_SAVE_RAM_LEN;
+pub const BILLBOARD_WORK_RAM_OFFSET: usize = V2_WORK_RAM_OFFSET;
+pub const BILLBOARD_WORK_RAM_LEN: usize = V2_WORK_RAM_RING_LEN;
+pub const BILLBOARD_SAVE_RAM_OFFSET: usize = V2_SAVE_RAM_OFFSET;
+pub const BILLBOARD_SAVE_RAM_LEN: usize = V2_SAVE_RAM_LEN;
+pub const BILLBOARD_OBSERVATION_LEN: usize = V2_SAVE_RAM_OFFSET + V2_SAVE_RAM_LEN;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeError(pub String);
@@ -425,7 +388,7 @@ impl std::error::Error for DecodeError {}
 pub struct BillboardObservation {
     pub work_frames: Vec<[u8; WORK_RAM_LEN]>,
     pub endpoint_work_ram: [u8; WORK_RAM_LEN],
-    pub save_ram: [u8; NOVA_SAVE_RAM_LEN],
+    pub save_ram: [u8; V2_SAVE_RAM_LEN],
 }
 
 pub fn parse_billboard(
@@ -441,10 +404,8 @@ pub fn parse_billboard(
     if read_u16(bytes, 4)? != BILLBOARD_VERSION {
         return Err(DecodeError("unsupported billboard version".to_owned()));
     }
-    if read_u16(bytes, 6)? & !0b11 != 0 {
-        return Err(DecodeError(
-            "billboard has unknown endpoint flags".to_owned(),
-        ));
+    if read_u16(bytes, 6)? != 0 {
+        return Err(DecodeError("billboard flags are nonzero".to_owned()));
     }
     if bytes.get(14..16) != Some(&[0, 0]) {
         return Err(DecodeError(
@@ -547,11 +508,9 @@ mod decoder_tests {
     use super::*;
     #[test]
     fn decoder_checks_regions_flags_and_truncation() {
-        let layout = NovaBillboardLayout::new(0).unwrap();
+        let layout = BillboardLayoutV2::new(0).unwrap();
         let mut bytes = vec![0; layout.total_len()];
-        layout
-            .write_header(&mut bytes, 3, 0, 3, false, false)
-            .unwrap();
+        layout.write_header(&mut bytes, 3, 0, 3).unwrap();
         assert_eq!(parse_billboard(&bytes, true).unwrap().work_frames.len(), 3);
         for end in 0..bytes.len() {
             assert!(parse_billboard(&bytes[..end], false).is_err());

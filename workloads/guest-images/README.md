@@ -88,13 +88,6 @@ gh workflow run harmony-workloads-oci-checks.yml --ref YOUR_BRANCH
 ```
 
 
-The Nova A–E CI check is `verify-nova-oracle-admission.sh`. It checks the exact
-built oracle executable and downloaded kernel/platform/OCI/ROM immediately
-before execution. The check requires restore-oracle mode and no tree-seed
-override, and retains only JSON/log evidence rather than the temporary full
-composition archives. See `workloads/tools/README.md` for candidate generation,
-review boundaries and executable provenance.
-
 `verify-prepared-admission.py` checks a prepared dump against its own manifest
 and against the fixed composition rules: archive order and offsets, the prepared
 API identity, the `/harmony-oci` namespace boundary, `LD_BIND_NOW=1` in the
