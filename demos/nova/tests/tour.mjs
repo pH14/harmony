@@ -230,21 +230,19 @@ try {
   await page.locator('#sound').click();
   assert.equal(await page.locator('#sound').getAttribute('aria-pressed'), 'false');
   await watchDuringTour(page);
-  for (let step = 2; step < 5; step++) {
-    await next(page, step);
-    if (step === 2) {
-      assert.match(await page.locator('#tour-copy').innerText(), /jump in and play/);
-      assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), false);
-      assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
-    }
-  }
+  await next(page, 2);
+  assert.match(await page.locator('#tour-copy').innerText(), /jump in and play/);
+  assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), false);
+  assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
+  await next(page, 4);
+  assert.equal(await page.locator('#tour-title').innerText(), 'Search branches', 'Without play, Next skips Hand it back');
   assert.equal(
     await page.locator("#branch-tree button[data-search]").count(),
     1,
     "The tour must not create a search branch",
   );
   await page.locator("#tour-back").click();
-  await ready(page, 3);
+  await ready(page, 2);
   await layout(page);
   await next(page, 4);
   await page.locator("#tour-next").click();
@@ -289,7 +287,7 @@ try {
   await page.locator("#tour-open").click();
   await ready(page, 0);
   await opening(page);
-  for (let step = 1; step < 5; step++) await next(page, step);
+  for (const step of [1, 2, 4]) await next(page, step);
   assert.equal(await page.locator("#tour-next").innerText(), "Let’s go explore!");
   assert.equal(await page.locator("#tour-try, #tour-progress").count(), 0);
   await page.locator("#tour-next").click();
@@ -382,7 +380,7 @@ try {
   await ready(phone, 0);
   await opening(phone);
   await layout(phone);
-  for (let step = 1; step < 5; step++) {
+  for (const step of [1, 2, 4]) {
     await next(phone, step);
     if (step === 1) {
       const route = phone.locator("#state-list .state").last();
@@ -422,7 +420,7 @@ try {
   await landscape.goto(url);
   await ready(landscape, 0);
   await opening(landscape);
-  for (let step = 1; step < 5; step++) await next(landscape, step);
+  for (const step of [1, 2, 4]) await next(landscape, step);
   assert.equal(await landscape.locator("#tour-next").innerText(), "Let’s go explore!");
   assert.equal(await landscape.locator("#tour-try, #tour-progress").count(), 0);
   await landscape.locator("#tour-next").click();
@@ -498,8 +496,7 @@ try {
   assert.equal(await practice.locator('#take-control').getAttribute('aria-pressed'), 'true');
   await practice.locator('#search-here').click();
   await ready(practice, 4);
-  await practice.waitForFunction(() => !document.querySelector('#map-toast').hidden && document.querySelector('#map-toast').textContent.includes('Your branch is live'));
-  assert.ok(await practice.locator('#tour-rings rect').count() >= 2, 'The final step keeps the new branch on the map lit');
+  assert.equal(await practice.locator('#map-toast').count(), 0, 'Starting a branch shows no toast');
   await practice.waitForFunction(() => document.querySelector('#branch-tree button[aria-pressed=true]').dataset.search === '1' && document.querySelector('#inspector').hidden);
   assert.equal(await practice.locator('li[data-search-node="0"] > ol > li[data-search-node="1"]').count(), 1);
   await practice.locator('button[data-search="0"]').hover();

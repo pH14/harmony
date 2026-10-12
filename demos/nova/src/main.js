@@ -33,7 +33,7 @@ const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Plays NES</h1><p class="hero-lede">Watch Harmony play the delightful <a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> NES game right in your browser.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>World 1 – Level 1</button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search, and return to it 10 seconds after you move the map">Auto view</button><button data-camera="room" aria-pressed="false" title="Show each full room">Full view</button></div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
-<div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Rooms in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a cell to watch its history</div><div id="hover" hidden></div><div id="map-toast" role="status" hidden></div></div>
+<div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Rooms in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 <p class="game-attribution"><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
 </section>
@@ -465,7 +465,6 @@ let searchChoices = [{ id: 0, parent: null }],
   traceReveal = 0,
   revealNext = false,
   transportPending = false,
-  toastTimer,
   branchPreview = null,
   routeHover = null,
   previewTimer;
@@ -1204,7 +1203,6 @@ function startSearch(level = bootLevel) {
             camera.focus = { point: branchOrigin.point, start: performance.now() };
             updateCameraToggle();
           }
-          showToast("Your branch is live and searching.");
           $("branch-feedback").textContent =
             `${searchLabel(searchChoices.find((s) => s.id === activeSearch))} is searching from this frame.`;
           updateBranchControls();
@@ -2311,17 +2309,6 @@ function drawOriginPulse(ctx, level, scale, now) {
   ctx.restore();
   return true;
 }
-function showToast(text) {
-  clearTimeout(toastTimer);
-  const toast = $("map-toast");
-  toast.textContent = text;
-  toast.hidden = false;
-  toast.classList.remove("leaving");
-  toastTimer = setTimeout(() => {
-    toast.classList.add("leaving");
-    toastTimer = setTimeout(() => (toast.hidden = true), 400);
-  }, 4200);
-}
 function startTraceReveal(animatePath = true) {
   traceReveal = reducedMotion.matches || !animatePath ? 0 : performance.now();
   const screen = document.querySelector(".screen");
@@ -2400,8 +2387,8 @@ function animate(now) {
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);
   lastTime = now;
-  const cameraMoving = (camera.follow && !paused) || !!camera.focus || !!panHold || playing || controlMode;
-  if (cameraMoving || now - lastMapPaint >= 1000 / 30) {
+  const mapMoving = !paused || !!camera.focus || !!panHold || playing || controlMode;
+  if (mapMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;
   }
@@ -2410,7 +2397,7 @@ function animate(now) {
     .classList.toggle("updating", seeking && now - seekStarted > 120);
   if (controlMode && !seeking && current && !document.hidden) {
     frameCredit += (elapsed * 60) / 1000;
-    const frames = Math.floor(frameCredit);
+    const frames = Math.round(frameCredit);
     frameCredit -= frames;
     for (let i = 0; i < frames; i++) {
       if (
@@ -2438,7 +2425,7 @@ function animate(now) {
   }
   if (playing && !seeking && current) {
     frameCredit += ((wallElapsed * 60) / 1000) * Number($("speed").value);
-    const frames = Math.floor(frameCredit);
+    const frames = Math.round(frameCredit);
     frameCredit -= frames;
     if (frames) {
       advanceFilm(Math.min(current.frames, currentFrame + frames));
@@ -2579,6 +2566,7 @@ const tour = new GuidedTour({
     {
       id: "fork",
       searches: true,
+      skip: () => !tourSession?.gameplay,
       title: "Hand it back",
       copy: [
         "Harmony can start a new search from right where you left off, or you can discard your branch.",
@@ -2593,10 +2581,7 @@ const tour = new GuidedTour({
       copy: [
         "Harmony keeps track of the branches you create. You can switch between them to compare and guide the search.",
       ],
-      targets: () => [
-        searchesSpotlight(),
-        $("map-toast").hidden ? null : $("map-toast"),
-      ],
+      targets: () => [searchesSpotlight()],
       interactive: () => [$("branches")],
     },
   ],

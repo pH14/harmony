@@ -126,7 +126,8 @@ over 1.8 seconds with a moving head, and lights the History film, replay
 controls and route list together; Your turn for takeover; Hand it back for search admission; and Search branches, which spotlights only Searches.
 Pressing Play from here on Zooming in moves to Your turn and starts play there.
 Pressing Branch search from here on Your turn or Hand it back moves straight to
-Search branches.
+Search branches. Next on Your turn skips Hand it back until you have played,
+since that step has no branch to show before then.
 Going back from a later step to Your turn or earlier discards gameplay played
 during the tour, so those steps show Play from here again.
 Each step has one or two short sentences and a row of progress dots. Every step enables its real highlighted controls: cell and route selection,
@@ -251,7 +252,13 @@ request arrives. The gold trail grows on the map while a selected path replays;
 the 1.8-second drawn reveal plays only when reconstruction finished within
 350 ms. Movies follow elapsed
 wall time, render only their final presented frame, and update details at most
-about seven times per second. Playback defaults to 1×.
+about seven times per second. Playback defaults to 1×. Replay and takeover
+round the frame count owed to elapsed time, so a 60 Hz display steps one game
+frame per display frame instead of alternating between zero and two. The map
+repaints every display frame while the search runs, in either camera mode, and
+at 30 frames per second when it is paused. The tour repositions its spotlights
+every frame and writes styles only when a value changes, so it adds no layout
+pass of its own.
 User-started histories and takeover play the original music and sound effects,
 with one mute control. Faster movies accelerate audio by the selected playback
 rate. Audio stops on pause, seeking, selection, restart, completion, or a hidden
@@ -304,9 +311,8 @@ It preserves health, items, level progression and emulator state through replay,
 without teleporting Nova or changing game RAM. After successful admission, the
 pane closes and the mapped branch origin ripples three times in gold for 2.4 seconds; reduced-motion visitors get a stationary ring.
 The camera centers the fork at the room-height close-up for 2.6 seconds, then
-resumes following, and a toast reports that the branch is live and searching.
-The new row slides into Searches. The final tour step keeps
-the toast lit. The map reveals
+resumes following.
+The new row slides into Searches. The map reveals
 that room, including after expanded phone gameplay. The prefix trail to the
 fork remains visible while the pane is closed; inspecting a history shows its
 own complete trail. Each retained search has its own heat, cell history IDs,

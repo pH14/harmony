@@ -1285,16 +1285,6 @@ footer .brand { color: var(--text); font-size: 15px; }
 footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
 .room-bar { display: none; }
 #room-tabs { display: none; }
-#map-toast {
-  position: absolute; z-index: 3; top: 14px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100% - 24px);
-  padding: 10px 14px; border-radius: 12px; background: #12171be8; color: #f5f1e4;
-  font: 500 13px/1.35 system-ui, sans-serif; box-shadow: 0 10px 30px #0006;
-  animation: toast-in .4s cubic-bezier(.2, .9, .3, 1.2);
-}
-#map-toast::before { content: ""; flex-shrink: 0; width: 10px; height: 10px; border-radius: 50%; background: #ffc940; box-shadow: 0 0 0 4px #ffc9404d; }
-#map-toast.leaving { opacity: 0; transform: translate(-50%, -8px); transition: opacity .35s, transform .35s; }
-@keyframes toast-in { from { opacity: 0; transform: translate(-50%, -12px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0); } }
 .branches li.fresh > .timeline-row > button[data-search] { animation: branch-in 1.6s ease-out; }
 @keyframes branch-in {
   0% { opacity: 0; transform: translateX(-14px); background: #ffc9408c; }
@@ -1330,7 +1320,6 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
   .map-row:not([data-current="true"]) { display: none; }
   .map-row .area-heading { display: none; }
   .map-row { border: 0; }
-  #map-toast { top: auto; bottom: 12px; font-size: 12px; }
 }
 
 .pan-edge { position: absolute; top: 0; bottom: 0; z-index: 2; width: 64px; display: flex; align-items: center; padding: 0 10px; border: 0; border-radius: 0; color: #fff; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .25s ease; }

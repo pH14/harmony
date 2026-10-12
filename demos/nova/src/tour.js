@@ -84,13 +84,13 @@ export class GuidedTour {
     this.find = (id) => this.dialog.querySelector(`#${id}`);
     this.card = this.dialog.querySelector(".tour-card");
     this.find("tour-skip").onclick = () => this.finish();
-    this.find("tour-back").onclick = () => this.go(this.index - 1);
+    this.find("tour-back").onclick = () => this.go(this.neighbor(-1));
     this.find("tour-next").onclick = () =>
       !this.ready
         ? this.go(this.index)
         : this.index === steps.length - 1
           ? this.finish()
-          : this.go(this.index + 1);
+          : this.go(this.neighbor(1));
     this.dialog.addEventListener("cancel", (e) => {
       e.preventDefault();
       this.finish();
@@ -150,6 +150,11 @@ export class GuidedTour {
       }
     };
     for (const child of document.body.children) restrict(child);
+  }
+  neighbor(direction) {
+    let index = this.index + direction;
+    while (this.steps[index + direction] && this.steps[index].skip?.()) index += direction;
+    return index;
   }
   get open() {
     return this.dialog.open;
@@ -231,28 +236,31 @@ export class GuidedTour {
     const visual = window.visualViewport;
     const viewport = { width: visual?.width || innerWidth, height: visual?.height || innerHeight };
     const offset = { x: visual?.offsetLeft || 0, y: visual?.offsetTop || 0 };
-    Object.assign(this.dialog.style, { inset: `${offset.y}px auto auto ${offset.x}px`, width: `${viewport.width}px`, height: `${viewport.height}px` });
-    const shade = this.dialog.querySelector("svg");
-    shade.setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
+    const frame = `${offset.x}:${offset.y}:${viewport.width}:${viewport.height}`;
+    if (frame !== this.frame) {
+      this.frame = frame;
+      Object.assign(this.dialog.style, { inset: `${offset.y}px auto auto ${offset.x}px`, width: `${viewport.width}px`, height: `${viewport.height}px` });
+      this.dialog.querySelector("svg").setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
+    }
     const phone = matchMedia("(max-width: 800px), (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)").matches;
     const landscape = phone && viewport.width > viewport.height;
     document.body.classList.toggle("tour-phone", phone);
     document.body.classList.toggle("tour-landscape", landscape);
-    this.card.style.width = `${phone ? (landscape ? Math.min(280, viewport.width * .36) : viewport.width - 24) : Math.min(340, viewport.width - 24)}px`;
+    const set = (style, key, value) => { if (style[key] !== value) style[key] = value; };
+    set(this.card.style, "width", `${phone ? (landscape ? Math.min(280, viewport.width * .36) : viewport.width - 24) : Math.min(340, viewport.width - 24)}px`);
     const playing = document.querySelector("#inspector")?.classList.contains("controlling");
     const searchesPinned = !!this.steps[this.index]?.searches;
     const reserved = playing ? 280 + (searchesPinned ? 64 : 0) : 220;
-    this.card.style.maxHeight = `${phone && !landscape ? viewport.height - reserved - 32 : viewport.height - 24}px`;
-    this.card.style.minHeight = "";
+    set(this.card.style, "maxHeight", `${phone && !landscape ? viewport.height - reserved - 32 : viewport.height - 24}px`);
     if (phone && !landscape) {
       if (this.ready) this.phoneCardHeight = Math.max(this.phoneCardHeight || 0, this.card.getBoundingClientRect().height);
-      this.card.style.minHeight = `${Math.min(this.phoneCardHeight, parseFloat(this.card.style.maxHeight))}px`;
-    }
+      set(this.card.style, "minHeight", `${Math.min(this.phoneCardHeight, parseFloat(this.card.style.maxHeight))}px`);
+    } else set(this.card.style, "minHeight", "");
     const { width, height } = this.card.getBoundingClientRect();
     let stage;
     if (phone) {
-      this.card.style.left = "12px";
-      this.card.style.top = "12px";
+      set(this.card.style, "left", "12px");
+      set(this.card.style, "top", "12px");
       stage = {
         left: offset.x + (landscape ? width + 24 : 8),
         top: offset.y + (landscape ? 12 : height + 24),
@@ -269,7 +277,7 @@ export class GuidedTour {
         "--tour-history-height": stage.bottom - stage.top - searches,
       };
       for (const [key, value] of Object.entries(variables))
-        document.body.style.setProperty(key, `${value}px`);
+        if (document.body.style.getPropertyValue(key) !== `${value}px`) document.body.style.setProperty(key, `${value}px`);
       const reveal = this.ready && this.steps[this.index].reveal?.();
       if (reveal) {
         const covers = (this.occluders?.() || []).filter((node) => !node.hidden && !node.contains(reveal));
@@ -323,11 +331,11 @@ export class GuidedTour {
         const better = tourPosition(rects, width, height, viewport);
         if (cardOverlap(better, rects, width, height) < cardOverlap(spot, rects, width, height)) this.cardSpot = { ...better, key };
       }
-      this.card.style.left = `${this.cardSpot.x}px`;
-      this.card.style.top = `${this.cardSpot.y}px`;
+      set(this.card.style, "left", `${this.cardSpot.x}px`);
+      set(this.card.style, "top", `${this.cardSpot.y}px`);
     }
     const ping = this.find("tour-ping"), target = this.ready && this.steps[this.index].ping?.();
-    ping.setAttribute("visibility", target ? "visible" : "hidden");
+    if (ping.getAttribute("visibility") !== (target ? "visible" : "hidden")) ping.setAttribute("visibility", target ? "visible" : "hidden");
     if (target) {
       const bounds = target.element.getBoundingClientRect();
       const area = {
