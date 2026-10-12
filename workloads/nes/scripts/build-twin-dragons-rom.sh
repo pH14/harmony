@@ -58,7 +58,6 @@ check_sha256 "$TWIN_DRAGONS_ROM_SHA256" "$rom" || {
 install -m 0644 "$rom" "$output_dir/twin-dragons.nes"
 install -m 0644 "$source_dir/LICENSE" "$output_dir/UPSTREAM-LICENSE.txt"
 install -m 0644 "$source_dir/README.md" "$output_dir/UPSTREAM-README.md"
-install -m 0644 "$archive" "$output_dir/twin-dragons-source.tar.gz"
 printf '%s\n' "$TWIN_DRAGONS_COMMIT" >"$output_dir/twin-dragons.commit"
 (cd "$output_dir" && sha256sum twin-dragons.nes >SHA256SUMS)
 echo "Twin Dragons ROM ready: $output_dir/twin-dragons.nes"
