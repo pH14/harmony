@@ -227,6 +227,7 @@ pub struct Evidence {
     pub backtrack_first_items: Vec<Option<u64>>,
     pub map_first: Vec<Option<u64>>,
     pub map_first_tier: Vec<Option<u64>>,
+    pub map_first_boss_room: Option<u64>,
     pub map_first_stocked: Option<u64>,
     pub map_first_hit_stock: Option<u8>,
     pub map_max_hits: u8,
@@ -796,6 +797,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         first.get_or_insert(0);
                     }
                     if w.rooted {
+                        e.map_first_boss_room.get_or_insert(0);
                         e.map_first_stocked.get_or_insert(0);
                     }
                     if w.tier(after) > w.tier(before) {
@@ -808,6 +810,10 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         && after.health >= layout.door_to_goal
                     {
                         e.map_first_stocked.get_or_insert(reached_work);
+                    }
+                    if w.boss_stock > 0 && after.item && after.arm == 0 && after.cell == layout.goal
+                    {
+                        e.map_first_boss_room.get_or_insert(reached_work);
                     }
                     if w.boss_stock > 0
                         && after.item

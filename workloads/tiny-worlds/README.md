@@ -227,9 +227,10 @@ reports include the `layout` (doors per room, regions, item, key, door, goal,
 region entry, farms, ordered items, and room distances; item and key are null
 when absent), `evidence.map_first` (first work entering the inner region,
 holding the item, leaving it with the item, and at the goal),
-`evidence.map_first_tier` (first work at each tier), `evidence.map_first_stocked`
-(first work arriving in a boss room holding the item and enough stock, and
-enough health when the boss hits back), and `parent_timeline`, which lists
+`evidence.map_first_tier` (first work at each tier),
+`evidence.map_first_boss_room` (first work arriving in a boss room holding the
+item), `evidence.map_first_stocked` (first work arriving in a boss room holding
+the item and enough stock, and enough health when the boss hits back), and `parent_timeline`, which lists
 each job's start work, its parent's tier, and its parent place in order. A room
 is its place divided by 16; boss hit counts are places 1,024 plus the hits.
 In an arena, a boss-room place is 2,048 plus the shield level plus the hits,

@@ -1567,7 +1567,8 @@ mod tests {
         let tiers: Vec<Option<u64>> =
             serde_json::from_value(report["evidence"]["map_first_tier"].clone()).unwrap();
         let stocked = report["evidence"]["map_first_stocked"].as_u64().unwrap();
-        assert!(tiers[1].unwrap() < stocked && stocked < goal);
+        let arrived = report["evidence"]["map_first_boss_room"].as_u64().unwrap();
+        assert!(tiers[1].unwrap() < arrived && arrived <= stocked && stocked < goal);
     }
 
     #[test]
@@ -1981,6 +1982,7 @@ mod tests {
         .unwrap();
         assert_eq!(report["verified"], true);
         assert_eq!(report["evidence"]["map_first_stocked"], 0);
+        assert_eq!(report["evidence"]["map_first_boss_room"], 0);
         assert_eq!(report["evidence"]["map_first_tier"][1], 0);
         assert!(Config { arena: 9, ..w }.validate().is_err());
         assert!(Config { arena: 0, ..w }.validate().is_err());
