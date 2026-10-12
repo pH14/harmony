@@ -150,7 +150,7 @@ MIRI_FLAGS_DEFAULT = "-Zmiri-permissive-provenance"
 # Every manifest that owns formatting, lints and tests. A workspace root covers
 # its members; the rest are standalone packages outside any workspace.
 CARGO_MANIFESTS = (
-    "demos/nova/rust/Cargo.toml",
+    "demos/twin-dragons/rust/Cargo.toml",
     "Cargo.toml",
     "consonance/harmony-linux/sdk/Cargo.toml",
     "consonance/harmony-linux/supervisor/Cargo.toml",
@@ -171,7 +171,7 @@ CARGO_MANIFESTS = (
 # out-of-workspace guest manifests are checked against the root allow-list for
 # licenses alone, because their dependency sets are audited upstream.
 DENY_COMMANDS = (
-    "--manifest-path demos/nova/rust/Cargo.toml check --config deny.toml",
+    "--manifest-path demos/twin-dragons/rust/Cargo.toml check --config deny.toml",
     "--manifest-path Cargo.toml check",
     "--manifest-path dissonance/Cargo.toml check",
     "--manifest-path workloads/nes/Cargo.toml check --config deny.toml",
@@ -721,16 +721,16 @@ REPOSITORY_MAINTENANCE = Workflow(
     ),
 )
 
-NOVA_BROWSER_CHECKS = Workflow(
-    path=f"{WORKFLOW_DIR}/nova-browser.yml",
-    name="Checks / Dissonance Workloads / Nova Browser",
+TWIN_DRAGONS_BROWSER_CHECKS = Workflow(
+    path=f"{WORKFLOW_DIR}/twin-dragons-browser.yml",
+    name="Checks / Dissonance Workloads / Twin Dragons Browser",
     owner="Dissonance Workloads",
     triggers=("pull_request", "push", "workflow_dispatch"),
-    jobs=(Job("Nova Browser", "pr", 15, crates=("nova-browser",)),),
+    jobs=(Job("Twin Dragons Browser", "pr", 15, crates=("twin-dragons-browser",)),),
 )
 
 WORKFLOWS = (
-    NOVA_BROWSER_CHECKS,
+    TWIN_DRAGONS_BROWSER_CHECKS,
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
     CONSONANCE_CHECKS,

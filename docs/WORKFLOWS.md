@@ -595,11 +595,13 @@ runner. It checks the shared CLI's prepared-input execution, exact replay, prefi
 branching, nonempty rooted searches, additional-budget continuation and artifact
 tamper refusal. Its evidence is uploaded with the existing Nova artifact.
 
-The Nova browser lane (`Checks / Dissonance Workloads / Nova Browser`) owns the
-standalone `demos/nova/rust` adapter. It builds pinned Nova and QuickNES into
-WebAssembly, runs adapter and browser checks, verifies exact selected-history
-replays, and uploads the static `nova-browser-dist` with corresponding sources
-and `nova-browser-evidence` screenshots. The bounded browser check asserts
-liveness, authentic starts in all 44 catalog levels, exact replay and rooted
+The Twin Dragons browser lane (`Checks / Dissonance Workloads / Twin Dragons
+Browser`) owns the standalone `demos/twin-dragons/rust` adapter. It builds
+QuickNES into WebAssembly, fetches the pinned silent-effects Twin Dragons ROM
+through `workloads/nes/scripts/build-twin-dragons-rom.sh`, runs adapter and
+browser checks, verifies exact selected-history replays, and uploads the static
+`twin-dragons-browser-dist` with corresponding sources and
+`twin-dragons-browser-evidence` screenshots. The bounded browser check asserts
+liveness, authentic starts in all 3 levels, exact replay and rooted
 branching, and desktop/phone interactions rather than a specific seed’s game
 progress.

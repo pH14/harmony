@@ -54,7 +54,7 @@ workload_packages = [
     "workloads/tiny-worlds",
 ]
 composition_apps_tests = [
-    "demos/nova/rust",
+    "demos/twin-dragons/rust",
     "consonance/nested-driver",
     "workloads/tools",
     "cli",

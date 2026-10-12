@@ -1,0 +1,444 @@
+{
+  "format": "harmony-twin-dragons-browser-v1",
+  "rom_sha256": "7b64267068caab5379b833336e836d6de49c7d37cc5a4341b83d07cbccf0ef73",
+  "core_revision": "26bb785c9deddb66a17717b21bb4e328f03ade32",
+  "id": 912,
+  "observation": {
+    "x": 64,
+    "y": 127,
+    "health": 3,
+    "level": 1,
+    "next_level": 2,
+    "gamestate": 1,
+    "goal": false,
+    "on_ground": true,
+    "facing": 1,
+    "loading": false,
+    "cleared": 1
+  },
+  "actions": [
+    {
+      "buttons": 160,
+      "frames": 78
+    },
+    {
+      "buttons": 128,
+      "frames": 10
+    },
+    {
+      "buttons": 129,
+      "frames": 8
+    },
+    {
+      "buttons": 128,
+      "frames": 2
+    },
+    {
+      "buttons": 129,
+      "frames": 11
+    },
+    {
+      "buttons": 131,
+      "frames": 9
+    },
+    {
+      "buttons": 131,
+      "frames": 5
+    },
+    {
+      "buttons": 130,
+      "frames": 9
+    },
+    {
+      "buttons": 128,
+      "frames": 10
+    },
+    {
+      "buttons": 130,
+      "frames": 66
+    },
+    {
+      "buttons": 130,
+      "frames": 3
+    },
+    {
+      "buttons": 131,
+      "frames": 85
+    },
+    {
+      "buttons": 3,
+      "frames": 117
+    },
+    {
+      "buttons": 2,
+      "frames": 10
+    },
+    {
+      "buttons": 0,
+      "frames": 91
+    },
+    {
+      "buttons": 1,
+      "frames": 10
+    },
+    {
+      "buttons": 0,
+      "frames": 115
+    },
+    {
+      "buttons": 1,
+      "frames": 56
+    },
+    {
+      "buttons": 1,
+      "frames": 12
+    },
+    {
+      "buttons": 1,
+      "frames": 106
+    },
+    {
+      "buttons": 0,
+      "frames": 114
+    },
+    {
+      "buttons": 0,
+      "frames": 10
+    },
+    {
+      "buttons": 160,
+      "frames": 51
+    },
+    {
+      "buttons": 161,
+      "frames": 103
+    },
+    {
+      "buttons": 163,
+      "frames": 8
+    },
+    {
+      "buttons": 67,
+      "frames": 7
+    },
+    {
+      "buttons": 67,
+      "frames": 52
+    },
+    {
+      "buttons": 66,
+      "frames": 8
+    },
+    {
+      "buttons": 67,
+      "frames": 8
+    },
+    {
+      "buttons": 66,
+      "frames": 5
+    },
+    {
+      "buttons": 64,
+      "frames": 12
+    },
+    {
+      "buttons": 160,
+      "frames": 10
+    },
+    {
+      "buttons": 161,
+      "frames": 12
+    },
+    {
+      "buttons": 161,
+      "frames": 4
+    },
+    {
+      "buttons": 160,
+      "frames": 4
+    },
+    {
+      "buttons": 160,
+      "frames": 105
+    },
+    {
+      "buttons": 161,
+      "frames": 8
+    },
+    {
+      "buttons": 161,
+      "frames": 2
+    },
+    {
+      "buttons": 160,
+      "frames": 9
+    },
+    {
+      "buttons": 160,
+      "frames": 6
+    },
+    {
+      "buttons": 160,
+      "frames": 7
+    },
+    {
+      "buttons": 161,
+      "frames": 5
+    },
+    {
+      "buttons": 160,
+      "frames": 3
+    },
+    {
+      "buttons": 162,
+      "frames": 60
+    },
+    {
+      "buttons": 162,
+      "frames": 57
+    },
+    {
+      "buttons": 162,
+      "frames": 9
+    },
+    {
+      "buttons": 163,
+      "frames": 4
+    },
+    {
+      "buttons": 161,
+      "frames": 59
+    },
+    {
+      "buttons": 160,
+      "frames": 8
+    },
+    {
+      "buttons": 162,
+      "frames": 9
+    },
+    {
+      "buttons": 162,
+      "frames": 2
+    },
+    {
+      "buttons": 163,
+      "frames": 9
+    },
+    {
+      "buttons": 161,
+      "frames": 62
+    },
+    {
+      "buttons": 160,
+      "frames": 75
+    },
+    {
+      "buttons": 160,
+      "frames": 76
+    },
+    {
+      "buttons": 161,
+      "frames": 4
+    },
+    {
+      "buttons": 161,
+      "frames": 9
+    },
+    {
+      "buttons": 160,
+      "frames": 11
+    },
+    {
+      "buttons": 64,
+      "frames": 51
+    },
+    {
+      "buttons": 66,
+      "frames": 2
+    },
+    {
+      "buttons": 130,
+      "frames": 96
+    },
+    {
+      "buttons": 162,
+      "frames": 6
+    },
+    {
+      "buttons": 163,
+      "frames": 4
+    },
+    {
+      "buttons": 162,
+      "frames": 79
+    },
+    {
+      "buttons": 163,
+      "frames": 9
+    },
+    {
+      "buttons": 162,
+      "frames": 9
+    },
+    {
+      "buttons": 160,
+      "frames": 5
+    },
+    {
+      "buttons": 161,
+      "frames": 5
+    },
+    {
+      "buttons": 161,
+      "frames": 7
+    },
+    {
+      "buttons": 161,
+      "frames": 3
+    },
+    {
+      "buttons": 160,
+      "frames": 8
+    },
+    {
+      "buttons": 162,
+      "frames": 3
+    },
+    {
+      "buttons": 163,
+      "frames": 12
+    },
+    {
+      "buttons": 163,
+      "frames": 7
+    },
+    {
+      "buttons": 161,
+      "frames": 3
+    },
+    {
+      "buttons": 161,
+      "frames": 7
+    },
+    {
+      "buttons": 160,
+      "frames": 9
+    },
+    {
+      "buttons": 162,
+      "frames": 2
+    },
+    {
+      "buttons": 163,
+      "frames": 111
+    },
+    {
+      "buttons": 162,
+      "frames": 103
+    },
+    {
+      "buttons": 160,
+      "frames": 10
+    },
+    {
+      "buttons": 161,
+      "frames": 12
+    },
+    {
+      "buttons": 160,
+      "frames": 4
+    },
+    {
+      "buttons": 160,
+      "frames": 7
+    },
+    {
+      "buttons": 162,
+      "frames": 10
+    },
+    {
+      "buttons": 162,
+      "frames": 3
+    },
+    {
+      "buttons": 160,
+      "frames": 2
+    },
+    {
+      "buttons": 162,
+      "frames": 51
+    },
+    {
+      "buttons": 163,
+      "frames": 3
+    },
+    {
+      "buttons": 161,
+      "frames": 12
+    },
+    {
+      "buttons": 161,
+      "frames": 53
+    },
+    {
+      "buttons": 129,
+      "frames": 3
+    },
+    {
+      "buttons": 131,
+      "frames": 103
+    },
+    {
+      "buttons": 131,
+      "frames": 4
+    },
+    {
+      "buttons": 131,
+      "frames": 107
+    },
+    {
+      "buttons": 147,
+      "frames": 3
+    },
+    {
+      "buttons": 147,
+      "frames": 11
+    },
+    {
+      "buttons": 83,
+      "frames": 4
+    },
+    {
+      "buttons": 82,
+      "frames": 117
+    },
+    {
+      "buttons": 82,
+      "frames": 4
+    },
+    {
+      "buttons": 80,
+      "frames": 6
+    },
+    {
+      "buttons": 80,
+      "frames": 5
+    },
+    {
+      "buttons": 0,
+      "frames": 117
+    }
+  ],
+  "frames": 3012,
+  "endpoint_sha256": "6587d7a78e369ce0d4596e95dcf6f1ba2ae2ad239e83301572e25abf52939d38",
+  "credit": {
+    "title": "Twin Dragons",
+    "author": "Garydos",
+    "source": "https://github.com/Garydos/twin-dragons-nes/tree/bcf27d0c5117a2aac19e6c33bdb3c776ada069fb",
+    "code_license": "Zlib",
+    "artwork": "Some artwork by surt, https://opengameart.org/content/twin-dragons, CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/). Modified: rendered with the game palette and composed into level maps and sprite sheets.",
+    "music": "Music by Garydos, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+    "notice": "Altered build: the sound-effect data is zeroed. Sound effects by Shiru are not included."
+  }
+}

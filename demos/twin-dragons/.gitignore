@@ -1,0 +1,13 @@
+node_modules/
+dist/
+rust/target/
+rust/pkg/
+public/engine/
+public/twin-dragons.nes
+public/licenses/
+.build/
+.emsdk/
+test-results/
+public/maps/
+public/maps.json
+public/sprites.png
