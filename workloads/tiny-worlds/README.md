@@ -120,6 +120,7 @@ representation or action choice affects the same world transitions.
 | `graph` | Walk a long line of nodes, with hashed jumps, to its last node. | Hide the progress tier. |
 | `crossing` | Reach a short exit while a large pool of flat-tier places competes for attempts. | Hide partial exit progress. |
 | `passive_clock` | Every sampled hold advances a clock; only specified event boundaries change the archive key. | Hide all intermediate events. |
+| `targets` | Cross a shut boss room and destroy cannons, some behind barriers, with a fixed number of bombs while live cannons drain health. | Hide cannons destroyed from the key. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -308,6 +309,56 @@ forecasts compare search attempts without treating action work as attempts.
 parent tier, parent place). `skipped_draws` counts draws whose parent and
 suffix were already executed; they produce no job.
 
+## Boss room with targets
+
+The `targets` world is the Boobeam Trap fight in Mega Man 2, started at the
+door with full weapon energy and full health. The room is a line of `width`
+positions and the player starts at position 0. Actions 0 and 1 step right and
+left, action 2 stands, and action 3 throws a bomb. The `cannons` cannons and
+`decoys` decoy barriers sit at distinct positions from 3 up, drawn from
+`layout`. The first `guarded` cannons each stand behind a barrier. The goal is
+every cannon destroyed with health left.
+
+Every bomb spends one of the `bombs`. A bomb lands only when it is thrown at a
+target's position after one of `aims` of the 64 possible histories of three
+actions, and each position has its own fixed set. A landed bomb on a guarded
+cannon breaks the barrier, and after `double_aims` of those histories it also
+destroys the cannon. Once the barrier is gone, a landed bomb destroys the
+cannon. A landed bomb on a decoy breaks the decoy. Every other bomb
+is wasted, so random input spends most of them. With 5 cannons, 3 of them
+guarded, and 7 bombs, a win needs at least one double kill, as in the game.
+After every action while a cannon stands, the player loses one health when a
+fixed function of the position and the last three actions, modulo
+`drain_odds`, is below the number of standing cannons. A player at 0 health
+stops.
+
+The place is the cannons destroyed, the intact barriers and decoys, the
+position divided by 2, and the last `posture_actions` actions. The last
+actions stand in for the game's posture and platforms. The identity is the
+position modulo 2. The key's stock is the bombs left and its health is the
+health. `broken=true` hides the cannons destroyed. Reports give the cannon and
+decoy positions in `layout`. `evidence.targets` gives the first execution and
+work at each count of cannons destroyed, and counts bombs thrown, bombs
+landed, double kills and decoys broken.
+
+In Mega Man 2, rooted segments from the door with 20 million tries killed on
+6 of 6 seeds at a median 7.92 million tries. The world measured these values
+over 32 layouts at 1,000,000 work. Tries are executions to the kill, and a miss
+counts as infinite in the median.
+
+| Settings | Layouts | Kills | Median tries (95% interval) |
+| --- | --- | --- | --- |
+| `width` 16, 5 cannons, 3 guarded, 2 decoys, 7 bombs, 28 health, `aims` 32, `double_aims` 24, `drain_odds` 32, `posture_actions` 2 | 32 | 25 | 32,000 (20,500–infinite) |
+| As above with `posture_actions` 1 and `drain_odds` 64 | 32 | 32 | 7,000 |
+| As the first row with `width` 12 | 16 | 16 | 11,000 |
+
+The first row misses on 7 layouts where the game killed on every seed. Every
+miss reached 4 cannons down within 12,000 tries and then ran about 975,000
+more tries without destroying the last cannon. The split by last actions
+spreads draws over many places at every damage level. After the first arrival
+at 4 cannons down, parents with 4 down take a median 3% of the draws with
+`posture_actions` 2, against 8% with `posture_actions` 1.
+
 ## Configuration bounds
 
 Every parameter is required except the optional map fields. Bounds keep
@@ -328,11 +379,12 @@ family's and passive clock's reachability hold by construction.
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
+| Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain`, `graph`, `crossing`, and `passive_clock` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, and `targets` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
