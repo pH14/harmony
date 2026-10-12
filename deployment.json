@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "79653af",
+    "commit": "01a9462",
     "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests and every npm run test:browser check in Chrome. Revised header and tour copy; the gameplay total is removed; Take the tour starts at once; the first-visit opening zoom is 1.3 times the close-up for 1.5 seconds.",
-    "asset_manifest_sha256": "790e2c7decc39fa509fd060cb28ca6c64ca0f9c010e942459e0b0113a763f703"
+    "checks": "Production build, 52 helper tests and every npm run test:browser check in Chrome. Auto view and Full view; Movement and Heatmap are independent toggles that share one phone row; tour buttons advance the tour; new rooms pulse on phones; the phone History sheet docks at the bottom edge.",
+    "asset_manifest_sha256": "01fa6beee89847b247ff3b1227e101d04f955906698efcfdedaa6924078f493a"
   },
   "raft": {
     "commit": "28791e77a",
