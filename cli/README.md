@@ -272,5 +272,3 @@ same dispatch and storage interfaces without application or NES types.
   local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.
 - `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY` exercises plain
   command replay as an unprivileged UML user and rejects planted output divergence.
-- `bash cli/tests/nes.sh ROM CORE DIRECTORY` exercises native NES search, replay,
-  prefix branching, rooted search, continuation and tamper refusal.
