@@ -846,6 +846,36 @@ class SelectorJobTests(unittest.TestCase):
         guarded = "(github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.harmony_languages == 'true'"
         self.assertFalse(self.rules("check", self.selected(**{"if": guarded}), consumer))
 
+    def test_a_rust_checks_selector_names_its_own_workflow_file(self):
+        selector = ci_contract.Job("Change Selection", "pr", 5, selects=("rust_checks",))
+        job = self.selector(outputs={"rust_checks": "${{ steps.rust_checks.outputs.enabled }}"})
+        job["steps"][1] = {"uses": "./.github/actions/ci-scope", "id": "rust_checks",
+                           "with": {"kind": "rust_checks", "target": "example.yml"}}
+        self.assertFalse(self.rules("scope", job, selector))
+        job["steps"][1]["with"]["target"] = "other.yml"
+        self.assertEqual(self.rules("scope", job, selector), ["ci-scope-routing"])
+        del job["steps"][1]["with"]["target"]
+        self.assertEqual(self.rules("scope", job, selector), ["ci-scope-routing"])
+
+    def test_a_job_can_be_selected_and_select_its_own_steps(self):
+        registered = ci_contract.Job("Snapshot", "pr", 15, scope="consonance_kvm", select="rust_checks")
+        job = {
+            "name": "Snapshot",
+            "timeout-minutes": 15,
+            "needs": ["scope"],
+            "if": "needs.scope.outputs.rust_checks == 'true'",
+            "steps": [
+                {"uses": "actions/checkout@v4", "with": {"fetch-depth": 0}},
+                {"uses": "./.github/actions/ci-scope", "id": "scope", "with": {"kind": "consonance_kvm"}},
+                {"run": "grant", "if": "steps.scope.outputs.enabled == 'true'"},
+            ],
+        }
+        self.assertFalse(self.rules("snapshot", job, registered))
+        unselected = dict(job, **{"if": ""})
+        self.assertEqual(self.rules("snapshot", unselected, registered), ["ci-scope-routing"])
+        unguarded = dict(job, steps=job["steps"][:2] + [{"run": "grant"}])
+        self.assertEqual(self.rules("snapshot", unguarded, registered), ["ci-scope-routing"])
+
     def test_a_selected_job_does_not_select_work_itself(self):
         _, consumer = self.registry()
         job = self.selected()

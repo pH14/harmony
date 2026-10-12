@@ -41,8 +41,8 @@ This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
 consonance/harmony-linux/linux/patches/ per the repo's kernel-patch licensing exception
 (patches/README.md); it is not first-party harmony source. Applied by
 consonance/harmony-linux/linux/build-kernel.sh; the counter-opcode reachability check
-(scan-counter-opcodes.sh) accounts for this file's two deliberate rdtsc
-reads in its reviewed allowlist.
+(scan-counter-opcodes.sh) requires zero raw rdtsc in the image; patch 0016
+routes this file's two deliberate rdtsc() reads through RDMSR(IA32_TSC).
 
 ---
 Under harmony_pvclock the FPU save paths also pin MXCSR_MASK: FXSAVE and
@@ -666,8 +666,8 @@ the flag, so pinned images restore without observable effect.
 +	 * On an assigned-at-exit stock host rdtsc does not trap: this read
 +	 * executes natively, its value is discarded, and the OUT itself both
 +	 * arms the registration and stamps the page. This is one of two
-+	 * intentional rdtscs in this file; the §3.3 opcode-scan allowlist
-+	 * records both.
++	 * intentional rdtscs in this file; patch 0016 turns both into
++	 * RDMSR(IA32_TSC) exits on every host.
 +	 */
 +	(void)rdtsc();
 +
@@ -746,8 +746,8 @@ the flag, so pinned images restore without observable effect.
 +	 * whole clock is a pure function of the exit stream, so there is no exit-boundary variability
 +	 * to avoid), and this read executes natively with its value discarded —
 +	 * the validation below then sees the already-stamped page. One flow
-+	 * serves both hosts. The §3.3 opcode-scan allowlist records both
-+	 * deliberate reads in this file.
++	 * serves both hosts. Patch 0016 turns both deliberate reads in this
++	 * file into RDMSR(IA32_TSC) exits.
 +	 */
 +	(void)rdtsc();
 +

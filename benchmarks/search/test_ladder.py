@@ -177,12 +177,20 @@ class MilestoneTableTests(unittest.TestCase):
         self.assertEqual(rows[0]['key_policy'], 'metroid_test_key')
 
     def test_the_table_carries_every_ladder_rung_in_game_order(self):
-        self.assertLessEqual(set(ladder.LADDER), set(milestones.MILESTONES))
+        self.assertLessEqual(set(ladder.LADDER), set(milestones.METROID_MILESTONES))
         tourian = ladder.LADDER[ladder.LADDER.index('tourian'):]
-        self.assertEqual([name for name in milestones.MILESTONES if name in tourian], tourian)
+        self.assertEqual([name for name in milestones.METROID_MILESTONES if name in tourian], tourian)
         write_cell(self.matrix, 'ladder-seg9', 11, first_seen(tourian=1, tourian_far=300, zebetite_destroyed=None))
         name, rows = milestones.collect(self.matrix)
         self.assertEqual(rows[0]['first_execution'], {'tourian': 1, 'tourian_far': 300})
+
+    def test_mega_man_2_cells_report_route_milestones_without_rooms(self):
+        write_cell(self.matrix, 'mm2-whole-game', 5,
+                   first_seen(crash_entered=0, crash_room_4=9, crash_defeated=40, wily5_machine=None), game='mm2')
+        name, rows = milestones.collect(self.matrix)
+        self.assertEqual(rows[0]['game'], 'mm2')
+        self.assertEqual(rows[0]['first_execution'], {'crash_entered': 0, 'crash_defeated': 40})
+        self.assertEqual(milestones.MM2_MILESTONES[-1], 'ending')
 
     def test_a_results_file_reads_summaries_under_rows(self):
         cell = write_cell(self.matrix, 'metroid-new-game', 4, first_seen(norfair=77, kraid_area=None))

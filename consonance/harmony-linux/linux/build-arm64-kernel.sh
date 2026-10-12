@@ -133,7 +133,7 @@ echo "== arm64 kernel: building Image + vmlinux"
 make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Image
 
 # ARM has no generic-timer-register trap on the reachable execution target.
-# Unlike x86's reviewed allowlist, one reachable CNTFRQ/CNTVCT/CNTPCT opcode is
+# As on x86, one reachable CNTFRQ/CNTVCT/CNTPCT opcode is
 # a determinism hole: CNTFRQ differs across the supported substrates, while the
 # count registers also vary with host execution.
 # The canonical Image is therefore published only after the empty-allowlist

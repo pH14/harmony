@@ -57,7 +57,7 @@ const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PROBE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-    nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
+    nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
 #[cfg(any(
     all(
         target_os = "linux",
@@ -742,6 +742,25 @@ mod tests {
         assert_eq!(
             boot_memory_kib("[    0.010000] Memory: 90660K/130676K available\r\n"),
             Ok((130676, 90660))
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn oracle_admission_session_matches_the_admission_checker() {
+        assert_eq!(
+            serde_json::to_value(super::oracle_admission_session()).unwrap(),
+            serde_json::json!({
+                "guest_contract": "Ordinary",
+                "ram_bytes": 134217728,
+                "seed": 0x4e4f_5641_5f43_4931u64,
+                "run_budget": 2000000000,
+                "cmdline": super::PROBE_CMDLINE,
+                "identity_tag": "",
+                "wall_limit": null,
+                "defer_virtual_time_checkpoint_hashes": true,
+            }),
+            "workloads/guest-images/verify-prepared-admission.py admits exactly this session"
         );
     }
 
@@ -2405,7 +2424,7 @@ fn run_session() -> Result<(), String> {
     #[cfg(target_arch = "x86_64")]
     const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
         no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-        nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
+        nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
     #[cfg(target_arch = "aarch64")]
     const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
     const HANDLE_REGISTER: u32 = 1;

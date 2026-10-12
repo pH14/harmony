@@ -79,16 +79,14 @@ Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the
 sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized.
+`SparseSnapshot::logical_identity` returns a copy whose x86 sidecar carries the
+VMM's logical XSAVE identity projection. Hash that copy when comparing
+snapshots for identity, and restore from the original.
 
 The embedded complete and sparse portable snapshots use format version 6.
 Older embedded versions are rejected. The outer sparse archive layout remains
 version 2.
 
-On x86, `Session::new_controlled_with_config_and_payloads` requires exact reviewed
-kernel, initramfs, RAM and command-line inputs before boot. It binds the session
-image identity to the profile, launch configuration and ordered setup payloads,
-and rejects an identity-tag override. Ordinary constructors
-still accept other inputs, retaining strict raw identity for unknown profiles.
 For matched profiles, logical identity excludes only validated init x87/SSE raw
 presence metadata; exported artifacts retain those bytes and checksum them.
 The guest execution restrictions and import boundary are documented in the

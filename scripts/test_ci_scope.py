@@ -21,7 +21,7 @@ class ScopeTests(unittest.TestCase):
                       for job in workflow.jobs
                       for kind in (job.scope, job.select, *job.selects)
                       if kind}
-        self.assertEqual(set(SCENARIOS) | {"kani", "miri", "miri_matrix"}, registered)
+        self.assertEqual(set(SCENARIOS) | {"kani", "miri", "miri_matrix", "rust_checks"}, registered)
 
     def test_a_searcher_change_runs_both_nes_compositions_and_nothing_else(self):
         self.assertEqual(self.active("dissonance/searcher/src/search/archive.rs"),

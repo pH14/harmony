@@ -49,9 +49,6 @@ runs:
     - name: Build a missing exact runtime
       if: inputs.rebuild == 'true' || steps.runtime-ready.outputs.scope != 'exact-input'
       shell: bash
-      env:
-        HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-        HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
       run: |
         rm -rf consonance/harmony-linux/build/x86_64
         make -C consonance/harmony-linux fetch

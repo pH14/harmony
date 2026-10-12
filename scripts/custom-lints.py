@@ -1100,7 +1100,11 @@ def check_job_scope(rel_path: str, job_id: str, job: dict, registered) -> list[V
     if registered.selects:
         return check_selector_job(rel_path, job_id, job, registered, steps, selectors)
     if registered.select:
-        return check_selected_job(rel_path, job_id, job, registered, selectors)
+        violations = check_selected_job(rel_path, job_id, job, registered,
+                                        [] if registered.scope else selectors)
+        if not registered.scope:
+            return violations
+        return violations + check_job_scope(rel_path, job_id, job, registered._replace(select=""))
     if not registered.scope:
         if selectors:
             return problem("selects work under a kind the registry does not record")
@@ -1152,6 +1156,8 @@ def check_selector_job(rel_path: str, job_id: str, job: dict, registered, steps,
         expected = "${{ steps.%s.outputs.enabled }}" % kind
         if str(outputs.get(kind, "")).strip() != expected:
             return problem(f"must publish the output '{kind}' as {expected}")
+        if kind == "rust_checks" and (step["with"].get("target") or "") != Path(rel_path).name:
+            return problem(f"must select '{kind}' for the workflow file {Path(rel_path).name}")
     checkout = next((step for step in steps if "actions/checkout" in str(step.get("uses", ""))), None)
     if checkout is None or (checkout.get("with") or {}).get("fetch-depth") != 0:
         return problem("must check out the complete diff the selector reads")

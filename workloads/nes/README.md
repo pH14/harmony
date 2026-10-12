@@ -46,6 +46,11 @@ MP4. `nes-film` renders the evaluation matrices of both compositions. It reads t
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
+A witness's `snapshot_sha256` and the SMB campaign's job-result digest hash
+snapshots after `SnapshotState::logical_identity`. On Intel KVM hosts a whole-VM endpoint's raw
+x87 presence bit changes between runs of the same input with equal guest RAM,
+so the raw bytes cannot serve as a replay identity.
+
 `nes-film --recorded-backend native` requires the replayed witness to equal the
 one the run recorded. `--recorded-backend consonance` compares the recorded
 semantic endpoint instead, because a whole-VM run's snapshot digest differs from
@@ -108,7 +113,7 @@ state keeps: none for QuickNES and 2 KiB for Consonance. SMB stores its work
 RAM there. Nova needs no work RAM after a restore. Observations carry no list of changed RAM
 addresses and no log line, because nothing reads them.
 
-Campaign recordings use the current Dissonance schedule policy version 3 and
+Campaign recordings use the current Dissonance schedule policy version 5 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.
 
@@ -129,7 +134,7 @@ campaign binary; it produces no SMB evidence.
 | Nova/Consonance | The whole-VM campaign runs in `Benchmarks / Harmony Workloads / NES` and the backend oracle in `Checks / Harmony Workloads / NES`. | Linux/KVM, pinned kernel/runtime, NES OCI image, and the pinned Nova ROM/core. |
 | SMB/native | Adapter and loopback tests are checked in; no current real-ROM CI lane is claimed here. | Pinned QuickNES core and a licensed SMB ROM supplied by the caller. |
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, and a caller-supplied licensed SMB ROM. |
-| Mega Man 2/native | All eight independent stage origins pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
+| Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Super Tilt Bro/native | The `STB` job in `Checks / Dissonance Workloads / NES` runs a bounded search on affected pull requests. The `Benchmarks / Dissonance Workloads / NES` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 

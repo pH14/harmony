@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Collect executions to each Metroid milestone per build, seed and cell.
+"""Collect executions to each Metroid or Mega Man 2 milestone per build, seed and cell.
 
 Each source is either a matrix directory written by `eval.py run` or a results
 JSON written by `eval.py` holding cell summaries under `rows`. For every
-Metroid cell the last progress record supplies `named_progress.first_seen`,
+cell the last progress record supplies `named_progress.first_seen`,
 which is cumulative, so the tail of `campaign/progress.jsonl` is read when it
 is present and the summary's own copy is used otherwise.
 """
@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-MILESTONES = [
+METROID_MILESTONES = [
     "brinstar",
     "morph_ball",
     "missile_capacity",
@@ -42,6 +42,28 @@ MILESTONES = [
     "escape_started",
     "ending",
 ]
+
+MM2_ROBOT_MASTERS = ["crash", "flash", "metal", "air", "bubble", "heat", "wood", "quick"]
+MM2_MILESTONES = (
+    [f"{stage}_{event}" for stage in MM2_ROBOT_MASTERS for event in ["entered", "boss", "defeated"]]
+    + [
+        name
+        for castle in range(1, 7)
+        for name in (
+            [f"wily{castle}_entered"]
+            + (
+                [f"wily5_{stage}_refight" for stage in MM2_ROBOT_MASTERS]
+                + ["wily5_machine", "wily5_machine_shell"]
+                if castle == 5
+                else [f"wily{castle}_boss"]
+            )
+            + [f"wily{castle}_defeated"]
+        )
+    ]
+    + ["ending"]
+)
+
+MILESTONES = {"metroid": METROID_MILESTONES, "mm2": MM2_MILESTONES}
 
 
 def last_line(path, window=1 << 20):
@@ -78,21 +100,29 @@ def progress_of(summary, cell_dir):
     }
 
 
+def game_of(summary):
+    request = summary.get("search_request") or {}
+    identity = summary.get("identity") or {}
+    return request.get("game") or identity.get("game")
+
+
 def row_of(summary, cell_dir):
     identity = summary.get("identity") or {}
     request = summary.get("search_request") or {}
+    game = game_of(summary)
     progress = progress_of(summary, cell_dir) or {}
     diagnostics = progress.get("workload_diagnostics") or {}
     named = (diagnostics.get("named_progress") or {}).get("first_seen") or {}
     first = {
         name: (named[name] or {}).get("execution")
-        for name in MILESTONES
+        for name in MILESTONES[game]
         if named.get(name)
     }
     build = (summary.get("build") or {}).get("binary_sha256")
     policies = identity.get("policies") or {}
     return {
         "cell": summary.get("cell"),
+        "game": game,
         "arm": summary.get("arm") or summary.get("case"),
         "case": summary.get("case"),
         "status": summary.get("status"),
@@ -112,10 +142,8 @@ def row_of(summary, cell_dir):
     }
 
 
-def is_metroid(summary):
-    request = summary.get("search_request") or {}
-    identity = summary.get("identity") or {}
-    return (request.get("game") or identity.get("game")) == "metroid"
+def has_milestones(summary):
+    return game_of(summary) in MILESTONES
 
 
 def collect(source):
@@ -123,14 +151,14 @@ def collect(source):
     if source.is_file():
         document = json.loads(source.read_text())
         rows = document.get("rows") or []
-        return source.stem, [row_of(row, None) for row in rows if is_metroid(row)]
+        return source.stem, [row_of(row, None) for row in rows if has_milestones(row)]
     rows = []
     for cell in sorted(source.iterdir()):
         summary = cell / "summary.json"
         if not summary.is_file():
             continue
         document = json.loads(summary.read_text())
-        if is_metroid(document):
+        if has_milestones(document):
             rows.append(row_of(document, cell))
     return source.name, rows
 
@@ -150,7 +178,7 @@ def render(name, rows, columns):
         ]
         for column in columns:
             hit = row["first_execution"].get(column)
-            line.append(f"{hit:,}" if hit else "-")
+            line.append("-" if hit is None else f"{hit:,}")
         widths = [max(width, len(part)) for width, part in zip(widths, line)]
         table.append(line)
     for line in [header] + table:
@@ -166,21 +194,23 @@ def main():
     for source in arguments.sources:
         name, rows = collect(source)
         if not rows:
-            print(f"== {name}: no Metroid cells", file=sys.stderr)
+            print(f"== {name}: no Metroid or Mega Man 2 cells", file=sys.stderr)
             continue
-        reached = sorted(
-            {
-                milestone
-                for row in rows
-                for milestone in row["first_execution"]
-            },
-            key=MILESTONES.index,
-        )
-        render(name, rows, reached)
+        for game in sorted({row["game"] for row in rows}):
+            game_rows = [row for row in rows if row["game"] == game]
+            reached = sorted(
+                {
+                    milestone
+                    for row in game_rows
+                    for milestone in row["first_execution"]
+                },
+                key=MILESTONES[game].index,
+            )
+            render(f"{name} {game}", game_rows, reached)
         if arguments.out:
             arguments.out.mkdir(parents=True, exist_ok=True)
             document = {
-                "format": "harmony-metroid-milestones-v1",
+                "format": "harmony-milestones-v2",
                 "matrix": name,
                 "milestones": MILESTONES,
                 "cells": rows,

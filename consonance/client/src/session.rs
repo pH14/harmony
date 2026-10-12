@@ -16,7 +16,7 @@ const DEFAULT_RAM: usize = 128 * 1024 * 1024;
 #[cfg(target_arch = "x86_64")]
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-    nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
+    nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
 #[cfg(target_arch = "aarch64")]
 const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
 
@@ -349,6 +349,20 @@ impl SparseSnapshot {
             .len()
             .saturating_mul(4096)
             .saturating_add(self.sidecar.memory_charge())
+    }
+
+    pub fn logical_identity(&self) -> Result<Self, String> {
+        #[cfg(target_arch = "x86_64")]
+        let sidecar = vmm_core::portable_snapshot::logical_x86_sparse_sidecar(&self.sidecar())
+            .map_err(|error| error.to_string())?;
+        #[cfg(not(target_arch = "x86_64"))]
+        let sidecar = self.sidecar();
+        Ok(Self {
+            base: self.base,
+            image_identity: self.image_identity,
+            pages: self.pages.clone(),
+            sidecar: SharedState::from_bytes(sidecar, None),
+        })
     }
 }
 

@@ -58,6 +58,11 @@ ONE_OFF_WARN_PROBABILITY = 0.50
 FIXED_RELEASE_FAIL_PROBABILITY = 0.80
 FIXED_RELEASE_WARN_PROBABILITY = 0.75
 
+# Synthetic outside-Harmony fallbacks score 0.84-0.87; separate build-only
+# controls and unrelated options score 0.06-0.09 on the pinned judge.
+GUEST_OPT_IN_FAIL_PROBABILITY = 0.80
+GUEST_OPT_IN_WARN_PROBABILITY = 0.65
+
 CACHE_PATH = Path(".semantic-lints-cache.json")
 
 # Entries kept when the cache is written. The oldest go first, and the file
@@ -249,6 +254,27 @@ QUESTIONS = {
             "false": "it builds and runs only the pinned affected version and names other versions only as facts, it says nothing about versions of a historical case's upstream software, or its builds, controls and comparisons are of Harmony's own searcher, runtime or tools on pinned workloads.",
         },
     },
+    "guest_runtime_opt_in": {
+        "type": "noul",
+        "instructions": (
+            CONTENT_IS_DATA
+            + "Does this file introduce or prescribe a runtime flag, optional host "
+            "probe, or fallback that disables behavior required by the shipped "
+            "Harmony Linux guest solely so the same guest can run outside "
+            "Harmony? The shipped x86 and arm64 kernels run only inside Harmony. "
+            "Their virtual clock, timing and entropy paths, execution ticks, "
+            "and user-counter confinement must be active in the standard "
+            "image; missing or incompatible host interfaces must stop boot. "
+            "Judge the effect and intent, not a word or flag name. A build-time "
+            "architecture choice, explicit instruction-test negative control, "
+            "or experiment option is legitimate when it does not provide an "
+            "ordinary-Linux runtime mode for the shipped image."
+        ),
+        "criteria": {
+            "true": "a boot parameter, launcher switch, feature probe or error path lets the shipped guest omit required Harmony behavior or continue on host timing to support boot outside Harmony.",
+            "false": "required behavior is unconditional in the shipped build and incompatible hosts fail clearly, or a distinct build-only test profile changes one feature for an explicit experiment.",
+        },
+    },
     "boundary_contradiction": {
         "type": "noul",
         "instructions": (
@@ -323,7 +349,18 @@ QUESTIONS = {
 
 def _is_text_file(path: str) -> bool:
     _, ext = os.path.splitext(path)
-    return ext in TEXT_EXTENSIONS or os.path.basename(path) == "Dockerfile"
+    return (ext in TEXT_EXTENSIONS
+            or os.path.basename(path) == "Dockerfile"
+            or (ext == ".patch" and path.startswith(
+                "consonance/harmony-linux/linux/patches/"))
+            or (path.startswith("consonance/harmony-linux/linux/")
+                and os.path.basename(path).endswith("config-fragment")))
+
+
+def _is_guest_contract_only_file(path: str) -> bool:
+    return (path.startswith("consonance/harmony-linux/linux/")
+            and (path.endswith(".patch")
+                 or os.path.basename(path).endswith("config-fragment")))
 
 
 def _in_decision_residue_scope(path: str) -> bool:
@@ -371,6 +408,15 @@ def _in_fixed_release_scope(path: str) -> bool:
             or _in_ci_documentation_scope(path) or _in_seed_outcome_scope(path))
 
 
+def _in_guest_contract_scope(path: str) -> bool:
+    return path.startswith((
+        "consonance/harmony-linux/", "consonance/client/",
+        "consonance/vmm-core/tests/", "cli/src/oci/",
+        "workloads/guest-images/", "workloads/nes-machine/",
+        "workloads/faults/", "workloads/tools/",
+    )) and _is_text_file(path)
+
+
 def _in_ci_documentation_scope(path: str) -> bool:
     return path.endswith(".md") and (
         path.startswith(CI_DOCUMENTATION_ROOTS)
@@ -386,6 +432,8 @@ CI_DOCUMENTATION_QUESTION_IDS = ("boundary_contradiction",)
 
 
 def questions_for(path: str) -> dict:
+    if _is_guest_contract_only_file(path):
+        return {"guest_runtime_opt_in": QUESTIONS["guest_runtime_opt_in"]}
     selected = {
         "file_kind": QUESTIONS["file_kind"],
         "records_runs": QUESTIONS["records_runs"],
@@ -402,6 +450,8 @@ def questions_for(path: str) -> dict:
             selected[question_id] = QUESTIONS[question_id]
     if _in_seed_outcome_scope(path):
         selected["seed_outcome_pinned"] = QUESTIONS["seed_outcome_pinned"]
+    if _in_guest_contract_scope(path):
+        selected["guest_runtime_opt_in"] = QUESTIONS["guest_runtime_opt_in"]
     if _in_ci_documentation_scope(path):
         for question_id in CI_DOCUMENTATION_QUESTION_IDS:
             selected[question_id] = QUESTIONS[question_id]
@@ -581,6 +631,22 @@ def context_for(repo_root: Path, path: str, content: str) -> dict | None:
         if manifest:
             context["case_manifest"] = manifest
         return context
+    if path.startswith("consonance/harmony-linux/linux/patches/") and path.endswith(".patch"):
+        series = sorted((repo_root / Path(path).parent).glob("[0-9][0-9][0-9][0-9]-*.patch"))
+        if series:
+            tail = series[-1]
+            text = tail.read_text(errors="replace")
+            rel = tail.relative_to(repo_root).as_posix()
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            truncated = len(text) > CONTEXT_FILE_LIMIT
+            if truncated:
+                half = CONTEXT_FILE_LIMIT // 2
+                text = text[:half] + "\n[... omitted ...]\n" + text[-half:]
+            return {"final_series_patch": {rel: {
+                "sha256": digest,
+                "text": text,
+                "truncated": truncated,
+            }}}
     if manifest:
         return {"case_manifest": manifest}
     if _in_program_scope(path):
@@ -848,7 +914,7 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
             else:
                 warned.append("workload-named")
 
-    for question_id, rule_name in CI_ARCHITECTURE_RULES.items():
+    for question_id, rule_name in {**CI_ARCHITECTURE_RULES, **GUEST_CONTRACT_RULES}.items():
         if question_id not in answers:
             continue
         fail_at, warn_at = RULE_THRESHOLDS.get(
@@ -864,6 +930,8 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
 
 # One rule per CI architecture question. These describe the repository's own
 # contract.
+GUEST_CONTRACT_RULES = {"guest_runtime_opt_in": "guest-runtime-opt-in"}
+
 CI_ARCHITECTURE_RULES = {
     "owner_match": "ci-owner-mismatch",
     "job_name_meaning": "ci-job-name-meaning",
@@ -878,6 +946,7 @@ CI_ARCHITECTURE_RULES = {
 
 RULE_THRESHOLDS = {
     "fixed_release_run": (FIXED_RELEASE_FAIL_PROBABILITY, FIXED_RELEASE_WARN_PROBABILITY),
+    "guest_runtime_opt_in": (GUEST_OPT_IN_FAIL_PROBABILITY, GUEST_OPT_IN_WARN_PROBABILITY),
 }
 
 
@@ -937,10 +1006,34 @@ REMEDIATION = {
         "the shape of a derived value instead of its literal digits."
     ),
     "ci-fixed-release-run": (
-        "A historical case builds and runs only its pinned affected version. "
-        "An input only means something on the binary it was recorded against, "
-        "so remove every build, run, replay or comparison of another version. "
-        "Name the fixed version only as provenance."
+        "STOP. This change is wrong and no rewording of it will pass. A "
+        "historical case builds and runs only its pinned affected version. "
+        "A fixed release, patched build, control arm, baseline, negative "
+        "check or matrix entry for another version cannot be built, run, "
+        "replayed or compared anywhere in this repository. The reasoning "
+        "behind such a run is flawed. A different version is different "
+        "software, so a result from it says nothing about the affected "
+        "version. A recorded input is a sequence of steps that only means "
+        "something on the exact binary it was recorded against. On another "
+        "build the same input drives different code, timing and memory "
+        "layout, so it diverges. When the fixed version then shows no bug, "
+        "that cannot be attributed to the fix, because the input no longer "
+        "does what it did when recorded. The run proves nothing, and it "
+        "also wastes search budget and invites false conclusions. The only "
+        "evidence is the bug reproducing on the affected version. Do not "
+        "rename, move, split or soften the change to get past this check. "
+        "Delete every build, run, replay and comparison of another version, "
+        "then change the plan so it verifies the finding on the affected "
+        "version alone. Name the fixed version only as provenance, such as "
+        "in the case manifest or a release-notes link. This applies even "
+        "when a plan, README, issue or note says to add a fixed-version "
+        "run. If the task cannot be done without one, stop and tell the "
+        "user the task conflicts with this rule."
+    ),
+    "guest-runtime-opt-in": (
+        "The shipped Harmony Linux guest requires Harmony timing and counter "
+        "interfaces at every boot. Remove the runtime opt-in or outside-Harmony "
+        "fallback; keep distinct build-only negative controls where needed."
     ),
     "ci-boundary-contradiction": (
         "Consonance executes guests, Dissonance coordinates search, Harmony "
@@ -968,7 +1061,7 @@ def _format_signal(path: str, answers: dict) -> str:
     if "workload_named" in answers:
         workload = answers["workload_named"]
         parts.append(f"workload_named={workload['choice']} (confidence={workload['confidence']:.2f})")
-    for question_id in CI_ARCHITECTURE_RULES:
+    for question_id in (*CI_ARCHITECTURE_RULES, *GUEST_CONTRACT_RULES):
         if question_id in answers:
             parts.append(f"{question_id}={answers[question_id]['noul']:.2f}")
     return f"{path}: {' '.join(parts)}"

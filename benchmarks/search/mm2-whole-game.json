@@ -1,0 +1,35 @@
+{
+  "format": "harmony-search-eval-v1",
+  "id": "mm2-whole-game-v1",
+  "seeds": [
+    301,
+    302,
+    303
+  ],
+  "workers": [
+    24
+  ],
+  "memory_mib": [
+    20480
+  ],
+  "search": {
+    "executions": 250000000,
+    "window": 4,
+    "wall_seconds": 259200,
+    "mixture": "energy_splice:6",
+    "verification": "witness",
+    "frames": 60000000000,
+    "checkpoint_every": 10000000,
+    "checkpoint_on_progress": true
+  },
+  "cases": [
+    {
+      "id": "mm2-whole-game",
+      "game": "mm2",
+      "whole_game": true,
+      "origin": "power-on menus selecting Crash stage; Robot Masters in the fixed order Crash, Flash, Metal, Air, Bubble, Heat, Wood, Quick, then Wily 1-6",
+      "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+      "search": {}
+    }
+  ]
+}

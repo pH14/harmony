@@ -81,9 +81,6 @@ jobs:
           key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
       - name: Build exact platform artifacts
         if: steps.runtime.outputs.cache-hit != 'true'
-        env:
-          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget python3
@@ -180,7 +177,7 @@ jobs:
           done
           mkdir -p oci-images
           tag="harmony-${IMAGE_PREFIX}:${version}"
-          docker build --pull "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
+          docker build "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
           docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
           (cd oci-images && sha256sum -- *.oci >MANIFEST.sha256)
       - uses: actions/upload-artifact@v4

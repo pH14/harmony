@@ -106,8 +106,6 @@
                 export NIX_LDFLAGS="-L${pkgs.elfutils.out}/lib -L${pkgs.openssl.out}/lib -L${pkgs.glibc.static}/lib''${NIX_LDFLAGS:+ $NIX_LDFLAGS}"
                 export LIBRARY_PATH="${pkgs.glibc.static}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
                 export PKG_CONFIG_PATH="${pkgs.elfutils.dev}/lib/pkgconfig:${pkgs.openssl.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-                export HARMONY_RDTSC_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt"
-                export HARMONY_RDRAND_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt"
               ''}
               exec ${./consonance/harmony-linux/nix/build-guest-images.sh} "$@"
             '';
@@ -140,8 +138,6 @@
                 export NIX_LDFLAGS="-L${pkgs.elfutils.out}/lib -L${pkgs.openssl.out}/lib -L${pkgs.glibc.static}/lib''${NIX_LDFLAGS:+ $NIX_LDFLAGS}"
                 export LIBRARY_PATH="${pkgs.glibc.static}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
                 export PKG_CONFIG_PATH="${pkgs.elfutils.dev}/lib/pkgconfig:${pkgs.openssl.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-                export HARMONY_RDTSC_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt"
-                export HARMONY_RDRAND_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt"
               ''}
               exec ${./workloads/guest-images/nix/build-guest-images.sh} "$@"
             '';

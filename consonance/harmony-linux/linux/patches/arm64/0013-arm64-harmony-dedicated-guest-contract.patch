@@ -1,0 +1,21 @@
+arm64: state required Harmony clock contract
+
+The shipped arm64 kernel runs only inside Harmony and its image build requires
+the paravirtual clock. Remove Kconfig help that suggests ordinary Linux boot is
+a supported mode. The registration path already stops on a missing or
+incompatible host interface.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+--- a/drivers/clocksource/Kconfig
++++ b/drivers/clocksource/Kconfig
+@@ -337,7 +337,7 @@
+ 	  access and the vDSO fast path are disabled; no live-counter fallback
+ 	  exists because reachable Neoverse N1 hardware cannot trap CNTVCT.
+ 
+-	  This is a dedicated Harmony guest option. Say N for ordinary kernels.
++	  The shipped Harmony guest requires this interface at boot.
+ 
+ config HARMONY_ARM_USER_COUNTER_TRAPS
+ 	bool "Harmony deny EL0 generic-counter reads"

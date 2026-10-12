@@ -2,10 +2,10 @@ name: Select work inside a CI job
 description: Use the complete local diff and report unselected checks as not applicable.
 inputs:
   kind:
-    description: A registered change-selection kind from scripts/ci_scope.py, or kani, miri or miri_matrix
+    description: A registered change-selection kind from scripts/ci_scope.py, or kani, miri, miri_matrix or rust_checks
     required: true
   target:
-    description: Registered Miri target, or for miri_matrix the component that owns the targets
+    description: Registered Miri target; for miri_matrix the component that owns the targets; for rust_checks the file name of the workflow whose Rust jobs are selected
     default: ''
 outputs:
   enabled:

@@ -34,7 +34,7 @@ fn server() -> Result<Server> {
     let image = image::stage(&std::env::var("NESTED_DRIVER_IMAGE")?, stage.path())?;
     let initramfs = bundle::prepare(&image, &LaunchRequest::default().with_kvm())?.initramfs(&base);
     let boot = move || {
-        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
+        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
         let mut vmm =
             boot_linux_nested_host_virtual_time(&kernel, &initramfs, 256 << 20, cmdline, 42)?;
         vmm.wire_snapshot_hashing();

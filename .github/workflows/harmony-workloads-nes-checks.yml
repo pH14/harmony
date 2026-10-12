@@ -264,9 +264,7 @@ jobs:
           set -euo pipefail
           rm -rf consonance/harmony-linux/build/x86_64
           make -C consonance/harmony-linux fetch
-          HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \
-          HARMONY_RDRAND_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt" \
-            consonance/harmony-linux/scripts/build-platform-runtime.sh
+          consonance/harmony-linux/scripts/build-platform-runtime.sh
       - name: Verify the guest runtime matches this source
         run: |
           set -euo pipefail

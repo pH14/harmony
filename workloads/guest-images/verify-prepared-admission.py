@@ -20,7 +20,7 @@ COMPONENTS = ["platform.cpio.gz", "rootfs.cpio.gz", "control.cpio.gz"]
 
 ORACLE_SCOPE = "nova-ae-linux-x86_64-kvm-oracle-v1"
 ORACLE_SEED = 0x4e4f56415f434931
-ORACLE_CMDLINE = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init"
+ORACLE_CMDLINE = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init"
 
 
 def inspect_engine(manifest, session):
@@ -31,7 +31,8 @@ def inspect_engine(manifest, session):
         return
     if scope != ORACLE_SCOPE or manifest.get("mode") != "nes":
         raise a.Rejected("unsupported engine/default session scope")
-    expected_session = {"ram_bytes": 134217728, "seed": ORACLE_SEED,
+    expected_session = {"guest_contract": "Ordinary",
+                        "ram_bytes": 134217728, "seed": ORACLE_SEED,
                         "run_budget": 2000000000, "cmdline": ORACLE_CMDLINE,
                         "identity_tag": "", "wall_limit": None,
                         "defer_virtual_time_checkpoint_hashes": True}

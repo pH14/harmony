@@ -194,6 +194,8 @@ pub struct StbSnapshot {
     pub(crate) player_b_ko_count: u8,
 }
 
+impl crate::witness::EndpointIdentity for StbSnapshot {}
+
 impl StbSnapshot {
     #[must_use]
     pub fn state(&self) -> StbMechanicalState {

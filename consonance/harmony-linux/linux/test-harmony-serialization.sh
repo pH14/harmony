@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build and boot the /dev/harmony KUnit concurrency test, then repeat with the
 # serialization helper deliberately mutated to the pre-fix no-lock behavior.
+# These are isolated driver KUnit kernels with the guest clock excluded at
+# build time so the driver tests can run on QEMU; they are never shipped.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -38,8 +40,12 @@ configure_kunit() {
     cp "$KOBJ/.config" "$object_dir/.config"
     "$KSRC/scripts/config" --file "$object_dir/.config" \
         -e KUNIT -e KUNIT_TEST -e KUNIT_DEFAULT_ENABLED \
-        -e HARMONY_DEVICE_KUNIT_TEST
+        -e HARMONY_DEVICE_KUNIT_TEST -d HARMONY_PVCLOCK
     make -C "$KSRC" O="$object_dir" ARCH=x86_64 olddefconfig
+    if grep -qxF 'CONFIG_HARMONY_PVCLOCK=y' "$object_dir/.config"; then
+        echo "FAIL: QEMU KUnit image must exclude the Harmony clock at build time" >&2
+        exit 1
+    fi
     if ! grep -qxF 'CONFIG_HARMONY_DEVICE_KUNIT_TEST=y' "$object_dir/.config"; then
         echo "FAIL: Harmony KUnit test did not survive olddefconfig" >&2
         exit 1

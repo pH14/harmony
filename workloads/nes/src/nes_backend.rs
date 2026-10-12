@@ -11,6 +11,10 @@ pub trait SnapshotState:
     type WorkRam: WorkRamCopy;
 
     fn memory_charge(&self) -> usize;
+
+    fn logical_identity(&self) -> Result<Self, MachineError> {
+        Ok(self.clone())
+    }
 }
 
 pub trait WorkRamCopy:
@@ -188,6 +192,10 @@ impl SnapshotState for machine::consonance::ConsonancePortable {
 
     fn memory_charge(&self) -> usize {
         self.memory_charge()
+    }
+
+    fn logical_identity(&self) -> Result<Self, MachineError> {
+        self.logical_identity().map_err(MachineError::Backend)
     }
 }
 

@@ -22,6 +22,15 @@ the supported execution contract. This keeps privileged payloads inside the
 delegated cgroup view rather than exposing its device-policy ancestor through
 filesystem or namespace handles.
 
+The shipped x86 and arm64 guest kernels run only inside Harmony. Their clocks,
+execution timing, entropy timing, and counter confinement require Harmony host
+interfaces at every boot; running either image as ordinary Linux on another
+hypervisor or bare metal is unsupported. Missing or incompatible required
+clock interfaces stop boot. Build-time traps-off images are explicit
+instruction-test controls, and the driver KUnit images exclude the clock at
+build time to isolate driver serialization on QEMU; neither is a deployable
+runtime profile.
+
 The common kernel policy disables `RWSEM_SPIN_ON_OWNER` when either Harmony
 virtual clock is compiled in. Its reader-owner optimistic-spin timeout uses
 `sched_clock()`, which remains frozen during exit-free spinning. Contended
@@ -128,15 +137,12 @@ Built-in initialization preserves the no-modules boundary. It is mutually
 exclusive with the traps-off and task-park profiles and requires a matching
 nested-host VMM contract. The instruction baseline must qualify the newly
 compiled KVM paths before publication; a failed audit is a qualification
-failure, not permission to extend the allowlist without reviewing those paths.
+failure.
 The guest KVM reads its host TSC through `RDMSR(IA32_TSC)`, which the outer
 Consonance MSR filter completes from virtual time. Its ordered counter accessor
 keeps explicit memory fences. The optional VMX hardware preemption timer is
 disabled by default, and the fixture verifies that it remains disabled;
-hardware countdowns cannot use Harmony virtual counter deadlines. Nested-host
-counter baselines are separate from the ordinary kernel's baselines, with
-toolchain-specific selections through `HARMONY_RDTSC_ALLOWLIST` and
-`HARMONY_RDRAND_ALLOWLIST`.
+hardware countdowns cannot use Harmony virtual counter deadlines.
 `HARMONY_BUILD_JOBS` bounds compiler parallelism for small shared-host proofs.
 For a Harmony AMD SVM host, the kernel consumes the contract's frozen CPUID
 TSC/crystal ratio and processor frequency before PIT or APIC calibration.
@@ -202,6 +208,12 @@ make -C consonance/harmony-linux/linux exec-image
 make -C consonance/harmony-linux/linux go-runtime-image
 ```
 
+`make test` on Ubuntu 24.04 checks reproducible x86 artifacts and verifies that
+boot on QEMU without Harmony's clock interface stops before `/init`. Guest
+runtime qualification runs the same negative boot check on its exact x86
+runtime artifact. The `vmm-core` guest boot tests cover successful
+registration inside Harmony.
+
 The x86 kernel's default, traps-off, and task-park outputs are separate test
 artifacts with their own instruction audit baselines. The arm64 traps-off
 output is likewise a deliberate negative control. These controls do not alter
@@ -210,7 +222,7 @@ the standard OCI runtime configuration.
 Workload image recipes and their pins live under `workloads/guest-images` and
 own their fetch entrypoint. Other workload packages own their inputs in the
 same way. The platform fetch entrypoint downloads only the kernel, BusyBox,
-arm64 musl source, the runc source, and the Go arm64 bootstrap archive.
+musl source, the runc source, and the amd64 and arm64 Go bootstrap archives.
 
 The reproducibility manifest records the patch series, configuration inputs,
 and generated artifact hashes. Build transcripts are evidence, not inputs.

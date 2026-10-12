@@ -16,7 +16,7 @@ const GUEST_RAM_LEN: usize = 256 << 20;
 const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
      no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-     nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1";
+     nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1";
 const REACHED_USERSPACE: &[u8] = b"Run /init as init process";
 const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: exit-count clock page registered";
 const GUEST_READY: &[u8] = b"GUEST_READY";

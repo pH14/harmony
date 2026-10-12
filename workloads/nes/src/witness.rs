@@ -2,6 +2,7 @@
 
 use std::error::Error;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -11,11 +12,27 @@ use crate::search::{
     rollout::ExecutionDisposition,
 };
 
+pub trait EndpointIdentity: Serialize {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        postcard_sha256(self)
+    }
+}
+
+pub fn postcard_sha256(value: &(impl Serialize + ?Sized)) -> Result<String, Box<dyn Error>> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(postcard::to_allocvec(value)?)
+    ))
+}
+
 pub fn replay_witness<G: Workload>(
     game: &G,
     run: &G::Run,
     input: &Input<G::Action>,
-) -> Result<Value, Box<dyn Error>> {
+) -> Result<Value, Box<dyn Error>>
+where
+    G::Snapshot: EndpointIdentity,
+{
     let mut target = game.new_target()?;
     let mut aggregate = G::Milestones::default();
     let mut evidence = G::Evidence::default();
@@ -52,6 +69,6 @@ pub fn replay_witness<G: Workload>(
     Ok(
         json!({"victory": objective_reached, "disposition": disposition, "milestones": aggregate,
             "diagnostics": G::diagnostics(&evidence),
-            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one", "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&endpoint)?))}),
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one", "snapshot_sha256": endpoint.endpoint_sha256()?}),
     )
 }

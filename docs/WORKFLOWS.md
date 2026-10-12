@@ -10,7 +10,7 @@ means. A new workflow is registered once, in the registry.
 
 A workflow name reads `Category / Owner` or `Category / Owner / Workload`.
 
-- **Category**: `Checks`, `Benchmarks` or `Release`.
+- **Category**: `Checks`, `Benchmarks`, `Release` or `Maintenance`.
 - **Owner**: a component (`Repository`, `Consonance`, `Dissonance`, `Harmony`)
   or a composition (`Harmony Host Compatibility`, `Dissonance Workloads`,
   `Harmony Workloads`).
@@ -53,6 +53,7 @@ what owns it, and the linter rejects them.
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
+| `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
@@ -197,6 +198,22 @@ output is true, joined to any other condition by `&&`, so an unselected job is
 skipped and never starts a runner. The `miri_matrix` kind publishes the Miri
 targets a change reaches for one component as the matrix of the Miri job;
 `scripts/miri_scope.py` is its only list.
+
+The `rust_checks` kind selects a workflow's Rust build and test jobs. Its
+target is the file name of the workflow. A change selects the jobs unless every
+changed path is one of these:
+
+- Documentation: Markdown, `docs/`, `LICENSE`, `.agents/`, `.claude/`,
+  `.githooks/` and `benchmarks/`.
+- A tool only the Repository workflow runs, listed in
+  `scripts/rust_scope.py`. `scripts/test_rust_scope.py` fails when another
+  workflow or action starts naming one.
+- The file of another workflow.
+
+A path that selects any scenario in `scripts/ci_scope.py` always selects, and so
+does any path the selector does not recognize. A scheduled or manual run
+selects the whole tracked tree, and so does a run whose diff cannot be read, as
+after a force push to main.
 
 A job that always runs part of its work and selects only the rest, such as the
 hardware steps of `CPU State`, runs the selector itself once, unconditionally,
@@ -411,6 +428,18 @@ The language workflow also builds a pinned UML profile for `UML Command Replay`.
 That bounded check runs a plain OCI command and fresh replays as an ordinary
 user, compares application and bridge evidence, and rejects a planted divergence.
 
+## Repository maintenance
+
+`Maintenance / Repository` runs `scripts/prune-branches.py` every day. It
+deletes a remote branch when no open pull request uses it and either a merged
+pull request's head is exactly the branch tip or the tip is reachable from
+`main`. It keeps every other branch and lists it in the job summary with the
+reason: closed without merging, commits after the merged head, no pull
+request, or GitHub could not list the branch's pull requests. The script lists
+branches first and then asks for their pull requests in batches, splitting a
+batch GitHub cannot execute until the failing branch is isolated. A manual dispatch lists the deletions and performs them only with the
+`apply` input.
+
 ## Naming
 
 - Title Case, with the canonical spellings in `ci_contract.CANONICAL_TERMS`
@@ -481,6 +510,10 @@ action is followed into its own file, so a script the workflow reaches only
 through an action counts too. The prompt carries a bounded excerpt of each of
 those files and the digest of the whole file, so a change anywhere in one
 reselects the workflow and invalidates its cached judgment.
+Guest kernel patches, launchers, and nearby build inputs are also judged
+for runtime switches that contradict the dedicated Harmony guest contract.
+The judge sees the final numbered patch in each kernel series when checking
+an earlier patch.
 The standalone-program rule applies to Cargo binary entrypoints at
 `src/bin/NAME.rs` or `src/bin/NAME/main.rs`. Rust helper modules remain subject
 to the other content rules and are assessed as part of their binary's code.
@@ -505,6 +538,7 @@ Offsets are zero-based characters and the end is exclusive.
 | `ci-fixed-release-run` | Does a historical case, its documentation or CI build, run or compare a version other than the affected one? |
 | `ci-boundary-contradiction` | Does documentation contradict the component and composition boundaries? |
 | `ci-pinned-seed-outcome` | Does a check require a particular search outcome from one fixed seed? |
+| `guest-runtime-opt-in` | Does a guest kernel patch, launcher, or adjacent build path make required Harmony guest behavior optional to run the shipped image outside Harmony? Build-only test controls remain valid. |
 
 The `Semantic Lints` job in `Checks / Repository` judges a pull request against
 the tip of its base branch. It judges a push to main against the commit before

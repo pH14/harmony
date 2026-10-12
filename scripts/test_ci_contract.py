@@ -237,7 +237,7 @@ class RoutingTests(unittest.TestCase):
                 if "pull_request" in workflow.triggers:
                     self.assertIn("push", workflow.triggers)
 
-    def test_scope_kinds_name_the_workflow_that_uses_them(self):
+    def test_scope_kinds_name_the_workflows_that_use_them(self):
         used = {}
         for workflow in ci_contract.WORKFLOWS:
             for job in workflow.jobs:
@@ -247,7 +247,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(set(used), set(ci_contract.SCOPE_KINDS))
         for kind, workflows in used.items():
             with self.subTest(kind=kind):
-                self.assertIn(ci_contract.SCOPE_KINDS[kind], workflows)
+                self.assertEqual(set(ci_contract.SCOPE_KINDS[kind]), workflows)
         self.assertTrue(set(SCENARIOS) <= set(ci_contract.SCOPE_KINDS))
 
 
@@ -352,22 +352,23 @@ class HostCompatibilityTests(unittest.TestCase):
 
         self.workflow = ci_contract.by_name("Checks / Harmony Host Compatibility")
         self.data = yaml.safe_load((ROOT / self.workflow.path).read_text())
+        self.hosts = {key: job for key, job in self.data["jobs"].items() if key != "scope"}
 
     def test_both_hosts_are_checked_on_every_pull_request(self):
-        self.assertEqual([job.name for job in self.workflow.jobs], ["macOS Arm64", "Linux Arm64"])
+        self.assertEqual([job.name for job in self.workflow.jobs if not job.selects], ["macOS Arm64", "Linux Arm64"])
         for job in self.workflow.jobs:
             with self.subTest(job=job.name):
                 self.assertEqual(job.trigger, "pr")
 
     def test_each_job_names_an_explicit_runner(self):
-        runners = {job["name"]: job["runs-on"] for job in self.data["jobs"].values()}
+        runners = {job["name"]: job["runs-on"] for job in self.hosts.values()}
         self.assertEqual(runners, {"macOS Arm64": "macos-14", "Linux Arm64": "ubuntu-24.04-arm"})
         for name, runner in runners.items():
             with self.subTest(job=name):
                 self.assertNotIn("latest", runner)
 
     def test_a_host_job_runs_more_than_a_compile(self):
-        for job in self.data["jobs"].values():
+        for job in self.hosts.values():
             commands = "\n".join(str(step.get("run", "")) for step in job["steps"])
             with self.subTest(job=job["name"]):
                 self.assertIn("cargo nextest run --workspace", commands)
@@ -377,7 +378,7 @@ class HostCompatibilityTests(unittest.TestCase):
     def test_a_host_job_claims_no_live_hypervisor(self):
         text = (ROOT / self.workflow.path).read_text()
         self.assertIn("not evidence that HVF or Arm KVM executes a guest", text)
-        for job in self.data["jobs"].values():
+        for job in self.hosts.values():
             commands = "\n".join(
                 line for step in job["steps"]
                 for line in str(step.get("run", "")).splitlines()

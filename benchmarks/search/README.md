@@ -147,6 +147,7 @@ runs use witness verification, because their stream starts at the checkpoint.
 | `metroid-ladder.json` | One case per Metroid chain segment, each starting from that segment's recorded `root_input`, on seeds 11–13 at 4 workers, 6 GiB and 3 million executions. Score it with `eval.py ladder`. |
 | `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
+| `mm2-whole-game.json` | MM2 from power-on to the ending on seeds 301–303: 24 workers, 20 GiB, energy splice, checkpoints at every new milestone and every 10 million executions. |
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 | `smb-regression-three.json` | The same case at 256 MiB on the first three seeds, the check run on every build that changes only the Metroid side. Every cell must solve. |
@@ -172,8 +173,9 @@ in 89–251 seconds, including witness verification. One validation seed needed
 598,013 executions, close to the 600,000 ceiling. These are distinct resource
 conditions.
 
-All manifests specify exact ROM hashes and normal menu origins. MM2 is currently
-an independent-stage panel; it does not claim full-game evaluation. Metroid
+All manifests specify exact ROM hashes and normal menu origins. The MM2 stage
+cases are independent stage clears. `mm2-whole-game.json` runs MM2 from power-on
+to the ending with the Robot Master order fixed. Metroid
 progress is reported even when its ending is not reached. Nova whole-game runs
 require all 40 cleared-level flags from level 1; a single cleared level cannot
 satisfy that predicate. Isolated later-level Nova setup is a declared fixture.
@@ -208,8 +210,8 @@ ladder. Reaching the ending passes every milestone before it. Two more tables
 give each root's continuation graph counters and its emulator work per
 execution. `--out` writes one JSON document per source, and `ladder` accepts
 those documents as sources in place of a matrix directory.
-`milestones.py` prints the execution at which each Metroid cell first reached
-each named milestone.
+`milestones.py` prints the execution at which each Metroid or MM2 cell first
+reached each named milestone.
 
 ## Evidence and resource accounting
 
