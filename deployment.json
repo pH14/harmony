@@ -1,10 +1,4 @@
 {
-  "nova": {
-    "commit": "9d0c96a",
-    "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests and every npm run test:browser check in Chrome. No branch toast; Next on Your turn skips Hand it back until the visitor has played; the map paints every frame while the search runs; the tour writes styles only on change; game frames round to the display rate.",
-    "asset_manifest_sha256": "4b8c4cec97a49b3e8d54fe91e6e6c622ec350f7f567094486f3d73084f53b649"
-  },
   "raft": {
     "commit": "28791e77a",
     "runtime": {
