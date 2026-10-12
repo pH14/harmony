@@ -20,6 +20,7 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
+    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
 };
 use std::{fs, io::BufReader, path::Path};
 
@@ -92,6 +93,16 @@ fn main() -> Result<()> {
             }
             "stb" if request.level.is_some() || request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
+            }
+            "twin-dragons"
+                if request.level.is_some()
+                    || request.stage.is_some()
+                    || request.ai.is_some()
+                    || request.whole_game =>
+            {
+                return Err(
+                    "Twin Dragons evaluation takes no level, stage, ai or whole_game option".into(),
+                );
             }
             _ => {}
         }
@@ -181,6 +192,13 @@ fn main() -> Result<()> {
                     started,
                 )
             }
+            "twin-dragons" => evaluate(
+                TwinDragonsGame::new(&rom, p, h),
+                TwinDragonsCampaignRun,
+                &request,
+                &out,
+                started,
+            ),
             _ => Err("unsupported game".into()),
         }
     })

@@ -18,6 +18,7 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
+    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
     witness::replay_witness,
 };
 use serde_json::{Value, json};
@@ -282,7 +283,18 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => Err("nes-film renders the Nova and STB benchmark scenarios".into()),
+        "twin-dragons" => {
+            if args.level.is_some() || args.ai.is_some() || args.whole_game {
+                return Err("Twin Dragons takes no level, ai or whole_game option".into());
+            }
+            produce(
+                TwinDragonsGame::new(&rom, &args.core, &args.core_sha256),
+                TwinDragonsCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        _ => Err("nes-film renders the Nova, STB and Twin Dragons benchmark scenarios".into()),
     }
 }
 

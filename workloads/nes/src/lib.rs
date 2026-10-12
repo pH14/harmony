@@ -16,6 +16,8 @@ pub mod package;
 
 pub mod stb;
 
+pub mod twin_dragons;
+
 pub mod mm2;
 
 pub mod metroid;
