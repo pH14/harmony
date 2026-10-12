@@ -4,7 +4,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let session = consonance_client::session::SessionConfig::default();
     let session_json = serde_json::to_vec(&session).expect("serialize default session");
-    if let Err(error) = nes_workload::admission::dump(&args, &session_json, None) {
+    if let Err(error) = nes_workload::admission::dump(&args, &session_json) {
         eprintln!("prepare-admission: {error}");
         std::process::exit(1);
     }

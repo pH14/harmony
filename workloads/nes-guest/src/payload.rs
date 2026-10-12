@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{core_seam::Core, nova::NovaChannel};
-use nes_protocol::{MAX_HOLD_FRAMES, NovaBillboardLayout};
+use crate::core_seam::Core;
+use nes_protocol::{BillboardLayoutV2, MAX_HOLD_FRAMES};
 
 pub const REG_HANDLE: u32 = 1;
 pub const REG_LEN: u32 = 2;
@@ -10,9 +10,19 @@ pub const CATALOG: &[harmony_sdk::Point] = &[
     harmony_sdk::Point::state(REG_LEN, "nes.publication.len"),
 ];
 
+pub trait NesChannel {
+    type Error;
+
+    fn payload_fetch(&mut self, out: &mut [u8; 2]) -> Result<(), Self::Error>;
+    fn state_set(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
+    fn state_max(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
+    fn reachable(&mut self, point: u32) -> Result<(), Self::Error>;
+    fn frame_complete(&mut self, frame_count: u64) -> Result<(), Self::Error>;
+}
+
 pub struct NesAgent<C> {
     core: C,
-    layout: NovaBillboardLayout,
+    layout: BillboardLayoutV2,
     frame: u32,
 }
 
@@ -20,12 +30,12 @@ impl<C: Core> NesAgent<C> {
     pub fn new(core: C) -> Result<Self, String> {
         Ok(Self {
             core,
-            layout: NovaBillboardLayout::new(0).map_err(|e| e.to_string())?,
+            layout: BillboardLayoutV2::new(0).map_err(|e| e.to_string())?,
             frame: 0,
         })
     }
 
-    pub fn layout(&self) -> NovaBillboardLayout {
+    pub fn layout(&self) -> BillboardLayoutV2 {
         self.layout
     }
 
@@ -40,7 +50,7 @@ impl<C: Core> NesAgent<C> {
         self.publish(bytes, 0, 0)
     }
 
-    pub fn run_chord<H: NovaChannel>(
+    pub fn run_chord<H: NesChannel>(
         &mut self,
         channel: &mut H,
         bytes: &mut [u8],
@@ -90,7 +100,7 @@ impl<C: Core> NesAgent<C> {
             return Err("NES save RAM exceeds publication".into());
         }
         self.layout
-            .write_header(bytes, self.frame, buttons, frames, false, false)
+            .write_header(bytes, self.frame, buttons, frames)
             .map_err(|e| e.to_string())
     }
 }
@@ -103,7 +113,7 @@ mod tests {
         action: [u8; 2],
         completed: Vec<u64>,
     }
-    impl NovaChannel for Channel {
+    impl NesChannel for Channel {
         type Error = ();
         fn payload_fetch(&mut self, out: &mut [u8; 2]) -> Result<(), ()> {
             *out = self.action;

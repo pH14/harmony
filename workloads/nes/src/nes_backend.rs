@@ -65,10 +65,6 @@ pub trait NesBackend<P>: Machine
 where
     P: SnapshotState,
 {
-    fn starts_at_power_on(&self) -> bool {
-        true
-    }
-
     fn export_nes(&mut self, snapshot: SnapId, base: Option<&P>) -> Result<P, MachineError>;
 
     fn import_nes(&mut self, portable: &P) -> Result<SnapId, MachineError>;
@@ -208,10 +204,6 @@ impl SnapshotState for machine::consonance::ConsonancePortable {
 impl NesBackend<machine::consonance::ConsonancePortable>
     for machine::consonance::ConsonanceMachine
 {
-    fn starts_at_power_on(&self) -> bool {
-        machine::consonance::ConsonanceMachine::starts_at_power_on(self)
-    }
-
     fn export_nes(
         &mut self,
         snapshot: SnapId,

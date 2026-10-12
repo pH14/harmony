@@ -9,12 +9,10 @@ mod doorbell;
 #[derive(Parser, Debug)]
 #[command(
     name = "play-agent",
-    about = "harmony in-guest play-agent: SMB or Nova workload"
+    about = "harmony in-guest play-agent: SMB or NES payload workload"
 )]
 struct Args {
     #[arg(long)]
-    nova_payload: bool,
-    #[arg(long, conflicts_with = "nova_payload")]
     nes_payload: bool,
     #[arg(long)]
     core: Option<String>,
@@ -127,17 +125,12 @@ fn smoke(args: &Args) -> Result<(), String> {
 mod real {
     use super::{Args, agent_config};
     use crate::doorbell;
-    use harmony_play_agent::{
-        Agent, Harness,
-        nova::{NovaAgent, NovaChannel},
-        regs,
-    };
+    use harmony_play_agent::{Agent, Harness, payload::NesChannel, regs};
     use hypercall_doorbell::observation::Observation;
 
     const DEFAULT_CORE: &str = "/opt/harmony/fceumm_libretro.so";
     const DEFAULT_ROM: &str = "/opt/harmony/smb.nes";
-    const DEFAULT_NOVA_CORE: &str = "/opt/harmony/quicknes_libretro.so";
-    const DEFAULT_NOVA_ROM: &str = "/opt/harmony/nova.nes";
+    const DEFAULT_NES_CORE: &str = "/opt/harmony/quicknes_libretro.so";
 
     struct SdkHarness<T: hypercall_proto::Transport> {
         sdk: harmony_sdk::Sdk<T>,
@@ -172,7 +165,7 @@ mod real {
         }
     }
 
-    impl<T: hypercall_proto::Transport> NovaChannel for SdkHarness<T>
+    impl<T: hypercall_proto::Transport> NesChannel for SdkHarness<T>
     where
         T::Error: core::fmt::Debug,
     {
@@ -213,9 +206,6 @@ mod real {
     pub fn run(args: &Args) -> Result<(), String> {
         if args.nes_payload {
             return run_nes(args);
-        }
-        if args.nova_payload {
-            return run_nova(args);
         }
         run_smb(args)
     }
@@ -317,7 +307,7 @@ mod real {
         let core_path = args
             .core
             .clone()
-            .unwrap_or_else(|| DEFAULT_NOVA_CORE.to_string());
+            .unwrap_or_else(|| DEFAULT_NES_CORE.to_string());
         let rom_path = args.rom.as_ref().ok_or("--nes-payload requires --rom")?;
         let rom = std::fs::read(rom_path).map_err(|e| format!("NES ROM: {e}"))?;
         let core = retro::LibretroCore::load(&core_path, rom_path, &rom)?;
@@ -342,91 +332,6 @@ mod real {
             .map_err(|e| format!("NES setup: {e:?}"))?;
         loop {
             agent.run_chord(&mut channel, observation.bytes())?;
-        }
-    }
-
-    fn run_nova(args: &Args) -> Result<(), String> {
-        let core_path = args
-            .core
-            .clone()
-            .or_else(|| std::env::var("HARMONY_NOVA_CORE").ok())
-            .unwrap_or_else(|| DEFAULT_NOVA_CORE.to_string());
-        let rom_path = args
-            .rom
-            .clone()
-            .or_else(|| std::env::var("HARMONY_NOVA_ROM").ok())
-            .unwrap_or_else(|| DEFAULT_NOVA_ROM.to_string());
-        let rom = std::fs::read(&rom_path).map_err(|error| format!("ROM {rom_path}: {error}"))?;
-        println!("play-agent: Nova ROM {rom_path} ({} bytes)", rom.len());
-
-        let mut core = retro::LibretroCore::load(&core_path, &rom_path, &rom)?;
-        println!("play-agent: QuickNES core {core_path} loaded");
-        let setup = harmony_play_agent::nova::run_setup(&mut core).map_err(|e| e.to_string())?;
-        println!(
-            "play-agent: Nova gameplay reached (level={} x={} y={} health={})",
-            setup.started_level + 1,
-            setup.x,
-            setup.y,
-            setup.health
-        );
-
-        let mut agent = NovaAgent::new(core).map_err(|e| e.to_string())?;
-        let layout = agent.layout();
-        let mut observation = Observation::create(layout.total_len())
-            .map_err(|error| format!("Nova observation: {error}"))?;
-        let sealed = agent
-            .prime_billboard(observation.bytes())
-            .map_err(|e| e.to_string())?;
-        if sealed.health == 0 || sealed.x == 0 || sealed.y == 0 {
-            return Err(format!("Nova seal-point vacuity check failed: {sealed:?}"));
-        }
-
-        let transport = doorbell::open()?;
-        let sdk = harmony_sdk::Sdk::init(transport, harmony_play_agent::nova::regs::CATALOG)
-            .map_err(|e| format!("Nova sdk init: {e:?}"))?;
-        let mut channel = SdkHarness { sdk };
-        channel
-            .sdk
-            .state_set(
-                harmony_play_agent::nova::regs::REG_BILLBOARD_HANDLE,
-                u64::from(observation.handle()),
-            )
-            .map_err(|e| format!("Nova billboard handle: {e:?}"))?;
-        channel
-            .sdk
-            .state_set(
-                harmony_play_agent::nova::regs::REG_BILLBOARD_LEN,
-                observation.bytes().len() as u64,
-            )
-            .map_err(|e| format!("Nova billboard length: {e:?}"))?;
-        agent
-            .emit_state(&mut channel, sealed)
-            .map_err(|e| format!("Nova initial state: {e}"))?;
-        channel
-            .sdk
-            .setup_complete()
-            .map_err(|e| format!("Nova setup_complete: {e:?}"))?;
-        println!(
-            "play-agent: Nova setup sealed; awaiting two-byte payload chords (billboard handle={}+{})",
-            observation.handle(),
-            layout.total_len()
-        );
-
-        loop {
-            let state = agent
-                .run_chord(&mut channel, observation.bytes())
-                .map_err(|e| e.to_string())?;
-            println!(
-                "play-agent: Nova chord complete frame={} level={} x={} y={} health={}",
-                agent.frame_count(),
-                state.started_level + 1,
-                state.x,
-                state.y,
-                state.health
-            );
-            if args.frames != 0 && agent.frame_count() >= args.frames {
-                return Ok(());
-            }
         }
     }
 

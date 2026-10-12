@@ -413,7 +413,7 @@ def _in_guest_contract_scope(path: str) -> bool:
         "consonance/harmony-linux/", "consonance/client/",
         "consonance/vmm-core/tests/", "cli/src/oci/",
         "workloads/guest-images/", "workloads/nes-machine/",
-        "workloads/faults/", "workloads/tools/",
+        "workloads/faults/",
     )) and _is_text_file(path)
 
 

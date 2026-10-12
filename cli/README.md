@@ -137,7 +137,7 @@ core = "quicknes_libretro.so"
 For guest execution, use `runner.kind = "consonance"` and set
 `workload.options.guest_image` to the NES guest OCI image. This adapter currently
 supports Linux KVM. These requirements belong to the adapter, not shared CLI
-flags. The current NES package recognizes SMB and Nova. It supports search,
+flags. The current NES package recognizes SMB. It supports search,
 recorded-input execution, replay, branching, rooted search and continuation.
 NES controller recordings use `--actions FILE`; console logs and virtual-time
 rewinds are not available for these recordings.

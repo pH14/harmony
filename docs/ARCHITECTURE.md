@@ -151,7 +151,7 @@ Workloads supply actions, evaluation, archive keys, milestones, and snapshots.
 
 ## Workload packages
 
-`workloads/nes` owns SMB and Nova adapters. Each supports QuickNES directly
+`workloads/nes` owns the NES game adapters. SMB supports QuickNES directly
 and QuickNES inside Consonance through the same game semantics. The package's
 machine driver interprets NES controller actions and publications. Shared
 host/guest codec code validates publication versions and region bounds. Native

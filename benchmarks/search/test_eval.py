@@ -19,7 +19,7 @@ spec.loader.exec_module(eval)
 
 class EvaluationTests(unittest.TestCase):
     def test_aggregate_keeps_outcomes_when_throughput_is_unavailable(self):
-        items = [{'case':'nova', 'status':'complete', 'result':{'solved':False, 'frames_per_second':rate}}
+        items = [{'case':'stb-easy', 'status':'complete', 'result':{'solved':False, 'frames_per_second':rate}}
                  for rate in (None, 100.0, float('inf'))]
         row = eval.aggregates(items)[0]
         self.assertEqual(row['valid_trials'], 3)
@@ -277,31 +277,26 @@ class EvaluationTests(unittest.TestCase):
         item = self.matrix(matrix)
         cell = matrix/item['cell']
         eval.write_json(cell/'request.private.json', {
-            'game': 'nova', 'level': 9, 'rom': '/assets/nova.nes', 'core': '/assets/core.so',
+            'game': 'stb', 'ai': 'easy', 'rom': '/assets/stb.nes', 'core': '/assets/core.so',
             'rom_sha256': 'a'*64, 'core_sha256': 'b'*64})
         eval.write_json(cell/'campaign/witness-input.json', {'actions': [{'buttons': 0, 'hold_frames': 2}]})
         eval.write_json(cell/'campaign/result.json', {'solved': True, 'witness': {'victory': True}})
         return item
 
     def test_the_render_command_carries_the_recorded_scenario_identity(self):
-        request = {'game': 'nova', 'level': 9, 'whole_game': True, 'rom': '/r.nes', 'core': '/c.so',
+        request = {'game': 'stb', 'ai': 'easy', 'rom': '/r.nes', 'core': '/c.so',
                    'rom_sha256': 'a'*64, 'core_sha256': 'b'*64}
         command = eval.film_command(Path('nes-film'), request, Path('run/campaign'), Path('run/film'), 4096, 180)
-        self.assertIn('--whole-game', command)
-        self.assertEqual(command[command.index('--level')+1], '9')
+        self.assertEqual(command[command.index('--ai')+1], 'easy')
         self.assertEqual(command[command.index('--max-frames')+1], '4096')
         self.assertEqual(command[command.index('--evidence')+1], 'run/campaign/result.json')
-        self.assertNotIn('--ai', command)
-        stb = eval.film_command(Path('nes-film'), {**request, 'game': 'stb', 'level': None, 'ai': 'easy',
-                                                   'whole_game': False}, Path('c'), Path('f'), 100, 10)
-        self.assertEqual(stb[stb.index('--ai')+1], 'easy')
-        self.assertNotIn('--level', stb)
-        self.assertNotIn('--whole-game', stb)
+        self.assertNotIn('--level', command)
+        self.assertNotIn('--whole-game', command)
 
     def test_a_run_with_no_renderable_input_reports_media_unavailable(self):
         matrix = self.root/'matrix'
         item = self.matrix(matrix)
-        eval.write_json(matrix/item['cell']/'request.private.json', {'game': 'nova'})
+        eval.write_json(matrix/item['cell']/'request.private.json', {'game': 'stb'})
         with self.assertRaises(ValueError):
             eval.film(self.film_args(matrix, Path('/nonexistent/nes-film')))
         index = eval.read_json(matrix/'films.json')

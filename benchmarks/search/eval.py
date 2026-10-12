@@ -140,7 +140,7 @@ def expand_suite(suite, selected=None):
         if 'selector' in settings: raise ValueError('case '+name+' sets search.selector; nes-eval takes no selector, so remove it from the manifest')
         if set(settings)-ALLOWED_SEARCH: raise ValueError('unknown search settings: '+', '.join(sorted(set(settings)-ALLOWED_SEARCH)))
         for seed,workers,memory in itertools.product(suite['seeds'],suite['workers'],suite['memory_mib']):
-            request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game','root_input','resume') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
+            request={**settings,**{k:case[k] for k in ('game','stage','ai','whole_game','root_input','resume') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
             for field in ('root_input','resume'):
                 if field in request: request[field]=str(request[field]).format(seed=seed)
             if request.get('checkpoint_every') is not None and (type(request['checkpoint_every']) is not int or request['checkpoint_every'] <= 0): raise ValueError('invalid checkpoint_every')
@@ -383,7 +383,7 @@ def compare(base, candidate):
             raise ValueError('adapter policy changed: ' + cell)
         if 'actions' in a['search_request'] or 'actions' in b['search_request']:
             raise ValueError('action-capped campaign records cannot be compared: ' + cell)
-        for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
+        for key in ('game', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
             if a['search_request'].get(key) != b['search_request'].get(key):
                 raise ValueError('comparison changed ' + key + ': ' + cell)
         row = {'cell': cell, 'comparable': True, 'baseline_status': a['status'], 'candidate_status': b['status'],
@@ -668,9 +668,7 @@ def film_command(binary, request, campaign, out, max_frames, tail_frames):
                '--rom-sha256', request['rom_sha256'], '--core-sha256', request['core_sha256'],
                '--input', str(campaign / 'witness-input.json'), '--evidence', str(campaign / 'result.json'),
                '--out', str(out), '--max-frames', str(max_frames), '--tail-frames', str(tail_frames)]
-    if request.get('level') is not None: command += ['--level', str(request['level'])]
     if request.get('ai') is not None: command += ['--ai', str(request['ai'])]
-    if request.get('whole_game'): command.append('--whole-game')
     return command
 
 

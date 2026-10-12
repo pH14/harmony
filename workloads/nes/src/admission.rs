@@ -33,11 +33,7 @@ fn image_files(
     Ok(())
 }
 
-pub fn dump(
-    args: &[String],
-    session_json: &[u8],
-    oracle: Option<Value>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 5
         || !matches!(args[0].as_str(), "nes" | "postgres")
         || args.len() != if args[0] == "nes" { 6 } else { 5 }
@@ -118,7 +114,7 @@ pub fn dump(
         "composed-initramfs.bin",
         json!({"sha256": sha(&composed), "size": composed.len()}),
     );
-    let mut manifest = json!({
+    let manifest = json!({
         "version": 1, "mode": mode, "prepared_identity": prepared.identity_hex(),
         "engine_scope": "default-linux-x86_64-kvm-session",
         "files": files,
@@ -131,10 +127,6 @@ pub fn dump(
         "code_inputs": code_inputs,
         "scope": "controlled NES or PostgreSQL; candidate dump, not approval"
     });
-    if let Some(oracle) = oracle {
-        manifest["engine_scope"] = json!("nova-ae-linux-x86_64-kvm-oracle-v1");
-        manifest["oracle"] = oracle;
-    }
     std::fs::write(
         output.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest)?,

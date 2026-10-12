@@ -60,7 +60,7 @@ class SelectionTests(unittest.TestCase):
     def test_a_path_that_selects_a_scenario_selects_every_workflow(self):
         paths = [".github/workflows/harmony-workloads-historical-bugs.yml",
                  "scripts/render-historical-bugs.py",
-                 ".github/workflows/harmony-workloads-nes-checks.yml"]
+                 ".github/workflows/dissonance-workloads-nes-checks.yml"]
         for workflow in WORKFLOWS:
             for path in paths:
                 with self.subTest(workflow=workflow, path=path):
