@@ -265,19 +265,40 @@ feed the slot preferences and neither changes the tier.
 | `arena` | 1–8 standing spots; needs `shield`. Entering the goal room holding the item shuts its doors, so every press there is a shot that spends one stock. While the shield is up, a shot lands one time in `shield_odds`. Once the shield is down, a shot hits the boss only from the spot that the hit count names. Every other shot is wasted. The spot is a fixed function of the room and the last three actions. Before the first hit, the place is the spot and the shield level; each hit count is one place. A stocked arrival needs full stock. | Boobeam Trap in Mega Man 2: the shutter closes behind the player, every Crash Bomb spends energy, a bomb counts only where it is placed, and the places with no cannon down (positions times barrier damage) are many. |
 | `rooted` | Needs `arena`. The campaign starts in the goal room holding the item, with full stock and health, and its stocked arrival is at work 0. | A rooted segment from the full-stock state at the boss door. |
 
-The arena reproduces the direction of the Boobeam Trap loss, at smaller
-rates. In Mega Man 2, a rooted segment kills in a median 7.9 million tries,
-with 75% of the room's draws on places with a cannon down. The power-on run
-holds the same full-stock state at the door and has no kill 83 million tries
-later. In that run the room takes 13.5% of the top tier's draws, and only 32%
-of those go to places with a cannon down. The panel's shielded boss with
-`hit_tier` off and `arena` 8 measured these values over 32 layouts per arm
-at 600,000 work:
+The arena reproduces the Boobeam Trap timeline from power-on. In three Mega
+Man 2 power-on runs, the searcher first reached the Boobeam door drained, and
+first arrived there with full stock 1.8 to 2.8 times later. One run killed
+Boobeam; the other two reached the 250 million try budget without a kill.
+Rooted segments from the full-stock door state, with a fresh archive, killed
+on 5 or 6 of 6 seeds within 20 million tries. The game loses its time between
+the first drained arrival and the first stocked one, and the fight from a
+stocked state is fast.
 
-| Start | Kills | Tries to the kill after the full-stock arrival (95% interval) | Room share of top-tier draws | Damaged share of room draws |
-| --- | --- | --- | --- | --- |
-| `rooted` | 32/32 | 8,500 (8,000–9,200) | 100% | 23% |
-| Room 0 | 27/32 | 32,000 (14,500–140,000), 25 runs | 38% | 12% |
+The calibrated arena is an 8 by 8 map with `loops` 0, `corridor` 4, `shaft` 4,
+`inner` 48, `farms` 8, `farm_cap` 16, `boss_stock` 6, `shield` 6,
+`shield_odds` 4, `tail_slots` and `arena` 8. It measured these values over 32
+layouts, with 1,000,000 work from room 0 and 100,000 work for `rooted`. World
+values are work, and intervals are 95% intervals of the median. The kill
+budgets in the third and fourth rows are 2.5 and 0.2 times the median first
+arrival, the ratios of the game's 250 million and 20 million try budgets to
+its first arrivals.
+
+| Measure | Mega Man 2 tries | World work |
+| --- | --- | --- |
+| First boss-room arrival | 85.4M, 100.4M, 106.6M | 72,800 (69,400–80,100), 32/32 |
+| First stocked arrival over first arrival | 1.8–2.8 | 2.30 (1.98–2.64), 31/32 stocked |
+| Kill from power-on within 2.5 times the first arrival | 1 of 3, at 235.3M | 14/32 within 182,000 |
+| Rooted kills within 0.2 times the first arrival | 5 or 6 of 6 | 27/32 within 14,600 |
+| Median rooted kill | 4.5M–8.8M | 5,200 (3,700–7,100), 31/32 within 100,000 |
+| Median rooted kill over median first arrival | 5%–9% | 7.2% (5.1%–9.8%) |
+
+From room 0, the median kill is 190,300 (167,800–200,600) work, and 31 of 32
+layouts kill within 1,000,000. The world fights faster from a stocked state
+than the game. After the first stocked arrival, the boss room takes 68% of the
+draws and the kill follows a median 7,400 work later, 1.4 times the rooted
+kill. In the game's one power-on kill, the kill followed the stocked arrival by
+39 million tries, and in an earlier power-on run the room took 13.5% of the
+top tier's draws.
 
 The graph world is sized for scaled runs. It has `nodes` states in a line,
 each also carrying stock and health from 0 to 15. Action 0 moves to the next
@@ -342,10 +363,12 @@ decoy positions in `layout`. `evidence.targets` gives the first execution and
 work at each count of cannons destroyed, and counts bombs thrown, bombs
 landed, double kills and decoys broken.
 
-In Mega Man 2, rooted segments from the door with 20 million tries killed on
-6 of 6 seeds at a median 7.92 million tries. The world measured these values
-over 32 layouts at 1,000,000 work. Tries are executions to the kill, and a miss
-counts as infinite in the median.
+The world starts where a rooted segment starts and models the fight; the
+`arena` map option models the trip to the door. In Mega Man 2, rooted segments
+from the full-stock door state, with a fresh archive and 20 million tries,
+killed on 5 or 6 of 6 seeds at medians of 4.5 to 8.8 million tries. The world
+measured these values over 32 layouts at 1,000,000 work. Tries are executions
+to the kill, and a miss counts as infinite in the median.
 
 | Settings | Layouts | Kills | Median tries (95% interval) |
 | --- | --- | --- | --- |
@@ -353,9 +376,10 @@ counts as infinite in the median.
 | As above with `posture_actions` 1 and `drain_odds` 64 | 32 | 32 | 7,000 |
 | As the first row with `width` 12 | 16 | 16 | 11,000 |
 
-The first row misses on 7 layouts where the game killed on every seed. Every
-miss reached 4 cannons down within 12,000 tries and then ran about 975,000
-more tries without destroying the last cannon. The split by last actions
+The second row matches the game's rooted kill rate. The first row misses on 7
+of 32 layouts, where the game missed on at most 1 of 6 seeds. Every miss
+reached 4 cannons down within 12,000 tries and then ran about 975,000 more
+tries without destroying the last cannon. The split by last actions
 spreads draws over many places at every damage level. After the first arrival
 at 4 cannons down, parents with 4 down take a median 3% of the draws with
 `posture_actions` 2, against 8% with `posture_actions` 1.
