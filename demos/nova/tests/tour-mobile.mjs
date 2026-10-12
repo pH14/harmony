@@ -38,7 +38,7 @@ async function exposed(locator, spotlight = false) {
   assert.ok(result.lit, `Control must be spotlighted: ${JSON.stringify(result)}`);
 }
 async function opening(page) {
-  assert.equal(await page.locator('#tour-title').innerText(), 'Thousands of Novas');
+  assert.equal(await page.locator('#tour-title').innerText(), 'Multiverse exploration');
   assert.equal(await page.locator('#tour-copy p').count(), 2);
   assert.equal(await page.locator('#visualization').getAttribute('data-value'), 'movement');
   const lit = await page.locator('.area-map').evaluateAll((maps) => maps.some((map) => {
@@ -111,7 +111,7 @@ try {
     await ready(page, 0);
     await opening(page);
     await next(page, 1);
-    assert.equal(await page.locator('#tour-title').innerText(), 'Follow one timeline');
+    assert.equal(await page.locator('#tour-title').innerText(), 'A Timeline');
     assert.equal(await page.locator('#tour-ping').getAttribute('visibility'), 'visible');
     assert.ok(await page.locator('#tour-ping-bounds rect').count() > 0);
     assert.equal(await page.locator('.tour-ping-wave').first().evaluate((node) => getComputedStyle(node).animationName), 'none', 'Reduced motion keeps the cell emphasis static');
@@ -157,7 +157,7 @@ try {
     assert.equal(await page.locator('#take-control').isVisible(), false);
     assert.equal(await page.locator('#game-controls').isVisible(), true);
     for (const button of await page.locator('.touch-controls button').all()) await exposed(button);
-    assert.equal(await page.locator('#tour-copy p').first().innerText(), 'Branch search from here starts a whole new search from wherever you left Nova. Discard throws your play away.');
+    assert.equal(await page.locator('#tour-copy p').first().innerText(), 'Harmony can start a new search from right where you left off, or you can discard your branch.');
     await exposed(page.locator('#tour-back'));
     await exposed(page.locator('#tour-next'));
     await exposed(page.locator('#search-here'), true);
@@ -201,13 +201,13 @@ try {
       await play(page);
       await page.locator('#discard-branch').tap();
       await ready(page,3);
-      assert.equal(await page.locator('#tour-title').innerText(),'Hand it back to Harmony','Early discard must visit the branch-decision step');
+      assert.equal(await page.locator('#tour-title').innerText(),'Hand it back','Early discard must visit the branch-decision step');
       await page.locator('#tour-back').tap();
       await ready(page,2);
       await play(page);
       await page.locator('#close-inspector').tap();
       await ready(page,3);
-      assert.equal(await page.locator('#tour-title').innerText(),'Hand it back to Harmony','Collapsing gameplay must visit the branch-decision step');
+      assert.equal(await page.locator('#tour-title').innerText(),'Hand it back','Collapsing gameplay must visit the branch-decision step');
       await page.locator('#tour-back').tap();
       await ready(page,2);
       await play(page);
@@ -215,7 +215,7 @@ try {
       await page.locator('#search-here').tap();
       await next(page,3);
       await page.waitForFunction(() => document.querySelector('button[data-search="1"][aria-pressed="true"]') && document.querySelector('#inspector').hidden);
-      assert.equal(await page.locator('#tour-title').innerText(),'Hand it back to Harmony','Early admission must not skip straight to Searches');
+      assert.equal(await page.locator('#tour-title').innerText(),'Hand it back','Early admission must not skip straight to Searches');
       await next(page,4);
       await page.locator('#pause').tap();
       await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');

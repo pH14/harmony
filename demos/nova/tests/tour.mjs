@@ -62,7 +62,7 @@ async function layout(page) {
   assert.equal(await page.locator("#tour-next").isVisible(), true);
 }
 async function opening(page) {
-  assert.equal(await page.locator('#tour-title').innerText(), 'Thousands of Novas');
+  assert.equal(await page.locator('#tour-title').innerText(), 'Multiverse exploration');
   assert.equal(await page.locator('#tour-copy p').count(), 2);
   assert.equal(await page.locator('.tour-dots li').count(), 5);
   assert.equal(await page.locator('.tour-dots li.current').count(), 1);
@@ -77,7 +77,7 @@ async function opening(page) {
   assert.equal(lit, true, 'The opening step spotlights the live map');
 }
 async function routeStep(page) {
-  assert.equal(await page.locator('#tour-title').innerText(), 'Follow one timeline');
+  assert.equal(await page.locator('#tour-title').innerText(), 'A Timeline');
   await page.waitForFunction(() => document.querySelector('#tour-ping').getAttribute('visibility') === 'visible' && [...document.querySelectorAll('.area-map')].some((c) => Number(c.dataset.tracePoints) > 0));
 }
 async function next(page, step) {
@@ -233,7 +233,7 @@ try {
   for (let step = 2; step < 5; step++) {
     await next(page, step);
     if (step === 2) {
-      assert.match(await page.locator('#tour-copy').innerText(), /Play from here/);
+      assert.match(await page.locator('#tour-copy').innerText(), /jump in and play/);
       assert.equal(await page.locator('#guided-tour').evaluate((e) => e.matches(':modal')), false);
       assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
     }
@@ -259,10 +259,7 @@ try {
   );
   await page.locator("#timeline-toggle").click();
   await page.locator("#tour-open").click();
-  await page.waitForFunction(() => document.querySelector(".map-wrap").dataset.camera === "follow" && Number(document.querySelector("#map").dataset.zoom) > 2, null, { timeout: 10000 });
-  assert.equal(await page.locator("#tour-open").isDisabled(), true, "Take the tour replays the opening before starting");
   await ready(page, 0);
-  assert.equal(await page.locator(".map-wrap").getAttribute("data-camera"), "follow", "The replayed opening settles into following the search");
   assert.equal(await page.locator("#timeline-toggle").getAttribute("aria-expanded"), "true", "The tour opens a collapsed Timeline");
   await opening(page);
   await next(page, 1);

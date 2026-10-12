@@ -89,7 +89,7 @@ room height on screen and follows that room's search frontier (the
 80th-percentile x of live sprites, low-pass filtered), or the furthest cell the
 search has reached there, or the room's start. Following pauses while the mouse
 is over a map and for 2.5 seconds after a touch. A two-option control beside
-the visualization choice switches between Follow search and Whole room. Whole
+the visualization choice switches between Follow search and Full view. Whole
 room fits every visible room and stops following. On phones, Follow search also
 switches to the newest room that has live Novas: it moves forward as soon as the
 search reaches a later room, and back only after the current room has been empty
@@ -106,21 +106,18 @@ frame while the camera or an edge pan moves, a replay plays or a visitor plays,
 and at 30 Hz otherwise. A visitor's own trail extends every 8 frames. Drawing
 snaps to whole canvas pixels.
 
-On a first visit the camera opens at 1.8 times the room-height close-up in the
+On a first visit the camera opens at 1.3 times the room-height close-up in the
 room with the most live squirrels (the first room on a fresh page), follows for
-about four seconds, then eases to the close-up over 1.6 seconds and keeps
-following. Other rooms keep their ordinary view. The tour waits for that opening
-and starts in the same room. Take the tour replays it before starting the tour
-unless the search is paused; when Whole room is showing, only the opening room
-moves. Returning and
+1.5 seconds, then eases to the close-up over 0.8 seconds and keeps following.
+Other rooms keep their ordinary view. The tour waits for that opening and starts
+in the same room. Take the tour starts the tour at once. Returning and
 reduced-motion visitors start at the close-up.
 
 A five-step guided tour follows the story many, one, you, fork and tree:
-Thousands of Novas, which spotlights every room with live Novas; Follow one timeline, which
+Multiverse exploration, which spotlights every room with live Novas; A Timeline, which
 zooms each room to fit its part of the selected route, spotlights the rooms the route visits, draws it in gold
 over 1.8 seconds with a moving head, and lights the History film, replay
-controls and route list together; Your turn for takeover; Hand it back to
-Harmony for search admission; and A tree of searches, which spotlights only Searches.
+controls and route list together; Your turn for takeover; Hand it back for search admission; and Search branches, which spotlights only Searches.
 Going back from a later step to Your turn or earlier discards gameplay played
 during the tour, so those steps show Play from here again.
 Each step has one or two short sentences and a row of progress dots. Every step enables its real highlighted controls: cell and route selection,
@@ -522,4 +519,4 @@ The panes are labeled Searches, Exploration and History. History keeps its headi
 
 Overview route strokes stay bright gold at a constant screen width, with a dark edge for contrast at small map scales. Retained histories collapse into a reopen control; dismissing human play still discards its draft and resumes the existing search. On phones, Searches places its heading and short scrollable tree in one row. During human play, History places audio in the header, then the screen, a spaced controller and Branch/Discard actions; the retained-route list stays hidden.
 
-Room headings name the room and its position ("Introduction · Room 1 of 3"). `tests/room-cameras.mjs` checks one viewport per room on desktop and phone, Whole room and Follow modes, edge panning and the room track, rotation, and an authentic retained-state hit at the far end of a long room using a hash-verified native history. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.
+Room headings name the room and its position ("Introduction · Room 1 of 3"). `tests/room-cameras.mjs` checks one viewport per room on desktop and phone, Full view and Follow modes, edge panning and the room track, rotation, and an authentic retained-state hit at the far end of a long room using a hash-verified native history. The nested-branch interaction check verifies native archive memory release, preserved child branches, active-parent resumption and non-reused branch IDs.

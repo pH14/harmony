@@ -219,7 +219,7 @@ try {
   assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
   assert.equal(await page.locator("#branches .search-details").count(), 1, "Per-search counters sit in the Searches pane");
   assert.equal(heroLayout.detailsOpen, false, "Per-search counters start collapsed");
-  assert.equal(heroLayout.heading, "One game. Thousands of timelines.");
+  assert.equal(heroLayout.heading, "Harmony Plays NES");
   const originImage = await page
     .locator("#film")
     .evaluate((c) => c.toDataURL());

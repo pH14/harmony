@@ -1254,7 +1254,6 @@ dialog h2 {
 .hero h1 { margin: 0; color: var(--text); font-size: clamp(28px, 3.3vw, 42px); font-weight: 600; line-height: 1.08; letter-spacing: -0.03em; }
 .hero-lede { max-width: 64ch; margin: 10px 0 0; font-size: 15px; line-height: 1.55; }
 .hero-lede a { color: var(--text); }
-.lede-narrow { display: none; }
 .hero-side { display: flex; flex-shrink: 0; align-items: center; gap: 24px; }
 .hero-stats { display: flex; gap: 24px; }
 .hero-stats div { display: flex; flex-direction: column; gap: 4px; }
@@ -1306,8 +1305,6 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
   .hero { flex-direction: column; align-items: stretch; gap: 12px; padding: 0 0 14px; }
   .hero h1 { font-size: 27px; }
   .hero-lede { margin-top: 6px; font-size: 13px; line-height: 1.45; }
-  .lede-wide { display: none; }
-  .lede-narrow { display: inline; }
   .hero-side { justify-content: space-between; gap: 12px; }
   .hero-stats { gap: 18px; }
   .hero-stats b { font-size: 22px; }
