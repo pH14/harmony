@@ -1,0 +1,40 @@
+Accept legacy FXSAVE signal frames from hosts without XSAVE
+
+Linux save_xstate_epilog writes FP_XSTATE_MAGIC1 and xstate_size even when
+XSAVE is unavailable, but writes the trailing FP_XSTATE_MAGIC2 only when
+use_xsave() is true. Recognize the 512-byte legacy state before checking
+for that trailer. This permits seccomp UML on QEMU's default qemu64 CPU,
+including the browser-hosted QEMU runtime.
+
+The size-only call must not copy into the flexible register array: its
+caller allocates that array only after learning the required size.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/x86/um/os-Linux/mcontext.c
++++ b/arch/x86/um/os-Linux/mcontext.c
+@@ -116,7 +116,8 @@
+ 	    (void *)data->sigstack + sizeof(data->sigstack))
+ 		return NULL;
+ 
+-	if (res->sw_reserved.magic1 != FP_XSTATE_MAGIC1) {
++	if (res->sw_reserved.magic1 != FP_XSTATE_MAGIC1 ||
++	    res->sw_reserved.xstate_size == sizeof(struct _fpstate_64)) {
+ 		*fp_size = sizeof(struct _fpstate);
+ 	} else {
+ 		char *magic2_addr;
+@@ -167,8 +168,10 @@
+ 	xstate_size = fp_size;
+ #endif
+ 
+-	if (fp_size_out)
++	if (fp_size_out) {
+ 		*fp_size_out = xstate_size;
++		return 0;
++	}
+ 
+ 	if (xstate_size > host_fp_size)
+ 		return -ENOSPC;

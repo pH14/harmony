@@ -533,6 +533,14 @@ HARMONY_HOST_COMPATIBILITY = Workflow(
     ),
 )
 
+RAFT_BROWSER_CHECKS = Workflow(
+    path=f"{WORKFLOW_DIR}/raft-browser.yml",
+    name="Checks / Harmony Workloads / Raft Browser",
+    owner="Harmony Workloads",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(Job("Raft Browser", "pr", 15), Job("Runtime Acceptance", "pr", 15)),
+)
+
 DISSONANCE_NES_CHECKS = Workflow(
     path=f"{WORKFLOW_DIR}/dissonance-workloads-nes-checks.yml",
     name="Checks / Dissonance Workloads / NES",
@@ -733,6 +741,7 @@ WORKFLOWS = (
     DISSONANCE_ANALYSIS,
     HARMONY_CHECKS,
     HARMONY_ANALYSIS,
+    RAFT_BROWSER_CHECKS,
     DISSONANCE_NES_CHECKS,
     DISSONANCE_TINY_WORLDS_CHECKS,
     HARMONY_NES_CHECKS,

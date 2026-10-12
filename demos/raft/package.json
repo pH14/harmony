@@ -1,0 +1,24 @@
+{
+  "name": "harmony-raft-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "dev": "node tools/serve.mjs",
+    "build": "node tools/build.mjs",
+    "test:browser": "node tools/ui-check.mjs",
+    "test:live": "node tools/live-check.mjs",
+    "preview": "DIST=1 node tools/serve.mjs",
+    "format:check": "prettier --check index.html isolate-sw.js src tests tools/*.mjs",
+    "pretest": "node tools/fetch-evidence.mjs"
+  },
+  "dependencies": {
+    "@xterm/xterm": "5.5.0",
+    "xterm-pty": "0.12.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "prettier": "3.8.1"
+  }
+}
