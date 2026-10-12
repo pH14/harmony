@@ -948,7 +948,9 @@ mod tests {
         SmbCampaignRun, SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint,
         SmbSnapshotCheckpointEntry, SmbTerminalPredicate, derive_selection_seed,
     };
-    use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution, default_window};
+    use crate::search::campaign::{
+        Evaluation, InputPolicy, Reporting, TargetExecution, default_window,
+    };
     use crate::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables};
     use crate::{
         chord::CHANGE_ONE_CONTROL_IDENTIFIER,
@@ -1179,6 +1181,45 @@ mod tests {
             assert_eq!(calls.get(), 1);
             assert_eq!(evidence.champion_milestones, reigning);
         }
+    }
+
+    #[test]
+    fn checkpoint_marks_count_each_first_reached_milestone() {
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let mut evidence = super::SmbCampaignEvidence::default();
+        let mut milestones = SmbMilestones::default();
+        let steps: [fn(&mut SmbMilestones); 4] = [
+            |m| m.max_1_1_scroll_bucket = 1,
+            |m| m.reached_1_1_flag = true,
+            |m| m.reached_1_2 = true,
+            |m| m.reached_onward = true,
+        ];
+        assert_eq!(<SmbGame as Reporting>::checkpoint_marks(&evidence), 0);
+        for (sequence, step) in (1..).zip(steps) {
+            step(&mut milestones);
+            for repeat in [sequence, sequence + 100] {
+                game.merge_action_evidence(
+                    &mut evidence,
+                    &evidence_action(milestones),
+                    repeat,
+                    || {
+                        Ok(SmbInput {
+                            actions: vec![ButtonChord::new(0x01, 4)],
+                        })
+                    },
+                )
+                .expect("merge action evidence");
+                assert_eq!(
+                    <SmbGame as Reporting>::checkpoint_marks(&evidence),
+                    sequence as usize
+                );
+            }
+        }
+        let bytes = <SmbGame as Reporting>::evidence_checkpoint(&evidence).expect("encode");
+        let restored = <SmbGame as Reporting>::evidence_from_checkpoint(&bytes).expect("decode");
+        assert_eq!(<SmbGame as Reporting>::checkpoint_marks(&restored), 4);
+        assert_eq!(restored.first_reached, evidence.first_reached);
     }
 
     #[test]
