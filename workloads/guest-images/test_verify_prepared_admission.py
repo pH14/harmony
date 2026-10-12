@@ -60,62 +60,7 @@ class CompositionTests(unittest.TestCase):
             (self.root / name).write_bytes(data)
         (self.root / "manifest.json").write_text(json.dumps(manifest))
 
-    def oracle_dump(self):
-        manifest_path = self.root / "manifest.json"
-        manifest = json.loads(manifest_path.read_text())
-        session = {"guest_contract": "Ordinary",
-                   "ram_bytes": 134217728, "seed": p.ORACLE_SEED,
-                   "run_budget": 2000000000, "cmdline": p.ORACLE_CMDLINE,
-                   "identity_tag": "", "wall_limit": None,
-                   "defer_virtual_time_checkpoint_hashes": True}
-        data = json.dumps(session).encode()
-        (self.root / "session-config.json").write_bytes(data)
-        manifest["files"]["session-config.json"] = {"size": len(data), "sha256": p.a.digest(data)}
-        manifest["engine_scope"] = p.ORACLE_SCOPE
-        manifest["oracle"] = {"version": 1, "backend": "boot_linux_stock_virtual_time",
-            "control": "direct-ControlServer-A-E", "restore_mode": "in-place-with-remap-factory",
-            "deadline_kind": "absolute-vtime", "setup_payloads": [[0, 1]] * 16,
-            "tree_seed": p.ORACLE_SEED ^ 0x4954454d325f5452}
-        manifest_path.write_text(json.dumps(manifest))
-        return manifest, session
-
-    def test_oracle_candidate_is_distinct_and_not_admitted(self):
-        self.oracle_dump()
-        report, _ = p.inspect_dump(self.root)
-        self.assertFalse(report["admitted"])
-        self.assertEqual(report["engine_scope"], p.ORACLE_SCOPE)
-
-    def test_resealed_oracle_configuration_mutations(self):
-        for field, value in [("guest_contract", "NestedHost"), ("seed", 0),
-                             ("ram_bytes", 268435456), ("run_budget", 1), ("defer_virtual_time_checkpoint_hashes", False),
-                             ("cmdline", p.ORACLE_CMDLINE + " quiet")]:
-            with self.subTest(field=field):
-                manifest, session = self.oracle_dump()
-                session[field] = value
-                data = json.dumps(session).encode()
-                (self.root / "session-config.json").write_bytes(data)
-                manifest["files"]["session-config.json"] = {"size": len(data), "sha256": p.a.digest(data)}
-                (self.root / "manifest.json").write_text(json.dumps(manifest))
-                with self.assertRaisesRegex(p.a.Rejected, "oracle configuration"):
-                    p.inspect_dump(self.root)
-
-    def test_oracle_control_and_scope_mutations(self):
-        for field, value in [("tree_seed", 0), ("restore_mode", "cold"),
-                             ("deadline_kind", "relative"), ("setup_payloads", [[0, 1]])]:
-            with self.subTest(field=field):
-                manifest, _ = self.oracle_dump()
-                manifest["oracle"][field] = value
-                (self.root / "manifest.json").write_text(json.dumps(manifest))
-                with self.assertRaisesRegex(p.a.Rejected, "oracle controls"):
-                    p.inspect_dump(self.root)
-        manifest, _ = self.oracle_dump()
-        manifest["engine_scope"] = "default-linux-x86_64-kvm-session"
-        (self.root / "manifest.json").write_text(json.dumps(manifest))
-        with self.assertRaisesRegex(p.a.Rejected, "cannot use default"):
-            p.inspect_dump(self.root)
-
     def test_verification_admits_only_components_with_clean_properties(self):
-        self.oracle_dump()
         clean = {"interpreter": None, "needed": [], "soname": None, "tlsdesc": False,
                  "text_relocations": False, "executable_stack": False,
                  "writable_executable_segments": [], "sites": []}
@@ -139,6 +84,14 @@ class CompositionTests(unittest.TestCase):
         paths = [i["path"] for i, _ in p.a.parse_newc(data)]
         self.assertIn("/opt/harmony/play-agent", paths)
         self.assertNotIn("/harmony-oci/rootfs/opt/harmony/play-agent", paths)
+
+    def test_unsupported_engine_scope(self):
+        path = self.root / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["engine_scope"] = "other"
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(p.a.Rejected, "engine/default session scope"):
+            p.inspect_dump(self.root)
 
     def test_changed_dump_bytes(self):
         (self.root / "kernel.bin").write_bytes(b"different")

@@ -155,11 +155,6 @@ where
     P: SnapshotState,
 {
     pub fn from_machine(machine: M) -> Result<Self, MachineError> {
-        if !machine.starts_at_power_on() {
-            return Err(MachineError::Backend(
-                "SMB machine does not expose a game-neutral NES power-on state".to_owned(),
-            ));
-        }
         Self::boot(machine, true)
     }
 

@@ -142,7 +142,7 @@ states.
 ## Current targets
 
 The repository exercises dissonance with deterministic NES targets. The direct
-QuickNES path provides emulator snapshots. The consonance-backed Nova path runs
+QuickNES path provides emulator snapshots. The consonance-backed SMB path runs
 QuickNES inside a controlled Linux VM and maps input prefixes to whole-VM
 snapshots local to each evaluator thread. Both present the same game-level
 action and observation model to the campaign engine.

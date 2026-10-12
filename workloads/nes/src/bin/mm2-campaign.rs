@@ -331,7 +331,7 @@ fn run_qualified_campaign(
     let best_endpoint = write_best_observation(game, best_input, output)?;
     let media = render_video(game, best_input, output, 180)?;
     if media.video.input_endpoint != best_endpoint {
-        return Err("video-enabled replay changed Nova's decoded input endpoint".into());
+        return Err("video-enabled replay changed the decoded input endpoint".into());
     }
     let verdict = json!({
         "mode": if config.continue_after_victory {

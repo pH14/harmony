@@ -55,7 +55,6 @@ workload_packages = [
 ]
 composition_apps_tests = [
     "consonance/nested-driver",
-    "workloads/tools",
     "cli",
     "consonance/control-proto/fuzz",
     "consonance/telemetry",

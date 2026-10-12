@@ -51,7 +51,7 @@ class FilmVerificationTests(unittest.TestCase):
                    audio_seconds=overrides.pop('audio_seconds', None))
         record = {'format': 'nes-film-v1', 'endpoint_verified': True,
                   'provenance': 'native QuickNES replay of the input this run recorded',
-                  'identity': {'game': 'nova', 'level': 1},
+                  'identity': {'game': 'smb'},
                   'input_sha256': hashlib.sha256(tape.read_bytes()).hexdigest(),
                   'video': {'frames': FRAMES, 'audio_sample_rate': 44100,
                             'audio_frames': FRAMES * 44100 // 60},
@@ -112,14 +112,14 @@ class FilmVerificationTests(unittest.TestCase):
                               capture_output=True, text=True)
 
     def test_an_index_with_a_failed_render_fails_the_command(self):
-        index = self.index([], failed=[{'cell': 'nova-s1', 'exit_code': 3}])
+        index = self.index([], failed=[{'cell': 'smb-s1', 'exit_code': 3}])
         result = self.run_main('--index', index, '--matrix', self.root, '--require', '0')
         self.assertEqual(result.returncode, 1)
-        self.assertIn('rendering failed for: nova-s1', result.stderr)
+        self.assertIn('rendering failed for: smb-s1', result.stderr)
 
     def test_an_index_reports_unavailable_media_and_still_checks_the_rest(self):
-        self.film(name='nova-s1')
-        index = self.index(['nova-s1'],
+        self.film(name='smb-s1')
+        index = self.index(['smb-s1'],
                            unavailable=[{'cell': 'stb-s1', 'reason': 'the search produced no renderable input'}])
         result = self.run_main('--index', index, '--matrix', self.root)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -135,10 +135,10 @@ class FilmVerificationTests(unittest.TestCase):
         self.assertTrue(any('audio samples' in problem for problem in problems), problems)
 
     def test_a_film_swapped_between_cells_fails_its_index_row(self):
-        self.film(name='nova-s1')
+        self.film(name='smb-s1')
         self.film(name='stb-s1', audio='sine=frequency=880:sample_rate=44100')
-        index = self.index(['nova-s1', 'stb-s1'])
-        first = self.root / 'nova-s1/film'
+        index = self.index(['smb-s1', 'stb-s1'])
+        first = self.root / 'smb-s1/film'
         second = self.root / 'stb-s1/film'
         shutil.rmtree(first)
         shutil.copytree(second, first)
@@ -148,27 +148,27 @@ class FilmVerificationTests(unittest.TestCase):
         self.assertIn('replays an input this cell never recorded', result.stderr)
 
     def test_the_verdict_of_every_cell_is_recorded_for_the_report(self):
-        self.film(name='nova-s1')
+        self.film(name='smb-s1')
         self.film(name='stb-s1', audio='anullsrc=r=44100:cl=stereo')
-        result = self.run_main('--index', self.index(['nova-s1', 'stb-s1']), '--matrix', self.root)
+        result = self.run_main('--index', self.index(['smb-s1', 'stb-s1']), '--matrix', self.root)
         self.assertEqual(result.returncode, 1)
         report = json.loads((self.root / VERIFY.REPORT_NAME).read_text())
-        self.assertEqual(report['verified'], ['nova-s1'])
+        self.assertEqual(report['verified'], ['smb-s1'])
         self.assertIn('stb-s1', report['problems'])
 
     def test_a_film_the_check_cannot_read_replaces_an_earlier_acceptance(self):
-        self.film(name='nova-s1')
-        index = self.index(['nova-s1'])
+        self.film(name='smb-s1')
+        index = self.index(['smb-s1'])
         first = self.run_main('--index', index, '--matrix', self.root)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(json.loads((self.root / VERIFY.REPORT_NAME).read_text())['verified'],
-                         ['nova-s1'])
-        (self.root / 'nova-s1/film/witness.mp4').write_bytes(b'not an mp4')
+                         ['smb-s1'])
+        (self.root / 'smb-s1/film/witness.mp4').write_bytes(b'not an mp4')
         second = self.run_main('--index', index, '--matrix', self.root)
         self.assertEqual(second.returncode, 1)
         report = json.loads((self.root / VERIFY.REPORT_NAME).read_text())
         self.assertEqual(report['verified'], [])
-        self.assertIn('nova-s1', report['problems'])
+        self.assertIn('smb-s1', report['problems'])
 
     def test_bare_media_is_checked_against_the_frames_its_workload_reported(self):
         mp4 = self.root / 'witness.mp4'

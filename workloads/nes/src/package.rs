@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::{
     film::Endpointed,
-    nova::campaign::{NovaCampaignRun, NovaGame},
     smb::campaign::{SmbCampaignRun, SmbGame},
     witness::replay_witness,
 };
@@ -25,14 +24,12 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum RomKind {
     Smb,
-    Nova,
 }
 impl RomKind {
     pub fn identify(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let digest = format!("{:x}", Sha256::digest(rom));
         match digest.as_str() {
             "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea" => Ok(Self::Smb),
-            "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08" => Ok(Self::Nova),
             _ => Err(format!("unsupported NES ROM SHA-256 {digest}").into()),
         }
     }
@@ -288,7 +285,6 @@ pub fn search_native(
     start: &SearchStart,
 ) -> Result<(), Box<dyn Error>> {
     validate_output(options)?;
-    let kind = RomKind::identify(rom)?;
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
     record_identity(
         rom,
@@ -305,22 +301,13 @@ pub fn search_native(
         },
         options,
     )?;
-    match kind {
-        RomKind::Smb => search(
-            SmbGame::new(rom, core, &core_hash),
-            smb_run(),
-            "native",
-            options,
-            start,
-        ),
-        RomKind::Nova => search(
-            NovaGame::new(rom, core, &core_hash),
-            NovaCampaignRun,
-            "native",
-            options,
-            start,
-        ),
-    }
+    search(
+        SmbGame::new(rom, core, &core_hash),
+        smb_run(),
+        "native",
+        options,
+        start,
+    )
 }
 #[cfg(all(
     feature = "consonance",
@@ -367,22 +354,13 @@ pub fn search_consonance(
         },
         options,
     )?;
-    match RomKind::identify(rom)? {
-        RomKind::Smb => search(
-            SmbGame::new_consonance(rom, kernel, &initramfs),
-            smb_run(),
-            "consonance",
-            options,
-            start,
-        ),
-        RomKind::Nova => search(
-            NovaGame::new_consonance(rom, kernel, &initramfs),
-            NovaCampaignRun,
-            "consonance",
-            options,
-            start,
-        ),
-    }
+    search(
+        SmbGame::new_consonance(rom, kernel, &initramfs),
+        smb_run(),
+        "consonance",
+        options,
+        start,
+    )
 }
 
 pub fn replay_native(
@@ -391,18 +369,12 @@ pub fn replay_native(
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     let hash = format!("{:x}", Sha256::digest(fs::read(core)?));
-    match RomKind::identify(rom)? {
-        RomKind::Smb => replay_witness(
-            &SmbGame::new(rom, core, &hash),
-            &smb_run(),
-            &serde_json::from_value(input)?,
-        ),
-        RomKind::Nova => replay_witness(
-            &NovaGame::new(rom, core, &hash),
-            &NovaCampaignRun,
-            &serde_json::from_value(input)?,
-        ),
-    }
+    RomKind::identify(rom)?;
+    replay_witness(
+        &SmbGame::new(rom, core, &hash),
+        &smb_run(),
+        &serde_json::from_value(input)?,
+    )
 }
 #[cfg(all(
     feature = "consonance",
@@ -416,18 +388,12 @@ pub fn replay_consonance(
     initramfs: &[u8],
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    match RomKind::identify(rom)? {
-        RomKind::Smb => replay_witness(
-            &SmbGame::new_consonance(rom, kernel, initramfs),
-            &smb_run(),
-            &serde_json::from_value(input)?,
-        ),
-        RomKind::Nova => replay_witness(
-            &NovaGame::new_consonance(rom, kernel, initramfs),
-            &NovaCampaignRun,
-            &serde_json::from_value(input)?,
-        ),
-    }
+    RomKind::identify(rom)?;
+    replay_witness(
+        &SmbGame::new_consonance(rom, kernel, initramfs),
+        &smb_run(),
+        &serde_json::from_value(input)?,
+    )
 }
 
 #[cfg(all(
@@ -444,20 +410,12 @@ pub fn search_saved_guest(
     start: &SearchStart,
 ) -> Result<(), Box<dyn Error>> {
     validate_output(options)?;
-    match RomKind::identify(rom)? {
-        RomKind::Smb => search(
-            SmbGame::new_consonance(rom, kernel, initramfs),
-            smb_run(),
-            "consonance",
-            options,
-            start,
-        ),
-        RomKind::Nova => search(
-            NovaGame::new_consonance(rom, kernel, initramfs),
-            NovaCampaignRun,
-            "consonance",
-            options,
-            start,
-        ),
-    }
+    RomKind::identify(rom)?;
+    search(
+        SmbGame::new_consonance(rom, kernel, initramfs),
+        smb_run(),
+        "consonance",
+        options,
+        start,
+    )
 }

@@ -13,6 +13,7 @@ import sys
 import contextlib
 import io
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -681,8 +682,8 @@ class CiArchitectureTests(RequiresApiKey):
         self.assertIn(".github/actions/ci-scope/action.yml", context["referenced"])
         self.assertIn("scripts/verify-nes-films.py", context["referenced"])
         self.assertIn("docs/WORKFLOWS.md", context["documentation"])
-        self.assertIn("Harmony Workloads", context["policy"]["compositions"])
-        self.assertTrue(any(entry["name"] == "Checks / Harmony Workloads / NES"
+        self.assertIn("Dissonance Workloads", context["policy"]["compositions"])
+        self.assertTrue(any(entry["name"] == "Benchmarks / Dissonance Workloads / NES"
                             for entry in context["other_workflows"]))
 
     def test_the_composed_context_stays_bounded(self):
@@ -706,11 +707,12 @@ class CiArchitectureTests(RequiresApiKey):
         self.assertIn(path, LINTS.select_files(ROOT, ["scripts/verify-nes-films.py"]))
 
     def test_a_registered_media_renderer_is_a_dependency(self):
-        path = ci_contract.by_name("Benchmarks / Harmony Workloads / NES").path
-        content = (ROOT / path).read_text()
-        self.assertIn("workloads/nes/src/bin/nes-film.rs",
-                      LINTS._dependencies(ROOT, path, content))
-        self.assertIn(path, LINTS.select_files(ROOT, ["workloads/nes/src/bin/nes-film.rs"]))
+        path = ".github/workflows/example.yml"
+        workflow = types.SimpleNamespace(
+            jobs=[types.SimpleNamespace(media=("workloads/nes/src/bin/nes-film.rs",))])
+        with mock.patch.object(ci_contract, "by_path", return_value=workflow):
+            self.assertIn("workloads/nes/src/bin/nes-film.rs",
+                          LINTS._dependencies(ROOT, path, ""))
 
     def test_a_change_past_the_context_excerpt_invalidates_the_judgment(self):
         with tempfile.TemporaryDirectory() as directory:

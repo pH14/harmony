@@ -15,7 +15,7 @@ from quality_scope import kani_required
 from rust_scope import rust_checks_required
 
 
-FULL_RUN_KINDS = ("harmony_nes", "harmony_languages", "rust_checks")
+FULL_RUN_KINDS = ("harmony_languages", "rust_checks")
 
 
 def changed_paths(kind, event, base, before):

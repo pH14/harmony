@@ -23,11 +23,11 @@ class ScopeTests(unittest.TestCase):
                       if kind}
         self.assertEqual(set(SCENARIOS) | {"kani", "miri", "miri_matrix", "rust_checks"}, registered)
 
-    def test_a_searcher_change_runs_both_nes_compositions_and_nothing_else(self):
+    def test_a_searcher_change_runs_the_nes_composition_and_nothing_else(self):
         self.assertEqual(self.active("dissonance/searcher/src/search/archive.rs"),
-                         {"dissonance_nes", "harmony_nes"})
+                         {"dissonance_stb"})
 
-    def test_stb_changes_select_their_own_game(self):
+    def test_stb_changes_select_the_stb_check(self):
         for path in ("workloads/nes/src/stb/target.rs", "workloads/nes/src/bin/stb-probe.rs",
                      "workloads/nes/scripts/build-stb-rom.sh",
                      ".github/actions/stb-evaluation/action.yml"):
@@ -46,15 +46,15 @@ class ScopeTests(unittest.TestCase):
 
     def test_backend_changes_select_both_execution_scenarios(self):
         self.assertEqual(self.active("consonance/vmm-backend/src/kvm.rs"),
-                         {"consonance_platform", "consonance_kvm", "harmony_nes", "harmony_languages"})
+                         {"consonance_platform", "consonance_kvm", "harmony_languages"})
 
     def test_the_shared_process_protocol_selects_its_consumers(self):
         self.assertEqual(self.active("consonance/process-proto/src/events.rs"),
-                         {"consonance_platform", "harmony_nes", "harmony_oci", "harmony_languages"})
+                         {"consonance_platform", "harmony_oci", "harmony_languages"})
 
-    def test_the_nes_guest_runs_through_both_compositions(self):
+    def test_the_nes_guest_selects_the_nes_composition(self):
         self.assertEqual(self.active("workloads/nes-guest/src/agent.rs"),
-                         {"dissonance_nes", "harmony_nes"})
+                         {"dissonance_stb"})
 
     def test_docs_and_report_tooling_start_no_scenario(self):
         self.assertFalse(self.active("consonance/vmm-core/README.md", "docs/WORKFLOWS.md",
@@ -67,15 +67,9 @@ class ScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.active(path), set(SCENARIOS))
 
-    def test_guest_preparation_changes_select_the_nova_consumer(self):
-        for path in (".github/actions/prepare-nes-guest/action.yml",
-                     ".github/actions/nes-guest-image/action.yml"):
-            with self.subTest(path=path):
-                self.assertIn("harmony_nes", self.active(path))
-
     def test_the_shared_emulator_build_selects_every_source_built_game(self):
         self.assertEqual(self.active("scripts/build-quicknes-core.sh"),
-                         {"dissonance_nes", "dissonance_stb", "harmony_nes"})
+                         {"dissonance_stb"})
 
 
 if __name__ == "__main__":
