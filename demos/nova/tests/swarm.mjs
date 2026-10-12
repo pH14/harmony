@@ -8,6 +8,7 @@ import { Heatmap, cellKey } from "../src/heat.js";
 import { project, isMapEvidence } from "../src/world.js";
 import { TOUR_KEY } from "../src/tour.js";
 import init, { Explorer } from "../rust/pkg/nova_browser.js";
+const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, {
   rom: await readFile(new URL("nova.nes", base)),
@@ -110,7 +111,7 @@ try {
     await page.goto(url);
     await page.waitForSelector("#attempts", { state: "attached" });
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");
-    assert.deepEqual(await page.locator("#visualization button").allTextContents(), ["Movement", "Heatmap", "Both"]);
+    assert.deepEqual(await page.locator("#visualization button").allTextContents(), ["Movement", "Heatmap"]);
     const bakedNovaPixels = await page.evaluate(async () => {
       const image = new Image();
       image.src = new URL("maps/0.png", location.href);
@@ -128,7 +129,7 @@ try {
     });
     assert.equal(bakedNovaPixels, 0, "The map artwork must not contain a stationary Nova at the starting position");
     await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 240);
-    await page.locator('[data-viz="movement"]').click();
+    await setView(page,'movement');
     await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");
     assert.equal(await page.locator("#heat-legend").count(), 0);
@@ -152,13 +153,13 @@ try {
     assert.equal(await pixels(), before, "Paused search must freeze the actual incoming attempts");
     assert.equal(await page.locator("#attempts").textContent(), attempts);
     await page.screenshot({ path: `test-results/swarm-${name}.png` });
-    await page.locator('[data-viz="heat"]').click();
+    await setView(page,'heat');
     assert.equal(await target.getAttribute("data-overlay"), "heat");
     assert.equal(await target.getAttribute("data-swarm-count"), "0");
     assert.equal(await page.locator("#heat-legend").count(), 0);
     await page.waitForTimeout(1700);
     const heatPixels = await pixels();
-    await page.locator('[data-viz="both"]').click();
+    await setView(page,'both');
     assert.equal(await target.getAttribute("data-overlay"), "both");
     assert.ok(Number(await target.getAttribute("data-swarm-count")) > 0);
     assert.equal(await page.locator("#heat-legend").count(), 0);
@@ -197,7 +198,7 @@ try {
     }
     await page.locator("#tour-skip").click();
     if (name === "desktop") {
-      await page.locator('[data-viz="both"]').click();
+      await setView(page,'both');
       const traced = page.locator('.area-map').filter({ visible: true });
       const room = await traced.evaluateAll((cs) => cs.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
       assert.notEqual(room, undefined);
@@ -208,11 +209,11 @@ try {
       assert.equal(await page.locator("#visualization").getAttribute("data-value"), 'both', 'Inspecting a populated cell must keep Both');
       assert.equal(await page.locator('#inspector').isVisible(), true);
       await page.screenshot({ path: 'test-results/swarm-both-route.png' });
-      await page.locator('[data-viz="movement"]').click();
+      await setView(page,'movement');
       await routeMap.focus();
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('#visualization').dataset.value === 'movement' && document.querySelector('#verification').textContent === 'Exact replay ✓' && [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.tracePoints) > 0));
-      await page.locator('[data-viz="both"]').click();
+      await setView(page,'both');
       await page.locator("#take-control").click();
       await page.keyboard.down("ArrowRight");
       await page.waitForTimeout(140);
@@ -222,7 +223,7 @@ try {
       await page.waitForFunction(() => document.querySelector("#branch-tree button[aria-pressed=true]").dataset.search === "1" && !document.querySelector("#branch-tree button[aria-pressed=true]").disabled && document.querySelector("#inspector").hidden);
       await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 30);
       await page.locator("#pause").click();
-      await page.locator('[data-viz="both"]').click();
+      await setView(page,'both');
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
       const branchAttempts = Number((await page.locator("#attempts").textContent()).replaceAll(",", ""));
       const ghosts = () => page.locator(".area-map").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
@@ -232,7 +233,7 @@ try {
       await page.locator("#pause").click();
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].reduce((n, c) => n + Number(c.dataset.swarmCount), 0) > 0);
       assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both");
-    } else await page.locator('[data-viz="both"]').click();
+    } else await setView(page,'both');
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both");
     await page.locator("#reset").click();
     await page.waitForFunction(() => document.querySelector("#reset").disabled === false);

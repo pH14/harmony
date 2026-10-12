@@ -29,7 +29,9 @@ required. Corresponding sources and build recipes accompany the ROM and core.
 
 ## Interaction
 
-The segmented view control offers Movement, Heatmap and Both. Movement is the default.
+Two checkbox toggles, Movement and Heatmap, choose what the maps show; either or
+both can be on, and the last one on stays on. Movement alone is the default.
+"Both" below means both toggles on.
 Movement shows the original level artwork with
 Nova sprites replaying recorded search rollouts together. Maps retain their
 original colors and the original light background shade. Each sprite fades in
@@ -89,14 +91,18 @@ room height on screen and follows that room's search frontier (the
 80th-percentile x of live sprites, low-pass filtered), or the furthest cell the
 search has reached there, or the room's start. Following pauses while the mouse
 is over a map and for 2.5 seconds after a touch. A two-option control beside
-the visualization choice switches between Follow search and Full view. Whole
-room fits every visible room and stops following. On phones, Follow search also
+the visualization toggles switches between Auto view and Full view. Full view
+fits every visible room and stops following. On phones, Auto view also
 switches to the newest room that has live Novas: it moves forward as soon as the
 search reaches a later room, and back only after the current room has been empty
-for 2.5 seconds. Tapping a room tab keeps that room on screen until Follow search
+for 2.5 seconds. Tapping a room tab keeps that room on screen until Auto view
 is chosen again. When the map width changes while the camera is not following,
-every room returns to the whole-room view. Any drag, pinch or cell
-selection also stops following. When a room is wider than its view, hovering it
+every room returns to the whole-room view. A drag, pinch or edge pan keeps Auto
+view selected and holds the camera where the visitor left it; following resumes
+10 seconds after the last movement. Selecting a cell stops following, and then
+neither camera option is shown as selected until the visitor picks one. On
+phones, when the search reaches a room for the first time after the opening
+room, that room tab's orange dot pulses five times. When a room is wider than its view, hovering it
 shows soft chevrons at the left and right edges; resting on one pans that way,
 easing up to most of a screen per second, and a tap on touch screens glides
 about half a screen. Panning by hand stops following like a drag. A thin track
@@ -118,6 +124,9 @@ Multiverse exploration, which spotlights every room with live Novas; Zooming in,
 zooms each room to fit its part of the selected route, spotlights the rooms the route visits, draws it in gold
 over 1.8 seconds with a moving head, and lights the History film, replay
 controls and route list together; Your turn for takeover; Hand it back for search admission; and Search branches, which spotlights only Searches.
+Pressing Play from here on Zooming in moves to Your turn and starts play there.
+Pressing Branch search from here on Your turn or Hand it back moves straight to
+Search branches.
 Going back from a later step to Your turn or earlier discards gameplay played
 during the tour, so those steps show Play from here again.
 Each step has one or two short sentences and a row of progress dots. Every step enables its real highlighted controls: cell and route selection,
@@ -187,8 +196,10 @@ Heat is a UI view of actual visits, not archive retention or parent-selection
 priority. Pausing, human play and switching to another branch freeze its heat;
 cooled cells remain blue to preserve the explored footprint. The play/pause icon controls search;
 Restart Search resets it. Heatmap and Both show the same activity overlay. Clicking a cell with retained states
-opens a history inspector beside the maps, or a collapsible bottom sheet on phones,
-listing its latest twelve retained states. Mouse hover outlines and the pointer cursor identify only cells with retained histories; empty ground and transit-only cells keep the ordinary cursor. Keyboard selection can still inspect any grid cell. Clicking a cell with no retained states
+opens a history inspector beside the maps, or a bottom sheet on phones,
+listing its latest twelve retained states. The phone sheet spans the screen
+width with an accent top border and a grab handle; closing it leaves a History
+bar docked at the bottom edge that reopens it. Mouse hover outlines and the pointer cursor identify only cells with retained histories; empty ground and transit-only cells keep the ordinary cursor. Keyboard selection can still inspect any grid cell. Clicking a cell with no retained states
 clears the previous selection and closes the inspector, leaving the maps visible
 and keyboard focus on the map. Arrow keys and Enter also select cells. Each level
 shows all its connected areas as stacked live maps: Introduction, Garden and

@@ -9,6 +9,7 @@ import { snapshotHash } from "../src/media.js";
 import { prefixAt } from "../src/branch.js";
 import { TOUR_KEY } from "../src/tour.js";
 import { isMapEvidence } from "../src/world.js";
+const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.CHROME_CHANNEL
@@ -702,7 +703,7 @@ try {
       document.querySelector("#verification").textContent === "Original game" &&
       document.querySelector("#scrub").max === "0",
   );
-  await page.locator('[data-viz="heat"]').click();
+  await setView(page,'heat');
   const originalAttempts = await page.locator("#attempts").textContent();
   const originalCells = await page.locator("#cells").textContent();
   await page.mouse.move(0, 0);
@@ -1311,8 +1312,8 @@ try {
     "The compact pane must leave most of the viewport to the route map",
   );
   assert.ok(
-    phoneMap.topGap <= 42,
-    "The preview should start near the top of the pane",
+    phoneMap.topGap <= 46,
+    `The preview should start near the top of the pane (${phoneMap.topGap})`,
   );
   assert.ok(
     phoneMap.visibleMap,

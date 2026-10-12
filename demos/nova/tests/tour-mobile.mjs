@@ -197,8 +197,10 @@ try {
       await page.locator('#tour-open').tap();
       await ready(page, 0);
       await opening(page);
-      for (let step=1;step<=2;step++) await next(page,step);
-      await play(page);
+      await next(page,1);
+      await page.locator('#take-control').tap();
+      await ready(page,2);
+      await page.waitForFunction(() => document.querySelector('#inspector').classList.contains('controlling'));
       await page.locator('#discard-branch').tap();
       await ready(page,3);
       assert.equal(await page.locator('#tour-title').innerText(),'Hand it back','Early discard must visit the branch-decision step');
@@ -213,10 +215,9 @@ try {
       await play(page);
       await page.evaluate(() => window.tourForkDelay = 1000);
       await page.locator('#search-here').tap();
-      await next(page,3);
+      await ready(page,4);
+      assert.equal(await page.locator('#tour-title').innerText(),'Search branches','Branching from Your turn skips the branch-decision step');
       await page.waitForFunction(() => document.querySelector('button[data-search="1"][aria-pressed="true"]') && document.querySelector('#inspector').hidden);
-      assert.equal(await page.locator('#tour-title').innerText(),'Hand it back','Early admission must not skip straight to Searches');
-      await next(page,4);
       await page.locator('#pause').tap();
       await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
       const paths = await page.locator('#attempts').textContent();

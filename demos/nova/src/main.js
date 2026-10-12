@@ -32,7 +32,7 @@ const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Plays NES</h1><p class="hero-lede">Watch Harmony play the delightful <a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> NES game right in your browser.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
-<div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>World 1 – Level 1</button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search frontier">Follow search</button><button data-camera="room" aria-pressed="false" title="Show each full room">Full view</button></div><div id="visualization" class="segments" role="group" aria-label="Visualization" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button><button data-viz="both" aria-pressed="false">Both</button></div><button id="completion" hidden>Watch completion</button></div></div>
+<div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>World 1 – Level 1</button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search, and return to it 10 seconds after you move the map">Auto view</button><button data-camera="room" aria-pressed="false" title="Show each full room">Full view</button></div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Rooms in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a cell to watch its history</div><div id="hover" hidden></div><div id="map-toast" role="status" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 <p class="game-attribution"><a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> by <a href="https://novasquirrel.com/">NovaSquirrel</a> · Original game artwork <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></p>
@@ -203,14 +203,17 @@ sprites.src = new URL("nova-sprites.png", base).href;
 function setVisualization(mode) {
   visualization = mode;
   $("visualization").dataset.value = mode;
-  for (const button of $("visualization").children) button.setAttribute("aria-pressed", button.dataset.viz === mode);
+  for (const button of $("visualization").children) button.setAttribute("aria-pressed", mode === "both" || button.dataset.viz === mode);
   $("map-hint").hidden = mode === "movement";
   $("hover").hidden = true;
   drawMap(performance.now());
 }
 for (const button of $("visualization").children) button.onclick = () => {
   userSelected = true;
-  setVisualization(button.dataset.viz);
+  const on = new Set(visualization === "both" ? ["movement", "heat"] : [visualization]);
+  if (on.has(button.dataset.viz)) on.delete(button.dataset.viz);
+  else on.add(button.dataset.viz);
+  if (on.size) setVisualization(on.size === 2 ? "both" : [...on][0]);
 };
 let theme;
 try { theme = localStorage.getItem("harmony.nova.theme"); } catch {}
@@ -278,7 +281,7 @@ function drawNovas(ctx, level, screenScale, rooms = swarmRooms, panel = null) {
 }
 const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3;
-const camera = { follow: false, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
+const camera = { follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
@@ -330,6 +333,7 @@ function steerCamera(level, c, target, zoom, zoomRate, panRate) {
   Object.assign(view, panelCenter(canvasPanel(c), view.zoom, view, c));
 }
 function overview(level) {
+  camera.overview = true;
   roomView(level).zoom = 1;
   for (const c of document.querySelectorAll(`.map-row[data-map="${level}"] .area-map`)) {
     const view = roomView(level, c);
@@ -338,18 +342,28 @@ function overview(level) {
   }
 }
 function updateCameraToggle() {
-  const value = camera.follow || camera.focus ? "follow" : "room";
+  const value = camera.follow || camera.focus ? "follow" : camera.overview ? "room" : "";
   $("camera-toggle").dataset.value = value;
   for (const button of $("camera-toggle").children) button.setAttribute("aria-pressed", button.dataset.camera === value);
 }
 function stopCamera() {
+  camera.overview = false;
   camera.only = null;
   camera.follow = false;
   camera.focus = null;
   camera.introDone = true;
   updateCameraToggle();
 }
+function moveCameraByHand() {
+  camera.overview = false;
+  camera.introDone = true;
+  camera.focus = null;
+  if (camera.follow) camera.manual = performance.now() + 10000;
+  updateCameraToggle();
+}
 function followSearch() {
+  camera.overview = false;
+  camera.manual = 0;
   camera.only = null;
   camera.targets = new Map();
   camera.follow = true;
@@ -367,6 +381,7 @@ for (const button of $("camera-toggle").children) button.onclick = () => {
   if (button.dataset.camera === "room") {
     stopCamera();
     for (const room of cameraRooms()) overview(room);
+    updateCameraToggle();
   } else {
     camera.pinned = null;
     followSearch();
@@ -412,7 +427,7 @@ function updateCamera(now) {
     }
     return;
   }
-  if (!camera.follow || paused || camera.held > now) return;
+  if (!camera.follow || paused || camera.held > now || camera.manual > now) return;
   camera.introStart ||= now;
   const t = now - camera.introStart;
   const scale = camera.introDone ? 1 : t < 1500 ? INTRO_SCALE : INTRO_SCALE + (1 - INTRO_SCALE) * ease(Math.min(1, (t - 1500) / 800));
@@ -1134,12 +1149,10 @@ function startSearch(level = bootLevel) {
         ready = true;
         activeSearch = data.active;
         const fresh = activateSearchView(activeSearch),
-          handedOff = fresh && !!pendingOrigin,
-          handoffTourStep = pendingOrigin?.tourStep;
+          handedOff = fresh && !!pendingOrigin;
         originPulse = null;
         if (handedOff) {
           branchOrigin = pendingOrigin;
-          delete branchOrigin.tourStep;
           originPulse = { point: branchOrigin.point, start: performance.now() };
           saveSearchView();
         }
@@ -1196,7 +1209,7 @@ function startSearch(level = bootLevel) {
             `${searchLabel(searchChoices.find((s) => s.id === activeSearch))} is searching from this frame.`;
           updateBranchControls();
           $("branch-tree").querySelector(`[data-search="${activeSearch}"]`).focus({ preventScroll: true });
-          if (tour.open && [STEP.you, STEP.fork].includes(handoffTourStep) && tour.index === handoffTourStep) tour.go(handoffTourStep + 1);
+
         }
         if (engine) selectState(state, initial).catch(fail);
         updateStats();
@@ -1341,7 +1354,16 @@ function updateStats() {
   const others = [...searchViews].filter(([id]) => id !== activeSearch).map(([, view]) => view.stats || {});
   const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), stats[key] || 0);
   $("hero-timelines").textContent = fmt(total("executions"));
-  for (const tab of $("room-tabs").children) tab.classList.toggle("visited", seenMaps.has(Number(tab.dataset.map)));
+  const anyVisited = !!$("room-tabs").querySelector(".visited");
+  for (const tab of $("room-tabs").children) {
+    const seen = seenMaps.has(Number(tab.dataset.map));
+    if (seen && anyVisited && !tab.classList.contains("visited")) {
+      tab.classList.add("fresh");
+      tab.addEventListener("animationend", () => tab.classList.remove("fresh"), { once: true });
+      tab.addEventListener("click", () => tab.classList.remove("fresh"), { once: true });
+    }
+    tab.classList.toggle("visited", seen);
+  }
   $("attempts").textContent = fmt(stats.executions);
   $("states").textContent = fmt(stats.states);
   $("cells").textContent = fmt(heat.cells.size);
@@ -1479,8 +1501,9 @@ function updatePan(now) {
   if (!panHold.moved) {
     panHold.moved = true;
     userSelected = true;
-    stopCamera();
+    moveCameraByHand();
   }
+  if (camera.follow) camera.manual = now + 10000;
   const speed = (c.width / scale) * 0.85 * ease(Math.min(1, ramp));
   Object.assign(view, panelCenter(map, view.zoom, { x: view.x + panHold.dir * speed * dt, y: view.y }, c));
 }
@@ -1678,7 +1701,7 @@ function bindMap(c) {
     pointerStart = null;
     hoverCell = null;
     $("hover").hidden = true;
-    stopCamera();
+    moveCameraByHand();
   }, { passive: false });
   c.addEventListener("touchmove", (event) => {
     if (!pinch || event.touches.length !== 2) return;
@@ -1693,6 +1716,7 @@ function bindMap(c) {
     }, c);
     room.x = center.x; room.y = center.y;
     userSelected = dragged = true;
+    if (camera.follow) camera.manual = performance.now() + 10000;
     roomView(id).zoom = room.zoom;
     drawMap(performance.now());
   }, { passive: false });
@@ -1726,10 +1750,11 @@ function bindMap(c) {
         dy = e.pointerType === "touch" ? 0 : e.clientY - pointerStart.y;
       if (Math.hypot(dx, dy) > 4 && !dragged) {
         dragged = true;
-        stopCamera();
+        moveCameraByHand();
       }
       if (dragged) {
         userSelected = true;
+        if (camera.follow) camera.manual = performance.now() + 10000;
         const rect = c.getBoundingClientRect(),
           scale =
             Math.min(c.width / map.width, c.height / map.height) * room.zoom;
@@ -2027,6 +2052,12 @@ function expandInspector(expanded) {
 $("expand-inspector").onclick = () =>
   expandInspector(!$("inspector").classList.contains("expanded"));
 $("take-control").onclick = () => {
+  if (tour.open && tour.index === STEP.one && !controlMode) {
+    tour.go(STEP.you).then(() => {
+      if (tour.open && tour.index === STEP.you && tour.ready) $("take-control").click();
+    });
+    return;
+  }
   hideRoutePreview();
   if (tourSession) { tourSession.interacted = true; tourSession.gameplay = true; }
   if (controlMode) {
@@ -2105,7 +2136,6 @@ $("search-here").onclick = async () => {
     prefix = trace.filter((p) => p.frame < branchFrame);
   prefix.push(point);
   pendingOrigin = {
-    tourStep: tour.open ? tour.index : null,
     point: point.gap ? null : point,
     frame: branchFrame,
     segments: trailSegments(prefix),
@@ -2113,6 +2143,7 @@ $("search-here").onclick = async () => {
   updateBranchControls();
   $("branch-message").hidden = false;
   $("branch-message").textContent = "Starting search from this frame…";
+  if (tour.open && (tour.index === STEP.you || tour.index === STEP.fork)) tour.go(STEP.tree);
   const branchWorker = worker,
     epoch = ++replayEpoch;
   const actions = prefixAt(current.actions, currentFrame),
@@ -2430,7 +2461,10 @@ const mapResize = new ResizeObserver(([entry]) => {
   mapLayoutWidth = width;
   for (const key of views.keys()) if (typeof key === "string") views.delete(key);
   renderMapRows(catalog.levels.find(l => l.rooms.includes(mapLevel)));
-  if (!camera.follow && !camera.focus) for (const room of cameraRooms()) overview(room);
+  if (!camera.follow && !camera.focus) {
+    for (const room of cameraRooms()) overview(room);
+    updateCameraToggle();
+  }
   drawMap(performance.now());
 });
 mapResize.observe($("map-rows"));
@@ -2531,7 +2565,7 @@ const tour = new GuidedTour({
           : tourCellRect(),
         $("inspector"),
       ],
-      interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("map-rows")],
+      interactive: () => [document.querySelector(".transport"), $("sound"), $("state-list"), $("map-rows"), $("take-control")],
     },
     {
       id: "you",

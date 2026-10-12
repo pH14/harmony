@@ -3,6 +3,7 @@ import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { TOUR_KEY } from '../src/tour.js';
+const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const browser = await chromium.launch({headless: true, ...(process.env.CHROME_CHANNEL ? {channel: process.env.CHROME_CHANNEL} : {})});
 const errors = [];
 async function open(options) {
@@ -104,7 +105,7 @@ try {
     assert.ok(Math.abs(await desktop.locator('.exploration').evaluate(e => e.getBoundingClientRect().width) - width) < 1, 'Tree depth must not resize the maps');
     if (id === 1) {
       for (const mode of ['movement','both','heat']) {
-        await desktop.locator(`[data-viz="${mode}"]`).click();
+        await setView(desktop,mode);
         await desktop.locator('[data-search="0"]').hover();
         await desktop.waitForFunction(mode => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === '0' && c.dataset.overlay === mode) && (mode === 'heat' || [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.swarmCount) > 0)),mode);
         assert.equal(await desktop.locator('#visualization').getAttribute('data-value'),mode);
@@ -117,7 +118,7 @@ try {
         await desktop.mouse.move(0,0);
         await desktop.waitForFunction(() => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === ''));
       }
-      await desktop.locator('[data-viz="movement"]').click();
+      await setView(desktop,'movement');
     }
   }
   const parentTime = (await desktop.locator('[data-search="3"]').innerText()).split('\n')[0].replace('↳ ','');

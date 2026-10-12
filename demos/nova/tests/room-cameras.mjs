@@ -46,7 +46,7 @@ try {
         const edge=part.locator(`.pan-edge[data-dir="${dir}"]`);
         if(phone)await edge.tap();else{await canvases.first().hover();await edge.hover();}
         await page.waitForFunction(([room,before,dir])=>dir*(+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.centerX-before)>8,[room,before,dir]);
-        assert.equal(await cameraMode(page),'room','Panning from a room edge hands the camera to the visitor');
+        assert.equal(await cameraMode(page),'follow','Panning from a room edge keeps Auto view, which resumes after a pause');
         if(!phone)await page.mouse.move(0,0);
         await camera(page,phone,'follow');
       }
