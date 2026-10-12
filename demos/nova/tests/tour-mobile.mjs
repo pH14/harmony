@@ -111,7 +111,7 @@ try {
     await ready(page, 0);
     await opening(page);
     await next(page, 1);
-    assert.equal(await page.locator('#tour-title').innerText(), 'A Timeline');
+    assert.equal(await page.locator('#tour-title').innerText(), 'Zooming in');
     assert.equal(await page.locator('#tour-ping').getAttribute('visibility'), 'visible');
     assert.ok(await page.locator('#tour-ping-bounds rect').count() > 0);
     assert.equal(await page.locator('.tour-ping-wave').first().evaluate((node) => getComputedStyle(node).animationName), 'none', 'Reduced motion keeps the cell emphasis static');

@@ -77,7 +77,7 @@ async function opening(page) {
   assert.equal(lit, true, 'The opening step spotlights the live map');
 }
 async function routeStep(page) {
-  assert.equal(await page.locator('#tour-title').innerText(), 'A Timeline');
+  assert.equal(await page.locator('#tour-title').innerText(), 'Zooming in');
   await page.waitForFunction(() => document.querySelector('#tour-ping').getAttribute('visibility') === 'visible' && [...document.querySelectorAll('.area-map')].some((c) => Number(c.dataset.tracePoints) > 0));
 }
 async function next(page, step) {

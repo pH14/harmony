@@ -31,7 +31,7 @@ const compactReplay = matchMedia("(max-width: 800px), (pointer: coarse) and (max
 const catalog = await (await fetch(new URL("maps.json", base))).json();
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
-<main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Plays NES</h1><p class="hero-lede">The delightful <a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> NES game is running right in your browser. Harmony is searching through it, keeping track of a multiverse of timelines.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div><div><b id="hero-playtime">0s</b><span>of gameplay</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
+<main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Plays NES</h1><p class="hero-lede">Watch Harmony play the delightful <a href="https://github.com/NovaSquirrel/NovaTheSquirrel">Nova the Squirrel</a> NES game right in your browser.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading Nova…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>World 1 – Level 1</button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search frontier">Follow search</button><button data-camera="room" aria-pressed="false" title="Show each full room">Full view</button></div><div id="visualization" class="segments" role="group" aria-label="Visualization" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button><button data-viz="both" aria-pressed="false">Both</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Rooms in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>INTRODUCTION</span><div id="map-hint" hidden>Click a cell to watch its history</div><div id="hover" hidden></div><div id="map-toast" role="status" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
@@ -1337,17 +1337,10 @@ $("completion").onclick = () => {
   watchRequested = true;
   worker.postMessage({ type: "states", ids: [witness.id], request: ++request });
 };
-function playtime(frames) {
-  const seconds = Math.floor((frames || 0) / 60);
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-  return `${Math.floor(seconds / 3600)}h ${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}m`;
-}
 function updateStats() {
   const others = [...searchViews].filter(([id]) => id !== activeSearch).map(([, view]) => view.stats || {});
   const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), stats[key] || 0);
   $("hero-timelines").textContent = fmt(total("executions"));
-  $("hero-playtime").textContent = playtime(total("frames"));
   for (const tab of $("room-tabs").children) tab.classList.toggle("visited", seenMaps.has(Number(tab.dataset.map)));
   $("attempts").textContent = fmt(stats.executions);
   $("states").textContent = fmt(stats.states);
@@ -2518,8 +2511,8 @@ const tour = new GuidedTour({
       reveal: () => tourMap(),
       title: "Multiverse exploration",
       copy: [
-        "Harmony creates a multiverse of timelines by trying many small actions over and over.",
-        "It keeps the ones that produce progress, and continually updates its search frontier.",
+        "Harmony plays games by creating a multiverse of timelines.",
+        "It continually tries small actions all over the areas it has explored, and keeps the ones that produce progress.",
       ],
       targets: () => activeRoomSpotlights(),
       interactive: () => [$("map-rows"), $("pause")],
@@ -2527,7 +2520,7 @@ const tour = new GuidedTour({
     {
       id: "one",
       reveal: () => tourMap(),
-      title: "A Timeline",
+      title: "Zooming in",
       ping: () => (traceReveal ? null : tourCellRect()),
       copy: [
         "Harmony can zoom in on any single timeline it has explored. You can press Replay to watch how it reached this one particular state.",
@@ -2564,7 +2557,7 @@ const tour = new GuidedTour({
       searches: true,
       title: "Search branches",
       copy: [
-        "Harmony keeps track of the branches you create. You can switch between them to compare.",
+        "Harmony keeps track of the branches you create. You can switch between them to compare and guide the search.",
       ],
       targets: () => [
         searchesSpotlight(),

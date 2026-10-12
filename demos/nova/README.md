@@ -75,8 +75,8 @@ as exploration. The build extracts idle, four walking and jumping poses, in both
 directions, from upstream's spnova.chr and player.s, with the original palette.
 The sprite sheet carries the same NovaSquirrel CC BY-NC-SA attribution as maps.
 
-The page opens with a one-line pitch and two live totals: timelines tried and
-gameplay time executed, summed across every search branch. The per-search
+The page opens with a one-line pitch and one live total: timelines tried,
+summed across every search branch. The per-search
 counters (timelines tried, moments saved, map cells reached, game frames played
 and snapshot memory) sit in a collapsed Details disclosure at the bottom of the
 Searches pane. There is no page header; the footer carries the Harmony link,
@@ -114,7 +114,7 @@ in the same room. Take the tour starts the tour at once. Returning and
 reduced-motion visitors start at the close-up.
 
 A five-step guided tour follows the story many, one, you, fork and tree:
-Multiverse exploration, which spotlights every room with live Novas; A Timeline, which
+Multiverse exploration, which spotlights every room with live Novas; Zooming in, which
 zooms each room to fit its part of the selected route, spotlights the rooms the route visits, draws it in gold
 over 1.8 seconds with a moving head, and lights the History film, replay
 controls and route list together; Your turn for takeover; Hand it back for search admission; and Search branches, which spotlights only Searches.
