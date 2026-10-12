@@ -16,6 +16,7 @@
 #define MAX_ROWS 4096
 #define MAX_STATEMENTS 256
 #define MAX_BODY 4096
+#define MAX_DROPPED 1024
 
 enum site { SITE_OP, SITE_STATEMENTS, SITE_THINK, SITE_KIND, SITE_BEGIN, SITE_CHECKPOINT, SITE_REOPEN, SITE_BODY };
 
@@ -49,6 +50,12 @@ struct txn {
     struct write_op ops[MAX_STATEMENTS];
 };
 
+struct dropped {
+    int64_t txn;
+    char outcome;
+    struct write_op op;
+};
+
 struct client {
     int id;
     const char *path;
@@ -61,6 +68,9 @@ struct client {
     int64_t next_txn;
     int journal;
     char journal_path[256];
+    struct dropped dropped[MAX_DROPPED];
+    int dropped_next;
+    int dropped_count;
 };
 
 static uint64_t fnv64(const unsigned char *data, size_t length) {
@@ -120,8 +130,37 @@ static int same_table(struct table *a, struct table *b) {
     return memcmp(a->rows, b->rows, sizeof a->rows[0] * (size_t)a->count) == 0;
 }
 
-/* Names the first rows where two tables differ, sorting both by key. */
-static void describe_difference(struct table *seen, struct table *expected, char *out, size_t size) {
+/* Remembers the writes of a transaction the journal records as not applied:
+ * F when its COMMIT failed, R when a recovery read found it absent. */
+static void note_dropped(struct client *c, const struct txn *t, char outcome) {
+    for (int i = 0; i < t->count; i++) {
+        c->dropped[c->dropped_next] = (struct dropped){t->id, outcome, t->ops[i]};
+        c->dropped_next = (c->dropped_next + 1) % MAX_DROPPED;
+        if (c->dropped_count < MAX_DROPPED) c->dropped_count++;
+    }
+}
+
+static const struct dropped *find_dropped(const struct client *c, int deleted, const struct row *row) {
+    for (int n = 1; n <= c->dropped_count; n++) {
+        const struct dropped *d = &c->dropped[(c->dropped_next - n + MAX_DROPPED) % MAX_DROPPED];
+        if (d->op.row.key != row->key || (d->op.kind == 'D') != deleted) continue;
+        if (deleted || (d->op.row.ver == row->ver && d->op.row.len == row->len && d->op.row.hash == row->hash))
+            return d;
+    }
+    return NULL;
+}
+
+static int name_dropped(const struct client *c, int deleted, const struct row *row, char *out, size_t size) {
+    const struct dropped *d = find_dropped(c, deleted, row);
+    if (!d) return 0;
+    return snprintf(out, size, " (%s by txn %lld, journaled %s)", deleted ? "deleted" : "written", (long long)d->txn,
+                    d->outcome == 'F' ? "failed" : "unapplied at recovery");
+}
+
+/* Names the first rows where two tables differ, sorting both by key, and the
+ * journaled-unapplied transaction that explains a row, if any. */
+static void describe_difference(const struct client *c, struct table *seen, struct table *expected, char *out,
+                                size_t size) {
     int i = 0, j = 0, named = 0;
     size_t at = 0;
     qsort(seen->rows, (size_t)seen->count, sizeof seen->rows[0], row_order);
@@ -133,15 +172,19 @@ static void describe_difference(struct table *seen, struct table *expected, char
         int n = 0;
         if (s && (!e || s->key < e->key)) {
             n = snprintf(out + at, size - at, "; unexpected key %lld ver %lld", (long long)s->key, (long long)s->ver);
+            if (n > 0 && at + (size_t)n < size) n += name_dropped(c, 0, s, out + at + n, size - at - (size_t)n);
             i++;
         } else if (e && (!s || e->key < s->key)) {
             n = snprintf(out + at, size - at, "; missing key %lld ver %lld", (long long)e->key, (long long)e->ver);
+            if (n > 0 && at + (size_t)n < size) n += name_dropped(c, 1, e, out + at + n, size - at - (size_t)n);
             j++;
         } else {
-            if (s->ver != e->ver || s->len != e->len || s->hash != e->hash)
+            if (s->ver != e->ver || s->len != e->len || s->hash != e->hash) {
                 n = snprintf(out + at, size - at, "; key %lld has ver %lld len %lld, history ver %lld len %lld",
                              (long long)s->key, (long long)s->ver, (long long)s->len, (long long)e->ver,
                              (long long)e->len);
+                if (n > 0 && at + (size_t)n < size) n += name_dropped(c, 0, s, out + at + n, size - at - (size_t)n);
+            }
             i++;
             j++;
         }
@@ -210,6 +253,8 @@ static void load_journal(struct client *c) {
     long good = 0;
     memset(&c->model, 0, sizeof c->model);
     c->has_pending = 0;
+    c->dropped_next = 0;
+    c->dropped_count = 0;
     c->next_seq = 1;
     c->next_txn = 1;
     if (!file) return;
@@ -239,6 +284,8 @@ static void load_journal(struct client *c) {
             if (c->has_pending && c->pending.id == id) {
                 if (applied)
                     for (int i = 0; i < c->pending.count; i++) apply_op(&c->model, &c->pending.ops[i]);
+                else
+                    note_dropped(c, &c->pending, line[0]);
                 c->has_pending = 0;
             }
         } else {
@@ -285,21 +332,20 @@ static int read_owned(struct client *c, struct table *out) {
 }
 
 /* Compares a read with the acknowledged history and resolves an
- * indeterminate transaction. */
-static void compare_owned(struct client *c, struct table *seen) {
+ * indeterminate transaction that applied. Returns 1 when the read shows an
+ * indeterminate transaction absent: the caller resolves it only once a write
+ * of its own has committed after the read, because a commit whose process died
+ * before it updated the WAL index is invisible to live connections, yet comes
+ * back if the index is rebuilt before another commit overwrites its frames. */
+static int compare_owned(struct client *c, struct table *seen) {
     struct table expected = c->model;
     static struct table applied;
     char detail[1024];
     if (same_table(seen, &expected)) {
-        if (c->has_pending) {
-            char line[64];
-            snprintf(line, sizeof line, "R %lld 0\n", (long long)c->pending.id);
-            journal_line(c, line);
-            c->has_pending = 0;
-        }
+        if (c->has_pending) return 1;
         gen_reached(R_COMPARED);
         gen_always(A_COMMITS, 1, NULL);
-        return;
+        return 0;
     }
     if (c->has_pending) {
         applied = c->model;
@@ -312,19 +358,39 @@ static void compare_owned(struct client *c, struct table *seen) {
             c->has_pending = 0;
             gen_reached(R_COMPARED);
             gen_always(A_COMMITS, 1, NULL);
-            return;
+            return 0;
         }
     }
     snprintf(detail, sizeof detail, "client %d saw %d owned rows, history has %d, pending txn %lld", c->id,
              seen->count, c->model.count, c->has_pending ? (long long)c->pending.id : -1LL);
-    describe_difference(seen, &expected, detail + strlen(detail), sizeof detail - strlen(detail));
+    describe_difference(c, seen, &expected, detail + strlen(detail), sizeof detail - strlen(detail));
     if (c->has_pending && strlen(detail) + 32 < sizeof detail) {
         strcat(detail, "; if the pending txn applied");
-        describe_difference(seen, &applied, detail + strlen(detail), sizeof detail - strlen(detail));
+        describe_difference(c, seen, &applied, detail + strlen(detail), sizeof detail - strlen(detail));
     }
     fprintf(stderr, "sqlite-general: %s\n", detail);
     gen_reached(R_COMPARED);
     gen_always(A_COMMITS, 0, detail);
+    return 0;
+}
+
+/* Inside the recovery read's write transaction, commits a write and then
+ * journals the indeterminate transaction as not applied. */
+static int seal_unapplied(struct client *c) {
+    char sql[128];
+    char line[64];
+    snprintf(sql, sizeof sql, "INSERT INTO seal(owner, n) VALUES(%d, 1) ON CONFLICT(owner) DO UPDATE SET n = n + 1",
+             c->id);
+    int rc = exec(c->db, sql, "seal unapplied commit");
+    if (rc == SQLITE_OK) rc = exec(c->db, "COMMIT", "commit seal");
+    if (rc != SQLITE_OK) return rc;
+    snprintf(line, sizeof line, "R %lld 0\n", (long long)c->pending.id);
+    journal_line(c, line);
+    note_dropped(c, &c->pending, 'R');
+    c->has_pending = 0;
+    gen_reached(R_COMPARED);
+    gen_always(A_COMMITS, 1, NULL);
+    return SQLITE_OK;
 }
 
 static void apply_settings(struct client *c, int busy_ms, const char *sync, int autockpt, int cache) {
@@ -449,6 +515,7 @@ static void op_write(struct client *c) {
     if (!sqlite3_get_autocommit(c->db)) {
         sqlite3_exec(c->db, "ROLLBACK", NULL, NULL, NULL);
         journal_outcome(c, 'F', t.id);
+        note_dropped(c, &t, 'F');
         c->has_pending = 0;
     }
 }
@@ -523,13 +590,14 @@ static void recovery_check(struct client *c) {
     static struct table seen;
     for (int attempt = 0; attempt < 20; attempt++) {
         int rc;
-        if (exec(c->db, "BEGIN DEFERRED", "begin recovery read") != SQLITE_OK) {
+        if (exec(c->db, c->has_pending ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED", "begin recovery read") != SQLITE_OK) {
             gen_sleep_ms(50);
             continue;
         }
         rc = read_owned(c, &seen);
-        if (rc == SQLITE_OK) compare_owned(c, &seen);
+        if (rc == SQLITE_OK && compare_owned(c, &seen)) rc = seal_unapplied(c);
         sqlite3_exec(c->db, "COMMIT", NULL, NULL, NULL);
+        if (!sqlite3_get_autocommit(c->db)) sqlite3_exec(c->db, "ROLLBACK", NULL, NULL, NULL);
         if (rc == SQLITE_OK) return;
         gen_sleep_ms(50);
     }
@@ -542,7 +610,8 @@ static int do_init(const char *path) {
         exec(db,
              "CREATE TABLE IF NOT EXISTS kv(k INTEGER PRIMARY KEY, owner INTEGER NOT NULL, "
              "ver INTEGER NOT NULL, body BLOB NOT NULL);"
-             "CREATE INDEX IF NOT EXISTS kv_owner ON kv(owner, ver);",
+             "CREATE INDEX IF NOT EXISTS kv_owner ON kv(owner, ver);"
+             "CREATE TABLE IF NOT EXISTS seal(owner INTEGER PRIMARY KEY, n INTEGER NOT NULL);",
              "init") != SQLITE_OK)
         return 1;
     sqlite3_close(db);

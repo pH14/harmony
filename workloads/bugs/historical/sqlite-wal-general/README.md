@@ -16,7 +16,7 @@ checks that no marker string reached the binary, and links
 
 | bundle line | role |
 |---|---|
-| `setup` | `sqlite-general init /data/test.db`: an empty WAL database with `kv(k, owner, ver, body)` and an index on `(owner, ver)` |
+| `setup` | `sqlite-general init /data/test.db`: an empty WAL database with `kv(k, owner, ver, body)`, an index on `(owner, ver)`, and `seal(owner, n)`, which a restarted client writes before it journals an indeterminate commit as not applied |
 | `node client-0` … `client-2` | three clients; each owns its rows and journals its commits in `/data/journal-<id>` |
 | `ready` | `/bin/true` |
 

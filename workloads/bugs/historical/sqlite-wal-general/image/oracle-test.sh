@@ -3,8 +3,9 @@
 # Exercises the sqlite-general oracle without Harmony: a clean run with
 # client kills must evaluate its properties without a violation, resolved
 # indeterminate commits and absent failed commits must pass, and a mismatched
-# indeterminate commit, an applied failed commit, a lost acknowledged write and
-# corrupted page headers must each be reported. A torn journal line must not
+# indeterminate commit, an applied failed commit, a commit resolved unapplied
+# that appears later, a lost acknowledged write and corrupted page headers must
+# each be reported, naming the rows and commits involved. A torn journal line must not
 # hide the commits journaled after it.
 #
 #   oracle-test.sh SQLITE_GENERAL SQLITE3_SHELL
@@ -65,6 +66,7 @@ printf 'P 900001 1 I:%d:1:0:%s\n' "$key" "$empty_hash" >>"$work/journal-1"
 "$driver" verify 1 "$db" 2>/dev/null
 (( $(hits "sqlite preserves acknowledged commits" false) == before )) || fail "an unapplied indeterminate commit was a violation"
 grep -q "^R 900001 0$" "$work/journal-1" || fail "the unapplied commit was not resolved"
+[[ $("$shell" "$db" "SELECT n FROM seal WHERE owner = 1") -ge 1 ]] || fail "the unapplied resolution committed no write"
 
 printf 'P 900002 1 I:%d:1:0:%s\n' "$((key + 1))" "$empty_hash" >>"$work/journal-1"
 "$shell" "$db" "INSERT INTO kv(k, owner, ver, body) VALUES($((key + 1)), 1, 1, x'')"
@@ -98,7 +100,22 @@ printf 'P 900005 1 I:%d:1:0:%s\nF 900005\n' "$((key + 4))" "$empty_hash" >>"$wor
 "$shell" "$db" "INSERT INTO kv(k, owner, ver, body) VALUES($((key + 4)), 1, 1, x'')"
 "$driver" verify 1 "$db" 2>/dev/null
 (( $(hits "sqlite preserves acknowledged commits" false) > before )) || fail "a failed commit that applied passed"
-echo "failed commits: absent passes, applied is reported"
+grep -qF "unexpected key $((key + 4)) ver 1 (written by txn 900005, journaled failed)" "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" ||
+    fail "the report does not name the failed commit"
+echo "failed commits: absent passes, applied is reported, naming the commit"
+
+"$shell" "$db" "DELETE FROM kv WHERE k = $((key + 4))"
+printf 'P 900007 1 I:%d:1:0:%s\n' "$((key + 6))" "$empty_hash" >>"$work/journal-1"
+"$driver" verify 1 "$db" 2>/dev/null
+grep -q "^R 900007 0$" "$work/journal-1" || fail "the unapplied commit was not resolved"
+before=$(hits "sqlite preserves acknowledged commits" false)
+"$shell" "$db" "INSERT INTO kv(k, owner, ver, body) VALUES($((key + 6)), 1, 1, x'')"
+"$driver" verify 1 "$db" 2>/dev/null
+(( $(hits "sqlite preserves acknowledged commits" false) > before )) || fail "a commit resolved unapplied that appeared later passed"
+grep -qF "unexpected key $((key + 6)) ver 1 (written by txn 900007, journaled unapplied at recovery)" \
+    "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" || fail "the report does not name the commit resolved unapplied"
+"$shell" "$db" "DELETE FROM kv WHERE k = $((key + 6))"
+echo "a commit resolved unapplied that appears later: reported, naming the commit"
 
 before=$(hits "sqlite preserves acknowledged commits" false)
 owner=$("$shell" "$db" "SELECT owner FROM kv WHERE owner IN (0, 2) ORDER BY owner LIMIT 1")

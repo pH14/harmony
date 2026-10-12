@@ -211,7 +211,11 @@ All three workloads share these rules:
 - **Journal**: `/data/journal-<client>`. Before `COMMIT` a pending line records
   the transaction's writes. After `COMMIT` an `A` line marks it acknowledged, or
   an `F` line marks it failed. A pending transaction with neither outcome is
-  indeterminate. A torn final line never had its `COMMIT` issued.
+  indeterminate. A torn final line never had its `COMMIT` issued. A restarted
+  client resolves an indeterminate transaction with an `R` line from a
+  recovery read in a write transaction: applied when the read shows its
+  writes, and not applied only after the client commits a write of its own in
+  that transaction (correction 13).
 - **Properties** (Always):
   - `sqlite integrity_check returns ok`: evaluated whenever `integrity_check`
     returned rows. **This is the case's scored assertion.**
@@ -590,3 +594,16 @@ made after a general-arm measurement restarts every affected measurement.
     PostgreSQL general searches on the same seeds spent 9 and 16 percent less
     wall time per guest tick. Every instrumented arm runs more executions in the
     same budget, so every arm is measured again.
+
+13. **Sealed recovery resolutions** (after the held-out measurement). A SQLite
+    general client killed during `COMMIT` can leave every frame of its
+    transaction in the WAL without updating the WAL index. Live connections
+    do not see the transaction, so the restarted client's recovery read
+    journaled it as not applied; if the index were then rebuilt from the WAL
+    before another commit overwrote those frames, the transaction would
+    appear, and the comparison would report a lost commit that SQLite never
+    acknowledged. The recovery read now runs in a write transaction and
+    journals a transaction as not applied only after committing a write of
+    its own, which overwrites any such frames. A failed comparison also names
+    the failed or unapplied transaction that wrote an unexpected row. Every
+    SQLite general and held-out arm is measured again.
