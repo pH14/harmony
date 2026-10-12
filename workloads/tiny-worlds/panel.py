@@ -29,6 +29,9 @@ REPORT_FIELDS = {"config", "crossing", "evidence", "first_objective_execution", 
                  "scale", "stream_sha256", "success", "verified", "work_budget"}
 SHIELDED_BOSS = {"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24, "shield": 8, "shield_odds": 4,
                  "hit_tier": True, "tail_slots": True}
+ARENA = {"loops": 0, "corridor": 4, "shaft": 4, "inner": 48, "farms": 8, "farm_cap": 16, "boss_stock": 6, "shield": 6,
+         "shield_odds": 4, "tail_slots": True, "arena": 8}
+ARENA_BUDGET, ROOTED_ARENA_BUDGET = 250_000, 20_000
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
@@ -147,6 +150,12 @@ def requests(seeds: int) -> list[dict]:
             shield_seed = secrets.randbits(64)
             rows.append(request("shield/tier", shielded, shield_seed, budget=600_000))
             rows.append(request("shield/hidden", hidden, shield_seed, budget=600_000))
+        for _ in range(3):
+            arena = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64), **ARENA}}
+            rooted = {**arena, "parameters": {**arena["parameters"], "rooted": True}}
+            arena_seed = secrets.randbits(64)
+            rows.append(request("arena/power-on", arena, arena_seed, budget=ARENA_BUDGET))
+            rows.append(request("arena/rooted", rooted, arena_seed, budget=ROOTED_ARENA_BUDGET))
         layout = secrets.randbits(64)
         for arm, farms in (("farms", 4), ("none", 0)):
             rows.append(request(f"farm/{arm}", {"family": "map", "parameters": {
@@ -446,6 +455,23 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def shield_gains():
         return sum(t["success"] and not h["success"] for t, h in zip(by["shield/tier"], by["shield/hidden"]))
 
+    def arena():
+        def reached(r, key):
+            work = r["evidence"].get(key)
+            return work if work is not None and work <= r["work_budget"] else None
+
+        arrivals = [reached(r, "map_first_boss_room") for r in by["arena/power-on"]]
+        arrival = statistics.median(math.inf if a is None else a for a in arrivals)
+        lag = statistics.median(math.inf if a is None or reached(r, "map_first_stocked") is None
+                                else reached(r, "map_first_stocked") / a
+                                for a, r in zip(arrivals, by["arena/power-on"]))
+
+        def kills(arm, limit):
+            return sum(r["success"] and r["first_objective_work"] <= limit for r in by[arm])
+
+        return lag, kills("arena/power-on", 2.5 * arrival), kills("arena/rooted", 0.2 * arrival)
+
+    lag, power_on_kills, rooted_kills = arena()
     n = len(by["credit/engaged"])
     m = len(by["boss/tier/tight"])
     third = n // 3
@@ -484,6 +510,10 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("farm loop: farms off the route slow the trip out under 10x", f"{farm_cost():.2f}", farm_cost() < 10),
         ("shield: damage as a tier loses more kills than it gains against hidden damage",
          f"{shield_losses()} vs {shield_gains()}", shield_losses() > shield_gains()),
+        ("arena: the first full-stock arrival comes 1.5-3x after the first boss-room arrival",
+         f"{lag:.2f}", 1.5 <= lag <= 3),
+        ("arena: power-on kills within 2.5x the first arrival fewer than rooted kills within 0.2x",
+         f"{power_on_kills} vs {rooted_kills}", power_on_kills < rooted_kills),
     ]
 
 
