@@ -1,9 +1,9 @@
 {
   "nova": {
-    "commit": "272eb12",
+    "commit": "bb1a941",
     "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests, the Rust wasm tests and every npm run test:browser check in Chromium (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, room-cameras, browser). Follow search and Whole room are a two-option control and phones follow the newest room; heat cell rows line up with floors in both the map and the search archive; tour steps highlight active rooms, the route's rooms and Searches only, merge overlapping highlights, frame the route, and discard tour gameplay when going back; the phone History screen is larger and maps repaint every frame during play.",
-    "asset_manifest_sha256": "546154bbb3444127bc27087646e4ab2e75aec019d80996299b1ff33970dc7d03"
+    "checks": "Production build, 52 helper tests and every npm run test:browser check in Chrome (levels, search, swarm, tour, tour-mobile, interactions, levels-browser, room-cameras, browser). New page and tour copy; Take the tour starts at once; the first-visit opening zoom is 1.3 times the close-up for 1.5 seconds.",
+    "asset_manifest_sha256": "3bcf4f08c31383eaf5520c76f129a94e8d2edcda720f2162b91c404927ea7501"
   },
   "raft": {
     "commit": "28791e77a",
