@@ -4,7 +4,8 @@ import { GuidedTour, tourSeen } from "./tour.js";
 import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
 import { RoutePreviews } from "./preview.js";
 import { GameAudio } from "./audio.js";
-import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
+import { createEngine, GAMES } from "./emulator.js";
+import { QUICKNES_REVISION } from "./cores/quicknes.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, SPRITE, ghosts } from "./swarm.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
@@ -25,6 +26,7 @@ import {
   isMapEvidence,
   followDiscovery,
 } from "./world.js";
+const game = GAMES.get("twin-dragons");
 const base = new URL(import.meta.env.BASE_URL, location.href),
   $ = (id) => document.getElementById(id);
 const compactReplay = matchMedia("(max-width: 800px), (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)");
@@ -198,7 +200,7 @@ const budget = memoryBudget(
   navigator.hardwareConcurrency,
   Number(params.get("workers")),
 );
-const pace = params.has("pace") ? Math.max(0, Number(params.get("pace")) || 0) : 85;
+const pace = params.has("pace") ? Math.max(0, Number(params.get("pace")) || 0) : game.pace;
 const swarm = new Swarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
@@ -500,7 +502,7 @@ let searchChoices = [{ id: 0, parent: null }],
   branchPreview = null,
   routeHover = null,
   previewTimer;
-const routePreviews = new RoutePreviews(() => createEngine(base),
+const routePreviews = new RoutePreviews(() => createEngine(base, game),
   budget.snapshotsMiB === 32 ? 8 : 16,
   (budget.snapshotsMiB === 32 ? 1 : 2) * 1048576,
   (previewEngine, frame) => {
@@ -660,7 +662,7 @@ function renderBranches() {
 const timeline = new ReplayTimeline(
   (budget.snapshotsMiB === 32 ? 2 : 4) * 1048576,
 );
-const music = new GameAudio(() => createEngine(base));
+const music = new GameAudio(() => createEngine(base, game));
 const panoramas = new Map();
 function mapURL(level) {
   const url = new URL(maps.get(level).file, base);
@@ -1330,7 +1332,7 @@ function startSearch(level = bootLevel) {
       fail(e);
     }
   };
-  worker.postMessage({ type: "init", base: base.href, seed, budget, pace, ports, boot_level: bootLevel }, ports);
+  worker.postMessage({ type: "init", base: base.href, game: game.id, seed, budget, pace, ports, boot_level: bootLevel }, ports);
 }
 function updateSearchControl() {
   heat.setRunning(ready && !paused && !stats.stopped, performance.now());
@@ -2217,8 +2219,8 @@ $("search-here").onclick = async () => {
     if (worker !== branchWorker || epoch !== replayEpoch) return;
     const tape = {
       format: "harmony-twin-dragons-browser-v1",
-      rom_sha256: ROM_SHA256,
-      core_revision: CORE_REVISION,
+      rom_sha256: game.rom.sha256,
+      core_revision: QUICKNES_REVISION,
       boot_level: bootLevel,
       actions,
       endpoint_sha256,
@@ -2821,7 +2823,7 @@ $("goal-title").onclick = () => {
 };
 $("close-level-picker").onclick = () => $("level-picker").close();
 requestAnimationFrame(animate);
-createEngine(base)
+createEngine(base, game)
   .then((e) => {
     engine = e;
     origin = e.boot(bootLevel);

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from "node:assert/strict";
+import twinDragons from "../src/games/twin-dragons.js";
 import { GameAudio } from "../src/audio.js";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { createEngine, ROM_SHA256, CORE_REVISION } from "../src/emulator.js";
+import { createEngine } from "../src/emulator.js";
+import { QUICKNES_REVISION as CORE_REVISION } from "../src/cores/quicknes.js";
+const ROM_SHA256 = twinDragons.rom.sha256;
 import { validateTape } from "../src/heat.js";
 import { prefixAt, appendInput } from "../src/branch.js";
 import { isMapEvidence } from "../src/world.js";
@@ -10,7 +13,7 @@ import { snapshotHash, snapshotDigest, CREDIT } from "../src/media.js";
 import { RoundSearch, ROUND_PATHS } from "../src/rollout.js";
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
 const base = new URL("../public/", import.meta.url);
-const engine = await createEngine(base, {
+const engine = await createEngine(base, twinDragons, {
   rom: await readFile(new URL("twin-dragons.nes", base)),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });
@@ -85,7 +88,7 @@ for (const seed of extended ? [11] : [27, 34]) {
   );
 }
 
-const loadEngine = async () => createEngine(base, {
+const loadEngine = async () => createEngine(base, twinDragons, {
   rom: await readFile(new URL("twin-dragons.nes", base)),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });
@@ -252,7 +255,7 @@ assert.deepEqual(
   batched,
   "Rendering only the final frame must preserve the exact game snapshot",
 );
-const shadow = await createEngine(base, {
+const shadow = await createEngine(base, twinDragons, {
   rom: await readFile(new URL("twin-dragons.nes", base)),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from "node:assert/strict";
+import twinDragons from "../src/games/twin-dragons.js";
 import { chromium } from "@playwright/test";
 import { readFile, mkdir } from "node:fs/promises";
-import { createEngine, decode } from "../src/emulator.js";
+import { createEngine } from "../src/emulator.js";
+import { decode } from "../src/games/twin-dragons.js";
 import { NO_ROOM } from "../src/swarm.js";
 import { Heatmap, cellKey } from "../src/heat.js";
 import { project, isMapEvidence } from "../src/world.js";
@@ -11,7 +13,7 @@ import { RoundSearch, ROUND_PATHS, runRollout, stepBytes } from "../src/rollout.
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
 const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const base = new URL("../public/", import.meta.url);
-const engine = await createEngine(base, {
+const engine = await createEngine(base, twinDragons, {
   rom: await readFile(new URL("twin-dragons.nes", base)),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });

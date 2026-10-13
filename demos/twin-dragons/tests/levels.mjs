@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from 'node:assert/strict';
+import twinDragons from "../src/games/twin-dragons.js";
 import { snapshotDigest } from '../src/media.js';
 import { readFile } from 'node:fs/promises';
 import { createEngine } from '../src/emulator.js';
@@ -7,7 +8,7 @@ import { isMapEvidence } from '../src/world.js';
 import { RoundSearch, ROUND_PATHS } from '../src/rollout.js';
 import init, { Explorer } from '../rust/pkg/twin_dragons_browser.js';
 const base = new URL('../public/', import.meta.url);
-const engine = await createEngine(base, {
+const engine = await createEngine(base, twinDragons, {
   rom: await readFile(new URL('twin-dragons.nes', base)),
   wasmBinary: await readFile(new URL('engine/quicknes.wasm', base)),
 });

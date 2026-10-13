@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { createEngine } from "./emulator.js";
+import { createEngine, GAMES } from "./emulator.js";
 import { runRollout, stepBytes } from "./rollout.js";
 let engine;
 const parents = new Map();
@@ -11,7 +11,7 @@ onmessage = ({ data }) => {
 async function handle({ data }) {
   try {
     if (data.type === "init") {
-      engine = await createEngine(data.base, { rom: data.rom, wasmBinary: data.wasm });
+      engine = await createEngine(data.base, GAMES.get(data.game), { rom: data.rom, wasmBinary: data.wasm });
       channel.postMessage({ type: "ready" });
       return;
     }

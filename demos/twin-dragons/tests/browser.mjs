@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { chromium } from "@playwright/test";
+import twinDragons from "../src/games/twin-dragons.js";
 import assert from "node:assert/strict";
 import { readFile, mkdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -149,7 +150,7 @@ async function openCurrentCell() {
   );
 }
 const localBase = pathToFileURL(process.cwd() + "/public/");
-const emulator = await createEngine(localBase, {
+const emulator = await createEngine(localBase, twinDragons, {
   rom: new Uint8Array(await readFile(new URL("twin-dragons.nes", localBase))),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", localBase)),
 });

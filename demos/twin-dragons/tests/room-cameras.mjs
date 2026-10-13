@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { chromium, webkit } from '@playwright/test';
+import twinDragons from "../src/games/twin-dragons.js";
 import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import { TOUR_KEY } from '../src/tour.js';
@@ -8,7 +9,7 @@ import { snapshotHash } from '../src/media.js';
 const recorded=JSON.parse(await readFile(new URL('./fixtures/level-one.json',import.meta.url)));
 // Fork from a grounded point far into Level 1 but short of its goal, so the forked search stays in Level 1.
 const base=new URL('../public/',import.meta.url);
-const engine=await createEngine(base,{rom:await readFile(new URL('twin-dragons.nes',base)),wasmBinary:await readFile(new URL('engine/quicknes.wasm',base))});
+const engine=await createEngine(base, twinDragons, {rom:await readFile(new URL('twin-dragons.nes',base)),wasmBinary:await readFile(new URL('engine/quicknes.wasm',base))});
 engine.boot(0);
 let tape=null;
 for(const [i,action] of recorded.actions.entries()){

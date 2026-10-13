@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { MOTION_STRIDE, motionPoint } from "./swarm.js";
+import { MOTION_STRIDE } from "./swarm.js";
 
-export const RAM_BYTES = 2048;
 export const ROUND_PATHS = 16;
 export const ROUNDS_AHEAD = 4;
 
@@ -16,30 +15,31 @@ export function parsePlan(plan) {
 }
 
 export function stepBytes(engine) {
-  return RAM_BYTES + engine.stateSize;
+  return engine.game.ramBytes + engine.stateSize;
 }
 
 export function runRollout(engine, snapshot, actions, out, offset, record) {
-  const { mod } = engine, stride = stepBytes(engine), ram = mod._nes_ram();
+  const { game } = engine, stride = stepBytes(engine), ramBytes = game.ramBytes;
   engine.restore(snapshot);
-  const samples = record ? [0, ...motionPoint(engine)] : null;
+  const ram = engine.ramView();
+  const samples = record ? [0, ...game.motion(ram)] : null;
   let frame = 0, steps = 0, ended = false;
   for (const packed of actions) {
     const buttons = packed >> 8, frames = packed & 255;
     if (samples)
       for (let done = 0; done < frames;) {
         const n = Math.min(4, frames - done);
-        mod._nes_run(buttons, n, 0);
+        engine.step(buttons, n);
         done += n;
         frame += n;
-        samples.push(frame, ...motionPoint(engine));
+        samples.push(frame, ...game.motion(ram));
       }
-    else mod._nes_run(buttons, frames, 0);
+    else engine.step(buttons, frames);
     const at = offset + steps * stride;
-    out.set(mod.HEAPU8.subarray(ram, ram + RAM_BYTES), at);
-    engine.captureInto(out.subarray(at + RAM_BYTES, at + stride));
+    out.set(ram, at);
+    engine.captureInto(out.subarray(at + ramBytes, at + stride));
     steps++;
-    if (out[at + 0x75] === 0 || out[at + 0x9e] === 0) {
+    if (game.ended(ram)) {
       ended = true;
       break;
     }

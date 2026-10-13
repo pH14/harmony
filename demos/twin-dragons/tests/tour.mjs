@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { chromium } from "@playwright/test";
+import twinDragons from "../src/games/twin-dragons.js";
 import assert from "node:assert/strict";
 import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { TOUR_KEY } from "../src/tour.js";
@@ -526,7 +527,7 @@ try {
   await opening(death);
   for (let step = 1; step <= 2; step++) await next(death, step);
   const base = new URL('../public/', import.meta.url);
-  const emulator = await createEngine(base, {rom:await readFile(new URL('twin-dragons.nes',base)), wasmBinary:await readFile(new URL('engine/quicknes.wasm',base))});
+  const emulator = await createEngine(base, twinDragons, {rom:await readFile(new URL('twin-dragons.nes',base)), wasmBinary:await readFile(new URL('engine/quicknes.wasm',base))});
   emulator.boot();
   const tape = JSON.parse(await readFile(new URL('fixtures/level-two.json', import.meta.url)));
   const actions = [...tape.actions, {buttons:130,frames:100}];

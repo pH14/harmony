@@ -1,22 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { settled } from "./emulator.js";
 export const MOTION_STRIDE = 5;
 export const NO_ROOM = 65535;
 
 export const SPRITE = { width: 32, height: 24, originX: 8, originY: 4 };
 
-export function playerPose(ram) {
-  const animation = ram[0x71], frame = ram[0x72];
-  const pose = animation === 1 ? 1 + Math.min(3, frame) : animation === 2 ? 5 : animation === 3 ? 6 : 0;
-  return pose * 2 + (ram[0x74] ? 1 : 0);
-}
-
-export function motionPoint(engine) {
-  const ram = engine.mod.HEAPU8.subarray(engine.mod._nes_ram(), engine.mod._nes_ram() + 2048);
-  const level = ram[0x42];
-  const valid = settled(ram[0x9e], level, ram[0x35]) && ram[0x75] !== 0;
-  return [valid ? level : NO_ROOM, ram[0x52] * 256 + ram[0x57] + ram[0x62], ram[0x63], playerPose(ram)];
-}
 
 export function swarmPoint(samples, frame) {
   let lo = 0, hi = samples.length / MOTION_STRIDE - 1;

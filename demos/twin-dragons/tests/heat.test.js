@@ -3,12 +3,9 @@ import test from "node:test";
 import { NO_ROOM } from "../src/swarm.js";
 import assert from "node:assert/strict";
 import { Heatmap, cellKey, routeIds, validateTape } from "../src/heat.js";
-import {
-  ROM_SHA256,
-  CORE_REVISION,
-  decode,
-  canonicalize,
-} from "../src/emulator.js";
+import twinDragons, { decode } from "../src/games/twin-dragons.js";
+import { QUICKNES_REVISION as CORE_REVISION, canonicalize } from "../src/cores/quicknes.js";
+const ROM_SHA256 = twinDragons.rom.sha256;
 test("heat cools without discarding histories, and separates rooms", () => {
   const heat = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: 7 };

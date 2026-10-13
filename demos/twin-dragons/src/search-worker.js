@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
-import { createEngine } from "./emulator.js";
-import { parsePlan, RAM_BYTES, ROUND_PATHS, ROUNDS_AHEAD } from "./rollout.js";
+import { createEngine, GAMES } from "./emulator.js";
+import { parsePlan, stepBytes, ROUND_PATHS, ROUNDS_AHEAD } from "./rollout.js";
 import { validateTape } from "./heat.js";
 import { branchInfo } from "./branch.js";
 import { snapshotHash } from "./media.js";
@@ -183,7 +183,7 @@ function finished({ chunk, buffer, steps, trails }) {
   const entry = chunks.get(chunk);
   chunks.delete(chunk);
   entry.slot.chunks--;
-  const stride = RAM_BYTES + engine.stateSize;
+  const stride = stepBytes(engine);
   let offset = 0;
   const touched = new Set();
   entry.jobs.forEach((job, i) => {
@@ -246,8 +246,8 @@ function addSearch(id, search) {
   for (let r = 0; r < ROUNDS_AHEAD; r++) planRound(search);
 }
 async function startPool(ports, base) {
-  const [rom, wasm] = await Promise.all(["twin-dragons.nes", "engine/quicknes.wasm"].map(async (name) =>
-    new Uint8Array(await (await fetch(new URL(name, base))).arrayBuffer())));
+  const rom = engine.rom,
+    wasm = new Uint8Array(await (await fetch(new URL(`engine/${engine.game.core}.wasm`, base))).arrayBuffer());
   await Promise.all(ports.map((worker) => new Promise((resolve) => {
     const slot = { worker, cache: new Map(), chunks: 0, ready: false };
     worker.onmessage = ({ data }) => {
@@ -261,7 +261,7 @@ async function startPool(ports, base) {
         error(e);
       }
     };
-    worker.postMessage({ type: "init", base, rom, wasm });
+    worker.postMessage({ type: "init", base, game: engine.game.id, rom, wasm });
     pool.push(slot);
   })));
 }
@@ -275,7 +275,7 @@ onmessage = async ({ data }) => {
       const gen = ++generation;
       pause();
       initialized = false;
-      engine = await createEngine(data.base);
+      engine = await createEngine(data.base, GAMES.get(data.game), data.rom ? { rom: data.rom } : {});
       budget = data.budget;
       pace = data.pace ?? 0;
       allowance = 0;
