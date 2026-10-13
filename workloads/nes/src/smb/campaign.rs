@@ -172,12 +172,6 @@ impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
             SmbBackend::Consonance { kernel, initramfs } => {
                 let machine =
                     ConsonanceMachine::new(kernel, initramfs).map_err(|error| error.to_string())?;
-                if !machine.starts_at_power_on() {
-                    return Err(
-                        "SMB Consonance image does not publish a power-on NES guest state"
-                            .to_owned(),
-                    );
-                }
                 SmbTarget::from_machine(machine).map_err(|error| error.to_string())
             }
             SmbBackend::QuickNes => Err("SMB backend does not match Consonance".to_owned()),
@@ -238,7 +232,7 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
             core_path: PathBuf::new(),
             core_sha256: String::new(),
             identity: format!(
-                "{};result_digest=postcard-1.1.3-sha256-hex-v3",
+                "{};result_digest=postcard-1.1.3-logical-xsave-sha256-hex-v4",
                 consonance_identity(kernel, initramfs),
             ),
             backend: SmbBackend::Consonance {
@@ -563,7 +557,15 @@ where
         "frames"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        postcard_result_sha256(result)
+        let mut logical = result.clone();
+        for candidate in logical
+            .actions
+            .iter_mut()
+            .filter_map(|action| action.candidate.as_mut())
+        {
+            candidate.snapshot = candidate.snapshot.logical_identity()?;
+        }
+        postcard_result_sha256(&logical)
     }
 
     fn archive_report(
@@ -928,12 +930,12 @@ where
         Ok(serde_json::to_value(target.observe().decoded)?)
     }
 
-    fn input_frames(&self, input: &SmbInput) -> u64 {
-        input
+    fn input_frames(&self, input: &SmbInput) -> Result<u64, Box<dyn Error>> {
+        Ok(input
             .actions
             .iter()
             .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum()
+            .sum())
     }
 }
 

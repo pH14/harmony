@@ -10,10 +10,6 @@ use nes_workload::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
     },
-    nova::{
-        campaign::{NovaCampaignRun, NovaGame},
-        target::NovaLevel,
-    },
     search::campaign::TargetExecution,
     smb::campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
     stb::{
@@ -65,32 +61,18 @@ fn main() -> Result<()> {
     run_cli(|request, rom, out, started| {
         match request.game.as_str() {
             "smb" | "metroid"
-                if request.level.is_some()
-                    || request.stage.is_some()
-                    || request.ai.is_some()
-                    || request.whole_game =>
+                if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
-                return Err("this game takes no level, stage, ai or whole_game option".into());
-            }
-            "nova"
-                if request.stage.is_some()
-                    || request.ai.is_some()
-                    || (request.whole_game && request.level.unwrap_or(1) != 1) =>
-            {
-                return Err(
-                "Nova whole-game evaluation must start at level 1; stage and ai are unsupported"
-                    .into(),
-            );
+                return Err("this game takes no stage, ai or whole_game option".into());
             }
             "mm2"
-                if request.level.is_some()
-                    || request.ai.is_some()
+                if request.ai.is_some()
                     || (request.whole_game && request.stage.is_some())
                     || (!request.whole_game && request.root_input.is_some()) =>
             {
                 return Err("MM2 takes a stage, or whole_game with an optional root_input".into());
             }
-            "stb" if request.level.is_some() || request.stage.is_some() || request.whole_game => {
+            "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
             _ => {}
@@ -108,25 +90,6 @@ fn main() -> Result<()> {
                 &out,
                 started,
             ),
-            "nova" => {
-                let game = NovaGame::new_at_level(
-                    &rom,
-                    p,
-                    h,
-                    NovaLevel::from_number(request.level.unwrap_or(1))?,
-                );
-                evaluate(
-                    if request.whole_game {
-                        game.with_whole_game()
-                    } else {
-                        game
-                    },
-                    NovaCampaignRun,
-                    &request,
-                    &out,
-                    started,
-                )
-            }
             "mm2" if request.whole_game => evaluate(
                 Mm2Game::new_whole_game(
                     &rom,

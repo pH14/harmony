@@ -64,18 +64,10 @@ class InlineSelectionTests(unittest.TestCase):
             self.assertEqual(paths, ["consonance/vmm-backend/src/kvm.rs", "dissonance/searcher/src/kvm.rs",
                                      "legacy.bin", "workloads/nes/src/stb/target.rs"])
             self.assertTrue(SCOPE.selection("dissonance_stb", "", paths)["enabled"])
-            for kind in ("dissonance_nes", "harmony_nes", "consonance_platform", "consonance_kvm"):
+            for kind in ("consonance_platform", "consonance_kvm"):
                 self.assertTrue(SCOPE.selection(kind, "", paths)["enabled"])
             missing = run(["git", "rev-list", "--objects", "--all", "--missing=print"], cwd=clone, text=True)
             self.assertIn("?" + legacy_blob, missing.splitlines())
-
-    def test_manual_nova_qualification_selects_the_tracked_source_tree(self):
-        with mock.patch.object(SCOPE.subprocess, "check_output", return_value="Cargo.toml\0") as run:
-            paths = SCOPE.changed_paths("harmony_nes", "workflow_dispatch", "", "")
-            run.assert_called_once_with(["git", "ls-files", "-z"], text=True)
-            self.assertTrue(SCOPE.selection("harmony_nes", "", paths)["enabled"])
-        with self.assertRaises(ValueError):
-            SCOPE.changed_paths("miri", "workflow_dispatch", "", "")
 
     def test_scheduled_and_manual_language_runs_select_the_tracked_source_tree(self):
         for event in ("schedule", "workflow_dispatch"):
@@ -134,7 +126,7 @@ class InlineSelectionTests(unittest.TestCase):
             self.assertEqual(paths, ["README.md", "Cargo.toml"])
             self.assertTrue(SCOPE.selection("rust_checks", "harmony-checks.yml", paths)["enabled"])
             with self.assertRaises(subprocess.CalledProcessError):
-                SCOPE.changed_paths("harmony_nes", "push", "", "a" * 40)
+                SCOPE.changed_paths("harmony_languages", "push", "", "a" * 40)
 
     def test_matches_existing_selectors(self):
         samples = [[], ["docs/WORKFLOWS.md"], ["Cargo.lock"],
@@ -165,11 +157,11 @@ class InlineSelectionTests(unittest.TestCase):
         self.assertTrue(SCOPE.selection("dissonance_stb", "", actual)["enabled"])
 
     def test_diff_modes_match_previous_routing_jobs(self):
-        for kind in ("dissonance_nes", "kani", "miri"):
+        for kind in ("dissonance_stb", "kani", "miri"):
             with mock.patch.object(SCOPE.subprocess, "check_output", return_value="file\0") as run:
                 self.assertEqual(SCOPE.changed_paths(kind, "pull_request", "base", ""), ["file"])
                 run.assert_called_once_with(["git", "diff", "--no-renames", "--name-only", "-z", "base...HEAD"], text=True)
-        for kind in ("dissonance_nes", "kani"):
+        for kind in ("dissonance_stb", "kani"):
             with mock.patch.object(SCOPE.subprocess, "check_output", return_value="") as run:
                 SCOPE.changed_paths(kind, "push", "", "before")
                 suffix = ["before...HEAD"] if kind in SCENARIOS else ["before", "HEAD"]
@@ -180,23 +172,23 @@ class InlineSelectionTests(unittest.TestCase):
                     run.assert_called_once_with(["git", "ls-files", "-z"], text=True)
 
     def test_unknown_inputs_and_diff_failures_fail_closed(self):
-        for kind, target in (("dissonance_nes", "typo"), ("miri", "typo"), ("typo", ""), ("kani", "typo")):
+        for kind, target in (("dissonance_stb", "typo"), ("miri", "typo"), ("typo", ""), ("kani", "typo")):
             with self.assertRaises(ValueError):
                 SCOPE.selection(kind, target, [])
-        for kind, event, base in (("dissonance_nes", "pull_request", ""), ("miri", "pull_request", ""),
+        for kind, event, base in (("dissonance_stb", "pull_request", ""), ("miri", "pull_request", ""),
                                   ("miri", "merge_group", "base"), ("kani", "unknown", "base")):
             with self.assertRaises(ValueError):
                 SCOPE.changed_paths(kind, event, base, "")
         with mock.patch.object(SCOPE.subprocess, "check_output", side_effect=subprocess.CalledProcessError(1, "git")):
             with self.assertRaises(subprocess.CalledProcessError):
-                SCOPE.changed_paths("dissonance_nes", "pull_request", "base", "")
+                SCOPE.changed_paths("dissonance_stb", "pull_request", "base", "")
 
     def test_cli_distinguishes_not_applicable_from_selected(self):
         for paths, enabled in ((["docs/WORKFLOWS.md"], False), (["dissonance/searcher/src/lib.rs"], True)):
             with tempfile.TemporaryDirectory() as directory:
                 summary = Path(directory) / "summary"
                 stdout = io.StringIO()
-                with mock.patch.object(sys, "argv", ["ci-job-scope.py", "--kind", "dissonance_nes"]), \
+                with mock.patch.object(sys, "argv", ["ci-job-scope.py", "--kind", "dissonance_stb"]), \
                      mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}), \
                      mock.patch.object(SCOPE, "changed_paths", return_value=paths), contextlib.redirect_stdout(stdout):
                     SCOPE.main()

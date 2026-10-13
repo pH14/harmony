@@ -52,6 +52,21 @@ pub struct SmbSnapshot<P: SnapshotState = Vec<u8>> {
     failed: bool,
 }
 
+impl<P: SnapshotState> SmbSnapshot<P> {
+    pub(crate) fn logical_identity(&self) -> Result<Self, MachineError> {
+        Ok(Self {
+            emulator_state: self.emulator_state.logical_identity()?,
+            ..self.clone()
+        })
+    }
+}
+
+impl<P: SnapshotState> crate::witness::EndpointIdentity for SmbSnapshot<P> {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        crate::witness::postcard_sha256(&self.logical_identity()?)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct SnapshotObservation {
     frame_count: u64,
@@ -140,11 +155,6 @@ where
     P: SnapshotState,
 {
     pub fn from_machine(machine: M) -> Result<Self, MachineError> {
-        if !machine.starts_at_power_on() {
-            return Err(MachineError::Backend(
-                "SMB machine does not expose a game-neutral NES power-on state".to_owned(),
-            ));
-        }
         Self::boot(machine, true)
     }
 
@@ -813,6 +823,10 @@ mod tests {
         fn memory_charge(&self) -> usize {
             self.0.len()
         }
+
+        fn logical_identity(&self) -> Result<Self, MachineError> {
+            Ok(Self(self.0.iter().take(1).copied().collect()))
+        }
     }
 
     #[derive(Debug)]
@@ -977,6 +991,36 @@ mod tests {
         fn keep_run_capture(&mut self, frames: usize) {
             self.kept_capture.push(frames);
         }
+    }
+
+    #[test]
+    fn logical_identity_projects_only_the_emulator_state() {
+        use crate::witness::EndpointIdentity;
+        let mut target = SmbTarget::from_machine(FakeMachine::new()).expect("boot");
+        let snapshot = target.snapshot().expect("snapshot");
+        let with_state = |state: Vec<u8>| SmbSnapshot {
+            emulator_state: FakePortable(state),
+            ..snapshot.clone()
+        };
+        let (raw, other_raw, other_logical) = (
+            with_state(vec![1, 2]),
+            with_state(vec![1, 3]),
+            with_state(vec![4, 2]),
+        );
+        assert_ne!(raw, other_raw);
+        assert_eq!(
+            raw.logical_identity().unwrap(),
+            other_raw.logical_identity().unwrap()
+        );
+        assert_eq!(raw.logical_identity().unwrap().work_ram, raw.work_ram);
+        assert_eq!(
+            raw.endpoint_sha256().unwrap(),
+            other_raw.endpoint_sha256().unwrap()
+        );
+        assert_ne!(
+            raw.endpoint_sha256().unwrap(),
+            other_logical.endpoint_sha256().unwrap()
+        );
     }
 
     #[test]

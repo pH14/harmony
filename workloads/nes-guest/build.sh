@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the play-agent for a guest image. The established SMB profile remains
-# dynamic because it dlopens a libretro core. The Nova CI profile supplies a
+# dynamic because it dlopens a libretro core. The static CI profile supplies a
 # pinned QuickNES archive and produces a fully static binary: Harmony denies
 # ring-3 RDTSC, which current glibc's dynamic loader executes before `main`.
 # Run on x86-64 Linux; emit the binary path on stdout's last line.

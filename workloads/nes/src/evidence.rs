@@ -193,7 +193,6 @@ mod tests {
     use crate::{
         metroid::campaign::{MetroidCampaignRun, MetroidGame},
         mm2::campaign::{Mm2CampaignRun, Mm2Game},
-        nova::campaign::{NovaCampaignRun, NovaGame},
         search::{
             archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
             campaign::{
@@ -331,7 +330,6 @@ mod tests {
         );
         let roms = [
             "HARMONY_SMB_ROM",
-            "HARMONY_NOVA_ROM",
             "HARMONY_MM2_ROM",
             "HARMONY_METROID_ROM",
             "HARMONY_STB_ROM",
@@ -345,14 +343,10 @@ mod tests {
                 .expect("HARMONY_QUICKNES_CORE must name QuickNES when a game ROM is set"),
         );
         let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
-        let [smb, nova, mm2, metroid, stb] = roms;
+        let [smb, mm2, metroid, stb] = roms;
         if let Some(rom) = smb {
             let game = SmbGame::new(&rom, &core, &core_sha256);
             assert_resume_restores_evidence(&game, smb_run, "smb");
-        }
-        if let Some(rom) = nova {
-            let game = NovaGame::new(&rom, &core, &core_sha256).with_whole_game();
-            assert_resume_restores_evidence(&game, NovaCampaignRun, "nova");
         }
         if let Some(rom) = mm2 {
             let game = Mm2Game::new_whole_game(&rom, &core, &core_sha256, Vec::new());

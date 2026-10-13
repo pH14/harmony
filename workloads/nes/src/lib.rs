@@ -8,7 +8,6 @@ pub mod eval;
 pub mod evidence;
 pub mod film;
 pub mod nes_backend;
-pub mod nova;
 pub mod prepare;
 pub mod smb;
 pub mod witness;

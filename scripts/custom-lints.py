@@ -34,7 +34,6 @@ GAME_NAMES = [
     r"mm2",
     r"zelda",
     r"tetris",
-    r"nova",
 ]
 
 # Emulator and runtime names.
@@ -497,7 +496,7 @@ def check_numbered_names(repo_root: Path, files: list[str]) -> list[Violation]:
 
 MISPLACED_WORKLOAD_FILE_RE = re.compile(
     r"(?:^|[-_/])"
-    r"(?:game|nes|nova|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
+    r"(?:game|nes|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
     r"(?:[-_./]|$)",
     re.IGNORECASE,
 )
@@ -544,9 +543,8 @@ VARIANT_RE = re.compile(r"<[^>]+>")
 # Stands in for a value only the runner knows.
 UNKNOWN_VALUE = "\x00"
 
-# The game runs natively through Dissonance and inside a Consonance VM through
-# Harmony. Neither composition substitutes for the other.
-NES_COMPOSITIONS_REQUIRED = ("Dissonance Workloads", "Harmony Workloads")
+# The games run natively through Dissonance.
+NES_COMPOSITIONS_REQUIRED = ("Dissonance Workloads",)
 MEDIA_VERIFIER = "scripts/verify-nes-films.py"
 
 # Harmony is built and tested on every host it claims to support.
@@ -554,7 +552,7 @@ HOST_COMPATIBILITY_WORKFLOW = "Checks / Harmony Host Compatibility"
 HOST_COMPATIBILITY_JOBS = ("macOS Arm64", "Linux Arm64")
 
 # Job names that describe a method instead of what the job covers. Contextual
-# names such as Nova, Coverage and Results identify a workload or a
+# names such as Coverage and Results identify a workload or a
 # responsibility and stay allowed.
 GENERIC_JOB_NAMES = frozenset({
     "build", "build and test", "check", "checks", "ci", "e2e", "integration",
@@ -1186,7 +1184,7 @@ def check_selected_job(rel_path: str, job_id: str, job: dict, registered, select
 
 
 def check_nes_compositions(repo_root: Path, tracked: set[str]) -> list[Violation]:
-    """Both NES compositions keep a bounded check and a full benchmark."""
+    """Each NES composition keeps a bounded check and a full benchmark."""
     import ci_contract
 
     violations = []

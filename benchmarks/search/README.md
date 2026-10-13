@@ -9,8 +9,8 @@ counted as a whole-game solve. No run starts from a supplied solution tape.
 
 ## Run
 
-Build the pinned QuickNES core with `scripts/build-quicknes-core.sh`. Build Nova
-and Super Tilt Bro with the scripts in `workloads/nes/scripts`. Supply your own
+Build the pinned QuickNES core with `scripts/build-quicknes-core.sh`. Build Super
+Tilt Bro with the script in `workloads/nes/scripts`. Supply your own
 SMB, MM2, and Metroid ROMs. Put their absolute paths and SHA-256 values in a
 private inventory outside the repository:
 
@@ -20,7 +20,6 @@ private inventory outside the repository:
   "smb": {"path": "/private/assets/smb.nes", "sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"},
   "mm2": {"path": "/private/assets/mm2.nes", "sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf"},
   "metroid": {"path": "/private/assets/metroid.nes", "sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6"},
-  "nova": {"path": "/private/assets/nova.nes", "sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08"},
   "stb": {"path": "/private/assets/stb.nes", "sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3"}
 }
 ```
@@ -138,16 +137,16 @@ runs use witness verification, because their stream starts at the checkpoint.
 
 | Manifest | Purpose |
 | --- | --- |
-| `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
-| `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
-| `nightly.json` | Scheduled/manual source-built capability panel: the five registered isolated Nova levels, whole-game Nova, and STB Easy/Fair/Hard across seeds 1–3. Long runs use bounded witness replay; isolated levels and STB Hard retain their distinct outcome semantics. |
-| `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
+| `qualification.json` | Four small cases: SMB, Mega Man 2, Metroid and STB. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
+| `ci.json` | Source-built STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
+| `nightly.json` | Scheduled/manual source-built capability panel: STB Easy/Fair/Hard across seeds 1–3. Long runs use bounded witness replay; STB Hard retains its distinct outcome semantics. |
+| `pilot.json` | Three exploratory seeds on SMB, Metal Man, Metroid new game and STB Hard. |
 | `alphabet-control.json` | The same development pilot origins and budgets with alphabet-only mutation. This exploratory panel does not require every case to solve. |
 | `metroid-long-horizon.json` | Metroid new game on three reused development seeds at 3 million executions, 4 workers and 8 GiB, with alphabet-only mutation. |
 | `metroid-long-horizon-energy-splice.json` | The same three seeds and budgets drawing through the retained-input table, against the alphabet-only arm of `metroid-long-horizon.json`. |
 | `metroid-ladder.json` | One case per Metroid chain segment, each starting from that segment's recorded `root_input`, on seeds 11–13 at 4 workers, 6 GiB and 3 million executions. Score it with `eval.py ladder`. |
-| `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
-| `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
+| `throughput-checkpoint.json` | The 12-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
+| `evaluation.json` | Main-mechanism control: five seeds across SMB, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `mm2-whole-game.json` | MM2 from power-on to the ending on seeds 301–303: 24 workers, 20 GiB, energy splice, checkpoints at every new milestone and every 10 million executions. |
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
@@ -177,9 +176,7 @@ conditions.
 All manifests specify exact ROM hashes and normal menu origins. The MM2 stage
 cases are independent stage clears. `mm2-whole-game.json` runs MM2 from power-on
 to the ending with the Robot Master order fixed. Metroid
-progress is reported even when its ending is not reached. Nova whole-game runs
-require all 40 cleared-level flags from level 1; a single cleared level cannot
-satisfy that predicate. Isolated later-level Nova setup is a declared fixture.
+progress is reported even when its ending is not reached.
 
 Copy a manifest to change **search** mechanisms for an ablation. Keep case IDs,
 origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
@@ -361,7 +358,7 @@ python3 scripts/check-dependency-boundaries.py
 The runner tests plant failures, timeouts, disk overuse, changed assets/policies,
 missing cells and publication leaks. The engine's generic continuation fixture
 requires actual reuse and memory pressure before comparing live/replay results.
-Licensed-ROM qualification runs locally. CI also builds Nova and STB from pinned
+Licensed-ROM qualification runs locally. CI also builds STB from pinned
 sources and exercises the common binary, runner, full campaign replay and compact
 export; its short qualification budgets do not claim whole-game completion.
 

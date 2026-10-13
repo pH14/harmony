@@ -56,8 +56,6 @@ pub struct Request {
     pub mixture: String,
     pub verification: String,
     #[serde(default)]
-    pub level: Option<u8>,
-    #[serde(default)]
     pub stage: Option<u8>,
     #[serde(default)]
     pub ai: Option<String>,
@@ -121,6 +119,7 @@ pub fn evaluate<G: Workload>(
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Snapshot: crate::witness::EndpointIdentity,
 {
     let full = request.verification == "campaign";
     if request.verification != "witness" && !full {
@@ -174,7 +173,7 @@ where
     }
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v4", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
+        &json!({"format":"nes-eval-identity-v4", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
     )?;
     let mut stream = StreamDigest {
         file: if full {

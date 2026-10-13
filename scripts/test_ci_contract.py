@@ -22,24 +22,6 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
-    def test_guest_image_identity_covers_protocol_and_toolchain(self):
-        spec = importlib.util.spec_from_file_location("nes_guest_key", ROOT / "scripts/nes-guest-image-key.py")
-        key = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(key)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in key.INPUTS:
-                path = root / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("baseline")
-            baseline = key.guest_digest(root)
-            for name in ("workloads/nes-protocol", "rust-toolchain.toml"):
-                with self.subTest(input=name):
-                    path = root / name
-                    path.write_text("changed")
-                    self.assertNotEqual(key.guest_digest(root), baseline)
-                    path.write_text("baseline")
-
     def test_exact_runtime_consumers_wait_for_its_build(self):
         import yaml
 
@@ -307,9 +289,8 @@ class OwnershipTests(unittest.TestCase):
 
 
 class CompositionTests(unittest.TestCase):
-    def test_both_nes_compositions_stay_registered(self):
-        self.assertEqual(set(ci_contract.NES_COMPOSITIONS),
-                         {"Dissonance Workloads", "Harmony Workloads"})
+    def test_the_nes_composition_stays_registered(self):
+        self.assertEqual(set(ci_contract.NES_COMPOSITIONS), {"Dissonance Workloads"})
         backends = set()
         for entry in ci_contract.NES_COMPOSITIONS.values():
             backends.add(entry["backend"])
@@ -319,7 +300,7 @@ class CompositionTests(unittest.TestCase):
                     self.assertTrue(workflow.name.endswith("NES"))
                     self.assertEqual(workflow.category,
                                      "Checks" if role == "checks" else "Benchmarks")
-        self.assertEqual(backends, {"native", "consonance"})
+        self.assertEqual(backends, {"native"})
 
     def test_required_media_names_a_registered_capture(self):
         registered = ci_contract.CAPTURE_ACTIONS + ci_contract.CAPTURE_SCRIPTS
@@ -443,8 +424,8 @@ class NamingTests(unittest.TestCase):
                 self.assertTrue(ci_contract.title_case_violations(name))
 
     def test_a_variant_placeholder_is_recognized(self):
-        self.assertTrue(ci_contract.is_variant_placeholder("Nova — Level <N>"))
-        self.assertFalse(ci_contract.is_variant_placeholder("Nova — Full Game"))
+        self.assertTrue(ci_contract.is_variant_placeholder("STB — <Difficulty>"))
+        self.assertFalse(ci_contract.is_variant_placeholder("STB — Full Game"))
 
 
 class CommandTests(unittest.TestCase):

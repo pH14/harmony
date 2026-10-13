@@ -18,36 +18,10 @@ SPEC.loader.exec_module(a)
 FILES = {"session-config.json", "kernel.bin", "platform.cpio.gz", "rootfs.cpio.gz", "control.cpio.gz", "execution.json", "image-runtime-config.json", "image-inputs.json", "composed-initramfs.bin"}
 COMPONENTS = ["platform.cpio.gz", "rootfs.cpio.gz", "control.cpio.gz"]
 
-ORACLE_SCOPE = "nova-ae-linux-x86_64-kvm-oracle-v1"
-ORACLE_SEED = 0x4e4f56415f434931
-ORACLE_CMDLINE = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init"
 
-
-def inspect_engine(manifest, session):
-    scope = manifest.get("engine_scope")
-    if scope == "default-linux-x86_64-kvm-session":
-        if "oracle" in manifest:
-            raise a.Rejected("oracle metadata cannot use default-session scope")
-        return
-    if scope != ORACLE_SCOPE or manifest.get("mode") != "nes":
+def inspect_engine(manifest):
+    if manifest.get("engine_scope") != "default-linux-x86_64-kvm-session":
         raise a.Rejected("unsupported engine/default session scope")
-    expected_session = {"guest_contract": "Ordinary",
-                        "ram_bytes": 134217728, "seed": ORACLE_SEED,
-                        "run_budget": 2000000000, "cmdline": ORACLE_CMDLINE,
-                        "identity_tag": "", "wall_limit": None,
-                        "defer_virtual_time_checkpoint_hashes": True}
-    if session != expected_session:
-        raise a.Rejected("unsupported Nova A–E oracle configuration")
-    expected = {"version": 1, "backend": "boot_linux_stock_virtual_time",
-                "control": "direct-ControlServer-A-E",
-                "restore_mode": "in-place-with-remap-factory",
-                "deadline_kind": "absolute-vtime", "setup_payloads": [[0, 1]] * 16,
-                "tree_seed": ORACLE_SEED ^ 0x4954454d325f5452}
-    oracle = manifest.get("oracle")
-    if not isinstance(oracle, dict) or set(oracle) != set(expected):
-        raise a.Rejected("unsupported Nova A–E oracle metadata")
-    if any(oracle[k] != v for k, v in expected.items()):
-        raise a.Rejected("unsupported Nova A–E oracle controls")
 
 
 def archive_entries(data):
@@ -94,7 +68,7 @@ def inspect_dump(directory):
             raise a.Rejected(f"dump file hash/size differs: {name}")
         blobs[name] = data
     session = json.loads(blobs["session-config.json"])
-    inspect_engine(manifest, session)
+    inspect_engine(manifest)
     tokens = session["cmdline"].split()
     if [token for token in tokens if token.startswith("LD_BIND_NOW=")] != ["LD_BIND_NOW=1"] or not {"noxsaveopt", "noxsaves", "rdinit=/init"}.issubset(tokens):
         raise a.Rejected("required pre-PID1 binding/kernel configuration is absent")
@@ -172,7 +146,7 @@ def inspect_dump(directory):
         raise a.Rejected("unsupported NES argv")
     if manifest["mode"] == "postgres" and execution["argv"] != ["/usr/local/bin/postgres-workload.sh"]:
         raise a.Rejected("unsupported PostgreSQL argv")
-    report = {"version": 1, "admitted": False, "prepared_identity": manifest["prepared_identity"], "execution": execution, "session_config": session, "engine_scope": manifest["engine_scope"], "oracle": manifest.get("oracle"), "runtime_config": config, "limitations": ["Controlled trusted code only; writable OCI root is not runtime immutability enforcement.", "Each independent archive is parsed separately; no general concatenated-archive overlay support."]}
+    report = {"version": 1, "admitted": False, "prepared_identity": manifest["prepared_identity"], "execution": execution, "session_config": session, "engine_scope": manifest["engine_scope"], "runtime_config": config, "limitations": ["Controlled trusted code only; writable OCI root is not runtime immutability enforcement.", "Each independent archive is parsed separately; no general concatenated-archive overlay support."]}
     return report, encode_newc(root_entries)
 
 

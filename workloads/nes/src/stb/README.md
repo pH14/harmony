@@ -194,8 +194,8 @@ The `STB` job in
 [Checks / Dissonance Workloads / NES](../../../../.github/workflows/dissonance-workloads-nes-checks.yml)
 runs a bounded seed-1 Easy search on affected pull requests and main changes.
 [Benchmarks / Dissonance Workloads / NES](../../../../.github/workflows/dissonance-workloads-nes-benchmarks.yml)
-qualifies all three AI levels on a schedule or a dispatch. It follows
-Nova's source-build/search/film pattern and checks full recorded campaign replay;
+qualifies all three AI levels on a schedule or a dispatch. It builds the
+game from source, searches and films it, and checks full recorded campaign replay;
 scheduled and manually selected STB runs cross all three levels with registered seeds 1, 2,
 and 3. Easy and Fair run exact 2,000-execution soaks. Hard searches up to
 20,000 executions and stops after finding a victory (then drains outstanding
