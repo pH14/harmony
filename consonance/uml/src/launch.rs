@@ -8,6 +8,8 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -20,9 +22,9 @@ use crate::console::ConsoleTail;
 use crate::process::group_members;
 #[cfg(target_os = "linux")]
 use crate::profile::PinnedImage;
-use crate::profile::VerifiedProfile;
+use crate::profile::{HostIdentity, VerifiedProfile};
 #[cfg(target_os = "linux")]
-use crate::profile::selected_processor;
+use crate::profile::{processor_allowed, selected_processor};
 
 const POLL: Duration = Duration::from_millis(5);
 const SWEEP_LIMIT: Duration = Duration::from_secs(5);
@@ -60,18 +62,9 @@ fn singleton_cpu_mask(cpu: usize) -> Option<libc::cpu_set_t> {
 }
 
 #[cfg(target_os = "linux")]
-fn enforce_host_cpu(command: &mut Command) -> Result<(), LaunchError> {
-    let cpu = selected_processor()?;
+fn enforce_host_cpu(command: &mut Command, cpu: usize, shared: bool) -> Result<(), LaunchError> {
     let mask = singleton_cpu_mask(cpu).ok_or(LaunchError::HostCpuUnavailable(cpu))?;
-    // SAFETY: cpu_set_t is plain data and zero is its empty set. The kernel
-    // writes at most the provided size into this live object.
-    let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    // SAFETY: allowed is writable for exactly the supplied cpu_set_t size.
-    if unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut allowed) } < 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: cpu was checked against CPU_SETSIZE and allowed is initialized.
-    if !unsafe { libc::CPU_ISSET(cpu, &allowed) } {
+    if !shared && !processor_allowed(cpu)? {
         return Err(LaunchError::HostCpuUnavailable(cpu));
     }
     // SAFETY: this is the final pre_exec callback installed by Guest. It only
@@ -97,6 +90,12 @@ pub struct Launch {
     pub kernel_arguments: Vec<String>,
     pub work_parent: PathBuf,
     pub bridge: Option<Bridge>,
+    #[cfg(target_os = "linux")]
+    admitted_processor: Arc<OnceLock<usize>>,
+    #[cfg(target_os = "linux")]
+    expected_host: Option<HostIdentity>,
+    #[cfg(target_os = "linux")]
+    shared_host: bool,
     #[cfg(target_os = "linux")]
     initramfs: Option<Arc<PinnedImage>>,
     #[cfg(not(target_os = "linux"))]
@@ -135,6 +134,19 @@ pub enum LaunchError {
     #[cfg(target_os = "linux")]
     #[error("UML host processor {0} is unavailable in this process's CPU affinity mask")]
     HostCpuUnavailable(usize),
+    #[cfg(target_os = "linux")]
+    #[error(
+        "this launch admitted UML host processor {admitted}, not requested processor {requested}"
+    )]
+    HostCpuAlreadyAdmitted { admitted: usize, requested: usize },
+    #[cfg(target_os = "linux")]
+    #[error(
+        "the launch's recorded host identity {expected:?} differs from this processor {current:?}"
+    )]
+    HostIdentity {
+        expected: Box<HostIdentity>,
+        current: Box<HostIdentity>,
+    },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -163,8 +175,87 @@ impl Launch {
             kernel_arguments: Vec::new(),
             work_parent,
             bridge: None,
+            #[cfg(target_os = "linux")]
+            admitted_processor: Arc::new(OnceLock::new()),
+            #[cfg(target_os = "linux")]
+            expected_host: None,
+            #[cfg(target_os = "linux")]
+            shared_host: false,
             initramfs: None,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn admitted_processor(&self) -> Result<usize, LaunchError> {
+        let cpu = match self.admitted_processor.get() {
+            Some(cpu) => *cpu,
+            None => {
+                let candidate = selected_processor()?;
+                *self.admitted_processor.get_or_init(|| candidate)
+            }
+        };
+        if !self.shared_host && !processor_allowed(cpu)? {
+            return Err(LaunchError::HostCpuUnavailable(cpu));
+        }
+        Ok(cpu)
+    }
+
+    pub fn host_identity(&self) -> Result<HostIdentity, LaunchError> {
+        #[cfg(target_os = "linux")]
+        {
+            let current = HostIdentity::for_processor(self.admitted_processor()?)?;
+            if let Some(expected) = &self.expected_host
+                && expected != &current
+            {
+                return Err(LaunchError::HostIdentity {
+                    expected: Box::new(expected.clone()),
+                    current: Box::new(current),
+                });
+            }
+            Ok(current)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(HostIdentity::current()?)
+        }
+    }
+
+    pub fn bind_current_host(&mut self) -> Result<HostIdentity, LaunchError> {
+        let host = self.host_identity()?;
+        #[cfg(target_os = "linux")]
+        {
+            self.expected_host = Some(host.clone());
+        }
+        Ok(host)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn bind_expected_host(&mut self, host: HostIdentity) -> Result<(), LaunchError> {
+        let current = HostIdentity::for_processor(host.processor)?;
+        if current != host {
+            return Err(LaunchError::HostIdentity {
+                expected: Box::new(host),
+                current: Box::new(current),
+            });
+        }
+        let admitted = *self.admitted_processor.get_or_init(|| host.processor);
+        if admitted != host.processor {
+            return Err(LaunchError::HostCpuAlreadyAdmitted {
+                admitted,
+                requested: host.processor,
+            });
+        }
+        self.expected_host = Some(host);
+        self.shared_host = true;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_recorded_host(mut self, host: HostIdentity) -> Self {
+        let _ = self.admitted_processor.set(host.processor);
+        self.expected_host = Some(host);
+        self.shared_host = true;
+        self
     }
 
     pub fn set_initramfs(&mut self, path: &Path) -> io::Result<()> {
@@ -329,7 +420,10 @@ impl Guest {
             None => None,
         };
         #[cfg(target_os = "linux")]
-        enforce_host_cpu(&mut command)?;
+        {
+            let host = launch.host_identity()?;
+            enforce_host_cpu(&mut command, host.processor, launch.shared_host)?;
+        }
         let child = command.spawn()?;
         drop(command);
         let pid = i32::try_from(child.id()).map_err(io::Error::other)?;
@@ -728,7 +822,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn final_host_cpu_pin_overrides_an_earlier_affinity_callback() {
-        let cpu = selected_processor().unwrap();
+        let launch = Launch::new(std::env::temp_dir());
+        let cpu = launch.admitted_processor().unwrap();
         // SAFETY: cpu_set_t is plain data and the kernel writes within the
         // provided object. CPU_ISSET reads only checked indices afterward.
         let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
@@ -745,7 +840,6 @@ mod tests {
             return;
         };
         let prior_mask = singleton_cpu_mask(other).unwrap();
-        let launch = Launch::new(std::env::temp_dir());
         let work = launch.work_directory().unwrap();
         let mut command = Command::new("sh");
         command
@@ -774,8 +868,9 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
-    fn launch_refuses_when_the_selected_cpu_becomes_disallowed() {
-        let cpu = selected_processor().unwrap();
+    fn launch_refuses_when_its_admitted_cpu_becomes_disallowed() {
+        let launch = Launch::new(std::env::temp_dir());
+        let cpu = launch.admitted_processor().unwrap();
         // SAFETY: cpu_set_t is plain data and the kernel writes no more than
         // the supplied object size into this live set.
         let mut original: libc::cpu_set_t = unsafe { std::mem::zeroed() };
@@ -798,8 +893,12 @@ mod tests {
             unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &narrowed) },
             0
         );
-        let identity = crate::profile::HostIdentity::current();
-        let launch = enforce_host_cpu(&mut Command::new("true"));
+        let identity = launch.host_identity();
+        let result = Guest::start(
+            Command::new("true"),
+            launch.work_directory().unwrap(),
+            &launch,
+        );
         // SAFETY: original is the affinity mask captured from this test
         // thread before narrowing, and the call restores only that thread.
         assert_eq!(
@@ -807,7 +906,175 @@ mod tests {
             0
         );
         assert!(identity.is_err());
-        assert!(launch.is_err());
+        assert!(matches!(result, Err(LaunchError::HostCpuUnavailable(_))));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn independent_workers_launch_on_distinct_admitted_cpus() {
+        // SAFETY: cpu_set_t is plain data and the kernel writes within the
+        // supplied live object.
+        let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: allowed is writable for the supplied cpu_set_t size.
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut allowed) },
+            0
+        );
+        let cpus = (0..libc::CPU_SETSIZE as usize)
+            .filter(|cpu| {
+                // SAFETY: cpu is below CPU_SETSIZE and allowed is initialized.
+                unsafe { libc::CPU_ISSET(*cpu, &allowed) }
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        if cpus.len() != 2 {
+            return;
+        }
+        let workers = cpus
+            .into_iter()
+            .map(|cpu| {
+                std::thread::spawn(move || {
+                    let mask = singleton_cpu_mask(cpu).unwrap();
+                    // SAFETY: mask is a live cpu_set_t of the supplied size
+                    // and the call changes only this worker thread.
+                    assert_eq!(
+                        unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &mask) },
+                        0
+                    );
+                    let launch = Launch::new(std::env::temp_dir());
+                    let host = launch.host_identity().unwrap();
+                    let work = launch.work_directory().unwrap();
+                    let mut command = Command::new("sh");
+                    command
+                        .arg("-c")
+                        .arg("grep Cpus_allowed_list /proc/self/status");
+                    let exit = Guest::start(command, work, &launch)
+                        .unwrap()
+                        .wait()
+                        .unwrap();
+                    assert_eq!(exit.reason, ExitReason::Exited(0));
+                    assert!(
+                        String::from_utf8(exit.console)
+                            .unwrap()
+                            .contains(&format!("Cpus_allowed_list:\t{cpu}"))
+                    );
+                    (cpu, host.processor)
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            let (requested, admitted) = worker.join().unwrap();
+            assert_eq!(requested, admitted);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn disjoint_worker_threads_launch_on_one_recorded_guest_cpu() {
+        // SAFETY: cpu_set_t is plain data and the kernel writes within the
+        // supplied live object.
+        let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: allowed is writable for the supplied cpu_set_t size.
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut allowed) },
+            0
+        );
+        let cpus = (0..libc::CPU_SETSIZE as usize)
+            .filter(|cpu| {
+                // SAFETY: cpu is below CPU_SETSIZE and allowed is initialized.
+                unsafe { libc::CPU_ISSET(*cpu, &allowed) }
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        if cpus.len() != 2 {
+            return;
+        }
+        let canonical = cpus[0];
+        let host = HostIdentity::for_processor(canonical).unwrap();
+        let workers = cpus
+            .into_iter()
+            .map(|worker_cpu| {
+                let host = host.clone();
+                std::thread::spawn(move || {
+                    let mask = singleton_cpu_mask(worker_cpu).unwrap();
+                    // SAFETY: mask is a live cpu_set_t of the supplied size
+                    // and the call changes only this worker thread.
+                    assert_eq!(
+                        unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &mask) },
+                        0
+                    );
+                    let mut launch = Launch::new(std::env::temp_dir());
+                    launch.bind_expected_host(host.clone()).unwrap();
+                    assert_eq!(launch.host_identity().unwrap(), host);
+                    let work = launch.work_directory().unwrap();
+                    let mut command = Command::new("sh");
+                    command
+                        .arg("-c")
+                        .arg("grep Cpus_allowed_list /proc/self/status");
+                    let exit = Guest::start(command, work, &launch)
+                        .unwrap()
+                        .wait()
+                        .unwrap();
+                    assert_eq!(exit.reason, ExitReason::Exited(0));
+                    assert!(
+                        String::from_utf8(exit.console)
+                            .unwrap()
+                            .contains(&format!("Cpus_allowed_list:\t{canonical}"))
+                    );
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn cloned_launch_refuses_cross_thread_cpu_migration() {
+        // SAFETY: cpu_set_t is plain data and the kernel writes within the
+        // supplied live object.
+        let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: allowed is writable for the supplied cpu_set_t size.
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut allowed) },
+            0
+        );
+        let cpus = (0..libc::CPU_SETSIZE as usize)
+            .filter(|cpu| {
+                // SAFETY: cpu is below CPU_SETSIZE and allowed is initialized.
+                unsafe { libc::CPU_ISSET(*cpu, &allowed) }
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        if cpus.len() != 2 {
+            return;
+        }
+        let launch = Launch::new(std::env::temp_dir());
+        assert_eq!(launch.admitted_processor().unwrap(), cpus[0]);
+        let moved = launch.clone();
+        let other = cpus[1];
+        let result = std::thread::spawn(move || {
+            let mask = singleton_cpu_mask(other).unwrap();
+            // SAFETY: mask is a live cpu_set_t of the supplied size and the
+            // call changes only this worker thread.
+            assert_eq!(
+                unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &mask) },
+                0
+            );
+            let work = moved.work_directory().unwrap();
+            matches!(
+                Guest::start(Command::new("true"), work, &moved),
+                Err(LaunchError::HostCpuUnavailable(_))
+            )
+        })
+        .join()
+        .unwrap();
+        assert!(result);
+        assert_eq!(launch.admitted_processor().unwrap(), cpus[0]);
     }
 
     #[test]

@@ -427,12 +427,17 @@ fn pin_path(path: &Path, name: &std::ffi::CStr, executable: bool) -> io::Result<
 
 impl HostIdentity {
     pub fn current() -> io::Result<Self> {
-        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")?;
         #[cfg(target_os = "linux")]
         let selected = Some(selected_processor()?);
         #[cfg(not(target_os = "linux"))]
         let selected = None;
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")?;
         Self::from_cpuinfo(&cpuinfo, selected)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn for_processor(processor: usize) -> io::Result<Self> {
+        Self::from_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo")?, Some(processor))
     }
 
     fn from_cpuinfo(cpuinfo: &str, selected: Option<usize>) -> io::Result<Self> {
@@ -487,7 +492,27 @@ impl HostIdentity {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn selected_processor() -> io::Result<usize> {
-    static SELECTED: OnceLock<usize> = OnceLock::new();
+    let mask = allowed_processors()?;
+    (0..libc::CPU_SETSIZE as usize)
+        .find(|cpu| {
+            // SAFETY: cpu is below CPU_SETSIZE and mask is initialized.
+            unsafe { libc::CPU_ISSET(*cpu, &mask) }
+        })
+        .ok_or_else(|| io::Error::other("no CPU is allowed by this thread's affinity mask"))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn processor_allowed(processor: usize) -> io::Result<bool> {
+    if processor >= libc::CPU_SETSIZE as usize {
+        return Ok(false);
+    }
+    let mask = allowed_processors()?;
+    // SAFETY: processor is below CPU_SETSIZE and mask is initialized.
+    Ok(unsafe { libc::CPU_ISSET(processor, &mask) })
+}
+
+#[cfg(target_os = "linux")]
+fn allowed_processors() -> io::Result<libc::cpu_set_t> {
     // SAFETY: cpu_set_t is plain data and zero is its empty set. The kernel
     // writes no more than the provided size into this live object.
     let mut mask: libc::cpu_set_t = unsafe { std::mem::zeroed() };
@@ -495,20 +520,7 @@ pub(crate) fn selected_processor() -> io::Result<usize> {
     if unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut mask) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    let first_allowed = (0..libc::CPU_SETSIZE as usize)
-        .find(|cpu| {
-            // SAFETY: cpu is below CPU_SETSIZE and mask is initialized.
-            unsafe { libc::CPU_ISSET(*cpu, &mask) }
-        })
-        .ok_or_else(|| io::Error::other("no CPU is allowed by this process's affinity mask"))?;
-    let selected = *SELECTED.get_or_init(|| first_allowed);
-    // SAFETY: selected came from a checked CPU index and mask is initialized.
-    if !unsafe { libc::CPU_ISSET(selected, &mask) } {
-        return Err(io::Error::other(format!(
-            "the selected UML host processor {selected} is no longer allowed by this process's affinity mask"
-        )));
-    }
-    Ok(selected)
+    Ok(mask)
 }
 
 fn artifact_path(directory: &Path, artifact: &Artifact) -> Result<PathBuf, ProfileError> {

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{Bridge, Event, event_hash};
-use crate::launch::Launch;
+use crate::launch::{Launch, LaunchError};
 use crate::profile::{HostIdentity, VerifiedProfile};
 
 const SCHEMA: u32 = 2;
@@ -33,6 +33,8 @@ pub enum ReplayRefused {
     NoBridge,
     #[error("cannot read the current host identity: {0}")]
     HostIdentity(#[from] std::io::Error),
+    #[error("cannot admit the recording's host CPU: {0}")]
+    Launch(#[from] LaunchError),
     #[error("recording was made with profile {recorded}; this profile is {current}")]
     Profile { recorded: String, current: String },
     #[error("recording was made on {recorded:?}; this host is {current:?}")]
@@ -48,7 +50,7 @@ impl Recording {
         launch: &Launch,
         events: &[Event],
     ) -> Result<Self, ReplayRefused> {
-        let host = HostIdentity::current()?;
+        let host = launch.host_identity()?;
         Self::new_with_host(profile, &host, launch, events)
     }
 
@@ -75,6 +77,9 @@ impl Recording {
     }
 
     pub fn check(&self, profile: &VerifiedProfile) -> Result<(), ReplayRefused> {
+        #[cfg(target_os = "linux")]
+        let host = HostIdentity::for_processor(self.host.processor)?;
+        #[cfg(not(target_os = "linux"))]
         let host = HostIdentity::current()?;
         self.check_with_host(profile, &host)
     }
@@ -110,6 +115,8 @@ impl Recording {
             seed: self.seed,
             cut: Some(self.events),
         });
+        #[cfg(target_os = "linux")]
+        let launch = launch.with_recorded_host(self.host.clone());
         launch
     }
 
@@ -274,10 +281,17 @@ mod tests {
         assert!(recording.check(&profile).is_ok());
 
         let mut forged = recording.clone();
-        forged.host.processor ^= 1;
+        forged.host.cpu_model.push_str(";forged");
         assert!(matches!(
             forged.check(&profile),
             Err(ReplayRefused::Host { .. })
+        ));
+
+        let replay = forged.launch(std::env::temp_dir());
+        let work = replay.work_directory().unwrap();
+        assert!(matches!(
+            crate::Guest::start(std::process::Command::new("true"), work, &replay),
+            Err(LaunchError::HostIdentity { .. })
         ));
     }
 }
