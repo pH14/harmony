@@ -2,8 +2,8 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
-    Backend, BackendError, CommonExit, CpuidModel, Exit, ExitCounts, Gpa, KvmBackend, MsrFilter,
-    MsrRange, VcpuState, X86Exit, X86Policy,
+    Backend, BackendError, CommonExit, CpuidEntry, CpuidModel, Exit, ExitCounts, Gpa, KvmBackend,
+    MsrFilter, MsrRange, VcpuState, X86Exit, X86Policy,
 };
 
 struct GuestMem {
@@ -928,7 +928,25 @@ fn sysenter_restore_rejects_values_kvm_cannot_preserve() {
     let mut backend = new_backend_or_explain();
     // SAFETY: guest RAM is page-aligned, remains allocated until after the backend is dropped, and no host slice aliases it while the guest runs.
     unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
-    configure(&mut backend);
+    backend
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 0,
+                    ebx: u32::from_le_bytes(*b"Genu"),
+                    edx: u32::from_le_bytes(*b"ineI"),
+                    ecx: u32::from_le_bytes(*b"ntel"),
+                    ..Default::default()
+                }],
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        })
+        .expect("set Intel-compatible test policy");
     let baseline = backend.save().expect("save baseline");
 
     for (index, value) in [(0x174, 1 << 32), (0x175, 1 << 63), (0x176, 1 << 56)] {
