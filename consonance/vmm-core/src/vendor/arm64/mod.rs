@@ -428,7 +428,7 @@ use vmm_backend::{Arm64, Arm64Exit, Arm64VcpuState, Backend, CommonExit, Exit, G
 
 pub use dispatch::Arm64Devices;
 
-use crate::vendor::Vendor;
+use crate::vendor::{SnapshotHashParts, Vendor};
 use crate::vmm::{Step, Vmm, VmmError};
 
 impl Vendor for Arm64 {
@@ -566,6 +566,46 @@ impl Vendor for Arm64 {
         Some(contract::runtime_contract_hash(
             vmm.backend.capabilities().arch,
         ))
+    }
+
+    fn project_snapshot_hash_parts(snapshot: &Arm64VmState) -> Result<SnapshotHashParts, VmmError> {
+        let state = records::decode_device_blob(&snapshot.devices.0)?;
+        let mut device = Vec::new();
+        for register in state.uart_regs {
+            device.extend_from_slice(&register.to_le_bytes());
+        }
+        device.extend_from_slice(&(state.uart_input.len() as u64).to_le_bytes());
+        device.extend_from_slice(&state.uart_input);
+        let mut vendor_chunks = Vec::new();
+        if let Some(gic) = &state.gic {
+            let mut bytes = Vec::new();
+            records::encode_gic_state(&mut bytes, gic);
+            crate::vmm::put_chunk(&mut vendor_chunks, b"GICV", &bytes);
+        }
+        let clockevent = state
+            .pvclock
+            .map_or_else(records::Arm64ClockeventState::default, |pv| pv.clockevent);
+        if clockevent != records::Arm64ClockeventState::default() {
+            let mut bytes = Vec::new();
+            records::encode_clockevent_state(&mut bytes, clockevent);
+            crate::vmm::put_chunk(&mut vendor_chunks, b"PVCE", &bytes);
+        }
+        Ok(SnapshotHashParts {
+            doorbell: (!state.doorbell.is_empty()).then_some(state.doorbell),
+            serial: state.uart_capture,
+            device,
+            vendor_chunks,
+            clock_offset: state.clock_offset,
+            pvclock: state.pvclock.map(|pv| crate::vmm::PvclockSnapshot {
+                gpa: pv.gpa,
+                registrable: pv.registrable,
+                armed: pv.armed,
+            }),
+        })
+    }
+
+    fn project_logical_snapshot(snapshot: &mut Arm64VmState, vcpu: &Arm64VcpuState) {
+        records::fill_vcpu_state(snapshot, vcpu);
     }
 
     fn regs_view(vcpu: &Arm64VcpuState) -> RegsView {

@@ -868,14 +868,7 @@ where
     }
 
     pub fn save_vm_state(&mut self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
-        self.ensure_snapshot_ready()?;
-        let vcpu = match &self.saved_state {
-            Some(s) => s.clone(),
-            None => self.backend.save()?,
-        };
-        <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
-        self.check_guest_mode(&vcpu)?;
-        self.build_snapshot_state(&vcpu)
+        self.capture_vm_state().map(|(snapshot, _)| snapshot)
     }
 
     pub(crate) fn capture_vm_state(
@@ -889,6 +882,15 @@ where
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
         self.check_guest_mode(&vcpu)?;
         let snapshot = self.build_snapshot_state(&vcpu)?;
+        if self.doorbell_pages.is_some()
+            && <B::A as Vendor>::project_snapshot_hash_parts(&snapshot)?
+                .doorbell
+                .is_none()
+        {
+            return Err(VmmError::ContractViolation(
+                "save_vm_state: mapped doorbell pages are absent from the VM state".into(),
+            ));
+        }
         Ok((snapshot, vcpu))
     }
 
@@ -980,13 +982,6 @@ where
             vendor: prep,
             vtime: vtime_commit,
         })
-    }
-
-    pub(crate) fn preflight_restore_vm_state(
-        &self,
-        s: &<B::A as Vendor>::Snapshot,
-    ) -> Result<(), VmmError> {
-        self.prepare_restore_vm_state(s).map(|_| ())
     }
 
     pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
@@ -1299,20 +1294,77 @@ where
         Ok(out)
     }
 
+    pub(crate) fn project_state_blob_suffix_from_snapshot(
+        &self,
+        snapshot: &<B::A as Vendor>::Snapshot,
+        sdk: &SdkSnapshot,
+    ) -> Result<Vec<u8>, VmmError> {
+        let prepared = self.prepare_restore_vm_state(snapshot)?;
+        let parts = <B::A as Vendor>::project_snapshot_hash_parts(snapshot)?;
+        if self.doorbell_pages.is_some() != parts.doorbell.is_some() {
+            return Err(VmmError::ContractViolation(
+                "restore_vm_state: mapped doorbell pages have no matching snapshot state".into(),
+            ));
+        }
+        let vcpu = <B::A as Vendor>::logical_identity_vcpu(&prepared.vcpu)?;
+        let mut out = Vec::new();
+        if let Some(doorbell) = parts.doorbell {
+            put_chunk(&mut out, b"DOOR", &doorbell);
+        }
+        put_chunk(
+            &mut out,
+            b"VCPU",
+            &<B::A as Vendor>::encode_vcpu_chunk(&vcpu),
+        );
+        put_chunk(&mut out, b"SERL", &parts.serial);
+        let mut device = parts.device;
+        append_terminal(&mut device, prepared.engine_state.terminal);
+        put_chunk(&mut out, b"DEV\0", &device);
+        if self.vtime.is_some() {
+            put_chunk(
+                &mut out,
+                b"VTIM",
+                &encode_vtime_parts(
+                    snapshot.vtime().guest_hz,
+                    snapshot.vtime().guest_base,
+                    parts.clock_offset,
+                    snapshot.vtime().snapshot_vns,
+                    snapshot.entropy_bytes(),
+                ),
+            );
+        }
+        out.extend_from_slice(&parts.vendor_chunks);
+        append_sdk_snapshot(&mut out, sdk);
+        if let Some(pvclock) = parts.pvclock {
+            let mut bytes = 1_u64.to_le_bytes().to_vec();
+            match pvclock.gpa {
+                Some(gpa) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&gpa.to_le_bytes());
+                }
+                None => bytes.push(0),
+            }
+            bytes.push(u8::from(pvclock.registrable));
+            bytes.push(u8::from(pvclock.armed));
+            put_chunk(&mut out, b"PVCK", &bytes);
+        }
+        if prepared.engine_state.sdk_snapshot_reentry_required {
+            put_chunk(&mut out, b"SDRE", &[1]);
+        }
+        if self.snapshot_hashing {
+            let mut logical_snapshot = snapshot.clone();
+            <B::A as Vendor>::project_logical_snapshot(&mut logical_snapshot, &vcpu);
+            let bytes =
+                <<B::A as Vendor>::Snapshot as SnapshotRecords>::encode_for_hash(&logical_snapshot)
+                    .map_err(SnapshotError::from)?;
+            put_chunk(&mut out, b"VMST", &bytes);
+        }
+        Ok(out)
+    }
+
     fn encode_device_terminal(&self) -> Vec<u8> {
         let mut v = <B::A as Vendor>::encode_device_state(&self.devices);
-        match self.terminal {
-            None => v.push(0),
-            Some(TerminalReason::DebugExit { code }) => {
-                v.push(1);
-                v.push(code);
-            }
-            Some(TerminalReason::Idle) => v.push(2),
-            Some(TerminalReason::Shutdown) => v.push(3),
-            Some(TerminalReason::SdkStop) => {
-                unreachable!("SdkStop never latches as the VM terminal")
-            }
-        }
+        append_terminal(&mut v, self.terminal);
         v
     }
 
@@ -2479,15 +2531,46 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
 }
 
 fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
+    encode_vtime_parts(
+        vt.cfg.guest_hz,
+        vt.cfg.guest_base,
+        vt.guest_clock_offset,
+        vt.clock.vns(),
+        &vt.entropy.save_state(),
+    )
+}
+
+fn encode_vtime_parts(
+    guest_hz: u64,
+    guest_base: u64,
+    clock_offset: u64,
+    vns: u64,
+    entropy: &[u8],
+) -> Vec<u8> {
     let mut v = Vec::new();
     v.push(1);
     v.extend_from_slice(&1_u64.to_le_bytes());
-    for x in [vt.cfg.guest_hz, vt.cfg.guest_base, vt.guest_clock_offset] {
+    for x in [guest_hz, guest_base, clock_offset] {
         v.extend_from_slice(&x.to_le_bytes());
     }
-    v.extend_from_slice(&vt.clock.vns().to_le_bytes());
-    v.extend_from_slice(&vt.entropy.save_state());
+    v.extend_from_slice(&vns.to_le_bytes());
+    v.extend_from_slice(entropy);
     v
+}
+
+fn append_terminal(out: &mut Vec<u8>, terminal: Option<TerminalReason>) {
+    match terminal {
+        None => out.push(0),
+        Some(TerminalReason::DebugExit { code }) => {
+            out.push(1);
+            out.push(code);
+        }
+        Some(TerminalReason::Idle) => out.push(2),
+        Some(TerminalReason::Shutdown) => out.push(3),
+        Some(TerminalReason::SdkStop) => {
+            unreachable!("SdkStop never latches as the VM terminal")
+        }
+    }
 }
 
 fn append_sdk_channel(
@@ -2503,6 +2586,36 @@ fn append_sdk_channel(
             &captured
         }
     };
+    append_sdk_hash_channel(
+        v,
+        recorded,
+        &sdk.events,
+        sdk.pending_stop.as_ref(),
+        sdk.pending_snapshot,
+        &sdk.coverage_thresholds,
+    );
+    Ok(())
+}
+
+fn append_sdk_snapshot(v: &mut Vec<u8>, sdk: &SdkSnapshot) {
+    append_sdk_hash_channel(
+        v,
+        &sdk.recorded,
+        &sdk.events,
+        sdk.pending_stop.as_ref(),
+        sdk.pending_snapshot,
+        &sdk.coverage_thresholds,
+    );
+}
+
+fn append_sdk_hash_channel(
+    v: &mut Vec<u8>,
+    recorded: &channel::RecordedState,
+    events: &[(u64, u32, Vec<u8>)],
+    pending_stop: Option<&SdkStop>,
+    pending_snapshot: bool,
+    coverage_thresholds: &BTreeMap<u32, u64>,
+) {
     v.extend_from_slice(b"SDK\0");
     let chunk_length = v.len();
     v.extend_from_slice(&0_u64.to_le_bytes());
@@ -2512,7 +2625,7 @@ fn append_sdk_channel(
     recorded.encode_into(v);
     let recorded_len = v.len() - recorded_start;
     v[chunk_start..recorded_start].copy_from_slice(&(recorded_len as u64).to_le_bytes());
-    match &sdk.pending_stop {
+    match pending_stop {
         None => v.push(0),
         Some(SdkStop::Assertion { id, data }) => {
             v.push(1);
@@ -2535,19 +2648,28 @@ fn append_sdk_channel(
             v.extend_from_slice(question.payload());
         }
     }
-    v.push(u8::from(sdk.pending_snapshot));
-    if !sdk.coverage_thresholds.is_empty() {
+    v.push(u8::from(pending_snapshot));
+    if !coverage_thresholds.is_empty() {
         v.extend_from_slice(b"COVR");
-        let count = u64::try_from(sdk.coverage_thresholds.len()).unwrap_or(u64::MAX);
+        let count = u64::try_from(coverage_thresholds.len()).unwrap_or(u64::MAX);
         v.extend_from_slice(&count.to_le_bytes());
-        for (thread, threshold) in &sdk.coverage_thresholds {
+        for (thread, threshold) in coverage_thresholds {
             v.extend_from_slice(&thread.to_le_bytes());
             v.extend_from_slice(&threshold.to_le_bytes());
         }
     }
+    if !events.is_empty() {
+        v.extend_from_slice(b"EVTS");
+        v.extend_from_slice(&(events.len() as u64).to_le_bytes());
+        for (moment, local, payload) in events {
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&local.to_le_bytes());
+            v.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            v.extend_from_slice(payload);
+        }
+    }
     let chunk_len = v.len() - chunk_start;
     v[chunk_length..chunk_start].copy_from_slice(&(chunk_len as u64).to_le_bytes());
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2627,6 +2749,104 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn imported_hash_projection_matches_live_x86_chunks() {
+        for snapshot_hashing in [false, true] {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 37).unwrap());
+            vmm.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            vmm.enable_pvclock();
+            enable_nominal(&mut vmm, 37);
+            if snapshot_hashing {
+                vmm.wire_snapshot_hashing();
+            }
+            vmm.devices.uart.write(0x3f8, b'x');
+            vmm.devices.uart.write(0x3fb, 0x80);
+            vmm.devices.uart.write(0x3f9, 0x5a);
+            vmm.inject_serial_input(b"queued");
+            let mut vcpu = vmm.backend.save().unwrap();
+            vcpu.events = vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0xcafe,
+                ..Default::default()
+            };
+            vmm.backend.set_state(vcpu);
+            vmm.sdk_snapshot_reentry_required = true;
+            let sdk = vmm.sdk.as_mut().unwrap();
+            sdk.events.push((39, 7, vec![4, 5, 6]));
+            sdk.pending_snapshot = true;
+            sdk.pending_stop = Some(SdkStop::Decision {
+                moment: 41,
+                seq: 2,
+                question: channel::Question::with_request_id(7, 9, vec![1, 2]).unwrap(),
+            });
+            sdk.coverage_thresholds.insert(3, 17);
+            let (snapshot, vcpu) = vmm.capture_vm_state().unwrap();
+            let sdk = vmm.sdk_snapshot().unwrap().unwrap();
+            let live = vmm
+                .state_blob_suffix_from_vcpu(&vcpu, Some(&sdk.recorded))
+                .unwrap();
+            let projected = vmm
+                .project_state_blob_suffix_from_snapshot(&snapshot, &sdk)
+                .unwrap();
+            assert_eq!(projected, live);
+        }
+    }
+
+    #[test]
+    fn imported_hash_projection_matches_live_arm_chunks() {
+        use vmm_backend::{Arm64Policy, MockArm64Backend};
+
+        for snapshot_hashing in [false, true] {
+            let mut backend = MockArm64Backend::new();
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(TEST_RAM).unwrap());
+            vmm.ram_base_gpa = crate::vendor::arm64::board::RAM_BASE;
+            vmm.map_doorbell_pages().unwrap();
+            vmm.doorbell_pages.as_mut().unwrap().as_mut_bytes()[0] = 0x5a;
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 37).unwrap());
+            vmm.enable_pvclock();
+            vmm.devices.gic = Some(crate::vendor::arm64::board::new_gic());
+            vmm.devices.clockevent.deadline = Some(113);
+            vmm.enable_sdk(nominal_env(37), &ServiceConfig::default());
+            if snapshot_hashing {
+                vmm.wire_snapshot_hashing();
+            }
+            vmm.devices.uart.write(0, u32::from(b'x'));
+            vmm.inject_serial_input(b"queued");
+            let mut vcpu = vmm.backend.save().unwrap();
+            vcpu.sysregs.tpidr_el1 = 0x1234_5678;
+            vcpu.vtimer.counter = 0x9abc_def0;
+            vmm.backend.set_state(vcpu);
+            vmm.sdk_snapshot_reentry_required = true;
+            let sdk = vmm.sdk.as_mut().unwrap();
+            sdk.events.push((39, 7, vec![4, 5, 6]));
+            sdk.pending_snapshot = true;
+            sdk.pending_stop = Some(SdkStop::Assertion {
+                id: 41,
+                data: vec![1, 2],
+            });
+            sdk.coverage_thresholds.insert(3, 17);
+            let (snapshot, vcpu) = vmm.capture_vm_state().unwrap();
+            let sdk = vmm.sdk_snapshot().unwrap().unwrap();
+            let live = vmm
+                .state_blob_suffix_from_vcpu(&vcpu, Some(&sdk.recorded))
+                .unwrap();
+            let projected = vmm
+                .project_state_blob_suffix_from_snapshot(&snapshot, &sdk)
+                .unwrap();
+            assert_eq!(projected, live);
         }
     }
 
@@ -3603,6 +3823,18 @@ mod tests {
             format!("{err}").contains("doorbell wiring mismatch"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn x86_mapped_doorbell_cannot_seal_without_a_device_record() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.ram_base_gpa = 0x4000_0000;
+        vmm.map_doorbell_pages().unwrap();
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::ContractViolation(reason))
+                if reason == "save_vm_state: mapped doorbell pages are absent from the VM state"
+        ));
     }
 
     #[test]
