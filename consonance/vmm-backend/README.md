@@ -69,6 +69,9 @@ truncated or sign-extended value on the next save. Restore preflight rejects a
 nonzero upper half of CS and noncanonical ESP or EIP values before changing
 the vCPU. The address width is the narrower of the host KVM capability and the
 installed guest CPUID model; the active guest contract exposes 48 virtual bits.
+CR8 holds a four-bit task-priority value. KVM also accepts larger values in
+`KVM_SET_SREGS2` but reads them back changed, so restore rejects those values
+during preflight.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that

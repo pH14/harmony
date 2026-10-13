@@ -854,6 +854,21 @@ fn validate_restore_shape_requires_preservable_sysenter_values() {
 }
 
 #[test]
+fn validate_restore_shape_requires_four_bit_cr8() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.sregs.cr8 = 0x0f;
+    assert!(validate_restore_shape(&state, None, 4096, 48).is_ok());
+    state.sregs.cr8 = 0x10;
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48),
+        Err(BackendError::InvalidState)
+    ));
+}
+
+#[test]
 fn guest_virtual_width_follows_installed_cpuid() {
     assert_eq!(guest_virtual_bits(&CpuidModel::default()), 48);
     let model = CpuidModel {
