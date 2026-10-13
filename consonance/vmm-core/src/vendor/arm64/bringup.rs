@@ -375,6 +375,7 @@ mod tests {
                 arch: Arm64Caps {
                     in_kernel_gic: false,
                     asid_bits,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                 },
             })
         };
@@ -399,11 +400,11 @@ mod tests {
         let from_sixteen = sixteen.save_vm_state().unwrap();
         assert_eq!(
             from_eight.contract_hash,
-            contract::contract_hash(Arm64AsidBits::Eight)
+            contract::runtime_contract_hash(eight.backend().capabilities().arch)
         );
         assert_eq!(
             from_sixteen.contract_hash,
-            contract::contract_hash(Arm64AsidBits::Sixteen)
+            contract::runtime_contract_hash(sixteen.backend().capabilities().arch)
         );
         eight.restore_vm_state(&from_eight).unwrap();
         sixteen.restore_vm_state(&from_sixteen).unwrap();

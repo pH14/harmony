@@ -560,6 +560,12 @@ impl Vendor for Arm64 {
         }
     }
 
+    fn contract_identity_hash<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<[u8; 32]> {
+        Some(contract::runtime_contract_hash(
+            vmm.backend.capabilities().arch,
+        ))
+    }
+
     fn regs_view(vcpu: &Arm64VcpuState) -> RegsView {
         let mut gpr = [0u64; 16];
         gpr.copy_from_slice(&vcpu.core.x[..16]);

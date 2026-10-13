@@ -37,15 +37,6 @@ pub enum BackendError {
         host: u64,
     },
 
-    #[error(
-        "ARM KVM SMCCC workaround register {register:#018x} reports {host}, expected {expected}"
-    )]
-    Arm64FirmwareMismatch {
-        register: u64,
-        expected: u64,
-        host: u64,
-    },
-
     #[error("backend internal error: {0}")]
     Internal(&'static str),
 

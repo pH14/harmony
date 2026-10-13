@@ -50,6 +50,7 @@ const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
     arch: crate::arch::arm64::Arm64Caps {
         in_kernel_gic: false,
         asid_bits: crate::arch::arm64::Arm64AsidBits::Eight,
+        smccc_workaround_levels: crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
     },
 };
 
@@ -461,6 +462,8 @@ mod tests {
             arch: crate::arch::arm64::Arm64Caps {
                 in_kernel_gic: true,
                 asid_bits: crate::arch::arm64::Arm64AsidBits::Sixteen,
+                smccc_workaround_levels:
+                    crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
             },
         };
         let mock = MockArm64Backend::with_capabilities(caps);
