@@ -96,11 +96,12 @@ component, to exact names inside that layout.
 Local layout and archive paths also require exact spelling at every component;
 symlink targets are checked component by component, including dangling links.
 Relative targets are resolved from the link's parent, so readable ancestors
-above that directory are not required. Case-aliased host paths are rejected
-before staging.
+above that directory are not required. Explicit case-aliased host paths and
+exact-name symlinks with invalid targets are rejected before staging.
 An unqualified image name remains a container-tool reference unless its local
-path has an exact match. Absolute and dot-relative paths explicitly select a
-local input and reject aliases.
+path has an exact match; an exact-name symlink with an invalid target is
+rejected instead of falling through to the container tool. Absolute and
+dot-relative paths explicitly select a local input and reject aliases.
 Hardlink targets must name an earlier member of the same archive with the
 exact same spelling. Hardlink, symlink, and directory members cannot carry
 data in either their tar header or a pax size override. This also excludes
