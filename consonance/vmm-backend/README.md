@@ -74,9 +74,10 @@ values on SVM unless the guest advertises the GenuineIntel vendor.
 CR8 holds a four-bit task-priority value. KVM also accepts larger values in
 `KVM_SET_SREGS2` but reads them back changed, so restore rejects those values
 during preflight.
-RFLAGS bit 1 is fixed at one. KVM accepts a cleared bit through
-`KVM_SET_REGS` and then reads it back set, so restore preflight requires it
-before applying any vCPU state.
+RFLAGS bit 1 is fixed at one, while bits 3, 5, 15, and 22 through 63 are
+reserved. KVM accepts a cleared bit 1 through `KVM_SET_REGS` and reads it
+back set. It also accepts reserved bits but rejects guest entry with them set.
+Restore preflight rejects both cases before applying any vCPU state.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
