@@ -251,11 +251,15 @@ HVF answers `SMCCC_ARCH_FEATURES(ARCH_WORKAROUND_1/2/3)` as `1/-1/0`.
 ARM KVM's responses to these three queries depend on the host's Spectre-v2,
 Spectre-v4, and BHB states even when optional firmware bitmaps are disabled.
 After applying the guest ID-register policy, ARM KVM reads its three firmware
-workaround pseudo-registers and admits only levels `2/0/1`, which produce the
-same guest responses. Other host levels fail before guest entry. The owned
-arm64 Linux guest treats workaround 2's `-2` as unaffected by Spectre-v4 but
-`-1` as vulnerable; its frozen CPU identity has no SSBS feature, so this answer
-controls retained mitigation state.
+workaround pseudo-registers and exposes their measured levels as backend
+capabilities. HVF exposes the equivalent fixed levels `2/0/1`. Hosts with other
+levels can boot, but the VMM binds those levels into snapshot compatibility and
+state identity so different firmware answers cannot share a replay state. The
+shared `arm64_sysreg_snapshot` hardware test executes all three queries in a
+guest and compares their responses with the exposed levels on both hosts. The
+owned arm64 Linux guest treats workaround 2's `-2` as unaffected by Spectre-v4
+but `-1` as vulnerable; its frozen CPU identity has no SSBS feature, so this
+answer controls retained mitigation state.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the

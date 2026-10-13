@@ -158,3 +158,42 @@ fn guest_system_registers_survive_reused_and_fresh_restore() {
         "system register continuations differ: {failures:?}"
     );
 }
+
+#[test]
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "macos", target_os = "linux"),
+    not(miri)
+))]
+#[ignore = "live ARM hypervisor; registered in HOST_TESTS"]
+fn smccc_workaround_features_match_backend_levels() {
+    let mut guest = Guest::new(live_backend(), &[0xd400_0002, 0xf900_0080, 0x1400_0000]);
+    let levels = guest.backend.capabilities().arch.smccc_workaround_levels;
+    for (index, feature) in [0x8000_8000, 0x8000_7fff, 0x8000_3fff]
+        .into_iter()
+        .enumerate()
+    {
+        let mut state = guest.save();
+        state.core.pc = RAM;
+        state.core.x[0] = 0x8000_0001;
+        state.core.x[1] = feature;
+        state.core.x[4] = OUTPUT;
+        guest.restore(&state);
+        let observed = guest.next_store();
+        let expected = match (index, levels[index]) {
+            (0 | 2, 0) => Some(u64::MAX),
+            (0 | 2, 1) => Some(0),
+            (0 | 2, 2) => Some(1),
+            (1, 0) => Some(u64::MAX),
+            (1, 3) => Some(u64::MAX - 1),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            assert_eq!(
+                observed, expected,
+                "feature {feature:#x}, level {}",
+                levels[index]
+            );
+        }
+    }
+}

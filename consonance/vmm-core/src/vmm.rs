@@ -1268,6 +1268,9 @@ where
             put_chunk(&mut out, b"VTIM", &encode_vtime(vt));
         }
         <B::A as Vendor>::hash_device_chunks(&vcpu, &self.devices, &mut out);
+        if let Some(contract) = <B::A as Vendor>::contract_identity_hash(self) {
+            put_chunk(&mut out, b"CNTR", &contract);
+        }
         if let Some(sdk) = &self.sdk {
             append_sdk_channel(&mut out, sdk, sdk_recorded)?;
         }
@@ -1359,6 +1362,9 @@ where
         ));
         out.push(("dev", dig(&self.encode_device_terminal())));
         <B::A as Vendor>::device_components(&vcpu, &self.devices, &mut out);
+        if let Some(contract) = <B::A as Vendor>::contract_identity_hash(self) {
+            out.push(("contract", contract));
+        }
         if let Some(vt) = &self.vtime {
             let mut cfg = 1_u64.to_le_bytes().to_vec();
             for x in [vt.cfg.guest_hz, vt.cfg.guest_base, vt.guest_clock_offset] {
