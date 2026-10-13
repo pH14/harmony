@@ -544,6 +544,9 @@ pub(crate) fn validate_restore_shape(
     if state.xsave.len() != xsave_len {
         return Err(BackendError::InvalidState);
     }
+    if state.regs.rflags & 2 == 0 {
+        return Err(BackendError::InvalidState);
+    }
     if state.sregs.cr8 > 0x0f {
         return Err(BackendError::InvalidState);
     }
