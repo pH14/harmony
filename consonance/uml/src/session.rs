@@ -32,6 +32,19 @@ const POLL: Duration = Duration::from_millis(5);
 const RESTORE_ARGUMENT: &str = "harmony_restore";
 const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP2";
 
+fn checked_sidecar(sidecar: &[u8]) -> Result<(u64, Reader<'_>), SessionError> {
+    let mut reader = Reader(
+        sidecar
+            .strip_prefix(SIDECAR_MAGIC)
+            .ok_or_else(|| SessionError::Protocol("checkpoint sidecar: magic".into()))?,
+    );
+    let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
+    if image_bytes > crate::memory::IMAGE_BYTES as u64 {
+        return Err(MemoryError::ImageTooLarge(image_bytes).into());
+    }
+    Ok((image_bytes, reader))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
     Event,
@@ -185,6 +198,7 @@ impl Checkpoints {
         sidecar: &[u8],
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
+        checked_sidecar(sidecar)?;
         let base = Checkpoint {
             memory: self.zero()?,
             services: near.services.clone(),
@@ -217,18 +231,13 @@ impl Checkpoints {
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
         let malformed = |what: &str| SessionError::Protocol(format!("checkpoint sidecar: {what}"));
-        let mut reader = Reader(
-            sidecar
-                .strip_prefix(SIDECAR_MAGIC)
-                .ok_or_else(|| malformed("magic"))?,
-        );
+        let (image_bytes, mut reader) = checked_sidecar(sidecar)?;
         let length = |reader: &mut Reader<'_>| {
             reader
                 .u64()
                 .and_then(|length| usize::try_from(length).map_err(|error| error.to_string()))
                 .map_err(SessionError::Protocol)
         };
-        let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
         let services = length(&mut reader)
             .and_then(|services| reader.take(services).map_err(SessionError::Protocol))?;
         let services = Services::decode(services, factory).map_err(SessionError::Protocol)?;
@@ -1081,6 +1090,45 @@ mod tests {
                 "{name} sidecar was accepted"
             );
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn import_bounds_the_private_image_before_storing_pages() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
+        let canonical = base.sidecar().unwrap();
+        let impossible = crate::memory::IMAGE_BYTES as u64 + 1;
+        let before = checkpoints.stats().unwrap().snapshots;
+        let base_digest = base.digest().unwrap();
+        for image_bytes in [impossible, u64::MAX] {
+            let mut sidecar = canonical.clone();
+            sidecar[SIDECAR_MAGIC.len()..SIDECAR_MAGIC.len() + 8]
+                .copy_from_slice(&image_bytes.to_le_bytes());
+            assert!(matches!(
+                checkpoints.import(&base, &base, &[], &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::ImageTooLarge(bytes))) if bytes == image_bytes
+            ));
+            assert!(matches!(
+                checkpoints.import_full(&base, &[], &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::ImageTooLarge(bytes))) if bytes == image_bytes
+            ));
+            assert_eq!(checkpoints.stats().unwrap().snapshots, before);
+            assert_eq!(base.digest().unwrap(), base_digest);
+        }
+
+        let mut boundary = canonical;
+        boundary[SIDECAR_MAGIC.len()..SIDECAR_MAGIC.len() + 8]
+            .copy_from_slice(&(crate::memory::IMAGE_BYTES as u64).to_le_bytes());
+        let imported = checkpoints
+            .import(&base, &base, &[], &boundary, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported.bytes(), crate::memory::IMAGE_BYTES as u64);
+        let imported_full = checkpoints
+            .import_full(&base, &[], &boundary, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported_full.bytes(), crate::memory::IMAGE_BYTES as u64);
+        assert_eq!(checkpoints.stats().unwrap().snapshots, before + 2);
     }
 
     #[test]
