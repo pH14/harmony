@@ -4,7 +4,8 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses the Dissonance `Archive` and
 parent selector to search it. The site plays three games: the NES game Twin
 Dragons on QuickNES, the Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and
-Super Mario Bros. and Mega Man 2 on QuickNES from ROMs the visitor supplies. The `game` URL
+Super Mario Bros., Mega Man 2 and Metroid on QuickNES from ROMs the visitor
+supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. Each
 game has one map per level. All execution happens on the visitor's computer,
 so hosting needs only static files.
@@ -425,6 +426,57 @@ does not yet find some of their exits. Seed 3 climbs about 420 pixels of Crash
 Man's stage in 3,000 rollouts. `tests/mm2.mjs` reads the ROM from `MM2_ROM` or
 `~/workspace/roms/mm2.nes` and skips when it is absent.
 
+### Metroid
+
+The site ships nothing from Metroid. The level selector accepts the ROM with
+SHA-256 `e6e6b701…65b6`. Metroid has one level, Zebes, whose five rooms are the
+areas Brinstar, Norfair, Kraid's Lair, Ridley's Lair and Tourian. The search
+starts from a new game, and the view follows it between areas the same way it
+follows Super Mario Bros. between bonus areas.
+
+Metroid keeps its items in cartridge RAM. The QuickNES shim keeps a 10 KiB copy
+of memory, the 2 KiB console RAM followed by the 8 KiB cartridge RAM at
+`$6000`, and refreshes it after every run and restore. A game with
+`cartridgeMemory: true` reads that copy, and the loader sets the iNES battery
+flag so the core exposes the cartridge RAM. `engine.commitMemory()` writes the
+copy back after a game changes it.
+
+| Address | Meaning |
+| --- | --- |
+| `$1E` | game mode; 3 is play |
+| `$49` | scroll direction: 0 up, 1 down, 2 left, 3 right |
+| `$4D` | facing; 0 is right |
+| `$4F`, `$50` | map row and column |
+| `$56` | door state; 0 and 5 are outside a door |
+| `$74` | area: low nibble 0 Brinstar, 1 Norfair, 2 Kraid, 3 Tourian, 4 Ridley |
+| `$106`, `$107` | health in BCD tenths |
+| `$30C`–`$30E` | Samus's name table, y and x |
+| `$6877`–`$687C` | energy tanks, equipment, missiles, missile capacity, Kraid and Ridley |
+| `$6883` | ending |
+
+Samus's map cell is the map position corrected by the scroll direction and
+name table, as in `workloads/nes/src/metroid`. Each area's map is the bounding
+box of its cells, and the table of which area owns each of the 32 × 32 world
+cells comes from a search over doors and passable screen edges. A rollout ends
+at death, a health reading of 800 or more (a BCD borrow), or the ending. A
+state inside a door transition is loading. The archive place is (area, loading,
+x / 32, y / 32), progress is the count of equipment bits, tanks and defeated
+bosses, and the preference is more missiles, then more health. The draw adds a
+Select press to one action in eight, because Select switches to missiles. Start
+pauses the game and is never drawn.
+
+The maps are drawn from the ROM's level data with no emulation. The world map
+at `$A53E` in bank 0 gives each cell's room. Each area bank holds the room,
+structure and macro tables at `$959A`, `$959C` and `$959E`, and its palette
+behind `$9560`. The pattern tables are copied in the order of the area's entries
+in the table at `$C6E0`. Door caps are drawn as bars in their palette colors.
+Enemies, items and elevators are sprites and are not drawn. Each screen is a
+separate 256 × 240 bitmap, because a whole area is too large for one canvas on
+a phone, and the strip beside the view draws a reduced copy. Seed 3 moves
+Samus about 600 pixels from the start in 3,000 rollouts. `tests/metroid.mjs`
+reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
+skips when it is absent.
+
 ## Verification and publishing
 
 ```sh
@@ -466,13 +518,14 @@ before the search reaches Level 2. `tests/room-cameras.mjs` checks one camera vi
 desktop and phone, Full view and Auto view, edge panning and the level strip,
 rotation, and a retained-state hit near the far end of Level 1 using the
 hash-verified `level-one` history. `tests/level-finish.mjs` checks that
-the map moves to Level 2 within 1.5 seconds after the first clearing rollout
-leaves Level 1, and not before, in Twin Dragons and Tobu Tobu Girl, and that
+the map moves to Level 2 within half a second of the first batch that clears
+Level 1 in Twin Dragons and Tobu Tobu Girl, and that
 the level strip moves the view in both. `tests/smb.mjs` also checks that
 cleared levels collapse into the +N button and that nothing scrolls sideways
 at 1,280 and 390 pixels wide. `tests/mm2.mjs` boots every stage, builds three
 maps, replays a Crash Man state exactly, compares the Rust and browser
 decoders, and checks that the stage map moves the view on both axes.
+`tests/metroid.mjs` does the same for Metroid's five area maps.
 `tests/replay-pause.mjs` checks that the path
 counter stays still while a visitor's replay plays and advances during the
 automatic replay pick and after the replay pauses, ends or closes.

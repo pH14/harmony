@@ -8,7 +8,7 @@ export function coreURL(name, base, version) {
 }
 
 export async function loadQuickNES(base, rom, inputs = {}) {
-  const version = "idle-loop-1";
+  const version = "idle-loop-2";
   const factory = (await import(/* @vite-ignore */ coreURL("quicknes.js", base, version))).default;
   const mod = await factory({
     ...(inputs.wasmBinary ? { wasmBinary: inputs.wasmBinary } : {}),
@@ -18,6 +18,7 @@ export async function loadQuickNES(base, rom, inputs = {}) {
   });
   const rp = mod._malloc(rom.length);
   mod.HEAPU8.set(rom, rp);
+  if (inputs.cartridgeMemory) mod.HEAPU8[rp + 6] |= 2;
   const loaded = mod._nes_load(rp, rom.length);
   mod._free(rp);
   if (!loaded) throw new Error("QuickNES could not load the ROM");
@@ -29,7 +30,8 @@ export async function loadQuickNES(base, rom, inputs = {}) {
     mod,
     revision: QUICKNES_REVISION,
     stateSize: size,
-    ramPointer: () => mod._nes_ram(),
+    ramPointer: inputs.cartridgeMemory ? () => mod._nes_memory() : () => mod._nes_ram(),
+    commitMemory: () => mod._nes_memory_commit(),
     step: (buttons, frames) => mod._nes_run(buttons, frames, 0),
     runRendered: (buttons, frames, render) => mod._nes_run(buttons, frames, render ? 1 : 0),
     enableAudio(enabled) {

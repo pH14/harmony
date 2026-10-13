@@ -502,7 +502,7 @@ function drawOverview(strip, now) {
   ctx.fillStyle = "#122b42";
   ctx.fillRect(0, 0, strip.width, strip.height);
   const image = panorama(id);
-  if (image) ctx.drawImage(image, 0, 0, strip.width, strip.height);
+  if (image) ctx.drawImage(image.small || image, 0, 0, strip.width, strip.height);
   ctx.fillStyle = "rgba(7,24,43,.4)";
   ctx.fillRect(0, 0, strip.width, strip.height);
   if (visualization === "movement") {
@@ -856,8 +856,19 @@ function nextBuiltMap() {
 function builtMapKey(level) {
   return `${game.id}:${game.rom.sha256}:map-v1:${level}`;
 }
+function tiledMap({ width, height, tiles }) {
+  const fit = Math.min(1, 1600 / Math.max(width, height)), small = document.createElement("canvas");
+  small.width = Math.round(width * fit);
+  small.height = Math.round(height * fit);
+  const ctx = small.getContext("2d");
+  return Promise.all(tiles.map(async (tile) => {
+    const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(tile.data.buffer || tile.data), tile.width, tile.height));
+    ctx.drawImage(bitmap, tile.x * fit, tile.y * fit, tile.width * fit, tile.height * fit);
+    return { x: tile.x, y: tile.y, width: tile.width, height: tile.height, bitmap };
+  })).then((list) => ({ width, height, tiles: list, small }));
+}
 function showBuiltMap(level, image) {
-  createImageBitmap(image).then((bitmap) => {
+  (image.tiles ? tiledMap(image) : createImageBitmap(image)).then((bitmap) => {
     panoramas.set(level, bitmap);
     addAreaMap(level, bitmap);
     for (const preview of document.querySelectorAll(`canvas.level-preview[data-level="${level}"]`)) drawLevelPreview(preview, bitmap);
@@ -871,6 +882,9 @@ function startMapWorker() {
     if (data.type === "sprites") {
       imageCanvas(data).toBlob((blob) => (sprites.src = URL.createObjectURL(blob)));
       builtMaps.ready = true;
+    } else if (data.type === "map" && data.tiles) {
+      showBuiltMap(data.level, data);
+      builtMaps.busy = false;
     } else if (data.type === "map") {
       const image = imageCanvas(data);
       showBuiltMap(data.level, image);
@@ -909,7 +923,8 @@ function addAreaMap(id, bitmap) {
     drawMap(performance.now());
   }
 }
-function drawLevelPreview(preview, bitmap) {
+function drawLevelPreview(preview, image) {
+  const bitmap = image.small || image;
   const height = bitmap.height, width = Math.min(bitmap.width, Math.round((height * preview.width) / preview.height));
   preview.getContext("2d").drawImage(bitmap, 0, 0, width, height, 0, 0, preview.width, preview.height);
 }
@@ -1935,7 +1950,12 @@ function drawArea(canvas, now) {
   ctx.translate(Math.round(canvas.width / 2 - areaCenter * scale), Math.round(canvas.height / 2 - areaCenterY * scale));
   ctx.scale(scale, scale);
   const image = panorama(mapLevel);
-  if (image) ctx.drawImage(image, 0, 0);
+  if (image?.tiles) {
+    const left = areaCenter - canvas.width / 2 / scale, right = areaCenter + canvas.width / 2 / scale;
+    const top = areaCenterY - canvas.height / 2 / scale, bottom = areaCenterY + canvas.height / 2 / scale;
+    for (const t of image.tiles)
+      if (t.x < right && t.x + t.width > left && t.y < bottom && t.y + t.height > top) ctx.drawImage(t.bitmap, t.x, t.y);
+  } else if (image) ctx.drawImage(image, 0, 0);
   canvas.dataset.previewRoute = !preview && routeHover?.segments ? routeHover.id : "";
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;

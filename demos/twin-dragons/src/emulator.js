@@ -5,9 +5,10 @@ import twinDragons from "./games/twin-dragons.js";
 import tobuTobuGirl from "./games/tobu-tobu-girl.js";
 import superMarioBros from "./games/super-mario-bros.js";
 import megaMan2 from "./games/mega-man-2.js";
+import metroid from "./games/metroid.js";
 
 const CORES = { quicknes: loadQuickNES, sameboy: loadSameBoy };
-export const GAMES = new Map([twinDragons, tobuTobuGirl, superMarioBros, megaMan2].map((game) => [game.id, game]));
+export const GAMES = new Map([twinDragons, tobuTobuGirl, superMarioBros, megaMan2, metroid].map((game) => [game.id, game]));
 
 export async function sha256Hex(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
@@ -22,7 +23,7 @@ export async function createEngine(base, game, inputs = {}) {
     new Uint8Array(await (await checkedFetch(new URL(game.rom.file, base))).arrayBuffer());
   if (rom.byteLength !== game.rom.bytes) throw new Error(`Unexpected ${game.title} ROM size`);
   if ((await sha256Hex(rom)) !== game.rom.sha256) throw new Error(`${game.title} ROM checksum mismatch`);
-  const core = await CORES[game.core](base, rom, inputs);
+  const core = await CORES[game.core](base, rom, { ...inputs, cartridgeMemory: !!game.cartridgeMemory });
   const engine = {
     ...core,
     game,

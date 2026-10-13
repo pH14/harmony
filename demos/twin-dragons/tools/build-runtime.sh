@@ -25,7 +25,7 @@ em++ -O3 -flto -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
     "$build/quicknes/quicknes.a" -I"$build/quicknes/libretro/libretro-common/include" \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker,node \
     '-sEXPORTED_RUNTIME_METHODS=["HEAPU8"]' -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINITIAL_MEMORY=16777216 \
-    '-sEXPORTED_FUNCTIONS=["_malloc","_free","_nes_load","_nes_run","_nes_state_size","_nes_save","_nes_restore","_nes_pixels","_nes_width","_nes_height","_nes_ram","_nes_ram_size","_nes_audio_enable","_nes_audio_samples","_nes_audio_count","_nes_audio_clear"]' \
+    '-sEXPORTED_FUNCTIONS=["_malloc","_free","_nes_load","_nes_run","_nes_state_size","_nes_save","_nes_restore","_nes_pixels","_nes_width","_nes_height","_nes_ram","_nes_ram_size","_nes_memory","_nes_memory_commit","_nes_audio_enable","_nes_audio_samples","_nes_audio_count","_nes_audio_clear"]' \
     -o "$demo/public/engine/quicknes.js"
 "$root/workloads/nes/scripts/build-twin-dragons-rom.sh" "$build/twin-dragons"
 cp "$build/twin-dragons/twin-dragons.nes" "$demo/public/twin-dragons.nes"

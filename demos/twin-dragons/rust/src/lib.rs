@@ -31,6 +31,7 @@ pub enum Game {
     TobuTobuGirl,
     SuperMarioBros,
     MegaMan2,
+    Metroid,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -81,6 +82,10 @@ const MM2_SCREEN_HEIGHT: u16 = 224;
 const MM2_CROP_TOP: u8 = 8;
 const MM2_BAND: u16 = 128;
 const MM2_FULL: u8 = 28;
+const METROID_AREAS: [(u16, u16, u16, u16); 5] = [(1, 1, 30, 19), (13, 9, 18, 16), (1, 16, 12, 15), (14, 23, 17, 8), (1, 3, 10, 9)];
+const METROID_AREA_OF: [u16; 5] = [0, 1, 2, 4, 3];
+const METROID_SCREEN_HEIGHT: u16 = 240;
+const METROID_CARTRIDGE: usize = 0x800;
 const MM2_STAGES: [(u8, &[u8]); 14] = [
     (0, &[0x47, 0x40, 0x4a, 0x40, 0x20, 0x20, 0x00]),
     (0, &[0x49, 0x40, 0x28, 0x20, 0x00]),
@@ -119,6 +124,7 @@ impl Game {
             "tobu-tobu-girl" => Ok(Game::TobuTobuGirl),
             "super-mario-bros" => Ok(Game::SuperMarioBros),
             "mega-man-2" => Ok(Game::MegaMan2),
+            "metroid" => Ok(Game::Metroid),
             _ => Err("unknown game"),
         }
     }
@@ -126,6 +132,7 @@ impl Game {
         match self {
             Game::TwinDragons | Game::SuperMarioBros | Game::MegaMan2 => 0x800,
             Game::TobuTobuGirl => 0x400,
+            Game::Metroid => 0x2800,
         }
     }
     fn decode(self, ram: &[u8]) -> Result<Observation, &'static str> {
@@ -134,6 +141,7 @@ impl Game {
             Game::TobuTobuGirl => decode_tobu(ram),
             Game::SuperMarioBros => decode_smb(ram),
             Game::MegaMan2 => decode_mm2(ram),
+            Game::Metroid => decode_metroid(ram),
         }
     }
     fn admissible(self, o: Observation) -> bool {
@@ -142,6 +150,7 @@ impl Game {
             Game::TobuTobuGirl => !o.loading || o.gamestate == TOBU_ENDING,
             Game::SuperMarioBros => (o.health != 0 && o.gamestate == SMB_PLAY && !o.goal) || o.won(),
             Game::MegaMan2 => (o.health != 0 && !o.loading && !o.goal) || o.won(),
+            Game::Metroid => (o.health != 0 && !o.loading) || o.won(),
         }
     }
     fn level_complete(self, o: Observation) -> bool {
@@ -150,12 +159,13 @@ impl Game {
             Game::TobuTobuGirl => o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE,
             Game::SuperMarioBros => o.health != 0 && !o.won() && (o.goal || o.gamestate == SMB_VICTORY),
             Game::MegaMan2 => o.health != 0 && !o.won() && o.goal,
+            Game::Metroid => false,
         }
     }
     fn starts_at_level_one(self, o: Observation) -> bool {
         match self {
             Game::TwinDragons => o.gamestate == PLAYING && o.level == 0,
-            Game::TobuTobuGirl | Game::SuperMarioBros | Game::MegaMan2 => !o.loading && o.level == 0,
+            Game::TobuTobuGirl | Game::SuperMarioBros | Game::MegaMan2 | Game::Metroid => !o.loading && o.level == 0,
         }
     }
     fn validate_actions(self, actions: &[Action]) -> Result<(), &'static str> {
@@ -165,9 +175,14 @@ impl Game {
         let mut frames = 0_u32;
         for a in actions {
             let menu_buttons = matches!(self, Game::TobuTobuGirl | Game::MegaMan2);
+            let blocked = match self {
+                Game::Metroid => 8,
+                _ if menu_buttons => 0,
+                _ => 12,
+            };
             if a.frames == 0
                 || (!menu_buttons && a.frames > 120)
-                || (!menu_buttons && a.buttons & 12 != 0)
+                || a.buttons & blocked != 0
                 || a.buttons & 48 == 48
                 || a.buttons & 192 == 192
             {
@@ -198,6 +213,7 @@ impl ArchiveKey for Observation {
                 (self.y / 16) << 8 | u16::from(self.time),
             ),
             Game::MegaMan2 => (self.level, self.loading, self.x / 32, (self.y / 32) << 8 | u16::from(self.time)),
+            Game::Metroid => (self.level, self.loading, self.x / 32, self.y / 32),
         }
     }
     fn progress(self) -> Self::Progress {
@@ -206,6 +222,7 @@ impl ArchiveKey for Observation {
             Game::TobuTobuGirl => (self.cleared, self.climb / TOBU_BAND),
             Game::SuperMarioBros => (self.cleared, self.climb / SMB_BAND),
             Game::MegaMan2 => (self.cleared, (self.climb / MM2_BAND) * 32 + u16::from(self.time)),
+            Game::Metroid => (self.cleared, 0),
         }
     }
     fn identity(self) -> Self::Identity {
@@ -213,7 +230,7 @@ impl ArchiveKey for Observation {
             Game::TwinDragons => (self.x / 16, self.y / 16),
             Game::TobuTobuGirl => (0, 0),
             Game::SuperMarioBros => (self.climb % 16, 0),
-            Game::MegaMan2 => (self.x / 16 % 2, self.y / 16 % 2),
+            Game::MegaMan2 | Game::Metroid => (self.x / 16 % 2, self.y / 16 % 2),
         }
     }
     fn capacity() -> usize {
@@ -231,6 +248,7 @@ impl ArchiveKey for Observation {
             Game::TobuTobuGirl => (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb)),
             Game::SuperMarioBros => (self.cleared, self.clock).cmp(&(other.cleared, other.clock)),
             Game::MegaMan2 => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
+            Game::Metroid => (self.cleared, self.fuel, self.clock).cmp(&(other.cleared, other.fuel, other.clock)),
         }
     }
     fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
@@ -246,6 +264,7 @@ impl Observation {
             Game::TobuTobuGirl => self.gamestate == TOBU_ENDING,
             Game::SuperMarioBros => self.cleared >= SMB_LEVEL_COUNT,
             Game::MegaMan2 => self.cleared >= MM2_LEVEL_COUNT,
+            Game::Metroid => self.goal,
         }
     }
 }
@@ -450,6 +469,76 @@ pub fn decode_mm2(ram: &[u8]) -> Result<Observation, &'static str> {
         time: boss_damage,
         fuel: 0,
         clock: 0,
+    })
+}
+
+fn bcd(byte: u8) -> u16 {
+    u16::from(byte >> 4) * 10 + u16::from(byte & 15)
+}
+
+fn metroid_cell(ram: &[u8]) -> (u8, u8) {
+    let direction = ram[0x49];
+    let vertical = direction < 2;
+    let backward = direction == 0 || direction == 2;
+    let scroll = ram[if vertical { 0xfc } else { 0xfd }];
+    let in_selected = ram[0x30c] == u8::from(ram[0xff] & 3 != 0);
+    let ahead = scroll == 0 || in_selected == backward;
+    let step = |v: u8| {
+        if ahead {
+            v
+        } else if backward {
+            v.wrapping_add(1)
+        } else {
+            v.wrapping_sub(1)
+        }
+    };
+    if vertical {
+        (ram[0x50], step(ram[0x4f]))
+    } else {
+        (step(ram[0x50]), ram[0x4f])
+    }
+}
+
+pub fn decode_metroid(ram: &[u8]) -> Result<Observation, &'static str> {
+    if ram.len() != 0x2800 {
+        return Err("emulator memory must contain 2 KiB work RAM and 8 KiB cartridge RAM");
+    }
+    let cart = |address: usize| ram[METROID_CARTRIDGE + address - 0x6000];
+    let level = METROID_AREA_OF.get(usize::from(ram[0x74] & 15)).copied().unwrap_or(0);
+    let (x0, y0, cols, rows) = METROID_AREAS[usize::from(level)];
+    let (cx, cy) = metroid_cell(ram);
+    let x = ((i32::from(cx) - i32::from(x0)) * 256 + i32::from(ram[0x30e])).clamp(0, i32::from(cols) * 256 - 1);
+    let y = ((i32::from(cy) - i32::from(y0)) * i32::from(METROID_SCREEN_HEIGHT) + i32::from(ram[0x30d]))
+        .clamp(0, i32::from(rows * METROID_SCREEN_HEIGHT) - 1);
+    let health = bcd(ram[0x107]) * 100 + bcd(ram[0x106]);
+    let playing = ram[0x1e] == 3;
+    let dead = playing && (health == 0 || health >= 8000);
+    let won = cart(0x6883) != 0;
+    let door = ram[0x56];
+    let cleared = cart(0x6878).count_ones() as u8
+        + cart(0x6877).min(6)
+        + (cart(0x687b) >> 7)
+        + (cart(0x687c) >> 7)
+        + u8::from(won);
+    let pose = ram[0x300];
+    Ok(Observation {
+        game: Game::Metroid,
+        x: x as u16,
+        y: y as u16,
+        health: if dead { 0 } else { health.div_ceil(10).min(255) as u8 },
+        level,
+        next_level: 0,
+        gamestate: ram[0x1e],
+        goal: won,
+        on_ground: pose <= 1 || pose == 0xff,
+        facing: u8::from(ram[0x4d] == 0),
+        loading: !playing || (door != 0 && door != 5),
+        cleared,
+        scene: ram[0x74],
+        climb: 0,
+        time: 0,
+        fuel: cart(0x6879),
+        clock: health,
     })
 }
 
@@ -687,7 +776,10 @@ impl Explorer {
             let mut actions = Vec::new();
             let count = 1 + below(&mut self.rng, 24);
             for action_count in (prefix.len()..).take(count) {
-                let action = draw(&mut self.rng, previous);
+                let mut action = draw(&mut self.rng, previous);
+                if self.game == Game::Metroid && below(&mut self.rng, 8) == 0 {
+                    action.buttons ^= 4;
+                }
                 if frame + u32::from(action.frames) > 200_000 || action_count >= 10_000 {
                     break;
                 }
