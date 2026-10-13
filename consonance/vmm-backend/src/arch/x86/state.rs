@@ -236,6 +236,26 @@ pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<
     Ok(restored)
 }
 
+pub fn kvm_restore_xsave_image(
+    image: &[u8],
+    restore_bv: Option<u64>,
+    supported_bv: u64,
+) -> Result<Vec<u8>> {
+    let restored = restore_xsave_image(image, restore_bv)?;
+    let Some((xstate_bv, xcomp_bv)) = standard_xsave_header(&restored) else {
+        return Err(BackendError::InvalidState);
+    };
+    let mxcsr = u32::from_le_bytes(
+        restored[SSE_MXCSR]
+            .try_into()
+            .map_err(|_| BackendError::InvalidState)?,
+    );
+    if xcomp_bv != 0 || xstate_bv & !supported_bv != 0 || mxcsr & !0xffff != 0 {
+        return Err(BackendError::InvalidState);
+    }
+    Ok(restored)
+}
+
 pub fn logical_xsave_restore_bv(image: &[u8], restore_bv: Option<u64>) -> Result<Option<u64>> {
     if image.len() < 576 {
         return Err(BackendError::InvalidState);
@@ -486,6 +506,51 @@ mod tests {
                 assert_eq!(image, before);
             }
         }
+    }
+
+    #[test]
+    fn kvm_restore_rejects_unrepresentable_xsave_before_mutating_source() {
+        let image = init_image(0);
+        let supported = 0x7;
+        assert_eq!(
+            kvm_restore_xsave_image(&image, None, supported).unwrap(),
+            image
+        );
+        assert_eq!(
+            kvm_restore_xsave_image(&image, Some(0), supported).unwrap(),
+            image
+        );
+
+        let mut compacted = image.clone();
+        compacted[XCOMP_BV..XSAVE_HEADER_END].copy_from_slice(&(1u64 << 63).to_le_bytes());
+        assert!(matches!(
+            kvm_restore_xsave_image(&compacted, None, supported),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(restore_xsave_image(&compacted, None).unwrap(), compacted);
+
+        let mut unsupported = image.clone();
+        unsupported[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&(1u64 << 63).to_le_bytes());
+        for restore_bv in [None, Some(1u64 << 63)] {
+            assert!(matches!(
+                kvm_restore_xsave_image(&unsupported, restore_bv, supported),
+                Err(BackendError::InvalidState)
+            ));
+        }
+
+        let mut reserved_mxcsr = image.clone();
+        reserved_mxcsr[SSE_MXCSR].copy_from_slice(&0x0001_1f80u32.to_le_bytes());
+        reserved_mxcsr[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&2u64.to_le_bytes());
+        for restore_bv in [None, Some(2)] {
+            assert!(matches!(
+                kvm_restore_xsave_image(&reserved_mxcsr, restore_bv, supported),
+                Err(BackendError::InvalidState)
+            ));
+        }
+        assert_eq!(
+            kvm_restore_xsave_image(&image, None, supported).unwrap(),
+            image
+        );
     }
 
     #[test]

@@ -19,7 +19,8 @@ use crate::arch::x86::{
     CpuidEntry, CpuidModel, MsrFilter, NestedFormat, X86, X86Caps, X86Completion, X86Policy,
 };
 use crate::arch::x86::{
-    canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
+    canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv,
+    kvm_restore_xsave_image,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -55,6 +56,7 @@ pub struct KvmBackend {
     nested_state_config: Option<(NestedFormat, usize)>,
     nested_physical_bits: u32,
     sysenter_virtual_bits: u32,
+    supported_xsave_bv: u64,
     host_amd_compatible: bool,
     sysenter_32bit: bool,
     nested_state_guard: crate::arch::x86::NestedStateGuard,
@@ -111,6 +113,12 @@ impl KvmBackend {
         let host_amd_compatible =
             amd_compatible_vendor(host_vendor.ebx, host_vendor.edx, host_vendor.ecx);
         let sysenter_virtual_bits = kvm_sysenter_virtual_bits(supported.as_slice());
+        let supported_xsave_bv = supported
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 0xD && entry.index == 0)
+            .map(|entry| u64::from(entry.eax) | (u64::from(entry.edx) << 32) | 3)
+            .unwrap_or(3);
         let mmap_size = kvm.get_vcpu_mmap_size().map_err(kvm_err)?;
         if mmap_size < size_of::<kvm_run>() {
             return Err(BackendError::Internal("kvm_run mmap size too small"));
@@ -127,6 +135,7 @@ impl KvmBackend {
             nested_state_config: None,
             nested_physical_bits: 0,
             sysenter_virtual_bits,
+            supported_xsave_bv,
             host_amd_compatible,
             sysenter_32bit: host_amd_compatible,
             nested_state_guard: Default::default(),
@@ -1072,14 +1081,23 @@ impl Backend for KvmBackend {
                 ));
             }
         }
-        restore_xsave_image(&state.xsave, state.xsave_restore_bv).map(|_| ())
+        kvm_restore_xsave_image(
+            &state.xsave,
+            state.xsave_restore_bv,
+            self.supported_xsave_bv,
+        )
+        .map(|_| ())
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
         self.check_completion_clear()?;
         self.validate_restore_state(state)?;
         self.drain_staged_completion()?;
-        let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
+        let xsave = kvm_restore_xsave_image(
+            &state.xsave,
+            state.xsave_restore_bv,
+            self.supported_xsave_bv,
+        )?;
 
         let restore = || {
             if let Some((format, _)) = self.nested_state_config {
