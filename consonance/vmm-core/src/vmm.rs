@@ -2959,9 +2959,9 @@ mod tests {
                 assert_eq!(
                     none_hash,
                     [
-                        0x49, 0xca, 0x26, 0xde, 0x0c, 0x51, 0x72, 0x0f, 0xcc, 0x0a, 0x05, 0xf8,
-                        0xee, 0x4f, 0x3c, 0xd4, 0x0a, 0x0e, 0x94, 0xfc, 0xf8, 0x4b, 0x4d, 0x9e,
-                        0xf4, 0xdc, 0xb1, 0x9d, 0x55, 0x8f, 0x45, 0x6c,
+                        0x8b, 0x9f, 0x95, 0x0f, 0xc3, 0xa4, 0x96, 0x4c, 0x8f, 0x14, 0x6e, 0xcf,
+                        0xd4, 0x1d, 0x52, 0xea, 0x4d, 0x20, 0xcc, 0xad, 0xec, 0x2c, 0xf9, 0x57,
+                        0xef, 0x5f, 0x51, 0x85, 0x62, 0x95, 0x93, 0x85
                     ],
                     "absent XSAVE provenance must preserve the vCPU hash"
                 );
@@ -7634,6 +7634,21 @@ mod tests {
             let empty = v.state_hash().unwrap();
             v.inject_serial_input(b"pending");
             assert_ne!(empty, v.state_hash().unwrap());
+        }
+    }
+
+    #[test]
+    fn uart_divisor_high_byte_is_part_of_state_identity() {
+        for hashing in [false, true] {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(4096).unwrap());
+            if hashing {
+                v.wire_snapshot_hashing();
+            }
+            v.devices.uart.write(0x3fb, 0x80);
+            let before = v.state_hash().unwrap();
+            v.devices.uart.write(0x3f9, 7);
+            assert_eq!(v.devices.uart.read(0x3f9), Some(7));
+            assert_ne!(before, v.state_hash().unwrap());
         }
     }
 

@@ -68,6 +68,7 @@ records. Snapshot capture still reads complete architectural state.
 architectural comparator in the parent module compares vCPU and canonical GIC
 fields independently of snapshot hashes.
 
-Device blobs use the current version 13 format. Presence fields describe the
+Device blobs use the current version 14 format and retain unread serial input
+in FIFO order. Presence fields describe the
 optional GIC, doorbell, and pvclock records; pvclock records preserve the page
 GPA, registration capability, and pending-versus-armed handshake state.
