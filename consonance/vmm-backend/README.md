@@ -102,6 +102,10 @@ CPUID mask, and no reserved MXCSR bits. These inputs likewise fail at
 `KVM_SET_XSAVE` after earlier writes, so preflight checks them first. The pure
 XSAVE image helper can retain a compacted image for non-KVM callers; the KVM
 restore path rejects it because its ioctl accepts standard layout only.
+The vCPU event validity flags in a snapshot must match the flags KVM reports
+for the VM. KVM accepts a different mask but returns its own after restore,
+changing the saved identity. Restore rejects that mismatch before any state
+write.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
