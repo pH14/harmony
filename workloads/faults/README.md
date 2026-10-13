@@ -216,7 +216,9 @@ replaces `runner.options.kernel`, and each session runs in the search thread. Th
 identity, host architecture, CPU model and CPU feature flags join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
-VM state. Each snapshot is a full guest image of about the guest's RAM, so a
+VM state. A profile changed after workload admission is rejected before guest
+boot, so that identity always names the profile the session pins. Each snapshot
+is a full guest image of about the guest's RAM, so a
 worker's store fills its budget faster than under KVM.
 
 ## Running it

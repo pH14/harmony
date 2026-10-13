@@ -195,7 +195,9 @@ the guest to its setup snapshot point and captures it. Each snapshot is a full
 `uml::Checkpoint`; a restore is in place while the guest is paused and starts
 a fresh process otherwise. The initramfs override is pinned before the first
 boot; its sealed bytes define the root identity and serve every later fresh
-process. A publish exports the checkpoint into one extent,
+process. A caller that admitted the profile earlier can supply its expected
+profile identity; boot checks it against the newly pinned profile before
+starting a guest. A publish exports the checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
 or inject interrupts. `store_bytes` is the allocated size of every held

@@ -68,9 +68,10 @@ pub enum GuestBackend {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UmlGuest {
-    pub profile: PathBuf,
-    pub identity: String,
-    pub work_parent: PathBuf,
+    pub(crate) profile: PathBuf,
+    pub(crate) profile_identity_sha256: String,
+    pub(crate) identity: String,
+    pub(crate) work_parent: PathBuf,
 }
 
 impl UmlGuest {
@@ -88,6 +89,7 @@ impl UmlGuest {
         );
         Ok(Self {
             profile: profile.to_path_buf(),
+            profile_identity_sha256: verified.identity_sha256().to_owned(),
             identity,
             work_parent,
         })
@@ -337,6 +339,7 @@ fn uml_launch(
     }
     Ok(UmlLaunch {
         profile: guest.profile.clone(),
+        expected_profile_identity_sha256: Some(guest.profile_identity_sha256.clone()),
         initramfs: path,
         memory_mib: config.ram_mib,
         kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),

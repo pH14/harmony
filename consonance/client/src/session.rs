@@ -761,6 +761,7 @@ pub use uml::UmlSession;
 #[derive(Clone, Debug)]
 pub struct UmlLaunch {
     pub profile: std::path::PathBuf,
+    pub expected_profile_identity_sha256: Option<String>,
     pub initramfs: std::path::PathBuf,
     pub memory_mib: u32,
     pub kernel_arguments: Vec<String>,
