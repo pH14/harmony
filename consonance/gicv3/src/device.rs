@@ -952,6 +952,12 @@ mod tests {
     #[test]
     fn private_trigger_configuration_is_read_only_and_invalid_state_is_rejected() {
         let mut g = gic();
+        for (word, expected) in [(0, 0), (1, 0), (2, 0xaaaa_aaaa), (6, 0)] {
+            let offset = ICFGR_BASE + word * 4;
+            g.mmio_write(GicFrame::Dist, offset, u32::MAX, 0).unwrap();
+            assert_eq!(g.mmio_read(GicFrame::Dist, offset, 0).unwrap(), expected);
+        }
+        assert!(Gicv3::restore(&g.snapshot(), 0).is_ok());
         let offset = SGI_FRAME_BASE + ICFGR_BASE;
         let initial = g.mmio_read(GicFrame::Redist, offset, 0).unwrap();
         g.mmio_write(GicFrame::Redist, offset, 0xaaaa_aaaa, 0)
