@@ -228,6 +228,23 @@ fn reseed_marker_requires_arrival(marker: u64, restored_floor: u64) -> bool {
     marker > restored_floor
 }
 
+fn validate_control_import_sections(
+    sdk: Option<&SdkSnapshot>,
+    control_state: &[u8],
+) -> Result<(), PortableSnapshotError> {
+    if sdk.is_none() {
+        return Err(PortableSnapshotError::Malformed(
+            "control snapshot missing SDK state",
+        ));
+    }
+    if control_state.is_empty() {
+        return Err(PortableSnapshotError::Malformed(
+            "control snapshot missing control state",
+        ));
+    }
+    Ok(())
+}
+
 impl<B: Backend<A: Vendor>> ControlServer<B> {
     fn preflight_imported_vm_state(
         &self,
@@ -600,6 +617,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
 
         let portable = decode_sparse_sidecar(sidecar)?;
+        validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
         self.preflight_imported_vm_state(&decoded)?;
@@ -733,6 +751,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         )
         .map_err(|_| PortableSnapshotError::Malformed("configured memory length"))?;
         let portable = PortableSnapshot::read_from(reader, expected_memory_len)?;
+        validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
         self.preflight_imported_vm_state(&decoded)?;
@@ -4499,6 +4518,149 @@ mod tests {
                 "sparse export target lacks a canonical state-blob suffix"
             ))
         ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "portable import and replay use mapped snapshot storage"
+    )]
+    fn imported_control_snapshots_require_sdk_and_control_state() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        source
+            .handle(&Request::Perturb {
+                fault: HostFault(upset(0x40).encode()),
+                at: Moment(501),
+            })
+            .unwrap()
+            .unwrap();
+        let cut = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let mut artifact = Vec::new();
+        source.export_portable_snapshot(cut, &mut artifact).unwrap();
+        let portable = super::PortableSnapshot::read_from(
+            artifact.as_slice(),
+            source.vmm().unwrap().guest_memory().len(),
+        )
+        .unwrap();
+        assert!(portable.sdk.is_some());
+        assert_eq!(portable.state_hash, source_hash);
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let imported = destination
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        assert_eq!(imported.state_hash, source_hash);
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut destination), source_hash);
+
+        let mut without_sdk = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: None,
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: 0,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut without_sdk)
+        .unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let before = hash(&mut destination);
+        assert!(matches!(
+            destination.import_portable_snapshot(without_sdk.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot missing SDK state"
+            ))
+        ));
+        assert_eq!(destination.latest_snapshot(), None);
+        assert_eq!(hash(&mut destination), before);
+
+        let mut without_control = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: portable.sdk.as_ref(),
+            policy: &portable.policy,
+            control_state: &[],
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut without_control)
+        .unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let before = hash(&mut destination);
+        assert!(matches!(
+            destination.import_portable_snapshot(without_control.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot missing control state"
+            ))
+        ));
+        assert_eq!(destination.latest_snapshot(), None);
+        assert_eq!(hash(&mut destination), before);
+
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+        let decoded = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
+        assert!(decoded.sdk.is_some());
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let imported = destination
+            .import_sparse_snapshot(base, sparse.clone())
+            .unwrap();
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut destination), source_hash);
+
+        let sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
+            vm_state: &decoded.vm_state,
+            sdk: None,
+            policy: &decoded.policy,
+            control_state: &decoded.control_state,
+            at: decoded.at,
+            sdk_events: 0,
+            trace_events: decoded.trace_events,
+            trace_schedules: decoded.trace_schedules,
+            tainted: decoded.tainted,
+            state_blob_suffix: &decoded.state_blob_suffix,
+        })
+        .unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let before = hash(&mut destination);
+        assert!(matches!(
+            destination.import_sparse_snapshot(
+                base,
+                super::SparsePortableSnapshot {
+                    pages: sparse.pages,
+                    sidecar,
+                },
+            ),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot missing SDK state"
+            ))
+        ));
+        assert_eq!(destination.latest_snapshot(), Some(base));
+        assert_eq!(hash(&mut destination), before);
     }
 
     #[test]
