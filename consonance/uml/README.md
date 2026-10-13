@@ -96,8 +96,12 @@
   `Checkpoints::import` reproduces the published checkpoint only onto a base
   with the publisher's digest, because a base also holds per-process host
   values: the C library's stack canary and pointer guard, host process IDs
-  and the work directory name. `state_hash` hashes the services state and the
-  pending request. Sessions are Linux only.
+  and the work directory name. `Session::state_hash` refuses a full-state
+  digest because a stable cross-process identity for guest memory is not yet
+  available. `bridge_state_digest` covers only services and the pending request;
+  the client combines it with the full setup checkpoint digest for its
+  setup-scoped cache identity. It must not be compared as a whole-state replay
+  proof. Sessions are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event
   count and event hash of a run. Schema 2 includes the selected host processor.
   It derives the seed from the live launch's

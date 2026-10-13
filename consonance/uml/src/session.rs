@@ -98,6 +98,8 @@ pub enum SessionError {
     Behind(usize),
     #[error("the guest stopped: {0:?}")]
     Stopped(ExitReason),
+    #[error("UML state hash is unavailable: guest memory has no canonical cross-process digest")]
+    StateHashUnavailable,
     #[error("bridge protocol: {0}")]
     Protocol(String),
     #[error("the guest refused the {operation}: errno {errno}")]
@@ -404,8 +406,12 @@ impl Session {
     }
 
     pub fn state_hash(&self) -> Result<[u8; 32], SessionError> {
+        Err(SessionError::StateHashUnavailable)
+    }
+
+    pub fn bridge_state_digest(&self) -> Result<[u8; 32], SessionError> {
         let mut digest = Sha256::new();
-        digest.update(b"harmony-uml-session-state-v1\0");
+        digest.update(b"harmony-uml-bridge-state-v1\0");
         digest.update(self.services.encode().map_err(SessionError::Protocol)?);
         if let Some(request) = &self.pending {
             digest.update(request);
@@ -1407,13 +1413,17 @@ mod tests {
         let checkpoints = Checkpoints::new();
         let mut session = Session::start(command, work, &launch, &checkpoints, None).unwrap();
         let first = session.run_until(0).unwrap();
-        let zero_hash = session.state_hash().unwrap();
+        let zero_hash = session.bridge_state_digest().unwrap();
+        assert!(matches!(
+            session.state_hash(),
+            Err(SessionError::StateHashUnavailable)
+        ));
         let zero_events = session.events().len();
         let second = session.run_until(100).unwrap();
-        let second_hash = session.state_hash().unwrap();
+        let second_hash = session.bridge_state_digest().unwrap();
         let second_events = session.events().len();
         let continued = session.run_until(150).unwrap();
-        let continued_hash = session.state_hash().unwrap();
+        let continued_hash = session.bridge_state_digest().unwrap();
         let continued_events = session.events().len();
         session.kill().unwrap();
 

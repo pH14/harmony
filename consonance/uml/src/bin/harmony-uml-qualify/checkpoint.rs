@@ -433,7 +433,7 @@ fn omitted_host_memory(
         session.restore(&omitted)?;
         Ok(diverged(session.run()?, reference))
     })();
-    omission("planted_omission_host_memory", outcome)
+    omission("planted_omission_host_memory", outcome, false)
 }
 
 fn omitted_bridge_state(
@@ -453,18 +453,40 @@ fn omitted_bridge_state(
             return Ok(json!({"setup": failure}));
         }
         let current = session.capture(Capture::default())?;
+        let bridge_digest = session.bridge_state_digest()?;
         session.restore(&first.with_bridge_of(&current))?;
-        Ok(diverged(session.run()?, reference))
+        let same_bridge_digest = session.bridge_state_digest()? == bridge_digest;
+        let state_hash_unavailable = matches!(
+            session.state_hash(),
+            Err(SessionError::StateHashUnavailable)
+        );
+        let mut detail = match session.run() {
+            Ok(exit) => diverged(exit, reference),
+            Err(error @ (SessionError::Stopped(_) | SessionError::Protocol(_))) => {
+                json!({"diverged": true, "error": error.to_string()})
+            }
+            Err(error) => return Err(error),
+        };
+        detail["same_bridge_digest"] = json!(same_bridge_digest);
+        detail["state_hash_unavailable"] = json!(state_hash_unavailable);
+        Ok(detail)
     })();
-    omission("planted_omission_bridge_state", outcome)
+    omission("planted_omission_bridge_state", outcome, true)
 }
 
-fn omission(name: &str, outcome: Result<Value, SessionError>) -> Value {
+fn omission(name: &str, outcome: Result<Value, SessionError>, require_unavailable: bool) -> Value {
     match outcome {
-        Ok(detail) => check(name, detail["diverged"] == json!(true), detail),
+        Ok(detail) => check(
+            name,
+            detail["diverged"] == json!(true)
+                && (!require_unavailable
+                    || detail["same_bridge_digest"] == json!(true)
+                        && detail["state_hash_unavailable"] == json!(true)),
+            detail,
+        ),
         Err(error @ (SessionError::Stopped(_) | SessionError::Protocol(_))) => check(
             name,
-            true,
+            !require_unavailable,
             json!({"diverged": true, "error": error.to_string()}),
         ),
         Err(error) => check(name, false, json!({"error": error.to_string()})),
