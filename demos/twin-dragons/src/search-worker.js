@@ -71,19 +71,33 @@ function updateMemory(batch, search) {
     wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength;
   batch.stopped = !!search.localStopped || memoryLimit();
 }
+const WORK_MS = 16;
+const channel = new MessageChannel(),
+  scheduled = new Map();
+let nextTask = 0;
+channel.port1.onmessage = ({ data }) => {
+  const callback = scheduled.get(data);
+  scheduled.delete(data);
+  callback?.();
+};
 const loop = new SearchLoop(() => {
   if (!initialized || busy) return false;
   try {
     const search = searches.get(active);
     shareSnapshotBudget(search);
     recorder.begin();
+    const points = [],
+      start = performance.now();
     let batch, motion;
     try {
-      batch = JSON.parse(search.explorer.advance(2));
+      do {
+        batch = JSON.parse(search.explorer.advance(1));
+        points.push(...batch.points);
+      } while (!batch.stopped && performance.now() - start < WORK_MS);
     } finally {
       motion = recorder.finish();
     }
-    batch.points = batch.points.map((p) => ({
+    batch.points = points.map((p) => ({
       ...p,
       retained: p.retained === null ? null : externalId(active, p.retained),
     }));
@@ -97,6 +111,13 @@ const loop = new SearchLoop(() => {
     error(e);
     return false;
   }
+}, {
+  schedule(callback) {
+    scheduled.set(++nextTask, callback);
+    channel.port2.postMessage(nextTask);
+    return nextTask;
+  },
+  cancel: (id) => scheduled.delete(id),
 });
 function error(e) {
   loop.pause();
