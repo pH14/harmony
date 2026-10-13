@@ -217,7 +217,12 @@ pub(crate) fn build_rootfs_segment(
     let mut writer = Writer::new();
     writer.dir("harmony-oci", 0o755);
     writer.dir("harmony-oci/rootfs", 0o755);
-    writer.tree_owned(rootfs, "harmony-oci/rootfs", &|path| owners.owner_of(path))?;
+    writer.tree_owned_with_modes(
+        rootfs,
+        "harmony-oci/rootfs",
+        &|path| owners.owner_of(path),
+        &|path, staged_mode| owners.mode_of(path, staged_mode),
+    )?;
     Ok(gzip(&writer.finish()))
 }
 

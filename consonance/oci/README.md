@@ -66,15 +66,17 @@ Both segments use a fixed gzip header and a pinned Rust DEFLATE encoder. The
 prepared bytes and identity therefore do not depend on the host's `gzip`
 implementation or version.
 
-Layers are extracted with `tar -p --no-same-owner`: each entry takes the mode
-its header recorded, whatever the host umask, and belongs to the staging user
-even when that user is root. The owner each header recorded is kept in
-`image::Ownership` beside the tree rather than on it. Whiteouts and replaced
-entries update the map the way they update the tree, and the rootfs segment
-records the mapped owner in every entry, which the guest kernel applies when it
-unpacks the initramfs. An image that hands its data to a service account, such
-as a database cluster owned by its own uid, is therefore readable by that
-account in the guest and by nobody else.
+Layers are extracted with `tar -p --no-same-owner`: ordinary file and directory
+modes come from the archive rather than the host umask, and files belong to the
+staging user even when that user is root. The owner and mode each header
+recorded are kept in `image::Ownership` beside the tree. This matters because
+macOS may strip setuid and setgid bits during extraction even when Linux
+retains them. Whiteouts and replaced entries update these maps the way they
+update the tree. The rootfs segment records the mapped owner and mode in each
+entry, which the guest kernel applies when it unpacks the initramfs. An image
+that hands its data to a service account, such as a database cluster owned by
+its own uid, is therefore readable by that account in the guest and by nobody
+else.
 
 Archive path components must be ASCII. Admission checks their case-folded
 prefixes before extraction and rejects names that differ only by ASCII case,

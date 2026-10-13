@@ -94,7 +94,17 @@ impl Writer {
         prefix: &str,
         owner_of: &dyn Fn(&Path) -> Owner,
     ) -> Result<(), CpioError> {
-        self.walk(dir, Path::new(""), prefix, owner_of)
+        self.tree_owned_with_modes(dir, prefix, owner_of, &|_, mode| mode)
+    }
+
+    pub fn tree_owned_with_modes(
+        &mut self,
+        dir: &Path,
+        prefix: &str,
+        owner_of: &dyn Fn(&Path) -> Owner,
+        mode_of: &dyn Fn(&Path, u32) -> u32,
+    ) -> Result<(), CpioError> {
+        self.walk(dir, Path::new(""), prefix, owner_of, mode_of)
     }
 
     fn walk(
@@ -103,6 +113,7 @@ impl Writer {
         relative: &Path,
         prefix: &str,
         owner_of: &dyn Fn(&Path) -> Owner,
+        mode_of: &dyn Fn(&Path, u32) -> u32,
     ) -> Result<(), CpioError> {
         let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
@@ -119,11 +130,13 @@ impl Writer {
                 let target = std::fs::read_link(&path)?;
                 self.symlink_owned(&archive_name, owner, target.as_os_str().as_encoded_bytes());
             } else if ftype.is_dir() {
-                self.dir_owned(&archive_name, meta.permissions().mode(), owner);
-                self.walk(&path, &relative, &archive_name, owner_of)?;
+                let mode = mode_of(&relative, meta.permissions().mode());
+                self.dir_owned(&archive_name, mode, owner);
+                self.walk(&path, &relative, &archive_name, owner_of, mode_of)?;
             } else if ftype.is_file() {
                 let data = std::fs::read(&path)?;
-                self.file_owned(&archive_name, meta.permissions().mode(), owner, &data);
+                let mode = mode_of(&relative, meta.permissions().mode());
+                self.file_owned(&archive_name, mode, owner, &data);
             } else if ftype.is_fifo() || ftype.is_socket() || meta.rdev() != 0 {
                 continue;
             } else {
