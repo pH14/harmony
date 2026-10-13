@@ -1179,11 +1179,19 @@ fn record_owners(members: &[Member], owners: &mut Ownership) {
         if whiteout(path).is_some() {
             continue;
         }
+        let (owner, mode) =
+            member
+                .hardlink_target
+                .as_ref()
+                .map_or((member.owner, member.mode), |target| {
+                    let target = Path::new(OsStr::from_bytes(target));
+                    (owners.owner_of(target), owners.mode_of(target, member.mode))
+                });
         if !member.is_dir {
             owners.remove_tree(path);
         }
-        owners.record(path, member.owner);
-        owners.record_mode(path, member.mode);
+        owners.record(path, owner);
+        owners.record_mode(path, mode);
     }
 }
 
@@ -3000,6 +3008,7 @@ mod tests {
         let layer = [
             raw_member_with_mode(b"bin/", b'5', "", b"", Owner::ROOT, 0o755),
             raw_member_with_mode(b"bin/tool", b'0', "", b"exec", Owner::ROOT, 0o4755),
+            raw_member_with_mode(b"bin/tool-link", b'1', "bin/tool", b"", SERVICE, 0),
             raw_member_with_mode(b"shared/", b'5', "", b"", Owner::ROOT, 0o2775),
             raw_member_with_mode(b"shared/implicit/data", b'0', "", b"x", Owner::ROOT, 0o644),
             raw_member_with_mode(b"overlaid/", b'5', "", b"", Owner::ROOT, 0o2775),
@@ -3018,10 +3027,6 @@ mod tests {
             &super::super::bundle::LaunchRequest::new(Vec::new()),
         )
         .unwrap();
-        assert_eq!(
-            prepared.identity_hex(),
-            "a06bc8cccefe1eb523103dd2e1bd63ea3d24af1938ffdeff886f453844613c40"
-        );
         let inflated = Command::new("gzip")
             .arg("-dc")
             .stdin(Stdio::piped())
@@ -3039,24 +3044,35 @@ mod tests {
             .unwrap();
         assert!(inflated.status.success());
         let mut at = 0;
-        let mut modes = BTreeMap::new();
+        let mut metadata = BTreeMap::new();
         loop {
             let mode = u32::from_str_radix(
                 std::str::from_utf8(&inflated.stdout[at + 14..at + 22]).unwrap(),
                 16,
             )
             .unwrap();
-            let (name, _, next) = cpio_entry(&inflated.stdout, at);
+            let (name, owner, next) = cpio_entry(&inflated.stdout, at);
             if name == "TRAILER!!!" {
                 break;
             }
-            modes.insert(name, mode & 0o7777);
+            metadata.insert(name, (mode & 0o7777, owner));
             at = next;
         }
-        assert_eq!(modes["harmony-oci/rootfs/bin/tool"], 0o4755);
-        assert_eq!(modes["harmony-oci/rootfs/shared"], 0o2775);
-        assert_eq!(modes["harmony-oci/rootfs/shared/implicit"], 0o755);
-        assert_eq!(modes["harmony-oci/rootfs/overlaid"], 0o755);
+        assert_eq!(
+            metadata["harmony-oci/rootfs/bin/tool"],
+            (0o4755, Owner::ROOT)
+        );
+        assert_eq!(
+            metadata["harmony-oci/rootfs/bin/tool-link"],
+            (0o4755, Owner::ROOT)
+        );
+        assert_eq!(metadata["harmony-oci/rootfs/shared"].0, 0o2775);
+        assert_eq!(metadata["harmony-oci/rootfs/shared/implicit"].0, 0o755);
+        assert_eq!(metadata["harmony-oci/rootfs/overlaid"].0, 0o755);
+        assert_eq!(
+            prepared.identity_hex(),
+            "1825f2d18ba46aefc692b982b0643f12fd7a94256310e60f31f385d5d19f6a27"
+        );
     }
 }
 

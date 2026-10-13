@@ -96,6 +96,8 @@ component, to exact names inside that layout.
 Hardlink targets must name an earlier member of the same archive with the
 exact same spelling. This also excludes archives that only extract because a
 host resolves a hardlink target case-insensitively.
+The hardlink inherits that earlier entry's owner and mode because both paths
+name the same inode when the layer is extracted.
 
 A layer that ships a child without an entry for its parent directory gives the
 implicit parent mode 0755, regardless of the host process's umask. The merge
