@@ -10,6 +10,7 @@ use proptest::prelude::*;
 use proptest::strategy::Union;
 use proptest::test_runner::Config;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
+use sha2::{Digest, Sha256};
 
 const MAGIC: u32 = 0x3150_4348;
 const HEADER_LEN: usize = 24;
@@ -148,7 +149,7 @@ impl SvcModel {
         match self {
             SvcModel::Console(bytes) => bytes.clone(),
             SvcModel::Entropy(state) => state.to_le_bytes().to_vec(),
-            SvcModel::Block(_) => Vec::new(),
+            SvcModel::Block(data) => Sha256::digest(data).to_vec(),
             SvcModel::Event(events) => {
                 let mut out = Vec::new();
                 out.extend_from_slice(&(events.len() as u32).to_le_bytes());
@@ -199,8 +200,20 @@ fn model_save(registered: &BTreeMap<u16, SvcModel>) -> Vec<u8> {
     out
 }
 
-fn model_restore(registered: &mut BTreeMap<u16, SvcModel>, blob: &[u8]) {
+fn model_restore(registered: &mut BTreeMap<u16, SvcModel>, blob: &[u8]) -> bool {
     let mut offset = 0;
+    for svc in registered.values() {
+        offset += 2;
+        let len = rd_u32(blob, offset) as usize;
+        offset += 4;
+        if let SvcModel::Block(data) = svc
+            && blob[offset..offset + len] != Sha256::digest(data)[..]
+        {
+            return false;
+        }
+        offset += len;
+    }
+    offset = 0;
     for svc in registered.values_mut() {
         offset += 2;
         let len = rd_u32(blob, offset) as usize;
@@ -208,6 +221,7 @@ fn model_restore(registered: &mut BTreeMap<u16, SvcModel>, blob: &[u8]) {
         svc.restore(&blob[offset..offset + len]);
         offset += len;
     }
+    true
 }
 
 fn make_frame(
@@ -268,6 +282,7 @@ struct RefState {
     registered: BTreeMap<u16, SvcModel>,
     saves: Vec<(BTreeSet<u16>, Vec<u8>)>,
     last_response: Vec<u8>,
+    last_restore_ok: bool,
 }
 
 impl RefState {
@@ -296,6 +311,7 @@ impl ReferenceStateMachine for ProtoRef {
             registered: BTreeMap::new(),
             saves: Vec::new(),
             last_response: Vec::new(),
+            last_restore_ok: false,
         })
         .boxed()
     }
@@ -445,7 +461,7 @@ impl ReferenceStateMachine for ProtoRef {
             }
             Transition::Restore { which } => {
                 let blob = state.saves[*which].1.clone();
-                model_restore(&mut state.registered, &blob);
+                state.last_restore_ok = model_restore(&mut state.registered, &blob);
             }
         }
         state
@@ -532,9 +548,11 @@ impl StateMachineTest for ProtoMachine {
                 sut.blobs.push(blob);
             }
             Transition::Restore { which } => {
-                sut.dispatcher
-                    .restore_state(&sut.blobs[which])
-                    .expect("restore of a matching-shape blob must succeed");
+                assert_eq!(
+                    sut.dispatcher.restore_state(&sut.blobs[which]).is_ok(),
+                    ref_state.last_restore_ok,
+                    "restore acceptance diverged from backing-media identity"
+                );
             }
         }
         sut

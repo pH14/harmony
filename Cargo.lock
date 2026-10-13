@@ -498,6 +498,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "proptest-state-machine",
+ "sha2",
  "thiserror",
 ]
 
