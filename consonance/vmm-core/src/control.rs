@@ -4306,72 +4306,78 @@ mod tests {
         let _ = snap(&mut s);
     }
 
-    #[test]
-    fn branch_rejects_service_contract_drift_and_replay_reports_restore_failure() {
-        #[derive(Clone)]
-        struct ReseedingService {
-            configuration: Vec<u8>,
-            trigger: u8,
-            reseeds: u8,
-            zero_only: bool,
+    #[derive(Clone)]
+    struct ReseedingService {
+        configuration: Vec<u8>,
+        trigger: u8,
+        reseeds: u8,
+        zero_only: bool,
+    }
+
+    impl environment::channel::ServiceHandler for ReseedingService {
+        fn identity(&self) -> &[u8] {
+            b"reseed-contract-v1"
         }
 
-        impl environment::channel::ServiceHandler for ReseedingService {
-            fn identity(&self) -> &[u8] {
-                b"reseed-contract-v1"
-            }
+        fn configuration(&self) -> &[u8] {
+            &self.configuration
+        }
 
-            fn configuration(&self) -> &[u8] {
-                &self.configuration
-            }
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::Answered(
+                environment::channel::Answer::Data(self.configuration.clone()),
+            ))
+        }
 
-            fn respond(
-                &mut self,
-                _: environment::Moment,
-                _: &environment::channel::Question,
-            ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
-            {
-                Ok(environment::channel::ServiceResponse::Answered(
-                    environment::channel::Answer::Data(self.configuration.clone()),
-                ))
-            }
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(Vec::new())
+        }
 
-            fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
-                Ok(Vec::new())
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(environment::channel::ChannelError::Malformed)
             }
+        }
 
-            fn restore_state(
-                &mut self,
-                state: &[u8],
-            ) -> Result<(), environment::channel::ChannelError> {
-                if state.is_empty() {
-                    Ok(())
-                } else {
-                    Err(environment::channel::ChannelError::Malformed)
-                }
-            }
-
-            fn reseed(&mut self, seed: u64) {
-                if self.zero_only {
-                    if seed == 0 {
-                        self.configuration = b"after".to_vec();
-                    }
-                    return;
-                }
-                self.reseeds += 1;
-                if self.reseeds == self.trigger {
+        fn reseed(&mut self, seed: u64) {
+            if self.zero_only {
+                if seed == 0 {
                     self.configuration = b"after".to_vec();
-                } else if self.trigger == 1 && self.reseeds == 2 {
-                    self.configuration = b"before".to_vec();
                 }
+                return;
             }
-
-            fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
-                Box::new(self.clone())
+            if seed == 0 {
+                return;
+            }
+            self.reseeds += 1;
+            if self.reseeds == self.trigger {
+                self.configuration = b"after".to_vec();
+            } else if self.trigger == 1 && self.reseeds == 2 {
+                self.configuration = b"before".to_vec();
             }
         }
 
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn branch_rejects_service_contract_drift_from_either_reseed() {
         for (late, zero_only) in [(false, false), (true, false), (false, true)] {
+            if cfg!(miri) && late {
+                continue;
+            }
             let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
             hello(&mut s);
             let base = snap(&mut s);
@@ -4411,7 +4417,11 @@ mod tests {
                 "late reseed: {late}, zero only: {zero_only}"
             );
         }
+    }
 
+    #[test]
+    #[cfg_attr(miri, ignore = "seedless Replay materializes snapshot-store mappings")]
+    fn replay_reports_restore_failure_for_decode_seed_drift() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let policy = ServiceConfig {
