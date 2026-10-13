@@ -47,7 +47,7 @@ const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Plays ${game.system}</h1><p class="hero-lede">${game.lede}</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div><label class="search-speed"><span>Search speed <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div class="level-nav"><nav id="level-strip" class="level-strip" aria-label="Levels in this search"></nav><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search, and return to it 10 seconds after you move the map">Auto view</button><button data-camera="room" aria-pressed="false" title="Show the whole level">Full view</button></div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
-<div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="map-hint" hidden>Click a cell to watch its history</div><div id="hover" hidden></div></div>
+<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="map-hint" hidden>Click a cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 <p class="game-attribution">${game.attribution}</p>
 </section>
@@ -206,7 +206,14 @@ function roomView(id, c) {
   const key = c ? `${id}:${c.dataset.panel}` : id;
   if (!views.has(key)) {
     const map = c ? canvasPanel(c) : { x: 0, y: 0, ...maps.get(id) };
-    views.set(key, { zoom: c ? roomView(id).zoom : 1, x: (map.x || 0) + map.width / 2, y: (map.y || 0) + map.height / 2 });
+    const fresh = c && !views.has(id) && camera.mode === "follow";
+    const view = { zoom: c ? roomView(id).zoom : 1, x: (map.x || 0) + map.width / 2, y: (map.y || 0) + map.height / 2 };
+    views.set(key, view);
+    if (fresh) {
+      view.zoom = roomView(id).zoom = closeUpZoom(c);
+      const point = frontier(id) || reachedFrontier(id);
+      Object.assign(view, panelCenter(map, view.zoom, { x: point.x, y: point.y - 8 }, c));
+    }
   }
   return views.get(key);
 }
@@ -224,9 +231,11 @@ function showPace() {
   $("search-speed").setAttribute("aria-valuetext", pace ? `${fmt(pace)} timelines per second` : "Unlimited");
   $("search-speed").title = pace ? `At most ${fmt(pace)} timelines per second` : "As fast as this device can run";
 }
+const FINISH_HOLD = 500;
 const swarm = new Swarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
+  FINISH_HOLD,
 );
 let visualization = "movement", swarmRooms = new Map();
 const sprites = new Image();
@@ -329,8 +338,7 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, 
 }
 const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3;
-const FINISH_HOLD = 800;
-const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
+const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
@@ -358,7 +366,8 @@ function maxZoom(c) {
 }
 function frontier(level) {
   const map = maps.get(level), raw = swarmRooms.get(level) || [];
-  const finisher = raw.filter((p) => p.finish).sort((a, b) => game.vertical ? a.y - b.y : b.x - a.x)[0];
+  const left = (p) => (p.samples ? p.samples.at(-MOTION_STRIDE) - p.frame : 0);
+  const finisher = raw.filter((p) => p.finish).sort((a, b) => left(a) - left(b) || (game.vertical ? a.y - b.y : b.x - a.x))[0];
   if (finisher) return { x: finisher.x + 8, y: finisher.y };
   const px = new Float64Array(raw.length), py = new Float64Array(raw.length);
   let n = 0;
@@ -528,9 +537,14 @@ function followSearch() {
   camera.focus = null;
   updateCameraToggle();
 }
+function levelIndex(room) {
+  return catalog.levels.findIndex((level) => level.rooms.includes(room));
+}
+function levelRooms(room = mapLevel) {
+  return catalog.levels.find((level) => level.rooms.includes(room))?.rooms || [room];
+}
 function cameraRooms() {
-  if (phoneLayout.matches) return [mapLevel];
-  return catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
+  return [mapLevel];
 }
 function drivenRooms() {
   return cameraRooms().filter((room) => camera.only == null || room === camera.only);
@@ -544,8 +558,8 @@ function applyCameraMode(mode = camera.mode) {
   } else {
     camera.pinned = null;
     followSearch();
-    const latest = latestRoom();
-    if (phoneLayout.matches && latest != null && latest !== mapLevel) setRoom(latest, true);
+    const room = followRoom(performance.now(), true);
+    if (room != null) setRoom(room, true);
   }
   drawMap(performance.now());
 }
@@ -556,17 +570,23 @@ if (game.vertical)
     title: "Stop following the search. Scroll the map or drag the level strip to move.",
   });
 function latestRoom() {
-  const rooms = catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
+  const rooms = levelRooms();
   return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
 }
-function actionRoom() {
-  const rooms = cameraRooms();
-  const [busiest, count] = rooms.map((id) => [id, swarmRooms.get(id)?.length || 0]).sort((a, b) => b[1] - a[1])[0] || [];
-  return count ? busiest : rooms.includes(mapLevel) ? mapLevel : rooms[0];
+function followRoom(now, immediate = false) {
+  const rooms = levelRooms(), live = (id) => swarmRooms.get(id) || [];
+  const finisher = live(mapLevel).some((p) => p.finish) ? mapLevel : rooms.find((id) => live(id).some((p) => p.finish));
+  const busiest = finisher ?? rooms.reduce((best, id) => (live(id).length > live(best).length * 1.5 ? id : best), mapLevel);
+  if (busiest === mapLevel) {
+    camera.busierSince = 0;
+    return null;
+  }
+  camera.busierSince ||= now;
+  return finisher != null || immediate || now - camera.busierSince > 2500 ? busiest : null;
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
-  const introRoom = intro ? actionRoom() : null;
-  Object.assign(camera, { introStart: 0, last: 0, emptySince: 0, jumped: 0, targets: new Map(), focus: null, mode: "follow", follow: true, introDone: !intro, introRoom, only });
+  const introRoom = intro ? mapLevel : null;
+  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, jumped: 0, targets: new Map(), focus: null, mode: "follow", follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
     const c = mapCanvas(room);
     if (c) steerCamera(room, c, { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
@@ -599,15 +619,12 @@ function updateCamera(now) {
   if (!camera.introDone && t >= 2300) camera.introDone = true;
   if (reducedMotion.matches && now - camera.jumped < 2000) return;
   camera.jumped = now;
-  if (phoneLayout.matches && camera.pinned == null) {
-    const rooms = catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
-    const latest = latestRoom();
-    if (swarmRooms.get(mapLevel)?.length) camera.emptySince = 0;
-    else camera.emptySince ||= now;
-    const ahead = rooms.indexOf(latest) > rooms.indexOf(mapLevel);
-    if (latest != null && latest !== mapLevel && (ahead || now - camera.emptySince > 2500)) {
-      setRoom(latest, true);
-      camera.emptySince = 0;
+  if (camera.pinned == null) {
+    const room = followRoom(now), pending = pendingRoom;
+    if (room != null) {
+      setRoom(room, true);
+      pendingRoom = pending;
+      camera.busierSince = 0;
       return;
     }
   }
@@ -1481,7 +1498,11 @@ function startSearch(level = bootLevel) {
         gameWon ||= data.won;
         const now = performance.now();
         if (!reducedMotion.matches)
-          for (const index of finishes || []) finishUntil = Math.max(finishUntil, now + motion[index].at(-MOTION_STRIDE) / 0.06 + FINISH_HOLD);
+          for (const index of finishes || []) {
+            const end = levelExit(motion[index]);
+            if (end === null) continue;
+            finishUntil = Math.min(finishUntil > now ? finishUntil : Infinity, now + end / 0.06 + FINISH_HOLD);
+          }
         heat.visitMotion(data.motion || [], maps, now);
         for (const point of data.points) {
           const o = point.observation,
@@ -1503,9 +1524,10 @@ function startSearch(level = bootLevel) {
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
           heat.retain({ ...point, observation: project(o, map) }, now);
-          if (followDiscovery(o, first, focusedLevel, userSelected, cleared)) {
+          const shown = pendingRoom?.level ?? branchPreview?.room ?? mapLevel;
+          if (followDiscovery(o, first, focusedLevel, userSelected, cleared) && levelIndex(o.level) >= levelIndex(shown)) {
             if (branchPreview) branchPreview.room = o.level;
-            else if (finishUntil > now) pendingRoom = { level: o.level, from: pendingRoom?.from ?? mapLevel, at: finishUntil };
+            else if (finishUntil > now) pendingRoom = { level: o.level, from: pendingRoom?.from ?? mapLevel };
             else setRoom(o.level);
           }
         }
@@ -1526,8 +1548,9 @@ function startSearch(level = bootLevel) {
         if (data.request === -2001) {
           if (routeHover) showRoutePreview(stateCache.get(routeHover.id), routeHover);
         } else if (data.request === 0) {
-          if (!userSelected && data.states[0])
-            selectState(data.states[0], true).catch(fail);
+          const state = data.states[0];
+          if (!userSelected && state && !pendingRoom && (!isMapEvidence(state.observation, catalog.levels) || levelRooms().includes(state.observation.level)))
+            selectState(state, true).catch(fail);
         } else if (data.request === request) {
           renderStates();
           if (data.states[0])
@@ -1567,10 +1590,21 @@ function updateSearchControl() {
       ? "Paused"
       : "Searching";
 }
+function levelExit(trail) {
+  const rooms = levelRooms(trail[1]);
+  if (!rooms.includes(mapLevel)) return null;
+  let frame = 0;
+  for (let i = 0; i < trail.length; i += MOTION_STRIDE) if (rooms.includes(trail[i + 1])) frame = trail[i];
+  return frame;
+}
 function setRoom(level, preserveSelection = false) {
   const map = maps.get(level);
   if (!map) return;
   pendingRoom = null;
+  if (!levelRooms().includes(level)) {
+    camera.pinned = null;
+    finishUntil = 0;
+  }
   mapLevel = level;
   mapWidth = map.width;
   mapHeight = map.height;
@@ -1657,15 +1691,20 @@ function updateStats() {
 function liveLevel() {
   return catalog.levels.findLast((level) => level.rooms.some((room) => seenMaps.has(room)))?.id ?? bootLevel;
 }
+let levelsExpanded = false;
 function renderLevelStrip() {
   const live = liveLevel(),
     levels = catalog.levels.filter((level) => level.id === focusedLevel || level.id === live || (level.id >= bootLevel && level.id <= live && level.rooms.some((room) => seenMaps.has(room)))),
+    recent = new Set(levels.slice(-2).map((level) => level.id).concat(focusedLevel)),
+    hidden = levels.filter((level) => !recent.has(level.id)),
+    collapse = hidden.length > 1,
+    shown = collapse && !levelsExpanded ? levels.filter((level) => recent.has(level.id)) : levels,
     locked = !ready || branchBusy || controlMode,
-    key = `${levels.map((level) => `${level.id}${cleared.has(level.id) ? "c" : ""}`)}|${focusedLevel}|${live}|${gameWon}|${locked}`;
+    key = `${levels.map((level) => `${level.id}${cleared.has(level.id) ? "c" : ""}`)}|${focusedLevel}|${live}|${gameWon}|${locked}|${collapse && levelsExpanded}`;
   const strip = $("level-strip");
   if (strip.dataset.key === key) return;
   strip.dataset.key = key;
-  strip.replaceChildren(...levels.map((level) => {
+  const buttons = shown.map((level) => {
     const button = document.createElement("button");
     button.dataset.level = level.id;
     button.disabled = locked;
@@ -1685,17 +1724,23 @@ function renderLevelStrip() {
     }
     button.onclick = () => showLevel(level, level.id === live);
     return button;
-  }));
-  strip.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
-  markStripOverflow();
+  });
+  if (collapse) {
+    const more = document.createElement("button");
+    more.className = "level-more";
+    more.setAttribute("aria-expanded", levelsExpanded);
+    more.setAttribute("aria-label", levelsExpanded ? "Hide earlier levels" : `Show ${hidden.length} earlier levels`);
+    more.title = levelsExpanded ? "Hide earlier levels" : hidden.map((level) => level.label).join(", ");
+    more.innerHTML = levelsExpanded ? "Hide<span> earlier</span>" : `+${hidden.length}<span> earlier</span>`;
+    more.onclick = () => {
+      levelsExpanded = !levelsExpanded;
+      renderLevelStrip();
+      $("level-strip").querySelector(".level-more").focus();
+    };
+    buttons.unshift(more);
+  }
+  strip.replaceChildren(...buttons);
 }
-function markStripOverflow() {
-  const strip = $("level-strip");
-  strip.dataset.moreLeft = strip.scrollLeft > 1;
-  strip.dataset.moreRight = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
-}
-$("level-strip").addEventListener("scroll", markStripOverflow, { passive: true });
-new ResizeObserver(markStripOverflow).observe($("level-strip"));
 function showLevel(level, live) {
   userSelected = true;
   const active = live ? level.rooms.findLast((id) => swarmRooms.get(id)?.length) : undefined;
@@ -1710,7 +1755,8 @@ function renderMapRows(owner) {
   $("room-tabs").replaceChildren(...rooms.map((id) => {
     const tab = document.createElement("button");
     tab.dataset.map = id;
-    tab.textContent = maps.get(id).label;
+    const label = maps.get(id).label, same = rooms.filter((room) => maps.get(room).label === label);
+    tab.textContent = same.length > 1 ? `${label} ${same.indexOf(id) + 1}` : label;
     tab.setAttribute("aria-pressed", id === mapLevel);
     tab.classList.toggle("visited", seenMaps.has(id));
     tab.onclick = () => {
@@ -1721,17 +1767,15 @@ function renderMapRows(owner) {
     };
     return tab;
   }));
+  document.querySelector(".map-wrap").dataset.rooms = rooms.length;
   $("map-rows").replaceChildren(
-    ...rooms.map((id) => {
+    ...[mapLevel].map((id) => {
       const row = document.createElement("section");
       row.className = "map-row";
       row.dataset.map = id;
       const label = document.createElement("button");
       label.textContent = maps.get(id).label;
       label.className = "area-label";
-      const order = document.createElement("span");
-      order.className = "room-order";
-      order.textContent = `Room ${rooms.indexOf(id) + 1} of ${rooms.length}`;
       label.setAttribute("aria-pressed", id === mapLevel);
       label.onclick = () => {
         userSelected = true;
@@ -1740,7 +1784,6 @@ function renderMapRows(owner) {
       const heading = document.createElement("div");
       heading.className = "area-heading";
       heading.append(label);
-      if (rooms.length > 1) heading.append(order);
       const parts = document.createElement("div");
       parts.className = "room-parts";
       const map = maps.get(id), panels = roomPanels(map.width, map.height);
@@ -1842,10 +1885,10 @@ function updateRoomChrome(c) {
 let spriteBudget = swarm.maxTrails, drawCost = 0, frameGap = 1000 / 60;
 function drawMap(now) {
   const start = performance.now();
-  if (pendingRoom && now >= pendingRoom.at) {
+  if (pendingRoom && now >= finishUntil) {
     const { level, from } = pendingRoom;
     pendingRoom = null;
-    if (mapLevel === from && !routeHover && !branchPreview && !tour.open) setRoom(level);
+    if (levelRooms(from).includes(mapLevel) && !routeHover && !branchPreview && !tour.open) setRoom(level);
   }
   swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, Math.round(spriteBudget), true);
   updatePan(now);

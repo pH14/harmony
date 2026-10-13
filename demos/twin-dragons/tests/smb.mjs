@@ -85,4 +85,32 @@ await page.waitForFunction(() => document.documentElement.dataset.game === "supe
 assert.equal(await page.locator('#level-strip [aria-pressed="true"]').textContent(), "World 1-1");
 assert.deepEqual(errors, []);
 console.log("Choosing the ROM in the game picker stores it and starts a Super Mario Bros. search.");
+
+await page.mouse.move(2, 2);
+await page.locator("#level-strip .level-more").waitFor({ timeout: 300000 });
+const layout = () => page.evaluate(() => {
+  const strip = document.querySelector("#level-strip"), tabs = document.querySelector("#room-tabs");
+  return {
+    page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    strip: strip.scrollWidth - strip.clientWidth,
+    tabs: tabs.scrollWidth - tabs.clientWidth,
+    rows: document.querySelectorAll(".map-row").length,
+    levels: strip.querySelectorAll("[data-level]").length,
+  };
+});
+for (const width of [1280, 390]) {
+  await page.setViewportSize({ width, height: 900 });
+  await page.waitForTimeout(300);
+  const collapsed = await layout();
+  assert.ok(collapsed.page <= 0 && collapsed.strip <= 0 && collapsed.tabs <= 0, `At ${width} px nothing scrolls sideways: ${JSON.stringify(collapsed)}`);
+  assert.equal(collapsed.rows, 1, "Only the room on screen has a map row");
+  assert.ok(collapsed.levels <= 3, "Earlier levels collapse behind one button");
+}
+await page.locator("#level-strip .level-more").click();
+const expanded = await layout();
+assert.equal(await page.locator("#level-strip .level-more").getAttribute("aria-expanded"), "true");
+assert.ok(expanded.levels >= 4, "Expanding the level list shows the earlier levels");
+assert.ok(expanded.page <= 0 && expanded.strip <= 0, `The expanded level list wraps: ${JSON.stringify(expanded)}`);
+assert.deepEqual(errors, []);
+console.log("Cleared levels collapse into one button, and nothing scrolls sideways on desktop or phone.");
 await browser.close();

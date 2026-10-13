@@ -18,9 +18,10 @@ export function swarmPoint(samples, frame) {
 }
 
 export class Swarm {
-  constructor(maxBytes, maxTrails) {
+  constructor(maxBytes, maxTrails, finishHold = 0) {
     this.maxBytes = maxBytes;
     this.maxTrails = maxTrails;
+    this.finishHold = finishHold;
     this.clear();
   }
   clear() {
@@ -36,7 +37,7 @@ export class Swarm {
   }
   prune(branch, milliseconds) {
     for (const [id, trail] of this.trails) {
-      if (trail.branch !== branch || milliseconds - trail.started < trail.duration / 0.06) continue;
+      if (trail.branch !== branch || milliseconds - trail.started < trail.duration / 0.06 + (trail.finish ? this.finishHold : 0)) continue;
       this.bytes -= trail.samples.byteLength;
       this.trails.delete(id);
     }

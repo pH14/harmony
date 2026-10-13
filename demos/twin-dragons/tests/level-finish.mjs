@@ -18,7 +18,13 @@ async function open(query) {
         super(...args);
         this.addEventListener("message", ({ data }) => {
           if (data?.type !== "batch") return;
-          for (const index of data.finishes || []) window.clearingEnds.push(performance.now() + data.motion[index].at(-5) / 0.06);
+          for (const index of data.finishes || []) {
+            const trail = data.motion[index];
+            if (trail[1] !== 0) continue;
+            let exit = 0;
+            for (let i = 0; i < trail.length; i += 5) if (trail[i + 1] === 0) exit = trail[i];
+            window.clearingEnds.push(performance.now() + exit / 0.06);
+          }
         });
       }
     };
@@ -33,11 +39,13 @@ for (const query of ["?pace=300", "?game=tobu-tobu-girl&pace=0"]) {
   const switched = await page.evaluate(() => performance.now());
   const ends = await page.evaluate(() => window.clearingEnds);
   assert.ok(ends.length, `${query}: the worker marks the rollouts that clear Level 1`);
-  assert.ok(switched >= Math.min(...ends), `${query}: the map stays on Level 1 until a clearing rollout has played`);
+  const first = Math.min(...ends);
+  assert.ok(switched >= first, `${query}: the map stays on Level 1 until a clearing rollout has left it`);
+  assert.ok(switched - first < 1500, `${query}: the map moves to Level 2 within 1.5 seconds of the first clearing rollout leaving Level 1 (${Math.round(switched - first)} ms)`);
   assert.deepEqual(errors, []);
   await page.close();
 }
-console.log("The map holds each cleared level until its clearing rollouts finish playing.");
+console.log("The map moves to the next level shortly after the first clearing rollout leaves the cleared one.");
 
 const { page, errors } = await open("?game=tobu-tobu-girl&pace=0");
 const strip = page.locator('.level-overview[data-map="0"]');

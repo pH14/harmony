@@ -221,13 +221,27 @@ and right edges; resting on one pans that way, and a tap on a touch screen
 glides about half a screen. A strip under the view shows the whole level, with
 each live sprite as a dot (or the heat cells in Heatmap mode) and a box for the
 part on screen. Clicking or dragging the strip moves the view there, and a
-sideways scroll on the map or the strip pans it.
+sideways scroll on the map or the strip pans it. A room the visitor has not
+seen yet opens at the close-up, centered on the frontier or the level start.
+
+The page shows one room at a time. When a level has several rooms, such as the
+Super Mario Bros. bonus areas, tabs above the view switch between them. Auto
+view moves to the room holding a clearing rollout, or to a room that has had
+1.5 times as many live sprites as the shown room for 2.5 seconds. The level row
+above the map lists the levels the search has reached. Once it holds four or
+more, all but the last two and the shown level collapse into a +N button that
+expands the full list. The row wraps instead of scrolling sideways.
 
 A rollout that raises the cleared-level count is a clearing rollout. The map
-always draws clearing rollouts, the camera follows the furthest one, and the
-map moves to the next level 0.8 seconds after the last one finishes playing.
-Any other room change, a route preview, a branch preview or the tour cancels
-the pending move. The automatic replay pick waits for it too.
+always draws clearing rollouts and the camera follows the one that leaves the
+level first. The map moves to the next level 0.5 seconds after the first
+clearing rollout that started in the shown level leaves it, and that sprite
+stays at its last position until then. When no such rollout is playing, as
+after a warp from an earlier level, the map moves at once. New rooms in levels
+behind the shown one never move the map back. A room change other than Auto
+view moving between the rooms of the shown level, a route preview, a branch
+preview or the tour cancels the pending move. The automatic replay pick waits
+for it and skips states outside the shown level.
 
 On a first visit the camera opens at 1.3 times the close-up, follows for 1.5
 seconds, then eases to the close-up over 0.8 seconds. Returning and
@@ -399,11 +413,13 @@ before the search reaches Level 2. `tests/room-cameras.mjs` checks one camera vi
 desktop and phone, Full view and Auto view, edge panning and the level strip,
 rotation, and a retained-state hit near the far end of Level 1 using the
 hash-verified `level-one` history. `tests/level-finish.mjs` checks that
-the map stays on Level 1 until a clearing rollout has played in Twin Dragons
-and Tobu Tobu Girl, and that the level strip moves the view in both.
-`tests/replay-pause.mjs` checks that the path counter stays still while a
-visitor's replay plays and advances during the automatic replay pick and after
-the replay pauses, ends or closes.
+the map moves to Level 2 within 1.5 seconds after the first clearing rollout
+leaves Level 1, and not before, in Twin Dragons and Tobu Tobu Girl, and that
+the level strip moves the view in both. `tests/smb.mjs` also checks that
+cleared levels collapse into the +N button and that nothing scrolls sideways
+at 1,280 and 390 pixels wide. `tests/replay-pause.mjs` checks that the path
+counter stays still while a visitor's replay plays and advances during the
+automatic replay pick and after the replay pauses, ends or closes.
 `CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
 

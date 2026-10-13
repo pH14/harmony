@@ -121,3 +121,15 @@ test("level-clearing trails stay drawn past the sprite cap", () => {
   const drawn = swarm.frame(0, 0, false, 1).get(0);
   assert.deepEqual(drawn.map((p) => [p.x, !!p.finish]), [[0, false], [1, true], [3, true]]);
 });
+
+test("a clearing trail holds its last position for the finish hold", () => {
+  const samples = new Uint16Array([0, 0, 10, 20, 0, 60, 0, 110, 20, 2]);
+  const swarm = new Swarm(1000, 10, 500);
+  swarm.add(0, [samples, samples], 0, [1]);
+  assert.equal(swarm.frame(0, 999).get(0).length, 2);
+  const held = swarm.frame(0, 1200).get(0);
+  assert.equal(held.length, 1);
+  assert.equal(held[0].finish, true);
+  assert.equal(held[0].x, 110);
+  assert.equal(swarm.frame(0, 1500).size, 0);
+});
