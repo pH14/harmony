@@ -74,7 +74,10 @@ fn vgic_apr_count(ctlr: u64) -> Result<usize> {
     match ((ctlr >> ICC_CTLR_PRIBITS_SHIFT) & 0b111) + 1 {
         4 | 5 => Ok(1),
         6 => Ok(2),
-        7 | 8 => Ok(4),
+        7 => Ok(4),
+        8 => Err(BackendError::Unsupported {
+            what: "KVM VGIC with 8 priority bits cannot expose all APR registers",
+        }),
         _ => Err(BackendError::InvalidState),
     }
 }
@@ -2098,7 +2101,7 @@ mod tests {
 
     #[test]
     fn vgic_apr_count_tracks_host_priority_width() {
-        for (priority_bits, expected_count) in [(4, 1), (5, 1), (6, 2), (7, 4), (8, 4)] {
+        for (priority_bits, expected_count) in [(4, 1), (5, 1), (6, 2), (7, 4)] {
             let ctlr = 0x8000 | ((priority_bits - 1) << ICC_CTLR_PRIBITS_SHIFT);
             let mut fake = FakeKvm::new();
             fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, ctlr)
@@ -2124,6 +2127,22 @@ mod tests {
             restore_vgic(&mut restored, &saved).unwrap();
             assert_eq!(save_vgic(&restored).unwrap(), saved);
         }
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+            ICC_CTLR_EL1,
+            true,
+            0x8000 | (7 << ICC_CTLR_PRIBITS_SHIFT),
+        )
+        .unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        assert!(matches!(
+            backend.set_policy(&Arm64Policy::default()),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(!backend.configured);
     }
 
     #[test]

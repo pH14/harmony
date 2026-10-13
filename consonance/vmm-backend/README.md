@@ -294,10 +294,13 @@ ARM KVM captures and restores the GIC CPU interface through the VGIC device
 registers: priority mask, both binary point registers, `ICC_CTLR_EL1`, both
 group enables, and every available Group-0 and Group-1 active-priority register.
 The number of active-priority registers follows the host's `PriBits` field.
+KVM cannot expose all active-priority slots when the host reports eight
+priority bits, so policy setup rejects that host before guest execution.
 Restore checks the immutable `ICC_CTLR_EL1` fields before changing vCPU state;
-those fields also enter the runtime contract. Snapshot capture rejects
+those fields also enter the runtime contract. Full vCPU capture rejects
 `ICC_CTLR_EL1.CBPR=1`, because KVM does not expose the independent Group-1
-binary point hidden by that mode. The ignored
+binary point hidden by that mode. This also makes run-end capture and state
+hashing fail closed if a guest sets CBPR. The ignored
 `guest_gic_cpu_interface_survives_fresh_restore` ARM KVM test exercises guest
 writes, cold restore, and this fail-closed boundary.
 
