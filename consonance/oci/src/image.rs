@@ -798,6 +798,11 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 ));
             }
             typeflag => {
+                if !matches!(typeflag, 0 | b'0' | b'1' | b'2' | b'5') {
+                    return Err(ImageError::Tar(
+                        "archive carries an unsupported member type".into(),
+                    ));
+                }
                 if members.len() == MAX_MEMBERS {
                     return Err(ImageError::Tar(format!(
                         "archive has more than {MAX_MEMBERS} members"
@@ -2263,6 +2268,30 @@ mod tests {
             assert!(matches!(
                 apply_layer(&layer, &rootfs, &mut Ownership::default()),
                 Err(ImageError::Tar(message)) if message == "hardlink member has nonzero data size"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn nonportable_member_types_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        for (flag, data) in [(b'A', b"x".as_slice()), (b'3', b"".as_slice())] {
+            let layer = write_archive(
+                dir.path(),
+                &format!("type-{}.tar", flag as char),
+                &raw_member(b"item", flag, "", data),
+            );
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive carries an unsupported member type"
             ));
             assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
             assert_eq!(

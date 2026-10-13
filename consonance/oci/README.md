@@ -101,6 +101,9 @@ exact same spelling, and hardlink members cannot carry data in either their
 tar header or a pax size override. This also excludes archives that only
 extract because a host resolves a hardlink target case-insensitively or
 interprets a hardlink payload differently.
+Filesystem members are limited to ordinary files, directories, symlinks, and
+hardlinks. Other tar typeflags are rejected before extraction because host tar
+tools disagree on unknown members and special-file creation.
 The hardlink inherits that earlier entry's owner and mode because both paths
 name the same inode when the layer is extracted.
 
