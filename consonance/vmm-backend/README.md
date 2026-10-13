@@ -88,6 +88,9 @@ during preflight; a valid long-mode PCIDE state remains restorable.
 Segment type and DPL fields have four-bit and two-bit encodings. KVM accepts
 larger values through `KVM_SET_SREGS2` and silently truncates them on the next
 save. Restore checks all eight segments before applying any vCPU state.
+The present, DB, S, L, G, AVL, and unusable flags are one-bit fields and receive
+the same preflight check; KVM otherwise accepts larger values and reads them
+back changed.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
