@@ -69,8 +69,10 @@ group against the CPU-interface active-priority registers and binary point;
 an active interrupt can block preemption even when its raw priority is lower.
 When the host's preemption width cannot be inferred unambiguously from captured
 GIC state, idle fails closed instead of guessing whether the clockevent can
-wake the guest. Due-timer
-polling remains behind the existing registration, deadline, and virtual-clock
+wake the guest. Idle also fails closed when a guest binary-point change leaves
+an active priority for which KVM's trapped interrupt-acknowledgment path and
+direct hardware acknowledgment could disagree.
+Due-timer polling remains behind the existing registration, deadline, and virtual-clock
 checks, and idle polling remains behind the virtual-clock check. It changes
 neither virtual time nor the schedule, deferral, delivery, and acknowledgement
 records. Snapshot capture still reads complete architectural state.

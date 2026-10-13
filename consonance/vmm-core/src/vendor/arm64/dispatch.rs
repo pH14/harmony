@@ -43,6 +43,13 @@ fn in_kernel_group1_preempts(gic: &Arm64GicState, priority: u8) -> Result<bool, 
         let group_shift = u32::from(gic.bpr1).max(minimum_shift);
         let active_priority = active_index << minimum_shift;
         let deliverable = u32::from(priority) >> group_shift < active_priority >> group_shift;
+        let trapped_deliverable =
+            (u32::from(priority) >> group_shift) << group_shift < active_priority;
+        if deliverable != trapped_deliverable {
+            return Err(VmmError::ContractViolation(
+                "in-kernel GIC trapped IAR preemption is ambiguous at idle".to_string(),
+            ));
+        }
         if answer.is_some_and(|previous| previous != deliverable) {
             return Err(VmmError::ContractViolation(
                 "in-kernel GIC preemption width is ambiguous at idle".to_string(),
@@ -1631,8 +1638,8 @@ mod tests {
 
         let cases = [
             ("preempts", 4, 1 << 14, true),
-            ("same priority group", 5, 1 << 14, false),
-            ("all priorities grouped", 7, 1 << 14, false),
+            ("same priority group", 5, 1 << 12, false),
+            ("all priorities grouped", 7, 1, false),
             ("priority dropped", 7, 0, true),
         ];
         for (name, bpr1, ap1r0, deliverable) in cases {
@@ -1714,6 +1721,7 @@ mod tests {
             Err(VmmError::ContractViolation(message)) if message.contains("ambiguous")
         ));
         gic.bpr1 = 5;
+        gic.ap1r[0] = 1 << 12;
         assert!(!in_kernel_group1_preempts(&gic, 0x60).unwrap());
         gic.ap0r[0] = 1;
         assert!(!in_kernel_group1_preempts(&gic, 0x00).unwrap());
@@ -1724,13 +1732,28 @@ mod tests {
         gic.bpr1 = 4;
         assert!(in_kernel_group1_preempts(&gic, 0x80).unwrap());
         gic.bpr1 = 7;
-        assert!(!in_kernel_group1_preempts(&gic, 0x80).unwrap());
+        assert!(matches!(
+            in_kernel_group1_preempts(&gic, 0x80),
+            Err(VmmError::ContractViolation(message)) if message.contains("trap")
+        ));
 
         gic.ctlr = 0x8600;
         gic.ap1r[1] = 0;
         gic.ap1r[3] = 1;
         gic.bpr1 = 4;
         assert!(in_kernel_group1_preempts(&gic, 0xa0).unwrap());
+    }
+
+    #[test]
+    fn in_kernel_preemption_fails_closed_when_trapped_iar_disagrees() {
+        let mut gic = records::gic_to_backend(&new_gic().snapshot());
+        gic.ctlr = 0x8400;
+        gic.bpr1 = 5;
+        gic.ap1r[0] = 1 << 14;
+        assert!(matches!(
+            in_kernel_group1_preempts(&gic, 0x60),
+            Err(VmmError::ContractViolation(message)) if message.contains("trap")
+        ));
     }
 
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -1745,7 +1768,7 @@ mod tests {
         #[repr(C, align(16384))]
         struct GuestMemory([u8; 16384]);
 
-        for (bpr1, expected) in [(4, true), (5, false)] {
+        for (bpr1, active_index, expected) in [(4, 14, true), (5, 12, false)] {
             let mut memory = Box::new(GuestMemory([0; 16384]));
             for (slot, word) in
                 memory
@@ -1778,7 +1801,7 @@ mod tests {
             gic.enable[1] |= 1 << 8;
             gic.active[1] |= 1 << 8;
             gic.priority[40] = 0x70;
-            gic.ap1r[0] = 1 << 14;
+            gic.ap1r[0] = 1 << active_index;
             gic.bpr1 = bpr1;
             gic.pmr = 0xff;
             gic.igrpen1 = true;
@@ -1788,7 +1811,7 @@ mod tests {
                 .unwrap();
             let saved_gic = backend.save().unwrap().gic.unwrap();
             assert_eq!(saved_gic.bpr1, bpr1);
-            assert_eq!(saved_gic.ap1r[0], 1 << 14);
+            assert_eq!(saved_gic.ap1r[0], 1 << active_index);
             let model = gicv3::Gicv3::restore(&records::gic_from_backend(&saved_gic), 0).unwrap();
             assert!(model.input_unmasked(PVCLOCK_PPI));
             assert!(model.input_deliverable(PVCLOCK_PPI));
