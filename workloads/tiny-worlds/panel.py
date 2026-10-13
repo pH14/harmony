@@ -150,12 +150,6 @@ def requests(seeds: int) -> list[dict]:
             shield_seed = secrets.randbits(64)
             rows.append(request("shield/tier", shielded, shield_seed, budget=600_000))
             rows.append(request("shield/hidden", hidden, shield_seed, budget=600_000))
-        for _ in range(3):
-            arena = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64), **ARENA}}
-            rooted = {**arena, "parameters": {**arena["parameters"], "rooted": True}}
-            arena_seed = secrets.randbits(64)
-            rows.append(request("arena/power-on", arena, arena_seed, budget=ARENA_BUDGET))
-            rows.append(request("arena/rooted", rooted, arena_seed, budget=ROOTED_ARENA_BUDGET))
         layout = secrets.randbits(64)
         for arm, farms in (("farms", 4), ("none", 0)):
             rows.append(request(f"farm/{arm}", {"family": "map", "parameters": {
@@ -385,6 +379,22 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int, worlds: list
 WORKERS = 1
 
 
+class Unreachable(RuntimeError):
+    pass
+
+
+def arena_pair(binary: Path) -> list[dict]:
+    while True:
+        arena = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64), **ARENA}}
+        rooted = {**arena, "parameters": {**arena["parameters"], "rooted": True}}
+        seed = secrets.randbits(64)
+        try:
+            rooted_report = execute(binary, request("arena/rooted", rooted, seed, budget=ROOTED_ARENA_BUDGET))
+        except Unreachable:
+            continue
+        return [execute(binary, request("arena/power-on", arena, seed, budget=ARENA_BUDGET)), rooted_report]
+
+
 def execute(binary: Path, job: dict) -> dict:
     request = job["request"]
     if WORKERS != 1:
@@ -395,7 +405,8 @@ def execute(binary: Path, job: dict) -> dict:
     process = subprocess.run([str(binary)], input=json.dumps(request),
                              capture_output=True, text=True, check=False)
     if process.returncode:
-        raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
+        error = Unreachable if "world objective is unreachable" in process.stderr else RuntimeError
+        raise error(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
     report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
     report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
                           if key.startswith(("map_", "crossing_", "passive_clock"))}
@@ -469,9 +480,10 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         def kills(arm, limit):
             return sum(r["success"] and r["first_objective_work"] <= limit for r in by[arm])
 
-        return lag, kills("arena/power-on", 2.5 * arrival), kills("arena/rooted", 0.2 * arrival)
+        fits = 2.5 * arrival <= ARENA_BUDGET and 0.2 * arrival <= ROOTED_ARENA_BUDGET
+        return lag, kills("arena/power-on", 2.5 * arrival), kills("arena/rooted", 0.2 * arrival), fits
 
-    lag, power_on_kills, rooted_kills = arena()
+    lag, power_on_kills, rooted_kills, windows_fit = arena()
     n = len(by["credit/engaged"])
     m = len(by["boss/tier/tight"])
     third = n // 3
@@ -513,7 +525,8 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("arena: the first full-stock arrival comes 1.5-3x after the first boss-room arrival",
          f"{lag:.2f}", 1.5 <= lag <= 3),
         ("arena: power-on kills within 2.5x the first arrival fewer than rooted kills within 0.2x",
-         f"{power_on_kills} vs {rooted_kills}", power_on_kills < rooted_kills),
+         f"{power_on_kills} vs {rooted_kills}" if windows_fit else "undecided, a window passes its arm's budget",
+         windows_fit and power_on_kills < rooted_kills),
     ]
 
 
@@ -547,6 +560,7 @@ def main() -> int:
     jobs = requests(args.seeds)
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         rows = list(pool.map(lambda job: execute(binary, job), jobs))
+        rows += [row for pair in pool.map(lambda _: arena_pair(binary), range(3 * args.seeds)) for row in pair]
     if not all(r["verified"] for r in rows):
         print("a run did not verify", file=sys.stderr)
         return 1
