@@ -252,7 +252,8 @@ never repeats automatic runner selection or resolves a mutable image tag.
 Replay verifies the exact CLI executable, architecture and saved artifact hashes;
 UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
-same processor. Application replay compares final state, assertions,
+same processor. Standalone command runs and replays bind that saved identity
+before launching the guest. Application replay compares final state, assertions,
 actions and recovery evidence. Plain UML replay compares application output and
 bridge events while retaining raw boot logs as diagnostics. Hardware command
 replay also compares the full serial digest. NES replay compares its typed witness

@@ -7,6 +7,7 @@ use std::{fs, path::Path, time::Duration};
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     c: &crate::runtime::Consonance,
+    runner_identity: &serde_json::Value,
     seed: u64,
     knobs: &[String],
     wall_seconds: Option<u64>,
@@ -32,7 +33,7 @@ pub fn execute(
     let mut uml_events = None;
     let outcome = if c.backend == Backend::Uml {
         let profile = uml::Profile::load(c.uml_profile.as_ref().ok_or("missing UML profile")?)?;
-        let mut launch = uml::Launch::new(out.join("uml-work"));
+        let mut launch = manifest_launch(out, runner_identity)?;
         fs::create_dir_all(&launch.work_parent)?;
         launch.memory_mib = c.ram_mib;
         launch.bridge = Some(uml::Bridge::new(seed));
@@ -86,6 +87,24 @@ pub fn execute(
         return Err(format!("guest application did not start or its supervisor failed; inspect {}/serial.log (startup {:?}, supervisor {:?})", out.display(), parse_startup_rc(&outcome.serial), parse_supervisor_failure_rc(&outcome.serial)).into());
     }
     Ok(rc == Some(0))
+}
+
+fn manifest_launch(out: &Path, identity: &serde_json::Value) -> Result<uml::Launch> {
+    let host: uml::HostIdentity = serde_json::from_value(
+        identity
+            .get("host")
+            .filter(|host| !host.is_null())
+            .ok_or("UML runner identity has no admitted host")?
+            .clone(),
+    )?;
+    let launch = uml::Launch::new(out.join("uml-work"));
+    #[cfg(target_os = "linux")]
+    let mut launch = launch;
+    #[cfg(target_os = "linux")]
+    launch.bind_expected_host(host)?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = host;
+    Ok(launch)
 }
 
 fn application_output(serial: &[u8]) -> Result<&[u8]> {
@@ -156,6 +175,27 @@ fn parse_marker(serial: &[u8], marker: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn command_launch_binds_the_manifest_host_before_guest_boot() {
+        let runner = crate::config::Runner {
+            kind: "consonance".into(),
+            backend: Some("uml".into()),
+            options: toml::Table::new(),
+        };
+        let manifest = crate::runners::identity(&runner).unwrap();
+        let host: uml::HostIdentity = serde_json::from_value(manifest["host"].clone()).unwrap();
+        let launch = super::manifest_launch(&std::env::temp_dir(), &manifest).unwrap();
+        assert_eq!(launch.host_identity().unwrap(), host);
+        assert_eq!(launch.admitted_processor().unwrap(), host.processor);
+
+        let mut altered = manifest;
+        altered["host"]["cpu_model"] = serde_json::json!("forged");
+        assert!(super::manifest_launch(&std::env::temp_dir(), &altered).is_err());
+        assert!(super::manifest_launch(&std::env::temp_dir(), &serde_json::json!({})).is_err());
+    }
+
     #[test]
     fn uml_replay_checks_application_bytes_and_events_without_host_boot_noise() {
         let first = b"initrd=/tmp/one uml_dir=/tmp/host-one\nHARMONY_OCI: startup\nhello\nHARMONY_OCI_APP_EXIT rc=0\nHARMONY_OCI_EXIT rc=0\nhost shutdown one\n";

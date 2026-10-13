@@ -103,6 +103,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
             let artifacts = manifest.fault_artifacts(&out)?;
             crate::oci::execute(
                 &c.runtime(),
+                &manifest.runner_identity,
                 c.seed,
                 &c.knobs,
                 c.wall_seconds,

@@ -275,6 +275,7 @@ pub fn run(
     let kernel = fs::read(out.join("artifacts/kernel"))?;
     let result = crate::oci::execute(
         &manifest.config.runtime(),
+        &manifest.runner_identity,
         manifest.config.seed,
         &manifest.config.knobs,
         manifest.config.wall_seconds,
