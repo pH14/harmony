@@ -5,7 +5,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { createEngine } from "../src/emulator.js";
-import { snapshotHash } from "../src/media.js";
+import { snapshotHash, snapshotDigest } from "../src/media.js";
 import { prefixAt } from "../src/branch.js";
 import { TOUR_KEY } from "../src/tour.js";
 import { isMapEvidence } from "../src/world.js";
@@ -40,12 +40,14 @@ await page.addInitScript((tourKey) => {
       window.tdTestWorker = this;
       this.addEventListener("message", ({ data }) => {
         if (data.type === "states") window.tdTestStates = data.states;
+        if (data.type === "states")
+          for (const state of data.states) (window.tdTestStateById ??= new Map()).set(state.id, state);
         if (data.type === "batch")
           for (const point of data.points)
             if (point.retained != null && point.retained !== 0 && !String(point.retained).endsWith(":0") && !point.observation.loading && point.observation.health > 0)
               (window.tdTestRecentRetained ??= []).push({ key: point.retained, level: point.observation.level, x: point.observation.x, y: point.observation.y });
         if (data.type === "states" && data.request === -4180)
-          window.tdTestLiveState?.(data.states.length > 0);
+          window.tdTestLiveState?.(data.states[0] ?? null);
         if (data.type === "batch" && data.active === 1)
           for (const point of data.points)
             if (point.retained !== null && point.retained !== "1:0" && !point.observation.loading && point.observation.health > 0)
@@ -910,18 +912,15 @@ try {
         ?.dataset.stateId.startsWith("1:") &&
       document.querySelector("#verification").textContent === "Exact replay ✓",
   );
-  const childState = await page.evaluate(() => window.tdTestStates[0]);
+  const childState = await page.evaluate(() =>
+    window.tdTestStateById.get(document.querySelector("#state-list .selected").dataset.stateId),
+  );
   assert.equal(
     await page.locator("#film-title").innerText(),
     "History",
     "The History pane keeps its heading for search descendants",
   );
-  const childTape = {
-    actions: childState.actions,
-    endpoint_sha256: await snapshotHash(
-      new Uint8Array(Object.values(childState.snapshot)),
-    ),
-  };
+  const childTape = { actions: childState.actions };
   assert.ok(
     childTape.actions.reduce((n, a) => n + a.frames, 0) >
       manualTape.actions.reduce((n, a) => n + a.frames, 0),
@@ -934,8 +933,8 @@ try {
   emulator.restore(emulatorRoot);
   for (const a of childTape.actions) emulator.run(a.buttons, a.frames);
   assert.equal(
-    await snapshotHash(emulator.capture()),
-    childTape.endpoint_sha256,
+    snapshotDigest(emulator.capture()),
+    childState.digest,
     "Search descendants must include and reproduce the human input prefix",
   );
   const nestedFrame = childState.frames - 1;
@@ -1238,19 +1237,30 @@ try {
     "Play must be visible without scrolling on a small phone",
   );
   await page.setViewportSize({ width: 390, height: 844 });
-  const phonePosition = await page.evaluate(async () => {
+  const phoneCandidates = await page.evaluate(() => {
     const level = Number(document.querySelector("#map").dataset.map);
-    const recent = window.tdTestRecentRetained.filter((candidate) => candidate.level === level).slice(-200).reverse();
-    for (const candidate of recent) {
-      if (Math.floor((candidate.x + 8) / 32) === Math.floor(128 / 32)) continue;
-      const live = await new Promise((resolve) => {
-        window.tdTestLiveState = resolve;
-        window.tdTestWorker.postMessage({ type: "states", ids: [candidate.key], request: -4180 });
-      });
-      if (live) return [candidate.x, candidate.y];
-    }
-    throw new Error("no live retained state outside the root cell");
+    return window.tdTestRecentRetained
+      .filter((candidate) => candidate.level === level && Math.floor((candidate.x + 8) / 32) !== Math.floor(128 / 32))
+      .slice(-200)
+      .reverse();
   });
+  let phonePosition = null, phoneKey = null;
+  for (const candidate of phoneCandidates) {
+    const state = await page.evaluate((key) => new Promise((resolve) => {
+      window.tdTestLiveState = resolve;
+      window.tdTestWorker.postMessage({ type: "states", ids: [key], request: -4180 });
+    }), candidate.key);
+    if (!state || state.boot_level !== 0) continue;
+    emulator.restore(emulatorRoot);
+    for (const a of state.actions) emulator.run(a.buttons, a.frames);
+    emulator.run(128, 60);
+    if (emulator.observation().health > 0) {
+      phonePosition = [candidate.x, candidate.y];
+      phoneKey = String(candidate.key);
+      break;
+    }
+  }
+  assert.ok(phonePosition, "no retained state outside the root cell survives holding right");
   await wholeRoom();
   const phoneCell = await page.locator("#map").evaluate((canvas, position) => {
     const w = Number(canvas.dataset.mapWidth),
@@ -1275,6 +1285,8 @@ try {
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",
   );
+  const phoneButton = page.locator(`#state-list [data-state-id="${phoneKey}"]`);
+  if (await phoneButton.count()) await phoneButton.click();
   const phoneStateId = await page
     .locator("#state-list .selected")
     .getAttribute("data-state-id");
