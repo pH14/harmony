@@ -212,6 +212,7 @@ dependencies = [
  "uml",
  "vmm-backend",
  "vmm-core",
+ "vtime",
 ]
 
 [[package]]
