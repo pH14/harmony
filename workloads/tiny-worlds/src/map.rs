@@ -1008,6 +1008,9 @@ impl Config {
 
     pub fn reachable(&self) -> Result<bool, String> {
         self.validate()?;
+        if self.arena > 0 {
+            return self.arena_reachable();
+        }
         let cap = self.health_cap(&self.layout());
         crate::reachable(
             self.initial(),
@@ -1031,6 +1034,68 @@ impl Config {
                 }
             },
         )
+    }
+}
+
+impl Config {
+    fn arena_reachable(&self) -> Result<bool, String> {
+        let layout = self.layout();
+        let cap = self.health_cap(&layout);
+        let fighting = |s: State| s.item && s.arm == 0 && s.cell == layout.goal;
+        let normal = |s: State| State {
+            health: if self.late_item {
+                s.health.min(self.boss_stock + self.farms).min(cap)
+            } else if self.boss_hits_back {
+                s.health.min(cap)
+            } else {
+                0
+            },
+            aim: if fighting(s) && s.shield < self.shield {
+                s.aim
+            } else {
+                0
+            },
+            tanks: 0,
+            phase: 0,
+            ..s
+        };
+        let unstocked = |s: State| State { stock: 0, ..s };
+        let start = normal(self.initial());
+        let mut best = std::collections::BTreeMap::from([(unstocked(start), start.stock)]);
+        let mut pending =
+            std::collections::BinaryHeap::from([(start.shield + start.hits, start.stock, start)]);
+        while let Some((_, stock, s)) = pending.pop() {
+            if best.get(&unstocked(s)).is_some_and(|&kept| kept > stock) {
+                continue;
+            }
+            if self.goal(s) {
+                return Ok(true);
+            }
+            let shots = (self.shield - s.shield) + (self.boss_stock - s.hits);
+            if fighting(s)
+                && (s.stock < shots || (self.boss_hits_back && s.health < self.boss_stock - s.hits))
+            {
+                continue;
+            }
+            for action in 0..4 {
+                let next = normal(self.step_with(s, action, fighting(s)));
+                if best
+                    .get(&unstocked(next))
+                    .is_some_and(|&kept| kept >= next.stock)
+                {
+                    continue;
+                }
+                best.insert(unstocked(next), next.stock);
+                if best.len() > crate::MAX_REACHABLE_STATES {
+                    return Err(format!(
+                        "reachability search exceeded {} states",
+                        crate::MAX_REACHABLE_STATES
+                    ));
+                }
+                pending.push((next.shield + next.hits, next.stock, next));
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -1994,6 +2059,38 @@ mod tests {
             }
             .validate()
             .is_err()
+        );
+    }
+
+    #[test]
+    fn arena_reachability_counts_every_missed_shot() {
+        let w = Config {
+            width: 4,
+            height: 4,
+            inner: 8,
+            farms: 2,
+            farm_cap: 2,
+            boss_stock: 1,
+            shield: 1,
+            shield_odds: 65535,
+            arena: 8,
+            rooted: true,
+            ..config(1)
+        };
+        assert_eq!(w.reachable(), Ok(false));
+        let generous = Config {
+            farm_cap: 8,
+            shield_odds: 1,
+            ..w
+        };
+        assert_eq!(generous.reachable(), Ok(true));
+        assert_eq!(
+            Config {
+                rooted: false,
+                ..generous
+            }
+            .reachable(),
+            Ok(true)
         );
     }
 
