@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "dd7f753fa",
+    "commit": "ff8b7d5b9",
     "build": "locally verified static build",
-    "checks": "Production build, the level-finish, Super Mario Bros. and room-camera browser checks in Chrome.",
-    "asset_manifest_sha256": "1eacc68c3e537f41a8265c6e4283187228acfd48e41a41df90bc5e25b830c65a"
+    "checks": "Production build, the Super Mario Bros., Metroid and level-finish browser checks in Chrome, and every browser check on the source branch.",
+    "asset_manifest_sha256": "e81c9b609c1578d5f8cecb39511c9c720cee22f0ce3d6cf9c38d59cef2839a0d"
   }
 }

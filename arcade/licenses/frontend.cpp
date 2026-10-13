@@ -14,6 +14,8 @@ static size_t audio_count;
 static unsigned width = 256, height = 240;
 static uint8_t pixels[256 * 240 * 4];
 static std::vector<uint8_t> cartridge;
+static uint8_t memory[0x2800];
+static bool cartridge_memory;
 
 static bool environment(unsigned command, void* data) {
     switch (command) {
@@ -78,9 +80,17 @@ int nes_load(const uint8_t* rom,int size) {
     retro_game_info info={nullptr,cartridge.data(),cartridge.size(),nullptr};
     return retro_load_game(&info);
 }
+static void refresh_memory() {
+    if(!cartridge_memory) return;
+    std::memcpy(memory,retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM),0x800);
+    auto* cart=static_cast<const uint8_t*>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    if(cart && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)>=0x2000) std::memcpy(memory+0x800,cart,0x2000);
+    else std::memset(memory+0x800,0,0x2000);
+}
 void nes_run(int b,int frames,int render) {
     buttons=b;
     for(int i=0;i<frames;i++) {render_enabled=render!=0 && i==frames-1;retro_run();}
+    refresh_memory();
 }
 void nes_audio_enable(int enabled) {audio_enabled=enabled!=0;audio_count=0;}
 int16_t* nes_audio_samples() {return audio_samples;}
@@ -88,10 +98,20 @@ int nes_audio_count() {return audio_count;}
 void nes_audio_clear() {audio_count=0;}
 int nes_state_size() {return retro_serialize_size();}
 int nes_save(uint8_t* bytes,int size) {return size==nes_state_size() && retro_serialize(bytes,size);}
-int nes_restore(const uint8_t* bytes,int size) {return size==nes_state_size() && retro_unserialize(bytes,size);}
+int nes_restore(const uint8_t* bytes,int size) {
+    bool ok=size==nes_state_size() && retro_unserialize(bytes,size);
+    refresh_memory();
+    return ok;
+}
 uint8_t* nes_pixels() {return pixels;}
 int nes_width() {return width;}
 int nes_height() {return height;}
 uint8_t* nes_ram() {return static_cast<uint8_t*>(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM));}
 int nes_ram_size() {return retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);}
+uint8_t* nes_memory() {cartridge_memory=true;refresh_memory();return memory;}
+void nes_memory_commit() {
+    std::memcpy(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM),memory,0x800);
+    auto* cart=static_cast<uint8_t*>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    if(cart && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)>=0x2000) std::memcpy(cart,memory+0x800,0x2000);
+}
 }
