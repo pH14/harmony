@@ -1188,7 +1188,57 @@ fn merge_layer(
     Ok(())
 }
 
-fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, ImageError> {
+fn open_directory(path: &Path, opened: &mut BTreeMap<PathBuf, u32>) -> Result<(), ImageError> {
+    let mode = std::fs::symlink_metadata(path)?.permissions().mode() & 0o7777;
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(writable_layer_mode(mode)),
+        )?;
+        opened.entry(path.to_path_buf()).or_insert(mode);
+    }
+    Ok(())
+}
+
+fn open_tree(path: &Path, opened: &mut BTreeMap<PathBuf, u32>) -> Result<(), ImageError> {
+    if !std::fs::symlink_metadata(path)?.is_dir() {
+        return Ok(());
+    }
+    open_directory(path, opened)?;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            open_tree(&entry.path(), opened)?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_directories(opened: BTreeMap<PathBuf, u32>) -> Result<(), ImageError> {
+    let mut opened: Vec<_> = opened.into_iter().collect();
+    opened.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    for (path, mode) in opened {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn resolve_under(
+    rootfs: &Path,
+    relative: &Path,
+    opened: &mut BTreeMap<PathBuf, u32>,
+) -> Result<Option<PathBuf>, ImageError> {
     let Ok(mut cursor) = rootfs.canonicalize() else {
         return Ok(None);
     };
@@ -1200,6 +1250,10 @@ fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, Imag
         })
         .collect();
     for (at, part) in parts.iter().enumerate() {
+        if !std::fs::symlink_metadata(&cursor)?.is_dir() {
+            return Ok(None);
+        }
+        open_directory(&cursor, opened)?;
         let next = match exact::entry(&cursor, part) {
             Ok(Some(next)) => next,
             Ok(None) => return Ok(None),
@@ -1356,45 +1410,60 @@ fn apply_whiteouts(
     members: &[Member],
     rootfs: &Path,
 ) -> Result<BTreeMap<PathBuf, u32>, ImageError> {
-    let mut opaque_modes = BTreeMap::new();
-    for member in members {
-        let path = member.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if name == ".wh..wh..opq" {
-            let parent = path.parent().unwrap_or(Path::new(""));
-            let Some(dir) = resolve_under(rootfs, parent)? else {
+    let mut opened = BTreeMap::new();
+    let result = (|| {
+        let mut opaque_modes = BTreeMap::new();
+        for member in members {
+            let path = member.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            let Ok(meta) = std::fs::symlink_metadata(&dir) else {
-                continue;
-            };
-            if meta.is_symlink() {
-                return Err(ImageError::UnsafePath(member.shown()));
-            }
-            if meta.is_dir() {
-                opaque_modes
-                    .entry(normalized(parent))
-                    .or_insert(meta.permissions().mode() & 0o7777);
-                std::fs::remove_dir_all(&dir)?;
-                std::fs::create_dir_all(&dir)?;
-            }
-        } else if let Some(hidden) = name.strip_prefix(".wh.") {
-            let Some(target) = resolve_under(rootfs, &path.with_file_name(hidden))? else {
-                continue;
-            };
-            let Ok(meta) = std::fs::symlink_metadata(&target) else {
-                continue;
-            };
-            if meta.is_dir() {
-                std::fs::remove_dir_all(&target)?;
-            } else {
-                std::fs::remove_file(&target)?;
+            if name == ".wh..wh..opq" {
+                let parent = path.parent().unwrap_or(Path::new(""));
+                let Some(dir) = resolve_under(rootfs, parent, &mut opened)? else {
+                    continue;
+                };
+                let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                    continue;
+                };
+                if meta.is_symlink() {
+                    return Err(ImageError::UnsafePath(member.shown()));
+                }
+                if meta.is_dir() {
+                    let mode = opened
+                        .get(&dir)
+                        .copied()
+                        .unwrap_or(meta.permissions().mode() & 0o7777);
+                    opaque_modes.entry(normalized(parent)).or_insert(mode);
+                    open_tree(&dir, &mut opened)?;
+                    std::fs::remove_dir_all(&dir)?;
+                    std::fs::create_dir_all(&dir)?;
+                }
+            } else if let Some(hidden) = name.strip_prefix(".wh.") {
+                let Some(target) =
+                    resolve_under(rootfs, &path.with_file_name(hidden), &mut opened)?
+                else {
+                    continue;
+                };
+                let Ok(meta) = std::fs::symlink_metadata(&target) else {
+                    continue;
+                };
+                if meta.is_dir() {
+                    open_tree(&target, &mut opened)?;
+                    std::fs::remove_dir_all(&target)?;
+                } else {
+                    std::fs::remove_file(&target)?;
+                }
             }
         }
+        Ok(opaque_modes)
+    })();
+    let restored = restore_directories(opened);
+    match (result, restored) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(modes), Ok(())) => Ok(modes),
     }
-    Ok(opaque_modes)
 }
 
 #[cfg(test)]
@@ -3558,6 +3627,113 @@ mod tests {
         assert!(!rootfs.join("d/old").exists());
         assert_eq!(std::fs::read(rootfs.join("d/new")).unwrap(), b"new");
         assert!(!rootfs.join("d/.wh..wh..opq").exists());
+    }
+
+    #[test]
+    fn whiteout_removes_child_from_nested_read_only_lower_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = [
+            raw_member_with_mode(b"ro/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member_with_mode(b"ro/nested/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member(b"ro/nested/old", b'0', "", b"old"),
+        ]
+        .concat();
+        let upper = raw_member(b"ro/nested/.wh.old", b'0', "", b"");
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        let result = apply_layer(&upper, &rootfs, &mut owners);
+        let ro_mode = std::fs::symlink_metadata(rootfs.join("ro"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        let nested_mode = std::fs::symlink_metadata(rootfs.join("ro/nested"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        for path in ["ro", "ro/nested"] {
+            std::fs::set_permissions(rootfs.join(path), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        result.unwrap();
+        assert!(!rootfs.join("ro/nested/old").exists());
+        assert_eq!(ro_mode, 0o555);
+        assert_eq!(nested_mode, 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro"), 0), 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro/nested"), 0), 0o555);
+    }
+
+    #[test]
+    fn opaque_whiteout_clears_read_only_lower_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = [
+            raw_member_with_mode(b"ro/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member_with_mode(b"ro/nested/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member(b"ro/nested/old", b'0', "", b"old"),
+        ]
+        .concat();
+        let upper = [
+            raw_member(b"ro/.wh.missing", b'0', "", b""),
+            raw_member(b"ro/.wh..wh..opq", b'0', "", b""),
+            raw_member(b"ro/new", b'0', "", b"new"),
+        ]
+        .concat();
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        let result = apply_layer(&upper, &rootfs, &mut owners);
+        let mode = std::fs::symlink_metadata(rootfs.join("ro"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        if rootfs.join("ro/nested").is_dir() {
+            std::fs::set_permissions(
+                rootfs.join("ro/nested"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        std::fs::set_permissions(rootfs.join("ro"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        result.unwrap();
+        assert!(!rootfs.join("ro/nested").exists());
+        assert_eq!(std::fs::read(rootfs.join("ro/new")).unwrap(), b"new");
+        assert_eq!(mode, 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro"), 0), 0o555);
+    }
+
+    #[test]
+    fn upper_file_fills_read_only_implicit_parent_without_changing_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = raw_member_with_mode(b"ro/", b'5', "", b"", Owner::ROOT, 0o555);
+        let upper = raw_member(b"ro/new", b'0', "", b"new");
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        let result = apply_layer(&upper, &rootfs, &mut owners);
+        let mode = std::fs::symlink_metadata(rootfs.join("ro"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        std::fs::set_permissions(rootfs.join("ro"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        result.unwrap();
+        assert_eq!(std::fs::read(rootfs.join("ro/new")).unwrap(), b"new");
+        assert_eq!(mode, 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro"), 0), 0o555);
     }
 
     const SERVICE: Owner = Owner { uid: 70, gid: 70 };
