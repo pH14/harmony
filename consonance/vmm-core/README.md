@@ -82,13 +82,15 @@ The version-7 envelope pins this expanded identity and rejects older versions.
 Import reconstructs the hash suffix from validated VM-state,
 SDK, and control records. A full import checks its claimed whole-state hash
 against RAM and that suffix; a sparse import compares the reconstructed suffix
-with its sidecar before deriving pages or minting a handle. Sparse sidecars also
-carry the source base snapshot's RAM digest. Export and import compute that
-digest once per base snapshot and cache it; cache deltas use the setup as that
-base. Imports compare the local base digest before deriving direct pages or a
-delta from a nearer snapshot. This rejects an
-outer archive whose identity was rewritten to pair source pages with different
-setup RAM. Sparse validation does not materialize guest RAM for each import.
+with its sidecar before deriving pages or minting a handle. Both imports verify
+that the installed service factory can instantiate the recorded policy and
+restore the captured handler state before committing the snapshot. Sparse
+sidecars also carry the source base snapshot's RAM digest. Export and import
+compute that digest once per base snapshot and cache it. Cache deltas use setup
+as their base. Imports compare the local base digest before deriving pages or a
+delta from a nearer snapshot. This rejects an outer archive whose identity was
+rewritten to pair source pages with different setup RAM. Sparse validation does
+not materialize guest RAM for each import.
 The complete portable format is version 7, and the sparse sidecar is version 8;
 older sparse sidecars are rejected. A sparse sidecar does not carry a target RAM
 hash, so independently recomposing both its source-base digest and the outer
