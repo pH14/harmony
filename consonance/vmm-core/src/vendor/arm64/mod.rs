@@ -511,7 +511,9 @@ impl Vendor for Arm64 {
         vmm.clockevent_trace_schedule_arm64()
     }
 
-    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
+    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
+        vmm: &mut Vmm<B>,
+    ) -> Result<Option<u64>, VmmError> {
         vmm.deliverable_timer_deadline_vns_arm64()
     }
 

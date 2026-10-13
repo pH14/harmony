@@ -2419,7 +2419,7 @@ where
         if <B::A as Vendor>::pending_deliverable_interrupt(self)? {
             return Ok(IdleAction::DeliverPending);
         }
-        let timer = <B::A as Vendor>::deliverable_timer_deadline_vns(self);
+        let timer = <B::A as Vendor>::deliverable_timer_deadline_vns(self)?;
         let wake = match (timer, self.idle_wake_vns) {
             (Some(timer), Some(host)) => Some(timer.min(host)),
             (Some(timer), None) => Some(timer),
