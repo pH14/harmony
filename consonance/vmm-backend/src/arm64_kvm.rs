@@ -1118,6 +1118,7 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     dirty_log: bool,
     unlogged_slot: bool,
     dirty_log_poisoned: bool,
+    restore_poisoned: bool,
     pending_irq: Option<GicIntId>,
     applied_irq: Option<GicIntId>,
     accepted_irq: Option<GicIntId>,
@@ -1141,6 +1142,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             dirty_log: true,
             unlogged_slot: false,
             dirty_log_poisoned: false,
+            restore_poisoned: false,
             pending_irq: None,
             applied_irq: None,
             accepted_irq: None,
@@ -1157,7 +1159,15 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         &self.kvm
     }
 
+    fn ensure_healthy(&self) -> Result<()> {
+        if self.restore_poisoned {
+            return Err(BackendError::Internal("backend state mutation failed"));
+        }
+        Ok(())
+    }
+
     fn ensure_runnable(&self) -> Result<()> {
+        self.ensure_healthy()?;
         if !self.configured {
             return Err(BackendError::NotConfigured);
         }
@@ -1311,6 +1321,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     type A = Arm64;
 
     fn set_policy(&mut self, policy: &crate::arch::arm64::Arm64Policy) -> Result<()> {
+        self.ensure_healthy()?;
         self.kvm
             .set_one_reg(KVM_REG_ARM_PSCI_VERSION, KVM_ARM_PSCI_1_0)?;
         for id in OPTIONAL_FIRMWARE_BITMAPS {
@@ -1344,6 +1355,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
+        self.ensure_healthy()?;
         if host.is_empty() {
             return Err(BackendError::Memory("zero-length memory region"));
         }
@@ -1391,6 +1403,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.ensure_healthy()?;
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (dirty logging disabled)",
@@ -1438,6 +1451,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
+        self.ensure_healthy()?;
         if id.is_some_and(|id| !(id.is_ppi() || id.is_spi())) {
             return Err(BackendError::InvalidState);
         }
@@ -1450,6 +1464,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
@@ -1460,6 +1475,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn read_arm64_gic_idle_state(&mut self, intid: u32) -> Result<Option<Arm64GicIdleState>> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
@@ -1468,6 +1484,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        self.ensure_healthy()?;
         match self.pending {
             Pending::MmioLoad { len } => {
                 self.kvm.write_mmio_data(le_data(value, len))?;
@@ -1483,6 +1500,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         match self.pending {
             Pending::SysregRead | Pending::SysregWrite => {
                 self.completion_staged = true;
@@ -1494,6 +1512,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         match self.pending {
             Pending::SysregWrite => {
                 self.completion_staged = true;
@@ -1513,6 +1532,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         if !self.completion_staged {
             return Ok(());
         }
@@ -1521,7 +1541,12 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         })
     }
 
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        self.ensure_healthy()
+    }
+
     fn save(&mut self) -> Result<Arm64VcpuState> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
@@ -1530,6 +1555,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         validate_restore_vcpu_state(state)?;
         validate_vgic_host(
             &self.kvm,
@@ -1538,11 +1564,16 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
         self.settle_mmio()?;
-        restore_vcpu(&mut self.kvm, state)?;
+        self.validate_restore_state(state)?;
+        if let Err(error) = restore_vcpu(&mut self.kvm, state) {
+            self.restore_poisoned = true;
+            return Err(error);
+        }
         self.pending_irq = None;
         self.applied_irq = None;
         self.accepted_irq = None;
@@ -1583,6 +1614,10 @@ pub struct FakeKvm {
     state_reads: std::sync::atomic::AtomicUsize,
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     regs: std::collections::BTreeMap<u64, u64>,
+    #[cfg(test)]
+    reg_writes: usize,
+    #[cfg(test)]
+    fail_reg_write_on: Option<usize>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
@@ -1774,6 +1809,13 @@ impl Arm64Kvm for FakeKvm {
             ));
         }
         self.calls.push("set_one_reg");
+        #[cfg(test)]
+        {
+            self.reg_writes += 1;
+            if self.fail_reg_write_on == Some(self.reg_writes) {
+                return Err(BackendError::Internal("fake KVM register write failed"));
+            }
+        }
         self.regs.insert(id, value);
         Ok(())
     }
@@ -3197,6 +3239,58 @@ mod tests {
                 "restore accepted noncanonical {name}"
             );
         }
+    }
+
+    #[test]
+    fn failed_restore_after_register_write_poisoned_before_save_or_run() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_ARM_WFX_PLACEHOLDER,
+            ..KvmRunView::default()
+        });
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let before = backend.save().unwrap();
+        let mut target = before;
+        target.core.x[0] = 0x1234;
+        target.core.x[1] = 0x5678;
+        assert!(backend.validate_restore_state(&target).is_ok());
+        let mut invalid = target;
+        invalid.vtimer.masked = false;
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().unwrap().core.x[0], before.core.x[0]);
+        backend.kvm.fail_reg_write_on = Some(backend.kvm.reg_writes + 2);
+        assert!(matches!(
+            backend.restore(&target),
+            Err(BackendError::Internal("fake KVM register write failed"))
+        ));
+        assert_eq!(backend.kvm.reg(core_reg(0)), Some(target.core.x[0]));
+        assert_eq!(backend.kvm.reg(core_reg(2)), None);
+        let saved = backend.save();
+        let run = backend.run();
+        let irq_mask = backend.read_irq_mask();
+        let prepare = backend.prepare_snapshot();
+        assert!(
+            matches!(
+                saved,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ) && matches!(
+                run,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ) && matches!(
+                irq_mask,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ) && matches!(
+                prepare,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ),
+            "after partial restore: save={:?}, run={run:?}, irq_mask={irq_mask:?}, prepare={prepare:?}",
+            saved.map(|state| state.core.x[0])
+        );
     }
 
     #[test]

@@ -300,6 +300,10 @@ arming a host-time interrupt outside the Harmony clockevent path.
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
 guest RAM or backend state is changed.
+ARM KVM also rejects later guest entry, capture, restore and state observation
+if a register or GIC write fails during restore: a partially changed vCPU must
+not be reused as a coherent replay state. Shape rejection before the write
+sequence leaves the backend usable.
 
 `HvfBackend::set_policy` reads HVF's own value of each `ID_AA64*` feature
 register before the first policy writes it, and fails with
