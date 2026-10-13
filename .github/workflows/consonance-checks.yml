@@ -368,7 +368,7 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/cr8.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/cr8.txt
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
-            -p vmm-backend --test kvm_smoke rflags_restore_requires_fixed_bit_before_mutation \
+            -p vmm-backend --test kvm_smoke rflags_restore_rejects_nonarchitectural_bits_before_mutation \
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/rflags.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/rflags.txt
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-core --lib \
