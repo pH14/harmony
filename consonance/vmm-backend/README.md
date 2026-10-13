@@ -111,6 +111,10 @@ never reports, an interrupt shadow using only the STI and MOV-SS bits, at most
 two pending NMIs, and canonical one-bit event fields. It also rejects a triple
 fault when the VM lacks that event capability. KVM otherwise accepts some of
 these values and changes them on the next save.
+KVM clears an exception payload marker when no exception is pending and ignores
+an inside-NMI marker outside SMM. This backend uses a userspace LAPIC, so KVM
+cannot retain a latched INIT event either. Preflight rejects those event forms
+before any restore write and accepts KVM-captured canonical events.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
