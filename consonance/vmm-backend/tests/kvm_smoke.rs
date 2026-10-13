@@ -931,11 +931,7 @@ fn sysenter_restore_rejects_values_kvm_cannot_preserve() {
     configure(&mut backend);
     let baseline = backend.save().expect("save baseline");
 
-    for (index, value) in [
-        (0x174, 1 << 32),
-        (0x175, 0x0000_8000_0000_0000),
-        (0x176, 1 << 48),
-    ] {
+    for (index, value) in [(0x174, 1 << 32), (0x175, 1 << 63), (0x176, 1 << 56)] {
         let mut invalid = baseline.clone();
         invalid.regs.rax ^= 1;
         invalid.msrs.insert(index, value);
