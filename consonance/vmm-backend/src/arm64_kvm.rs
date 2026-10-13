@@ -1296,6 +1296,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 in_kernel_gic: true,
                 asid_bits: self.kvm.asid_bits(),
                 smccc_workaround_levels: self.smccc_workaround_levels,
+                psci_profile: crate::arch::arm64::Arm64PsciProfile::KvmPsci10,
             },
         }
     }

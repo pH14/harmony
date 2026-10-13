@@ -198,3 +198,67 @@ fn smccc_workaround_features_match_backend_levels() {
         );
     }
 }
+
+#[test]
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "macos", target_os = "linux"),
+    not(miri)
+))]
+#[ignore = "live ARM hypervisor; registered in HOST_TESTS"]
+fn psci_profile_matches_guest_hvc() {
+    use vmm_backend::Arm64PsciProfile;
+
+    let mut guest = Guest::new(live_backend(), &[0xd400_0002, 0xf900_0080, 0x1400_0000]);
+    let profile = guest.backend.capabilities().arch.psci_profile;
+    for (name, function, argument, hvf, kvm) in [
+        ("version", 0x8400_0000, 0, 0x1_0000, 0x1_0000),
+        (
+            "features CPU_SUSPEND32",
+            0x8400_000a,
+            0x8400_0001,
+            u64::MAX,
+            0,
+        ),
+        (
+            "features CPU_SUSPEND64",
+            0x8400_000a,
+            0xc400_0001,
+            u64::MAX,
+            0,
+        ),
+        ("features CPU_OFF", 0x8400_000a, 0x8400_0002, u64::MAX, 0),
+        ("features CPU_ON64", 0x8400_000a, 0xc400_0003, u64::MAX, 0),
+        (
+            "features AFFINITY_INFO64",
+            0x8400_000a,
+            0xc400_0004,
+            u64::MAX,
+            0,
+        ),
+        ("CPU_ON self", 0xc400_0003, 0, u64::MAX - 3, u64::MAX - 3),
+        ("CPU_ON absent", 0xc400_0003, 1, u64::MAX - 3, u64::MAX - 1),
+        ("AFFINITY_INFO self", 0xc400_0004, 0, u64::MAX - 6, 0),
+        (
+            "AFFINITY_INFO absent",
+            0xc400_0004,
+            1,
+            u64::MAX - 6,
+            u64::MAX - 1,
+        ),
+    ] {
+        let mut state = guest.save();
+        state.core.pc = RAM;
+        state.core.x[0] = function;
+        state.core.x[1] = argument;
+        state.core.x[2] = 0;
+        state.core.x[3] = 0;
+        state.core.x[4] = OUTPUT;
+        guest.restore(&state);
+        let expected = match profile {
+            Arm64PsciProfile::HvfSingleVcpu => hvf,
+            Arm64PsciProfile::KvmPsci10 => kvm,
+        };
+        assert_eq!(guest.next_store(), expected, "{name}, profile {profile:?}");
+    }
+}
