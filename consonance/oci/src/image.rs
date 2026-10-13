@@ -815,10 +815,18 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     gid,
                     link_path,
                 } = std::mem::take(&mut pax);
-                if typeflag == b'1' && (size != 0 || pax_size.is_some_and(|size| size != 0)) {
-                    return Err(ImageError::Tar(
-                        "hardlink member has nonzero data size".into(),
-                    ));
+                let no_data_kind = match typeflag {
+                    b'1' => Some("hardlink"),
+                    b'2' => Some("symlink"),
+                    b'5' => Some("directory"),
+                    _ => None,
+                };
+                if let Some(kind) = no_data_kind
+                    && (size != 0 || pax_size.is_some_and(|size| size != 0))
+                {
+                    return Err(ImageError::Tar(format!(
+                        "{kind} member has nonzero data size"
+                    )));
                 }
                 let gnu_name = long_name.take();
                 let gnu_link = long_link.take();
@@ -826,8 +834,14 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     uid: owner_id(uid, &block[108..116])?,
                     gid: owner_id(gid, &block[116..124])?,
                 };
+                let name = path.or(gnu_name).unwrap_or_else(|| ustar_name(&block));
+                if typeflag != b'5' && name.ends_with(b"/") {
+                    return Err(ImageError::Tar(
+                        "non-directory member has a trailing slash".into(),
+                    ));
+                }
                 members.push(Member {
-                    name: path.or(gnu_name).unwrap_or_else(|| ustar_name(&block)),
+                    name,
                     is_dir: typeflag == b'5',
                     mode: (parse_octal(&block[100..108])? & 0o7777) as u32,
                     owner,
@@ -2278,6 +2292,86 @@ mod tests {
     }
 
     #[test]
+    fn symlink_and_directory_data_are_rejected_before_rootfs_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let record = pax_record("size", "11");
+        let cases = [
+            (
+                "symlink",
+                b'2',
+                b"link".as_slice(),
+                "target",
+                raw_member(b"target", b'0', "", b"data"),
+                Vec::new(),
+            ),
+            (
+                "directory",
+                b'5',
+                b"dir/".as_slice(),
+                "",
+                Vec::new(),
+                raw_member(b"dir/item", b'0', "", b"data"),
+            ),
+        ];
+        for (kind, flag, name, target, before, after) in cases {
+            let raw_entry = raw_member(name, flag, target, b"replacement");
+            let mut pax_member = raw_entry.clone();
+            pax_member[124..136].copy_from_slice(b"00000000000\0");
+            reseal(&mut pax_member);
+            let raw = [before.clone(), raw_entry, after.clone()].concat();
+            let pax = [
+                before,
+                raw_member(b"PaxHeaders/0", b'x', "", record.as_bytes()),
+                pax_member,
+                after,
+            ]
+            .concat();
+            for (variant, body) in [("raw", raw), ("pax", pax)] {
+                let layer = write_archive(dir.path(), &format!("{kind}-{variant}.tar"), &body);
+                assert!(matches!(
+                    apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                    Err(ImageError::Tar(message)) if message == format!("{kind} member has nonzero data size")
+                ));
+                assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+                assert_eq!(
+                    std::fs::read(rootfs.join("sentinel")).unwrap(),
+                    b"unchanged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn regular_member_with_trailing_slash_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        for (name, payload) in [
+            ("payload", b"replacement".to_vec()),
+            ("hidden", raw_member(b"hidden", b'3', "", b"")),
+        ] {
+            let layer = write_archive(
+                dir.path(),
+                &format!("slash-regular-{name}.tar"),
+                &raw_member(b"dir/", b'0', "", &payload),
+            );
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
     fn nonportable_member_types_are_rejected_before_extraction() {
         let dir = tempfile::tempdir().unwrap();
         let rootfs = dir.path().join("rootfs");
@@ -2343,7 +2437,7 @@ mod tests {
         );
         assert!(matches!(
             apply_layer(&layer, &rootfs, &mut Ownership::default()),
-            Err(ImageError::UnsafePath(_))
+            Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
         ));
         assert!(victim.join("sentinel").exists());
         assert!(!victim.join("pwn").exists());
@@ -2388,7 +2482,7 @@ mod tests {
         );
         assert!(matches!(
             apply_layer(&layer, &rootfs, &mut Ownership::default()),
-            Err(ImageError::UnsafePath(_))
+            Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
         ));
         assert!(victim.join("sentinel").exists());
         assert!(!victim.join("pwn").exists());

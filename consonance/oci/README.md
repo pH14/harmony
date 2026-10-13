@@ -99,10 +99,13 @@ Relative targets are resolved from the link's parent, so readable ancestors
 above that directory are not required. Case-aliased host paths are rejected
 before staging.
 Hardlink targets must name an earlier member of the same archive with the
-exact same spelling, and hardlink members cannot carry data in either their
-tar header or a pax size override. This also excludes archives that only
-extract because a host resolves a hardlink target case-insensitively or
-interprets a hardlink payload differently.
+exact same spelling. Hardlink, symlink, and directory members cannot carry
+data in either their tar header or a pax size override. This also excludes
+archives that only extract because a host resolves a hardlink target
+case-insensitively or interprets a non-file payload differently.
+An entry whose name ends in `/` must carry the directory typeflag; some host
+tar tools otherwise treat a regular file as a directory and parse its payload
+as additional members that admission never saw.
 Filesystem members are limited to ordinary files, directories, symlinks, and
 hardlinks. Other tar typeflags are rejected before extraction because host tar
 tools disagree on unknown members and special-file creation.
