@@ -1300,6 +1300,66 @@ fn event_flags_restore_requires_host_mask_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
+fn event_shape_restore_rejects_noncanonical_fields_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for variant in 0..7 {
+        let mut invalid = baseline.clone();
+        invalid.sregs.cr2 ^= 1;
+        match variant {
+            0 => invalid.events.nmi_pending = 4,
+            1 => invalid.events.interrupt_soft = 1,
+            2 => invalid.events.sipi_vector = 1,
+            3 => invalid.events.interrupt_shadow = 4,
+            4 => invalid.events.exception_pending = 2,
+            5 => invalid.events.nmi_masked = 2,
+            _ => invalid.events.triple_fault_pending = 1,
+        }
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr2 ^= 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate canonical events");
+    backend.restore(&valid).expect("restore canonical events");
+    let observed = backend.save().expect("save restored state");
+    assert_eq!(observed.events, baseline.events);
+    assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+
+    let mut pending_nmis = baseline.clone();
+    pending_nmis.events.nmi_pending = 2;
+    backend
+        .validate_restore_state(&pending_nmis)
+        .expect("validate two pending NMIs");
+    backend
+        .restore(&pending_nmis)
+        .expect("restore two pending NMIs");
+    assert_eq!(
+        backend
+            .save()
+            .expect("save pending NMIs")
+            .events
+            .nmi_pending,
+        2
+    );
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
 fn unusable_segment_restore_requires_canonical_shape_before_mutation() {
     let mut mem = GuestMem::new(0x10000);
     let mut backend = new_backend_or_explain();
