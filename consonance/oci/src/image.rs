@@ -251,11 +251,15 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
         dir
     };
 
-    let manifest = exact::entry(&layout, OsStr::new("manifest.json"))?;
-    let index = exact::entry(&layout, OsStr::new("index.json"))?;
-    let (layers, config_blob) = if manifest.as_ref().is_some_and(|path| path.is_file()) {
+    let manifest = contained_join(&layout, "manifest.json")
+        .ok()
+        .is_some_and(|path| path.is_file());
+    let index = contained_join(&layout, "index.json")
+        .ok()
+        .is_some_and(|path| path.is_file());
+    let (layers, config_blob) = if manifest {
         docker_save_layers(&layout)?
-    } else if index.as_ref().is_some_and(|path| path.is_file()) {
+    } else if index {
         oci_layout_layers(&layout)?
     } else {
         return Err(ImageError::Unrecognized(input.to_path_buf()));
@@ -2029,6 +2033,29 @@ mod tests {
 
         let staged = stage(layout.to_str().unwrap(), &dir.path().join("staging")).unwrap();
         assert_eq!(std::fs::read(staged.rootfs.join("file")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn layout_type_ignores_a_case_alias_symlinked_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let blobs = layout.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            layout.join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), br#"{"config":{}}"#).unwrap();
+        std::os::unix::fs::symlink("INDEX.JSON", layout.join("manifest.json")).unwrap();
+
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("stage")).unwrap();
+        assert!(staged.rootfs.is_dir());
     }
 
     #[test]
