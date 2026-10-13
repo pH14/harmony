@@ -51,8 +51,10 @@ that must outlive the store borrow.
 `page_delta(base, parent, target)` lists what a target adds over a parent that
 itself derives from `base`: pages that differ from the parent, with their
 stored BLAKE3 hashes, and the page numbers that returned to the base's content.
-With no parent the delta is every page that differs from the base. The hashes
-come from the content index, so an export hashes nothing.
+With no parent the delta is every page that differs from the base. Before
+exporting a resident page with its stored hash, the store rehashes its bytes and
+rejects stale content. An export checks each distinct emitted resident page once;
+unchanged pages are not read or rehashed.
 `DeltaBuilder::write_hashed_page` hashes the page once, rejects it when the
 hash differs from the one supplied, and interns it under that hash.
 `DeltaBuilder::write_changed_page` compares the page with the parent's stored
@@ -62,7 +64,19 @@ mostly unchanged region does not hash the unchanged pages.
 order and rejects out-of-range, reordered, or duplicate rows before it selects
 pages from the nearby snapshot. This keeps a malformed delta from restoring an
 origin page over a target page or silently dropping a nonexistent zero page
-during import.
+during import. It verifies every distinct reachable resident page of the near
+snapshot before reusing that snapshot, including inherited pages absent from
+the target rows. It also checks origin pages copied into the rebased result.
+`page_ref_eq` verifies referenced resident data before reporting equality.
+The BLAKE3 work is proportional to distinct resident pages, rather than
+the number of references to interned content. In a release microbenchmark on
+Apple silicon with 8,192 distinct 4 KiB pages (32 MiB), ten exports averaged
+0.60 ms before verification and 21.51 ms after it; ten empty-row rebases of
+the same near image averaged less than 0.01 ms before verification and 21.41 ms
+after it. With 8,192 references to one interned page, verified export and
+rebase averaged 0.65 ms and 0.45 ms. These are local measurements, not a latency
+budget; rehashing distinct bytes is the cost of detecting resident corruption
+before their hashes or near-page reuse are trusted.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
