@@ -65,6 +65,8 @@ pending stop, pending snapshot flag, and coverage thresholds are restored from
 the borrowed snapshot. Branches install their new environment plan while
 preserving the same captured SDK metadata. The stored snapshot remains owned by
 the server and reusable; the restored VM owns the state it can mutate.
+Seeded branches require a wired entropy stream. A branch into a VM without one
+is rejected before the live VM is replaced, leaving the session usable.
 Whole-state hashes include this control state and the recorded prefix used for
 duplicate-input rejection. Writers always emit the current format, and readers
 reject older envelopes. Complete reads allocate incrementally from received

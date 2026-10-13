@@ -1338,6 +1338,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Err(ControlError::Unsupported));
             }
         }
+        if seed.is_some()
+            && (reseeds.is_empty() || reseeds.contains_key(&restored_floor))
+            && !self.vmm.as_ref().is_some_and(|v| v.vtime_wired())
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         self.finish_session_trace_segment();
         let in_place = self.restore_mode == RestoreMode::InPlace;
         let in_place_result = in_place.then(|| self.restore_in_place(store_id, &vm_state));
@@ -7052,6 +7058,63 @@ mod tests {
             Err(ControlError::Unsupported),
             "an unarmable backend cannot enforce host faults exactly"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
+    )]
+    fn branch_without_vtime_rejects_seed_before_replacing_the_vm() {
+        let make_vm = || {
+            let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            Ok(Vmm::new(backend, GuestRam::new(RAM).unwrap()))
+        };
+        let mut server = ControlServer::new(make_vm().unwrap(), Box::new(make_vm));
+        hello(&mut server);
+        let base = snap(&mut server);
+        let before = hash(&mut server);
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(7),
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(server.handle(&Request::Snapshot).unwrap().is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
+    )]
+    fn branch_with_vtime_still_accepts_seed() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let base = snap(&mut server);
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(7),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(server.vmm().unwrap().vtime_wired());
+        assert!(server.handle(&Request::Snapshot).unwrap().is_ok());
     }
 
     #[test]
