@@ -891,7 +891,7 @@ fn validate_restore_shape_requires_four_bit_cr8() {
 }
 
 #[test]
-fn validate_restore_shape_requires_fixed_rflags_bit() {
+fn validate_restore_shape_requires_architectural_rflags() {
     let mut state = VcpuState {
         xsave: vec![0; 4096],
         ..Default::default()
@@ -903,6 +903,15 @@ fn validate_restore_shape_requires_fixed_rflags_bit() {
         validate_restore_shape(&state, None, 4096, 48, false),
         Err(BackendError::InvalidState)
     ));
+    for bit in [3, 5, 15, 22, 63] {
+        state.regs.rflags = 2 | (1 << bit);
+        assert!(matches!(
+            validate_restore_shape(&state, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+    }
+    state.regs.rflags = 3;
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
 }
 
 #[test]

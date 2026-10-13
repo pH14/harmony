@@ -991,7 +991,7 @@ fn cr8_restore_rejects_out_of_range_priority_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
-fn rflags_restore_requires_fixed_bit_before_mutation() {
+fn rflags_restore_rejects_nonarchitectural_bits_before_mutation() {
     let mut mem = GuestMem::new(0x10000);
     let mut backend = new_backend_or_explain();
     // SAFETY: guest RAM is page-aligned, remains allocated until after the backend is dropped, and no host slice aliases it while the guest runs.
@@ -1012,12 +1012,27 @@ fn rflags_restore_requires_fixed_bit_before_mutation() {
     ));
     assert_eq!(backend.save().expect("save after rejection"), baseline);
 
+    for bit in [3, 5, 15, 22, 63] {
+        let mut invalid = baseline.clone();
+        invalid.regs.rflags |= 1 << bit;
+        invalid.regs.rax ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
     let mut valid = baseline.clone();
-    valid.regs.rflags |= 2;
+    valid.regs.rflags |= 1;
     valid.regs.rax ^= 1;
     backend.restore(&valid).expect("restore valid RFLAGS");
     let restored = backend.save().expect("save valid RFLAGS");
-    assert_eq!(restored.regs, valid.regs);
+    assert_eq!(restored, valid);
 }
 
 #[test]
