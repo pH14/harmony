@@ -437,8 +437,9 @@ store. `import_sparse_delta(setup, near, pages, sidecar)` takes a complete
 page list over the setup snapshot and derives the imported snapshot from `near`,
 writing only the pages where the two differ. Once `near`'s chain reaches the
 maximum chain length, the import derives from `setup` instead, so repeated
-imports keep the same chain bound as seals. Each page must match its hash, so a
-changed page is refused before a handle is minted.
+imports keep the same chain bound as seals. Every supplied page must match its
+hash, including a page reused from `near`; a mismatch is refused before a
+handle is minted.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
