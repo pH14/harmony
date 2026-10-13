@@ -131,6 +131,13 @@ impl InputSpec {
             ));
         }
         let mut env = RecordedEnv::new(self.seed, handler);
+        if env.handler().identity() != self.config.identity
+            || env.handler().configuration() != self.config.configuration
+        {
+            return Err(ChannelError::Handler(
+                "reseed changed the service contract".into(),
+            ));
+        }
         env.set_payloads(self.payloads.clone())?;
         for (&(at, service, request), answer) in &self.answers {
             env.record_service_request(at, service, request, answer.clone());
@@ -311,6 +318,78 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct ReseedChangesContract {
+        reseeded: bool,
+        change_identity: bool,
+    }
+
+    impl ServiceHandler for ReseedChangesContract {
+        fn identity(&self) -> &[u8] {
+            if self.reseeded && self.change_identity {
+                b"other-contract"
+            } else {
+                b"reseed-changes-contract"
+            }
+        }
+
+        fn configuration(&self) -> &[u8] {
+            if self.reseeded && !self.change_identity {
+                b"after"
+            } else {
+                b"before"
+            }
+        }
+
+        fn respond(
+            &mut self,
+            _moment: crate::Moment,
+            _question: &crate::channel::Question,
+        ) -> Result<crate::channel::ServiceResponse, ChannelError> {
+            Ok(crate::channel::ServiceResponse::Answered(Answer::Data(
+                self.configuration().to_vec(),
+            )))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(ChannelError::Malformed)
+            }
+        }
+
+        fn reseed(&mut self, _seed: u64) {
+            self.reseeded = true;
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn materialize_rejects_service_contract_changed_by_initial_reseed() {
+        let mut spec = InputSpec::seeded(7);
+        spec.set_config(ServiceConfig {
+            identity: b"reseed-changes-contract".to_vec(),
+            configuration: b"before".to_vec(),
+        });
+        for change_identity in [false, true] {
+            let factory: ServiceFactory = Arc::new(move |_| {
+                Ok(Box::new(ReseedChangesContract {
+                    reseeded: false,
+                    change_identity,
+                }))
+            });
+            assert!(spec.materialize(&factory).is_err());
+        }
+    }
     mod buffered_reference {
         use crate as environment;
         include!("../qualification/reference-input-spec.rs");
