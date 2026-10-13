@@ -91,6 +91,14 @@ searches are retained in one worker, with only one advancing at a time. The
 advancing search gets the global budget minus the bytes the others hold, with
 a 2 MiB floor.
 
+The worker runs rollouts for 16 ms at a time, posts one batch message, and
+yields through a `MessageChannel` so pause, switch and state requests are
+handled between batches. The batch size changes only the message cadence; the
+seed still determines every search choice. On an Apple M1 Max one worker runs
+about 30,000 game frames per second, and QuickNES emulation takes 97% of the
+worker's time. The QuickNES core is built with `-O3` and link-time
+optimization.
+
 Each level's root comes from a fixed boot route. `boot(level)` restores a
 power-on snapshot and presses nothing for 60 frames, Start for 2 frames, and
 nothing for 240 frames. It then waits up to 120 frames for the player to land.
