@@ -98,7 +98,9 @@
 - `Recording` names the profile, host, seed, memory, boot arguments, event
   count and event hash of a run. It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
-  replay. `Recording::check` refuses a different profile or host, and
+  replay. Recording creation and replay checks read the current host identity
+  themselves, so a caller cannot supply a stale or forged host identity.
+  `Recording::check` refuses a different profile or host, and
   `Recording::launch` replays to the recorded cut.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
