@@ -830,6 +830,16 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 }
                 let gnu_name = long_name.take();
                 let gnu_link = long_link.take();
+                if path.is_some() && gnu_name.is_some() {
+                    return Err(ImageError::Tar(
+                        "member has conflicting GNU and pax name overrides".into(),
+                    ));
+                }
+                if link_path.is_some() && gnu_link.is_some() {
+                    return Err(ImageError::Tar(
+                        "member has conflicting GNU and pax link overrides".into(),
+                    ));
+                }
                 let owner = Owner {
                     uid: owner_id(uid, &block[108..116])?,
                     gid: owner_id(gid, &block[116..124])?,
@@ -2415,6 +2425,74 @@ mod tests {
             assert!(matches!(
                 apply_layer(&layer, &rootfs, &mut Ownership::default()),
                 Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_pax_and_gnu_name_overrides_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let gnu = raw_member(b"././@LongLink", b'L', "", b"dir/\0");
+        let pax = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("path", "safe").as_bytes(),
+        );
+        let hidden = raw_member(b"evil", b'0', "", b"bad");
+        for (name, headers) in [
+            ("gnu-pax", [gnu.clone(), pax.clone()].concat()),
+            ("pax-gnu", [pax.clone(), gnu.clone()].concat()),
+        ] {
+            let body = [headers, raw_member(b"raw", b'0', "", &hidden)].concat();
+            let layer = write_archive(dir.path(), &format!("mixed-name-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "member has conflicting GNU and pax name overrides"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_pax_and_gnu_link_overrides_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let gnu = raw_member(b"././@LongLink", b'K', "", b"missing\0");
+        let pax = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("linkpath", "source").as_bytes(),
+        );
+        for (name, headers) in [
+            ("gnu-pax", [gnu.clone(), pax.clone()].concat()),
+            ("pax-gnu", [pax.clone(), gnu.clone()].concat()),
+        ] {
+            let body = [
+                raw_member(b"source", b'0', "", b"data"),
+                headers,
+                raw_member(b"link", b'1', "source", b""),
+            ]
+            .concat();
+            let layer = write_archive(dir.path(), &format!("mixed-link-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "member has conflicting GNU and pax link overrides"
             ));
             assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
             assert_eq!(

@@ -107,6 +107,8 @@ An entry whose name ends in `/` must carry the directory typeflag; some host
 tar tools otherwise treat a regular file as a directory and parse its payload
 as additional members that admission never saw. Empty effective member names,
 including empty pax or GNU name overrides, are also rejected.
+Members cannot combine GNU and pax overrides for a name or link target because
+macOS and GNU tar choose different values when both are present.
 Filesystem members are limited to ordinary files, directories, symlinks, and
 hardlinks. Other tar typeflags are rejected before extraction because host tar
 tools disagree on unknown members and special-file creation.
