@@ -153,9 +153,10 @@ The inner process and VM remain allocated. Ordinary guests use the kernel
 bitmap directly. Portable tests and Miri cover payload and mapping preservation,
 preflight before mutation, operation order and stopping on errors. The live
 matrix checks all RAM bytes, while recorded search exercises longer histories.
-Any error during a nested dirty drain, including its read/validation prefix,
-or during CPU-state mutation poisons that backend. A drain may already have
-cleared part of the dirty log when a later operation fails.
+Any error during an x86 KVM dirty drain, including a nested-state read or
+validation failure, poisons that backend. A later slot failure may leave earlier
+dirty bits cleared, so retrying cannot recover the complete page set. Errors
+during nested CPU-state mutation also poison the backend.
 Further entry, preparation, capture and restore fail; a deleted slot cannot
 be reused after an incomplete reload. Portable fault injection exercises each
 slot-removal/replacement error and the final nested-state installation boundary.
