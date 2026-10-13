@@ -197,6 +197,7 @@ mod tests {
         launch.bridge = Some(Bridge::new(41));
         let recording = Recording::new(&profile, &host, &launch, &[]).unwrap();
         let replay = recording.launch(PathBuf::from("/replay"));
+        assert_eq!(replay.bridge.unwrap().cut, Some(0));
         let seed_arg = |launch: &Launch| {
             launch
                 .command(&profile, std::path::Path::new("/work/guest"))

@@ -25,7 +25,8 @@
   pair from a thread of its own. It answers entropy from the seed, records
   each event with its virtual time, and fails the run if virtual time goes
   backwards. With a cut, it stops answering at that event, and the guest
-  stops with `ExitReason::EventCut`.
+  stops with `ExitReason::EventCut`. A cut at zero stops the guest before its
+  first request and records no events.
 - `Session` holds the bridge socket on the caller's thread instead. Its
   services answer the same SDK requests as the KVM backend through
   `environment::sdk`: entropy, events, assertion violations, standing-service

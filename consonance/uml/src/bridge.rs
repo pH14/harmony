@@ -458,6 +458,14 @@ impl<'a> Reader<'a> {
 }
 
 pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> BridgeLog {
+    if bridge.cut == Some(0) {
+        state.store(CUT, Ordering::Release);
+        return BridgeLog {
+            events: Vec::new(),
+            failure: None,
+            socket,
+        };
+    }
     let mut services = Services::new(bridge.seed);
     let mut request = vec![0_u8; STAMP_LEN + MAX_FRAME];
     let mut response = vec![0_u8; MAX_FRAME];
@@ -579,6 +587,44 @@ mod tests {
         let log = thread.join().unwrap();
         assert_eq!(state.load(Ordering::Acquire), CUT);
         assert_eq!(log.events.len(), 2);
+        assert!(log.failure.is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn zero_event_cut_stops_before_the_first_request() {
+        let (host, guest) = socket_pair().unwrap();
+        let state = Arc::new(AtomicU8::new(RUNNING));
+        let worker_state = Arc::clone(&state);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(serve(
+                    host,
+                    Bridge {
+                        seed: 1,
+                        cut: Some(0),
+                    },
+                    worker_state,
+                ))
+                .unwrap();
+        });
+        let first = receiver.recv_timeout(std::time::Duration::from_secs(5));
+        let stopped_without_request = first.is_ok();
+        drop(guest);
+        let log = match first {
+            Ok(log) => log,
+            Err(_) => receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+        };
+        worker.join().unwrap();
+        assert!(
+            stopped_without_request,
+            "zero-event cut waited for a guest request"
+        );
+        assert_eq!(state.load(Ordering::Acquire), CUT);
+        assert!(log.events.is_empty());
         assert!(log.failure.is_none());
     }
 
