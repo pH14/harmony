@@ -84,6 +84,11 @@ case-insensitive, Unicode-normalizing filesystems common on macOS. A Unicode
 normalization pass alone would not cover arbitrary non-UTF-8 Linux names or
 every host filesystem's case rules, so non-ASCII archive paths fail closed.
 Existing Harmony workload images use ASCII paths.
+Whiteout targets must match the spelling of the lower name they remove; after
+an exact whiteout, a new entry may reuse that path with different case. Whiteout
+lookups never follow a staged symlink parent. OCI control-file, mount, and
+account-file lookups match each existing path component exactly rather than
+using host case-folding; account paths cannot use symlinks.
 Hardlink targets must name an earlier member of the same archive with the
 exact same spelling. This also excludes archives that only extract because a
 host resolves a hardlink target case-insensitively.

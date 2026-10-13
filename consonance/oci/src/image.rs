@@ -2,9 +2,11 @@
 
 use crate::credentials;
 pub use crate::credentials::{CredentialsError, ProcessCredentials};
+use crate::exact;
 use guest_image::Owner;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -249,9 +251,11 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
         dir
     };
 
-    let (layers, config_blob) = if layout.join("manifest.json").is_file() {
+    let manifest = exact::entry(&layout, OsStr::new("manifest.json"))?;
+    let index = exact::entry(&layout, OsStr::new("index.json"))?;
+    let (layers, config_blob) = if manifest.as_ref().is_some_and(|path| path.is_file()) {
         docker_save_layers(&layout)?
-    } else if layout.join("index.json").is_file() {
+    } else if index.as_ref().is_some_and(|path| path.is_file()) {
         oci_layout_layers(&layout)?
     } else {
         return Err(ImageError::Unrecognized(input.to_path_buf()));
@@ -389,7 +393,20 @@ fn contained_join(root: &Path, relative: &str) -> Result<PathBuf, ImageError> {
         return Err(ImageError::UnsafePath(relative.to_string()));
     }
     let real_root = root.canonicalize()?;
-    let resolved = resolve_deepest(&real_root.join(relative))?;
+    let mut exact_path = real_root.clone();
+    for component in Path::new(relative).components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        let Some(next) = exact::entry(&exact_path, part)? else {
+            return Err(ImageError::Io(std::io::ErrorKind::NotFound.into()));
+        };
+        if std::fs::symlink_metadata(&next)?.file_type().is_symlink() {
+            return Err(ImageError::UnsafePath(relative.to_string()));
+        }
+        exact_path = next;
+    }
+    let resolved = resolve_deepest(&exact_path)?;
     if !resolved.starts_with(&real_root) {
         return Err(ImageError::UnsafePath(relative.to_string()));
     }
@@ -461,32 +478,99 @@ fn check_portable_names(
     names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
 ) -> Result<(), ImageError> {
     for member in members {
-        let mut folded = Vec::new();
-        let mut exact = Vec::new();
-        for component in member.path().components() {
-            let Component::Normal(part) = component else {
-                continue;
-            };
-            let bytes = part.as_bytes();
-            if !bytes.is_ascii() {
-                return Err(ImageError::NonPortableName(member.shown()));
+        check_portable_path(member.path(), names, true)?;
+    }
+    Ok(())
+}
+
+fn check_portable_path(
+    path: &Path,
+    names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    insert: bool,
+) -> Result<Vec<u8>, ImageError> {
+    check_relative(path)?;
+    let mut folded = Vec::new();
+    let mut exact = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        let bytes = part.as_bytes();
+        if !bytes.is_ascii() {
+            return Err(ImageError::NonPortableName(
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+        if !folded.is_empty() {
+            folded.push(b'/');
+            exact.push(b'/');
+        }
+        folded.extend(bytes.to_ascii_lowercase());
+        exact.extend_from_slice(bytes);
+        if let Some(other) = names.get(&folded) {
+            if other != &exact {
+                return Err(ImageError::CaseCollision {
+                    path: path.to_string_lossy().into_owned(),
+                    other: String::from_utf8_lossy(other).into_owned(),
+                });
             }
-            if !folded.is_empty() {
-                folded.push(b'/');
-                exact.push(b'/');
+        } else if insert {
+            names.insert(folded.clone(), exact.clone());
+        }
+    }
+    Ok(folded)
+}
+
+fn remove_portable_tree(names: &mut BTreeMap<Vec<u8>, Vec<u8>>, key: &[u8], include_root: bool) {
+    let mut prefix = key.to_vec();
+    prefix.push(b'/');
+    names.retain(|candidate, _| {
+        !((include_root && candidate == key) || key.is_empty() || candidate.starts_with(&prefix))
+    });
+}
+
+fn check_layer_portable_names(
+    members: &[Member],
+    names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), ImageError> {
+    for member in members {
+        match whiteout(member.path()) {
+            Some(Whiteout::Opaque(directory)) => {
+                check_portable_path(member.path(), names, false)?;
+                check_portable_path(directory, names, false)?;
             }
-            folded.extend(bytes.to_ascii_lowercase());
-            exact.extend_from_slice(bytes);
-            if let Some(other) = names.get(&folded) {
-                if other != &exact {
-                    return Err(ImageError::CaseCollision {
-                        path: member.shown(),
-                        other: String::from_utf8_lossy(other).into_owned(),
-                    });
-                }
-            } else {
-                names.insert(folded.clone(), exact.clone());
+            Some(Whiteout::Entry(target)) => {
+                check_portable_path(member.path(), names, false)?;
+                check_portable_path(&target, names, false)?;
             }
+            None => {}
+        }
+    }
+    for member in members {
+        match whiteout(member.path()) {
+            Some(Whiteout::Opaque(directory)) => {
+                let key = member_key(directory);
+                remove_portable_tree(names, &key, false);
+            }
+            Some(Whiteout::Entry(target)) => {
+                let key = member_key(&target);
+                remove_portable_tree(names, &key, true);
+            }
+            None => {}
+        }
+    }
+    for member in members {
+        if whiteout(member.path()).is_some() {
+            continue;
+        }
+        let key = check_portable_path(member.path(), names, true)?;
+        if !member.is_dir {
+            remove_portable_tree(names, &key, false);
+        }
+    }
+    for member in members {
+        if whiteout(member.path()).is_some() {
+            check_portable_path(member.path(), names, false)?;
         }
     }
     Ok(())
@@ -931,20 +1015,36 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
 }
 
 fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, ImageError> {
-    let Ok(real_root) = rootfs.canonicalize() else {
+    let Ok(mut cursor) = rootfs.canonicalize() else {
         return Ok(None);
     };
-    let Some(name) = relative.file_name() else {
-        return Ok(Some(real_root));
-    };
-    let parent = rootfs.join(relative.parent().unwrap_or(Path::new("")));
-    let Ok(real_parent) = parent.canonicalize() else {
-        return Ok(None);
-    };
-    if !real_parent.starts_with(&real_root) {
-        return Err(ImageError::UnsafePath(relative.display().to_string()));
+    let parts: Vec<_> = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect();
+    for (at, part) in parts.iter().enumerate() {
+        let next = match exact::entry(&cursor, part) {
+            Ok(Some(next)) => next,
+            Ok(None) => return Ok(None),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if at + 1 < parts.len() && std::fs::symlink_metadata(&next)?.file_type().is_symlink() {
+            return Err(ImageError::UnsafePath(relative.display().to_string()));
+        }
+        cursor = next;
     }
-    Ok(Some(real_parent.join(name)))
+    Ok(Some(cursor))
 }
 
 fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
@@ -980,7 +1080,7 @@ fn apply_layer_tracked(
 ) -> Result<(), ImageError> {
     let members = read_members(layer)?;
     check_members(&members)?;
-    check_portable_names(&members, portable_names)?;
+    check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
     apply_whiteouts(&members, rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
@@ -1137,6 +1237,7 @@ mod tests {
     fn blob_path_splits_the_digest() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("blobs/sha256")).unwrap();
+        std::fs::write(dir.path().join("blobs/sha256/abc"), b"blob").unwrap();
         assert_eq!(
             blob_path(dir.path(), "sha256:abc").unwrap(),
             dir.path().canonicalize().unwrap().join("blobs/sha256/abc")
@@ -1258,6 +1359,8 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("c.json"), b"{\"config\":{}}").unwrap();
+        std::fs::write(dir.path().join("l1.tar"), b"").unwrap();
+        std::fs::write(dir.path().join("l2.tar"), b"").unwrap();
         let (layers, config) = docker_save_layers(dir.path()).unwrap();
         let real = dir.path().canonicalize().unwrap();
         assert_eq!(layers, [real.join("l1.tar"), real.join("l2.tar")]);
@@ -1280,6 +1383,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(blobs.join("c"), b"cfg").unwrap();
+        std::fs::write(blobs.join("l"), b"").unwrap();
         let (layers, config) = oci_layout_layers(dir.path()).unwrap();
         assert_eq!(layers, [blobs.canonicalize().unwrap().join("l")]);
         assert_eq!(config, b"cfg");
@@ -1587,6 +1691,29 @@ mod tests {
     }
 
     #[test]
+    fn a_whiteout_cannot_follow_an_internal_symlink_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("actual")).unwrap();
+        std::fs::write(rootfs.join("actual/sentinel"), b"unchanged").unwrap();
+        std::os::unix::fs::symlink("actual", rootfs.join("link")).unwrap();
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &raw_member(b"link/.wh.sentinel", b'0', "", b""),
+        );
+
+        assert!(matches!(
+            apply_layer(&upper, &rootfs, &mut Ownership::default()),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert_eq!(
+            std::fs::read(rootfs.join("actual/sentinel")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
     fn whiteout_of_a_symlink_removes_only_the_link() {
         let dir = tempfile::tempdir().unwrap();
         let (rootfs, victim) = planted(dir.path());
@@ -1773,6 +1900,78 @@ mod tests {
             Err(ImageError::CaseCollision { .. })
         ));
         assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_whiteout_cannot_hide_a_differently_cased_lower_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = write_archive(
+            dir.path(),
+            "lower.tar",
+            &raw_member(b"Foo", b'0', "", b"lower"),
+        );
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &raw_member(b".wh.foo", b'0', "", b""),
+        );
+        let mut owners = Ownership::default();
+        let mut names = BTreeMap::new();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+
+        assert!(matches!(
+            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        assert_eq!(std::fs::read(rootfs.join("Foo")).unwrap(), b"lower");
+    }
+
+    #[test]
+    fn an_exact_whiteout_allows_a_new_case_after_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = write_archive(
+            dir.path(),
+            "lower.tar",
+            &raw_member(b"Foo", b'0', "", b"lower"),
+        );
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &[
+                raw_member(b".wh.Foo", b'0', "", b""),
+                raw_member(b"foo", b'0', "", b"upper"),
+            ]
+            .concat(),
+        );
+        let mut owners = Ownership::default();
+        let mut names = BTreeMap::new();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+        apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names).unwrap();
+
+        assert_eq!(std::fs::read(rootfs.join("foo")).unwrap(), b"upper");
+        assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn layout_control_files_require_exact_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("MANIFEST.JSON"),
+            br#"[{"Config":"config.json","Layers":[]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("staging")),
+            Err(ImageError::Unrecognized(_))
+        ));
     }
 
     #[test]

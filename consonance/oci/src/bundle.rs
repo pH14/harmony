@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::cpio::{CpioError, Writer};
+use super::exact;
 use super::image::{ImageError, Ownership, StagedImage};
 use execution_proto::{ExecutionSpec, SpecError, VERSION};
 use serde_json::json;
@@ -189,7 +190,12 @@ fn validate_mount_path(rootfs: &Path, destination: &str) -> Result<(), BundleErr
         let Component::Normal(component) = component else {
             continue;
         };
-        path.push(component);
+        path = match exact::entry(&path, component) {
+            Ok(Some(found)) => found,
+            Ok(None) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        };
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(BundleError::MountSymlink {
@@ -906,6 +912,13 @@ mod tests {
             prepare(&staged, &LaunchRequest::default()),
             Err(BundleError::MountSymlink { path }) if path == KERNEL_LOG_DEVICE
         ));
+    }
+
+    #[test]
+    fn mount_destination_checks_require_exact_component_spelling() {
+        let rootfs = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/outside", rootfs.path().join("TMP")).unwrap();
+        validate_mount_path(rootfs.path(), "/tmp").unwrap();
     }
 
     #[test]
