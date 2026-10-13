@@ -354,8 +354,9 @@ guest readback of that baseline and of a programmed edge after uninterrupted
 execution and cold restore.
 The single-vCPU machine supports SPI routing only to affinity zero. The
 userspace GIC rejects a nonzero `GICD_IROUTER` write. KVM can execute that
-write inside its in-kernel VGIC, so capture reads every implemented SPI's
-64-bit route and refuses a snapshot if any route is nonzero. Restore clears
+write inside its in-kernel VGIC, so capture reads both 32-bit KVM device-attribute
+words of every implemented SPI's 64-bit route and refuses a snapshot if either
+word is nonzero. Restore clears
 and verifies all SPI routes, including on a reused target that previously ran
 a guest with a nonzero route. The ignored
 `guest_nonzero_spi_route_rejects_capture_and_zero_route_restores` test checks
