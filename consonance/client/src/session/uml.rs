@@ -48,6 +48,31 @@ fn checked_cache_sidecar(identity: [u8; 32], sidecar: &[u8]) -> Result<&[u8], Bo
     Ok(&sidecar[identity_end..])
 }
 
+fn root_identity(
+    config: &UmlLaunch,
+    profile: &VerifiedProfile,
+    host: &uml::HostIdentity,
+    initramfs: &[u8],
+) -> [u8; 32] {
+    let mut identity = Sha256::new();
+    identity.update(b"harmony-uml-root-v2\0");
+    identity.update(profile.identity_sha256().as_bytes());
+    for field in [&host.architecture, &host.cpu_model, &host.cpu_features] {
+        identity.update((field.len() as u64).to_le_bytes());
+        identity.update(field.as_bytes());
+    }
+    identity.update((host.processor as u64).to_le_bytes());
+    identity.update(config.seed.to_le_bytes());
+    identity.update(config.memory_mib.to_le_bytes());
+    identity.update(config.setup_budget.to_le_bytes());
+    for argument in &config.kernel_arguments {
+        identity.update((argument.len() as u64).to_le_bytes());
+        identity.update(argument.as_bytes());
+    }
+    identity.update(initramfs);
+    identity.finalize().into()
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Spent {
     count: u64,
@@ -75,6 +100,7 @@ pub struct UmlSession {
     session: Option<uml::Session>,
     profile: VerifiedProfile,
     launch: Launch,
+    host: uml::HostIdentity,
     seed: u64,
     root_identity: [u8; 32],
     cache_domain: [u8; 32],
@@ -124,6 +150,12 @@ impl UmlSession {
         launch.wall_limit = Duration::MAX;
         launch.console_limit_bytes = u64::MAX;
         launch.console_tail_bytes = CONSOLE_TAIL;
+        launch.bind_expected_host(config.expected_host.clone())?;
+        let host = launch.host_identity()?;
+        let initramfs = launch
+            .initramfs_bytes()?
+            .ok_or_else(|| SessionError::Control("the pinned initramfs is missing".into()))?;
+        let root_identity = root_identity(config, &profile, &host, &initramfs);
         let checkpoints = Checkpoints::new();
         let mut session = uml::Session::spawn(&launch, &profile, &checkpoints, None)?;
         session.set_progress_limit(Some(config.progress_limit));
@@ -149,27 +181,13 @@ impl UmlSession {
                 .into());
             }
         };
-        let mut identity = Sha256::new();
-        identity.update(b"harmony-uml-root-v1\0");
-        identity.update(profile.identity_sha256().as_bytes());
-        identity.update(config.seed.to_le_bytes());
-        identity.update(config.memory_mib.to_le_bytes());
-        identity.update(config.setup_budget.to_le_bytes());
-        for argument in &config.kernel_arguments {
-            identity.update((argument.len() as u64).to_le_bytes());
-            identity.update(argument.as_bytes());
-        }
-        identity.update(
-            launch
-                .initramfs_bytes()?
-                .ok_or_else(|| SessionError::Control("the pinned initramfs is missing".into()))?,
-        );
         let mut this = Self {
             session: Some(session),
             profile,
             launch,
+            host,
             seed: config.seed,
-            root_identity: identity.finalize().into(),
+            root_identity,
             cache_domain: [0; 32],
             progress_limit: config.progress_limit,
             factory,
@@ -222,6 +240,12 @@ impl UmlSession {
             .snapshots
             .get(&snapshot)
             .ok_or_else(|| SessionError::Control(format!("unknown snapshot {snapshot:?}")))?;
+        if self.launch.host_identity()? != self.host {
+            return Err(SessionError::Control(
+                "the UML launch host identity changed before restore".into(),
+            )
+            .into());
+        }
         let begun = started();
         if let Some(session) = self.session.as_mut().filter(|session| session.paused()) {
             session.restore(checkpoint)?;
@@ -602,11 +626,21 @@ mod tests {
         profile_fixture().1
     }
 
+    fn host() -> uml::HostIdentity {
+        uml::HostIdentity {
+            architecture: "x86_64".into(),
+            processor: 0,
+            cpu_model: "model".into(),
+            cpu_features: "features".into(),
+        }
+    }
+
     fn unbooted_session() -> UmlSession {
         UmlSession {
             session: None,
             profile: profile(),
             launch: Launch::new(PathBuf::new()),
+            host: host(),
             seed: 7,
             root_identity: [7; 32],
             cache_domain: [9; 32],
@@ -641,6 +675,7 @@ mod tests {
         let config = UmlLaunch {
             profile: directory.path().to_path_buf(),
             expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
+            expected_host: host(),
             initramfs: directory.path().join("rootfs"),
             memory_mib: 128,
             kernel_arguments: Vec::new(),
@@ -685,5 +720,42 @@ mod tests {
             b"checkpoint"
         );
         assert!(checked_cache_sidecar([7; 32], &valid[..8]).is_err());
+    }
+
+    #[test]
+    fn root_identity_refuses_a_different_admitted_guest_processor() {
+        let profile = profile();
+        let host = host();
+        let config = UmlLaunch {
+            profile: PathBuf::new(),
+            expected_profile_identity_sha256: profile.identity_sha256().to_owned(),
+            expected_host: host.clone(),
+            initramfs: PathBuf::new(),
+            memory_mib: 128,
+            kernel_arguments: vec!["rdinit=/init".into()],
+            work_parent: PathBuf::new(),
+            seed: 7,
+            setup_budget: 100,
+            progress_limit: Duration::from_secs(1),
+        };
+        let local = root_identity(&config, &profile, &host, b"initramfs");
+        let mut foreign_host = host.clone();
+        foreign_host.processor ^= 1;
+        let foreign = root_identity(&config, &profile, &foreign_host, b"initramfs");
+        assert_ne!(local, foreign);
+
+        let index = LocalIndex::new(1 << 20);
+        let mut session = unbooted_session();
+        session.root_identity = local;
+        let root = extent(&index, b"foreign-cpu-root", foreign);
+        let error = session.import_root(&index, &root).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_eq!(session.snapshots.len(), 0);
+        assert_eq!(session.next, 1);
+        index.release(root);
     }
 }

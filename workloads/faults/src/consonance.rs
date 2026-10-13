@@ -70,6 +70,7 @@ pub enum GuestBackend {
 pub struct UmlGuest {
     pub(crate) profile: PathBuf,
     pub(crate) profile_identity_sha256: String,
+    pub(crate) host: uml::HostIdentity,
     pub(crate) identity: String,
     pub(crate) work_parent: PathBuf,
 }
@@ -80,19 +81,32 @@ impl UmlGuest {
             .map_err(|error| format!("User-mode Linux profile: {error}"))?;
         let host = uml::HostIdentity::current()
             .map_err(|error| format!("User-mode Linux host identity: {error}"))?;
-        let identity = format!(
-            "profile={};architecture={};cpu={};features={:x}",
-            verified.identity_sha256(),
-            host.architecture,
-            host.cpu_model,
-            Sha256::digest(host.cpu_features.as_bytes())
-        );
+        let identity = Self::identity(verified.identity_sha256(), &host);
         Ok(Self {
             profile: profile.to_path_buf(),
             profile_identity_sha256: verified.identity_sha256().to_owned(),
+            host,
             identity,
             work_parent,
         })
+    }
+
+    fn identity(profile: &str, host: &uml::HostIdentity) -> String {
+        format!(
+            "profile={profile};architecture={};processor={};cpu={};features={:x}",
+            host.architecture,
+            host.processor,
+            host.cpu_model,
+            Sha256::digest(host.cpu_features.as_bytes())
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn admit_processor(&mut self, processor: usize) -> Result<(), String> {
+        self.host = uml::HostIdentity::for_processor(processor)
+            .map_err(|error| format!("User-mode Linux host processor {processor}: {error}"))?;
+        self.identity = Self::identity(&self.profile_identity_sha256, &self.host);
+        Ok(())
     }
 
     fn kernel_arguments(knobs: &[String]) -> Vec<String> {
@@ -340,6 +354,7 @@ fn uml_launch(
     Ok(UmlLaunch {
         profile: guest.profile.clone(),
         expected_profile_identity_sha256: guest.profile_identity_sha256.clone(),
+        expected_host: guest.host.clone(),
         initramfs: path,
         memory_mib: config.ram_mib,
         kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),
@@ -1355,6 +1370,12 @@ mod tests {
         let guest = UmlGuest {
             profile: directory.path().join("profile"),
             profile_identity_sha256: "admitted-profile".into(),
+            host: uml::HostIdentity {
+                architecture: "x86_64".into(),
+                processor: 0,
+                cpu_model: "model".into(),
+                cpu_features: "features".into(),
+            },
             identity: "admitted-host".into(),
             work_parent: directory.path().to_path_buf(),
         };
@@ -1366,6 +1387,7 @@ mod tests {
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
+        assert_eq!(launch.expected_host, guest.host);
         assert_eq!(std::fs::read(launch.initramfs).unwrap(), b"initramfs");
     }
 
