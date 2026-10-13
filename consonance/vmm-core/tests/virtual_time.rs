@@ -479,6 +479,7 @@ fn state_blob_carries_assigned_vtime_and_entropy_at_work_zero() {
 
     let labels: Vec<_> = baseline
         .state_components()
+        .unwrap()
         .into_iter()
         .map(|(label, _)| label)
         .collect();

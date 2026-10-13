@@ -90,7 +90,7 @@ fn g1_kernel_xsave_paired_endpoint() {
             .expect("capture VM state")
             .encode()
             .unwrap();
-        let components = vmm.state_components();
+        let components = vmm.state_components().unwrap();
         std::fs::write(directory.join("memory.bin"), &memory).unwrap();
         std::fs::write(directory.join("state-blob.bin"), &state).unwrap();
         std::fs::write(directory.join("vm-state.bin"), &vm_state).unwrap();
