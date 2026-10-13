@@ -29,6 +29,8 @@ pub struct Arm64VcpuState {
 
 pub const ARM64_GIC_BITMAP_WORDS: usize = 32;
 
+pub const ARM64_GIC_CONFIG_WORDS: usize = 64;
+
 pub const ARM64_GIC_PRIORITY_BYTES: usize = 1020;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,6 +45,7 @@ pub struct Arm64GicState {
     pub pending: [u32; ARM64_GIC_BITMAP_WORDS],
     pub active: [u32; ARM64_GIC_BITMAP_WORDS],
     pub line_level: [u32; ARM64_GIC_BITMAP_WORDS],
+    pub config: [u32; ARM64_GIC_CONFIG_WORDS],
     pub priority: [u8; ARM64_GIC_PRIORITY_BYTES],
     pub pmr: u8,
     pub bpr0: u8,
@@ -60,7 +63,7 @@ pub struct Arm64GicState {
 impl Default for Arm64GicState {
     fn default() -> Self {
         Self {
-            version: 4,
+            version: 5,
             impl_spis: 0,
             timer_hz: 0,
             timer_intid: 0,
@@ -70,6 +73,7 @@ impl Default for Arm64GicState {
             pending: [0; ARM64_GIC_BITMAP_WORDS],
             active: [0; ARM64_GIC_BITMAP_WORDS],
             line_level: [0; ARM64_GIC_BITMAP_WORDS],
+            config: [0; ARM64_GIC_CONFIG_WORDS],
             priority: [0; ARM64_GIC_PRIORITY_BYTES],
             pmr: 0,
             bpr0: 0,

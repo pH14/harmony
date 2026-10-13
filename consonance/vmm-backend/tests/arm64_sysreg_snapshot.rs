@@ -214,6 +214,48 @@ fn guest_gic_cpu_interface_survives_fresh_restore() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_gic_spi_trigger_survives_fresh_restore() {
+    let movz = |r: u32, imm: u32, shift: u32| 0xd280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let movk = |r: u32, imm: u32, shift: u32| 0xf280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let program = [
+        movz(1, 0x0800, 16),
+        movk(1, 0x0c08, 0),
+        movz(4, 0x0900, 16),
+        0xb940_0020,
+        0xf900_0080,
+        movz(0, 2, 16),
+        0xb900_0020,
+        0xb940_0020,
+        0xf900_0080,
+        0xb940_0020,
+        0xf900_0080,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    let initial = source.next_store();
+    assert_eq!(initial, 0);
+    let first = source.next_store();
+    let cut = source.save();
+    assert_eq!(cut.gic.as_ref().unwrap().config[2] as u64, first);
+    let uninterrupted = source.next_store();
+    drop(source);
+    let mut target = Guest::new(live_backend(), &program);
+    let fresh = target.save().gic.unwrap().config[2];
+    assert_eq!(fresh, 0);
+    target.restore(&cut);
+    assert_eq!(target.save().gic.as_ref().unwrap().config[2] as u64, first);
+    let resumed = target.next_store();
+    eprintln!(
+        "GICD_ICFGR2 initial={initial:#x} fresh={fresh:#x} programmed={first:#x} uninterrupted={uninterrupted:#x} restored={resumed:#x}"
+    );
+    assert_eq!(first, 0x20000);
+    assert_eq!(uninterrupted, first);
+    assert_eq!(resumed, first);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {
     let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
     let mut state = guest.save();

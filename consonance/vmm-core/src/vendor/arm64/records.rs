@@ -141,6 +141,7 @@ pub(crate) fn gic_from_backend(s: &Arm64GicState) -> gicv3::GicState {
         pending: s.pending,
         active: s.active,
         line_level: s.line_level,
+        config: s.config,
         priority: s.priority,
         pmr: s.pmr,
         bpr0: s.bpr0,
@@ -168,6 +169,7 @@ pub(crate) fn gic_to_backend(s: &gicv3::GicState) -> Arm64GicState {
         pending: s.pending,
         active: s.active,
         line_level: s.line_level,
+        config: s.config,
         priority: s.priority,
         pmr: s.pmr,
         bpr0: s.bpr0,
@@ -214,7 +216,7 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
 }
 
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4441;
-const DEVICE_BLOB_VERSION: u16 = 15;
+const DEVICE_BLOB_VERSION: u16 = 16;
 const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -274,6 +276,9 @@ pub(crate) fn encode_gic_state(out: &mut Vec<u8>, s: &gicv3::GicState) {
             put_u32(out, *w);
         }
     }
+    for word in s.config {
+        put_u32(out, word);
+    }
     out.extend_from_slice(&s.priority);
     out.push(s.pmr);
     out.push(s.bpr0);
@@ -304,6 +309,10 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         }
     }
     let [group, enable, pending, active, line_level] = files;
+    let mut config = [0; 64];
+    for word in &mut config {
+        *word = c.u32()?;
+    }
     let mut priority = [0u8; 1020];
     priority.copy_from_slice(c.take(1020)?);
     let pmr_byte = c.take(1)?[0];
@@ -345,6 +354,7 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         pending,
         active,
         line_level,
+        config,
         priority,
         pmr: pmr_byte,
         bpr0,
@@ -603,6 +613,8 @@ mod tests {
         })
         .unwrap();
         gic.raise(40).unwrap();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0x0c08, 0x20000, 0)
+            .unwrap();
         gic.set_pmr(0x80);
         gic.write_cntv_cval(125);
         gic.write_cntv_ctl(gicv3::CNTV_CTL_ENABLE);

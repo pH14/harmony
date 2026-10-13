@@ -66,6 +66,7 @@ pub fn compare_gic_architecture(
     array!(pending);
     array!(active);
     array!(line_level);
+    array!(config);
     array!(priority);
     array!(ap0r);
     array!(ap1r);
@@ -207,6 +208,7 @@ impl Arm64ArchitecturalState {
         write_u32_array(&mut out, "gic.pending", &gic.pending)?;
         write_u32_array(&mut out, "gic.active", &gic.active)?;
         write_u32_array(&mut out, "gic.line_level", &gic.line_level)?;
+        write_u32_array(&mut out, "gic.config", &gic.config)?;
         for (index, value) in gic.priority.iter().enumerate() {
             writeln!(out, "gic.priority.{index} {value:02x}")?;
         }
@@ -738,11 +740,20 @@ mod comparator_tests {
                 index: Some(2),
             })
         );
+        let mut planted = expected.clone();
+        planted.config[2] = 0x20000;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "config",
+                index: Some(2),
+            })
+        );
         assert_eq!(compare_gic_architecture(&expected, &expected), Ok(()));
     }
 
     #[test]
-    fn gic_cpu_interface_changes_the_unconditional_device_hash_chunk() {
+    fn gic_cpu_interface_and_trigger_config_change_the_unconditional_device_hash_chunk() {
         let mut vcpu = Arm64VcpuState {
             gic: Some(records::gic_to_backend(&board::new_gic().snapshot())),
             ..Arm64VcpuState::default()
@@ -759,6 +770,45 @@ mod comparator_tests {
         after.clear();
         <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut after);
         assert_ne!(before, after);
+        vcpu.gic.as_mut().unwrap().ap1r[0] = 0;
+        vcpu.gic.as_mut().unwrap().config[2] = 0x20000;
+        after.clear();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut after);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn spi_trigger_configuration_changes_whole_state_hash_without_snapshot_hashing() {
+        use crate::vmm::GuestRam;
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Arm64Policy, Capabilities, MockArm64Backend};
+
+        let machine = |config| {
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-kernel-gic",
+                arch: Arm64Caps {
+                    in_kernel_gic: true,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
+                    gic_ctlr_fixed_bits: 0x8400,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut gic = board::new_gic().snapshot();
+            gic.config[2] = config;
+            backend.set_state(Arm64VcpuState {
+                gic: Some(records::gic_to_backend(&gic)),
+                ..Arm64VcpuState::default()
+            });
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut level = machine(0);
+        let mut edge = machine(0x20000);
+        assert!(!level.snapshot_hashing_wired());
+        assert_ne!(level.state_hash().unwrap(), edge.state_hash().unwrap());
+        level.wire_snapshot_hashing();
+        edge.wire_snapshot_hashing();
+        assert_ne!(level.state_hash().unwrap(), edge.state_hash().unwrap());
     }
 
     #[test]

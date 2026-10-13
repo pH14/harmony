@@ -30,7 +30,7 @@ impl Gicv3 {
         let pmr = u16::from(self.pmr);
         let mut best: Option<(u16, u32)> = None;
         for w in 0..BITMAP_WORDS {
-            let mut bits = (self.pending[w] | self.line_level[w])
+            let mut bits = (self.pending[w] | (self.line_level[w] & !self.edge[w]))
                 & self.enable[w]
                 & self.group[w]
                 & !self.active[w];
