@@ -12,7 +12,12 @@
   profile. On Linux it copies and re-hashes those three files into sealed
   memory-backed descriptors before returning. The executable and rootfs
   descriptors remain open through child spawn, so later path changes cannot
-  substitute different bytes for the verified profile.
+  substitute different bytes for the verified profile. The child receives the
+  executable at descriptor 240 and rootfs at 241; an initramfs override uses
+  242. These stable numbers let a checkpoint captured by one worker restore in
+  another even when their parent descriptor layouts differ. The launcher
+  reserves those numbers for its lifetime and refuses profiles if another host
+  resource already occupies one.
 - `HostIdentity::current` reads the CPU model and feature flags from
   `/proc/cpuinfo`.
 - `Launch` builds the UML command line: memory size, initramfs,

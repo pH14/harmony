@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::fs::File;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -7,7 +8,7 @@ use environment::input_spec::nominal_factory;
 use serde_json::{Value, json};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use uml::{
-    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, MemoryError, Session,
+    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, MemoryError, Profile, Session,
     SessionError, Stop, VerifiedProfile, event_hash,
 };
 
@@ -67,6 +68,12 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
         .map_err(io::Error::other)?
         .wait()?;
     if let Some(points) = points(&reference) {
+        checks.push(shifted_artifact_fds(
+            profile,
+            &base,
+            &reference.events,
+            &points,
+        ));
         checks.push(omitted_host_memory(
             profile,
             &base,
@@ -87,6 +94,44 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
         ));
     }
     Ok(checks)
+}
+
+fn shifted_artifact_fds(
+    profile: &VerifiedProfile,
+    base: &Launch,
+    reference: &[Event],
+    points: &Points,
+) -> Value {
+    let outcome = (|| -> Result<Option<Value>, SessionError> {
+        let checkpoints = Checkpoints::new();
+        let mut source = start(profile, base, false, &checkpoints, None)?;
+        if let Some(failure) = pause(&mut source, points.first, reference)? {
+            return Ok(Some(failure));
+        }
+        let checkpoint = source.capture(Capture::default())?;
+        source.kill()?;
+        let held: Vec<File> = (0..24)
+            .map(|_| File::open("/dev/null"))
+            .collect::<io::Result<_>>()?;
+        let shifted = Profile::load(profile.directory()).map_err(io::Error::other)?;
+        let restored = start(&shifted, base, false, &checkpoints, Some(&checkpoint))?;
+        let failure = finished(restored.run()?, reference)?;
+        drop(held);
+        Ok(failure)
+    })();
+    match outcome {
+        Ok(None) => check("checkpoint_shifted_artifact_fds", true, json!({"held": 24})),
+        Ok(Some(failure)) => check(
+            "checkpoint_shifted_artifact_fds",
+            false,
+            json!({"held": 24, "failure": failure}),
+        ),
+        Err(error) => check(
+            "checkpoint_shifted_artifact_fds",
+            false,
+            json!({"held": 24, "error": error.to_string()}),
+        ),
+    }
 }
 
 fn points(reference: &Exit) -> Option<Points> {

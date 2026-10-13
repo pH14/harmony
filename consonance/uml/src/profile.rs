@@ -13,12 +13,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const SCHEMA: u32 = 2;
 const PT_INTERP: u32 = 3;
+#[cfg(target_os = "linux")]
+const KERNEL_FD: i32 = 240;
+#[cfg(target_os = "linux")]
+const ROOTFS_FD: i32 = 241;
+#[cfg(target_os = "linux")]
+const INITRAMFS_FD: i32 = 242;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -197,16 +205,16 @@ impl VerifiedProfile {
 
     pub(crate) fn executable(&self) -> PathBuf {
         #[cfg(target_os = "linux")]
-        if let Some(pinned) = &self.pinned {
-            return pinned.executable.path();
+        if self.pinned.is_some() {
+            return child_path(KERNEL_FD);
         }
         self.directory.join(&self.profile.executable.name)
     }
 
     pub(crate) fn rootfs(&self) -> PathBuf {
         #[cfg(target_os = "linux")]
-        if let Some(pinned) = &self.pinned {
-            return pinned.rootfs.path();
+        if self.pinned.is_some() {
+            return child_path(ROOTFS_FD);
         }
         self.directory.join(&self.profile.rootfs.name)
     }
@@ -216,17 +224,22 @@ impl VerifiedProfile {
         let Some(pinned) = self.pinned.clone() else {
             return;
         };
-        // SAFETY: the closure only calls fcntl(2) on descriptors held by the
-        // captured artifacts. They stay open until the command is dropped, and
-        // clearing CLOEXEC keeps the sealed files available to the UML child.
+        // SAFETY: the closure only calls dup2(2) and fcntl(2) on descriptors
+        // held by the captured artifacts. Process-lifetime reservations keep
+        // the fixed targets unavailable to Command's spawn error pipe. The
+        // sources stay open until the command is dropped and cannot equal
+        // the fixed targets, which are reserved before pinning.
         unsafe {
             command.pre_exec(move || {
-                for fd in [
-                    pinned.executable.fd.as_raw_fd(),
-                    pinned.rootfs.fd.as_raw_fd(),
+                for (source, target) in [
+                    (pinned.executable.fd.as_raw_fd(), KERNEL_FD),
+                    (pinned.rootfs.fd.as_raw_fd(), ROOTFS_FD),
                 ] {
-                    let flags = libc::fcntl(fd, libc::F_GETFD);
-                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, inherited_flags(flags)) < 0 {
+                    if libc::dup2(source, target) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    let flags = libc::fcntl(target, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(target, libc::F_SETFD, inherited_flags(flags)) < 0 {
                         return Err(io::Error::last_os_error());
                     }
                 }
@@ -239,6 +252,10 @@ impl VerifiedProfile {
 #[cfg(target_os = "linux")]
 impl PinnedArtifacts {
     fn new(directory: &Path, profile: &Profile) -> Result<Self, ProfileError> {
+        reserved_child_fds().map_err(|source| ProfileError::Pin {
+            name: "launcher descriptors".to_owned(),
+            source,
+        })?;
         Ok(Self {
             executable: pin_artifact(directory, &profile.executable, c"harmony-uml-kernel", true)?,
             _config: pin_artifact(directory, &profile.config, c"harmony-uml-config", false)?,
@@ -254,27 +271,36 @@ impl PinnedImage {
         name: &std::ffi::CStr,
         executable: bool,
     ) -> io::Result<Self> {
+        reserved_child_fds()?;
         let (fd, _) = pin_path(path, name, executable)?;
         Ok(Self { fd })
     }
 
     pub(crate) fn path(&self) -> PathBuf {
-        PathBuf::from(format!("/proc/self/fd/{}", self.fd.as_raw_fd()))
+        child_path(INITRAMFS_FD)
+    }
+
+    fn parent_path(&self) -> PathBuf {
+        child_path(self.fd.as_raw_fd())
     }
 
     pub(crate) fn bytes(&self) -> io::Result<Vec<u8>> {
-        std::fs::read(self.path())
+        std::fs::read(self.parent_path())
     }
 
     pub(crate) fn pass(self: &Arc<Self>, command: &mut Command) {
         let image = Arc::clone(self);
-        // SAFETY: the closure owns an Arc to the sealed descriptor until the
-        // command is dropped and only clears CLOEXEC on that live fd in the child.
+        // SAFETY: the closure owns an Arc to the sealed source until the
+        // command is dropped and calls only dup2(2) and fcntl(2) on live
+        // descriptors in the child before exec.
         unsafe {
             command.pre_exec(move || {
-                let fd = image.fd.as_raw_fd();
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, inherited_flags(flags)) < 0 {
+                if libc::dup2(image.fd.as_raw_fd(), INITRAMFS_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let flags = libc::fcntl(INITRAMFS_FD, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(INITRAMFS_FD, libc::F_SETFD, inherited_flags(flags)) < 0
+                {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -286,6 +312,42 @@ impl PinnedImage {
 #[cfg(target_os = "linux")]
 fn inherited_flags(flags: i32) -> i32 {
     flags & !libc::FD_CLOEXEC
+}
+
+#[cfg(target_os = "linux")]
+fn child_path(fd: i32) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{fd}"))
+}
+
+#[cfg(target_os = "linux")]
+fn reserved_child_fds() -> io::Result<&'static [OwnedFd; 3]> {
+    static RESERVED: OnceLock<Result<[OwnedFd; 3], String>> = OnceLock::new();
+    RESERVED
+        .get_or_init(|| {
+            let source = File::open("/dev/null").map_err(|error| error.to_string())?;
+            let mut reserved = Vec::new();
+            for target in [KERNEL_FD, ROOTFS_FD, INITRAMFS_FD] {
+                // SAFETY: fcntl(2) duplicates a live source descriptor, and
+                // from_raw_fd takes ownership only after a successful call.
+                let duplicate =
+                    unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, target) };
+                if duplicate < 0 {
+                    return Err(io::Error::last_os_error().to_string());
+                }
+                // SAFETY: F_DUPFD_CLOEXEC returned a fresh descriptor owned
+                // only by this function.
+                let owned = unsafe { OwnedFd::from_raw_fd(duplicate) };
+                if duplicate != target {
+                    return Err(format!("launcher descriptor {target} is already in use"));
+                }
+                reserved.push(owned);
+            }
+            reserved
+                .try_into()
+                .map_err(|_| "launcher descriptor reservation is incomplete".to_owned())
+        })
+        .as_ref()
+        .map_err(|error| io::Error::other(error.clone()))
 }
 
 #[cfg(target_os = "linux")]
@@ -500,6 +562,15 @@ mod tests {
         assert_eq!(inherited_flags(libc::FD_CLOEXEC | 0x40), 0x40);
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pinned_child_paths_use_separate_reserved_descriptors() {
+        assert_eq!(child_path(KERNEL_FD), PathBuf::from("/proc/self/fd/240"));
+        assert_eq!(child_path(ROOTFS_FD), PathBuf::from("/proc/self/fd/241"));
+        assert_eq!(child_path(INITRAMFS_FD), PathBuf::from("/proc/self/fd/242"));
+        assert!(KERNEL_FD > 4 && KERNEL_FD < ROOTFS_FD && ROOTFS_FD < INITRAMFS_FD);
+    }
+
     fn write_profile(directory: &Path, edit: impl FnOnce(&mut Profile)) {
         std::fs::write(directory.join("linux"), elf(&[1])).unwrap();
         std::fs::write(directory.join("config"), b"CONFIG_UML=y\n").unwrap();
@@ -579,14 +650,17 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         write_profile(directory.path(), |_| {});
         let verified = Profile::load(directory.path()).unwrap();
-        let original = std::fs::read(verified.rootfs()).unwrap();
+        let original = verified.pinned.as_ref().unwrap().rootfs.bytes().unwrap();
 
         std::fs::write(directory.path().join("initramfs.cpio.gz"), b"changed").unwrap();
         assert!(matches!(
             Profile::load(directory.path()),
             Err(ProfileError::Digest { name, .. }) if name == "initramfs.cpio.gz"
         ));
-        assert_eq!(std::fs::read(verified.rootfs()).unwrap(), original);
+        assert_eq!(
+            verified.pinned.as_ref().unwrap().rootfs.bytes().unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -596,14 +670,15 @@ mod tests {
         write_profile(directory.path(), |_| {});
         let verified = Profile::load(directory.path()).unwrap();
         let rootfs = verified.rootfs();
+        let parent_path = verified.pinned.as_ref().unwrap().rootfs.parent_path();
         let mut command = Command::new("cat");
         command.arg(&rootfs);
         verified.pass_artifacts(&mut command);
         drop(verified);
-        assert_eq!(std::fs::read(&rootfs).unwrap(), b"rootfs");
+        assert_eq!(std::fs::read(&parent_path).unwrap(), b"rootfs");
         assert_eq!(command.output().unwrap().stdout, b"rootfs");
         drop(command);
-        assert!(std::fs::read(&rootfs).is_err());
+        assert!(std::fs::read(&parent_path).is_err());
     }
 
     #[test]
@@ -614,6 +689,7 @@ mod tests {
         std::fs::write(&path, b"original").unwrap();
         let image = Arc::new(PinnedImage::from_path(&path, c"override-test", false).unwrap());
         let pinned_path = image.path();
+        let parent_path = image.parent_path();
         std::fs::write(&path, b"changed").unwrap();
         assert_eq!(image.bytes().unwrap(), b"original");
         let mut command = Command::new("cat");
@@ -622,7 +698,7 @@ mod tests {
         drop(image);
         assert_eq!(command.output().unwrap().stdout, b"original");
         drop(command);
-        assert!(std::fs::read(&pinned_path).is_err());
+        assert!(std::fs::read(&parent_path).is_err());
     }
 
     #[test]
