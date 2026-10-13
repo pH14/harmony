@@ -717,6 +717,7 @@ function builtMapKey(level) {
 function showBuiltMap(level, image) {
   createImageBitmap(image).then((bitmap) => {
     panoramas.set(level, bitmap);
+    addAreaMap(level, bitmap);
     for (const preview of document.querySelectorAll(`canvas.level-preview[data-level="${level}"]`)) drawLevelPreview(preview, bitmap);
   });
 }
@@ -744,6 +745,21 @@ async function buildMapInBrowser(level) {
   startMapWorker();
   builtMaps.queue.push(level);
   nextBuiltMap();
+}
+function discoverArea(id) {
+  if (maps.has(id) || panoramas.has(id) || !game.areaMap?.(id)) return;
+  panorama(id);
+}
+function addAreaMap(id, bitmap) {
+  const info = game.areaMap?.(id);
+  if (!info || maps.has(id)) return;
+  maps.set(id, { ...info, width: bitmap.width, height: bitmap.height });
+  const owner = catalog.levels.find((level) => level.id === info.level);
+  owner.rooms.push(id);
+  if (owner.rooms.includes(mapLevel)) {
+    renderMapRows(owner);
+    drawMap(performance.now());
+  }
 }
 function drawLevelPreview(preview, bitmap) {
   const height = bitmap.height, width = Math.min(bitmap.width, Math.round((height * preview.width) / preview.height));
@@ -1365,6 +1381,7 @@ function startSearch(level = bootLevel) {
             if (!wins.has(level) && point.retained !== null)
               wins.set(level, point.retained);
           mergeProgress(cleared, o, bootLevel);
+          if (!map && !o.loading && o.health) discoverArea(o.level);
           if (!map || !isMapEvidence(o, catalog.levels)) continue;
           const first = !seenMaps.has(o.level);
           seenMaps.add(o.level);

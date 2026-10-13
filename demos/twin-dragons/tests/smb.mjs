@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import smb, { buildMap, buildSprites, MAP_WIDTHS, MAP_HEIGHT } from "../src/games/super-mario-bros.js";
+import smb, { areaRoom, buildMap, buildSprites, MAP_WIDTHS, MAP_HEIGHT } from "../src/games/super-mario-bros.js";
 import { createEngine } from "../src/emulator.js";
 import { isMapEvidence } from "../src/world.js";
 import { snapshotDigest } from "../src/media.js";
@@ -40,6 +40,8 @@ for (const level of [0, 1, 3, 31]) {
   assert.equal(map.reached, MAP_WIDTHS[level], `Level ${level} map reaches its recorded width`);
   assert.equal(map.data.length, MAP_WIDTHS[level] * MAP_HEIGHT * 4);
 }
+const water = buildMap(engine, areaRoom(31, 2));
+assert.equal(water.width, 1152, "The World 8-4 underwater area gets its own map");
 const sheet = buildSprites(engine);
 assert.ok(sheet.data.some((v, i) => i % 4 === 3 && v > 0), "The sprite sheet holds Mario");
 console.log("Level maps and the sprite sheet build from the ROM.");

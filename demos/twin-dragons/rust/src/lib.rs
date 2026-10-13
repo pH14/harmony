@@ -38,7 +38,7 @@ pub struct Observation {
     pub x: u16,
     pub y: u16,
     pub health: u8,
-    pub level: u8,
+    pub level: u16,
     pub next_level: u8,
     pub gamestate: u8,
     pub goal: bool,
@@ -65,6 +65,7 @@ const TOBU_MAP_HEIGHTS: [u16; 3] = [2000, 2896, 3792];
 const TOBU_SPRITE_LEFT: u16 = 24;
 const TOBU_SPRITE_CENTER: u16 = 155;
 const SMB_LEVEL_COUNT: u8 = 32;
+const SMB_AREA_SLOTS: u16 = 128;
 
 thread_local! {
     static TIER_RANK_SHIFT: Cell<u32> = const { Cell::new(3) };
@@ -155,7 +156,7 @@ impl Game {
 }
 
 impl ArchiveKey for Observation {
-    type Place = (u8, bool, u16, u16);
+    type Place = (u16, bool, u16, u16);
     type Progress = (u8, u16);
     type Identity = (u16, u16);
     type Lineage = ();
@@ -237,7 +238,7 @@ pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
         x: u16::from(ram[0x52]) * 256 + u16::from(ram[0x57]) + u16::from(ram[0x62]),
         y: u16::from(ram[0x63]),
         health: ram[0x75],
-        level,
+        level: u16::from(level),
         next_level,
         gamestate,
         goal,
@@ -269,7 +270,7 @@ pub fn decode_tobu(ram: &[u8]) -> Result<Observation, &'static str> {
         y: (TOBU_MAP_HEIGHTS[usize::from(level.min(2))] + u16::from(ram[0xc3]))
             .saturating_sub(TOBU_SPRITE_CENTER + climb),
         health: u8::from(in_level || gamestate == TOBU_ENDING),
-        level,
+        level: u16::from(level),
         next_level: 0,
         gamestate,
         goal: ram[0x235] != 0,
@@ -299,7 +300,7 @@ pub fn decode_smb(ram: &[u8]) -> Result<Observation, &'static str> {
     let room = ram[0x74e].wrapping_mul(32).wrapping_add(ram[0x74f] & 31);
     let mode = ram[0x770];
     let loading = !(mode == SMB_PLAY && ram[0x772] == SMB_PLAYING_TASK);
-    let on_map = !loading && SMB_MAIN_AREAS.get(usize::from(id)) == Some(&room);
+    let in_area = !loading && SMB_MAIN_AREAS.get(usize::from(id)) != Some(&room);
     let camera = u16::from(ram[0x71a]) * 256 + u16::from(ram[0x71c]);
     let x = u16::from(ram[0x6d]) * 256 + u16::from(ram[0x86]);
     let y = match ram[0xb5] {
@@ -316,13 +317,17 @@ pub fn decode_smb(ram: &[u8]) -> Result<Observation, &'static str> {
         x,
         y,
         health: u8::from(!dead),
-        level: id,
+        level: if in_area {
+            u16::from(SMB_LEVEL_COUNT) + u16::from(id) * SMB_AREA_SLOTS + u16::from(room)
+        } else {
+            u16::from(id)
+        },
         next_level: 0,
         gamestate: mode,
         goal,
         on_ground: ram[0x1d] == 0,
         facing: ram[0x33],
-        loading: !on_map,
+        loading,
         cleared: if victory {
             SMB_LEVEL_COUNT
         } else {

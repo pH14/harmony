@@ -77,8 +77,9 @@ the coordinator a `MessageChannel` port to each rollout worker, because some
 browsers fail to load a worker started from inside another worker. The archive place is (level, loading,
 x / 32, y / 32), its progress is the number of levels cleared, and its identity
 within a place is (x / 16, y / 16). The place rows match the map's cell rows.
-The parent selector weighs each progress tier 8 times the tier below, so new
-work concentrates on the furthest level without a direction preference. Within
+The parent selector weighs each progress tier 8 times the tier below in Twin
+Dragons and Tobu Tobu Girl, and 2 times in Super Mario Bros., so new work
+concentrates on the furthest level without a direction preference. Within
 a place it prefers more health. A state with zero health or on the
 title screen ends a rollout. The 32-pixel heatmap projection is separate from
 archive identity.
@@ -316,12 +317,18 @@ The adapter uses the RAM rules from `workloads/nes/src/smb`:
 | `$07F8`–`$07FA` | timer digits |
 | `$06D9`, `$06DA` | castle loop checks passed correctly and in total |
 
-The 32 levels are the map ids, world × 4 + level. A state is on the map when
-its area is that level's main area; bonus rooms and pipe scenes count as
-loading. `boot(level)` writes the world, level and area number on the title
+The 32 levels are the map ids, world × 4 + level. A state in another area,
+such as a bonus room or the World 8-4 underwater section, gets the map id 32 +
+level × 128 + area. The page builds that area's map the first time the search
+enters it and shows it as another room of the level. The builder enters an area
+by writing `$0750` (area pointer) and `$0751` (entrance page) and setting
+`$0772` to 0. Pipe scenes and other non-play tasks count as loading. `boot(level)` writes the world, level and area number on the title
 screen and presses Start. The archive place is (level, loop on path, area ×
 512 + camera / 16 + player screen x / 16, y / 16 and timer hundreds), progress
-is (levels cleared, camera / 1,024), and the preference is more time left. A
+is (levels cleared, camera / 1,024), and the preference is more time left.
+Super Mario Bros. uses 2 times per tier because a separate area restarts the
+camera measure: with 8 times per tier, the World 8-4 underwater section ranks
+three tiers below the castle and the search stalls there. A
 rollout ends at death, the flag pole or a castle's end. `transition` presses
 nothing until the next level is playable.
 
