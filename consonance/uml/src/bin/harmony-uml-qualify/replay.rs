@@ -127,7 +127,7 @@ pub fn completed(exit: &Exit) -> bool {
 fn replays(
     options: &Options,
     profile: &VerifiedProfile,
-    host: &HostIdentity,
+    _host: &HostIdentity,
     fixture: &str,
     cpus: &[usize],
 ) -> io::Result<Value> {
@@ -136,6 +136,7 @@ fn replays(
         .map_err(io::Error::other)?
         .wait()?;
     let reference_hash = event_hash(&reference.events);
+    let admitted = base.host_identity().map_err(io::Error::other)?;
     if !completed(&reference) {
         return Ok(check(
             &format!("replay_{fixture}"),
@@ -155,8 +156,16 @@ fn replays(
                         return;
                     }
                     let perturbation = PERTURBATIONS[index % PERTURBATIONS.len()];
-                    let outcome =
-                        perturbed(profile, &base, perturbation, cpus[index % cpus.len()], host);
+                    let requested = cpus[index % cpus.len()];
+                    let override_cpu = if perturbation == Perturbation::Pinned {
+                        cpus.iter()
+                            .copied()
+                            .find(|cpu| *cpu != admitted.processor)
+                            .unwrap_or(requested)
+                    } else {
+                        requested
+                    };
+                    let outcome = perturbed(profile, &base, perturbation, override_cpu, &admitted);
                     results
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -201,7 +210,7 @@ fn replays(
             "final_virtual_ns": reference.events.last().map(|event| event.moment),
             "replays": options.replays,
             "perturbations": counts,
-            "pinned_guest_processor": host.processor,
+            "pinned_guest_processor": admitted.processor,
             "wall_ms_median": walls.get(walls.len() / 2),
             "wall_ms_max": walls.last(),
             "mismatches": mismatches,
@@ -349,7 +358,7 @@ fn perturbed(
     launch: &Launch,
     perturbation: Perturbation,
     cpu: usize,
-    _host: &HostIdentity,
+    host: &HostIdentity,
 ) -> io::Result<Exit> {
     let work = launch.work_directory()?;
     let mut command = launch
@@ -375,7 +384,7 @@ fn perturbed(
         for _ in 0..busy {
             scope.spawn(|| {
                 if perturbation == Perturbation::Pinned {
-                    let _ = pin(cpu);
+                    let _ = pin(host.processor);
                 }
                 while !stop.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
@@ -393,11 +402,11 @@ fn perturbed(
         #[cfg(target_os = "linux")]
         if perturbation == Perturbation::Pinned {
             let observed = allowed_cpus_for(guest.pid())?;
-            if observed != [_host.processor] {
+            if observed != [host.processor] {
                 stop.store(true, Ordering::Relaxed);
                 return Err(io::Error::other(format!(
                     "UML guest affinity {observed:?} did not match enforced host processor {}",
-                    _host.processor
+                    host.processor
                 )));
             }
         }

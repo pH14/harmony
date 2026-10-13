@@ -18,14 +18,17 @@
   another even when their parent descriptor layouts differ. The launcher
   reserves those numbers for its lifetime and refuses profiles if another host
   resource already occupies one.
-- `HostIdentity::current` reads the CPU model and feature flags from
-  `/proc/cpuinfo`. On Linux it selects the first processor allowed by the
-  process affinity mask once per process and includes that processor number in
-  the identity. Later identity reads and UML launches refuse a mask that no
-  longer allows it. The launcher pins every guest to that selected processor
-  in its final pre-exec step, after caller-supplied callbacks, so a recording
-  cannot silently run on a different CPU model. Qualification's pinned replay
-  perturbation verifies the guest's enforced processor.
+- `HostIdentity::current` reads the first processor allowed by the calling
+  thread and its CPU model and features from `/proc/cpuinfo`. Each `Launch`
+  admits one processor on first use and shares that admission with its clones;
+  moving an ordinary launch to a thread that excludes that processor refuses
+  execution. A caller can instead bind a verified expected host identity when
+  multiple worker threads must run guests on one canonical processor. The
+  launcher checks that identity and pins every guest to its admitted processor
+  in its final pre-exec step, after caller-supplied callbacks. The child fails
+  to spawn if its cpuset no longer permits the processor. Qualification's
+  pinned replay perturbation contends for the actual guest processor and
+  verifies the final affinity despite an earlier override callback.
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a
@@ -99,10 +102,11 @@
   count and event hash of a run. Schema 2 includes the selected host processor.
   It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
-  replay. Recording creation and replay checks read the current host identity
-  themselves, so a caller cannot supply a stale or forged host identity.
-  `Recording::check` refuses a different profile or host, and
-  `Recording::launch` replays to the recorded cut.
+  replay. Recording creation derives identity from the admitted `Launch`;
+  replay checks read the recorded processor's current identity. A caller cannot
+  supply a stale identity in either path. `Recording::check` refuses a
+  different profile or host, and `Recording::launch` binds the recorded
+  processor and identity through the cut even if the caller skips `check`.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit.
