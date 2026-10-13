@@ -46,7 +46,9 @@
   checkpoint. A restore writes back only the pages that differ between the
   current state and the target. `Checkpoints::delta` lists a checkpoint's
   pages relative to a base for publishing, `Checkpoint::sidecar` encodes the
-  services state, and `Checkpoints::import` rebuilds a checkpoint from both.
+  services state, and `Checkpoints::import` rebuilds a checkpoint from both. An
+  import rejects trailing sidecar bytes and pending requests whose size or
+  virtual moment could not have come from a paused guest.
   `Checkpoint::digest` hashes a checkpoint's pages and services state.
   `Checkpoints::import` reproduces the published checkpoint only onto a base
   with the publisher's digest, because a base also holds per-process host
