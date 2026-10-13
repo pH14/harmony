@@ -63,41 +63,70 @@ the third level is cleared.
 
 ## Search
 
-The browser driver is a bounded single-worker adapter. Its archive place is
-(levels cleared, level, loading, x / 32, y / 32), and its identity within a
-place is (x / 16, y / 16). The place rows match the map's cell rows. Within a place it prefers more cleared levels, then
-more health. A state with zero health or on the title screen ends a rollout.
-The 32-pixel heatmap projection is separate from archive identity.
+The search runs in one coordinator worker and a pool of rollout workers. The
+coordinator owns the Dissonance archive and parent selector. Each rollout
+worker holds its own QuickNES instance. The archive place is (levels cleared,
+level, loading, x / 32, y / 32), and its identity within a place is (x / 16,
+y / 16). The place rows match the map's cell rows. Within a place it prefers
+more cleared levels, then more health. A state with zero health or on the
+title screen ends a rollout. The 32-pixel heatmap projection is separate from
+archive identity.
 
-Rollouts have one to eight controller actions. The seed determines every search
-choice; wall time changes only animation, heat decay and presentation. The
-first search uses seed 3, and Restart increments it. Seed 3 enters Level 2
-after about 3,000 paths. A history is bounded to 10,000 actions and 200,000
-frames. Runs stop after 100,000 paths or 400,000 archive history entries, or
-when the search WASM buffers reach their limit. Phones, coarse-pointer devices
-and devices reporting at most 4 GiB of RAM use 32 MiB of snapshots and 96 MiB
-of search WASM buffers. Other devices use 128 MiB and 192 MiB. A Twin Dragons
-snapshot is 12,792 bytes before compression, and 60,000 paths retain about
-10 MB of compressed snapshots.
+Rollouts have one to eight controller actions. The coordinator plans rollouts
+in rounds of 16. For each rollout it selects a parent and draws the actions
+from the seeded generator. It plans four rounds ahead and plans a new round
+each time the oldest round has fully merged. Rollout workers run the actions
+from the parent snapshot and return the 2 KiB work RAM and the raw snapshot
+after each action, plus a motion trail. The coordinator merges results into
+the archive in plan order, whatever order they arrive in. The seed therefore
+determines every search choice, and the worker count and timing change only
+throughput and presentation. The first search uses seed 27, and Restart
+increments it. Seed 27 enters Level 2 after about 3,000 paths. A history is
+bounded to 10,000 actions and 200,000 frames. Runs stop after 100,000 paths
+or 400,000 archive history entries, or when the search WASM buffers reach
+their limit.
+
+The coordinator sends one rollout per message and keeps two messages
+outstanding per worker. Each worker caches up to 64 parent snapshots by id;
+the coordinator tracks every worker's cache, so a message carries a snapshot
+only when the worker lacks it. Results come back in one transferred buffer
+per message. Pause stops sending new rollouts and holds results until resume,
+so the counters freeze at once.
+
+Desktops run `navigator.hardwareConcurrency - 1` rollout workers, at most 8.
+Phones, coarse-pointer devices and devices reporting at most 4 GiB of RAM run
+2 or 3. The `workers` URL parameter overrides the count, from 1 to 16. The
+Details pane shows the count. Each rollout worker holds a 16 MiB QuickNES heap
+and up to 0.8 MB of cached parents. Small devices use 32 MiB of snapshots and
+96 MiB of coordinator WASM buffers; other devices use 128 MiB and 192 MiB. A
+Twin Dragons snapshot is 12,792 bytes before compression, and 60,000 paths
+retain about 10 MB of compressed snapshots.
 
 The snapshot budget never stops a search. Every entry the archive retires
 releases its snapshot at the end of each rollout. When resident snapshots
 exceed the budget, the adapter lowers the archive's `max_entries` cap by about
 1.5%, never below 256 active entries, so each later admission retires an older
-entry. The archive selects only active entries, so a restore never needs a
-released snapshot. Each admitted state keeps a 64-bit digest of its raw
-snapshot, so replays of retired paths still verify exactly. Up to eight
-searches are retained in one worker, with only one advancing at a time. The
-advancing search gets the global budget minus the bytes the others hold, with
+entry. The archive selects only active entries, and the coordinator copies each
+parent snapshot when it plans the rollout, so a rollout never needs a released
+snapshot. Each admitted state keeps a 64-bit digest of its raw snapshot, so
+replays of retired paths still verify exactly. Up to eight searches are
+retained in the coordinator, with only one advancing at a time on all rollout
+workers. Rollouts already sent for a search still merge into it after a
+switch. The advancing search gets the global budget minus the bytes the others hold, with
 a 2 MiB floor.
 
-The worker runs rollouts for 16 ms at a time, posts one batch message, and
-yields through a `MessageChannel` so pause, switch and state requests are
-handled between batches. The batch size changes only the message cadence; the
-seed still determines every search choice. On an Apple M1 Max one worker runs
-about 30,000 game frames per second, and QuickNES emulation takes 97% of the
-worker's time. The QuickNES core is built with `-O3` and link-time
-optimization.
+Throughput scales with the worker count. On the 8 performance cores of an
+Intel Core Ultra 9 285HX one rollout worker runs about 33,500 game frames per
+second, 4 run 133,000, 6 run 198,000 and 8 run 235,000 (2,100 paths per
+second). Workers wait on the round boundary less than 1% of the time. QuickNES
+emulation takes 97% of a rollout worker's time, and the core is built with
+`-O3` and link-time optimization. With the CPU slowed 6 times on a 4-core
+phone layout, 3 workers run about 15,000 frames per second and reach Level 2
+in about 30 seconds, against 80 seconds for one worker.
+
+The map samples swarm sprites evenly when drawing falls behind. While display
+frames run late and drawing the maps takes more than 6 ms, the sprite budget
+shrinks by 10% per frame, down to 256; it grows back once frames are on time.
 
 Each level's root comes from a fixed boot route. `boot(level)` restores a
 power-on snapshot and presses nothing for 60 frames, Start for 2 frames, and
@@ -132,14 +161,15 @@ sprite PNGs carry the game and artwork credits in their text metadata.
 ## Interaction
 
 The page opens with a one-line pitch, one live total (timelines tried across
-every search branch) and Take the tour. The per-search counters sit in a
-collapsed Details disclosure at the bottom of the Searches pane. The footer
+every search branch) and Take the tour. The per-search counters and the
+rollout worker count sit in a collapsed Details disclosure at the bottom of the
+Searches pane. The footer
 holds the Harmony link, Credits & source and the Dark mode / Light mode switch.
 
 Two toggles, Movement and Heatmap, choose what the map shows. Either or both
 can be on, and the last one on stays on. Movement alone is the default.
 Movement shows the level map with small dragon sprites replaying recorded
-search rollouts. One recorder samples the search emulator every four game
+search rollouts. Each rollout worker samples its emulator every four game
 frames, without changing inputs, random draws or captured endpoints. Loading
 frames and frames with zero health are hidden. Each sprite fades in as its
 rollout starts and eases to about two-thirds opacity as it finishes, followed
@@ -204,15 +234,19 @@ npm run test:browser
 
 `tests/levels.mjs` boots all three levels and checks health, progress, a fresh
 search, exact replay, repeated boot and a rooted fork. `tests/search.mjs`
-requires seeds 3 and 4 to enter Level 2 within 6,000 paths and exactly replays
-each arrival. It replays the `level-one`, `level-two` and `level-three`
+requires seeds 27 and 34 to enter Level 2 within 6,000 paths and exactly
+replays each arrival. It runs the same seed twice with three emulators and
+once with one, requires identical batches and digests, and replays a state
+found by the third emulator. It replays the `level-one`, `level-two` and `level-three`
 fixtures against their endpoint checksums, and checks that the Level 1 fixture
 plus the rest of the Level 2 controller history reproduces the Level 2
 snapshot. It also forks mid-action and from manual play in Levels 1 and 2 and
 checks the audio emulator against the search emulator. The fixtures came from
 real seed 3 and seed 5 searches and contain only controller inputs.
-`TWIN_DRAGONS_PROGRESS_PATHS=25000 npm run test:search` requires seed 5 to
-enter Level 3, which it does at about 18,500 paths.
+`TWIN_DRAGONS_PROGRESS_PATHS=25000 npm run test:search` requires seed 11 to
+enter Level 3, which it does at about 21,800 paths. `tests/parallel.mjs` loads
+the page twice with three workers and once with one, and requires the first
+120 archived histories and digests to match.
 
 `tests/search.mjs` also runs a 2 MiB snapshot budget for 3,000 rollouts and
 checks that the search keeps going, retires snapshots and still replays
