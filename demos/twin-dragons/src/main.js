@@ -666,12 +666,16 @@ function mapURL(level) {
 }
 function panorama(level) {
   if (!panoramas.has(level)) {
-    const image = new Image();
-    image.src = mapURL(level);
-    panoramas.set(level, image);
+    panoramas.set(level, null);
+    fetch(mapURL(level))
+      .then((response) => response.blob())
+      .then(createImageBitmap)
+      .then((bitmap) => panoramas.set(level, bitmap))
+      .catch(() => {});
   }
   return panoramas.get(level);
 }
+for (const map of catalog.maps) panorama(map.id);
 const canvas = $("map"),
   film = $("film").getContext("2d");
 const numberFormat = new Intl.NumberFormat(),
@@ -1345,7 +1349,6 @@ function setRoom(level, preserveSelection = false) {
   $("map-label").textContent = map.label.toUpperCase();
   renderMapRows(owner);
   updateStats();
-  panorama(level);
 }
 function browseRoom(level) {
   stopControl();
@@ -1479,7 +1482,6 @@ function renderMapRows(owner) {
         parts.append(part);
       });
       row.append(heading, parts);
-      panorama(id);
       return row;
     }),
   );
@@ -1598,7 +1600,7 @@ function drawArea(canvas, now) {
   ctx.translate(Math.round(canvas.width / 2 - areaCenter * scale), Math.round(canvas.height / 2 - areaCenterY * scale));
   ctx.scale(scale, scale);
   const image = panorama(mapLevel);
-  if (image?.complete && image.naturalWidth) ctx.drawImage(image, 0, 0);
+  if (image) ctx.drawImage(image, 0, 0);
   canvas.dataset.previewRoute = !preview && routeHover?.segments ? routeHover.id : "";
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;
