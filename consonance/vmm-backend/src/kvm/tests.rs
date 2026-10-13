@@ -937,6 +937,33 @@ fn validate_restore_shape_requires_legal_virtual_8086_mode() {
 }
 
 #[test]
+fn validate_restore_shape_requires_ia32e_paging_for_pcide() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2;
+    state.sregs.cr4 = 1 << 17;
+    for (cr0, cr4, efer) in [
+        (0, 1 << 17, 0),
+        ((1 << 31) | 1, 1 << 17, (1 << 10) | (1 << 8)),
+        ((1 << 31) | 1, (1 << 17) | (1 << 5), 1 << 8),
+    ] {
+        state.sregs.cr0 = cr0;
+        state.sregs.cr4 = cr4;
+        state.sregs.efer = efer;
+        assert!(matches!(
+            validate_restore_shape(&state, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+    }
+    state.sregs.cr0 = (1 << 31) | 1;
+    state.sregs.cr4 = (1 << 17) | (1 << 5);
+    state.sregs.efer = (1 << 10) | (1 << 8);
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+}
+
+#[test]
 fn sysenter_policy_follows_host_la57_and_guest_vendor() {
     assert_eq!(kvm_sysenter_virtual_bits(&[]), 48);
     let mut la57 = kvm_cpuid_entry2 {

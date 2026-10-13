@@ -576,6 +576,13 @@ pub(crate) fn validate_restore_shape(
     if state.sregs.cr8 > 0x0f {
         return Err(BackendError::InvalidState);
     }
+    if state.sregs.cr4 & (1 << 17) != 0
+        && (state.sregs.cr0 & (1 << 31) == 0
+            || state.sregs.cr4 & (1 << 5) == 0
+            || state.sregs.efer & (1 << 10) == 0)
+    {
+        return Err(BackendError::InvalidState);
+    }
     for (index, value) in [
         (EFER, state.sregs.efer),
         (FS_BASE, state.sregs.fs.base),
