@@ -57,9 +57,10 @@ backend boundary. The public pending-interrupt query reports the asserted
 clockevent PPI on KVM and the userspace GIC's pending INTID on HVF.
 
 When the paravirtual clockevent is due, `dispatch` queries the backend's IRQ
-mask and defers delivery while `PSTATE.I` is set. HVF supplies that bit directly;
-backends without the query retain the full-state read. Idle handling uses the
-same query before deciding whether it may advance to a wake deadline. For KVM,
+mask and defers delivery while `PSTATE.I` is set. HVF and ARM KVM supply that
+bit directly; backends without the query retain the full-state read. Idle
+handling uses the same query before deciding whether it may advance to a wake
+deadline. For KVM,
 idle also reads the in-kernel GIC state and applies the same PPI deliverability
 rules as the userspace GIC. A disabled, group-masked, priority-masked, or active
 clockevent PPI neither causes an immediate idle retry nor makes a future
