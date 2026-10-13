@@ -11,10 +11,10 @@ export const CREDIT = {
   notice:
     "Altered build: the sound-effect data is zeroed. Sound effects by Shiru are not included.",
 };
-export async function creditPNG(blob, frame) {
+export async function creditPNG(blob, frame, credit = CREDIT) {
   const bytes = new Uint8Array(await blob.arrayBuffer()),
     text = new TextEncoder().encode(
-      "Description\0" + JSON.stringify({ ...CREDIT, frame }),
+      "Description\0" + JSON.stringify({ ...credit, frame }),
     ),
     tag = new TextEncoder().encode("tEXt"),
     chunk = new Uint8Array(text.length + 12),

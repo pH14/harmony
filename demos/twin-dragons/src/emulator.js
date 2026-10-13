@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { loadQuickNES } from "./cores/quicknes.js";
+import { loadSameBoy } from "./cores/sameboy.js";
 import twinDragons from "./games/twin-dragons.js";
+import tobuTobuGirl from "./games/tobu-tobu-girl.js";
+import superMarioBros from "./games/super-mario-bros.js";
 
-const CORES = { quicknes: loadQuickNES };
-export const GAMES = new Map([[twinDragons.id, twinDragons]]);
+const CORES = { quicknes: loadQuickNES, sameboy: loadSameBoy };
+export const GAMES = new Map([twinDragons, tobuTobuGirl, superMarioBros].map((game) => [game.id, game]));
 
 export async function sha256Hex(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
@@ -12,6 +15,7 @@ export async function sha256Hex(bytes) {
 }
 
 export async function createEngine(base, game, inputs = {}) {
+  if (!inputs.rom && game.rom.upload) throw new Error(`${game.title} needs a ROM`);
   const rom =
     inputs.rom ||
     new Uint8Array(await (await checkedFetch(new URL(game.rom.file, base))).arrayBuffer());

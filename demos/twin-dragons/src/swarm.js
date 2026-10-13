@@ -2,9 +2,6 @@
 export const MOTION_STRIDE = 5;
 export const NO_ROOM = 65535;
 
-export const SPRITE = { width: 32, height: 24, originX: 8, originY: 4 };
-
-
 export function swarmPoint(samples, frame) {
   let lo = 0, hi = samples.length / MOTION_STRIDE - 1;
   while (lo < hi) {

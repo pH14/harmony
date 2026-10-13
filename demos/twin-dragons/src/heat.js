@@ -95,32 +95,31 @@ export function routeIds(cell, selectedId) {
     ids.push(selectedId);
   return ids.sort((a, b) => cell.routes.get(a) - cell.routes.get(b));
 }
-export function validateTape(tape) {
+export function validateTape(tape, game, revision) {
   if (
     !tape ||
-    tape.format !== "harmony-twin-dragons-browser-v1" ||
-    tape.rom_sha256 !==
-      "7b64267068caab5379b833336e836d6de49c7d37cc5a4341b83d07cbccf0ef73" ||
-    tape.core_revision !== "26bb785c9deddb66a17717b21bb4e328f03ade32" ||
+    tape.format !== `harmony-${game.id}-browser-v1` ||
+    tape.rom_sha256 !== game.rom.sha256 ||
+    tape.core_revision !== revision ||
     !/^[0-9a-f]{64}$/.test(tape.endpoint_sha256 || "") ||
     !Array.isArray(tape.actions) ||
     tape.actions.length > 10000 ||
     !Number.isInteger(tape.boot_level ?? 0) ||
-    (tape.boot_level ?? 0) < 0 || (tape.boot_level ?? 0) >= 3
+    (tape.boot_level ?? 0) < 0 || (tape.boot_level ?? 0) >= game.levelCount
   )
-    throw new Error("Unsupported Twin Dragons history");
+    throw new Error(`Unsupported ${game.title} history`);
   let frames = 0;
   for (const a of tape.actions) {
     if (
       !Number.isInteger(a.buttons) ||
       a.buttons < 0 ||
       a.buttons > 255 ||
-      a.buttons & 12 ||
       (a.buttons & 48) === 48 ||
       (a.buttons & 192) === 192 ||
       !Number.isInteger(a.frames) ||
       a.frames < 1 ||
-      a.frames > 120
+      a.frames > game.maxActionFrames ||
+      (a.buttons & 12 && !game.menuButtons)
     )
       throw new Error("Invalid controller action");
     frames += a.frames;

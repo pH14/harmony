@@ -2,9 +2,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createEngine } from "../src/emulator.js";
-import { SPRITE, playerPose } from "../src/swarm.js";
+import twinDragons, { playerPose } from "../src/games/twin-dragons.js";
 import { png } from "./png.mjs";
 import { creditPNG } from "../src/media.js";
+const SPRITE = twinDragons.sprite;
 import { constArray, nesColor, pinnedSource, tilePixel } from "./twin-dragons-source.mjs";
 
 const demo = pathToFileURL(process.cwd() + "/"),
@@ -46,7 +47,7 @@ for (let facing = 0; facing < 2; facing++)
         }
     }
   });
-const engine = await createEngine(base, {
+const engine = await createEngine(base, twinDragons, {
   rom: new Uint8Array(await readFile(new URL("twin-dragons.nes", base))),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });

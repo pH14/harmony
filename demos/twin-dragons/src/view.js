@@ -17,6 +17,7 @@ export function viewCenter(
 }
 
 export const CAMERA_VIEWPORT = { phone: { width: 640, height: 320 }, desktop: { width: 1280, height: 320 } };
+export const TALL_CAMERA_VIEWPORT = { phone: { width: 640, height: 800 }, desktop: { width: 720, height: 900 } };
 
 export function roomPanels(width, height) {
   return [{ index: 0, x: 0, y: 0, width, height, viewport: true }];

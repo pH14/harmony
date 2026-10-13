@@ -29,6 +29,7 @@ pub struct Action {
 pub enum Game {
     TwinDragons,
     TobuTobuGirl,
+    SuperMarioBros,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -49,6 +50,8 @@ pub struct Observation {
     pub climb: u16,
     pub time: u8,
     pub fuel: u8,
+    #[serde(default)]
+    pub clock: u16,
 }
 
 const LEVEL_COUNT: u8 = 3;
@@ -58,18 +61,35 @@ const TOBU_IN_LEVEL: u8 = 4;
 const TOBU_ENDING: u8 = 10;
 const TOBU_LEVEL_COMPLETE: u8 = 2;
 const TOBU_BAND: u16 = 1024;
+const TOBU_MAP_HEIGHTS: [u16; 3] = [2000, 2896, 3792];
+const TOBU_SPRITE_LEFT: u16 = 24;
+const TOBU_SPRITE_CENTER: u16 = 155;
+const SMB_LEVEL_COUNT: u8 = 32;
+const SMB_PLAY: u8 = 1;
+const SMB_VICTORY: u8 = 2;
+const SMB_PLAYING_TASK: u8 = 3;
+const SMB_KILLED: u8 = 0x0b;
+const SMB_ADVANCED_FLAG: u8 = 5;
+const SMB_MAP_HEIGHT: u16 = 224;
+const SMB_SPRITE_TOP: u16 = 9;
+const SMB_BAND: u16 = 64;
+const SMB_MAIN_AREAS: [u8; 32] = [
+    37, 64, 38, 96, 40, 1, 39, 98, 36, 53, 32, 99, 34, 65, 44, 97, 42, 49, 38, 98, 46, 35, 45, 96, 51, 1, 39, 100,
+    48, 50, 33, 101,
+];
 
 impl Game {
     fn parse(id: &str) -> Result<Game, &'static str> {
         match id {
             "twin-dragons" => Ok(Game::TwinDragons),
             "tobu-tobu-girl" => Ok(Game::TobuTobuGirl),
+            "super-mario-bros" => Ok(Game::SuperMarioBros),
             _ => Err("unknown game"),
         }
     }
     fn ram_bytes(self) -> usize {
         match self {
-            Game::TwinDragons => 0x800,
+            Game::TwinDragons | Game::SuperMarioBros => 0x800,
             Game::TobuTobuGirl => 0x400,
         }
     }
@@ -77,21 +97,27 @@ impl Game {
         match self {
             Game::TwinDragons => decode(ram),
             Game::TobuTobuGirl => decode_tobu(ram),
+            Game::SuperMarioBros => decode_smb(ram),
         }
     }
     fn admissible(self, o: Observation) -> bool {
         match self {
             Game::TwinDragons => o.health != 0 && o.gamestate != 0,
             Game::TobuTobuGirl => !o.loading || o.gamestate == TOBU_ENDING,
+            Game::SuperMarioBros => (o.health != 0 && o.gamestate == SMB_PLAY && !o.goal) || o.won(),
         }
     }
     fn level_complete(self, o: Observation) -> bool {
-        self == Game::TobuTobuGirl && o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE
+        match self {
+            Game::TwinDragons => false,
+            Game::TobuTobuGirl => o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE,
+            Game::SuperMarioBros => o.health != 0 && !o.won() && (o.goal || o.gamestate == SMB_VICTORY),
+        }
     }
     fn starts_at_level_one(self, o: Observation) -> bool {
         match self {
             Game::TwinDragons => o.gamestate == PLAYING && o.level == 0,
-            Game::TobuTobuGirl => !o.loading && o.level == 0,
+            Game::TobuTobuGirl | Game::SuperMarioBros => !o.loading && o.level == 0,
         }
     }
     fn validate_actions(self, actions: &[Action]) -> Result<(), &'static str> {
@@ -126,19 +152,27 @@ impl ArchiveKey for Observation {
     fn place(self) -> Self::Place {
         match self.game {
             Game::TwinDragons => (self.level, self.loading, self.x / 32, self.y / 32),
-            Game::TobuTobuGirl => (self.level, self.loading, self.climb / 32, self.x / 32),
+            Game::TobuTobuGirl => (self.level, self.loading, self.climb / 32, (self.x + TOBU_SPRITE_LEFT) / 32),
+            Game::SuperMarioBros => (
+                self.level,
+                self.fuel != 0,
+                u16::from(self.scene) * 512 + self.climb,
+                (self.y / 16) << 8 | u16::from(self.time),
+            ),
         }
     }
     fn progress(self) -> Self::Progress {
         match self.game {
             Game::TwinDragons => (self.cleared, 0),
             Game::TobuTobuGirl => (self.cleared, self.climb / TOBU_BAND),
+            Game::SuperMarioBros => (self.cleared, self.climb / SMB_BAND),
         }
     }
     fn identity(self) -> Self::Identity {
         match self.game {
             Game::TwinDragons => (self.x / 16, self.y / 16),
             Game::TobuTobuGirl => (0, 0),
+            Game::SuperMarioBros => (self.climb % 16, 0),
         }
     }
     fn capacity() -> usize {
@@ -151,6 +185,7 @@ impl ArchiveKey for Observation {
         match self.game {
             Game::TwinDragons => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
             Game::TobuTobuGirl => (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb)),
+            Game::SuperMarioBros => (self.cleared, self.clock).cmp(&(other.cleared, other.clock)),
         }
     }
     fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
@@ -164,6 +199,7 @@ impl Observation {
         match self.game {
             Game::TwinDragons => self.cleared >= LEVEL_COUNT,
             Game::TobuTobuGirl => self.gamestate == TOBU_ENDING,
+            Game::SuperMarioBros => self.cleared >= SMB_LEVEL_COUNT,
         }
     }
 }
@@ -200,6 +236,7 @@ pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
         climb: 0,
         time: 0,
         fuel: 0,
+        clock: 0,
     })
 }
 
@@ -215,8 +252,9 @@ pub fn decode_tobu(ram: &[u8]) -> Result<Observation, &'static str> {
     let cleared = if gamestate == TOBU_ENDING { LEVEL_COUNT } else { level };
     Ok(Observation {
         game: Game::TobuTobuGirl,
-        x: u16::from(ram[0xc2]),
-        y: u16::from(ram[0xc3]),
+        x: u16::from(ram[0xc2]).saturating_sub(TOBU_SPRITE_LEFT),
+        y: (TOBU_MAP_HEIGHTS[usize::from(level.min(2))] + u16::from(ram[0xc3]))
+            .saturating_sub(TOBU_SPRITE_CENTER + climb),
         health: u8::from(in_level || gamestate == TOBU_ENDING),
         level,
         next_level: 0,
@@ -230,6 +268,58 @@ pub fn decode_tobu(ram: &[u8]) -> Result<Observation, &'static str> {
         climb,
         time: ram[0xb0],
         fuel: ram[0x23a],
+        clock: 0,
+    })
+}
+
+pub fn decode_smb(ram: &[u8]) -> Result<Observation, &'static str> {
+    if ram.len() != 0x800 {
+        return Err("emulator memory must contain 2 KiB work RAM");
+    }
+    let world = ram[0x75f];
+    let level = if ram[0x746] == SMB_ADVANCED_FLAG {
+        ram[0x75c].saturating_sub(1)
+    } else {
+        ram[0x75c]
+    };
+    let id = world.wrapping_mul(4).wrapping_add(level);
+    let room = ram[0x74e].wrapping_mul(32).wrapping_add(ram[0x74f] & 31);
+    let mode = ram[0x770];
+    let loading = !(mode == SMB_PLAY && ram[0x772] == SMB_PLAYING_TASK);
+    let on_map = !loading && SMB_MAIN_AREAS.get(usize::from(id)) == Some(&room);
+    let camera = u16::from(ram[0x71a]) * 256 + u16::from(ram[0x71c]);
+    let x = u16::from(ram[0x6d]) * 256 + u16::from(ram[0x86]);
+    let y = match ram[0xb5] {
+        0 => 0,
+        1 => (u16::from(ram[0xce]) + SMB_SPRITE_TOP).min(SMB_MAP_HEIGHT - 1),
+        _ => SMB_MAP_HEIGHT - 1,
+    };
+    let dead = ram[0x0e] == SMB_KILLED || ram[0xb5] >= 2;
+    let goal = ram[0x746] != 0;
+    let victory = mode == SMB_VICTORY && world == 7;
+    let screen_x = if loading { 0 } else { (x.saturating_sub(camera) >> 4).min(15) };
+    Ok(Observation {
+        game: Game::SuperMarioBros,
+        x,
+        y,
+        health: u8::from(!dead),
+        level: id,
+        next_level: 0,
+        gamestate: mode,
+        goal,
+        on_ground: ram[0x1d] == 0,
+        facing: ram[0x33],
+        loading: !on_map,
+        cleared: if victory {
+            SMB_LEVEL_COUNT
+        } else {
+            id + u8::from(goal || mode == SMB_VICTORY)
+        },
+        scene: room,
+        climb: if loading { 0 } else { camera >> 4 } + screen_x,
+        time: ram[0x7f8],
+        fuel: u8::from(ram[0x6d9] == ram[0x6da]),
+        clock: u16::from(ram[0x7f8]) * 100 + u16::from(ram[0x7f9]) * 10 + u16::from(ram[0x7fa]),
     })
 }
 
@@ -501,13 +591,13 @@ impl Explorer {
     }
 
     pub fn merge(&mut self, steps: &[u8], transition: &[u32]) -> Result<(), JsValue> {
+        if self.stopped {
+            return Ok(());
+        }
         let job = self
             .pending
             .pop_front()
             .ok_or_else(|| js_error("no rollout is pending"))?;
-        if self.stopped {
-            return Ok(());
-        }
         let ram_bytes = self.game.ram_bytes();
         let stride = ram_bytes + self.snapshot_size;
         let transition: Vec<Action> = transition

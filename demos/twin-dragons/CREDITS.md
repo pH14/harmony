@@ -1,4 +1,6 @@
-# Twin Dragons — credits and licenses
+# Credits and licenses
+
+## Twin Dragons
 
 **Twin Dragons** is by **Garydos**. This Harmony demonstration is not endorsed
 by the authors.
@@ -31,6 +33,8 @@ in `licenses/`. `harmony-source.tar.gz` holds Harmony's complete source.
 license notices, including miniz_oxide (MIT, Zlib or Apache-2.0) and adler2
 (0BSD, MIT or Apache-2.0).
 
+## Emulators
+
 **QuickNES** by Shay Green and contributors, with the libretro port by its
 contributors, is pinned to `26bb785c9deddb66a17717b21bb4e328f03ade32`:
 https://github.com/libretro/QuickNES_Core/tree/26bb785c9deddb66a17717b21bb4e328f03ade32
@@ -41,6 +45,39 @@ QuickNES browser core. Its C++ shim (`tools/frontend.cpp`) is
 The browser core applies Harmony's idle-loop patch
 (`quicknes-idle-loop.patch`), which changes only CPU speed.
 The compiled core is distributed with its corresponding source and build recipe.
+
+**SameBoy** by Lior Halphon runs Tobu Tobu Girl Deluxe. It is pinned to
+`98da08c3117a7bf39c7329fc662c0d18cb54707d` (v1.0.4):
+https://github.com/LIJI32/SameBoy/tree/98da08c3117a7bf39c7329fc662c0d18cb54707d
+SameBoy is under the **Expat license**, shipped as `sameboy-LICENSE.txt`. The
+browser core applies a patch that skips idle CPU time during HALT. The patch
+changes only emulator speed. It is part of `build-sameboy-runtime.sh`, which
+ships with the frontend `sameboy-frontend.c` and `sameboy-source.tar.gz`.
+The core runs SameBoy's own boot ROM, built from the same source.
+
+## Tobu Tobu Girl Deluxe
+
+**Tobu Tobu Girl Deluxe** is by **Tangram Games**. This demonstration is not endorsed by the authors.
+
+- Source: https://github.com/SimonLarsen/tobutobugirl-dx at commit
+  `4985d4d282aa43229f250ffa3b0d86998ebd55d3`
+- Game code: **MIT license**, shipped as `licenses/tobu-tobu-girl-LICENSE.txt`.
+- Images, text, sound and music: **CC BY 4.0**
+  (https://creativecommons.org/licenses/by/4.0/).
+- The ROM is compiled from that source with a pinned toolchain by
+  `workloads/gb/scripts/build-tobu-tobu-girl-rom.sh`.
+- Modified: the level maps and the player sprite sheet are captured from the
+  game's screens and composed into images. Each level background is stretched
+  to the level's height. Browser maps add heat overlays and player sprites.
+
+## Super Mario Bros.
+
+Super Mario Bros. is © Nintendo. The site ships no part of the game. A visitor
+supplies the ROM, which stays in that browser's storage. The browser draws the
+level maps and the player sprite from that ROM. This demonstration is not
+endorsed by Nintendo.
+
+## Harmony
 
 The browser interface and Harmony/Dissonance Rust code are
 **AGPL-3.0-or-later**: https://github.com/pH14/harmony

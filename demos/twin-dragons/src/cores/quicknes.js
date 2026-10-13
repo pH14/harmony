@@ -64,6 +64,10 @@ export async function loadQuickNES(base, rom, inputs = {}) {
       const ptr = mod._nes_pixels();
       return { width, height, data: new Uint8ClampedArray(mod.HEAPU8.slice(ptr, ptr + width * height * 4)) };
     },
+    pixelView() {
+      const ptr = mod._nes_pixels();
+      return mod.HEAPU8.subarray(ptr, ptr + mod._nes_width() * mod._nes_height() * 4);
+    },
   };
 }
 

@@ -1,10 +1,13 @@
-# Twin Dragons browser explorer
+# Harmony browser explorer
 
-A static demonstration of state-space exploration. QuickNES runs the NES game
-Twin Dragons in WebAssembly. A Rust worker uses the Dissonance `Archive` and
-parent selector to search the game. The site has one map for each of the game's
-three levels. All execution happens on the visitor's computer, so hosting needs
-only static files.
+A static demonstration of state-space exploration. Emulators compiled to
+WebAssembly run a game, and a Rust worker uses the Dissonance `Archive` and
+parent selector to search it. The site plays three games: the NES game Twin
+Dragons on QuickNES, the Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and
+Super Mario Bros. on QuickNES from a ROM the visitor supplies. The `game` URL
+parameter picks the game, and the level selector switches between them. Each
+game has one map per level. All execution happens on the visitor's computer,
+so hosting needs only static files.
 
 ## Run
 
@@ -242,6 +245,94 @@ Replay and play round the frame count owed to elapsed time, so a 60 Hz display
 steps one game frame per display frame. The map repaints every display frame
 while the search runs and at 30 Hz while it is paused. Replays play the game's
 music. The sound effects are absent from this build.
+
+## Games
+
+Each game is a module in `src/games/` that names its core, ROM, RAM size,
+level count, screen and sprite sizes, controls, credits, rollout pace and
+history limits, and supplies `decode`, `ended`, `motion` and `boot`. A game
+with a scripted level change also supplies `levelComplete` and `transition`.
+`src/emulator.js` lists the games and cores. The Rust `Game` enum in
+`rust/src/lib.rs` holds the matching decoder and archive key, and
+`tests/*.mjs` check that the two decoders agree.
+
+### Tobu Tobu Girl Deluxe
+
+`tools/build-runtime.sh` compiles the ROM from the pinned upstream source with
+`workloads/gb/scripts/build-tobu-tobu-girl-rom.sh`. That toolchain runs only on
+x86-64 Linux, so other hosts build it in a `debian:13` amd64 Docker container;
+the ROM hash matches on both. `tools/build-sameboy-runtime.sh` builds the
+pinned SameBoy core with a patch that skips idle CPU time during HALT. The
+patch changes only speed, and the core's snapshots and work RAM match the
+unpatched core frame for frame.
+
+The adapter reads the first 1 KiB bank of work RAM:
+
+| Address | Meaning |
+| --- | --- |
+| `$A5` | game state: 3 level select, 4 in level, 6 level won, 9 unlock notice, 10 ending |
+| `$A6` | scene within a level: 0 playing, 1 died, 2 level complete |
+| `$A7` | level, 1 to 3 |
+| `$B0` | time left |
+| `$C2`, `$C3` | player x and y on screen |
+| `$230`, `$233`, `$237` | climb terms |
+
+The level scrolls upward, so the page shows tall maps and the camera follows
+the highest players. Climb is `$233 * $237 + $230`. Map coordinates are x =
+screen x - 24 and y = level height - 155 - climb + screen y. Level heights are
+2,000, 2,896 and 3,792 lines. `tools/build-tobu-maps.mjs` climbs each level
+with a save-state search and composes the maps and the sprite sheet from the
+emulator's frames. The background scrolls slower than the level, so each map
+stretches the 256-line background to the level's height.
+
+A rollout ends when the player dies or finishes a level. After a finished
+level, `transition` presses A and Start through the win and level-select
+screens until the next level is playable. Those presses are part of the
+history. The archive place is (level, loading, climb / 32, x / 32), progress
+is (levels cleared, climb / 1,024), and the preference is more time left.
+Seeds 1 to 8 finish the game in 15,806 to 44,693 rollouts, median 18,775, so
+the pace is 120 rollouts per second.
+
+### Super Mario Bros.
+
+The site ships nothing from Super Mario Bros. The level selector accepts the
+ROM with SHA-256 `0b3d9e1f…6dea`, the same ROM as `workloads/nes`. The page
+keeps it in IndexedDB and never uploads it. A visit without a stored ROM shows
+Twin Dragons and asks for the file.
+
+The adapter uses the RAM rules from `workloads/nes/src/smb`:
+
+| Address | Meaning |
+| --- | --- |
+| `$075F`, `$075C` | world and level; the level is one ahead once `$0746` is 5 |
+| `$074E`, `$074F` | area type and area offset |
+| `$0770`, `$0772` | mode (1 play, 2 castle cleared or game won) and play task (3 playing) |
+| `$000E` | player state; `$0B` is dead |
+| `$00B5` | vertical page; 2 or more has fallen into a pit |
+| `$006D`, `$0086`, `$00CE` | player x page, x and y |
+| `$071A`, `$071C` | camera page and x |
+| `$0746` | flag-pole sequence |
+| `$07F8`–`$07FA` | timer digits |
+| `$06D9`, `$06DA` | castle loop checks passed correctly and in total |
+
+The 32 levels are the map ids, world × 4 + level. A state is on the map when
+its area is that level's main area; bonus rooms and pipe scenes count as
+loading. `boot(level)` writes the world, level and area number on the title
+screen and presses Start. The archive place is (level, loop on path, area ×
+512 + camera / 16 + player screen x / 16, y / 16 and timer hundreds), progress
+is (levels cleared, camera / 1,024), and the preference is more time left. A
+rollout ends at death, the flag pole or a castle's end. `transition` presses
+nothing until the next level is playable.
+
+The page builds each map in a worker from the ROM. The builder holds Mario at
+a fixed height, hides sprites, clears enemies and loop checks, holds Right
+and B, and copies each newly scrolled column into the map. When Mario stops
+moving it tries the next height. It keeps the flag pole, so each map ends after
+the flag sequence. Built maps are cached in IndexedDB by ROM hash. Map widths
+are fixed per level, because the page lays out maps before they are built.
+Seed 27 reaches World 1-2 from World 1-1 after about 2,300 rollouts.
+`tests/smb.mjs` reads the ROM from `SMB_ROM` or
+`~/workspace/roms/Super Mario Bros. (World).nes` and skips when it is absent.
 
 ## Verification and publishing
 

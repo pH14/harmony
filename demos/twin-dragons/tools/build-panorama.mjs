@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { createEngine, LEVEL_COUNT } from "../src/emulator.js";
+import { createEngine } from "../src/emulator.js";
+import twinDragons from "../src/games/twin-dragons.js";
 import { png } from "./png.mjs";
 import { creditPNG } from "../src/media.js";
 import {
@@ -27,7 +28,7 @@ const palette = constArray(
 );
 if (palette.length !== 32 || metatiles.length % 4)
   throw new Error("Unexpected upstream palette or metatile table");
-const engine = await createEngine(base, {
+const engine = await createEngine(base, twinDragons, {
   rom: new Uint8Array(await readFile(new URL("twin-dragons.nes", base))),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });
@@ -35,7 +36,7 @@ const TOP = 8,
   HEIGHT = 224;
 await mkdir(new URL("maps/", base), { recursive: true });
 const maps = [];
-for (let id = 0; id < LEVEL_COUNT; id++) {
+for (let id = 0; id < twinDragons.levelCount; id++) {
   const level = await loadLevel(root, id);
   const colors = palette.slice(0, 16);
   if (level.background !== null) colors[0] = level.background;
@@ -59,8 +60,7 @@ for (let id = 0; id < LEVEL_COUNT; id++) {
     }
   engine.boot(id);
   const frame = engine.pixels(),
-    camera = engine.mod.HEAPU8[engine.mod._nes_ram() + 0x52] * 256 +
-      engine.mod.HEAPU8[engine.mod._nes_ram() + 0x57];
+    camera = engine.ramView()[0x52] * 256 + engine.ramView()[0x57];
   let same = 0;
   for (let y = 32; y < frame.height; y++)
     for (let x = 0; x < frame.width; x++) {

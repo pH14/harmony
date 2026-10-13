@@ -4,12 +4,12 @@ import { GuidedTour, tourSeen } from "./tour.js";
 import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
 import { RoutePreviews } from "./preview.js";
 import { GameAudio } from "./audio.js";
-import { createEngine, GAMES } from "./emulator.js";
-import { QUICKNES_REVISION } from "./cores/quicknes.js";
+import { createEngine, GAMES, sha256Hex } from "./emulator.js";
+import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
-import { Swarm, SPRITE, ghosts } from "./swarm.js";
+import { Swarm, ghosts } from "./swarm.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
-import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT } from "./view.js";
+import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
   prefixAt,
   appendInput,
@@ -26,24 +26,36 @@ import {
   isMapEvidence,
   followDiscovery,
 } from "./world.js";
-const game = GAMES.get("twin-dragons");
+const params = new URLSearchParams(location.search);
+const requested = GAMES.get(params.get("game")) || GAMES.get("twin-dragons");
+const suppliedRom = requested.rom.upload ? await loadRom(requested.id) : null;
+const missingRom = requested.rom.upload && !suppliedRom ? requested : null;
+const game = missingRom ? GAMES.get("twin-dragons") : requested;
+const engineInputs = suppliedRom && !missingRom ? { rom: suppliedRom } : {};
+let askedForRom = false;
+const SPRITE = game.sprite;
 const base = new URL(import.meta.env.BASE_URL, location.href),
+  assets = new URL(game.assets, base),
   $ = (id) => document.getElementById(id);
 const compactReplay = matchMedia("(max-width: 800px), (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)");
-const catalog = await (await fetch(new URL("maps.json", base))).json();
+document.title = `Harmony Plays ${game.system}`;
+document.documentElement.dataset.game = game.id;
+document.documentElement.classList.toggle("vertical-game", !!game.vertical);
+document.documentElement.style.setProperty("--screen-ratio", game.screen.width / game.screen.height);
+const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets))).json());
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
-<main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Plays NES</h1><p class="hero-lede">Watch Harmony play the NES game <a href="https://github.com/Garydos/twin-dragons-nes">Twin Dragons</a> right in your browser.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading Twin Dragons…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
-<div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>Level 1</button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search, and return to it 10 seconds after you move the map">Auto view</button><button data-camera="room" aria-pressed="false" title="Show the whole level">Full view</button></div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
+<main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Plays ${game.system}</h1><p class="hero-lede">${game.lede}</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details"><summary>Details</summary><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
+<div class="goal"><div><button id="goal-title" class="level-picker-open" aria-haspopup="dialog" aria-controls="level-picker" disabled>${catalog.levels[0].label}</button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search, and return to it 10 seconds after you move the map">Auto view</button><button data-camera="room" aria-pressed="false" title="Show the whole level">Full view</button></div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="map-hint" hidden>Click a cell to watch its history</div><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
-<p class="game-attribution"><a href="https://github.com/Garydos/twin-dragons-nes">Twin Dragons</a> by Garydos · Artwork by <a href="https://opengameart.org/content/twin-dragons">surt</a>, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>, modified</p>
+<p class="game-attribution">${game.attribution}</p>
 </section>
-<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="256" height="224" aria-label="Twin Dragons gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>Jump</span></span><span><kbd>X</kbd><span>Breathe fire</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="Breathe fire">B</button><button data-button="1" aria-label="Jump">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
+<section class="inspect inspector" id="inspector" aria-label="History inspector" hidden><div class="drawer-top"><div class="history-heading"><h2 id="film-title">History</h2></div><div class="history-controls"><button id="sound" class="icon-button" aria-label="Mute game audio" title="Mute game audio" aria-pressed="false"></button><button id="expand-inspector" aria-expanded="false">Expand</button><button id="close-inspector" aria-controls="inspector" aria-label="Collapse History" aria-expanded="true" title="Collapse History">›</button></div></div><div class="film"><span id="verification" hidden>Starting emulator</span><div class="screen"><canvas id="film" tabindex="0" width="${game.screen.width}" height="${game.screen.height}" aria-label="${game.title} gameplay replay"></canvas><span id="frame-label">FRAME 0</span></div><div class="transport"><div class="replay-actions"><button id="play" disabled>▶ Replay</button></div><input id="scrub" aria-label="Replay frame" type="range" min="0" max="0" value="0" disabled><select id="speed" aria-label="Playback speed"><option value="1" selected>1×</option><option value="4">4×</option><option value="12">12×</option></select></div><div id="game-controls" hidden><div class="keyboard-guide" aria-label="Keyboard controls"><span><kbd>↑ ← ↓ →</kbd><kbd>WASD</kbd><span>Move</span></span><span><kbd>Z</kbd><kbd>Space</kbd><span>${game.controls.a}</span></span><span><kbd>X</kbd><span>${game.controls.b}</span></span></div><div class="touch-controls" aria-label="Game controller"><div class="dpad"><button data-button="16" aria-label="Move up">↑</button><button data-button="64" aria-label="Move left">←</button><button data-button="32" aria-label="Move down">↓</button><button data-button="128" aria-label="Move right">→</button></div><div class="action-buttons"><button data-button="2" aria-label="${game.controls.b}">B</button><button data-button="1" aria-label="${game.controls.a}">A</button></div></div></div><div class="branch-actions"><button id="take-control" disabled>🎮 Play from here</button><button id="search-here" hidden disabled>↗ Branch search from here</button><button id="discard-branch" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg>Discard branch</button></div><div id="branch-message" role="status" hidden></div></div>
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
 <div id="error" role="alert" hidden></div>
-<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Choose a starting point</h2><p>A fresh search, from any level.</p></div><div id="level-grid" class="level-grid"></div></dialog>
+<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Choose a starting point</h2><p>A fresh search, from any level.</p></div><div id="game-choice" class="segments game-choice" role="group" aria-label="Game"></div><p id="rom-message" class="rom-message" role="status" hidden></p><div id="level-grid" class="level-grid"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 let heat = new Heatmap(),
   worker,
@@ -193,7 +205,6 @@ function roomView(id, c) {
   }
   return views.get(key);
 }
-const params = new URLSearchParams(location.search);
 const budget = memoryBudget(
   navigator.deviceMemory,
   matchMedia("(pointer: coarse)").matches,
@@ -207,7 +218,7 @@ const swarm = new Swarm(
 );
 let visualization = "movement", swarmRooms = new Map();
 const sprites = new Image();
-sprites.src = new URL("sprites.png", base).href;
+if (!game.buildSprites) sprites.src = new URL("sprites.png", assets).href;
 function setVisualization(mode) {
   visualization = mode;
   $("visualization").dataset.value = mode;
@@ -253,9 +264,10 @@ function branchIcon() {
   if (!sprites.complete || !sprites.naturalWidth) return null;
   if (!branchIcons.has("player")) {
     const icon = document.createElement("canvas");
-    icon.width = 20;
-    icon.height = 19;
-    icon.getContext("2d").drawImage(sprites, 4, 2, 20, 19, 0, 0, 20, 19);
+    const [x, y, width, height] = SPRITE.icon;
+    icon.width = width;
+    icon.height = height;
+    icon.getContext("2d").drawImage(sprites, x, y, width, height, 0, 0, width, height);
     branchIcons.set("player", icon.toDataURL());
   }
   return branchIcons.get("player");
@@ -309,7 +321,8 @@ const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinn
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
-  return Math.max(1, c.height / 224 / fit);
+  const view = game.closeUp || game.screen;
+  return Math.max(1, Math.min(c.width / view.width, c.height / view.height) / fit);
 }
 function frameRoute() {
   for (const room of cameraRooms()) {
@@ -341,6 +354,13 @@ function frontier(level) {
     py[n++] = y;
   }
   if (n < 4) return null;
+  if (game.vertical) {
+    const y = py.slice(0, n).sort()[Math.floor(n * 0.2)];
+    const xs = [];
+    for (let i = 0; i < n; i++) if (Math.abs(py[i] - y) < 160) xs.push(px[i]);
+    xs.sort((a, b) => a - b);
+    return { x: xs[xs.length >> 1] ?? map.width / 2, y: y - 8 };
+  }
   const x = px.slice(0, n).sort()[Math.floor(n * 0.8)];
   const ys = [];
   for (let i = 0; i < n; i++) if (Math.abs(px[i] - x) < 160) ys.push(py[i]);
@@ -351,7 +371,7 @@ function reachedFrontier(level) {
   const map = maps.get(level);
   let best = null;
   for (const cell of heat.cells.values())
-    if (cell.level === level && (!best || cell.x > best.x)) best = cell;
+    if (cell.level === level && (!best || (game.vertical ? cell.y < best.y : cell.x > best.x))) best = cell;
   return best ? { x: best.x * 32 + 16, y: cellTop(best.y) + 16 } : { x: 0, y: map.height };
 }
 function steerCamera(level, c, target, zoom, zoomRate, panRate) {
@@ -502,7 +522,7 @@ let searchChoices = [{ id: 0, parent: null }],
   branchPreview = null,
   routeHover = null,
   previewTimer;
-const routePreviews = new RoutePreviews(() => createEngine(base, game),
+const routePreviews = new RoutePreviews(() => createEngine(base, game, engineInputs),
   budget.snapshotsMiB === 32 ? 8 : 16,
   (budget.snapshotsMiB === 32 ? 1 : 2) * 1048576,
   (previewEngine, frame) => {
@@ -662,14 +682,75 @@ function renderBranches() {
 const timeline = new ReplayTimeline(
   (budget.snapshotsMiB === 32 ? 2 : 4) * 1048576,
 );
-const music = new GameAudio(() => createEngine(base, game));
+const music = new GameAudio(() => createEngine(base, game, engineInputs));
 const panoramas = new Map();
 function mapURL(level) {
-  const url = new URL(maps.get(level).file, base);
+  const url = new URL(maps.get(level).file, assets);
   url.searchParams.set("v", "level-data-1");
   return url.href;
 }
+const builtMaps = { worker: null, ready: false, queue: [], busy: false, wanted: null };
+function imageCanvas({ width, height, data }) {
+  const image = document.createElement("canvas");
+  image.width = width;
+  image.height = height;
+  image.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(data.buffer || data), width, height), 0, 0);
+  return image;
+}
+function nextBuiltMap() {
+  if (!builtMaps.ready || builtMaps.busy || !builtMaps.queue.length) return;
+  const at = Math.max(0, builtMaps.queue.indexOf(builtMaps.wanted));
+  const [level] = builtMaps.queue.splice(at, 1);
+  builtMaps.busy = true;
+  builtMaps.worker.postMessage({ type: "map", level });
+}
+function builtMapKey(level) {
+  return `${game.id}:${game.rom.sha256}:map-v1:${level}`;
+}
+function showBuiltMap(level, image) {
+  createImageBitmap(image).then((bitmap) => {
+    panoramas.set(level, bitmap);
+    for (const preview of document.querySelectorAll(`canvas.level-preview[data-level="${level}"]`)) drawLevelPreview(preview, bitmap);
+  });
+}
+function startMapWorker() {
+  if (builtMaps.worker) return;
+  builtMaps.worker = new Worker(new URL("./map-worker.js", import.meta.url), { type: "module" });
+  builtMaps.worker.onmessage = ({ data }) => {
+    if (data.type === "error") return showError(data.message);
+    if (data.type === "sprites") {
+      imageCanvas(data).toBlob((blob) => (sprites.src = URL.createObjectURL(blob)));
+      builtMaps.ready = true;
+    } else if (data.type === "map") {
+      const image = imageCanvas(data);
+      showBuiltMap(data.level, image);
+      image.toBlob((blob) => blob && save(builtMapKey(data.level), blob));
+      builtMaps.busy = false;
+    }
+    nextBuiltMap();
+  };
+  builtMaps.worker.postMessage({ type: "init", base: base.href, game: game.id, rom: engineInputs.rom });
+}
+async function buildMapInBrowser(level) {
+  const cached = await load(builtMapKey(level));
+  if (cached instanceof Blob) return showBuiltMap(level, cached);
+  startMapWorker();
+  builtMaps.queue.push(level);
+  nextBuiltMap();
+}
+function drawLevelPreview(preview, bitmap) {
+  const height = bitmap.height, width = Math.min(bitmap.width, Math.round((height * preview.width) / preview.height));
+  preview.getContext("2d").drawImage(bitmap, 0, 0, width, height, 0, 0, preview.width, preview.height);
+}
 function panorama(level) {
+  if (game.buildMap) {
+    builtMaps.wanted = level;
+    if (!panoramas.has(level)) {
+      panoramas.set(level, null);
+      buildMapInBrowser(level);
+    }
+    return panoramas.get(level);
+  }
   if (!panoramas.has(level)) {
     panoramas.set(level, null);
     fetch(mapURL(level))
@@ -680,7 +761,11 @@ function panorama(level) {
   }
   return panoramas.get(level);
 }
-for (const map of catalog.maps) panorama(map.id);
+if (game.buildMap) {
+  startMapWorker();
+  panorama(bootLevel);
+}
+else for (const map of catalog.maps) panorama(map.id);
 const canvas = $("map"),
   film = $("film").getContext("2d");
 const numberFormat = new Intl.NumberFormat(),
@@ -938,7 +1023,7 @@ function renderDetails(observation) {
   $("details").replaceChildren();
   const fields = [
     ["Position", `${observation.x}, ${observation.y}`],
-    ["Health", `${observation.health} / 3`],
+    ...(game.maxHealth ? [["Health", `${observation.health} / ${game.maxHealth}`]] : []),
     ["Levels cleared", observation.cleared - bootLevel],
     [
       "Level",
@@ -1016,15 +1101,15 @@ function renderStates() {
         : "Loading…";
       summary.append(name, duration);
       resources.className = "state-resources";
-      resources.textContent = state
-        ? `♥ ${state.observation.health}/3`
+      resources.textContent = state && game.maxHealth
+        ? `♥ ${state.observation.health}/${game.maxHealth}`
         : "";
       button.append(marker, summary, resources);
       button.setAttribute("aria-pressed", selected);
       if (state)
         button.setAttribute(
           "aria-label",
-          `${routeName(id)}, ${Math.floor(state.frames / 60)} seconds of gameplay, health ${state.observation.health} of 3`,
+          `${routeName(id)}, ${Math.floor(state.frames / 60)} seconds of gameplay${game.maxHealth ? `, health ${state.observation.health} of ${game.maxHealth}` : ""}`,
         );
       button.disabled = controlMode || branchBusy;
       button.onpointerenter = () => previewRoute(id, button);
@@ -1149,7 +1234,7 @@ function startSearch(level = bootLevel) {
 
   $("error").hidden = true;
   $("memory-limit").hidden = true;
-  $("status").textContent = "Loading Twin Dragons…";
+  $("status").textContent = `Loading ${game.title}…`;
   $("pause").disabled = true;
   updateSearchControl();
 
@@ -1332,7 +1417,7 @@ function startSearch(level = bootLevel) {
       fail(e);
     }
   };
-  worker.postMessage({ type: "init", base: base.href, game: game.id, seed, budget, pace, ports, boot_level: bootLevel }, ports);
+  worker.postMessage({ type: "init", base: base.href, game: game.id, rom: engineInputs.rom, seed, budget, pace, ports, boot_level: bootLevel }, ports);
 }
 function updateSearchControl() {
   heat.setRunning(ready && !paused && !stats.stopped, performance.now());
@@ -1377,11 +1462,14 @@ function browseRoom(level) {
     worker.postMessage({ type: "states", ids: [id], request: ++request });
   }
 }
+function levelLabel(id) {
+  return catalog.levels.find((level) => level.id === id)?.label ?? `Level ${id + 1}`;
+}
 function completionWitness() {
   if (wins.has(focusedLevel))
     return {
       id: wins.get(focusedLevel),
-      label: `Watch Level ${focusedLevel + 1} finish`,
+      label: `Watch ${levelLabel(focusedLevel)} finish`,
     };
   return null;
 }
@@ -1422,7 +1510,7 @@ function updateStats() {
   setText("cells", fmt(heat.cells.size));
   setText("goal-title", gameWon
     ? "Game complete"
-    : `Level ${focusedLevel + 1}${cleared.has(focusedLevel) ? " ✓" : ""}`);
+    : `${levelLabel(focusedLevel)}${cleared.has(focusedLevel) ? " ✓" : ""}`);
   const witness = completionWitness();
   $("completion").hidden = !witness;
   if (witness) setText("completion", witness.label);
@@ -1480,13 +1568,14 @@ function renderMapRows(owner) {
         part.className = "room-part";
         const c = id === mapLevel && index === 0 ? canvas : document.createElement("canvas");
         c.className = "area-map";
-        const viewport = phoneLayout.matches ? CAMERA_VIEWPORT.phone : CAMERA_VIEWPORT.desktop;
+        const viewports = game.vertical ? TALL_CAMERA_VIEWPORT : CAMERA_VIEWPORT;
+        const viewport = phoneLayout.matches ? viewports.phone : viewports.desktop;
         c.width = viewport.width;
         c.height = viewport.height;
         c.dataset.viewport = true;
         Object.assign(c.dataset, { map: id, panel: index, panelX: panel.x, panelY: panel.y,
           mapWidth: panel.width, mapHeight: panel.height, roomWidth: map.width, roomHeight: map.height });
-        c.style.touchAction = "pan-y";
+        c.style.touchAction = game.vertical ? "none" : "pan-y";
         c.tabIndex = 0;
         if (c !== canvas) bindMap(c);
         const track = document.createElement("div");
@@ -1971,9 +2060,7 @@ $("info").onclick = (e) => {
   if (e.target === $("info")) $("info").close();
 };
 $("credits").onclick = () =>
-  showInfo(
-    `<span class="eyebrow">CREDITS & LICENSING</span><h2>Twin Dragons</h2><p>Created by <a href="https://github.com/Garydos">Garydos</a>. <a href="https://github.com/Garydos/twin-dragons-nes/tree/bcf27d0c5117a2aac19e6c33bdb3c776ada069fb">Source at commit bcf27d0</a>. The game’s code is under the <a href="licenses/twin-dragons-LICENSE.txt">zlib license</a>.</p><p>This build is altered: the sound-effect data is zeroed. The sound effects by Shiru are not included.</p><p>Some artwork by surt, <a href="https://opengameart.org/content/twin-dragons">opengameart.org/content/twin-dragons</a>, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>. Modified: the level maps and the player sprite sheet are rendered from the game’s tiles with its palette and composed into images; browser maps add heat overlays. Music by Garydos, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. FamiTone2 by Shiru and FamiTone5 by nesdoug are public domain. This demonstration is not endorsed by the authors.</p><p>QuickNES library sources: LGPL-2.1-or-later. The compiled libretro browser core, with Harmony’s <a href="licenses/quicknes-idle-loop.patch">idle-loop patch</a>, is distributed under GPL-2.0 terms with a GPL-2.0-or-later C++ shim. The separate Harmony browser interface and Rust search code: AGPL-3.0-or-later.</p><p><a href="licenses/CREDITS.md">Full credits</a> · <a href="licenses/quicknes-source.tar.gz">QuickNES source</a> · <a href="licenses/harmony-source.tar.gz">Harmony source</a> \u00b7 <a href="licenses/rust-dependencies.tar.gz">Rust dependency sources and notices</a> · <a href="https://github.com/pH14/harmony">Repository and build instructions</a></p>`,
-  );
+  showInfo(game.credits);
 function hideHistoryRail() {
   $("history-rail").hidden = true;
   $("workspace").classList.remove("history-collapsed");
@@ -2027,6 +2114,10 @@ function updateBranchControls() {
     else soundParent.append($("sound"));
   }
   $("goal-title").disabled = !ready || !engine || branchBusy || controlMode;
+  if (missingRom && !askedForRom && !$("goal-title").disabled) {
+    askedForRom = true;
+    $("goal-title").click();
+  }
   $("tour-open").disabled =
     !ready || !engine || controlMode || branchBusy || seeking;
   const usable =
@@ -2218,9 +2309,9 @@ $("search-here").onclick = async () => {
     const endpoint_sha256 = await snapshotHash(snapshot);
     if (worker !== branchWorker || epoch !== replayEpoch) return;
     const tape = {
-      format: "harmony-twin-dragons-browser-v1",
+      format: `harmony-${game.id}-browser-v1`,
       rom_sha256: game.rom.sha256,
-      core_revision: QUICKNES_REVISION,
+      core_revision: engine.revision,
       boot_level: bootLevel,
       actions,
       endpoint_sha256,
@@ -2800,14 +2891,41 @@ $("tour-open").onclick = beginTour;
 $("goal-title").onclick = () => {
   const wasPlaying = playing;
   if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
+  $("game-choice").replaceChildren(...[...GAMES.values()].map((choice) => {
+    const button = document.createElement("button");
+    button.textContent = choice.title;
+    button.setAttribute("aria-pressed", choice === game);
+    const play = () => {
+      const url = new URL(location.href);
+      url.searchParams.set("game", choice.id);
+      location.assign(url);
+    };
+    button.onclick = () => {
+      if (choice === game) return;
+      if (choice.rom.upload && (choice !== requested || missingRom)) chooseRom(choice, play);
+      else play();
+    };
+    return button;
+  }));
+  $("rom-message").hidden = !missingRom;
+  $("rom-message").textContent = missingRom ? `Choose your ${missingRom.title} ROM file to play it. It stays in this browser.` : "";
   $("level-grid").replaceChildren();
   for (const level of catalog.levels) {
-    const card = document.createElement("button"), image = document.createElement("img"), caption = document.createElement("span");
+    const card = document.createElement("button"), caption = document.createElement("span");
+    let image = document.createElement("img");
     card.className = "level-card";
     card.dataset.level = level.id;
     card.setAttribute("aria-label", level.label);
     card.setAttribute("aria-current", level.id === bootLevel ? "true" : "false");
-    image.src = new URL(`maps/${level.rooms[0]}-preview.png`, base).href; image.loading = "lazy"; image.alt = "";
+    if (game.buildMap) {
+      image = document.createElement("canvas");
+      Object.assign(image, { width: 256, height: 96, className: "level-preview" });
+      image.dataset.level = level.rooms[0];
+      const bitmap = panorama(level.rooms[0]);
+      if (bitmap) drawLevelPreview(image, bitmap);
+    } else {
+      image.src = new URL(`maps/${level.rooms[0]}-preview.png`, assets).href; image.loading = "lazy"; image.alt = "";
+    }
     caption.textContent = level.label;
     card.append(image, caption);
     card.onclick = () => {
@@ -2822,8 +2940,26 @@ $("goal-title").onclick = () => {
   $("level-picker").showModal();
 };
 $("close-level-picker").onclick = () => $("level-picker").close();
+function chooseRom(choice, play) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".nes,application/octet-stream";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    $("rom-message").hidden = false;
+    if (bytes.length !== choice.rom.bytes || (await sha256Hex(bytes)) !== choice.rom.sha256)
+      $("rom-message").textContent = `That file is not the ${choice.title} ROM this demo supports. It needs the ${choice.rom.bytes.toLocaleString()}-byte ROM with SHA-256 ${choice.rom.sha256.slice(0, 12)}…`;
+    else if (!(await saveRom(choice.id, bytes)))
+      $("rom-message").textContent = "This browser blocks site storage, so the ROM cannot be kept for the page.";
+    else play();
+  };
+  input.click();
+}
+
 requestAnimationFrame(animate);
-createEngine(base, game)
+createEngine(base, game, engineInputs)
   .then((e) => {
     engine = e;
     origin = e.boot(bootLevel);

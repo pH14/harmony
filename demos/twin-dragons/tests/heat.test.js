@@ -104,7 +104,7 @@ test("history admission rejects wrong identities and malformed inputs", () => {
     endpoint_sha256: "a".repeat(64),
     actions: [{ buttons: 129, frames: 60 }],
   };
-  assert.equal(validateTape(tape), 60);
+  assert.equal(validateTape(tape, twinDragons, CORE_REVISION), 60);
   for (const changes of [
     { endpoint_sha256: "invalid" },
     { format: "other" },
@@ -120,7 +120,7 @@ test("history admission rejects wrong identities and malformed inputs", () => {
     { actions: [{ buttons: 1, frames: NaN }] },
     { actions: Array(2000).fill({ buttons: 1, frames: 120 }) },
   ])
-    assert.throws(() => validateTape({ ...tape, ...changes }));
+    assert.throws(() => validateTape({ ...tape, ...changes }, twinDragons, CORE_REVISION));
 });
 test("Twin Dragons memory decode reads world position and progress and refuses other layouts", () => {
   const ram = new Uint8Array(2048);

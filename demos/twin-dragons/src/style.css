@@ -241,6 +241,14 @@ h2 {
   touch-action: pan-y;
   cursor: default;
 }
+.vertical-game #map,
+.vertical-game .area-map {
+  width: auto;
+  max-width: 100%;
+  height: min(72vh, 900px);
+  margin: 0 auto;
+  touch-action: none;
+}
 .map-row {
   border-bottom: 1px solid var(--line);
 }
@@ -376,7 +384,7 @@ h2 {
   display: block;
   width: min(100%, 384px);
   height: auto;
-  aspect-ratio: 256/224;
+  aspect-ratio: var(--screen-ratio);
   image-rendering: pixelated;
 }
 #frame-label {
@@ -1084,14 +1092,18 @@ dialog h2 {
   .tour-card p { font-size: 12px; margin: 7px 0 10px; line-height: 1.4; }
 }
 
-.level-picker-open { font-size: 16px; font-weight: 500; padding: 6px 0; background: transparent; border: 0; }
+.level-picker-open { font-size: 16px; font-weight: 500; padding: 6px 0; background: transparent; border: 0; white-space: nowrap; }
 .level-picker-open::after { content: "⌄"; margin-left: 10px; color: var(--muted); }
 #level-picker { width: min(800px, calc(100% - 32px)); max-width: 800px; max-height: calc(100dvh - 32px); padding: 28px; border-radius: 16px; overscroll-behavior: contain; animation: sheet-in .2s ease-out; }
 .level-picker-heading h2 { margin: 0; font-size: 23px; }
 .level-picker-heading p { margin: 7px 0 24px; }
+.game-choice { display: flex; margin: 0 0 16px; }
+.game-choice button { flex: 1; font-size: 13px; padding: 9px 10px; }
+.rom-message { margin: -6px 0 16px; font-size: 13px; color: var(--muted); }
+
 .level-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .level-card { padding: 0; overflow: hidden; border: 1px solid var(--line); background: var(--background); border-radius: 9px; text-align: left; }
-.level-card img { display: block; width: 100%; height: 70px; object-fit: cover; object-position: left bottom; image-rendering: pixelated; }
+.level-card img, .level-card canvas { display: block; width: 100%; height: 70px; object-fit: cover; object-position: left bottom; image-rendering: pixelated; }
 .level-card span { display: block; padding: 9px 11px; font-size: 11px; }
 .level-card[aria-current="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .level-card[aria-current="true"] span::after { content: " · current"; color: var(--muted); }
@@ -1146,7 +1158,7 @@ dialog h2 {
   .inspector.controlling.expanded { height: auto; max-height: calc(100dvh - 12px); padding: 12px; gap: 10px; }
   .controlling #expand-inspector { display: none; }
   .inspector.controlling .screen { max-width: none; width: 100%; margin: 0; padding: 10px; }
-  .inspector.controlling #film { width: min(100%, calc((100dvh - 280px) * 256 / 224)); }
+  .inspector.controlling #film { width: min(100%, calc((100dvh - 280px) * var(--screen-ratio))); }
   .controlling #game-controls { margin: 2px 0 6px; }
   .controlling .touch-controls { justify-content: space-between; gap: clamp(10px, 3vw, 18px); padding: 8px clamp(0px, calc((100vw - 340px) / 5), 10px) 12px; }
   .controlling .action-buttons { gap: 14px; }
@@ -1160,7 +1172,7 @@ dialog h2 {
 @media (max-width: 800px) and (max-height: 500px) {
   .inspector.controlling .film { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 20px; align-items: center; }
   .inspector.controlling .screen { grid-column: 1; grid-row: 1 / 3; }
-  .inspector.controlling #film { width: min(100%, calc((100dvh - 120px) * 256 / 224)); }
+  .inspector.controlling #film { width: min(100%, calc((100dvh - 120px) * var(--screen-ratio))); }
   .controlling #game-controls { grid-column: 2; grid-row: 1; margin: 0; }
   .controlling .branch-actions { grid-column: 2; grid-row: 2; }
 }
@@ -1178,7 +1190,7 @@ dialog h2 {
   height: auto; max-height: var(--tour-history-height); padding: 8px; gap: 6px;
 }
 .tour-phone .inspector.controlling .screen { padding: 4px; }
-.tour-phone .inspector.controlling #film { width: min(100%, max(48px, calc((var(--tour-history-height) - 244px) * 256 / 224))); }
+.tour-phone .inspector.controlling #film { width: min(100%, max(48px, calc((var(--tour-history-height) - 244px) * var(--screen-ratio)))); }
 .tour-phone .controlling #game-controls { margin: 4px 0; }
 .tour-phone .controlling .touch-controls { padding: 4px 0; }
 .tour-phone[data-tour-step="fork"] .branches,
@@ -1200,7 +1212,7 @@ dialog h2 {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr); gap: 8px 12px; align-items: center;
 }
 .tour-landscape .inspector.controlling .screen { grid-column: 1; grid-row: 1 / 3; }
-.tour-landscape .inspector.controlling #film { width: min(100%, calc((var(--tour-history-height) - 62px) * 256 / 224)); }
+.tour-landscape .inspector.controlling #film { width: min(100%, calc((var(--tour-history-height) - 62px) * var(--screen-ratio))); }
 .tour-landscape .controlling #game-controls { grid-column: 2; grid-row: 1; margin: 0; }
 .tour-landscape .controlling .branch-actions { grid-column: 2; grid-row: 2; margin: 0; }
 .tour-landscape .controlling .action-buttons button { width: 44px; height: 44px; }

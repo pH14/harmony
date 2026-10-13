@@ -336,7 +336,7 @@ onmessage = async ({ data }) => {
             "Eight searches retained. Delete a branch or Restart Search before creating another.",
           );
         const tape = data.tape;
-        const frames = validateTape(tape);
+        const frames = validateTape(tape, engine.game, engine.revision);
         if ((tape.boot_level ?? 0) !== bootLevel) throw new Error("History starts in a different level");
         if (frames >= 200000 || tape.actions.length >= 10000)
           throw new Error(

@@ -131,7 +131,7 @@ for (const name of ["level-one", "level-two", "level-three"]) {
   const tape = JSON.parse(
     await readFile(new URL(`fixtures/${name}.json`, import.meta.url)),
   );
-  validateTape(tape);
+  validateTape(tape, twinDragons, CORE_REVISION);
   engine.restore(root);
   for (const action of tape.actions) engine.run(action.buttons, action.frames);
   assert.equal(
