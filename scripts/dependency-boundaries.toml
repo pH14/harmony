@@ -56,7 +56,6 @@ workload_packages = [
 composition_apps_tests = [
     "demos/twin-dragons/rust",
     "consonance/nested-driver",
-    "workloads/tools",
     "cli",
     "consonance/control-proto/fuzz",
     "consonance/telemetry",

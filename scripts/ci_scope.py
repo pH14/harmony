@@ -11,9 +11,7 @@ import sys
 
 
 SCENARIOS = (
-    "dissonance_nes",
     "dissonance_stb",
-    "harmony_nes",
     "harmony_oci",
     "harmony_languages",
     "consonance_platform",
@@ -23,12 +21,9 @@ GLOBAL = (
     "Cargo.toml", "Cargo.lock", "**/Cargo.toml", "**/Cargo.lock",
     "rust-toolchain*", "flake.nix", "flake.lock", ".cargo/**",
     ".github/workflows/dissonance-workloads-nes-checks.yml",
-    ".github/workflows/harmony-workloads-nes-checks.yml",
     ".github/workflows/harmony-workloads-oci-checks.yml",
     ".github/workflows/consonance-checks.yml",
     ".github/actions/platform-runtime/**",
-    ".github/actions/nes-guest-image/**",
-    ".github/actions/prepare-nes-guest/**",
     ".github/workflows/harmony-workloads-languages-checks.yml",
     "scripts/ci_scope.py", "scripts/test_ci_scope.py",
     "scripts/ci_contract.py", "scripts/test_ci_contract.py",
@@ -44,15 +39,10 @@ def selected(paths):
             continue
         if any(fnmatch.fnmatchcase(path, pattern) for pattern in GLOBAL):
             return dict.fromkeys(result, True)
-        if path.startswith(("dissonance/", "cli/")):
-            result["dissonance_nes"] = result["harmony_nes"] = True
-        if path.startswith(("workloads/nes/", "workloads/nes-machine/", "workloads/nes-protocol/", "workloads/nes-guest/")):
-            if path.startswith(("workloads/nes/src/stb/", "workloads/nes/src/bin/stb-")) or "/stb-" in path or path.endswith("build-stb-rom.sh"):
-                result["dissonance_stb"] = True
-            else:
-                result["dissonance_nes"] = result["harmony_nes"] = True
+        if path.startswith(("dissonance/", "cli/", "workloads/nes/", "workloads/nes-machine/", "workloads/nes-protocol/", "workloads/nes-guest/")):
+            result["dissonance_stb"] = True
         if path == "scripts/build-quicknes-core.sh":
-            result["dissonance_nes"] = result["dissonance_stb"] = result["harmony_nes"] = True
+            result["dissonance_stb"] = True
         if path.startswith(".github/actions/stb-evaluation/"):
             result["dissonance_stb"] = True
         if path.startswith(("workloads/fault-policy/", "workloads/faults/", "workloads/bugs/historical/postgres-cic-corruption/", "scripts/historical-")):
@@ -64,7 +54,7 @@ def selected(paths):
         if path.startswith("cli/"):
             result["harmony_oci"] = result["consonance_platform"] = True
         if path.startswith("consonance/"):
-            result["consonance_platform"] = result["harmony_nes"] = True
+            result["consonance_platform"] = True
         if path.startswith(("consonance/vmm-backend/", "consonance/vmm-core/", "consonance/vm-state/", "consonance/vtime/")):
             result["consonance_kvm"] = True
         if path.startswith(("consonance/execution-proto/", "consonance/process-proto/", "consonance/oci/", "consonance/client/")):

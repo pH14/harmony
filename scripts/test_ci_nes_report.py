@@ -34,8 +34,8 @@ class ReportTests(unittest.TestCase):
 
     def test_missing_jobs_remain_in_roster(self):
         rows, issues = REPORT.collect(self.suite, self.root)
-        self.assertEqual(len(rows), 27)
-        self.assertEqual(len(issues), 27)
+        self.assertEqual(len(rows), 9)
+        self.assertEqual(len(issues), 9)
         self.assertTrue(all(row["status"] == "missing" for row in rows))
 
     def test_failed_case_survives_merge(self):
@@ -65,7 +65,7 @@ class ReportTests(unittest.TestCase):
             del row["media"]
             self.write_roster(str(index), [row])
         _, issues = REPORT.collect(self.suite, self.root)
-        self.assertEqual(len(issues), 27)
+        self.assertEqual(len(issues), 9)
         self.assertTrue(all("predates media" in issue for issue in issues))
 
     def test_duplicate_cells_cannot_count_twice(self):
@@ -73,7 +73,7 @@ class ReportTests(unittest.TestCase):
         self.write_roster("one", rows)
         self.write_roster("two", rows[:1])
         merged, issues = REPORT.collect(self.suite, self.root)
-        self.assertEqual(len(merged), 27)
+        self.assertEqual(len(merged), 9)
         self.assertTrue(any("duplicate" in issue for issue in issues))
 
     def test_wrong_manifest_does_not_supply_evidence(self):

@@ -279,7 +279,6 @@ fn parse_billboard(
 
 pub struct ConsonanceMachine {
     session: Session,
-    power_on_publication: bool,
     setup: SnapId,
     billboard_handle: u32,
     billboard_len: u32,
@@ -335,12 +334,7 @@ impl ConsonanceMachine {
             |s| s.replay_snapshot(control_snap(setup)),
         )?;
         let registers = state_registers(&mut session, &mut profile)?;
-        let power_on_publication = registers.contains("nes.publication.handle");
-        let (handle_name, len_name) = if power_on_publication {
-            ("nes.publication.handle", "nes.publication.len")
-        } else {
-            ("nova_billboard_handle", "nova_billboard_len")
-        };
+        let (handle_name, len_name) = ("nes.publication.handle", "nes.publication.len");
         let billboard_handle =
             u32::try_from(registers.get(handle_name).map_err(MachineError::Backend)?)
                 .map_err(|_| MachineError::Backend("observation handle exceeds u32".to_owned()))?;
@@ -383,7 +377,6 @@ impl ConsonanceMachine {
         );
         Ok(Self {
             session,
-            power_on_publication,
             setup,
             billboard_handle,
             billboard_len,
@@ -396,10 +389,6 @@ impl ConsonanceMachine {
             observation_valid: true,
             profile,
         })
-    }
-
-    pub fn starts_at_power_on(&self) -> bool {
-        self.power_on_publication
     }
 }
 

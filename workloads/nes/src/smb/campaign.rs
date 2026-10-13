@@ -171,12 +171,6 @@ impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
             SmbBackend::Consonance { kernel, initramfs } => {
                 let machine =
                     ConsonanceMachine::new(kernel, initramfs).map_err(|error| error.to_string())?;
-                if !machine.starts_at_power_on() {
-                    return Err(
-                        "SMB Consonance image does not publish a power-on NES guest state"
-                            .to_owned(),
-                    );
-                }
                 SmbTarget::from_machine(machine).map_err(|error| error.to_string())
             }
             SmbBackend::QuickNes => Err("SMB backend does not match Consonance".to_owned()),

@@ -9,10 +9,6 @@ use std::{
 
 use nes_workload::{
     film::{Capture, FilmMetadata, Filmable, Reel},
-    nova::{
-        campaign::{NovaCampaignRun, NovaGame},
-        target::NovaLevel,
-    },
     search::archive::Input,
     stb::{
         campaign::{StbCampaignRun, StbGame},
@@ -35,9 +31,7 @@ struct Args {
     core: PathBuf,
     rom_sha256: String,
     core_sha256: String,
-    level: Option<u8>,
     ai: Option<String>,
-    whole_game: bool,
     input: PathBuf,
     evidence: PathBuf,
     out: PathBuf,
@@ -53,9 +47,7 @@ impl Args {
         let mut core = None;
         let mut rom_sha256 = None;
         let mut core_sha256 = None;
-        let mut level = None;
         let mut ai = None;
-        let mut whole_game = false;
         let mut input = None;
         let mut evidence = None;
         let mut out = None;
@@ -64,10 +56,6 @@ impl Args {
         let mut recorded_backend = "native".to_owned();
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
-            if flag == "--whole-game" {
-                whole_game = true;
-                continue;
-            }
             let value = args
                 .next()
                 .ok_or_else(|| format!("missing value after {}", flag.to_string_lossy()))?;
@@ -83,7 +71,6 @@ impl Args {
                 "--core" => core = Some(PathBuf::from(&value)),
                 "--rom-sha256" => rom_sha256 = Some(text()?),
                 "--core-sha256" => core_sha256 = Some(text()?),
-                "--level" => level = Some(text()?.parse()?),
                 "--ai" => ai = Some(text()?),
                 "--input" => input = Some(PathBuf::from(&value)),
                 "--evidence" => evidence = Some(PathBuf::from(&value)),
@@ -100,9 +87,7 @@ impl Args {
             core: core.ok_or("missing --core")?,
             rom_sha256: rom_sha256.ok_or("missing --rom-sha256")?,
             core_sha256: core_sha256.ok_or("missing --core-sha256")?,
-            level,
             ai,
-            whole_game,
             input: input.ok_or("missing --input")?,
             evidence: evidence.ok_or("missing --evidence")?,
             out: out.ok_or("missing --out")?,
@@ -244,32 +229,10 @@ fn main() -> Result<()> {
     }
     let identity = json!({
         "game": args.game,
-        "level": args.level,
         "ai": args.ai,
-        "whole_game": args.whole_game,
     });
     match args.game.as_str() {
-        "nova" => {
-            if args.ai.is_some() {
-                return Err("Nova takes no ai option".into());
-            }
-            let game = NovaGame::new_at_level(
-                &rom,
-                &args.core,
-                &args.core_sha256,
-                NovaLevel::from_number(args.level.unwrap_or(1))?,
-            );
-            let game = if args.whole_game {
-                game.with_whole_game()
-            } else {
-                game
-            };
-            produce(game, NovaCampaignRun, &args, identity)
-        }
         "stb" => {
-            if args.level.is_some() || args.whole_game {
-                return Err("STB takes only an ai option".into());
-            }
             let ai = match args.ai.as_deref().unwrap_or("hard") {
                 "easy" => StbAi::Easy,
                 "fair" => StbAi::Fair,
@@ -284,8 +247,8 @@ fn main() -> Result<()> {
             )
         }
         "twin-dragons" => {
-            if args.level.is_some() || args.ai.is_some() || args.whole_game {
-                return Err("Twin Dragons takes no level, ai or whole_game option".into());
+            if args.ai.is_some() {
+                return Err("Twin Dragons takes no ai option".into());
             }
             produce(
                 TwinDragonsGame::new(&rom, &args.core, &args.core_sha256),
@@ -294,7 +257,7 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => Err("nes-film renders the Nova, STB and Twin Dragons benchmark scenarios".into()),
+        _ => Err("nes-film renders the STB and Twin Dragons benchmark scenarios".into()),
     }
 }
 
@@ -305,7 +268,7 @@ mod tests {
     fn required(extra: &[&str]) -> Vec<OsString> {
         let mut args = [
             "--game",
-            "nova",
+            "stb",
             "--rom",
             "rom",
             "--core",
@@ -333,7 +296,6 @@ mod tests {
         let args = Args::parse_from(required(&[])).expect("arguments parse");
         assert_eq!(args.max_frames, DEFAULT_MAX_FRAMES);
         assert_eq!(args.tail_frames, DEFAULT_TAIL_FRAMES);
-        assert!(!args.whole_game);
     }
 
     #[test]
@@ -345,9 +307,6 @@ mod tests {
 
     #[test]
     fn scenario_identity_is_explicit() {
-        let args = Args::parse_from(required(&["--level", "9", "--whole-game"])).unwrap();
-        assert_eq!(args.level, Some(9));
-        assert!(args.whole_game);
         assert_eq!(
             Args::parse_from(required(&["--ai", "easy"]))
                 .unwrap()
@@ -375,6 +334,6 @@ mod tests {
     #[test]
     fn unknown_and_incomplete_arguments_are_rejected() {
         assert!(Args::parse_from(required(&["--unknown", "value"])).is_err());
-        assert!(Args::parse_from(vec![OsString::from("--game"), OsString::from("nova")]).is_err());
+        assert!(Args::parse_from(vec![OsString::from("--game"), OsString::from("stb")]).is_err());
     }
 }

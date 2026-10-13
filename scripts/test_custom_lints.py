@@ -177,88 +177,6 @@ class WorkflowFileTests(unittest.TestCase):
     def test_a_registered_workflow_passes(self):
         self.assertFalse(self.check(workflow_text()))
 
-    def test_nova_consumers_wait_for_same_run_guest_artifacts(self):
-        for workflow, consumer in (
-            (ci_contract.HARMONY_NES_CHECKS, "nova"),
-            (ci_contract.HARMONY_NES_BENCHMARKS, "whole-vm-search-campaign"),
-        ):
-            with self.subTest(workflow=workflow.path):
-                data = LINTS._parse_workflow(ROOT / workflow.path)
-                jobs = data["jobs"]
-                self.assertEqual(jobs[consumer]["needs"], "guest-image")
-                self.assertTrue(any(step.get("uses") == "./.github/actions/prepare-nes-guest"
-                                    for step in jobs["guest-image"]["steps"]))
-                downloads = [step["with"] for step in jobs[consumer]["steps"]
-                             if step.get("uses") == "actions/download-artifact@v4"]
-                self.assertEqual(len(downloads), 2)
-                self.assertEqual(downloads[0]["name"], "nes-guest-runtime")
-                self.assertIn("steps.guest-image.outputs.key", downloads[1]["name"])
-                self.assertTrue(all("run-id" not in download for download in downloads))
-                if consumer == "nova":
-                    self.assertEqual(jobs[consumer]["timeout-minutes"], 15)
-                    self.assertIn("always()", jobs[consumer]["if"])
-                    guard = jobs[consumer]["steps"][0]
-                    self.assertEqual(guard["if"], "needs.guest-image.result != 'success'")
-                    self.assertIn("exit 1", guard["run"])
-
-    def test_image_cache_requires_the_complete_evidence_bundle(self):
-        action = yaml.safe_load((ROOT / ".github/actions/nes-guest-image/action.yml").read_text())
-        check = next(step["run"] for step in action["runs"]["steps"] if step.get("id") == "check")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            build = root / "consonance/harmony-linux/build"
-            files = {
-                "nes.oci/index.json": b"index",
-                "nes.oci/blobs/sha256/manifest": b"manifest",
-                "nes.oci.sha256": (hashlib.sha256(b"manifest").hexdigest() + "  nes.oci/blobs/sha256/manifest\n").encode(),
-                "nes-build-provenance/build.txt": b"build evidence",
-                "nes-build-provenance/SHA256SUMS": (hashlib.sha256(b"build evidence").hexdigest() + "  build.txt\n").encode(),
-                "nes-quicknes.a": b"static archive",
-            }
-            for name, content in files.items():
-                path = build / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(content)
-            output = root / "output"
-            def run_check():
-                output.write_text("")
-                subprocess.run(["bash", "-euo", "pipefail", "-c", check], cwd=root,
-                               env={**os.environ, "GITHUB_OUTPUT": str(output)},
-                               check=True, capture_output=True, text=True)
-                return output.read_text().strip()
-            self.assertEqual(run_check(), "hit=true")
-            for name in ("nes.oci.sha256", "nes-build-provenance/SHA256SUMS", "nes-quicknes.a"):
-                with self.subTest(missing=name):
-                    (build / name).unlink()
-                    self.assertEqual(run_check(), "hit=false")
-                    (build / name).write_bytes(files[name])
-            (build / "nes.oci/blobs/sha256/manifest").write_bytes(b"corrupt")
-            with self.assertRaises(subprocess.CalledProcessError):
-                run_check()
-
-    def test_nes_runtime_cache_cannot_populate_the_qualified_cache(self):
-        action = yaml.safe_load((ROOT / ".github/actions/prepare-nes-guest/action.yml").read_text())
-        steps = action["runs"]["steps"]
-        restore_index = next(i for i, step in enumerate(steps)
-                             if step.get("uses") == "actions/cache/restore@v4")
-        cleanup = steps[restore_index - 1]
-        self.assertEqual(cleanup["if"], steps[restore_index]["if"])
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            stale = root / "consonance/harmony-linux/build/x86_64/build-provenance/stale"
-            stale.parent.mkdir(parents=True)
-            stale.write_text("qualified runtime evidence")
-            subprocess.run(["bash", "-eu", "-c", cleanup["run"]], cwd=root, check=True)
-            self.assertFalse((root / "consonance/harmony-linux/build/x86_64").exists())
-        saves = [step["with"] for step in action["runs"]["steps"]
-                 if step.get("uses") == "actions/cache/save@v4"]
-        self.assertTrue(any(item["key"].startswith("nes-platform-v1-") for item in saves))
-        self.assertFalse(any(item["key"].startswith("consonance-platform-") for item in saves))
-        image = next(step["with"] for step in action["runs"]["steps"]
-                     if step.get("uses") == "actions/upload-artifact@v4" and "image-v2" in step["with"]["name"])
-        for path in ("nes.oci", "nes.oci.sha256", "nes-build-provenance", "nes-quicknes.a"):
-            self.assertIn("consonance/harmony-linux/build/" + path, image["path"].splitlines())
-
     def test_the_repository_matches_its_registry(self):
         self.assertFalse(LINTS.check_workflow_rules(ROOT, list(ci_contract.registered_paths())))
 
@@ -381,7 +299,7 @@ class RegistryStructureTests(unittest.TestCase):
             with self.subTest(job=job):
                 self.assertIn("ci-display-name",
                               self.rules(registered(jobs=(ci_contract.Job(job, "pr", 15),))))
-        for job in ("Nova", "Coverage", "Results", "Guest Memory"):
+        for job in ("STB", "Coverage", "Results", "Guest Memory"):
             with self.subTest(job=job):
                 self.assertNotIn("ci-display-name",
                                  self.rules(registered(jobs=(ci_contract.Job(job, "pr", 15),))))
@@ -391,7 +309,7 @@ class RegistryStructureTests(unittest.TestCase):
         self.assertIn("ci-display-name", self.rules(registered(jobs=jobs)))
 
     def test_a_variant_uses_the_registered_separator(self):
-        for job in ("Nova - <N>", "Nova: <N>", "Nova <N>"):
+        for job in ("STB - <N>", "STB: <N>", "STB <N>"):
             with self.subTest(job=job):
                 self.assertIn("ci-display-name",
                               self.rules(registered(jobs=(ci_contract.Job(job, "pr", 15),))))
@@ -569,21 +487,21 @@ class JobContractTests(unittest.TestCase):
             return [v.rule for v in LINTS.check_workflow_file(root, workflow.path, workflow)]
 
     def test_only_the_registered_image_prerequisite_gets_a_build_budget(self):
-        workflow = ci_contract.HARMONY_NES_CHECKS
-        registered_job = next(job for job in workflow.jobs if job.name == "NES Guest Image")
+        workflow = ci_contract.HARMONY_OCI_CHECKS
+        registered_job = next(job for job in workflow.jobs if job.name == "Exact Runtime Artifacts")
         job = {"timeout-minutes": 45, "steps": []}
         for path, name, timeout in (
-            (workflow.path, "NES Guest Image", 45),
-            (workflow.path, "NES Guest Image", 46),
-            (workflow.path, "Nova", 45),
-            (".github/workflows/example.yml", "NES Guest Image", 45),
+            (workflow.path, "Exact Runtime Artifacts", 45),
+            (workflow.path, "Exact Runtime Artifacts", 46),
+            (workflow.path, "Container Execution", 45),
+            (".github/workflows/example.yml", "Exact Runtime Artifacts", 45),
         ):
             with self.subTest(path=path, name=name, timeout=timeout):
                 candidate = registered_job._replace(name=name, scope="", timeout_minutes=timeout)
                 job["timeout-minutes"] = timeout
                 violations = LINTS.check_job_contract(path, "guest-image", job, candidate, True)
                 timeout_errors = [v for v in violations if v.rule == "ci-pr-job-timeout"]
-                self.assertEqual(bool(timeout_errors), (path, name, timeout) != (workflow.path, "NES Guest Image", 45))
+                self.assertEqual(bool(timeout_errors), (path, name, timeout) != (workflow.path, "Exact Runtime Artifacts", 45))
 
     def test_bounded_jobs_declare_their_budget(self):
         self.assertFalse(self.check("    timeout-minutes: 15\n    steps: []"))
@@ -743,25 +661,25 @@ class DisplayNameTests(unittest.TestCase):
         self.assertFalse(self.check(labelled, (ci_contract.Job("Snapshot Identity — Replica <N>", "pr", 15),)))
 
     def test_an_include_entry_refines_the_combination_it_matches(self):
-        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+        job = {"name": "STB — Replica ${{ matrix.replica }}",
                "strategy": {"matrix": {"replica": [1, 2],
                                        "include": [{"replica": 1, "extra": True}]}}}
-        self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1", "Nova — Replica 2"])
+        self.assertEqual(LINTS._job_display_names(job), ["STB — Replica 1", "STB — Replica 2"])
         self.assertEqual(LINTS._matrix_rows(job),
                          [{"replica": 1, "extra": True}, {"replica": 2}])
 
     def test_an_excluded_combination_is_not_displayed(self):
-        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+        job = {"name": "STB — Replica ${{ matrix.replica }}",
                "strategy": {"matrix": {"replica": [1, 2], "exclude": [{"replica": 2}]}}}
-        self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1"])
+        self.assertEqual(LINTS._job_display_names(job), ["STB — Replica 1"])
 
     def test_an_include_entry_the_axes_cannot_hold_becomes_its_own_job(self):
-        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+        job = {"name": "STB — Replica ${{ matrix.replica }}",
                "strategy": {"matrix": {"replica": [1], "include": [{"replica": 2}]}}}
-        self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1", "Nova — Replica 2"])
+        self.assertEqual(LINTS._job_display_names(job), ["STB — Replica 1", "STB — Replica 2"])
 
     def test_two_include_entries_the_axes_cannot_hold_stay_separate(self):
-        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+        job = {"name": "STB — Replica ${{ matrix.replica }}",
                "strategy": {"matrix": {"replica": [1], "include": [
                    {"replica": 2, "extra": "first"}, {"replica": 2, "extra": "second"}]}}}
         self.assertEqual(LINTS._matrix_rows(job),
@@ -769,9 +687,9 @@ class DisplayNameTests(unittest.TestCase):
                           {"replica": 2, "extra": "second"}])
 
     def test_display_names_expand_only_what_the_file_declares(self):
-        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+        job = {"name": "STB — Replica ${{ matrix.replica }}",
                "strategy": {"matrix": {"replica": [1, 2]}}}
-        self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1", "Nova — Replica 2"])
+        self.assertEqual(LINTS._job_display_names(job), ["STB — Replica 1", "STB — Replica 2"])
         dynamic = {"name": "${{ matrix.display_name }}",
                    "strategy": {"matrix": "${{ fromJSON(needs.manifest.outputs.matrix) }}"}}
         self.assertEqual(LINTS._job_display_names(dynamic), [LINTS.UNKNOWN_VALUE])
@@ -886,11 +804,11 @@ class SelectorJobTests(unittest.TestCase):
 class ScopeRoutingTests(unittest.TestCase):
     def job(self, **changes) -> dict:
         job = {
-            "name": "Nova",
+            "name": "STB",
             "timeout-minutes": 15,
             "steps": [
                 {"uses": "actions/checkout@v4", "with": {"fetch-depth": 0, "filter": "blob:none"}},
-                {"uses": "./.github/actions/ci-scope", "id": "scope", "with": {"kind": "harmony_nes"}},
+                {"uses": "./.github/actions/ci-scope", "id": "scope", "with": {"kind": "dissonance_stb"}},
                 {"run": "harmony search", "if": "${{ steps.scope.outputs.enabled == 'true' }}"},
             ],
         }
@@ -898,8 +816,8 @@ class ScopeRoutingTests(unittest.TestCase):
         return job
 
     def check(self, job, registry=None) -> list[str]:
-        registry = registry if registry is not None else ci_contract.Job("Nova", "pr", 15, scope="harmony_nes")
-        return [v.rule for v in LINTS.check_job_scope(".github/workflows/example.yml", "nova", job, registry)]
+        registry = registry if registry is not None else ci_contract.Job("STB", "pr", 15, scope="dissonance_stb")
+        return [v.rule for v in LINTS.check_job_scope(".github/workflows/example.yml", "smb", job, registry)]
 
     def test_a_selecting_job_passes(self):
         self.assertFalse(self.check(self.job()))
@@ -915,7 +833,7 @@ class ScopeRoutingTests(unittest.TestCase):
         self.assertEqual(self.check(job), ["ci-scope-routing"])
 
     def test_an_unregistered_job_cannot_select(self):
-        self.assertEqual(self.check(self.job(), ci_contract.Job("Nova", "pr", 15)), ["ci-scope-routing"])
+        self.assertEqual(self.check(self.job(), ci_contract.Job("STB", "pr", 15)), ["ci-scope-routing"])
 
     def test_the_selector_itself_cannot_be_skipped(self):
         for change in ({"if": "false"}, {"continue-on-error": True}, {"id": "other"}):
@@ -941,11 +859,11 @@ class ScopeRoutingTests(unittest.TestCase):
 
 
 class NesCompositionTests(unittest.TestCase):
-    def test_both_compositions_keep_a_check_and_a_benchmark(self):
+    def test_the_composition_keeps_a_check_and_a_benchmark(self):
         paths = {ci_contract.by_name(entry[role]).path
                  for entry in ci_contract.NES_COMPOSITIONS.values()
                  for role in ("checks", "benchmarks")}
-        self.assertEqual(len(paths), 4)
+        self.assertEqual(len(paths), 2)
         self.assertFalse(LINTS.check_nes_compositions(ROOT, paths))
         for dropped in sorted(paths):
             with self.subTest(dropped=dropped):
@@ -955,7 +873,7 @@ class NesCompositionTests(unittest.TestCase):
     def test_a_deleted_composition_is_reported(self):
         with mock.patch.object(ci_contract, "NES_COMPOSITIONS", {}):
             violations = LINTS.check_nes_compositions(ROOT, set())
-        self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"] * 2)
+        self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"])
 
     def test_every_composition_runs_the_backend_it_is_registered_with(self):
         for composition, entry in ci_contract.NES_COMPOSITIONS.items():
@@ -965,19 +883,19 @@ class NesCompositionTests(unittest.TestCase):
                     self.assertFalse(LINTS.check_nes_backend(ROOT, composition, entry, role, workflow))
 
     def test_a_vm_composition_running_only_native_is_reported(self):
-        entry = ci_contract.NES_COMPOSITIONS["Harmony Workloads"]
-        workflow = ci_contract.by_name(entry["checks"])
+        entry = {"backend": "consonance"}
+        workflow = ci_contract.by_name(ci_contract.NES_COMPOSITIONS["Dissonance Workloads"]["checks"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / workflow.path).parent.mkdir(parents=True)
             (root / workflow.path).write_text("run: harmony search --runner quicknes game.nes\n")
-            violations = LINTS.check_nes_backend(root, "Harmony Workloads", entry, "checks", workflow)
+            violations = LINTS.check_nes_backend(root, "Dissonance Workloads", entry, "checks", workflow)
         self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"])
         self.assertIn("never runs the consonance backend", violations[0].text)
 
     def test_an_unregistered_backend_is_reported(self):
-        violations = LINTS.check_nes_backend(ROOT, "Harmony Workloads", {"backend": "invented"},
-                                             "checks", ci_contract.by_name("Checks / Harmony Workloads / NES"))
+        violations = LINTS.check_nes_backend(ROOT, "Dissonance Workloads", {"backend": "invented"},
+                                             "checks", ci_contract.by_name("Checks / Dissonance Workloads / NES"))
         self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"])
 
 
@@ -1028,8 +946,7 @@ class NesMediaTests(unittest.TestCase):
 
     def test_a_capture_step_the_job_can_skip_does_not_count(self):
         workflow = self.composition("checks")
-        steps = ("      - run: nes-film --out film\n        if: false\n"
-                 "      - uses: ./.github/actions/stb-evaluation\n"
+        steps = ("      - uses: ./.github/actions/stb-evaluation\n        if: false\n"
                  "      - run: python3 scripts/verify-nes-films.py film/film.json\n")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1089,7 +1006,7 @@ class NesMediaTests(unittest.TestCase):
             "python3 scripts/verify-nes-films.py film/film.json",
             "workloads/nes/src/bin/nes-film.rs"))
         self.assertTrue(LINTS.names_capture(
-            "workloads/nes/target/release/nes-film --game nova",
+            "workloads/nes/target/release/nes-film --game stb",
             "workloads/nes/src/bin/nes-film.rs"))
 
     def test_the_repository_registers_a_capture_for_every_filming_job(self):
@@ -1139,42 +1056,42 @@ class NesCaseCoverageTests(unittest.TestCase):
         self.assertFalse(LINTS.check_nes_case_coverage(ROOT, {self.PATH}))
 
     def test_each_case_has_an_independent_job(self):
-        self.assertFalse(self.check(["nova-full", "stb-hard"], self.entries("nova-full", "stb-hard")))
+        self.assertFalse(self.check(["stb-easy", "stb-hard"], self.entries("stb-easy", "stb-hard")))
 
     def test_the_manifest_requires_its_tracked_owning_workflow(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             manifest = root / "benchmarks/search/nightly.json"
             manifest.parent.mkdir(parents=True)
-            manifest.write_text(json.dumps({"cases": [{"id": "nova-full"}]}))
+            manifest.write_text(json.dumps({"cases": [{"id": "stb-easy"}]}))
             violations = LINTS.check_nes_case_coverage(root, set())
         self.assertEqual([v.rule for v in violations], ["ci-nes-case-jobs"])
 
     def test_a_monolithic_panel_is_rejected(self):
-        rules = self.check(["nova-full", "stb-hard"], self.entries("nova-full", "stb-hard"),
+        rules = self.check(["stb-easy", "stb-hard"], self.entries("stb-easy", "stb-hard"),
                            command="python3 benchmarks/search/eval.py run benchmarks/search/nightly.json")
         self.assertEqual(rules, ["ci-nes-case-jobs"])
 
     def test_a_new_case_requires_a_job(self):
-        self.assertEqual(self.check(["nova-full", "stb-hard", "new-game"],
-                                    self.entries("nova-full", "stb-hard")), ["ci-nes-case-jobs"])
+        self.assertEqual(self.check(["stb-easy", "stb-hard", "new-game"],
+                                    self.entries("stb-easy", "stb-hard")), ["ci-nes-case-jobs"])
 
     def test_duplicate_and_unknown_cases_are_rejected(self):
-        for cases in (("nova", "nova"), ("nova", "unknown")):
+        for cases in (("smb", "smb"), ("smb", "unknown")):
             with self.subTest(cases=cases):
-                self.assertEqual(self.check(["nova", "stb"], self.entries(*cases)), ["ci-nes-case-jobs"])
+                self.assertEqual(self.check(["smb", "stb"], self.entries(*cases)), ["ci-nes-case-jobs"])
 
     def test_an_extra_axis_cannot_multiply_case_jobs(self):
-        self.assertEqual(self.check(["nova"], self.entries("nova"), extra_axis={"repeat": [1, 2]}),
+        self.assertEqual(self.check(["smb"], self.entries("smb"), extra_axis={"repeat": [1, 2]}),
                          ["ci-nes-case-jobs"])
 
     def test_every_matrix_entry_names_its_scenario(self):
-        self.assertEqual(self.check(["nova"], [{"case": "nova"}]), ["ci-nes-case-jobs"])
+        self.assertEqual(self.check(["smb"], [{"case": "smb"}]), ["ci-nes-case-jobs"])
 
     def test_sibling_failures_do_not_cancel_cases_or_hide_results(self):
         for options in ({"fail_fast": True}, {"report_if": "success()"}, {"needs": ()}):
             with self.subTest(options=options):
-                self.assertEqual(self.check(["nova"], self.entries("nova"), **options),
+                self.assertEqual(self.check(["smb"], self.entries("smb"), **options),
                                  ["ci-nes-case-jobs"])
 
 

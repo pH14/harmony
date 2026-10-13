@@ -45,11 +45,9 @@ what owns it, and the linter rejects them.
 | `Checks / Harmony / Analysis` | `harmony-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Dissonance Workloads / NES` | `dissonance-workloads-nes-checks.yml` | pull_request, push |
 | `Checks / Dissonance Workloads / Tiny Worlds` | `dissonance-workloads-tiny-worlds-checks.yml` | pull_request, push |
-| `Checks / Harmony Workloads / NES` | `harmony-workloads-nes-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Harmony Workloads / Languages` | `harmony-workloads-languages-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Harmony Workloads / OCI` | `harmony-workloads-oci-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
-| `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
 | `Benchmarks / Harmony Workloads / UML` | `harmony-workloads-uml-campaign.yml` | workflow_dispatch |
 | `Release / Harmony` | `release.yml` | push (version tags) |
@@ -92,40 +90,16 @@ has effective capabilities.
 
 Reports remain workflow artifacts.
 
-## Dissonance Workloads and Harmony Workloads
+## Dissonance Workloads
 
-The same game runs two ways, and neither substitutes for the other.
+**`Dissonance Workloads / NES`** drives native QuickNES through the Dissonance
+adapter. It exercises the search loop, the archive and the game's own
+interpretation without a virtual machine.
 
-- **`Dissonance Workloads / NES`** drives native QuickNES through the Dissonance
-  adapter. It exercises the search loop, the archive and the game's own
-  interpretation without a virtual machine.
-- **`Harmony Workloads / NES`** runs the same game inside a Consonance guest. It
-  exercises snapshot and restore, the guest protocol and the assembled product.
-
-`scripts/ci_contract.py` registers the pair in `NES_COMPOSITIONS` with the
-backend each one runs, and the linter requires each composition to keep a
-bounded Checks workflow and a full Benchmarks workflow, and requires each
-workflow to actually run its registered backend. A Harmony composition reduced
-to native execution alone fails `ci-nes-compositions`.
-
-The Harmony NES Checks and Benchmarks workflows prepare their exact runtime and
-ROM-free NES image in one prerequisite job. The shared `prepare-nes-guest`
-action reuses source-matched artifacts when available and builds missing ones.
-Nova waits for that job and downloads its artifacts from the same workflow run;
-a cache miss is construction work, not a validation failure. All four benchmark
-replicas consume the same prepared image. Runtime provenance is checked before
-publication and after download; image artifact names retain the exact source
-key. The versioned image bundle carries the OCI layout, its digest, build provenance,
-and the exact static QuickNES archive used by the producer. Both artifacts are
-retained for 30 days. Runtime builds made for NES use a separate cache namespace
-from Guest Runtime Qualification; they never populate its qualified cache.
-Nova reports failure if preparation fails, preserving the required check even
-when no validation can run. Image identity includes the guest protocol and Rust
-toolchain, and cross-run image reuse excludes artifacts from fork repositories.
-No manual benchmark dispatch or failed-check retry is required to populate
-an image for a pull request. A manual Checks run with `rebuild_guest=true`
-exercises cold construction followed by bounded Nova validation instead of the
-full backend-equivalence job.
+`scripts/ci_contract.py` registers the composition in `NES_COMPOSITIONS` with
+the backend it runs, and the linter requires it to keep a bounded Checks
+workflow and a full Benchmarks workflow, and requires each workflow to actually
+run its registered backend.
 
 `Checks / Consonance` and `Checks / Harmony Workloads / OCI` each start with an
 `Exact Runtime Artifacts` job. It runs the shared `exact-platform-runtime`
@@ -148,8 +122,7 @@ Every job declares a trigger class.
 - **`pr`** jobs run on pull requests and on pushes to main, and finish inside 15
   minutes. This bound holds for `pull_request`, `pull_request_target` and
   `merge_group`. Artifact-build prerequisites are the exceptions, each capped
-  at 45 minutes for a cold build: `NES Guest Image` builds the exact runtime and
-  ROM-free image, `UML Artifacts — <Architecture>` builds the UML kernels,
+  at 45 minutes for a cold build: `UML Artifacts — <Architecture>` builds the UML kernels,
   `Exact Runtime Artifacts` builds the exact guest runtime,
   `Language Guest Runtime` builds the guest for the language checks, and
   `Language Image — <Language>` builds each language workload image. Their
@@ -174,7 +147,6 @@ the job, which states why the work cannot fit the bound:
 | `Checks / Harmony / Analysis` | `Miri — <Crate> (Whole Crate)` | 240 | Interpreting a whole adapter crate under Miri takes hours, so pull requests get the tests the change reaches. |
 | `Checks / Harmony / Analysis` | `Coverage` | 30 | An instrumented build and run of the CLI exceeds the pull request budget. |
 | `Checks / Harmony / Analysis` | `Mutation Testing — Shard <N>/4` | 320 | Mutation testing rebuilds the CLI once per mutant. |
-| `Checks / Harmony Workloads / NES` | `Backend Equivalence` | 75 | Comparing the native and Consonance backends builds the exact guest runtime and both game images. |
 | `Checks / Harmony Workloads / OCI` | `Docker` | 90 | Building the pinned Docker workload image and booting it twice under nested KVM exceeds the pull request budget. |
 | `Checks / Harmony Workloads / OCI` | `K3s` | 90 | Building the pinned K3s workload image and bringing a cluster up twice exceeds the pull request budget. |
 
@@ -353,7 +325,7 @@ machine runs is deleted.
 
 ## Audiovisual evidence
 
-Both NES compositions publish video with game audio: a bounded capture in the
+The NES composition publishes video with game audio: a bounded capture in the
 Checks workflow and every scenario in the Benchmarks workflow.
 
 `workloads/nes/src/bin/nes-film.rs` renders every evaluation matrix. It reads
@@ -448,12 +420,12 @@ batch GitHub cannot execute until the failing branch is isolated. A manual dispa
 - `ci_contract.SMALL_WORDS` stay lowercase unless they open or close a name.
 - A display name identifies a responsibility or a workload scenario. It never
   names a trigger, and generic names such as `Unit Tests`, `Build` or `Verify`
-  are rejected. Contextual names such as `Nova`, `Coverage` and `Results` are
+  are rejected. Contextual names such as `STB`, `Coverage` and `Results` are
   kept.
 - A job name never repeats the workflow hierarchy; the workflow name already
   carries the owner.
 - A matrix variant is a ` — <Variant>` suffix with an explicit label:
-  `Nova — Replica <N>`, `Mutation Testing — Shard <N>/16`. A bare `(1)` is
+  `UML Artifacts — <Architecture>`, `Mutation Testing — Shard <N>/16`. A bare `(1)` is
   rejected, and so is a job whose matrix would display one name twice.
 - Matrix values and machine identifiers pass through unchanged. The linter
   checks static text and the values a statically declared matrix supplies; it
@@ -589,11 +561,6 @@ a pinned UML profile, and the source SDK for language preparation. Guest, UML
 and SDK archives carry SHA-256 sidecars. `harmony check` and `harmony prepare`
 fetch assets for the CLI version and host architecture into the user data
 cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR`.
-
-The Harmony NES Nova lane also runs `cli/tests/nes.sh` against the pinned native
-runner. It checks the shared CLI's prepared-input execution, exact replay, prefix
-branching, nonempty rooted searches, additional-budget continuation and artifact
-tamper refusal. Its evidence is uploaded with the existing Nova artifact.
 
 The Twin Dragons browser lane (`Checks / Dissonance Workloads / Twin Dragons
 Browser`) owns the standalone `demos/twin-dragons/rust` adapter. It builds

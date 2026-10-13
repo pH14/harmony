@@ -137,7 +137,7 @@ core = "quicknes_libretro.so"
 For guest execution, use `runner.kind = "consonance"` and set
 `workload.options.guest_image` to the NES guest OCI image. This adapter currently
 supports Linux KVM. These requirements belong to the adapter, not shared CLI
-flags. The current NES package recognizes SMB and Nova. It supports search,
+flags. The current NES package recognizes SMB. It supports search,
 recorded-input execution, replay, branching, rooted search and continuation.
 NES controller recordings use `--actions FILE`; console logs and virtual-time
 rewinds are not available for these recordings.
@@ -272,5 +272,3 @@ same dispatch and storage interfaces without application or NES types.
   local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.
 - `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY` exercises plain
   command replay as an unprivileged UML user and rejects planted output divergence.
-- `bash cli/tests/nes.sh ROM CORE DIRECTORY` exercises native NES search, replay,
-  prefix branching, rooted search, continuation and tamper refusal.

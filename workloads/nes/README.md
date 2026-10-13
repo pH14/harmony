@@ -1,16 +1,16 @@
 # NES workload package
 
-This standalone Rust workspace adapts SMB, Nova, Mega Man 2, Metroid, and Super
-Tilt Bro to Dissonance.
+This standalone Rust workspace adapts SMB, Mega Man 2, Metroid, and Super Tilt Bro
+to Dissonance.
 It owns game interpretation, controller policies, campaign binaries, and workload
 reporting. Generic archive and campaign mechanisms come from `searcher`; emulator
 and guest execution support comes from `../nes-machine`. Consonance stages an
 OCI image through `oci-support`, injects the caller's ROM at `/game.nes`, and
 delegates process startup to the platform supervisor.
 
-The `smb-*`, `nova-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
+The `smb-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
 points. Set `runner.options.core` in the CLI recipe or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
-native execution. SMB and Nova support native QuickNES and whole-VM Consonance execution.
+native execution. SMB supports native QuickNES and whole-VM Consonance execution.
 Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
 not implemented for them.
@@ -42,7 +42,7 @@ game's decoded endpoint and frame count for a recorded input, `Filmable` adds
 rendering that input to raw video and audio, and `Reel` owns the FFmpeg
 pipeline: it rejects an empty or wrong-geometry render and a PCM track too short
 to cover the video, muxes the track back in, and hashes both the track and the
-MP4. `nes-film` renders the evaluation matrices of both compositions. It reads the input and `result.json` a campaign already
+MP4. `nes-film` renders the evaluation matrices. It reads the input and `result.json` a campaign already
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
@@ -58,7 +58,7 @@ a native one by construction. Such a film is a native QuickNES replay of a tape
 the VM search recorded: `film.json` sets `endpoint_bridged` and leaves
 `evidence_verified` false, and nothing is captured inside the guest.
 
-`--max-frames` bounds the render. A `nova-full` input has no length bound and
+`--max-frames` bounds the render. A whole-game input has no length bound and
 each action can hold up to 120 frames, so an unbounded film can run for hours. Frames past the
 ceiling are still emulated and are left out of the video, making the film a
 trailing window ending at the recorded endpoint plus `--tail-frames`. The
@@ -75,7 +75,7 @@ Tilt Bro campaign's own witness is checked.
 held for a short hold of 2–12 frames or a long hold, with equal odds. The long
 hold is 96–120 frames for SMB and 48–120 frames for the other games. Each game
 names its held chords and at most one tap button: Select for Metroid, Start for
-Mega Man 2, none for SMB, Nova and Super Tilt Bro.
+Mega Man 2, none for SMB and Super Tilt Bro.
 
 A new chord changes one control of the chord before it. The controls are the
 D-pad, with nine positions, and the A and B buttons. The draw picks the D-pad,
@@ -97,7 +97,7 @@ resident and replays fewer evicted parents. The SMB state of 12,912 bytes
 compresses about seven times. The Metroid state of 21,118 bytes, which includes
 8 KiB of cartridge RAM, compresses to about 9 KB. Compression takes about 10 µs
 and decompression about 6 µs, against about 105 µs for one emulated frame.
-Nova and Super Tilt Bro keep a live handle for the current state and export
+Super Tilt Bro keeps a live handle for the current state and exports
 from it. SMB, Metroid and Mega Man 2 capture and restore through
 `NesBackend::capture_nes` and `NesBackend::restore_nes`. On QuickNES each worker
 thread serializes, compresses and decompresses in buffers it reuses, so a
@@ -110,7 +110,7 @@ reads right after a restore, so a game that needs work RAM after a restore
 reads it from the machine. The Consonance backend serves reads only after a
 run. `SnapshotState::WorkRam` is the copy of work RAM that a snapshot of that
 state keeps: none for QuickNES and 2 KiB for Consonance. SMB stores its work
-RAM there. Nova needs no work RAM after a restore. Observations carry no list of changed RAM
+RAM there. Observations carry no list of changed RAM
 addresses and no log line, because nothing reads them.
 
 Campaign recordings use the current Dissonance schedule policy version 5 and
@@ -119,19 +119,11 @@ namespaces before constructing a replay target.
 
 ## Backend evidence matrix
 
-The native/Consonance backend oracle covers SMB and Nova, but the available
-artifact and platform evidence is not uniform:
-
-Nova has two separate Consonance evidence paths. The `Backend Equivalence` job
-in `Checks / Harmony Workloads / NES` builds the generic NES OCI image and runs
-the shared backend oracle and CLI entry point. `Benchmarks / Harmony Workloads /
-NES` uses the same platform runtime and NES OCI image through the whole-VM
-campaign binary; it produces no SMB evidence.
+The native/Consonance backend oracle covers SMB, but the available artifact
+and platform evidence is not uniform:
 
 | Workload/backend | Current evidence | Required artifacts and platform |
 | --- | --- | --- |
-| Nova/native | `Checks / Dissonance Workloads / NES` and `Benchmarks / Dissonance Workloads / NES` exercise the pinned ROM and QuickNES core. | Host QuickNES core; the CI ROM is built from the pinned source recipe. |
-| Nova/Consonance | The whole-VM campaign runs in `Benchmarks / Harmony Workloads / NES` and the backend oracle in `Checks / Harmony Workloads / NES`. | Linux/KVM, pinned kernel/runtime, NES OCI image, and the pinned Nova ROM/core. |
 | SMB/native | Adapter and loopback tests are checked in; no current real-ROM CI lane is claimed here. | Pinned QuickNES core and a licensed SMB ROM supplied by the caller. |
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
@@ -147,7 +139,7 @@ cargo run --release --manifest-path workloads/nes/Cargo.toml \
   ROM QUICKNES_CORE KERNEL PLATFORM_INITRAMFS NES_OCI_IMAGE
 ```
 
-The oracle identifies SMB and Nova from the ROM and compares native and
+The oracle identifies SMB from the ROM and compares native and
 whole-VM observations, restored continuations, terminal outcomes, and probes.
 ROMs are not redistributed by this package. On aarch64, the caller must supply
 a kernel, platform runtime, and NES OCI image built for that architecture; no
@@ -158,15 +150,11 @@ cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings
 ```
 
-The [Nova](src/nova/README.md), [Mega Man 2](src/mm2/README.md), and
+The [Mega Man 2](src/mm2/README.md) and
 [Metroid](src/metroid/README.md) READMEs document their input and observation maps. Campaign streams
 and checkpoints retain their versioned workload identities across crate moves.
 
-The package also owns the pinned Nova source recipe and ROM revision in
-`scripts/build-nova-rom.sh` and `nova-versions.env`. Its default output is
-`build/nova`. The `tools` directory contains NES movie conversion and trace
-utilities; artifact redistribution terms are recorded in
-`NOVA-ARTIFACT-LICENSE.md`.
+The `tools` directory contains NES movie conversion and trace utilities.
 
 [Super Tilt Bro](src/stb/README.md) has a separate pinned recipe in
 `scripts/build-stb-rom.sh`, `stb-versions.env`, and `STB-ARTIFACT-LICENSE.md`.
@@ -179,24 +167,18 @@ described above, with minimal game guidance.
 ## Local evaluation matrix
 
 [`benchmarks/search`](../../benchmarks/search/README.md) supplies one compact
-native `nes-eval` runner for SMB, Nova, Mega Man 2, Metroid, and Super Tilt Bro.
+native `nes-eval` runner for SMB, Mega Man 2, Metroid, and Super Tilt Bro.
 ROM/core hashes, origin definitions, complete adapter policy identities,
 resource budgets, verification, and immutable export are shared across games.
 Licensed ROMs stay in a private host inventory. Source-built games and generic
 runner/engine tests can run in ordinary CI.
 
 The scheduled/manual public capability panel is registered in
-`benchmarks/search/nightly.json` and reports isolated Nova levels, whole-game
-Nova, and STB in independent case jobs with one combined roster. It intentionally does not include licensed
+`benchmarks/search/nightly.json` and reports STB Easy, Fair and Hard in independent
+case jobs with one combined roster. It intentionally does not include licensed
 SMB, Mega Man 2, or Metroid. Run the full private evaluation and the separate
 SMB reference manifest with `benchmarks/search/run-private.sh` on a Linux host
 that already has the caller's asset inventory; those reports remain local.
-
-Nova's `NovaGame::with_whole_game()` changes the recorded terminal predicate to
-all 40 cleared-level flags, continues execution through intermediate clears, and
-permits an 8,192-action horizon. The default remains the isolated-level workload.
-Whole-game runs must begin at level 1; isolated level setups are never scored as
-whole-game completion.
 
 ### Prepared-execution admission
 
@@ -221,7 +203,7 @@ prepared identity, kernel bytes, and ordered concatenated initramfs bytes. NES
 uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
 `oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
 entrypoint script receive explicit hashes; all workload files remain bound by
-the rootfs segment. The Nova ROM pin is in `nova-versions.env`.
+the rootfs segment.
 
 Run `workloads/guest-images/verify-prepared-admission.py inventory DUMP
 --output NEW_REPORT_DIR` from the repository root for a candidate inventory. GNU
@@ -249,10 +231,8 @@ python3 workloads/guest-images/test_verify_prepared_admission.py -v
 ```
 
 The quality workflow runs these composition mutation checks. The `admission`
-module writes candidate manifests from the actual OCI preparation API. The
-example describes default Linux x86 sessions; the tools probe uses the same
-writer for its separately named Nova A–E scope, described in
-`workloads/tools/README.md`. Neither mode broadens the controlled workload scope.
+module writes candidate manifests from the actual OCI preparation API for
+default Linux x86 sessions. It does not broaden the controlled workload scope.
 
 ## Reusing native evaluation
 

@@ -42,7 +42,7 @@ COMPOSITIONS = (
 CANONICAL_TERMS = (
     "macOS", "etcd", "K3s", "QuickNES", "PostgreSQL", "NES", "OCI", "API",
     "Arm64", "CLI", "KVM", "XSAVE", "HVF", "VM", "CPU", "RAM", "Miri", "Kani",
-    "STB", "Nova", "Docker", "Linux", "Go", "Intel", "Harmony", "Consonance",
+    "STB", "Docker", "Linux", "Go", "Intel", "Harmony", "Consonance",
     "Dissonance", "N6", "UML",
 )
 
@@ -57,7 +57,6 @@ SMALL_WORDS = (
 VARIANT_SEPARATOR = " — "
 PR_BOUNDED_MINUTES = 15
 PR_ARTIFACT_BUILD_BUDGETS = {
-    (f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml", "NES Guest Image"): 45,
     (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
     (f"{WORKFLOW_DIR}/consonance-checks.yml", "Exact Runtime Artifacts"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "Exact Runtime Artifacts"): 45,
@@ -141,7 +140,6 @@ CAPTURE_SCRIPTS = (
 # never invokes one, whatever budget it declares.
 FULL_SEARCH_COMMANDS = (
     "benchmarks/search/eval.py run",
-    "nova-consonance-campaign",
     "scripts/historical-search.sh",
 )
 
@@ -162,7 +160,6 @@ CARGO_MANIFESTS = (
     "workloads/nes-guest/Cargo.toml",
     "workloads/nes-machine/Cargo.toml",
     "workloads/nes-protocol/Cargo.toml",
-    "workloads/tools/Cargo.toml",
     "workloads/tiny-worlds/Cargo.toml",
 )
 
@@ -178,7 +175,6 @@ DENY_COMMANDS = (
     "--manifest-path workloads/nes-protocol/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/fault-policy/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/faults/Cargo.toml check --config deny.toml",
-    "--manifest-path workloads/tools/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/tiny-worlds/Cargo.toml check --config deny.toml",
     "--manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses",
     "--manifest-path consonance/harmony-linux/sdk/Cargo.toml check --config deny.toml licenses",
@@ -541,10 +537,6 @@ DISSONANCE_NES_CHECKS = Workflow(
     owner="Dissonance Workloads",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("Nova", "pr", 15, media=("workloads/nes/src/bin/nes-film.rs",),
-            ignored_tests=("machine::cartridge_ram "
-                           "declared_cartridge_ram_survives_real_core_restore",),
-            scope="dissonance_nes"),
         Job("STB", "pr", 15, media=(".github/actions/stb-evaluation",), scope="dissonance_stb"),
     ),
 )
@@ -557,24 +549,6 @@ DISSONANCE_TINY_WORLDS_CHECKS = Workflow(
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("World Mechanics", "pr", 15, crates=("tiny-worlds",), select="rust_checks"),
-    ),
-)
-
-HARMONY_NES_CHECKS = Workflow(
-    path=f"{WORKFLOW_DIR}/harmony-workloads-nes-checks.yml",
-    name="Checks / Harmony Workloads / NES",
-    owner="Harmony Workloads",
-    triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
-    jobs=(
-        Job("NES Guest Image", "pr", 45,
-            exception="Cold construction of exact runtime and NES image artifacts is "
-                      "a build prerequisite; Nova validation remains bounded to 15 minutes.",
-            scope="harmony_nes"),
-        Job("Nova", "pr", 15, media=("workloads/nes/src/bin/nes-film.rs",),
-            scope="harmony_nes"),
-        Job("Backend Equivalence", "full", 75,
-            exception="Comparing the native and Consonance backends builds the "
-                      "exact guest runtime and both game images."),
     ),
 )
 
@@ -631,23 +605,8 @@ DISSONANCE_NES_BENCHMARKS = Workflow(
     owner="Dissonance Workloads",
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
-        Job("Nova — Level <N>", "full", 210, media=(".github/actions/nes-film",)),
-        Job("Nova — Full Game", "full", 210, media=(".github/actions/nes-film",)),
         Job("STB — <Difficulty>", "full", 210, media=(".github/actions/nes-film",)),
         Job("Results", "full", 5),
-    ),
-)
-
-HARMONY_NES_BENCHMARKS = Workflow(
-    path=f"{WORKFLOW_DIR}/harmony-workloads-nes-benchmarks.yml",
-    name="Benchmarks / Harmony Workloads / NES",
-    owner="Harmony Workloads",
-    triggers=("schedule", "workflow_dispatch"),
-    jobs=(
-        Job("NES Guest Image", "full", 45),
-        Job("Nova — Replica <N>", "full", 120,
-            media=("workloads/nes/src/bin/nes-film.rs",)),
-        Job("Results", "full", 15),
     ),
 )
 
@@ -746,39 +705,30 @@ WORKFLOWS = (
     HARMONY_ANALYSIS,
     DISSONANCE_NES_CHECKS,
     DISSONANCE_TINY_WORLDS_CHECKS,
-    HARMONY_NES_CHECKS,
     HARMONY_OCI_CHECKS,
     HARMONY_LANGUAGES_CHECKS,
     DISSONANCE_NES_BENCHMARKS,
-    HARMONY_NES_BENCHMARKS,
     HARMONY_HISTORICAL_BENCHMARKS,
     HARMONY_UML_CAMPAIGN,
     RELEASE,
     REPOSITORY_MAINTENANCE,
 )
 
-# The two NES compositions. Native QuickNES exercises the Dissonance adapter;
-# the Harmony composition runs the same game inside a Consonance VM. Each needs
-# a bounded check and a full benchmark, and neither substitutes for the other.
+# The NES composition. Native QuickNES exercises the Dissonance adapter. It
+# needs a bounded check and a full benchmark.
 NES_COMPOSITIONS = {
     "Dissonance Workloads": {
         "checks": DISSONANCE_NES_CHECKS.name,
         "benchmarks": DISSONANCE_NES_BENCHMARKS.name,
         "backend": "native",
     },
-    "Harmony Workloads": {
-        "checks": HARMONY_NES_CHECKS.name,
-        "benchmarks": HARMONY_NES_BENCHMARKS.name,
-        "backend": "consonance",
-    },
 }
 
 # How a workflow file shows which backend it executes a composition on. A
 # composition keeps at least one marker for the backend it is registered with.
 BACKEND_MARKERS = {
-    "native": ("--runner quicknes", "nes-eval"),
-    "consonance": ("--backend kvm", "--backend hvf", "--backend uml", "--backend consonance", "--features consonance",
-                   "nova-consonance-campaign"),
+    "native": ("--runner quicknes", "nes-eval", ".github/actions/stb-evaluation"),
+    "consonance": ("--backend kvm", "--backend hvf", "--backend uml", "--backend consonance", "--features consonance"),
 }
 
 # Jobs that must publish a film with a real audio stream, and the registered
@@ -814,9 +764,7 @@ MIRI_ANALYSIS_WORKFLOWS = {
 # Change-selection kinds the composite action accepts, and the workflows that
 # use each one.
 SCOPE_KINDS = {
-    "dissonance_nes": (DISSONANCE_NES_CHECKS.name,),
     "dissonance_stb": (DISSONANCE_NES_CHECKS.name,),
-    "harmony_nes": (HARMONY_NES_CHECKS.name,),
     "harmony_oci": (HARMONY_OCI_CHECKS.name,),
     "harmony_languages": (HARMONY_LANGUAGES_CHECKS.name,),
     "consonance_platform": (CONSONANCE_CHECKS.name, HARMONY_OCI_CHECKS.name),

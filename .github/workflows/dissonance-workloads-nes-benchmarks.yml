@@ -37,15 +37,9 @@ jobs:
     timeout-minutes: 210
     strategy:
       fail-fast: false
-      max-parallel: 9
+      max-parallel: 3
       matrix:
         include:
-          - { name: Nova — Level 1, case: nova-level-1 }
-          - { name: Nova — Level 9, case: nova-level-9 }
-          - { name: Nova — Level 17, case: nova-level-17 }
-          - { name: Nova — Level 25, case: nova-level-25 }
-          - { name: Nova — Level 33, case: nova-level-33 }
-          - { name: Nova — Full Game, case: nova-full }
           - { name: STB — Easy, case: stb-easy }
           - { name: STB — Fair, case: stb-fair }
           - { name: STB — Hard, case: stb-hard, require_victory: true }
@@ -72,7 +66,6 @@ jobs:
         run: |
           set -euo pipefail
           case "$NES_CASE" in
-            nova-*) workloads/nes/scripts/build-nova-rom.sh "${ASSET_ROOT}/nova" ;;
             stb-*) workloads/nes/scripts/build-stb-rom.sh "${ASSET_ROOT}/stb" ;;
             *) echo "Unregistered public NES case: $NES_CASE" >&2; exit 1 ;;
           esac
@@ -86,10 +79,9 @@ jobs:
           files = {
               'core': root / 'quicknes_libretro.so',
           }
-          for game in ('nova', 'stb'):
-              rom = root / game / (game + '.nes')
-              if rom.is_file():
-                  files[game] = rom
+          rom = root / 'stb' / 'stb.nes'
+          if rom.is_file():
+              files['stb'] = rom
           inventory = {
               name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
               for name, path in files.items()
@@ -129,10 +121,6 @@ jobs:
             exit 1
           fi
           case "$NES_CASE" in
-            nova-*)
-              cp workloads/nes/NOVA-ARTIFACT-LICENSE.md "${PUBLIC_ROOT}/ARTIFACT-LICENSE.md"
-              cp workloads/nes/nova-versions.env "${PUBLIC_ROOT}/"
-              ;;
             stb-*)
               cp workloads/nes/STB-ARTIFACT-LICENSE.md "${PUBLIC_ROOT}/ARTIFACT-LICENSE.md"
               cp "${ASSET_ROOT}/stb/UPSTREAM-LICENSE.txt" "${ASSET_ROOT}/stb/UPSTREAM-CREDITS.asm" \

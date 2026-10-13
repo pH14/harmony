@@ -26,7 +26,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod real {
     use machine::{consonance::ConsonanceMachine, nes::ButtonChord};
     use nes_workload::{
-        nova::target::NovaTarget,
         package::RomKind,
         smb::target::SmbTarget,
         target::{ExitKind, Target},
@@ -48,9 +47,6 @@ mod real {
         )?;
         let initramfs = prepared.initramfs(&fs::read(platform)?);
         let vm = ConsonanceMachine::new(&fs::read(kernel)?, &initramfs)?;
-        if !vm.starts_at_power_on() {
-            return Err("oracle requires a generic power-on NES image".into());
-        }
         macro_rules! compare_game {
             ($native:expr, $vm:expr, $terminal:expr) => {
                 compare(
@@ -70,11 +66,6 @@ mod real {
                 SmbTarget::from_smb_rom_bytes_headless(&rom, core, &hash),
                 SmbTarget::from_machine(vm),
                 |t| t.is_dead() || t.is_victory()
-            ),
-            RomKind::Nova => compare_game!(
-                NovaTarget::from_rom_bytes_headless(&rom, core, &hash),
-                NovaTarget::from_power_on(vm),
-                |t| t.is_dead() || t.cleared_a_level()
             ),
         }
     }
