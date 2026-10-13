@@ -756,6 +756,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
     let mut long_name: Option<Vec<u8>> = None;
     let mut long_link: Option<Vec<u8>> = None;
     let mut pax = Pax::default();
+    let mut pax_header_seen = false;
     let mut block = [0u8; TAR_BLOCK];
     while read_block(&mut stream, &mut block)? {
         if block.iter().all(|byte| *byte == 0) {
@@ -784,6 +785,10 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 long_link = Some(data);
             }
             b'x' => {
+                if pax_header_seen {
+                    return Err(ImageError::Tar("member has multiple pax headers".into()));
+                }
+                pax_header_seen = true;
                 let data = header_data(&mut stream, size)?;
                 parse_pax(&data, &mut pax)?;
             }
@@ -798,6 +803,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 ));
             }
             typeflag => {
+                pax_header_seen = false;
                 if !matches!(typeflag, 0 | b'0' | b'1' | b'2' | b'5') {
                     return Err(ImageError::Tar(
                         "archive carries an unsupported member type".into(),
@@ -2493,6 +2499,43 @@ mod tests {
             assert!(matches!(
                 apply_layer(&layer, &rootfs, &mut Ownership::default()),
                 Err(ImageError::Tar(message)) if message == "member has conflicting GNU and pax link overrides"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_pax_headers_for_one_member_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let path = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("path", "safe").as_bytes(),
+        );
+        let time = raw_member(
+            b"PaxHeaders/1",
+            b'x',
+            "",
+            pax_record("mtime", "0").as_bytes(),
+        );
+        let hidden = raw_member(b"evil", b'0', "", b"bad");
+        for (name, headers) in [
+            ("path-time", [path.clone(), time.clone()].concat()),
+            ("time-path", [time.clone(), path.clone()].concat()),
+        ] {
+            let body = [headers, raw_member(b"dir/", b'0', "", &hidden)].concat();
+            let layer = write_archive(dir.path(), &format!("double-pax-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "member has multiple pax headers"
             ));
             assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
             assert_eq!(
