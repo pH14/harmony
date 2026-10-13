@@ -33,9 +33,10 @@
   questions answered by a `ServiceHandler`, payload pulls and coverage.
   `branch` installs a seed, handler and payloads. `run_until` runs to a
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
-  snapshot request. Each returns a `Stop`: an event count, deadline,
-  snapshot point, violation, exhausted input, a closed bridge, or a guest
-  exit. A guest whose virtual time
+  snapshot request. A request already paused at or beyond a deadline stays
+  unanswered when the deadline is checked again. Each returns a `Stop`: an
+  event count, deadline, snapshot point, violation, exhausted input, a closed
+  bridge, or a guest exit. A guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   session pauses the guest before each answer, takes a `Checkpoint` there,
   restores one in place, or starts a fresh process that restores one at boot.
