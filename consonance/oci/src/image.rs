@@ -2232,6 +2232,30 @@ mod tests {
 
     #[test]
     fn implicit_layer_parent_has_a_fixed_mode() {
+        let Some(marker) = std::env::var_os("HARMONY_OCI_UMASK_TEST_MARKER") else {
+            let marker = tempfile::NamedTempFile::new().unwrap();
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg("umask 077; exec \"$@\"")
+                .arg("sh")
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::tests::implicit_layer_parent_has_a_fixed_mode",
+                    "--nocapture",
+                ])
+                .env("HARMONY_OCI_UMASK_TEST_MARKER", marker.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "restricted-umask child failed: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(std::fs::read(marker.path()).unwrap(), b"ok");
+            return;
+        };
         let dir = tempfile::tempdir().unwrap();
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
@@ -2251,6 +2275,7 @@ mod tests {
             std::fs::read(rootfs.join("implicit/file")).unwrap(),
             b"data"
         );
+        std::fs::write(marker, b"ok").unwrap();
     }
 
     fn cpio_entry(bytes: &[u8], at: usize) -> (String, Owner, usize) {
