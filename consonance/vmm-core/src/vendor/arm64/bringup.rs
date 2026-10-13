@@ -376,6 +376,7 @@ mod tests {
                     in_kernel_gic: false,
                     asid_bits,
                     smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
                 },
             })
         };

@@ -270,6 +270,15 @@ owned arm64 Linux guest treats workaround 2's `-2` as unaffected by Spectre-v4
 but `-1` as vulnerable; its frozen CPU identity has no SSBS feature, so this
 answer controls retained mitigation state.
 
+ARM KVM handles PSCI 1.0 HVCs in-kernel. HVF implements its own single-vCPU
+PSCI handler. Their guest-visible answers differ: for example,
+`PSCI_FEATURES(CPU_SUSPEND)` returns `0` on KVM and `-1` on HVF, and
+`AFFINITY_INFO` for CPU 0 returns `0` on KVM and `-7` on HVF. Both backends
+expose an explicit PSCI profile capability. The shared
+`arm64_sysreg_snapshot` hardware test checks each profile against live guest
+HVC results. This profile is a replay compatibility boundary, not a claim that
+the two PSCI implementations have equal behavior.
+
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
 translation, exception, and thread registers. The shared
