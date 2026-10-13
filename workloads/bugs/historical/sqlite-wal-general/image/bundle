@@ -1,0 +1,5 @@
+setup /usr/local/bin/sqlite-general init /data/test.db
+node client-0 /usr/bin/env NO_COLOR=1 /usr/local/bin/sqlite-general client 0 /data/test.db
+node client-1 /usr/bin/env NO_COLOR=1 /usr/local/bin/sqlite-general client 1 /data/test.db
+node client-2 /usr/bin/env NO_COLOR=1 /usr/local/bin/sqlite-general client 2 /data/test.db
+ready /bin/true

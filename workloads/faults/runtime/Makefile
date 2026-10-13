@@ -19,6 +19,7 @@ EVENT_TEST := $(BUILD_DIR)/event-test
 HOOK_TEST := $(BUILD_DIR)/hook-test
 SITE_TEST := $(BUILD_DIR)/site-test
 WATCH_TEST := $(BUILD_DIR)/watch-test
+FORK_TEST := $(BUILD_DIR)/fork-test
 
 .PHONY: all check clean
 
@@ -44,11 +45,15 @@ $(SITE_TEST): tests/site_test.c fault_runtime.c fault_runtime.h | $(BUILD_DIR)
 $(WATCH_TEST): tests/watch_test.c fault_runtime.c fault_runtime_shim.c fault_runtime.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/watch_test.c
 
-check: $(LIB) $(EVENT_TEST) $(HOOK_TEST) $(SITE_TEST) $(WATCH_TEST)
+$(FORK_TEST): tests/fork_test.c fault_runtime.c fault_runtime_shim.c fault_runtime.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/fork_test.c
+
+check: $(LIB) $(EVENT_TEST) $(HOOK_TEST) $(SITE_TEST) $(WATCH_TEST) $(FORK_TEST)
 	$(EVENT_TEST)
 	$(HOOK_TEST)
 	$(SITE_TEST)
 	$(WATCH_TEST)
+	$(FORK_TEST)
 
 clean:
 	rm -rf $(BUILD_DIR)

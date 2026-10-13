@@ -1,0 +1,17 @@
+
+# --- general-discovery determinism overlay ---
+# The focused case's overlay minus its autovacuum line: autovacuum keeps its
+# default so pruning is not handed to the search.
+listen_addresses = ''
+unix_socket_directories = '/tmp'
+fsync = on
+jit = off
+log_timezone = 'UTC'
+timezone = 'UTC'
+log_line_prefix = ''
+log_statement = 'none'
+shared_buffers = 32MB
+max_connections = 16
+max_wal_size = 48MB
+max_parallel_workers_per_gather = 0
+max_parallel_maintenance_workers = 0

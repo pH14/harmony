@@ -36,10 +36,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
-        FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome,
-        merge_milestones, merge_progress_watermark, milestone_key, milestones,
+        CHOICE_IDENTIFIER, DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport,
+        FaultBugRecord, FaultInput, FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER,
+        MAX_RECORDED_BUGS, ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost, archive_key,
+        bug_outcome, merge_milestones, merge_progress_watermark, milestone_key, milestones,
         park_threshold_bucket, sample_action,
     },
     assertion::Assertions,
@@ -58,6 +58,7 @@ const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 const VOCABULARY_FIELD: &str = "action_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
 const DURATION_POLICY_FIELD: &str = "duration_policy";
+const CHOICE_POLICY_FIELD: &str = "choice_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
@@ -396,6 +397,7 @@ impl InputPolicy for FaultWorkload {
         [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (CHOICE_POLICY_FIELD, CHOICE_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
         ]
@@ -433,10 +435,17 @@ impl InputPolicy for FaultWorkload {
     fn sample_alphabet(
         &self,
         run: &FaultCampaignRun,
-        _previous: Option<&FaultAction>,
+        previous: Option<&FaultAction>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<FaultAction, Box<dyn Error>> {
-        sample_action(rand, &run.vocabulary, 0, std::num::NonZeroU16::MIN, None)
+        sample_action(
+            rand,
+            &run.vocabulary,
+            0,
+            std::num::NonZeroU16::MIN,
+            None,
+            previous.map(|action| action.choice),
+        )
     }
 
     fn duration_request(
@@ -495,11 +504,20 @@ impl InputPolicy for FaultWorkload {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
-        _previous: Option<&FaultAction>,
+        previous: Option<&FaultAction>,
         draw: DurationDraw<FaultArchiveKey>,
         replay: bool,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        held_suffix(run, state, mixture, before, mutation_seed, replay, draw)
+        held_suffix(
+            run,
+            state,
+            mixture,
+            before,
+            mutation_seed,
+            previous,
+            replay,
+            draw,
+        )
     }
 
     fn duration_of_action(
@@ -562,12 +580,14 @@ fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn held_suffix(
     run: &FaultCampaignRun,
     state: &DrawTables<FaultAction>,
     mixture: MixtureDraw,
     before: Option<&EmpiricalStepCheckpoint>,
     mutation_seed: u64,
+    previous: Option<&FaultAction>,
     replay: bool,
     draw: DurationDraw<FaultArchiveKey>,
 ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
@@ -580,12 +600,21 @@ fn held_suffix(
                 mixture.mixture,
                 mixture.weight,
                 mutation_seed,
-                None,
+                previous,
                 |rand| {
                     Ok(biased_step(view, rand)?
                         .filter(|action| event_is_ready(action, event_ready)))
                 },
-                |_, rand| sample_action(rand, &run.vocabulary, event_ready, ticks, Some(view)),
+                |prior, rand| {
+                    sample_action(
+                        rand,
+                        &run.vocabulary,
+                        event_ready,
+                        ticks,
+                        Some(view),
+                        prior.map(|action| action.choice),
+                    )
+                },
             )
         })?;
     for action in &mut suffix {

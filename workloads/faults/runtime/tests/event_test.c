@@ -47,7 +47,7 @@ static int mock_kill(pid_t pid, int signal_number)
 {
     assert(pid == 0);
     assert(signal_number == SIGKILL);
-    assert(pthread_mutex_trylock(&harmony_fault_events.lock) == EBUSY);
+    assert(pthread_mutex_trylock(&harmony_fault_events->lock) == EBUSY);
     kill_calls++;
     return 0;
 }
@@ -96,7 +96,7 @@ static void *park_callback(void *site)
 static ssize_t acknowledged_write(int fd, const void *data, size_t length)
 {
     if (length == HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE)
-        assert(pthread_mutex_trylock(&harmony_fault_events.lock) == EBUSY);
+        assert(pthread_mutex_trylock(&harmony_fault_events->lock) == EBUSY);
     return write(fd, data, length);
 }
 
@@ -155,16 +155,16 @@ int main(void)
     unsigned char report_frame[HARMONY_FAULT_EVENT_REPORT_SIZE];
 
     alarm(10);
-    harmony_fault_events.park_weight_left = UINT64_C(2) << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
+    harmony_fault_events->park_weight_left = UINT64_C(2) << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
     assert(harmony_fault_park_spend(0) == 0);
     assert(harmony_fault_park_spend(1) == 0);
     assert(harmony_fault_park_spend(2) == 0);
     assert(harmony_fault_park_spend(3) == 1);
-    harmony_fault_events.park_weight_left = 2;
+    harmony_fault_events->park_weight_left = 2;
     assert(harmony_fault_park_spend(UINT64_C(1) << 40) == 0);
-    assert(harmony_fault_events.park_weight_left == 1);
+    assert(harmony_fault_events->park_weight_left == 1);
     assert(harmony_fault_park_spend(UINT64_MAX) == 1);
-    assert(harmony_fault_events.park_weight_left == 0);
+    assert(harmony_fault_events->park_weight_left == 0);
 
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, control) == 0);
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, report) == 0);
@@ -279,10 +279,10 @@ int main(void)
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
     assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
-    assert(get_word(response, 8) == harmony_fault_events.coverage_crossings);
+    assert(get_word(response, 8) == harmony_fault_events->coverage_crossings);
     assert(get_word(response, 8) != 0);
-    assert(get_word(response, 16) == harmony_fault_events.coverage_digest);
-    assert(get_word(response, 24) == harmony_fault_events.coverage_callbacks);
+    assert(get_word(response, 16) == harmony_fault_events->coverage_digest);
+    assert(get_word(response, 24) == harmony_fault_events->coverage_callbacks);
 
     {
         pthread_t first;
@@ -326,14 +326,14 @@ int main(void)
     for (;;) {
         int initialized;
 
-        assert(pthread_mutex_lock(&harmony_fault_events.lock) == 0);
-        initialized = harmony_fault_events.initialized != 0;
-        assert(pthread_mutex_unlock(&harmony_fault_events.lock) == 0);
+        assert(pthread_mutex_lock(&harmony_fault_events->lock) == 0);
+        initialized = harmony_fault_events->initialized != 0;
+        assert(pthread_mutex_unlock(&harmony_fault_events->lock) == 0);
         if (!initialized)
             break;
         assert(sched_yield() == 0);
     }
-    assert(harmony_fault_events.park_armed == 0);
+    assert(harmony_fault_events->park_armed == 0);
 
     assert(close(control[1]) == 0);
     assert(close(report[0]) == 0);

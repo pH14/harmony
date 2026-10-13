@@ -6,12 +6,14 @@
         50
       ]
     },
-    "coverage_quantum": 1
+    "coverage_quantum": 1,
+    "choice": 0
   },
   {
     "operation": {
       "Wait": 50
     },
-    "coverage_quantum": 1
+    "coverage_quantum": 1,
+    "choice": 0
   }
 ]

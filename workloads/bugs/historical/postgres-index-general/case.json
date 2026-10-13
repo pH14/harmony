@@ -1,0 +1,78 @@
+{
+  "format": "harmony-historical-case-v1",
+  "id": "postgres-index-general",
+  "title": "PostgreSQL 14.3 index and transaction workload for general discovery",
+  "software": "PostgreSQL",
+  "panel": "discovery",
+  "focused_case": "postgres-cic-corruption",
+  "sources": {
+    "issue": "https://postgr.es/m/17485-396609c6925b982d%40postgresql.org",
+    "introducing_commit": "https://github.com/postgres/postgres/commit/d9d076222f5b",
+    "fix_commit": "https://github.com/postgres/postgres/commit/e28bb885196916b0a3d898ae4f2be0e38108d81b",
+    "release_note": "https://www.postgresql.org/about/news/postgresql-144-released-2470/"
+  },
+  "versions": {
+    "affected": "14.0-14.3",
+    "fixed": "14.4"
+  },
+  "workload": {
+    "version": "14.3",
+    "source_url": "https://ftp.postgresql.org/pub/source/v14.3/postgresql-14.3.tar.bz2",
+    "sha256": "279057368bf59a919c05ada8f95c5e04abb43e74b9a2a69c3d46a20e07a9af38"
+  },
+  "image": {
+    "context": ".",
+    "dockerfile": "workloads/bugs/historical/postgres-index-general/image/Dockerfile",
+    "build_args": {
+      "PG_VERSION": "14.3",
+      "PG_SHA256": "279057368bf59a919c05ada8f95c5e04abb43e74b9a2a69c3d46a20e07a9af38"
+    }
+  },
+  "kernel_profile": "faultlab",
+  "oracle": {
+    "assertion": "postgres amcheck finds every heap tuple indexed",
+    "evidence": "postgres amcheck verified an index",
+    "kind": "always",
+    "source": "the general driver's check operation",
+    "detector": "bt_index_check(index, heapallindexed => true) on every valid B-tree index of items",
+    "fires_on": "amcheck raises data_corrupted (XX001) or index_corrupted (XX002)",
+    "silent_when": [
+      "the server is down",
+      "the connection drops mid-check",
+      "an index is dropped while it is checked"
+    ],
+    "integrity": [
+      {
+        "assertion": "postgres index and sequential scans agree",
+        "evidence": "postgres general compared committed rows"
+      },
+      {
+        "assertion": "postgres preserves acknowledged commits",
+        "evidence": "postgres general compared committed rows"
+      }
+    ]
+  },
+  "actions": [
+    "Wait",
+    "Kill",
+    "EventKill",
+    "EventPark",
+    "Pause",
+    "Restart"
+  ],
+  "run": {
+    "ram_mib": 1024,
+    "knobs": {}
+  },
+  "search": {
+    "executions": 1000000,
+    "wall_minutes": 90
+  },
+  "discovery_mode": "general",
+  "status": "measured",
+  "ci": {
+    "status": "runnable",
+    "display_name": "PostgreSQL Index General",
+    "image_prefix": "pg-general"
+  }
+}

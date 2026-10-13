@@ -31,9 +31,34 @@
   "oracle": {
     "assertion": "integrity-check-clean: PRAGMA quick_check returns ok",
     "evidence": "workload: process started",
+    "fix_functions": [
+      "walCheckpoint"
+    ],
     "kind": "always",
     "source": "the fork's own workload assertions, unmodified",
-    "detector": "each writer's periodic sweep runs PRAGMA quick_check on three of four sweeps and PRAGMA integrity_check on the rest"
+    "detector": "each writer's periodic sweep runs PRAGMA quick_check on three of four sweeps and PRAGMA integrity_check on the rest",
+    "integrity": [
+      {
+        "assertion": "integrity-check-clean: PRAGMA integrity_check returns ok",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "no-corruption: a write transaction never reports SQLITE_CORRUPT",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "no-lost-committed-writes: all of this writer's committed rows are present with no gaps",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "read-your-writes: committed row is immediately visible to its writer",
+        "evidence": "workload: process started"
+      },
+      {
+        "assertion": "read-your-writes: committed counter is immediately visible to its writer",
+        "evidence": "workload: process started"
+      }
+    ]
   },
   "actions": [
     "Wait",
@@ -48,14 +73,13 @@
     "knobs": {}
   },
   "search": {
-    "executions": 0,
+    "executions": 1000000,
     "wall_minutes": 240
   },
   "discovery_mode": "guided",
   "status": "reproduced",
   "ci": {
-    "status": "deferred",
-    "reason": "the image is built and searched on arm64 hosts; the hosted workflow builds x86_64 images",
+    "status": "runnable",
     "display_name": "SQLite WAL Reset",
     "image_prefix": "sqlite"
   }

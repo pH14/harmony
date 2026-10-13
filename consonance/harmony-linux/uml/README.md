@@ -184,7 +184,11 @@ and asserts the symbols the profile depends on.
   emulation, host child signals, the fixed memory layout, checkpoints, and
   the initial FPU state for every new program, as x86 Linux does; UML
   otherwise copies the vector registers of a stub process, which hold
-  leftovers of host strings such as the command line.
+  leftovers of host strings such as the command line. Its last patch stops
+  `flush_tlb_mm` and the checkpoint walks at the `XA_ZERO_ENTRY` that a
+  failed `dup_mmap` leaves in the child's VMA tree; without it, a kill that
+  lands while a process forks panics the guest. Mainline Linux no longer
+  leaves the marker, so the arm64 series, built on 7.2-rc4, does not carry it.
   `linux/patches/um-arm64/` ports the same series to the arm64 RFC. Its
   counter emulation also answers the frequency register, and the stub waits
   for the kernel without the RFC's counter-bounded spin, because its own
