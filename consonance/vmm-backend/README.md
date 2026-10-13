@@ -246,8 +246,13 @@ Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
 translation, exception, and thread registers. The shared
 `arm64_sysreg_snapshot` hardware test compares uninterrupted execution, capture
-without restore, restore after a detour, and restore into a fresh VM. Its
-aligned guest-memory fixture also runs under Miri through the mock backend.
+without restore, restore after a detour, and restore into a fresh VM. It
+requires the detour to change guest readback across an exit for CONTEXTIDR, PAR,
+and CSSELR. AMAIR and auxiliary fault status can be fixed or lose writes across
+an exit on a particular host; those cases are reported as unobservable rather
+than evidence of register restoration. Portable tests independently check all
+six fields through the KVM register table, codec, and VMM identity. The aligned
+guest-memory fixture also runs under Miri through the mock backend.
 
 ARM KVM saves the guest's system registers as the guest left them and never
 normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and

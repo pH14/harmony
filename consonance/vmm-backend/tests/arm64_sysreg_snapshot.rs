@@ -114,6 +114,8 @@ fn guest_system_registers_survive_reused_and_fresh_restore() {
             0xd503_3fdf,
             mrs,
             0xf900_0121,
+            mrs,
+            0xf900_0121,
             0x1400_0000,
         ];
         let mut reference = Guest::new(live_backend(), &program);
@@ -124,15 +126,28 @@ fn guest_system_registers_survive_reused_and_fresh_restore() {
         assert_eq!(guest.next_store(), 0x1234);
         let cut = guest.save();
         let original = guest.next_store();
+        let immediate_detour = guest.next_store();
         let detour = guest.next_store();
+        let observable = original != detour;
+        if matches!(name, "CONTEXTIDR_EL1" | "PAR_EL1" | "CSSELR_EL1") {
+            assert!(
+                observable,
+                "{name} detour must change the guest's next read"
+            );
+        }
         guest.restore(&cut);
         let reused = guest.next_store();
         drop(guest);
         let mut fresh = Guest::new(live_backend(), &program);
         fresh.restore(&cut);
         let cold = fresh.next_store();
+        let sensitivity = if observable {
+            "observable"
+        } else {
+            "not observable on this host"
+        };
         eprintln!(
-            "{name}: uninterrupted={uninterrupted:#x} captured={original:#x} detour={detour:#x} reused={reused:#x} fresh={cold:#x}"
+            "{name}: {sensitivity}; uninterrupted={uninterrupted:#x} captured={original:#x} immediate-detour={immediate_detour:#x} detour-after-exit={detour:#x} reused={reused:#x} fresh={cold:#x}"
         );
         if uninterrupted != original || original != reused || original != cold {
             failures.push((name, uninterrupted, original, reused, cold));
