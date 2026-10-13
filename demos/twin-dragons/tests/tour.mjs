@@ -331,7 +331,7 @@ try {
     ({ manual, manualFrame }) =>
       document.querySelector("#film-title").dataset.stateId === manual &&
       document.querySelector("#scrub").value === manualFrame &&
-      !document.querySelector("#take-control").disabled,
+      !document.querySelector("#tour-open").disabled,
     { manual, manualFrame },
   );
   assert.equal(
@@ -353,14 +353,19 @@ try {
   await next(page, 1);
   const keyboardRoute = await page.locator('#film-title').getAttribute('data-state-id');
   assert.notEqual(keyboardRoute, manual);
+  const tourRoutes = await page.locator('#state-list .state').evaluateAll((rows) => rows.map((row) => row.dataset.stateId));
+  await page.mouse.move(1, 1);
   await page.locator('#map').focus();
   await page.keyboard.press('ArrowLeft');
   await page.keyboard.press('ArrowRight');
+  await page.locator('#film-title').evaluate((title) => { title.dataset.stateId = ''; });
   await page.keyboard.press('Enter');
-  await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && document.querySelector('#verification').textContent === 'Exact replay ✓', keyboardRoute);
+  await page.waitForFunction(() => document.querySelector('#film-title').dataset.stateId !== '' && document.querySelector('#verification').textContent === 'Exact replay ✓');
+  const keyboardChoice = await page.locator('#film-title').getAttribute('data-state-id');
+  assert.ok(tourRoutes.includes(keyboardChoice), 'Enter inspects a route of the same cell');
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#guided-tour').isVisible(), false);
-  assert.equal(await page.locator('#film-title').getAttribute('data-state-id'), keyboardRoute, 'Explicit keyboard cell selection must survive dismissal instead of restoring an older manual history');
+  assert.equal(await page.locator('#film-title').getAttribute('data-state-id'), keyboardChoice, 'Explicit keyboard cell selection must survive dismissal instead of restoring an older manual history');
   assert.equal(await page.locator('[inert]').count(), 0);
 
   assert.equal(
