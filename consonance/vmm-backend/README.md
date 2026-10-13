@@ -172,8 +172,10 @@ without capturing a complete snapshot. `Some(true)` means the mask is set;
 `None` means the caller must obtain it from full state. This query does not
 enter the guest, acknowledge an IRQ, or test the interrupt controller's pending
 state. Errors propagate rather than falling back to another read. HVF reads
-`PSTATE.I` through one CPSR access and rejects pending completions before the
-read, as its snapshot capture does. Other backends currently return `None`.
+`PSTATE.I` through one CPSR access. ARM KVM completes any owed MMIO write and
+then reads PSTATE through one register ioctl instead of capturing the GIC and
+the rest of the vCPU. Both reject pending completions before the read. Other
+backends currently return `None`.
 The boxed backend forwards the query so live sessions use the same path.
 
 The ignored HVF `irq_mask_polling_matches_full_capture` comparison alternates

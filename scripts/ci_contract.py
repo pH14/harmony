@@ -245,6 +245,7 @@ HOST_TESTS = {
         ARM64_BASELINE_TEST,
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_cpu_interface_survives_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot kvm_irq_mask_read_matches_full_capture",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
