@@ -67,6 +67,10 @@ impl Pl011 {
         &self.capture
     }
 
+    pub(crate) fn pending_input(&self) -> Vec<u8> {
+        self.rx.iter().copied().collect()
+    }
+
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
@@ -75,10 +79,10 @@ impl Pl011 {
         &self.regs
     }
 
-    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u32; 5]) {
+    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u32; 5], input: Vec<u8>) {
         self.capture = capture;
         self.regs = regs;
-        self.rx.clear();
+        self.rx = input.into();
     }
 }
 
@@ -136,7 +140,7 @@ mod tests {
     fn restore_overwrites_residuals_and_clears_input() {
         let mut u = Pl011::new();
         u.inject_input(b"stale");
-        u.restore(b"prior".to_vec(), [1, 2, 3, 4, 5]);
+        u.restore(b"prior".to_vec(), [1, 2, 3, 4, 5], vec![]);
         assert_eq!(u.capture(), b"prior");
         assert_eq!(u.shadow_regs(), &[1, 2, 3, 4, 5]);
         assert_eq!(u.read(reg::DR), 0);

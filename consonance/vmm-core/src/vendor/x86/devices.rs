@@ -89,6 +89,10 @@ impl Uart8250 {
         self.read(port)
     }
 
+    pub(crate) fn pending_input(&self) -> Vec<u8> {
+        self.rx.iter().copied().collect()
+    }
+
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
@@ -143,12 +147,19 @@ impl Uart8250 {
         self.dlm
     }
 
-    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u8; 8], dlab: bool, dlm: u8) {
+    pub(crate) fn restore(
+        &mut self,
+        capture: Vec<u8>,
+        regs: [u8; 8],
+        dlab: bool,
+        dlm: u8,
+        input: Vec<u8>,
+    ) {
         self.capture = capture;
         self.regs = regs;
         self.dlab = dlab;
         self.dlm = dlm;
-        self.rx.clear();
+        self.rx = input.into();
     }
 }
 
@@ -398,7 +409,7 @@ mod tests {
     fn restore_clears_injected_input() {
         let mut u = Uart8250::new();
         u.inject_input(b"leftover");
-        u.restore(vec![], [0; 8], false, 0);
+        u.restore(vec![], [0; 8], false, 0, vec![]);
         assert!(!u.rx_has_input());
         assert_eq!(u.read(UART_PORT_BASE), Some(0));
     }

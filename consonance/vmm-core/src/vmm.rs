@@ -2959,9 +2959,9 @@ mod tests {
                 assert_eq!(
                     none_hash,
                     [
-                        0x82, 0x05, 0x10, 0xc1, 0x83, 0x86, 0xa3, 0xa5, 0xc3, 0x55, 0xd6, 0x77,
-                        0x2f, 0x36, 0x72, 0x37, 0x22, 0xa2, 0x58, 0x9a, 0xad, 0x95, 0xbe, 0x93,
-                        0x91, 0xa3, 0x43, 0x1c, 0x52, 0xb1, 0x69, 0x2d,
+                        0x49, 0xca, 0x26, 0xde, 0x0c, 0x51, 0x72, 0x0f, 0xcc, 0x0a, 0x05, 0xf8,
+                        0xee, 0x4f, 0x3c, 0xd4, 0x0a, 0x0e, 0x94, 0xfc, 0xf8, 0x4b, 0x4d, 0x9e,
+                        0xf4, 0xdc, 0xb1, 0x9d, 0x55, 0x8f, 0x45, 0x6c,
                     ],
                     "absent XSAVE provenance must preserve the vCPU hash"
                 );
@@ -7540,6 +7540,104 @@ mod tests {
     }
 
     #[test]
+    fn serial_input_survives_snapshot_continuation() {
+        let read = Exit::Arch(X86Exit::Io {
+            port: 0x3f8,
+            size: 1,
+            write: None,
+        });
+        let mut original = Vmm::new(
+            configured_mock(vec![read.clone(), read.clone()]),
+            GuestRam::new(4096).unwrap(),
+        );
+        original.inject_serial_input(b"ab");
+        original.step().unwrap();
+        let snapshot = original.save_vm_state().unwrap();
+        let snapshot = vm_state::VmState::decode(&snapshot.encode().unwrap()).unwrap();
+        let mut restored = Vmm::new(configured_mock(vec![read]), GuestRam::new(4096).unwrap());
+        restored.inject_serial_input(b"stale");
+        restored.restore_vm_state(&snapshot).unwrap();
+        original.step().unwrap();
+        restored.step().unwrap();
+        assert_eq!(
+            original.backend.completions().last(),
+            Some(&Completion::Read(98))
+        );
+        assert_eq!(
+            restored.backend.completions().last(),
+            original.backend.completions().last()
+        );
+    }
+
+    #[test]
+    fn serial_input_is_part_of_state_identity() {
+        for hashing in [false, true] {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(4096).unwrap());
+            if hashing {
+                v.wire_snapshot_hashing();
+            }
+            let empty = v.state_hash().unwrap();
+            v.inject_serial_input(b"pending");
+            assert_ne!(empty, v.state_hash().unwrap());
+        }
+    }
+
+    #[test]
+    fn arm64_serial_input_survives_snapshot_continuation() {
+        use vmm_backend::{Arm64MockCompletion, Arm64Policy, MockArm64Backend};
+        let read = Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(crate::vendor::arm64::board::PL011.0),
+            size: 4,
+            write: None,
+        });
+        let make = |exits| {
+            let mut backend = MockArm64Backend::with_exits(exits);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(4096).unwrap())
+        };
+        let write = Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(crate::vendor::arm64::board::PL011.0),
+            size: 4,
+            write: Some(120),
+        });
+        let mut original = make(vec![read.clone(), write, read.clone()]);
+        original.inject_serial_input(b"ab");
+        original.step().unwrap();
+        original.step().unwrap();
+        let snapshot = original.save_vm_state().unwrap();
+        let snapshot = vm_state::Arm64VmState::decode(&snapshot.encode().unwrap()).unwrap();
+        let mut restored = make(vec![read]);
+        restored.inject_serial_input(b"stale");
+        restored.restore_vm_state(&snapshot).unwrap();
+        original.step().unwrap();
+        restored.step().unwrap();
+        assert_eq!(
+            original.backend.completions().last(),
+            Some(&Arm64MockCompletion::Read(98))
+        );
+        assert_eq!(
+            restored.backend.completions().last(),
+            original.backend.completions().last()
+        );
+    }
+
+    #[test]
+    fn arm64_serial_input_is_part_of_state_identity() {
+        use vmm_backend::{Arm64Policy, MockArm64Backend};
+        for hashing in [false, true] {
+            let mut backend = MockArm64Backend::new();
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut v = Vmm::new(backend, GuestRam::new(4096).unwrap());
+            if hashing {
+                v.wire_snapshot_hashing();
+            }
+            let empty = v.state_hash().unwrap();
+            v.inject_serial_input(b"pending");
+            assert_ne!(empty, v.state_hash().unwrap());
+        }
+    }
+
+    #[test]
     fn save_vm_state_captures_the_uart_dlm() {
         let mut v = full_vmm(
             VcpuState::default(),
@@ -7838,11 +7936,11 @@ mod tests {
         };
         let mut blob = encode_device_blob(&good).0;
         assert_eq!(
-            blob[blob.len() - 2],
+            blob[blob.len() - 6],
             1,
             "the registrable byte precedes armed"
         );
-        let registrable_index = blob.len() - 2;
+        let registrable_index = blob.len() - 6;
         blob[registrable_index] = 0;
         assert!(
             crate::vendor::x86::records::decode_device_blob(&blob).is_err(),

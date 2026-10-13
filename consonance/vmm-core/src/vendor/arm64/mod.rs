@@ -501,6 +501,9 @@ impl Vendor for Arm64 {
         for r in devices.uart.shadow_regs() {
             v.extend_from_slice(&r.to_le_bytes());
         }
+        let input = devices.uart.pending_input();
+        v.extend_from_slice(&(input.len() as u64).to_le_bytes());
+        v.extend_from_slice(&input);
         v
     }
 
