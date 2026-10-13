@@ -22,7 +22,7 @@ enables, and active-priority registers needed by KVM's in-kernel controller.
 The userspace controller's current Group-1 arbitration uses its own PMR and
 active INTID state; these additional CPU-interface fields remain zero on HVF.
 `input_unmasked` checks the individual input's distributor, redistributor,
-group, active, and PMR gates without applying the userspace model's running
+group, active, and PMR conditions without applying the userspace model's running
 priority. `vmm-core` uses that check before applying KVM's active-priority and
 binary-point state to its clockevent idle decision.
 
