@@ -2,6 +2,8 @@
 
 use std::ffi::OsString;
 use std::io::{self, Read};
+#[cfg(target_os = "linux")]
+use std::mem::size_of;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -19,6 +21,8 @@ use crate::process::group_members;
 #[cfg(target_os = "linux")]
 use crate::profile::PinnedImage;
 use crate::profile::VerifiedProfile;
+#[cfg(target_os = "linux")]
+use crate::profile::selected_processor;
 
 const POLL: Duration = Duration::from_millis(5);
 const SWEEP_LIMIT: Duration = Duration::from_secs(5);
@@ -40,6 +44,48 @@ fn fixed_host_layout(command: &mut Command) {
             Ok(())
         });
     }
+}
+
+#[cfg(target_os = "linux")]
+fn singleton_cpu_mask(cpu: usize) -> Option<libc::cpu_set_t> {
+    if cpu >= libc::CPU_SETSIZE as usize {
+        return None;
+    }
+    // SAFETY: cpu_set_t is plain data and zero is its empty set. The checked
+    // index is inside its storage before CPU_SET writes the bit.
+    let mut mask: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: cpu is below CPU_SETSIZE and mask is a live cpu_set_t.
+    unsafe { libc::CPU_SET(cpu, &mut mask) };
+    Some(mask)
+}
+
+#[cfg(target_os = "linux")]
+fn enforce_host_cpu(command: &mut Command) -> Result<(), LaunchError> {
+    let cpu = selected_processor()?;
+    let mask = singleton_cpu_mask(cpu).ok_or(LaunchError::HostCpuUnavailable(cpu))?;
+    // SAFETY: cpu_set_t is plain data and zero is its empty set. The kernel
+    // writes at most the provided size into this live object.
+    let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: allowed is writable for exactly the supplied cpu_set_t size.
+    if unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut allowed) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: cpu was checked against CPU_SETSIZE and allowed is initialized.
+    if !unsafe { libc::CPU_ISSET(cpu, &allowed) } {
+        return Err(LaunchError::HostCpuUnavailable(cpu));
+    }
+    // SAFETY: this is the final pre_exec callback installed by Guest. It only
+    // changes the forked child's affinity using a captured stack-sized mask;
+    // every subsequent UML process inherits that single-CPU affinity.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &mask) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +132,9 @@ pub enum LaunchError {
     Path(PathBuf),
     #[error("kernel argument {0} sets a host resource that the launcher owns")]
     Reserved(String),
+    #[cfg(target_os = "linux")]
+    #[error("UML host processor {0} is unavailable in this process's CPU affinity mask")]
+    HostCpuUnavailable(usize),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -279,6 +328,8 @@ impl Guest {
             }
             None => None,
         };
+        #[cfg(target_os = "linux")]
+        enforce_host_cpu(&mut command)?;
         let child = command.spawn()?;
         drop(command);
         let pid = i32::try_from(child.id()).map_err(io::Error::other)?;
@@ -659,6 +710,104 @@ mod tests {
                 Ok(())
             });
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn singleton_host_cpu_mask_contains_only_the_selected_cpu() {
+        let mask = singleton_cpu_mask(2).unwrap();
+        // SAFETY: indices 1 and 2 are below CPU_SETSIZE and mask is initialized.
+        unsafe {
+            assert!(!libc::CPU_ISSET(1, &mask));
+            assert!(libc::CPU_ISSET(2, &mask));
+        }
+        assert!(singleton_cpu_mask(libc::CPU_SETSIZE as usize).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn final_host_cpu_pin_overrides_an_earlier_affinity_callback() {
+        let cpu = selected_processor().unwrap();
+        // SAFETY: cpu_set_t is plain data and the kernel writes within the
+        // provided object. CPU_ISSET reads only checked indices afterward.
+        let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: allowed is a live cpu_set_t of the supplied size.
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut allowed) },
+            0
+        );
+        let other = (0..libc::CPU_SETSIZE as usize).find(|candidate| {
+            // SAFETY: candidate is below CPU_SETSIZE and allowed is initialized.
+            *candidate != cpu && unsafe { libc::CPU_ISSET(*candidate, &allowed) }
+        });
+        let Some(other) = other else {
+            return;
+        };
+        let prior_mask = singleton_cpu_mask(other).unwrap();
+        let launch = Launch::new(std::env::temp_dir());
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("grep Cpus_allowed_list /proc/self/status");
+        // SAFETY: this callback changes only the forked child's affinity
+        // using a live, initialized mask and no allocation or shared state.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &prior_mask) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let exit = match Guest::start(command, work, &launch) {
+            Ok(guest) => guest.wait().unwrap(),
+            Err(LaunchError::HostCpuUnavailable(_)) => return,
+            Err(error) => panic!("CPU pin launch failed: {error}"),
+        };
+        assert_eq!(exit.reason, ExitReason::Exited(0));
+        let output = String::from_utf8(exit.console).unwrap();
+        assert!(output.contains(&format!("Cpus_allowed_list:\t{cpu}")));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn launch_refuses_when_the_selected_cpu_becomes_disallowed() {
+        let cpu = selected_processor().unwrap();
+        // SAFETY: cpu_set_t is plain data and the kernel writes no more than
+        // the supplied object size into this live set.
+        let mut original: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: original is writable for the supplied cpu_set_t size.
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut original) },
+            0
+        );
+        let other = (0..libc::CPU_SETSIZE as usize).find(|candidate| {
+            // SAFETY: candidate is below CPU_SETSIZE and original is initialized.
+            *candidate != cpu && unsafe { libc::CPU_ISSET(*candidate, &original) }
+        });
+        let Some(other) = other else {
+            return;
+        };
+        let narrowed = singleton_cpu_mask(other).unwrap();
+        // SAFETY: narrowed is a live cpu_set_t of the supplied size and the
+        // call changes only this test thread's affinity.
+        assert_eq!(
+            unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &narrowed) },
+            0
+        );
+        let identity = crate::profile::HostIdentity::current();
+        let launch = enforce_host_cpu(&mut Command::new("true"));
+        // SAFETY: original is the affinity mask captured from this test
+        // thread before narrowing, and the call restores only that thread.
+        assert_eq!(
+            unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &original) },
+            0
+        );
+        assert!(identity.is_err());
+        assert!(launch.is_err());
     }
 
     #[test]

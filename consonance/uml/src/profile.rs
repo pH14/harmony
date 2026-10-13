@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, Read};
 #[cfg(target_os = "linux")]
+use std::mem::size_of;
+#[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
@@ -61,6 +63,7 @@ pub struct VirtualTimeCosts {
 #[serde(deny_unknown_fields)]
 pub struct HostIdentity {
     pub architecture: String,
+    pub processor: usize,
     pub cpu_model: String,
     pub cpu_features: String,
 }
@@ -424,13 +427,27 @@ fn pin_path(path: &Path, name: &std::ffi::CStr, executable: bool) -> io::Result<
 
 impl HostIdentity {
     pub fn current() -> io::Result<Self> {
-        Ok(Self::from_cpuinfo(&std::fs::read_to_string(
-            "/proc/cpuinfo",
-        )?))
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")?;
+        #[cfg(target_os = "linux")]
+        let selected = Some(selected_processor()?);
+        #[cfg(not(target_os = "linux"))]
+        let selected = None;
+        Self::from_cpuinfo(&cpuinfo, selected)
     }
 
-    fn from_cpuinfo(cpuinfo: &str) -> Self {
-        let first = cpuinfo.split("\n\n").next().unwrap_or_default();
+    fn from_cpuinfo(cpuinfo: &str, selected: Option<usize>) -> io::Result<Self> {
+        let index = |block: &str| {
+            block.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                (name.trim() == "processor")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+        };
+        let first = cpuinfo
+            .split("\n\n")
+            .find(|block| selected.is_none_or(|cpu| index(block) == Some(cpu)))
+            .ok_or_else(|| io::Error::other("selected processor is absent from /proc/cpuinfo"))?;
         let (model_keys, features_key): (&[&str], &str) = match std::env::consts::ARCH {
             "aarch64" => (
                 &[
@@ -453,16 +470,45 @@ impl HostIdentity {
                 (name.trim() == key).then(|| value.trim().to_owned())
             })
         };
-        Self {
+        let processor = index(first)
+            .ok_or_else(|| io::Error::other("/proc/cpuinfo processor has no valid index"))?;
+        Ok(Self {
             architecture: std::env::consts::ARCH.to_owned(),
+            processor,
             cpu_model: model_keys
                 .iter()
                 .filter_map(|key| value(key).map(|value| format!("{key}={value}")))
                 .collect::<Vec<_>>()
                 .join(";"),
             cpu_features: value(features_key).unwrap_or_default(),
-        }
+        })
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn selected_processor() -> io::Result<usize> {
+    static SELECTED: OnceLock<usize> = OnceLock::new();
+    // SAFETY: cpu_set_t is plain data and zero is its empty set. The kernel
+    // writes no more than the provided size into this live object.
+    let mut mask: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: mask is writable for exactly the supplied cpu_set_t size.
+    if unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut mask) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let first_allowed = (0..libc::CPU_SETSIZE as usize)
+        .find(|cpu| {
+            // SAFETY: cpu is below CPU_SETSIZE and mask is initialized.
+            unsafe { libc::CPU_ISSET(*cpu, &mask) }
+        })
+        .ok_or_else(|| io::Error::other("no CPU is allowed by this process's affinity mask"))?;
+    let selected = *SELECTED.get_or_init(|| first_allowed);
+    // SAFETY: selected came from a checked CPU index and mask is initialized.
+    if !unsafe { libc::CPU_ISSET(selected, &mask) } {
+        return Err(io::Error::other(format!(
+            "the selected UML host processor {selected} is no longer allowed by this process's affinity mask"
+        )));
+    }
+    Ok(selected)
 }
 
 fn artifact_path(directory: &Path, artifact: &Artifact) -> Result<PathBuf, ProfileError> {
@@ -704,7 +750,8 @@ mod tests {
     #[test]
     fn host_identity_reads_the_first_processor() {
         let text = "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 183\nmodel name\t: Example CPU\nstepping\t: 1\nmicrocode\t: 0x12b\nflags\t\t: fpu tsc avx2\nCPU implementer\t: 0x61\nCPU part\t: 0x022\nFeatures\t: fp asimd\n\nprocessor\t: 1\nmodel\t\t: 1\nflags\t\t: fpu\n";
-        let host = HostIdentity::from_cpuinfo(text);
+        let host = HostIdentity::from_cpuinfo(text, None).unwrap();
+        assert_eq!(host.processor, 0);
         if std::env::consts::ARCH == "aarch64" {
             assert_eq!(host.cpu_model, "CPU implementer=0x61;CPU part=0x022");
             assert_eq!(host.cpu_features, "fp asimd");
@@ -715,5 +762,23 @@ mod tests {
             );
             assert_eq!(host.cpu_features, "fpu tsc avx2");
         }
+    }
+
+    #[test]
+    fn host_identity_refuses_a_missing_processor_index() {
+        assert!(HostIdentity::from_cpuinfo("Features: fp asimd\n", None).is_err());
+    }
+
+    #[test]
+    fn host_identity_selects_the_requested_processor() {
+        let text = "processor: 0\nCPU part: 0xd81\nFeatures: fp\n\nprocessor: 2\nCPU part: 0xd80\nFeatures: fp\n";
+        let first = HostIdentity::from_cpuinfo(text, Some(0)).unwrap();
+        let second = HostIdentity::from_cpuinfo(text, Some(2)).unwrap();
+        assert_eq!(first.processor, 0);
+        assert_eq!(second.processor, 2);
+        if std::env::consts::ARCH == "aarch64" {
+            assert_ne!(first.cpu_model, second.cpu_model);
+        }
+        assert!(HostIdentity::from_cpuinfo(text, Some(1)).is_err());
     }
 }
