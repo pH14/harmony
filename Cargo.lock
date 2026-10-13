@@ -687,9 +687,11 @@ version = "0.1.0"
 dependencies = [
  "consonance-client",
  "control-proto",
+ "crc32fast",
  "environment",
  "execution-proto",
  "guest-image",
+ "miniz_oxide",
  "process-proto",
  "serde",
  "serde_json",

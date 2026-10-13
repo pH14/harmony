@@ -7,7 +7,6 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 pub const CONTROL_ROOT: &str = "/harmony-oci";
 pub const ROOTFS_ROOT: &str = "/harmony-oci/rootfs";
@@ -31,8 +30,6 @@ pub enum BundleError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Spec(#[from] SpecError),
-    #[error("gzip failed: {0}")]
-    Gzip(String),
     #[error("external input count {count} exceeds {limit}")]
     ExternalInputCount { count: usize, limit: usize },
     #[error("external input bytes {bytes} exceeds {limit}")]
@@ -215,7 +212,7 @@ pub(crate) fn build_rootfs_segment(
     writer.dir("harmony-oci", 0o755);
     writer.dir("harmony-oci/rootfs", 0o755);
     writer.tree_owned(rootfs, "harmony-oci/rootfs", &|path| owners.owner_of(path))?;
-    gzip(&writer.finish())
+    Ok(gzip(&writer.finish()))
 }
 
 #[cfg(test)]
@@ -265,7 +262,7 @@ fn build_control_segment_validated(
             &input.data,
         );
     }
-    gzip(&writer.finish())
+    Ok(gzip(&writer.finish()))
 }
 
 fn argv(config: &super::image::RuntimeConfig, command: &[String]) -> Vec<String> {
@@ -579,26 +576,22 @@ fn digest_field(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
-fn gzip(data: &[u8]) -> Result<Vec<u8>, BundleError> {
-    let mut input = tempfile::NamedTempFile::new()?;
-    std::io::Write::write_all(&mut input, data)?;
-    let output = Command::new("gzip")
-        .args(["-n", "-1", "-c"])
-        .arg(input.path())
-        .output()?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(BundleError::Gzip(
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        ))
-    }
+fn gzip(data: &[u8]) -> Vec<u8> {
+    let compressed = miniz_oxide::deflate::compress_to_vec(data, 1);
+    let mut output = Vec::with_capacity(compressed.len() + 18);
+    output.extend_from_slice(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 4, 255]);
+    output.extend_from_slice(&compressed);
+    output.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+    output.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::image::RuntimeConfig;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
 
     fn image() -> StagedImage {
         let dir = tempfile::tempdir().unwrap();
@@ -988,6 +981,37 @@ mod tests {
                 byte
             );
         }
+    }
+
+    #[test]
+    fn prepared_identity_is_portable_for_a_large_rootfs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let payload: Vec<u8> = (0..1 << 20)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 56) as u8
+            })
+            .collect();
+        let path = dir.path().join("payload");
+        std::fs::write(&path, payload).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let image = StagedImage {
+            rootfs: dir.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        let prepared = prepare(&image, &LaunchRequest::new(vec!["/payload".into()])).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&prepared.rootfs_segment)),
+            "07b518ca1704197efe27b6e33670a5665366854a59943501273d10a8ae273b3f"
+        );
+        assert_eq!(
+            prepared.identity_hex(),
+            "cc22e0ae8c440f7edd93b48485fa1a3504bd95072e91a5fcbea6935b589b2f05"
+        );
     }
 
     #[test]
