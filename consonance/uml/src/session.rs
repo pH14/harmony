@@ -1152,6 +1152,16 @@ mod tests {
             ));
             assert_eq!(checkpoints.stats().unwrap(), before);
         }
+
+        let valid_rows = owned_delta(&checkpoints, &base, &target);
+        let valid: Vec<_> = valid_rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let imported = checkpoints
+            .import(&base, &target, &valid, &sidecar, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported.digest().unwrap(), target.digest().unwrap());
     }
 
     #[test]
