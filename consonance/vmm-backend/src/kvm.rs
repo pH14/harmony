@@ -566,7 +566,11 @@ pub(crate) fn validate_restore_shape(
     if state.xsave.len() != xsave_len {
         return Err(BackendError::InvalidState);
     }
-    if state.regs.rflags & 2 == 0 || state.regs.rflags & 0xffff_ffff_ffc0_8028 != 0 {
+    if state.regs.rflags & 2 == 0
+        || state.regs.rflags & 0xffff_ffff_ffc0_8028 != 0
+        || (state.regs.rflags & (1 << 17) != 0
+            && (state.sregs.cr0 & 1 == 0 || state.sregs.efer & (1 << 10) != 0))
+    {
         return Err(BackendError::InvalidState);
     }
     if state.sregs.cr8 > 0x0f {

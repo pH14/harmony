@@ -915,6 +915,28 @@ fn validate_restore_shape_requires_architectural_rflags() {
 }
 
 #[test]
+fn validate_restore_shape_requires_legal_virtual_8086_mode() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2 | (1 << 17);
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48, false),
+        Err(BackendError::InvalidState)
+    ));
+    state.sregs.cr0 |= 1;
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+    state.sregs.efer |= 1 << 10;
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48, false),
+        Err(BackendError::InvalidState)
+    ));
+    state.regs.rflags = 2;
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+}
+
+#[test]
 fn sysenter_policy_follows_host_la57_and_guest_vendor() {
     assert_eq!(kvm_sysenter_virtual_bits(&[]), 48);
     let mut la57 = kvm_cpuid_entry2 {
