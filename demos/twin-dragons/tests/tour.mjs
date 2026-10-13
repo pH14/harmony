@@ -579,6 +579,11 @@ try {
   await ready(blocked, 0);
   await opening(blocked);
   await blocked.keyboard.press("Escape");
+  assert.equal(
+    await blocked.locator('#camera-toggle [aria-pressed="true"]').count(),
+    1,
+    "Leaving the tour must leave exactly one view mode selected",
+  );
   await blocked.close();
   assert.deepEqual(errors, []);
   console.log(

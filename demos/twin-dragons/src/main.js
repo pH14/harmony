@@ -281,8 +281,7 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null) 
 }
 const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3;
-let cameraBeforeHistory = "";
-const camera = { follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
+const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
@@ -343,9 +342,8 @@ function overview(level) {
   }
 }
 function updateCameraToggle() {
-  const value = camera.follow || camera.focus ? "follow" : camera.overview ? "room" : "";
-  $("camera-toggle").dataset.value = value;
-  for (const button of $("camera-toggle").children) button.setAttribute("aria-pressed", button.dataset.camera === value);
+  $("camera-toggle").dataset.value = camera.mode;
+  for (const button of $("camera-toggle").children) button.setAttribute("aria-pressed", button.dataset.camera === camera.mode);
 }
 function stopCamera() {
   camera.overview = false;
@@ -367,6 +365,7 @@ function followSearch() {
   camera.manual = 0;
   camera.only = null;
   camera.targets = new Map();
+  camera.mode = "follow";
   camera.follow = true;
   camera.focus = null;
   updateCameraToggle();
@@ -378,10 +377,10 @@ function cameraRooms() {
 function drivenRooms() {
   return cameraRooms().filter((room) => camera.only == null || room === camera.only);
 }
-for (const button of $("camera-toggle").children) button.onclick = () => {
-  cameraBeforeHistory = "";
-  if (button.dataset.camera === "room") {
+function applyCameraMode(mode = camera.mode) {
+  if (mode === "room") {
     stopCamera();
+    camera.mode = "room";
     for (const room of cameraRooms()) overview(room);
     updateCameraToggle();
   } else {
@@ -391,12 +390,8 @@ for (const button of $("camera-toggle").children) button.onclick = () => {
     if (phoneLayout.matches && latest != null && latest !== mapLevel) setRoom(latest, true);
   }
   drawMap(performance.now());
-};
-function restoreCamera() {
-  const mode = cameraBeforeHistory;
-  cameraBeforeHistory = "";
-  if (mode) $("camera-toggle").querySelector(`[data-camera="${mode}"]`).click();
 }
+for (const button of $("camera-toggle").children) button.onclick = () => applyCameraMode(button.dataset.camera);
 function latestRoom() {
   const rooms = catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
   return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
@@ -408,7 +403,7 @@ function actionRoom() {
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
   const introRoom = intro ? actionRoom() : null;
-  Object.assign(camera, { introStart: 0, last: 0, emptySince: 0, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
+  Object.assign(camera, { introStart: 0, last: 0, emptySince: 0, jumped: 0, targets: new Map(), focus: null, mode: "follow", follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
     const c = mapCanvas(room);
     if (c) steerCamera(room, c, { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
@@ -430,7 +425,7 @@ function updateCamera(now) {
     steerCamera(point.level, c, { x: point.x, y: point.y - 8 }, closeUpZoom(c), smooth(0.45), smooth(0.4));
     if (now - start >= 2600) {
       camera.focus = null;
-      followSearch();
+      applyCameraMode();
     }
     return;
   }
@@ -1023,10 +1018,7 @@ function revealTransport(ok) {
 function inspect(cell) {
   hideRoutePreview();
   if (!cell || branchBusy) return;
-  if (cell.ids.length) {
-    cameraBeforeHistory ||= $("camera-toggle").dataset.value;
-    stopCamera();
-  }
+  if (cell.ids.length) stopCamera();
   revealNext = true;
   stopControl();
   music.stop();
@@ -1054,7 +1046,7 @@ function inspect(cell) {
     worker.postMessage({ type: "states", ids: cell.ids, request: ++request });
   } else {
     closeInspector({ restoreFocus: false });
-    restoreCamera();
+    applyCameraMode();
   }
 }
 function startSearch(level = bootLevel) {
@@ -2035,7 +2027,7 @@ function stopControl() {
 $("close-inspector").onclick = () => {
   const retained = !!current && !playSession, draft = !!playSession;
   closeInspector();
-  restoreCamera();
+  applyCameraMode();
   if (draft) leaveTourGameplay();
   if (retained) {
     $("history-rail").hidden = false;
@@ -2250,7 +2242,7 @@ window.addEventListener("keydown", (e) => {
     if (controlMode) stopControl();
     else if (!$("inspector").hidden && !$("info").open) {
       closeInspector();
-      restoreCamera();
+      applyCameraMode();
     }
     return;
   }
@@ -2460,7 +2452,7 @@ const mapResize = new ResizeObserver(([entry]) => {
   mapLayoutWidth = width;
   for (const key of views.keys()) if (typeof key === "string") views.delete(key);
   renderMapRows(catalog.levels.find(l => l.rooms.includes(mapLevel)));
-  if (!camera.follow && !camera.focus) {
+  if (camera.mode === "room" && !camera.focus) {
     for (const room of cameraRooms()) overview(room);
     updateCameraToggle();
   }
@@ -2716,7 +2708,7 @@ const tour = new GuidedTour({
       worker.postMessage({ type: "resume" });
       updateSearchControl();
     }
-    if (phoneLayout.matches && $("inspector").hidden) followSearch();
+    if ($("inspector").hidden) applyCameraMode();
     return restoration;
   },
 });
