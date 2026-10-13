@@ -67,8 +67,9 @@ SYSENTER CS is a 32-bit VMCS field, while SYSENTER ESP and EIP are virtual
 addresses. KVM can accept wider values through `KVM_SET_MSRS` but return a
 truncated or sign-extended value on the next save. Restore preflight rejects a
 nonzero upper half of CS and noncanonical ESP or EIP values before changing
-the vCPU. The address width is the narrower of the host KVM capability and the
-installed guest CPUID model; the active guest contract exposes 48 virtual bits.
+the vCPU. KVM canonicalizes ESP and EIP at its host LA57 capability width,
+independent of the guest CPUID width. SVM also discards their upper halves for
+AMD-compatible guests, so preflight requires 32-bit values in that case.
 CR8 holds a four-bit task-priority value. KVM also accepts larger values in
 `KVM_SET_SREGS2` but reads them back changed, so restore rejects those values
 during preflight.

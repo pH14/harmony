@@ -471,14 +471,31 @@ pub(crate) fn cpuid_entries(model: &CpuidModel) -> Vec<kvm_cpuid_entry2> {
         .collect()
 }
 
-pub(crate) fn guest_virtual_bits(model: &CpuidModel) -> u32 {
+pub(crate) fn amd_compatible_vendor(ebx: u32, edx: u32, ecx: u32) -> bool {
+    let mut vendor = [0; 12];
+    vendor[..4].copy_from_slice(&ebx.to_le_bytes());
+    vendor[4..8].copy_from_slice(&edx.to_le_bytes());
+    vendor[8..].copy_from_slice(&ecx.to_le_bytes());
+    vendor == *b"AuthenticAMD" || vendor == *b"HygonGenuine"
+}
+
+pub(crate) fn guest_amd_compatible(model: &CpuidModel) -> bool {
     model
         .entries
         .iter()
-        .find(|entry| entry.leaf == 0x8000_0008 && entry.subleaf == 0)
-        .map(|entry| (entry.eax >> 8) & 0xff)
-        .filter(|bits| (48..=64).contains(bits))
-        .unwrap_or(48)
+        .find(|entry| entry.leaf == 0 && entry.subleaf == 0)
+        .is_some_and(|entry| amd_compatible_vendor(entry.ebx, entry.edx, entry.ecx))
+}
+
+pub(crate) fn kvm_sysenter_virtual_bits(entries: &[kvm_cpuid_entry2]) -> u32 {
+    if entries
+        .iter()
+        .any(|entry| entry.function == 7 && entry.index == 0 && entry.ecx & (1 << 16) != 0)
+    {
+        57
+    } else {
+        48
+    }
 }
 
 fn canonical_address(address: u64, bits: u32) -> bool {
@@ -524,6 +541,7 @@ pub(crate) fn validate_restore_shape(
     filter: Option<&MsrFilter>,
     xsave_len: usize,
     virtual_bits: u32,
+    sysenter_32bit: bool,
 ) -> Result<()> {
     const EFER: u32 = 0xc000_0080;
     const FS_BASE: u32 = 0xc000_0100;
@@ -567,11 +585,10 @@ pub(crate) fn validate_restore_shape(
         return Err(BackendError::InvalidState);
     }
     for index in [SYSENTER_ESP, SYSENTER_EIP] {
-        if state
-            .msrs
-            .get(&index)
-            .is_some_and(|&value| !canonical_address(value, virtual_bits))
-        {
+        if state.msrs.get(&index).is_some_and(|&value| {
+            (sysenter_32bit && value > u64::from(u32::MAX))
+                || !canonical_address(value, virtual_bits)
+        }) {
             return Err(BackendError::InvalidState);
         }
     }
