@@ -69,7 +69,9 @@ the third level is cleared.
 
 The search runs in one coordinator worker and a pool of rollout workers. The
 coordinator owns the Dissonance archive and parent selector. Each rollout
-worker holds its own QuickNES instance. The archive place is (level, loading,
+worker holds its own QuickNES instance. The page starts every worker and hands
+the coordinator a `MessageChannel` port to each rollout worker, because some
+browsers fail to load a worker started from inside another worker. The archive place is (level, loading,
 x / 32, y / 32), its progress is the number of levels cleared, and its identity
 within a place is (x / 16, y / 16). The place rows match the map's cell rows.
 The parent selector weighs each progress tier 8 times the tier below, so new

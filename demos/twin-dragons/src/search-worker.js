@@ -223,13 +223,11 @@ function addSearch(id, search) {
   searches.set(id, search);
   for (let r = 0; r < ROUNDS_AHEAD; r++) planRound(search);
 }
-async function startPool(count, base) {
+async function startPool(ports, base) {
   const [rom, wasm] = await Promise.all(["twin-dragons.nes", "engine/quicknes.wasm"].map(async (name) =>
     new Uint8Array(await (await fetch(new URL(name, base))).arrayBuffer())));
-  await Promise.all(Array.from({ length: count }, () => new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./rollout-worker.js", import.meta.url), { type: "module" });
+  await Promise.all(ports.map((worker) => new Promise((resolve) => {
     const slot = { worker, cache: new Map(), chunks: 0, ready: false };
-    worker.onerror = (e) => reject(new Error(e.message || "Rollout worker failed"));
     worker.onmessage = ({ data }) => {
       try {
         if (data.type === "ready") {
@@ -263,7 +261,7 @@ onmessage = async ({ data }) => {
       genesis = engine.boot(bootLevel);
       wasm = await init();
       if (gen !== generation) return;
-      await startPool(data.workers ?? 1, data.base);
+      await startPool(data.ports, data.base);
       if (gen !== generation) return;
       const explorer = bootLevel === 0 ? new Explorer(data.seed ?? 1) : Explorer.from_history(data.seed ?? 1, "[]");
       explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);

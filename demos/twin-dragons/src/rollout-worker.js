@@ -3,11 +3,16 @@ import { createEngine } from "./emulator.js";
 import { runRollout, stepBytes } from "./rollout.js";
 let engine;
 const parents = new Map();
-onmessage = async ({ data }) => {
+let channel = self;
+onmessage = ({ data }) => {
+  channel = data.port;
+  channel.onmessage = handle;
+};
+async function handle({ data }) {
   try {
     if (data.type === "init") {
       engine = await createEngine(data.base, { rom: data.rom, wasmBinary: data.wasm });
-      postMessage({ type: "ready" });
+      channel.postMessage({ type: "ready" });
       return;
     }
     if (data.type !== "run") return;
@@ -25,9 +30,9 @@ onmessage = async ({ data }) => {
       offset += job.actions.length * stride;
     }
     for (const key of data.evicted) parents.delete(key);
-    postMessage({ type: "done", chunk: data.chunk, buffer: out.buffer, steps, trails },
+    channel.postMessage({ type: "done", chunk: data.chunk, buffer: out.buffer, steps, trails },
       [out.buffer, ...trails.filter(Boolean).map((t) => t.buffer)]);
   } catch (e) {
-    postMessage({ type: "error", message: String(e?.message || e) });
+    channel.postMessage({ type: "error", message: String(e?.message || e) });
   }
-};
+}

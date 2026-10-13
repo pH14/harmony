@@ -45,6 +45,7 @@ document.querySelector("#app").innerHTML = `
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 let heat = new Heatmap(),
   worker,
+  rolloutWorkers = [],
   engine,
   origin,
   originPixels,
@@ -1108,6 +1109,7 @@ function startSearch(level = bootLevel) {
   renderBranches();
   $("branch-message").hidden = true;
   if (worker) worker.terminate();
+  for (const rollout of rolloutWorkers) rollout.terminate();
   heat = new Heatmap();
   swarm.clear();
   swarmRooms = new Map();
@@ -1149,6 +1151,15 @@ function startSearch(level = bootLevel) {
 
   $("status-dot").className = "";
   $("cell-title").textContent = "Saved paths";
+  const ports = [];
+  rolloutWorkers = Array.from({ length: budget.workers }, () => {
+    const rollout = new Worker(new URL("./rollout-worker.js", import.meta.url), { type: "module" });
+    const channel = new MessageChannel();
+    rollout.onerror = (e) => fail(e.message || "Rollout worker failed");
+    rollout.postMessage({ port: channel.port1 }, [channel.port1]);
+    ports.push(channel.port2);
+    return rollout;
+  });
   worker = new Worker(new URL("./search-worker.js", import.meta.url), {
     type: "module",
   });
@@ -1317,7 +1328,7 @@ function startSearch(level = bootLevel) {
       fail(e);
     }
   };
-  worker.postMessage({ type: "init", base: base.href, seed, budget, workers: budget.workers, boot_level: bootLevel });
+  worker.postMessage({ type: "init", base: base.href, seed, budget, ports, boot_level: bootLevel }, ports);
 }
 function updateSearchControl() {
   heat.setRunning(ready && !paused && !stats.stopped, performance.now());
