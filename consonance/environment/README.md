@@ -32,6 +32,10 @@ payloads, recorded answers, reseed points, and mechanical effects. Its versioned
 codec bounds lengths and validates ordering. Mechanical effects describe memory
 writes and memory XOR; packages choose when and why to use them. The VMM validates their machine addresses before applying them.
 
+`InputSpec::materialize` verifies the handler's identity and configuration both
+before and after the initial reseed. A reseed that changes either value rejects
+the input instead of returning an environment under a different service contract.
+
 `InputSpec` writes service configuration and effects directly into its output,
 filling each nested length after encoding. Standalone configuration and effect
 encoders share those writers and retain the same bytes. This avoids temporary
