@@ -50,7 +50,7 @@ pub fn checks(
     }
     checks.push(replays(options, profile, host, "counter", &cpus)?);
     checks.push(seed_changes_events(options, profile)?);
-    checks.push(refusal(profile, host));
+    checks.push(refusal(profile));
     Ok(checks)
 }
 
@@ -189,7 +189,7 @@ fn replays(
     }
     walls.sort_unstable();
 
-    let cuts = cut_replays(options, profile, host, &base, &reference.events)?;
+    let cuts = cut_replays(options, profile, &base, &reference.events)?;
     let cuts_passed = cuts.iter().all(|cut| cut["passed"] == json!(true));
     Ok(check(
         &format!("replay_{fixture}"),
@@ -213,7 +213,6 @@ fn replays(
 fn cut_replays(
     options: &Options,
     profile: &VerifiedProfile,
-    host: &HostIdentity,
     base: &Launch,
     reference: &[Event],
 ) -> io::Result<Vec<Value>> {
@@ -225,13 +224,10 @@ fn cut_replays(
         let cut = (step * reference.len() / options.cuts).max(1);
         let path = directory.path().join(format!("cut-{cut}.json"));
         let recording =
-            Recording::new(profile, host, base, &reference[..cut]).map_err(io::Error::other)?;
+            Recording::new(profile, base, &reference[..cut]).map_err(io::Error::other)?;
         std::fs::write(&path, serde_json::to_vec_pretty(&recording)?)?;
         let loaded: Recording = serde_json::from_slice(&std::fs::read(&path)?)?;
-        let refused = loaded
-            .check(profile, host)
-            .err()
-            .map(|error| error.to_string());
+        let refused = loaded.check(profile).err().map(|error| error.to_string());
         let mut launch = loaded.launch(options.work.clone());
         launch.console_tail_bytes = base.console_tail_bytes;
         launch.wall_limit = base.wall_limit;
@@ -279,25 +275,25 @@ fn seed_changes_events(options: &Options, profile: &VerifiedProfile) -> io::Resu
     ))
 }
 
-fn refusal(profile: &VerifiedProfile, host: &HostIdentity) -> Value {
+fn refusal(profile: &VerifiedProfile) -> Value {
     let mut base = Launch::new(std::env::temp_dir());
     base.bridge = Some(Bridge::new(SEED));
-    let recording = match Recording::new(profile, host, &base, &[]) {
+    let recording = match Recording::new(profile, &base, &[]) {
         Ok(recording) => recording,
         Err(error) => return check("replay_refuses_other_host", false, json!(error.to_string())),
     };
-    let mut other_cpu = host.clone();
-    other_cpu.cpu_model.push_str(";stepping=other");
-    let mut other_features = host.clone();
-    other_features.cpu_features.push_str(" other");
+    let mut other_cpu = recording.clone();
+    other_cpu.host.cpu_model.push_str(";stepping=other");
+    let mut other_features = recording.clone();
+    other_features.host.cpu_features.push_str(" other");
     let mut other_profile = recording.clone();
     other_profile.profile_identity_sha256 = "0".repeat(64);
     let results = [
-        recording.check(profile, &other_cpu),
-        recording.check(profile, &other_features),
-        other_profile.check(profile, host),
+        other_cpu.check(profile),
+        other_features.check(profile),
+        other_profile.check(profile),
     ];
-    let passed = recording.check(profile, host).is_ok()
+    let passed = recording.check(profile).is_ok()
         && matches!(results[0], Err(ReplayRefused::Host { .. }))
         && matches!(results[1], Err(ReplayRefused::Host { .. }))
         && matches!(results[2], Err(ReplayRefused::Profile { .. }));

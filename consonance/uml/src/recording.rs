@@ -31,6 +31,8 @@ pub enum ReplayRefused {
     Initramfs,
     #[error("a run without a bridge cannot be recorded")]
     NoBridge,
+    #[error("cannot read the current host identity: {0}")]
+    HostIdentity(#[from] std::io::Error),
     #[error("recording was made with profile {recorded}; this profile is {current}")]
     Profile { recorded: String, current: String },
     #[error("recording was made on {recorded:?}; this host is {current:?}")]
@@ -42,6 +44,15 @@ pub enum ReplayRefused {
 
 impl Recording {
     pub fn new(
+        profile: &VerifiedProfile,
+        launch: &Launch,
+        events: &[Event],
+    ) -> Result<Self, ReplayRefused> {
+        let host = HostIdentity::current()?;
+        Self::new_with_host(profile, &host, launch, events)
+    }
+
+    fn new_with_host(
         profile: &VerifiedProfile,
         host: &HostIdentity,
         launch: &Launch,
@@ -63,7 +74,12 @@ impl Recording {
         })
     }
 
-    pub fn check(
+    pub fn check(&self, profile: &VerifiedProfile) -> Result<(), ReplayRefused> {
+        let host = HostIdentity::current()?;
+        self.check_with_host(profile, &host)
+    }
+
+    fn check_with_host(
         &self,
         profile: &VerifiedProfile,
         host: &HostIdentity,
@@ -152,26 +168,31 @@ mod tests {
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.kernel_arguments = vec!["harmony_fixture=values".to_owned()];
         launch.bridge = Some(Bridge::new(9));
-        let recording = Recording::new(&profile("a"), &host("model=1"), &launch, &events).unwrap();
-        assert!(recording.check(&profile("a"), &host("model=1")).is_ok());
+        let recording =
+            Recording::new_with_host(&profile("a"), &host("model=1"), &launch, &events).unwrap();
+        assert!(
+            recording
+                .check_with_host(&profile("a"), &host("model=1"))
+                .is_ok()
+        );
         assert!(matches!(
-            recording.check(&profile("b"), &host("model=1")),
+            recording.check_with_host(&profile("b"), &host("model=1")),
             Err(ReplayRefused::Profile { .. })
         ));
         assert!(matches!(
-            recording.check(&profile("a"), &host("model=2")),
+            recording.check_with_host(&profile("a"), &host("model=2")),
             Err(ReplayRefused::Host { .. })
         ));
         let mut features = host("model=1");
         features.cpu_features.push_str(" avx512f");
         assert!(matches!(
-            recording.check(&profile("a"), &features),
+            recording.check_with_host(&profile("a"), &features),
             Err(ReplayRefused::Host { .. })
         ));
         let mut processor = host("model=1");
         processor.processor = 2;
         assert!(matches!(
-            recording.check(&profile("a"), &processor),
+            recording.check_with_host(&profile("a"), &processor),
             Err(ReplayRefused::Host { .. })
         ));
 
@@ -196,7 +217,7 @@ mod tests {
             std::fs::write(&initramfs, b"image").unwrap();
             launch.set_initramfs(&initramfs).unwrap();
             assert!(matches!(
-                Recording::new(&profile("a"), &host("model=1"), &launch, &events),
+                Recording::new_with_host(&profile("a"), &host("model=1"), &launch, &events),
                 Err(ReplayRefused::Initramfs)
             ));
         }
@@ -208,7 +229,7 @@ mod tests {
         let host = host("model=1");
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.bridge = Some(Bridge::new(41));
-        let recording = Recording::new(&profile, &host, &launch, &[]).unwrap();
+        let recording = Recording::new_with_host(&profile, &host, &launch, &[]).unwrap();
         let replay = recording.launch(PathBuf::from("/replay"));
         assert_eq!(replay.bridge.unwrap().cut, Some(0));
         let seed_arg = |launch: &Launch| {
@@ -225,12 +246,31 @@ mod tests {
         let replay_seed = seed_arg(&replay);
         assert_eq!(live_seed, replay_seed);
         assert_eq!(recording.seed, 41);
-        assert!(recording.check(&profile, &host).is_ok());
+        assert!(recording.check_with_host(&profile, &host).is_ok());
         assert!(recording.matches(&[]));
         launch.bridge = None;
         assert!(matches!(
-            Recording::new(&profile, &host, &launch, &[]),
+            Recording::new_with_host(&profile, &host, &launch, &[]),
             Err(ReplayRefused::NoBridge)
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn public_recording_uses_the_current_host_instead_of_a_supplied_identity() {
+        let profile = profile("a");
+        let mut launch = Launch::new(PathBuf::from("/work"));
+        launch.bridge = Some(Bridge::new(41));
+        let recording = Recording::new(&profile, &launch, &[]).unwrap();
+        assert_eq!(recording.host, HostIdentity::current().unwrap());
+        assert!(recording.check(&profile).is_ok());
+
+        let mut forged = recording.clone();
+        forged.host.processor ^= 1;
+        assert!(matches!(
+            forged.check(&profile),
+            Err(ReplayRefused::Host { .. })
         ));
     }
 }
