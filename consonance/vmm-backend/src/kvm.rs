@@ -593,7 +593,20 @@ pub(crate) fn validate_restore_shape(
         state.sregs.tr,
         state.sregs.ldt,
     ] {
-        if segment.type_ > 0x0f || segment.dpl > 3 {
+        if segment.type_ > 0x0f
+            || segment.dpl > 3
+            || [
+                segment.present,
+                segment.db,
+                segment.s,
+                segment.l,
+                segment.g,
+                segment.avl,
+                segment.unusable,
+            ]
+            .into_iter()
+            .any(|value| value > 1)
+        {
             return Err(BackendError::InvalidState);
         }
     }

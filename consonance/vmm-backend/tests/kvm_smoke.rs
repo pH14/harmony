@@ -1125,6 +1125,44 @@ fn segment_encoding_restore_rejects_oversized_fields_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
+fn segment_one_bit_restore_rejects_oversized_flags_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for field in 0..4 {
+        let mut invalid = baseline.clone();
+        match field {
+            0 => invalid.sregs.cs.present = 2,
+            1 => invalid.sregs.ds.l = 2,
+            2 => invalid.sregs.tr.unusable = 2,
+            _ => invalid.sregs.ldt.avl = 2,
+        }
+        invalid.regs.rax ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.ds.avl = 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate AVL");
+    backend.restore(&valid).expect("restore AVL");
+    assert_eq!(backend.save().expect("save AVL").sregs.ds.avl, 1);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
 fn msr_filter_is_loud() {
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,
