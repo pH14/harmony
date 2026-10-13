@@ -480,6 +480,9 @@ published. The wire encoding and hashed bytes are unchanged. The SDK record is
 encoded directly into the hash suffix; its two nested length fields are filled
 from the resulting byte ranges. This avoids temporary record and chunk buffers
 while preserving the same framing and independently owned retained SDK state.
+When the backend declares a state unsupported for capture, Snapshot, whole-VM
+Hash, and Regs reply with `SnapshotRefused` and leave the session available;
+unexpected backend failures remain fatal.
 
 A control snapshot encodes its recorded inputs, pending effects/reseeds, failure
 state, and execution nonce once. It appends these encoded bytes to the canonical
