@@ -27,6 +27,8 @@ pub enum MemoryError {
     ImageTooLarge(u64),
     #[error("the checkpoints hold no guest memory yet")]
     Empty,
+    #[error("snapshot belongs to another checkpoint store")]
+    ForeignSnapshot,
 }
 
 #[derive(Clone, Default)]
@@ -114,6 +116,14 @@ impl Checkpoints {
         }
     }
 
+    pub(crate) fn require_owned_snapshot(&self, snapshot: &Snapshot) -> Result<(), MemoryError> {
+        if Rc::ptr_eq(&self.0, &snapshot.checkpoints.0) {
+            Ok(())
+        } else {
+            Err(MemoryError::ForeignSnapshot)
+        }
+    }
+
     pub(crate) fn zero(&self) -> Result<Snapshot, MemoryError> {
         let mut pages = self.held()?;
         let root = pages.root;
@@ -129,6 +139,11 @@ impl Checkpoints {
         target: &Snapshot,
         use_delta: impl FnOnce(&PageDelta<'_>) -> R,
     ) -> Result<R, MemoryError> {
+        self.require_owned_snapshot(base)?;
+        if let Some(parent) = parent {
+            self.require_owned_snapshot(parent)?;
+        }
+        self.require_owned_snapshot(target)?;
         let pages = self.held()?;
         let delta = pages
             .store
@@ -143,6 +158,8 @@ impl Checkpoints {
         rows: &[(u64, &PageHash, &[u8; PAGE_SIZE])],
         image_bytes: u64,
     ) -> Result<Snapshot, MemoryError> {
+        self.require_owned_snapshot(base)?;
+        self.require_owned_snapshot(near)?;
         let mut pages = self.held()?;
         let near = if pages
             .store
@@ -716,11 +733,11 @@ mod tests {
 
         assert!(matches!(
             Checkpoints::new().delta_pages(&base, None, &target, |_| ()),
-            Err(MemoryError::Empty)
+            Err(MemoryError::ForeignSnapshot)
         ));
         assert!(matches!(
             Checkpoints::new().import_pages(&base, &base, &borrowed, 50),
-            Err(MemoryError::Empty)
+            Err(MemoryError::ForeignSnapshot)
         ));
     }
 

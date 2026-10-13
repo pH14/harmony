@@ -185,6 +185,7 @@ impl Checkpoints {
         target: &Checkpoint,
         use_pages: impl FnOnce(&[(u64, &PageHash, &[u8; PAGE_SIZE])]) -> R,
     ) -> Result<R, SessionError> {
+        self.require_owned_snapshot(&target.memory)?;
         let zero = self.zero()?;
         Ok(self.delta_pages(&zero, None, &target.memory, |delta| {
             use_pages(&delta.changed)
@@ -198,6 +199,7 @@ impl Checkpoints {
         sidecar: &[u8],
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
+        self.require_owned_snapshot(&near.memory)?;
         checked_sidecar(sidecar)?;
         let base = Checkpoint {
             memory: self.zero()?,
@@ -230,6 +232,8 @@ impl Checkpoints {
         sidecar: &[u8],
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
+        self.require_owned_snapshot(&base.memory)?;
+        self.require_owned_snapshot(&near.memory)?;
         let malformed = |what: &str| SessionError::Protocol(format!("checkpoint sidecar: {what}"));
         let (image_bytes, mut reader) = checked_sidecar(sidecar)?;
         let length = |reader: &mut Reader<'_>| {
@@ -281,6 +285,9 @@ impl Session {
         checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
     ) -> Result<Self, SessionError> {
+        if let Some(checkpoint) = restore {
+            checkpoints.require_owned_snapshot(&checkpoint.memory)?;
+        }
         let bridge = launch.bridge.ok_or(SessionError::NoBridge)?;
         let memory = GuestMemory::new()?;
         command.arg(format!("harmony_physmem={PHYSMEM_FD}"));
@@ -510,6 +517,8 @@ impl Session {
     }
 
     fn restore_from(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
+        self.checkpoints
+            .require_owned_snapshot(&checkpoint.memory)?;
         let physmem_bytes = self.memory.map()?;
         let checkpoints = self.checkpoints.clone();
         let target = checkpoint.memory.id();
@@ -1158,6 +1167,57 @@ mod tests {
             .import(&base, &near, &valid, &sidecar, &nominal_factory())
             .unwrap();
         assert_eq!(imported.digest().unwrap(), target.digest().unwrap());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn checkpoint_operations_reject_foreign_owner_before_changing_the_store() {
+        let first = Checkpoints::new();
+        let foreign = checkpoint(snapshot(&first, None, &[(0, 1)]), 5, Some(120));
+        let second = Checkpoints::new();
+        let local = checkpoint(snapshot(&second, None, &[(0, 2)]), 5, Some(120));
+        assert_eq!(foreign.memory.id(), local.memory.id());
+        assert_ne!(foreign.digest().unwrap(), local.digest().unwrap());
+        let before = second.stats().unwrap();
+        let sidecar = local.sidecar().unwrap();
+
+        assert!(matches!(
+            second.full(&foreign, |_| ()),
+            Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+        ));
+        for result in [
+            second.delta(&foreign, None, &local, |_, _| ()),
+            second.delta(&local, Some(&foreign), &local, |_, _| ()),
+            second.delta(&local, None, &foreign, |_, _| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+            ));
+        }
+        for result in [
+            second.import(&foreign, &local, &[], &sidecar, &nominal_factory()),
+            second.import(&local, &foreign, &[], &sidecar, &nominal_factory()),
+            second.import_full(&foreign, &[], &sidecar, &nominal_factory()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+            ));
+        }
+        assert_eq!(second.stats().unwrap(), before);
+        assert_ne!(foreign.digest().unwrap(), local.digest().unwrap());
+
+        let exported = second
+            .clone()
+            .full(&local, |pages| {
+                pages
+                    .iter()
+                    .map(|(gfn, _, data)| (*gfn, data[0]))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(exported, vec![(0, 2)]);
     }
 
     #[test]
