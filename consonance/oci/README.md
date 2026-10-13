@@ -73,9 +73,10 @@ unpacks the initramfs. An image that hands its data to a service account, such
 as a database cluster owned by its own uid, is therefore readable by that
 account in the guest and by nobody else.
 
-A layer that ships a child without an entry for its parent directory leaves
-that parent with the mode `tar` gave it when it created it, and the merge
-applies that mode over the lower layer's.
+A layer that ships a child without an entry for its parent directory gives the
+implicit parent mode 0755, regardless of the host process's umask. The merge
+applies that mode over the lower layer's. Explicit directory modes still come
+from the layer header.
 
 `RuntimeConfig::user` retains the image `Config.User` value. The supported
 Linux forms are `uid`, `uid:gid`, `user`, `user:group`, `uid:group`, and
