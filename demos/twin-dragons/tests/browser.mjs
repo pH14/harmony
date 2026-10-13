@@ -623,7 +623,7 @@ try {
       document.querySelector("#verification").textContent ===
         "Exact replay ✓" && document.querySelector("#map").dataset.map === "1",
   );
-  assert.match(await page.locator("#goal-title").innerText(), /^Level 2( ✓)?$/);
+  assert.match(await page.locator('#level-strip [aria-pressed="true"]').textContent(), /^Level 2( ✓)?$/);
   const levelFrames = new Map();
   emulator.restore(emulatorRoot);
   let frame = 0, lastLevelOne = 0;
@@ -648,7 +648,7 @@ try {
           .textContent.startsWith("FRAME " + frame.toLocaleString() + " /"),
       { level, frame },
     );
-    assert.match(await page.locator("#goal-title").innerText(), new RegExp(`^Level ${level + 1}( ✓)?$`));
+    assert.match(await page.locator('#level-strip [aria-pressed="true"]').textContent(), new RegExp(`^Level ${level + 1}( ✓)?$`));
   }
   const beforeGoal = lastLevelOne - 30;
   await page.locator("#scrub").fill(String(beforeGoal));
@@ -672,8 +672,23 @@ try {
         .querySelector("#frame-label")
         .textContent.startsWith("FRAME 0 /"),
   );
-  assert.match(await page.locator("#goal-title").innerText(), /^Level 1( ✓)?$/);
+  assert.match(await page.locator('#level-strip [aria-pressed="true"]').textContent(), /^Level 1( ✓)?$/);
   console.log("Cached scrub and playback follow the Level 1 to Level 2 transition.");
+  const live = page.locator("#level-strip button:has(.level-live)"),
+    liveLevel = Number(await live.getAttribute("data-level")),
+    [replayLevel, replayFrame] = [...levelFrames].find(([level]) => level !== liveLevel);
+  await page.locator("#scrub").fill(String(replayFrame));
+  await page.waitForFunction((level) => document.querySelector("#map").dataset.map === String(level), replayLevel);
+  assert.equal(await page.locator('#level-strip [aria-pressed="true"]').getAttribute("data-level"), String(replayLevel));
+  await live.click();
+  await page.waitForFunction(
+    ({ level, rooms }) =>
+      document.querySelector('#level-strip [aria-pressed="true"]')?.dataset.level === String(level) &&
+      rooms.includes(Number(document.querySelector("#map").dataset.map)),
+    { level: liveLevel, rooms: catalog.levels.find((level) => level.id === liveLevel).rooms },
+  );
+  assert.equal(await page.locator('#camera-toggle [data-camera="follow"]').getAttribute("aria-pressed"), "true");
+  console.log("The level trail returns from a replayed level to the level the search is exploring.");
   const longFrames = await selectFixture(
     {
       actions: [

@@ -22,11 +22,11 @@ try {
       };
     });
     await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?pace=0`);
-    await page.locator('#goal-title').waitFor({state:'visible'});
-    await page.waitForFunction(() => !document.querySelector('#goal-title').disabled);
+    await page.locator('#new-search').waitFor({state:'visible'});
+    await page.waitForFunction(() => !document.querySelector('#new-search').disabled);
     for (const level of [1,2,0]) {
       console.log(`Testing ${phone ? 'phone' : 'desktop'} level ${level}`);
-      await page.locator('#goal-title').click();
+      await page.locator('#new-search').click();
       assert.equal(await page.locator('#level-grid .level-card').count(),3);
       await page.locator('.level-card[data-level="2"]').scrollIntoViewIfNeeded();
       const close = await page.locator('#close-level-picker').boundingBox();
@@ -37,9 +37,9 @@ try {
       for (const size of sizes) assert.deepEqual(size,[256,96], 'Gallery images must be bounded thumbnails');
       await page.screenshot({path:`test-results/levels-${phone ? 'phone' : 'desktop'}.png`});
       await page.locator(`.level-card[data-level="${level}"]`).click();
-      await page.waitForFunction(level => window.tdRoot?.boot_level === level && !document.querySelector('#pause').disabled && !document.querySelector('#goal-title').disabled,level);
+      await page.waitForFunction(level => window.tdRoot?.boot_level === level && !document.querySelector('#pause').disabled && !document.querySelector('#new-search').disabled,level);
       assert.equal((await page.evaluate(() => window.tdRoot)).observation.level,level);
-      assert.equal(await page.locator('#goal-title').textContent(), `Level ${level+1}`);
+      assert.equal(await page.locator('#level-strip [aria-pressed="true"]').textContent(), `Level ${level+1}`);
       assert.equal(await page.locator('#branch-tree [data-search]').count(),1);
       await page.waitForFunction(() => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) >= 4);
       await page.locator('#pause').click();
@@ -78,7 +78,7 @@ try {
     assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(255, 255, 255)');
     await page.locator('#theme').click();
     assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),'rgb(28, 28, 28)');
-    await page.locator('#goal-title').click();
+    await page.locator('#new-search').click();
     await page.locator('#close-level-picker').click();
     assert.equal(await page.locator('#branch-tree [data-search]').count(),2,'Dismissing the level picker keeps the Timeline');
     if (phone) {

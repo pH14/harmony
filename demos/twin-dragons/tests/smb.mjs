@@ -80,7 +80,7 @@ const chooser = page.waitForEvent("filechooser");
 await page.locator("#game-choice button", { hasText: "Super Mario Bros." }).click();
 await (await chooser).setFiles(path);
 await page.waitForFunction(() => document.documentElement.dataset.game === "super-mario-bros" && Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 200, null, { timeout: 60000 });
-assert.equal(await page.locator("#goal-title").innerText(), "World 1-1");
+assert.equal(await page.locator('#level-strip [aria-pressed="true"]').textContent(), "World 1-1");
 assert.deepEqual(errors, []);
 console.log("Choosing the ROM in the game picker stores it and starts a Super Mario Bros. search.");
 await browser.close();

@@ -39,10 +39,10 @@ try {
       };
     },TOUR_KEY);
     await page.goto(`${(process.env.DEMO_URL||'http://127.0.0.1:4173').replace(/\/$/,'')}/?pace=0`);
-    await page.waitForFunction(()=>!document.querySelector('#goal-title').disabled);
+    await page.waitForFunction(()=>!document.querySelector('#new-search').disabled);
     let panned=0;
     for(const level of [0,1,2]) {
-      await page.locator('#goal-title').click();await page.locator(`.level-card[data-level="${level}"]`).click();
+      await page.locator('#new-search').click();await page.locator(`.level-card[data-level="${level}"]`).click();
       await page.waitForFunction(level=>window.root?.boot_level===level&&!document.querySelector('#pause').disabled,level);
       await page.waitForFunction(()=>Number(document.querySelector('#attempts').textContent.replaceAll(',',''))>=12);
       await page.locator('#pause').click();
@@ -84,7 +84,7 @@ try {
     }
     // A recorded, hash-verified native history makes the selected cell independent of search speed. The
     // forked search pauses as soon as it starts, so later states cannot push the root out of its cell's list.
-    await page.locator('#goal-title').click();await page.locator('.level-card[data-level="0"]').click();
+    await page.locator('#new-search').click();await page.locator('.level-card[data-level="0"]').click();
     await page.waitForFunction(()=>window.root?.boot_level===0&&!document.querySelector('#pause').disabled);
     await page.evaluate(tape=>window.testWorker.postMessage({type:'fork',tape,seed:3}),tape);
     await page.waitForFunction(()=>window.root?.id==='1:0'&&!document.querySelector('#pause').disabled);
