@@ -2369,6 +2369,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock")]
     fn route_memory_mapping_is_miri_reachable() {
         let mut backend = crate::MockArm64Backend::new();
         backend.set_policy(&Arm64Policy::default()).unwrap();
