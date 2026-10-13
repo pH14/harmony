@@ -61,7 +61,9 @@
   `Checkpoint::digest` hashes a checkpoint's pages and services state.
   Checkpoint handles belong to their `Checkpoints` store. Export, import, and
   live restore reject a handle from another store before using its snapshot ID;
-  cloning `Checkpoints` retains the same store ownership.
+  cloning `Checkpoints` retains the same store ownership. A checkpoint dropped
+  inside an export callback is released at the next store access, after the
+  callback's page borrow ends.
   `Checkpoints::import` reproduces the published checkpoint only onto a base
   with the publisher's digest, because a base also holds per-process host
   values: the C library's stack canary and pointer guard, host process IDs

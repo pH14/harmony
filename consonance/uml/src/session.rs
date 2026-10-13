@@ -1008,6 +1008,26 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn dropping_checkpoint_during_delta_callback_releases_snapshot() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
+        let target = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(1, 2)]),
+            5,
+            Some(120),
+        );
+        let shared = target.with_bridge_of(&target);
+
+        checkpoints
+            .delta(&base, None, &target, |_, _| drop(shared))
+            .unwrap();
+        drop(target);
+        drop(base);
+        assert_eq!(checkpoints.stats().unwrap().snapshots, 1);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn checkpoints_report_their_moment_events_and_image() {
         let checkpoints = Checkpoints::new();
         let stamped = checkpoint(snapshot(&checkpoints, None, &[(1, 1)]), 5, Some(120));
