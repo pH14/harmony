@@ -4584,7 +4584,7 @@ mod tests {
     #[test]
     fn restore_vtime_does_not_touch_backend_save() {
         let mut v = Vmm::new(
-            SaveFailBackend(configured_mock(vec![])),
+            SaveFailBackend(configured_mock(vec![]), false),
             GuestRam::new(0x1000).unwrap(),
         );
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
@@ -5844,7 +5844,10 @@ mod tests {
         exits.push(Exit::Common(CommonExit::Idle));
         let mut inner = configured_mock(exits);
         inner.set_state(if_set_state());
-        let mut v = Vmm::new(SaveFailBackend(inner), GuestRam::new(0x1000).unwrap());
+        let mut v = Vmm::new(
+            SaveFailBackend(inner, false),
+            GuestRam::new(0x1000).unwrap(),
+        );
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
         v.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
@@ -6197,7 +6200,7 @@ mod tests {
         ));
     }
 
-    struct SaveFailBackend(MockBackend);
+    struct SaveFailBackend(MockBackend, bool);
     impl Backend for SaveFailBackend {
         type A = vmm_backend::X86;
 
@@ -6237,7 +6240,13 @@ mod tests {
             self.0.complete_arch(c)
         }
         fn save(&mut self) -> vmm_backend::Result<VcpuState> {
-            Err(vmm_backend::BackendError::Memory("induced save failure"))
+            if self.1 {
+                Err(vmm_backend::BackendError::Unsupported {
+                    what: "induced capture refusal",
+                })
+            } else {
+                Err(vmm_backend::BackendError::Memory("induced save failure"))
+            }
         }
         fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
             self.0.restore(s)
@@ -7031,7 +7040,7 @@ mod tests {
     #[test]
     fn save_vm_state_fails_closed_on_backend_save_error() {
         let mut v = Vmm::new(
-            SaveFailBackend(configured_mock(vec![])),
+            SaveFailBackend(configured_mock(vec![]), false),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(
@@ -7047,7 +7056,7 @@ mod tests {
     #[test]
     fn cpu_observations_fail_closed_on_backend_save_error() {
         let mut v = Vmm::new(
-            SaveFailBackend(configured_mock(vec![])),
+            SaveFailBackend(configured_mock(vec![]), false),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(matches!(v.inspect_vcpu(), Err(VmmError::Backend(_))));
@@ -7078,7 +7087,10 @@ mod tests {
         let mut state = VcpuState::default();
         state.regs.rip = 0x1234;
         backend.set_state(state);
-        let vmm = Vmm::new(SaveFailBackend(backend), GuestRam::new(0x1000).unwrap());
+        let vmm = Vmm::new(
+            SaveFailBackend(backend, false),
+            GuestRam::new(0x1000).unwrap(),
+        );
         let mut server = ControlServer::new(vmm, Box::new(|| panic!("unused factory")));
         server
             .handle(&Request::Hello(server_caps()))
@@ -7089,6 +7101,41 @@ mod tests {
             matches!(reply, Err(ServeError::Vmm(VmmError::Backend(_)))),
             "{reply:?}"
         );
+    }
+
+    #[test]
+    fn unsupported_capture_refuses_observations_without_ending_the_session() {
+        use crate::control::{ControlServer, server_caps};
+        use control_proto::{ControlError, HashScope, Reply, Request};
+
+        let mut vmm = Vmm::new(
+            SaveFailBackend(configured_mock(vec![]), true),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        vmm.wire_snapshot_hashing();
+        let mut server = ControlServer::new(vmm, Box::new(|| panic!("unused factory")));
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        for request in [
+            Request::Regs,
+            Request::Hash {
+                scope: HashScope::Whole,
+            },
+            Request::Snapshot,
+        ] {
+            assert!(matches!(
+                server.handle(&request).unwrap(),
+                Err(ControlError::SnapshotRefused { reason })
+                    if reason == "induced capture refusal"
+            ));
+            assert_eq!(server.latest_snapshot(), None);
+        }
+        assert!(matches!(
+            server.handle(&Request::Read { gpa: 0, len: 1 }).unwrap(),
+            Ok(Reply::Bytes(bytes)) if bytes.len() == 1
+        ));
     }
 
     #[test]
