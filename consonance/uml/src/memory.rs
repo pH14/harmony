@@ -23,6 +23,8 @@ pub enum MemoryError {
     Store(#[from] snapshot_store::StoreError),
     #[error("guest memory is {got} bytes, the checkpoints hold {expected}")]
     Size { got: usize, expected: usize },
+    #[error("imported checkpoint has {got} bytes of physical memory, destination has {expected}")]
+    ImportedMemorySize { got: u64, expected: u64 },
     #[error("the private image is {0} bytes, more than {IMAGE_BYTES}")]
     ImageTooLarge(u64),
     #[error("the checkpoints hold no guest memory yet")]
@@ -37,7 +39,7 @@ pub struct Checkpoints(Rc<RefCell<Option<Pages>>>);
 pub(crate) struct Pages {
     pub(crate) store: Store,
     pub(crate) root: SnapshotId,
-    physmem_bytes: usize,
+    pub(crate) physmem_bytes: usize,
 }
 
 pub(crate) struct Snapshot {
@@ -249,6 +251,10 @@ impl Snapshot {
             .unwrap_or(0)
     }
 
+    pub(crate) fn physmem_bytes(&self) -> Result<u64, MemoryError> {
+        Ok(self.checkpoints.held()?.physmem_bytes as u64)
+    }
+
     pub(crate) fn digest(&self, digest: &mut Sha256) -> Result<(), MemoryError> {
         let pages = self.checkpoints.held()?;
         let delta = pages.store.page_delta(pages.root, None, self.id)?;
@@ -257,6 +263,7 @@ impl Snapshot {
             digest.update(hash);
         }
         digest.update(pages.image_bytes(self.id)?.to_le_bytes());
+        digest.update((pages.physmem_bytes as u64).to_le_bytes());
         Ok(())
     }
 
@@ -676,6 +683,25 @@ mod tests {
         assert_ne!(digest(&base), digest(&child));
         let reverted = snapshot(&checkpoints, Some(&child), &[(2, 0)], 10);
         assert_eq!(digest(&reverted), digest(&base));
+    }
+
+    #[test]
+    fn digests_distinguish_guest_physical_memory_sizes() {
+        fn sized_snapshot(physmem_bytes: usize) -> Snapshot {
+            let checkpoints = Checkpoints::new();
+            let mut held = checkpoints.pages(physmem_bytes).unwrap();
+            let root = held.root;
+            let mut builder = held.store.derive(root).unwrap();
+            builder.write_page(1, &page(3)).unwrap();
+            builder.write_page(IMAGE_PAGES, &page(7)).unwrap();
+            let id = builder.seal(image_state(24));
+            drop(held);
+            checkpoints.adopt(id)
+        }
+
+        let small = sized_snapshot(PAGE_SIZE);
+        let large = sized_snapshot(2 * PAGE_SIZE);
+        assert_ne!(digest(&small), digest(&large));
     }
 
     #[test]
