@@ -38,7 +38,7 @@ fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor
 fingerprint encodings cover the complete state records used for restore, while
 the complete portable artifact digest covers the same persisted bytes. The
-VMST uses the current version 7 wire format; a present `xsave_restore_bv`
+VMST uses the current version 8 wire format; a present `xsave_restore_bv`
 intentionally changes the VCPU identity.
 Dirty-page drains and resets distinguish unsupported tracking from backend
 errors. Unsupported tracking permits a full capture; an operational error
@@ -80,9 +80,13 @@ and the helper does not change live trace scheduling or establish backend
 admissibility or future execution equivalence.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
-x86 device format is version 6 and the current arm64 device format is version
-13; each uses presence fields so optional devices retain their state without
-selecting historical layouts.
+x86 device format is version 7 and the current arm64 device format is version
+14; each uses presence fields so optional devices retain their state without
+selecting historical layouts. Both device records preserve unread serial input
+in FIFO order. Restore replaces any residual input, and state identity includes
+the unread queue even when full snapshot hashing is disabled. The x86 device
+identity also includes the UART divisor high byte independently of the DLAB
+register window.
 
 The architecture-neutral engine record preserves terminal reasons and deferred
 SDK reentry state in the current VM-state container. A terminal restore does not

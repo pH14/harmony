@@ -29,6 +29,8 @@ pub enum ReplayRefused {
     Schema(u32),
     #[error("a run with a replaced initramfs cannot be recorded")]
     Initramfs,
+    #[error("a run without a bridge cannot be recorded")]
+    NoBridge,
     #[error("recording was made with profile {recorded}; this profile is {current}")]
     Profile { recorded: String, current: String },
     #[error("recording was made on {recorded:?}; this host is {current:?}")]
@@ -43,12 +45,12 @@ impl Recording {
         profile: &VerifiedProfile,
         host: &HostIdentity,
         launch: &Launch,
-        seed: u64,
         events: &[Event],
     ) -> Result<Self, ReplayRefused> {
         if launch.initramfs.is_some() {
             return Err(ReplayRefused::Initramfs);
         }
+        let seed = launch.bridge.ok_or(ReplayRefused::NoBridge)?.seed;
         Ok(Self {
             schema: SCHEMA,
             profile_identity_sha256: profile.identity_sha256.clone(),
@@ -148,8 +150,8 @@ mod tests {
         }];
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.kernel_arguments = vec!["harmony_fixture=values".to_owned()];
-        let recording =
-            Recording::new(&profile("a"), &host("model=1"), &launch, 9, &events).unwrap();
+        launch.bridge = Some(Bridge::new(9));
+        let recording = Recording::new(&profile("a"), &host("model=1"), &launch, &events).unwrap();
         assert!(recording.check(&profile("a"), &host("model=1")).is_ok());
         assert!(matches!(
             recording.check(&profile("b"), &host("model=1")),
@@ -182,8 +184,39 @@ mod tests {
 
         launch.initramfs = Some(PathBuf::from("/image.cpio.gz"));
         assert!(matches!(
-            Recording::new(&profile("a"), &host("model=1"), &launch, 9, &events),
+            Recording::new(&profile("a"), &host("model=1"), &launch, &events),
             Err(ReplayRefused::Initramfs)
+        ));
+    }
+
+    #[test]
+    fn recording_uses_the_live_bridge_seed() {
+        let profile = profile("a");
+        let host = host("model=1");
+        let mut launch = Launch::new(PathBuf::from("/work"));
+        launch.bridge = Some(Bridge::new(41));
+        let recording = Recording::new(&profile, &host, &launch, &[]).unwrap();
+        let replay = recording.launch(PathBuf::from("/replay"));
+        let seed_arg = |launch: &Launch| {
+            launch
+                .command(&profile, std::path::Path::new("/work/guest"))
+                .unwrap()
+                .get_args()
+                .find(|argument| argument.to_string_lossy().starts_with("harmony_seed="))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        let live_seed = seed_arg(&launch);
+        let replay_seed = seed_arg(&replay);
+        assert_eq!(live_seed, replay_seed);
+        assert_eq!(recording.seed, 41);
+        assert!(recording.check(&profile, &host).is_ok());
+        assert!(recording.matches(&[]));
+        launch.bridge = None;
+        assert!(matches!(
+            Recording::new(&profile, &host, &launch, &[]),
+            Err(ReplayRefused::NoBridge)
         ));
     }
 }

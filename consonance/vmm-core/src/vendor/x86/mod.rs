@@ -167,6 +167,10 @@ impl Vendor for X86 {
         let mut v = Vec::new();
         v.extend_from_slice(devices.uart.shadow_regs());
         v.push(u8::from(devices.uart.dlab()));
+        v.push(devices.uart.dlm());
+        let input = devices.uart.pending_input();
+        v.extend_from_slice(&(input.len() as u64).to_le_bytes());
+        v.extend_from_slice(&input);
         v
     }
 

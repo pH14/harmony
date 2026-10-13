@@ -113,6 +113,17 @@ impl Arm64ArchitecturalState {
             self.vcpu.sysregs.cntkctl_el1,
         )?;
 
+        write_u64(
+            &mut out,
+            "sysregs.contextidr_el1",
+            self.vcpu.sysregs.contextidr_el1,
+        )?;
+        write_u64(&mut out, "sysregs.amair_el1", self.vcpu.sysregs.amair_el1)?;
+        write_u64(&mut out, "sysregs.par_el1", self.vcpu.sysregs.par_el1)?;
+        write_u64(&mut out, "sysregs.csselr_el1", self.vcpu.sysregs.csselr_el1)?;
+        write_u64(&mut out, "sysregs.afsr0_el1", self.vcpu.sysregs.afsr0_el1)?;
+        write_u64(&mut out, "sysregs.afsr1_el1", self.vcpu.sysregs.afsr1_el1)?;
+
         for (index, value) in self.vcpu.simd_fp.q.iter().enumerate() {
             write!(out, "simd_fp.q.{index} ")?;
             write_hex(&mut out, value)?;
@@ -300,6 +311,32 @@ pub fn compare_arm64_architecture(
     );
     scalar!("sysregs.esr_el1", a.sysregs.esr_el1, b.sysregs.esr_el1);
     scalar!("sysregs.far_el1", a.sysregs.far_el1, b.sysregs.far_el1);
+    scalar!(
+        "sysregs.contextidr_el1",
+        a.sysregs.contextidr_el1,
+        b.sysregs.contextidr_el1
+    );
+    scalar!(
+        "sysregs.amair_el1",
+        a.sysregs.amair_el1,
+        b.sysregs.amair_el1
+    );
+    scalar!("sysregs.par_el1", a.sysregs.par_el1, b.sysregs.par_el1);
+    scalar!(
+        "sysregs.csselr_el1",
+        a.sysregs.csselr_el1,
+        b.sysregs.csselr_el1
+    );
+    scalar!(
+        "sysregs.afsr0_el1",
+        a.sysregs.afsr0_el1,
+        b.sysregs.afsr0_el1
+    );
+    scalar!(
+        "sysregs.afsr1_el1",
+        a.sysregs.afsr1_el1,
+        b.sysregs.afsr1_el1
+    );
     scalar!(
         "sysregs.tpidr_el0",
         a.sysregs.tpidr_el0,
@@ -501,6 +538,9 @@ impl Vendor for Arm64 {
         for r in devices.uart.shadow_regs() {
             v.extend_from_slice(&r.to_le_bytes());
         }
+        let input = devices.uart.pending_input();
+        v.extend_from_slice(&(input.len() as u64).to_le_bytes());
+        v.extend_from_slice(&input);
         v
     }
 

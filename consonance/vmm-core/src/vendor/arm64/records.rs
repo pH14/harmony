@@ -49,6 +49,12 @@ pub(crate) fn to_vm_sysregs(s: &Arm64SysregFile) -> Arm64Sysregs {
         tpidr_el1: s.tpidr_el1,
         tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
+        contextidr_el1: s.contextidr_el1,
+        amair_el1: s.amair_el1,
+        par_el1: s.par_el1,
+        csselr_el1: s.csselr_el1,
+        afsr0_el1: s.afsr0_el1,
+        afsr1_el1: s.afsr1_el1,
     }
 }
 
@@ -67,6 +73,12 @@ pub(crate) fn from_vm_sysregs(s: &Arm64Sysregs) -> Arm64SysregFile {
         tpidr_el1: s.tpidr_el1,
         tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
+        contextidr_el1: s.contextidr_el1,
+        amair_el1: s.amair_el1,
+        par_el1: s.par_el1,
+        csselr_el1: s.csselr_el1,
+        afsr0_el1: s.afsr0_el1,
+        afsr1_el1: s.afsr1_el1,
     }
 }
 
@@ -190,7 +202,7 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
 }
 
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4441;
-const DEVICE_BLOB_VERSION: u16 = 13;
+const DEVICE_BLOB_VERSION: u16 = 14;
 const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -215,6 +227,7 @@ pub(crate) struct Arm64DeviceState {
     pub clock_offset: u64,
     pub report_stream: Vec<u32>,
     pub uart_capture: Vec<u8>,
+    pub uart_input: Vec<u8>,
     pub uart_regs: [u32; 5],
     pub gic: Option<gicv3::GicState>,
     pub doorbell: Vec<u8>,
@@ -342,6 +355,8 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
         v.push(u8::from(pv.virtual_time));
         encode_clockevent_state(&mut v, pv.clockevent);
     }
+    put_u32(&mut v, d.uart_input.len() as u32);
+    v.extend_from_slice(&d.uart_input);
     vm_state::DeviceBlob(v)
 }
 
@@ -504,6 +519,8 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     } else {
         None
     };
+    let input_len = c.u32()? as usize;
+    let uart_input = c.take(input_len)?.to_vec();
     if c.pos != bytes.len() {
         return Err(SnapshotError::DeviceBlob("trailing bytes"));
     }
@@ -511,6 +528,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         clock_offset,
         report_stream,
         uart_capture,
+        uart_input,
         uart_regs,
         gic,
         doorbell,
@@ -527,6 +545,7 @@ mod tests {
             clock_offset: 0xDEAD_BEEF,
             report_stream: vec![1, 2, 3],
             uart_capture: b"hello".to_vec(),
+            uart_input: b"pending".to_vec(),
             uart_regs: [13, 1, 0x70, 0x301, 0x10],
             gic: None,
             doorbell: Vec::new(),
@@ -701,9 +720,13 @@ mod tests {
             d
         }] {
             let good = encode_device_blob(&base).0;
-            let len_field = good.len() - DOORBELL_BLOB_LEN - 4;
-            let mut crafted = good[..len_field].to_vec();
-            crafted.extend_from_slice(&0u32.to_le_bytes());
+            let len_field = good.len() - 4 - base.uart_input.len() - 1 - DOORBELL_BLOB_LEN - 4;
+            assert_eq!(
+                &good[len_field..len_field + 4],
+                &(DOORBELL_BLOB_LEN as u32).to_le_bytes()
+            );
+            let mut crafted = good;
+            crafted[len_field..len_field + 4].copy_from_slice(&0u32.to_le_bytes());
             assert!(
                 matches!(
                     decode_device_blob(&crafted),
@@ -724,14 +747,14 @@ mod tests {
         assert!(decode_device_blob(&impossible).is_err());
 
         let mut bad_bool = good;
-        let line_flag = bad_bool.len() - 17;
+        let line_flag = bad_bool.len() - 17 - 4 - sample_with_pvclock().uart_input.len();
         bad_bool[line_flag] = 2;
         assert!(decode_device_blob(&bad_bool).is_err());
 
         let mut missing_gpa_state = sample_with_pvclock();
         missing_gpa_state.pvclock.as_mut().unwrap().armed = false;
         let mut missing_gpa = encode_device_blob(&missing_gpa_state).0;
-        let armed_flag = missing_gpa.len() - 20;
+        let armed_flag = missing_gpa.len() - 20 - 4 - missing_gpa_state.uart_input.len();
         let gpa_flag = armed_flag - 10;
         missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
         missing_gpa[gpa_flag] = 0;
@@ -751,7 +774,7 @@ mod tests {
         let mut pending = sample_with_pvclock();
         pending.pvclock.as_mut().unwrap().armed = false;
         let mut bad_armed = encode_device_blob(&pending).0;
-        let armed_flag = bad_armed.len() - 20;
+        let armed_flag = bad_armed.len() - 20 - 4 - pending.uart_input.len();
         bad_armed[armed_flag] = 2;
         assert!(decode_device_blob(&bad_armed).is_err());
     }
@@ -765,6 +788,12 @@ mod tests {
         live.core.pstate = 0x3c5;
         live.sysregs.sctlr_el1 = 0x30d0_0800;
         live.sysregs.cntkctl_el1 = 3;
+        live.sysregs.contextidr_el1 = 4660;
+        live.sysregs.amair_el1 = 4661;
+        live.sysregs.par_el1 = 4662;
+        live.sysregs.csselr_el1 = 4663;
+        live.sysregs.afsr0_el1 = 4664;
+        live.sysregs.afsr1_el1 = 4665;
         live.mp_state = vmm_backend::MpState::Halted;
 
         let mut snap = Arm64VmState::default();

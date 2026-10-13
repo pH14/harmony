@@ -457,6 +457,12 @@ enum SysSel {
     TpidrroEl0,
     TpidrEl1,
     Cntkctl,
+    Contextidr,
+    Amair,
+    Par,
+    Csselr,
+    Afsr0,
+    Afsr1,
 }
 
 const SYSREGS: &[(u64, SysSel)] = &[
@@ -473,6 +479,12 @@ const SYSREGS: &[(u64, SysSel)] = &[
     (sysreg_id(3, 3, 13, 0, 3), SysSel::TpidrroEl0),
     (sysreg_id(3, 0, 13, 0, 4), SysSel::TpidrEl1),
     (sysreg_id(3, 0, 14, 1, 0), SysSel::Cntkctl),
+    (sysreg_id(3, 0, 13, 0, 1), SysSel::Contextidr),
+    (sysreg_id(3, 0, 10, 3, 0), SysSel::Amair),
+    (sysreg_id(3, 0, 7, 4, 0), SysSel::Par),
+    (sysreg_id(3, 2, 0, 0, 0), SysSel::Csselr),
+    (sysreg_id(3, 0, 5, 1, 0), SysSel::Afsr0),
+    (sysreg_id(3, 0, 5, 1, 1), SysSel::Afsr1),
 ];
 
 fn sys_field(f: &mut crate::arch::arm64::Arm64SysregFile, sel: SysSel) -> &mut u64 {
@@ -490,6 +502,12 @@ fn sys_field(f: &mut crate::arch::arm64::Arm64SysregFile, sel: SysSel) -> &mut u
         SysSel::TpidrroEl0 => &mut f.tpidrro_el0,
         SysSel::TpidrEl1 => &mut f.tpidr_el1,
         SysSel::Cntkctl => &mut f.cntkctl_el1,
+        SysSel::Contextidr => &mut f.contextidr_el1,
+        SysSel::Amair => &mut f.amair_el1,
+        SysSel::Par => &mut f.par_el1,
+        SysSel::Csselr => &mut f.csselr_el1,
+        SysSel::Afsr0 => &mut f.afsr0_el1,
+        SysSel::Afsr1 => &mut f.afsr1_el1,
     }
 }
 
@@ -508,6 +526,12 @@ fn sys_value(f: &crate::arch::arm64::Arm64SysregFile, sel: SysSel) -> u64 {
         SysSel::TpidrroEl0 => f.tpidrro_el0,
         SysSel::TpidrEl1 => f.tpidr_el1,
         SysSel::Cntkctl => f.cntkctl_el1,
+        SysSel::Contextidr => f.contextidr_el1,
+        SysSel::Amair => f.amair_el1,
+        SysSel::Par => f.par_el1,
+        SysSel::Csselr => f.csselr_el1,
+        SysSel::Afsr0 => f.afsr0_el1,
+        SysSel::Afsr1 => f.afsr1_el1,
     }
 }
 
@@ -2074,6 +2098,12 @@ mod tests {
         s.core.sp_el1 = 0x8_0000;
         s.sysregs.sctlr_el1 = 0x30d0_0800;
         s.sysregs.cntkctl_el1 = 3;
+        s.sysregs.contextidr_el1 = 4660;
+        s.sysregs.amair_el1 = 4661;
+        s.sysregs.par_el1 = 4662;
+        s.sysregs.csselr_el1 = 4663;
+        s.sysregs.afsr0_el1 = 4664;
+        s.sysregs.afsr1_el1 = 4665;
         s.simd_fp.q[0] = [0xA5; 16];
         s.simd_fp.q[31] = [0x5A; 16];
         s.simd_fp.fpcr = 0x0040_0000;

@@ -30,6 +30,12 @@ const HV_REG_FPSR: u32 = 33;
 const HV_REG_CPSR: u32 = 34;
 
 const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
+const HV_SYS_REG_CONTEXTIDR_EL1: u16 = 0xc681;
+const HV_SYS_REG_AMAIR_EL1: u16 = 0xc518;
+const HV_SYS_REG_PAR_EL1: u16 = 0xc3a0;
+const HV_SYS_REG_CSSELR_EL1: u16 = 0xd000;
+const HV_SYS_REG_AFSR0_EL1: u16 = 0xc288;
+const HV_SYS_REG_AFSR1_EL1: u16 = 0xc289;
 const HV_SYS_REG_DBGBVR0_EL1: u16 = 0x8004;
 const HV_SYS_REG_DBGBCR0_EL1: u16 = 0x8005;
 const HV_SYS_REG_DBGWVR0_EL1: u16 = 0x8006;
@@ -1101,6 +1107,12 @@ impl Backend for HvfBackend {
         state.sysregs.tpidr_el1 = self.sysreg(HV_SYS_REG_TPIDR_EL1)?;
         state.sysregs.tpidrro_el0 = self.sysreg(HV_SYS_REG_TPIDRRO_EL0)?;
         state.sysregs.cntkctl_el1 = self.sysreg(HV_SYS_REG_CNTKCTL_EL1)?;
+        state.sysregs.contextidr_el1 = self.sysreg(HV_SYS_REG_CONTEXTIDR_EL1)?;
+        state.sysregs.amair_el1 = self.sysreg(HV_SYS_REG_AMAIR_EL1)?;
+        state.sysregs.par_el1 = self.sysreg(HV_SYS_REG_PAR_EL1)?;
+        state.sysregs.csselr_el1 = self.sysreg(HV_SYS_REG_CSSELR_EL1)?;
+        state.sysregs.afsr0_el1 = self.sysreg(HV_SYS_REG_AFSR0_EL1)?;
+        state.sysregs.afsr1_el1 = self.sysreg(HV_SYS_REG_AFSR1_EL1)?;
         for index in 0..16u16 {
             state.debug.breakpoint_value[index as usize] =
                 self.sysreg(HV_SYS_REG_DBGBVR0_EL1 + index * 8)?;
@@ -1196,6 +1208,12 @@ impl Backend for HvfBackend {
         self.set_sysreg(HV_SYS_REG_TPIDR_EL1, state.sysregs.tpidr_el1)?;
         self.set_sysreg(HV_SYS_REG_TPIDRRO_EL0, state.sysregs.tpidrro_el0)?;
         self.set_sysreg(HV_SYS_REG_CNTKCTL_EL1, state.sysregs.cntkctl_el1)?;
+        self.set_sysreg(HV_SYS_REG_CONTEXTIDR_EL1, state.sysregs.contextidr_el1)?;
+        self.set_sysreg(HV_SYS_REG_AMAIR_EL1, state.sysregs.amair_el1)?;
+        self.set_sysreg(HV_SYS_REG_PAR_EL1, state.sysregs.par_el1)?;
+        self.set_sysreg(HV_SYS_REG_CSSELR_EL1, state.sysregs.csselr_el1)?;
+        self.set_sysreg(HV_SYS_REG_AFSR0_EL1, state.sysregs.afsr0_el1)?;
+        self.set_sysreg(HV_SYS_REG_AFSR1_EL1, state.sysregs.afsr1_el1)?;
         for index in 0..16u16 {
             self.set_sysreg(
                 HV_SYS_REG_DBGBVR0_EL1 + index * 8,

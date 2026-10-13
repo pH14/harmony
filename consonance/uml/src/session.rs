@@ -32,6 +32,19 @@ const POLL: Duration = Duration::from_millis(5);
 const RESTORE_ARGUMENT: &str = "harmony_restore";
 const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP2";
 
+fn checked_sidecar(sidecar: &[u8]) -> Result<(u64, Reader<'_>), SessionError> {
+    let mut reader = Reader(
+        sidecar
+            .strip_prefix(SIDECAR_MAGIC)
+            .ok_or_else(|| SessionError::Protocol("checkpoint sidecar: magic".into()))?,
+    );
+    let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
+    if image_bytes > crate::memory::IMAGE_BYTES as u64 {
+        return Err(MemoryError::ImageTooLarge(image_bytes).into());
+    }
+    Ok((image_bytes, reader))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
     Event,
@@ -185,6 +198,7 @@ impl Checkpoints {
         sidecar: &[u8],
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
+        checked_sidecar(sidecar)?;
         let base = Checkpoint {
             memory: self.zero()?,
             services: near.services.clone(),
@@ -217,24 +231,28 @@ impl Checkpoints {
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
         let malformed = |what: &str| SessionError::Protocol(format!("checkpoint sidecar: {what}"));
-        let mut reader = Reader(
-            sidecar
-                .strip_prefix(SIDECAR_MAGIC)
-                .ok_or_else(|| malformed("magic"))?,
-        );
+        let (image_bytes, mut reader) = checked_sidecar(sidecar)?;
         let length = |reader: &mut Reader<'_>| {
             reader
                 .u64()
                 .and_then(|length| usize::try_from(length).map_err(|error| error.to_string()))
                 .map_err(SessionError::Protocol)
         };
-        let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
         let services = length(&mut reader)
             .and_then(|services| reader.take(services).map_err(SessionError::Protocol))?;
         let services = Services::decode(services, factory).map_err(SessionError::Protocol)?;
         let request = length(&mut reader)
             .and_then(|request| reader.take(request).map_err(SessionError::Protocol))?
             .to_vec();
+        if !reader.0.is_empty() {
+            return Err(malformed("trailing bytes"));
+        }
+        if !(STAMP_LEN..=STAMP_LEN + MAX_FRAME).contains(&request.len()) {
+            return Err(malformed("pending request length"));
+        }
+        if stamp(&request).is_some_and(|moment| moment < services.latest) {
+            return Err(malformed("pending request is behind the recorded services"));
+        }
         let memory = self.import_pages(&base.memory, &near.memory, pages, image_bytes)?;
         Ok(Checkpoint {
             memory,
@@ -639,6 +657,9 @@ impl Session {
                     }
                     Err(error) => return Err(error),
                 };
+                if length > STAMP_LEN + MAX_FRAME {
+                    return Err(SessionError::Protocol(format!("request of {length} bytes")));
+                }
                 let moment = stamp(&self.request[..length])
                     .ok_or_else(|| SessionError::Protocol(format!("request of {length} bytes")))?;
                 let stop = match until {
@@ -1035,6 +1056,79 @@ mod tests {
                 Err(SessionError::Protocol(_))
             ));
         }
+
+        let mut trailing = sidecar.clone();
+        trailing.push(0x5a);
+        let request_field = sidecar.len() - STAMP_LEN - 8;
+        let mut short = sidecar[..request_field + 9].to_vec();
+        short[request_field..request_field + 8].copy_from_slice(&1_u64.to_le_bytes());
+        let mut oversized = sidecar[..request_field + 8].to_vec();
+        let oversized_len = STAMP_LEN + MAX_FRAME + 1;
+        oversized[request_field..request_field + 8]
+            .copy_from_slice(&(oversized_len as u64).to_le_bytes());
+        oversized.resize(request_field + 8 + oversized_len, 0);
+        oversized[request_field + 8..request_field + 16].copy_from_slice(&400_u64.to_le_bytes());
+        let mut behind = sidecar.clone();
+        behind[request_field + 8..request_field + 16].copy_from_slice(&89_u64.to_le_bytes());
+        for (name, malformed) in [
+            ("trailing", trailing),
+            ("short request", short),
+            ("oversized request", oversized),
+            ("backward request", behind),
+        ] {
+            assert!(
+                matches!(
+                    subscriber.import(
+                        &subscriber_base,
+                        &subscriber_base,
+                        &borrowed,
+                        &malformed,
+                        &nominal_factory(),
+                    ),
+                    Err(SessionError::Protocol(_))
+                ),
+                "{name} sidecar was accepted"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn import_bounds_the_private_image_before_storing_pages() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
+        let canonical = base.sidecar().unwrap();
+        let impossible = crate::memory::IMAGE_BYTES as u64 + 1;
+        let before = checkpoints.stats().unwrap().snapshots;
+        let base_digest = base.digest().unwrap();
+        for image_bytes in [impossible, u64::MAX] {
+            let mut sidecar = canonical.clone();
+            sidecar[SIDECAR_MAGIC.len()..SIDECAR_MAGIC.len() + 8]
+                .copy_from_slice(&image_bytes.to_le_bytes());
+            assert!(matches!(
+                checkpoints.import(&base, &base, &[], &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::ImageTooLarge(bytes))) if bytes == image_bytes
+            ));
+            assert!(matches!(
+                checkpoints.import_full(&base, &[], &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::ImageTooLarge(bytes))) if bytes == image_bytes
+            ));
+            assert_eq!(checkpoints.stats().unwrap().snapshots, before);
+            assert_eq!(base.digest().unwrap(), base_digest);
+        }
+
+        let mut boundary = canonical;
+        boundary[SIDECAR_MAGIC.len()..SIDECAR_MAGIC.len() + 8]
+            .copy_from_slice(&(crate::memory::IMAGE_BYTES as u64).to_le_bytes());
+        let imported = checkpoints
+            .import(&base, &base, &[], &boundary, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported.bytes(), crate::memory::IMAGE_BYTES as u64);
+        let imported_full = checkpoints
+            .import_full(&base, &[], &boundary, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported_full.bytes(), crate::memory::IMAGE_BYTES as u64);
+        assert_eq!(checkpoints.stats().unwrap().snapshots, before + 2);
     }
 
     #[test]
@@ -1088,7 +1182,7 @@ mod tests {
             Checkpoint {
                 memory: store.adopt(id),
                 services: Services::new(7),
-                request: Vec::new(),
+                request: 0_u64.to_le_bytes().to_vec(),
             }
         }
         let first = Checkpoints::new();

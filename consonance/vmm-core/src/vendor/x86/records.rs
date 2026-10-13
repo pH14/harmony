@@ -392,11 +392,12 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
 }
 
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
-const DEVICE_BLOB_VERSION: u16 = 6;
+const DEVICE_BLOB_VERSION: u16 = 7;
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct UartState {
     pub capture: Vec<u8>,
+    pub input: Vec<u8>,
     pub regs: [u8; 8],
     pub dlab: bool,
     pub dlm: u8,
@@ -531,6 +532,8 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     } else {
         out.push(0);
     }
+    put_u32(&mut out, d.uart.input.len() as u32);
+    out.extend_from_slice(&d.uart.input);
     DeviceBlob(out)
 }
 
@@ -702,6 +705,11 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
     } else {
         None
     };
+    let input_len = r.u32().ok_or(bad("truncated UART input length"))? as usize;
+    let input = r
+        .take(input_len)
+        .ok_or(bad("truncated UART input"))?
+        .to_vec();
     if r.pos != blob.len() {
         return Err(bad("trailing bytes"));
     }
@@ -710,6 +718,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         report_stream,
         uart: UartState {
             capture,
+            input,
             regs,
             dlab,
             dlm,
@@ -972,6 +981,7 @@ mod tests {
             report_stream: vec![0x1111_1111, 0x0000_0000, 0xDEAD_BEEF],
             uart: UartState {
                 capture: b"GUEST_READY PASS\n".to_vec(),
+                input: b"pending".to_vec(),
                 regs: [0x01, 0x02, 0xC7, 0x03, 0x03, 0x00, 0x00, 0x00],
                 dlab: true,
                 dlm: 0x09,
@@ -1592,6 +1602,7 @@ mod tests {
             report_stream: Vec::new(),
             uart: UartState {
                 capture: b"PAYLOAD x PASS\n".to_vec(),
+                input: Vec::new(),
                 regs: [0; 8],
                 dlab: false,
                 dlm: 0,
@@ -1689,10 +1700,11 @@ mod tests {
             ..DeviceState::default()
         })
         .0;
-        let gpa_flag = missing_gpa.len() - 11;
+        let gpa_flag = missing_gpa.len() - 15;
         missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
         missing_gpa[gpa_flag] = 0;
-        *missing_gpa.last_mut().unwrap() = 1;
+        let armed = missing_gpa.len() - 5;
+        missing_gpa[armed] = 1;
         assert!(matches!(
             decode_device_blob(&missing_gpa),
             Err(SnapshotError::DeviceBlob(

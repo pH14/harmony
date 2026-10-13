@@ -58,6 +58,11 @@ events, then nested state. Event restoration follows general registers because
 KVM_SET_REGS clears the exception queue. The selftest's earlier event write
 loses pending #PF and #GP under the enabled exception-payload API; the existing
 live exception-payload and serviced-MSR regressions exercise that difference.
+EFER, FS base, and GS base occur in both the special-register record and the
+stateful MSR block. Restore rejects mismatched copies during preflight, before
+retiring a staged write completion or changing KVM state; otherwise the later
+MSR write silently replaces the special-register value. Coherent copies remain
+restorable and read back with the same values.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
@@ -241,6 +246,18 @@ KVM leaves `MMFR0.ASIDBits` out of its writable ID register mask and fails
 `KVM_SET_ONE_REG` with `EINVAL` for any value other than the host's, so
 `LiveKvm::new` reads the vCPU's `ID_AA64MMFR0_EL1` after `KVM_ARM_VCPU_INIT` and
 reports that width.
+
+Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
+`PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
+translation, exception, and thread registers. The shared
+`arm64_sysreg_snapshot` hardware test compares uninterrupted execution, capture
+without restore, restore after a detour, and restore into a fresh VM. It
+requires the detour to change guest readback across an exit for CONTEXTIDR, PAR,
+and CSSELR. AMAIR and auxiliary fault status can be fixed or lose writes across
+an exit on a particular host; those cases are reported as unobservable rather
+than evidence of register restoration. Portable tests independently check all
+six fields through the KVM register table, codec, and VMM identity. The aligned
+guest-memory fixture also runs under Miri through the mock backend.
 
 ARM KVM saves the guest's system registers as the guest left them and never
 normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and

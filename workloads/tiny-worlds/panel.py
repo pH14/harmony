@@ -29,6 +29,9 @@ REPORT_FIELDS = {"config", "crossing", "evidence", "first_objective_execution", 
                  "scale", "stream_sha256", "success", "verified", "work_budget"}
 SHIELDED_BOSS = {"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24, "shield": 8, "shield_odds": 4,
                  "hit_tier": True, "tail_slots": True}
+ARENA = {"loops": 0, "corridor": 4, "shaft": 4, "inner": 48, "farms": 8, "farm_cap": 16, "boss_stock": 6, "shield": 6,
+         "shield_odds": 4, "tail_slots": True, "arena": 8}
+ARENA_BUDGET, ROOTED_ARENA_BUDGET = 250_000, 20_000
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
@@ -376,6 +379,22 @@ def compare(baseline: Path, candidate: Path, scale: int, jobs: int, worlds: list
 WORKERS = 1
 
 
+class Unreachable(RuntimeError):
+    pass
+
+
+def arena_pair(binary: Path) -> list[dict]:
+    while True:
+        arena = {"family": "map", "parameters": {"width": 8, "height": 8, "layout": secrets.randbits(64), **ARENA}}
+        rooted = {**arena, "parameters": {**arena["parameters"], "rooted": True}}
+        seed = secrets.randbits(64)
+        try:
+            rooted_report = execute(binary, request("arena/rooted", rooted, seed, budget=ROOTED_ARENA_BUDGET))
+        except Unreachable:
+            continue
+        return [execute(binary, request("arena/power-on", arena, seed, budget=ARENA_BUDGET)), rooted_report]
+
+
 def execute(binary: Path, job: dict) -> dict:
     request = job["request"]
     if WORKERS != 1:
@@ -386,7 +405,8 @@ def execute(binary: Path, job: dict) -> dict:
     process = subprocess.run([str(binary)], input=json.dumps(request),
                              capture_output=True, text=True, check=False)
     if process.returncode:
-        raise RuntimeError(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
+        error = Unreachable if "world objective is unreachable" in process.stderr else RuntimeError
+        raise error(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
     report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
     report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
                           if key.startswith(("map_", "crossing_", "passive_clock"))}
@@ -446,6 +466,24 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
     def shield_gains():
         return sum(t["success"] and not h["success"] for t, h in zip(by["shield/tier"], by["shield/hidden"]))
 
+    def arena():
+        def reached(r, key):
+            work = r["evidence"].get(key)
+            return work if work is not None and work <= r["work_budget"] else None
+
+        arrivals = [reached(r, "map_first_boss_room") for r in by["arena/power-on"]]
+        arrival = statistics.median(math.inf if a is None else a for a in arrivals)
+        lag = statistics.median(math.inf if a is None or reached(r, "map_first_stocked") is None
+                                else reached(r, "map_first_stocked") / a
+                                for a, r in zip(arrivals, by["arena/power-on"]))
+
+        def kills(arm, limit):
+            return sum(r["success"] and r["first_objective_work"] <= limit for r in by[arm])
+
+        fits = 2.5 * arrival <= ARENA_BUDGET and 0.2 * arrival <= ROOTED_ARENA_BUDGET
+        return lag, kills("arena/power-on", 2.5 * arrival), kills("arena/rooted", 0.2 * arrival), fits
+
+    lag, power_on_kills, rooted_kills, windows_fit = arena()
     n = len(by["credit/engaged"])
     m = len(by["boss/tier/tight"])
     third = n // 3
@@ -484,6 +522,11 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("farm loop: farms off the route slow the trip out under 10x", f"{farm_cost():.2f}", farm_cost() < 10),
         ("shield: damage as a tier loses more kills than it gains against hidden damage",
          f"{shield_losses()} vs {shield_gains()}", shield_losses() > shield_gains()),
+        ("arena: the first full-stock arrival comes 1.5-3x after the first boss-room arrival",
+         f"{lag:.2f}", 1.5 <= lag <= 3),
+        ("arena: power-on kills within 2.5x the first arrival fewer than rooted kills within 0.2x",
+         f"{power_on_kills} vs {rooted_kills}" if windows_fit else "undecided, a window passes its arm's budget",
+         windows_fit and power_on_kills < rooted_kills),
     ]
 
 
@@ -517,6 +560,7 @@ def main() -> int:
     jobs = requests(args.seeds)
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         rows = list(pool.map(lambda job: execute(binary, job), jobs))
+        rows += [row for pair in pool.map(lambda _: arena_pair(binary), range(3 * args.seeds)) for row in pair]
     if not all(r["verified"] for r in rows):
         print("a run did not verify", file=sys.stderr)
         return 1

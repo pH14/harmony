@@ -14,6 +14,12 @@ let prepared = bundle::prepare(&staged, &request)?;
 let initramfs = prepared.initramfs(platform_initramfs);
 ```
 
+Each `image::stage` call creates its own directory beneath the supplied staging
+directory. Reusing that directory, including after a failed stage, cannot carry
+files from an earlier image into the next guest rootfs or its identity. The
+caller owns the staging directory and removes it when the prepared image is no
+longer needed.
+
 `PreparedExecution` owns the deterministic rootfs and platform control
 segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is
 placed at `/harmony-oci/rootfs`; the control segment owns
@@ -67,9 +73,10 @@ unpacks the initramfs. An image that hands its data to a service account, such
 as a database cluster owned by its own uid, is therefore readable by that
 account in the guest and by nobody else.
 
-A layer that ships a child without an entry for its parent directory leaves
-that parent with the mode `tar` gave it when it created it, and the merge
-applies that mode over the lower layer's.
+A layer that ships a child without an entry for its parent directory gives the
+implicit parent mode 0755, regardless of the host process's umask. The merge
+applies that mode over the lower layer's. Explicit directory modes still come
+from the layer header.
 
 `RuntimeConfig::user` retains the image `Config.User` value. The supported
 Linux forms are `uid`, `uid:gid`, `user`, `user:group`, `uid:group`, and

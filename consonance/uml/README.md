@@ -46,7 +46,12 @@
   checkpoint. A restore writes back only the pages that differ between the
   current state and the target. `Checkpoints::delta` lists a checkpoint's
   pages relative to a base for publishing, `Checkpoint::sidecar` encodes the
-  services state, and `Checkpoints::import` rebuilds a checkpoint from both.
+  services state, and `Checkpoints::import` rebuilds a checkpoint from both. An
+  import rejects trailing sidecar bytes, a private image length above the
+  256 MiB live image limit, and pending requests whose size or virtual moment
+  could not have come from a paused guest. Both import paths check the image
+  length before touching the page store. The live session rejects oversized
+  bridge requests before they can become checkpoints.
   `Checkpoint::digest` hashes a checkpoint's pages and services state.
   `Checkpoints::import` reproduces the published checkpoint only onto a base
   with the publisher's digest, because a base also holds per-process host
@@ -54,9 +59,10 @@
   and the work directory name. `state_hash` hashes the services state and the
   pending request. Sessions are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event
-  count and event hash of a run. It refuses a run with a replaced initramfs,
-  which it cannot replay. `Recording::check` refuses a different profile or
-  host, and `Recording::launch` replays to the recorded cut.
+  count and event hash of a run. It derives the seed from the live launch's
+  bridge and refuses an unbridged run or a replaced initramfs, which it cannot
+  replay. `Recording::check` refuses a different profile or host, and
+  `Recording::launch` replays to the recorded cut.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit.

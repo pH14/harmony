@@ -9,8 +9,7 @@
 #
 #   aa5-counter-scan.py <aarch64-elf> [<elf> ...]
 #
-# This mirrors the harness primitive `scan::decode_counter_read` (harness/src/scan.rs, unit
-# tested): MRS Xt, <sysreg> is 0xD53_xxxxx, the counter registers live at op0=3,op1=3,CRn=14,
+# MRS Xt, <sysreg> is 0xD53_xxxxx, the counter registers live at op0=3,op1=3,CRn=14,
 # CRm=0, distinguished by op2 (0=CNTFRQ 1=CNTPCT 2=CNTVCT 5=CNTPCTSS 6=CNTVCTSS). The raw-opcode
 # decode SELF-VALIDATES against objdump's mnemonic on every instruction, so it can neither miss a
 # counter read nor invent one. CNTFRQ_EL0 is rejected too: it is constant on one
@@ -18,7 +17,9 @@
 # therefore leaks host identity into guest RAM. The owned kernel must obtain the
 # fixed guest frequency through its compiled Harmony accessor instead. The
 # implementation-defined REVIDR_EL1 and AIDR_EL1 values are rejected for the
-# same reason; the owned kernel records neutral values instead.
+# same reason; the owned kernel records neutral values instead. CNTP_TVAL_EL0
+# and CNTV_TVAL_EL0 reads also expose the live counter through the remaining
+# timer interval, even when the guest never programs a timer.
 import importlib.util
 import re
 import subprocess
@@ -39,7 +40,7 @@ TIMER_PROGRAMS = {
 
 
 def decode_counter_read(word: int):
-    """Return the counter register name for an MRS of one, else None (mirrors scan::decode_counter_read)."""
+    """Return the register name for an MRS that exposes host time or frequency."""
     if word & 0xFFF00000 != 0xD5300000:
         return None
     o0 = (word >> 19) & 0x1  # op0 - 2
@@ -47,9 +48,13 @@ def decode_counter_read(word: int):
     crn = (word >> 12) & 0xF
     crm = (word >> 8) & 0xF
     op2 = (word >> 5) & 0x7
-    if o0 != 1 or op1 != 3 or crn != 14 or crm != 0:
+    if o0 != 1 or op1 != 3 or crn != 14:
         return None
-    return OP2.get(op2)
+    if crm == 0:
+        return OP2.get(op2)
+    if op2 == 0:
+        return {2: "CNTP_TVAL_EL0", 3: "CNTV_TVAL_EL0"}.get(crm)
+    return None
 
 
 def decode_host_identity_read(word: int):
@@ -106,7 +111,7 @@ def scan(path: str):
         identity = decode_host_identity_read(word)
         timer = decode_timer_program(word)
         mnem_counter = low.startswith("mrs") and bool(
-            re.search(r"cnt(frq|pct|vct)(ss)?_el0", low)
+            re.search(r"\b(cnt(frq|pct|vct)(ss)?|cnt[vp]_tval)_el0\b", low)
         )
         mnem_timer = low.startswith("msr") and bool(
             re.search(r"cnt[vp]_(tval|cval)_el0", low)

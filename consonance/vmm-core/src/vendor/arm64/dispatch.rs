@@ -805,6 +805,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             clock_offset,
             report_stream: self.report_stream.clone(),
             uart_capture: self.devices.uart.capture().to_vec(),
+            uart_input: self.devices.uart.pending_input(),
             uart_regs: *self.devices.uart.shadow_regs(),
             gic: backend_gic.or_else(|| self.devices.gic.as_ref().map(gicv3::Gicv3::snapshot)),
             doorbell: self
@@ -971,7 +972,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         if let Some(g) = gic {
             self.devices.gic = Some(g);
         }
-        self.devices.uart.restore(dev.uart_capture, dev.uart_regs);
+        self.devices
+            .uart
+            .restore(dev.uart_capture, dev.uart_regs, dev.uart_input);
         if let Some(db) = self
             .doorbell_pages
             .as_mut()
@@ -1026,6 +1029,12 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
         s.sysregs.tpidr_el1,
         s.sysregs.tpidrro_el0,
         s.sysregs.cntkctl_el1,
+        s.sysregs.contextidr_el1,
+        s.sysregs.amair_el1,
+        s.sysregs.par_el1,
+        s.sysregs.csselr_el1,
+        s.sysregs.afsr0_el1,
+        s.sysregs.afsr1_el1,
     ] {
         v.extend_from_slice(&x.to_le_bytes());
     }
@@ -1117,6 +1126,12 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
         s.sysregs.tpidr_el1,
         s.sysregs.tpidrro_el0,
         s.sysregs.cntkctl_el1,
+        s.sysregs.contextidr_el1,
+        s.sysregs.amair_el1,
+        s.sysregs.par_el1,
+        s.sysregs.csselr_el1,
+        s.sysregs.afsr0_el1,
+        s.sysregs.afsr1_el1,
     ] {
         sys.extend_from_slice(&x.to_le_bytes());
     }
