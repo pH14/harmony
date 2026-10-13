@@ -19,6 +19,34 @@ use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
 const CONSOLE_TAIL: usize = 64 << 10;
+const CACHE_SIDECAR_MAGIC: [u8; 8] = *b"HUMLCA01";
+
+fn cache_sidecar(identity: [u8; 32], raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let len = CACHE_SIDECAR_MAGIC
+        .len()
+        .checked_add(identity.len())
+        .and_then(|len| len.checked_add(raw.len()))
+        .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
+    let mut sidecar = Vec::with_capacity(len);
+    sidecar.extend_from_slice(&CACHE_SIDECAR_MAGIC);
+    sidecar.extend_from_slice(&identity);
+    sidecar.extend_from_slice(raw);
+    Ok(sidecar)
+}
+
+fn checked_cache_sidecar(identity: [u8; 32], sidecar: &[u8]) -> Result<&[u8], Box<dyn Error>> {
+    if sidecar.len() < CACHE_SIDECAR_MAGIC.len() + identity.len()
+        || sidecar[..CACHE_SIDECAR_MAGIC.len()] != CACHE_SIDECAR_MAGIC
+    {
+        return Err(SessionError::Portable("cached snapshot sidecar differs".into()).into());
+    }
+    let identity_start = CACHE_SIDECAR_MAGIC.len();
+    let identity_end = identity_start + identity.len();
+    if sidecar[identity_start..identity_end] != identity {
+        return Err(SessionError::Portable("cached snapshot identity differs".into()).into());
+    }
+    Ok(&sidecar[identity_end..])
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Spent {
@@ -49,6 +77,7 @@ pub struct UmlSession {
     launch: Launch,
     seed: u64,
     root_identity: [u8; 32],
+    cache_domain: [u8; 32],
     progress_limit: Duration,
     factory: ServiceFactory,
     checkpoints: Checkpoints,
@@ -131,6 +160,7 @@ impl UmlSession {
             launch,
             seed: config.seed,
             root_identity: identity.finalize().into(),
+            cache_domain: [0; 32],
             progress_limit: config.progress_limit,
             factory,
             checkpoints,
@@ -142,6 +172,15 @@ impl UmlSession {
         };
         let (setup, at) = this.capture()?;
         this.setup = (setup, at);
+        let mut cache_domain = Sha256::new();
+        cache_domain.update(b"harmony-uml-cache-session-v1\0");
+        cache_domain.update(this.root_identity);
+        let setup_checkpoint = this
+            .snapshots
+            .get(&setup)
+            .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
+        cache_domain.update(setup_checkpoint.digest()?);
+        this.cache_domain = cache_domain.finalize().into();
         Ok(this)
     }
 
@@ -277,7 +316,7 @@ impl SearchSession for UmlSession {
             .snapshots
             .get(&target)
             .ok_or_else(|| SessionError::Control("unknown root snapshot".into()))?;
-        let sidecar = target.sidecar()?;
+        let sidecar = cache_sidecar(self.root_identity, &target.sidecar()?)?;
         let extent = self
             .checkpoints
             .full(target, |pages| -> Result<_, Box<dyn Error>> {
@@ -302,13 +341,14 @@ impl SearchSession for UmlSession {
         let delta = read_extent(chain[0].bytes())?;
         let deltas = [delta];
         let resolved = resolve(&deltas)?;
+        let sidecar = checked_cache_sidecar(self.root_identity, resolved.sidecar)?;
         let near = self
             .snapshots
             .get(&self.setup.0)
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
         let checkpoint =
             self.checkpoints
-                .import_full(near, &resolved.pages, resolved.sidecar, &self.factory)?;
+                .import_full(near, &resolved.pages, sidecar, &self.factory)?;
         let id = SnapId(self.next);
         self.next += 1;
         let at = checkpoint.moment();
@@ -365,7 +405,7 @@ impl SearchSession for UmlSession {
         let setup = checkpoint(self.setup.0)?;
         let parent_checkpoint = parent.map(|(id, _)| checkpoint(id)).transpose()?;
         let target_checkpoint = checkpoint(target)?;
-        let sidecar = target_checkpoint.sidecar()?;
+        let sidecar = cache_sidecar(self.cache_domain, &target_checkpoint.sidecar()?)?;
         let extent = self.checkpoints.delta(
             setup,
             parent_checkpoint,
@@ -391,10 +431,13 @@ impl SearchSession for UmlSession {
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
         let begun = started();
         let chain = index.chain(lease)?;
-        let deltas = chain
+        let mut deltas = chain
             .iter()
             .map(|extent| read_extent(CommittedExtent::bytes(extent)))
             .collect::<Result<Vec<_>, _>>()?;
+        for delta in &mut deltas {
+            delta.sidecar = checked_cache_sidecar(self.cache_domain, delta.sidecar)?;
+        }
         let resolved = resolve(&deltas)?;
         let setup = self
             .snapshots
@@ -490,5 +533,99 @@ impl SearchSession for UmlSession {
 
     fn abandoned(&self) -> bool {
         self.abandoned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::LocalIndex;
+    use environment::input_spec::nominal_factory;
+    use std::path::PathBuf;
+    use uml::{Artifact, Profile, VirtualTimeCosts};
+
+    fn unbooted_session() -> UmlSession {
+        let artifact = Artifact {
+            name: "unused".into(),
+            sha256: String::new(),
+        };
+        UmlSession {
+            session: None,
+            profile: VerifiedProfile {
+                directory: PathBuf::new(),
+                profile: Profile {
+                    schema: 2,
+                    architecture: std::env::consts::ARCH.into(),
+                    kernel_version: String::new(),
+                    userspace: "seccomp".into(),
+                    patch_series_sha256: String::new(),
+                    host_libraries: Vec::new(),
+                    executable: artifact.clone(),
+                    config: artifact.clone(),
+                    rootfs: artifact,
+                    virtual_time: VirtualTimeCosts {
+                        syscall_vns: 1,
+                        clock_read_vns: 1,
+                    },
+                },
+                identity_sha256: String::new(),
+            },
+            launch: Launch::new(PathBuf::new()),
+            seed: 7,
+            root_identity: [7; 32],
+            cache_domain: [9; 32],
+            progress_limit: Duration::ZERO,
+            factory: nominal_factory(),
+            checkpoints: Checkpoints::new(),
+            snapshots: BTreeMap::new(),
+            next: 1,
+            setup: (SnapId(1), 0),
+            abandoned: false,
+            counters: Counters::default(),
+        }
+    }
+
+    fn extent(index: &LocalIndex, key: &[u8], identity: [u8; 32]) -> Lease {
+        let sidecar = cache_sidecar(identity, b"checkpoint").unwrap();
+        let len = extent_len(0, 0, sidecar.len()).unwrap();
+        let mut extent = index.extent(len).unwrap();
+        write_extent(extent.bytes_mut(), &[], &[], &sidecar).unwrap();
+        index
+            .publish(Namespace::new(&[b"test"]), key, None, extent, 1)
+            .unwrap()
+    }
+
+    #[test]
+    fn foreign_uml_root_and_delta_leases_reject_before_checkpoint_lookup() {
+        let index = LocalIndex::new(1 << 20);
+        let mut session = unbooted_session();
+        let root = extent(&index, b"root", [8; 32]);
+        let error = session.import_root(&index, &root).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        index.release(root);
+
+        let delta = extent(&index, b"delta", [8; 32]);
+        let error = session
+            .import_cached(&index, &delta, SnapId(1))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_eq!(session.snapshots.len(), 0);
+        assert_eq!(session.next, 1);
+        index.release(delta);
+
+        let valid = cache_sidecar([7; 32], b"checkpoint").unwrap();
+        assert_eq!(
+            checked_cache_sidecar([7; 32], &valid).unwrap(),
+            b"checkpoint"
+        );
+        assert!(checked_cache_sidecar([7; 32], &valid[..8]).is_err());
     }
 }
