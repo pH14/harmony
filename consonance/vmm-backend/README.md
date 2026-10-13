@@ -172,7 +172,7 @@ without capturing a complete snapshot. `Some(true)` means the mask is set;
 `None` means the caller must obtain it from full state. This query does not
 enter the guest, acknowledge an IRQ, or test the interrupt controller's pending
 state. Errors propagate rather than falling back to another read. HVF reads
-`PSTATE.I` through one CPSR access. ARM KVM completes any owed MMIO write and
+`PSTATE.I` through one CPSR access. ARM KVM completes any owed MMIO access and
 then reads PSTATE through one register ioctl instead of capturing the GIC and
 the rest of the vCPU. Both reject pending completions before the read. Other
 backends currently return `None`.
