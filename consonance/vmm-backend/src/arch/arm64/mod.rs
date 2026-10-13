@@ -97,10 +97,18 @@ pub struct Arm64Caps {
     pub in_kernel_gic: bool,
     pub asid_bits: Arm64AsidBits,
     pub smccc_workaround_levels: [u64; 3],
+    pub psci_profile: Arm64PsciProfile,
 }
 
 impl Arm64Caps {
     pub const FIXED_SMCCC_WORKAROUND_LEVELS: [u64; 3] = [2, 0, 1];
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Arm64PsciProfile {
+    HvfSingleVcpu = 1,
+    KvmPsci10 = 2,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

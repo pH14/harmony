@@ -1454,6 +1454,7 @@ mod tests {
                     in_kernel_gic: false,
                     asid_bits: Arm64AsidBits::Eight,
                     smccc_workaround_levels: levels,
+                    psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1527,6 +1528,7 @@ mod tests {
                     in_kernel_gic: true,
                     asid_bits: Arm64AsidBits::Eight,
                     smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1570,6 +1572,42 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn psci_profiles_distinguish_restore_and_state_identity() {
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Arm64PsciProfile, Capabilities};
+
+        let machine = |profile| {
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-arm64",
+                arch: Arm64Caps {
+                    in_kernel_gic: false,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: profile,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut source = machine(Arm64PsciProfile::HvfSingleVcpu);
+        let mut same = machine(Arm64PsciProfile::HvfSingleVcpu);
+        let mut different = machine(Arm64PsciProfile::KvmPsci10);
+
+        assert_eq!(source.state_hash().unwrap(), same.state_hash().unwrap());
+        assert_ne!(
+            source.state_hash().unwrap(),
+            different.state_hash().unwrap()
+        );
+        let snapshot = source.save_vm_state().unwrap();
+        let before = different.save_vm_state().unwrap();
+        same.restore_vm_state(&snapshot).unwrap();
+        assert!(matches!(
+            different.restore_vm_state(&snapshot),
+            Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+        ));
+        assert_eq!(different.save_vm_state().unwrap(), before);
     }
 
     #[test]

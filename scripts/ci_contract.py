@@ -239,11 +239,13 @@ HOST_TESTS = {
         "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
+        "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
     "linux-aarch64": (
         ARM64_BASELINE_TEST,
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
+        "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
 }
 
