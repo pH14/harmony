@@ -855,6 +855,11 @@ fn validate_restore_shape_requires_preservable_sysenter_values() {
 
     state.msrs.insert(0x175, 1 << 48);
     assert!(validate_restore_shape(&state, Some(&filter), 4096, 57, false).is_ok());
+    state.msrs.insert(0x175, 1 << 63);
+    assert!(matches!(
+        validate_restore_shape(&state, Some(&filter), 4096, 57, false),
+        Err(BackendError::InvalidState)
+    ));
 
     state.msrs.insert(0x175, u64::from(u32::MAX));
     state.msrs.insert(0x176, u64::from(u32::MAX));
@@ -921,9 +926,10 @@ fn sysenter_policy_follows_host_la57_and_guest_vendor() {
             ..Default::default()
         }],
     };
-    assert!(guest_amd_compatible(&model(b"AuthenticAMD")));
-    assert!(guest_amd_compatible(&model(b"HygonGenuine")));
-    assert!(!guest_amd_compatible(&model(b"GenuineIntel")));
+    assert!(!guest_intel_vendor(&model(b"AuthenticAMD")));
+    assert!(!guest_intel_vendor(&model(b"HygonGenuine")));
+    assert!(guest_intel_vendor(&model(b"GenuineIntel")));
+    assert!(!guest_intel_vendor(&CpuidModel::default()));
 }
 
 #[test]

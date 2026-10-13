@@ -479,12 +479,16 @@ pub(crate) fn amd_compatible_vendor(ebx: u32, edx: u32, ecx: u32) -> bool {
     vendor == *b"AuthenticAMD" || vendor == *b"HygonGenuine"
 }
 
-pub(crate) fn guest_amd_compatible(model: &CpuidModel) -> bool {
+pub(crate) fn guest_intel_vendor(model: &CpuidModel) -> bool {
     model
         .entries
         .iter()
         .find(|entry| entry.leaf == 0 && entry.subleaf == 0)
-        .is_some_and(|entry| amd_compatible_vendor(entry.ebx, entry.edx, entry.ecx))
+        .is_some_and(|entry| {
+            entry.ebx == u32::from_le_bytes(*b"Genu")
+                && entry.edx == u32::from_le_bytes(*b"ineI")
+                && entry.ecx == u32::from_le_bytes(*b"ntel")
+        })
 }
 
 pub(crate) fn kvm_sysenter_virtual_bits(entries: &[kvm_cpuid_entry2]) -> u32 {
