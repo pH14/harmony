@@ -835,6 +835,9 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     gid: owner_id(gid, &block[116..124])?,
                 };
                 let name = path.or(gnu_name).unwrap_or_else(|| ustar_name(&block));
+                if name.is_empty() {
+                    return Err(ImageError::Tar("archive member has an empty name".into()));
+                }
                 if typeflag != b'5' && name.ends_with(b"/") {
                     return Err(ImageError::Tar(
                         "non-directory member has a trailing slash".into(),
@@ -2372,6 +2375,56 @@ mod tests {
     }
 
     #[test]
+    fn empty_name_override_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let pax = pax_record("path", "");
+        for (name, header) in [
+            ("pax", raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes())),
+            ("gnu", raw_member(b"././@LongLink", b'L', "", b"\0")),
+        ] {
+            let body = [header, raw_member(b"dir/", b'0', "", b"replacement")].concat();
+            let layer = write_archive(dir.path(), &format!("empty-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive member has an empty name"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn overridden_trailing_slash_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let pax = pax_record("path", "dir/");
+        for (name, header) in [
+            ("pax", raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes())),
+            ("gnu", raw_member(b"././@LongLink", b'L', "", b"dir/\0")),
+        ] {
+            let body = [header, raw_member(b"safe", b'0', "", b"replacement")].concat();
+            let layer = write_archive(dir.path(), &format!("slash-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
     fn nonportable_member_types_are_rejected_before_extraction() {
         let dir = tempfile::tempdir().unwrap();
         let rootfs = dir.path().join("rootfs");
@@ -2475,14 +2528,14 @@ mod tests {
             dir.path(),
             "newline.tar",
             &[
-                ("pad\nlink/", b'0', ""),
+                ("pad\nlink/", b'5', ""),
                 ("link", b'2', "../../victim"),
                 ("link/pwn", b'0', ""),
             ],
         );
         assert!(matches!(
             apply_layer(&layer, &rootfs, &mut Ownership::default()),
-            Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
+            Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
         assert!(!victim.join("pwn").exists());
