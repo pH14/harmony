@@ -66,6 +66,9 @@ let heat = new Heatmap(),
   bootLevel = 0,
   gameWon = false,
   paused = false,
+  replayPaused = false,
+  replayWatching = false,
+  viewerReplay = false,
   ready = false,
   seed = 27,
   request = 0,
@@ -91,7 +94,6 @@ let heat = new Heatmap(),
   pointerStart = null,
   dragged = false;
 let stateCache = new StateCache(),
-  sparks = [],
   bestByMap = new Map(),
   bestStates = new Map(),
   arrivals = new Map(),
@@ -172,7 +174,6 @@ function activateSearchView(id) {
     branchOrigin,
   } = view);
   searchViews.set(id, view);
-  sparks = [];
   swarmRooms = swarm.frame(id, heat.clock(performance.now()), reducedMotion.matches);
   hoverCell = selectedCell = null;
   lastAuto = 0;
@@ -1137,7 +1138,8 @@ async function selectState(state, autoplay = false) {
   if (autoplay) {
     if (userSelected && music.context) startAudio();
     playing = true;
-    $("play").textContent = "Ⅱ Pause replay";
+    viewerReplay = userSelected;
+    $("play").textContent = "Ⅱ Pause";
   }
   if (!autoplay) routePreviews.remember(state.id, state.frames === 0 ? originPixels : engine.pixels());
   if (!autoplay && revealNext) startTraceReveal(performance.now() - selectionStarted < 350);
@@ -1337,6 +1339,7 @@ function startSearch(level = bootLevel) {
   camera.pinned = null;
   gameWon = false;
   paused = false;
+  replayPaused = replayWatching = false;
   ready = false;
   seeking = false;
 
@@ -1355,7 +1358,6 @@ function startSearch(level = bootLevel) {
   $("details").replaceChildren();
   $("state-list").replaceChildren();
   updateStats();
-  sparks = [];
   knownSearches = new Set([0]);
   setRoom(bootLevel);
   beginCamera();
@@ -1501,14 +1503,12 @@ function startSearch(level = bootLevel) {
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
           heat.retain({ ...point, observation: project(o, map) }, now);
-          sparks.push({ ...project(o, map), time: now });
           if (followDiscovery(o, first, focusedLevel, userSelected, cleared)) {
             if (branchPreview) branchPreview.room = o.level;
             else if (finishUntil > now) pendingRoom = { level: o.level, from: pendingRoom?.from ?? mapLevel, at: finishUntil };
             else setRoom(o.level);
           }
         }
-        sparks = sparks.slice(-120);
         if (
           latestBest !== null &&
           !userSelected &&
@@ -1536,6 +1536,7 @@ function startSearch(level = bootLevel) {
         }
       } else if (data.type === "limit") {
         paused = true;
+        replayPaused = false;
         $("status").textContent = data.won ? "Game won" : "Memory limit reached";
         updateSearchControl();
         $("goal-status").textContent = data.won
@@ -1936,15 +1937,6 @@ function drawArea(canvas, now) {
       top: areaCenterY - canvas.height / 2 / scale,
       bottom: areaCenterY + canvas.height / 2 / scale,
     });
-  for (const p of preview || mode === "movement" ? [] : sparks) {
-    if (p.level !== mapLevel) continue;
-    const age = (now - p.time) / 1600;
-    if (age > 1) continue;
-    ctx.fillStyle = `rgba(255,239,183,${(1 - age) * 0.75})`;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y - 8, 1.5 + (1 - age) * 1.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
   canvas.dataset.tracePoints = drawTrail(ctx, mapLevel, scale, preview ? areaOrigin?.segments || [] : undefined);
   canvas.dataset.zoom = areaZoom;
   canvas.dataset.centerX = areaCenter;
@@ -2187,12 +2179,28 @@ function bindMap(c) {
   });
 }
 bindMap(canvas);
-$("pause").onclick = () => {
-  paused = !paused;
-  worker.postMessage({ type: paused ? "pause" : "resume" });
+function setSearchPaused(value) {
+  paused = value;
+  worker.postMessage({ type: value ? "pause" : "resume" });
   updateSearchControl();
-  $("status").textContent = paused ? "Paused" : "Exploring";
-  $("status-dot").className = paused ? "paused" : "";
+  $("status").textContent = value ? "Paused" : "Exploring";
+  $("status-dot").className = value ? "paused" : "";
+}
+function holdSearchForReplay() {
+  const watching = playing && viewerReplay && !controlMode;
+  if (watching === replayWatching) return;
+  replayWatching = watching;
+  if (watching && !paused && ready && !stats.stopped) {
+    replayPaused = true;
+    setSearchPaused(true);
+  } else if (!watching && replayPaused) {
+    replayPaused = false;
+    if (paused && ready && !stats.stopped && !playSession && !branchBusy && !tourSession) setSearchPaused(false);
+  }
+}
+$("pause").onclick = () => {
+  replayPaused = false;
+  setSearchPaused(!paused);
 };
 $("reset").onclick = () => {
   if (tourSession) tourSession.interacted = true;
@@ -2224,9 +2232,10 @@ $("play").onclick = async () => {
     if (!(await reset) || current !== state || epoch !== replayEpoch) return;
   }
   playing = true;
+  viewerReplay = true;
   frameCredit = 0;
   startAudio();
-  $("play").textContent = "Ⅱ Pause replay";
+  $("play").textContent = "Ⅱ Pause";
 };
 $("speed").onchange = () => {
   if (playing) startAudio();
@@ -2616,6 +2625,7 @@ document.addEventListener("visibilitychange", () => {
     music.stop();
     playing = false;
     $("play").textContent = "▶ Replay";
+    holdSearchForReplay();
   }
 });
 for (const button of document.querySelectorAll(".touch-controls button")) {
@@ -2777,6 +2787,7 @@ function animate(now) {
     segments = trailSegments(trace);
     drawFilm();
   }
+  holdSearchForReplay();
   if (playing && !seeking && current) {
     frameCredit += ((wallElapsed * 60) / 1000) * Number($("speed").value);
     const frames = Math.round(frameCredit);
@@ -2788,7 +2799,7 @@ function animate(now) {
       if (currentFrame === current.frames) {
         playing = false;
         music.stop();
-        $("play").textContent = "↺ Replay again";
+        $("play").textContent = "↺ Replay";
         verify().then(updateBranchControls).catch(replayError);
       }
     }
@@ -2944,7 +2955,7 @@ const tour = new GuidedTour({
     if (visualization !== "movement") setVisualization("movement");
     tourSession = {
       cell: tourCell(),
-      wasPaused: paused,
+      wasPaused: paused && !replayPaused,
       prepared: false,
       previousManual: String(current?.id).startsWith("manual-")
         ? current
@@ -2952,6 +2963,7 @@ const tour = new GuidedTour({
       previousFrame: currentFrame,
       interacted: false,
     };
+    replayPaused = false;
     userSelected = true;
     playing = false;
     music.stop();

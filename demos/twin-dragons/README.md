@@ -204,7 +204,7 @@ rollout starts and eases to about two-thirds opacity as it finishes, followed
 by two faint dots at its position six and twelve game frames earlier. Sprites
 are drawn at least 18 CSS pixels tall, up to 2.5 times their native size.
 Heatmap warms 32-pixel cells from blue through red with a six-second half-life
-measured while that search runs. Cell rows start 8 pixels below a 32-pixel
+measured while that search runs, and draws nothing else from the search. Cell rows start 8 pixels below a 32-pixel
 boundary of the map, on the 16-pixel tile grid, so a dragon standing on a
 floor sits inside one cell.
 
@@ -255,6 +255,11 @@ Replay and play round the frame count owed to elapsed time, so a 60 Hz display
 steps one game frame per display frame. The map repaints every display frame
 while the search runs and at 30 Hz while it is paused. Replays play the game's
 music. The sound effects are absent from this build.
+
+The Replay button reads Pause while a replay plays and Replay otherwise. A
+replay the visitor starts pauses the search, and the search resumes when the
+replay pauses, ends or closes, unless the visitor paused or resumed the search
+in the meantime. The automatic replay pick plays while the search runs.
 
 ## Games
 
@@ -396,6 +401,9 @@ rotation, and a retained-state hit near the far end of Level 1 using the
 hash-verified `level-one` history. `tests/level-finish.mjs` checks that
 the map stays on Level 1 until a clearing rollout has played in Twin Dragons
 and Tobu Tobu Girl, and that the level strip moves the view in both.
+`tests/replay-pause.mjs` checks that the path counter stays still while a
+visitor's replay plays and advances during the automatic replay pick and after
+the replay pauses, ends or closes.
 `CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
 

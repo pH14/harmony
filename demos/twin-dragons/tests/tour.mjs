@@ -113,12 +113,12 @@ async function watchDuringTour(page) {
   const undimmed = await canvas.screenshot();
   const darkenedFraction = await dimmedFraction(page, lit, undimmed);
   if (darkenedFraction >= .01) { await writeFile('test-results/tour-map-lit.png',lit); await writeFile('test-results/tour-map-clear.png',undimmed); await page.screenshot({path:'test-results/tour-map-layout.png'}); }
-  assert.ok(darkenedFraction < 0.01, `The selected route map must remain lit; only transient sparks may differ (${darkenedFraction})`);
+  assert.ok(darkenedFraction < 0.01, `The selected route map must remain lit (${darkenedFraction})`);
   await page.locator('.tour-shade').evaluate((e) => e.style.visibility = '');
   await page.screenshot({ path: `test-results/tour-live-${page.viewportSize().width}.png` });
   assert.equal(await page.locator('#pause').evaluate((e) => !!e.closest('[inert]')), true);
   await page.locator('#play').click();
-  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause replay') && Number(document.querySelector('#scrub').value) >= 10);
+  await page.waitForFunction(() => document.querySelector('#play').textContent.includes('Pause') && Number(document.querySelector('#scrub').value) >= 10);
   await page.locator('#play').focus();
   assert.equal(await page.evaluate(() => document.activeElement.id), 'play');
   await page.keyboard.press('Space');
