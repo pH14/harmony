@@ -7,7 +7,7 @@ import { GameAudio } from "./audio.js";
 import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
-import { Swarm, ghosts } from "./swarm.js";
+import { Swarm, ghosts, MOTION_STRIDE } from "./swarm.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -79,6 +79,8 @@ let heat = new Heatmap(),
   frameCredit = 0,
   latestBest = null,
   lastAuto = 0,
+  pendingRoom = null,
+  finishUntil = 0,
   hoverCell = null,
   selectedCell = null,
   mapLevel = 0,
@@ -174,6 +176,8 @@ function activateSearchView(id) {
   swarmRooms = swarm.frame(id, heat.clock(performance.now()), reducedMotion.matches);
   hoverCell = selectedCell = null;
   lastAuto = 0;
+  pendingRoom = null;
+  finishUntil = 0;
   return fresh;
 }
 function revealBranchOrigin() {
@@ -194,7 +198,7 @@ function canvasPanel(c) {
     width: Number(c.dataset.mapWidth), height: Number(c.dataset.mapHeight) };
 }
 function mapCanvas(id, point) {
-  const panels = [...document.querySelectorAll(`.map-row[data-map="${id}"] canvas`)];
+  const panels = [...document.querySelectorAll(`.map-row[data-map="${id}"] .area-map`)];
   return (point && panels.find(c => panelContains(canvasPanel(c), { x: point.x, y: point.y - 8 }))) || panels[0];
 }
 function roomView(id, c) {
@@ -324,6 +328,7 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, 
 }
 const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3;
+const FINISH_HOLD = 800;
 const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
@@ -352,6 +357,8 @@ function maxZoom(c) {
 }
 function frontier(level) {
   const map = maps.get(level), raw = swarmRooms.get(level) || [];
+  const finisher = raw.filter((p) => p.finish).sort((a, b) => game.vertical ? a.y - b.y : b.x - a.x)[0];
+  if (finisher) return { x: finisher.x + 8, y: finisher.y };
   const px = new Float64Array(raw.length), py = new Float64Array(raw.length);
   let n = 0;
   for (const p of raw) {
@@ -395,10 +402,57 @@ function overview(level) {
   camera.overview = true;
   roomView(level).zoom = 1;
   for (const c of document.querySelectorAll(`.map-row[data-map="${level}"] .area-map`)) {
-    const view = roomView(level, c);
-    view.zoom = 1;
-    Object.assign(view, panelCenter(canvasPanel(c), 1, view, c));
+    const view = roomView(level, c), zoom = game.vertical ? closeUpZoom(c) : 1;
+    view.zoom = roomView(level).zoom = zoom;
+    Object.assign(view, panelCenter(canvasPanel(c), zoom, view, c));
   }
+}
+function scrollRoom(id, y) {
+  for (const c of document.querySelectorAll(`.map-row[data-map="${id}"] .area-map`)) {
+    const view = roomView(id, c);
+    Object.assign(view, panelCenter(canvasPanel(c), view.zoom, { x: view.x, y }, c));
+  }
+}
+function levelOverview(id) {
+  const map = maps.get(id), strip = document.createElement("canvas");
+  strip.className = "level-overview";
+  strip.dataset.map = id;
+  strip.height = TALL_CAMERA_VIEWPORT.desktop.height;
+  strip.width = Math.max(8, Math.round(map.width * strip.height / map.height));
+  strip.title = "The whole level. Click or drag to move the view.";
+  strip.setAttribute("aria-hidden", "true");
+  const seek = (e) => {
+    const r = strip.getBoundingClientRect();
+    moveCameraByHand();
+    scrollRoom(id, ((e.clientY - r.top) / r.height) * map.height);
+    drawMap(performance.now());
+  };
+  strip.addEventListener("pointerdown", (e) => {
+    seek(e);
+    strip.setPointerCapture(e.pointerId);
+  });
+  strip.addEventListener("pointermove", (e) => {
+    if (strip.hasPointerCapture(e.pointerId)) seek(e);
+  });
+  return strip;
+}
+function drawOverview(strip) {
+  const id = Number(strip.dataset.map), map = maps.get(id), ctx = strip.getContext("2d"), k = strip.height / map.height;
+  ctx.fillStyle = "#122b42";
+  ctx.fillRect(0, 0, strip.width, strip.height);
+  const image = panorama(id);
+  if (image) ctx.drawImage(image, 0, 0, strip.width, strip.height);
+  ctx.fillStyle = "rgba(7,24,43,.4)";
+  ctx.fillRect(0, 0, strip.width, strip.height);
+  ctx.fillStyle = "#ffd96a";
+  for (const p of swarmRooms.get(id) || []) ctx.fillRect(Math.round((p.x + 8) * k) - 1, Math.round((p.y + 8) * k) - 1, 3, 3);
+  const c = mapCanvas(id);
+  if (!c) return;
+  const view = roomView(id, c), panel = canvasPanel(c);
+  const half = c.height / 2 / (Math.min(c.width / panel.width, c.height / panel.height) * view.zoom);
+  ctx.strokeStyle = "rgba(255,255,255,.95)";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1.5, Math.max(1.5, (view.y - half) * k), strip.width - 3, Math.min(strip.height - 3, 2 * half * k));
 }
 function updateCameraToggle() {
   $("camera-toggle").dataset.value = camera.mode;
@@ -451,6 +505,11 @@ function applyCameraMode(mode = camera.mode) {
   drawMap(performance.now());
 }
 for (const button of $("camera-toggle").children) button.onclick = () => applyCameraMode(button.dataset.camera);
+if (game.vertical)
+  Object.assign(document.querySelector('#camera-toggle [data-camera="room"]'), {
+    textContent: "Manual view",
+    title: "Stop following the search. Scroll the map or drag the level strip to move.",
+  });
 function latestRoom() {
   const rooms = catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
   return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
@@ -1245,6 +1304,8 @@ function startSearch(level = bootLevel) {
   wins.clear();
   latestBest = null;
   lastAuto = 0;
+  pendingRoom = null;
+  finishUntil = 0;
   stats = {};
   for (const id of ["play", "scrub"]) $(id).disabled = true;
   $("details").replaceChildren();
@@ -1368,11 +1429,13 @@ function startSearch(level = bootLevel) {
         drawMap(performance.now());
       } else if (data.type === "batch") {
         if (data.active !== activeSearch) return;
-        swarm.add(activeSearch, data.motion || [], heat.clock(performance.now()));
-        const { motion, ...batchStats } = data;
+        const { motion, finishes, ...batchStats } = data;
+        swarm.add(activeSearch, motion || [], heat.clock(performance.now()), finishes);
         stats = batchStats;
         gameWon ||= data.won;
         const now = performance.now();
+        if (!reducedMotion.matches)
+          for (const index of finishes || []) finishUntil = Math.max(finishUntil, now + motion[index].at(-MOTION_STRIDE) / 0.06 + FINISH_HOLD);
         heat.visitMotion(data.motion || [], maps, now);
         for (const point of data.points) {
           const o = point.observation,
@@ -1397,6 +1460,7 @@ function startSearch(level = bootLevel) {
           sparks.push({ ...project(o, map), time: now });
           if (followDiscovery(o, first, focusedLevel, userSelected, cleared)) {
             if (branchPreview) branchPreview.room = o.level;
+            else if (finishUntil > now) pendingRoom = { level: o.level, from: pendingRoom?.from ?? mapLevel, at: finishUntil };
             else setRoom(o.level);
           }
         }
@@ -1404,6 +1468,7 @@ function startSearch(level = bootLevel) {
         if (
           latestBest !== null &&
           !userSelected &&
+          !pendingRoom &&
           now - lastAuto > 8000 &&
           !seeking
         ) {
@@ -1460,6 +1525,7 @@ function updateSearchControl() {
 function setRoom(level, preserveSelection = false) {
   const map = maps.get(level);
   if (!map) return;
+  pendingRoom = null;
   mapLevel = level;
   mapWidth = map.width;
   mapHeight = map.height;
@@ -1655,6 +1721,7 @@ function renderMapRows(owner) {
         track.setAttribute("aria-hidden", "true");
         track.append(document.createElement("i"), document.createElement("b"));
         part.append(c, panEdge(c, -1), panEdge(c, 1), track);
+        if (game.vertical) part.append(levelOverview(id));
         parts.append(part);
       });
       row.append(heading, parts);
@@ -1663,7 +1730,7 @@ function renderMapRows(owner) {
   );
   if (focusedMap !== undefined) {
     const target =
-      document.querySelector(`.map-row[data-map="${focusedMap}"] canvas`) ||
+      document.querySelector(`.map-row[data-map="${focusedMap}"] .area-map`) ||
       canvas;
     target.focus({ preventScroll: true });
   }
@@ -1740,6 +1807,11 @@ function updateRoomChrome(c) {
 let spriteBudget = swarm.maxTrails, drawCost = 0, frameGap = 1000 / 60;
 function drawMap(now) {
   const start = performance.now();
+  if (pendingRoom && now >= pendingRoom.at) {
+    const { level, from } = pendingRoom;
+    pendingRoom = null;
+    if (mapLevel === from && !routeHover && !branchPreview && !tour.open) setRoom(level);
+  }
   swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, Math.round(spriteBudget), true);
   updatePan(now);
   updateCamera(now);
@@ -1747,6 +1819,7 @@ function drawMap(now) {
     drawArea(c, now);
     updateRoomChrome(c);
   }
+  for (const strip of document.querySelectorAll(".level-overview")) drawOverview(strip);
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
   drawCost = drawCost * 0.9 + (performance.now() - start) * 0.1;
   const behind = drawCost > 6 && frameGap > 20, ahead = drawCost < 4 || frameGap < 18;
@@ -1894,6 +1967,18 @@ function mapCoordinates(e) {
 }
 function bindMap(c) {
   let pinch;
+  if (game.vertical)
+    c.addEventListener("wheel", (e) => {
+      const id = Number(c.dataset.map), view = roomView(id, c), panel = canvasPanel(c), r = c.getBoundingClientRect();
+      const scale = Math.min(c.width / panel.width, c.height / panel.height) * view.zoom;
+      const lines = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
+      const next = panelCenter(panel, view.zoom, { x: view.x, y: view.y + (e.deltaY * lines * c.height) / r.height / scale }, c);
+      if (Math.abs(next.y - view.y) < 0.5) return;
+      e.preventDefault();
+      moveCameraByHand();
+      scrollRoom(id, next.y);
+      drawMap(performance.now());
+    }, { passive: false });
   c.addEventListener("pointerenter", (e) => {
     if (e.pointerType === "mouse") camera.held = Infinity;
   });

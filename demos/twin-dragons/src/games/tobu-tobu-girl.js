@@ -96,7 +96,7 @@ export default {
   system: "Game Boy",
   assets: "tobu-tobu-girl/",
   screen: { width: 160, height: 144 },
-  closeUp: { width: 144, height: 360 },
+  closeUp: { width: 144, height: 300 },
   sprite: { width: 16, height: 16, originX: 0, originY: 0, icon: [0, 0, 16, 16] },
   controls: { a: "Dash", b: "Jetpack" },
   lede: `Watch Harmony play the Game Boy game <a href="https://tangramgames.dk/tobutobugirldx/">Tobu Tobu Girl Deluxe</a> right in your browser.`,

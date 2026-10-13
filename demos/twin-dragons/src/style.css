@@ -253,6 +253,23 @@ h2 {
   margin: 0 auto;
   touch-action: none;
 }
+.vertical-game .room-part {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  padding: 0 16px;
+}
+.vertical-game .room-part .area-map,
+.vertical-game .room-part #map { margin: 0; min-width: 0; }
+.level-overview {
+  flex: none;
+  height: min(72vh, 900px);
+  width: auto;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--line);
+  cursor: ns-resize;
+  touch-action: none;
+}
 .map-row {
   border-bottom: 1px solid var(--line);
 }

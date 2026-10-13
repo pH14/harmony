@@ -113,3 +113,11 @@ test("a sprite cap samples trails across the swarm and keeps each sampled trail 
   assert.deepEqual(swarm.frame(0, 0, false, 10).get(0).map((p) => p.x), [0, 4, 8, 12, 16, 20, 24, 28, 32, 36]);
   assert.deepEqual(swarm.frame(0, 500, false, 10).get(0).map((p) => p.x), [25, 29, 33, 37, 41, 45, 49, 53, 57, 61]);
 });
+
+test("level-clearing trails stay drawn past the sprite cap", () => {
+  const trails = Array.from({ length: 5 }, (_, i) => new Uint16Array([0, 0, i, 20, 0, 30, 0, i + 40, 20, 0]));
+  const swarm = new Swarm(1 << 20, 100);
+  swarm.add(0, trails, 0, [1, 3]);
+  const drawn = swarm.frame(0, 0, false, 1).get(0);
+  assert.deepEqual(drawn.map((p) => [p.x, !!p.finish]), [[0, false], [1, true], [3, true]]);
+});

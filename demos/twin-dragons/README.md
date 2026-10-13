@@ -221,6 +221,12 @@ and right edges; resting on one pans that way, and a tap on a touch screen
 glides about half a screen. A thin track along the bottom shows which part of
 the level is on screen, with a gold dot at the point the camera is chasing.
 
+A rollout that raises the cleared-level count is a clearing rollout. The map
+always draws clearing rollouts, the camera follows the furthest one, and the
+map moves to the next level 0.8 seconds after the last one finishes playing.
+Any other room change, a route preview, a branch preview or the tour cancels
+the pending move. The automatic replay pick waits for it too.
+
 On a first visit the camera opens at 1.3 times the close-up, follows for 1.5
 seconds, then eases to the close-up over 0.8 seconds. Returning and
 reduced-motion visitors start at the close-up.
@@ -279,8 +285,12 @@ The adapter reads the first 1 KiB bank of work RAM:
 | `$C2`, `$C3` | player x and y on screen |
 | `$230`, `$233`, `$237` | climb terms |
 
-The level scrolls upward, so the page shows tall maps and the camera follows
-the highest players. Climb is `$233 * $237 + $230`. Map coordinates are x =
+The level scrolls upward, so the camera viewport is a 432 × 900 canvas that
+fits the 144-pixel level width, and it follows the highest players. A strip
+beside it shows the whole level with each live sprite as a dot and a box for
+the part on screen. Clicking or dragging the strip moves the view there, and
+the mouse wheel scrolls the view. Manual view takes the place of Full view and
+stops following. Climb is `$233 * $237 + $230`. Map coordinates are x =
 screen x - 24 and y = level height - 155 - climb + screen y. Level heights are
 2,000, 2,896 and 3,792 lines. `tools/build-tobu-maps.mjs` climbs each level
 with a save-state search and composes the maps and the sprite sheet from the
@@ -382,7 +392,10 @@ credits. `tests/browser.mjs` runs one worker so its Level 1 checks finish
 before the search reaches Level 2. `tests/room-cameras.mjs` checks one camera viewport per level on
 desktop and phone, Full view and Auto view, edge panning and the level track,
 rotation, and a retained-state hit near the far end of Level 1 using the
-hash-verified `level-one` history. `CHROME_CHANNEL=chrome` uses an installed Chrome, and
+hash-verified `level-one` history. `tests/level-finish.mjs` checks that
+the map stays on Level 1 until a clearing rollout has played in Twin Dragons
+and Tobu Tobu Girl, and that the Tobu level strip moves the view.
+`CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
 
 `Checks / Dissonance Workloads / Twin Dragons Browser` rebuilds and tests the

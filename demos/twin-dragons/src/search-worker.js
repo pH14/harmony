@@ -108,7 +108,10 @@ function drain(search) {
     while (round.next < round.jobs.length && round.jobs[round.next].result) {
       const job = round.jobs[round.next++];
       search.explorer.merge(job.result, new Uint32Array(job.transition));
-      if (job.trail) search.motion.push(job.trail);
+      if (job.trail) {
+        if (job.clears) search.finishes.push(search.motion.length);
+        search.motion.push(job.trail);
+      }
       job.result = job.trail = job.transition = job.snapshot = null;
       if (search.explorer.stopped()) {
         cancel(search);
@@ -179,7 +182,7 @@ function paced() {
     }, ((CHUNK_PATHS - allowance) * 1000) / pace);
   return false;
 }
-function finished({ chunk, buffer, steps, trails, transitions }) {
+function finished({ chunk, buffer, steps, trails, transitions, clears }) {
   const entry = chunks.get(chunk);
   chunks.delete(chunk);
   entry.slot.chunks--;
@@ -193,6 +196,7 @@ function finished({ chunk, buffer, steps, trails, transitions }) {
     job.result = bytes;
     job.trail = trails[i];
     job.transition = transitions[i];
+    job.clears = clears[i];
     touched.add(job.search);
   });
   for (const search of touched) drain(search);
@@ -208,8 +212,9 @@ function flush() {
   const search = searches.get(active);
   try {
     const batch = JSON.parse(search.explorer.take_batch());
-    const motion = search.motion;
+    const { motion, finishes } = search;
     search.motion = [];
+    search.finishes = [];
     batch.points = batch.points.map((p) => ({
       ...p,
       retained: p.retained === null ? null : externalId(active, p.retained),
@@ -218,7 +223,7 @@ function flush() {
     updateMemory(batch, search);
     search.stats = batch;
     batch.workers = pool.length;
-    postMessage({ type: "batch", active, ...batch, motion }, motion.map((trail) => trail.buffer));
+    postMessage({ type: "batch", active, ...batch, motion, finishes }, motion.map((trail) => trail.buffer));
     if (batch.stopped) {
       running = false;
       postMessage({ type: "limit", won: batch.won });
@@ -243,6 +248,7 @@ function addSearch(id, search) {
   search.rounds = [];
   search.queue = [];
   search.motion = [];
+  search.finishes = [];
   searches.set(id, search);
   for (let r = 0; r < ROUNDS_AHEAD; r++) planRound(search);
 }

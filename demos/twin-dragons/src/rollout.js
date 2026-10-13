@@ -27,6 +27,7 @@ export function runRollout(engine, snapshot, actions, out, offset, record) {
   engine.restore(snapshot);
   const ram = engine.ramView();
   const samples = record ? [0, ...game.motion(ram)] : null;
+  const clearedBefore = game.decode(ram).cleared;
   let frame = 0, steps = 0, ended = false, transition = [];
   for (const packed of actions) {
     const buttons = packed >> 8, frames = packed & 255;
@@ -56,7 +57,7 @@ export function runRollout(engine, snapshot, actions, out, offset, record) {
     }
   }
   const trail = samples && samples.length > MOTION_STRIDE ? new Uint16Array(samples) : null;
-  return { steps, trail, transition, points: steps - (ended && !transition.length ? 1 : 0) };
+  return { steps, trail, transition, clears: game.decode(ram).cleared > clearedBefore, points: steps - (ended && !transition.length ? 1 : 0) };
 }
 
 export function runPlan(engines, explorer, jobs, record = false) {

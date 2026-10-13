@@ -41,15 +41,16 @@ export class Swarm {
       this.trails.delete(id);
     }
   }
-  add(branch, trails, milliseconds) {
+  add(branch, trails, milliseconds, finishes = []) {
     this.prune(branch, milliseconds);
-    for (const samples of trails) {
+    const marked = new Set(finishes);
+    for (const [index, samples] of trails.entries()) {
       if (!(samples instanceof Uint16Array) || samples.length < MOTION_STRIDE * 2 ||
           samples.length % MOTION_STRIDE || samples.byteLength > this.maxBytes) continue;
       const duration = samples.at(-MOTION_STRIDE);
       if (!duration) continue;
       const id = this.serial++;
-      this.trails.set(id, { branch, samples, duration, started: milliseconds });
+      this.trails.set(id, { branch, samples, duration, started: milliseconds, finish: marked.has(index) });
       this.bytes += samples.byteLength;
       while (this.bytes > this.maxBytes || this.trails.size > this.maxTrails) {
         const oldest = this.trails.keys().next().value;
@@ -63,11 +64,11 @@ export class Swarm {
     const rooms = new Map(), step = Math.max(1, Math.ceil(this.trails.size / maxPoints));
     let count = 0;
     for (const [id, trail] of this.trails) {
-      if (count >= maxPoints) break;
-      if (trail.branch !== branch || id % step) continue;
+      if (trail.branch !== branch || (!trail.finish && (count >= maxPoints || id % step))) continue;
       const frame = still ? 0 : Math.max(0, milliseconds - trail.started) * 0.06;
       const point = swarmPoint(trail.samples, frame);
       if (!point) continue;
+      if (trail.finish) point.finish = true;
       if (detail) {
         point.life = still ? 0 : Math.min(1, frame / trail.duration);
         if (!still) {
