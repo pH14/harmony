@@ -91,6 +91,9 @@ save. Restore checks all eight segments before applying any vCPU state.
 The present, DB, S, L, G, AVL, and unusable flags are one-bit fields and receive
 the same preflight check; KVM otherwise accepts larger values and reads them
 back changed.
+A segment with the present flag clear must be marked unusable. An unusable
+segment keeps only its base and selector; its other fields are zero. KVM
+normalizes other combinations during save, so restore checks this shape first.
 The XSAVE header's reserved bytes 528 through 575 must be zero. KVM rejects a
 nonzero byte at `KVM_SET_XSAVE` after earlier restore writes, so preflight
 checks that range before changing the vCPU.

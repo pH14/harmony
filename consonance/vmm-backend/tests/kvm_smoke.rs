@@ -1200,6 +1200,52 @@ fn xsave_reserved_header_restore_rejects_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
+fn unusable_segment_restore_requires_canonical_shape_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for field in 0..4 {
+        let mut invalid = baseline.clone();
+        match field {
+            0 => invalid.sregs.cs.present = 0,
+            1 => invalid.sregs.ds.unusable = 1,
+            2 => invalid.sregs.tr.present = 0,
+            _ => invalid.sregs.ldt.unusable = 1,
+        }
+        invalid.regs.rax ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.ldt = vmm_backend::Segment {
+        base: valid.sregs.ldt.base,
+        selector: valid.sregs.ldt.selector,
+        unusable: 1,
+        ..Default::default()
+    };
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate unusable LDT");
+    backend.restore(&valid).expect("restore unusable LDT");
+    assert_eq!(
+        backend.save().expect("save unusable LDT").sregs.ldt,
+        valid.sregs.ldt
+    );
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
 fn msr_filter_is_loud() {
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,
