@@ -810,6 +810,11 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     gid,
                     link_path,
                 } = std::mem::take(&mut pax);
+                if typeflag == b'1' && (size != 0 || pax_size.is_some_and(|size| size != 0)) {
+                    return Err(ImageError::Tar(
+                        "hardlink member has nonzero data size".into(),
+                    ));
+                }
                 let gnu_name = long_name.take();
                 let gnu_link = long_link.take();
                 let owner = Owner {
@@ -2230,6 +2235,41 @@ mod tests {
         let layer = write_archive(dir.path(), "exact-hardlink.tar", &body);
         apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
         assert_eq!(std::fs::read(rootfs.join("link")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn hardlink_with_data_is_rejected_before_rootfs_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let raw = [
+            raw_member(b"a", b'0', "", b"original"),
+            raw_member(b"link", b'1', "a", b"replacement"),
+        ]
+        .concat();
+        let record = pax_record("size", "11");
+        let mut pax_link = raw_member(b"link", b'1', "a", b"replacement");
+        pax_link[124..136].copy_from_slice(b"00000000000\0");
+        reseal(&mut pax_link);
+        let pax = [
+            raw_member(b"a", b'0', "", b"original"),
+            raw_member(b"PaxHeaders/0", b'x', "", record.as_bytes()),
+            pax_link,
+        ]
+        .concat();
+        for (name, body) in [("raw-hardlink.tar", raw), ("pax-hardlink.tar", pax)] {
+            let layer = write_archive(dir.path(), name, &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "hardlink member has nonzero data size"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
     }
 
     #[test]
