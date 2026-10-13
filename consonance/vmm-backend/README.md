@@ -91,6 +91,9 @@ save. Restore checks all eight segments before applying any vCPU state.
 The present, DB, S, L, G, AVL, and unusable flags are one-bit fields and receive
 the same preflight check; KVM otherwise accepts larger values and reads them
 back changed.
+The XSAVE header's reserved bytes 528 through 575 must be zero. KVM rejects a
+nonzero byte at `KVM_SET_XSAVE` after earlier restore writes, so preflight
+checks that range before changing the vCPU.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
