@@ -30,10 +30,11 @@
   attach host files, disks, consoles or network devices, because a
   `Recording` cannot carry those host resources. `set_initramfs` likewise
   copies an override into a sealed descriptor when configured, and every
-  later launch from that `Launch` uses the same bytes. Linux launches request
-  a fixed host address layout before executing the pinned kernel, because UML's
-  own `/proc/self/exe` re-exec cannot reopen a memory-backed executable by its
-  symlink target. If the host denies that request, the patched kernel's
+  later launch from that `Launch` uses the same bytes. Linux launches normalize
+  the host personality to `ADDR_NO_RANDOMIZE` before executing the pinned
+  kernel, excluding inherited host layout flags. This avoids UML's
+  `/proc/self/exe` re-exec, which cannot reopen a memory-backed executable by
+  its symlink target. If the host denies that request, the patched kernel's
   randomized-layout fallback applies. Qualification deliberately clears the
   request before its randomized rounds.
 - `Bridge` serves the guest's `/dev/harmony` requests on a `SOCK_SEQPACKET`
