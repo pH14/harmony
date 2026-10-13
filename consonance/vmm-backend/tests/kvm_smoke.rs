@@ -1200,6 +1200,64 @@ fn xsave_reserved_header_restore_rejects_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
+fn xsave_header_inputs_restore_rejects_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+    assert!(baseline.xsave.len() >= 576);
+
+    for variant in 0..6 {
+        let mut invalid = baseline.clone();
+        invalid.sregs.cr2 ^= 1;
+        match variant {
+            0 => {
+                invalid.xsave_restore_bv = None;
+                invalid.xsave[520..528].copy_from_slice(&(1u64 << 63).to_le_bytes());
+            }
+            1 => {
+                invalid.xsave_restore_bv = None;
+                invalid.xsave[520..528].copy_from_slice(&1u64.to_le_bytes());
+            }
+            2 | 3 => {
+                invalid.xsave_restore_bv = (variant == 2).then_some(1u64 << 63);
+                invalid.xsave[512..520].copy_from_slice(&(1u64 << 63).to_le_bytes());
+            }
+            _ => {
+                invalid.xsave_restore_bv = (variant == 4).then_some(2);
+                invalid.xsave[512..520].copy_from_slice(&2u64.to_le_bytes());
+                invalid.xsave[24..28].copy_from_slice(&0x0001_1f80u32.to_le_bytes());
+            }
+        }
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr2 ^= 1;
+    valid.xsave_restore_bv = Some(2);
+    valid.xsave[512..520].copy_from_slice(&2u64.to_le_bytes());
+    valid.xsave[24..28].copy_from_slice(&0x1f81u32.to_le_bytes());
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate standard XSAVE");
+    backend.restore(&valid).expect("restore standard XSAVE");
+    let observed = backend.save().expect("save valid XSAVE");
+    assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
+    assert_eq!(observed.xsave[24..28], 0x1f81u32.to_le_bytes());
+    assert_eq!(observed.xsave[512..520], 2u64.to_le_bytes());
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
 fn unusable_segment_restore_requires_canonical_shape_before_mutation() {
     let mut mem = GuestMem::new(0x10000);
     let mut backend = new_backend_or_explain();
