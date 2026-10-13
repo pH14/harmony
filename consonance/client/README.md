@@ -83,7 +83,7 @@ retained by reference until a snapshot is serialized.
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
-The embedded complete and sparse portable snapshots use format version 6.
+The embedded complete and sparse portable snapshots use format version 7.
 Older embedded versions are rejected. The outer sparse archive layout remains
 version 2.
 

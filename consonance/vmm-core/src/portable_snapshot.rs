@@ -14,7 +14,7 @@ use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 6;
+const VERSION: u16 = 7;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 6);
+        assert_eq!(VERSION, 7);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
@@ -1136,7 +1136,7 @@ mod tests {
                 + 128
         );
 
-        for old_version in [1_u16, 2, 3, 4, 5, VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, VERSION + 1] {
             let mut old = encoded();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             refresh_digest(&mut old);
@@ -1484,7 +1484,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, 3, 4, 5, VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, VERSION + 1] {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
@@ -2054,7 +2054,7 @@ mod tests {
             Some(0)
         );
 
-        let mut v6_len = None;
+        let mut current_len = None;
         for raw_bv in [0_u64, 2, 3] {
             let (image, restore_bv) = captured_xsave(raw_bv);
             assert_eq!(image, canonical);
@@ -2084,10 +2084,10 @@ mod tests {
                     .xsave_restore_bv,
                 Some(raw_bv)
             );
-            if let Some(previous) = v6_len {
+            if let Some(previous) = current_len {
                 assert_eq!(sidecar.len(), previous);
             } else {
-                v6_len = Some(sidecar.len());
+                current_len = Some(sidecar.len());
             }
         }
     }
