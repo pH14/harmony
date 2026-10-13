@@ -339,7 +339,7 @@ fn uml_launch(
     }
     Ok(UmlLaunch {
         profile: guest.profile.clone(),
-        expected_profile_identity_sha256: Some(guest.profile_identity_sha256.clone()),
+        expected_profile_identity_sha256: guest.profile_identity_sha256.clone(),
         initramfs: path,
         memory_mib: config.ram_mib,
         kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),
@@ -1348,6 +1348,26 @@ pub fn from_paths(
 mod tests {
     use super::*;
     use crate::target::FaultOperation;
+
+    #[test]
+    fn uml_launch_carries_the_admitted_profile_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let guest = UmlGuest {
+            profile: directory.path().join("profile"),
+            profile_identity_sha256: "admitted-profile".into(),
+            identity: "admitted-host".into(),
+            work_parent: directory.path().to_path_buf(),
+        };
+        let config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Uml(guest.clone()),
+            root: None,
+        };
+        let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
+        assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
+        assert_eq!(std::fs::read(launch.initramfs).unwrap(), b"initramfs");
+    }
 
     fn unbooted_target() -> FaultTarget {
         FaultTarget {
