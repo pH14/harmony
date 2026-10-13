@@ -324,6 +324,7 @@ CONSONANCE_CHECKS = Workflow(
                            "vmm-backend::kvm_smoke cr8_restore_rejects_out_of_range_priority_before_mutation",
                            "vmm-backend::kvm_smoke rflags_restore_rejects_nonarchitectural_bits_before_mutation",
                            "vmm-backend::kvm_smoke rflags_vm_restore_rejects_real_mode_before_mutation",
+                           "vmm-backend::kvm_smoke segment_encoding_restore_rejects_oversized_fields_before_mutation",
                            "vmm-core::x86_kvm_pcide_preflight pcide_restore_requires_ia32e_mode_before_entry",
                            PUBLIC_SNAPSHOT_IDENTITY_TEST),
             scope="consonance_kvm",

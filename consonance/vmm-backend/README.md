@@ -85,6 +85,9 @@ CR4.PCIDE requires IA-32e paging: CR0.PG, CR4.PAE, and EFER.LMA must all be
 set. KVM accepts PCIDE without that mode in `KVM_SET_SREGS2`, then fails the
 next VM entry before the guest executes. Restore rejects the combination
 during preflight; a valid long-mode PCIDE state remains restorable.
+Segment type and DPL fields have four-bit and two-bit encodings. KVM accepts
+larger values through `KVM_SET_SREGS2` and silently truncates them on the next
+save. Restore checks all eight segments before applying any vCPU state.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
