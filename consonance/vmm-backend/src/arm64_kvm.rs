@@ -43,13 +43,14 @@ const GIC_ISPENDR: u64 = 0x0200;
 const GIC_ISACTIVER: u64 = 0x0300;
 const GIC_ICACTIVER: u64 = 0x0380;
 const GIC_IPRIORITYR: u64 = 0x0400;
+const GIC_ICFGR: u64 = 0x0c00;
 const GICR_ISACTIVER0: u64 = GICR_SGI_BASE + 0x0300;
 const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
 const HARMONY_GIC_IMPL_SPIS: u32 = 64;
 pub(crate) const HARMONY_GIC_NR_IRQS: u32 = 32 + HARMONY_GIC_IMPL_SPIS;
 const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
-const GIC_STATE_VERSION: u32 = 4;
+const GIC_STATE_VERSION: u32 = 5;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -590,6 +591,20 @@ fn vgic_priority_attr(word: usize) -> (u32, u64) {
     }
 }
 
+fn vgic_config_attr(word: usize) -> (u32, u64) {
+    if word < 2 {
+        (
+            KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+            GICR_SGI_BASE + GIC_ICFGR + (word as u64) * 4,
+        )
+    } else {
+        (
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GIC_ICFGR + (word as u64) * 4,
+        )
+    }
+}
+
 fn vgic_level_attr(block: u32) -> u64 {
     VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
 }
@@ -637,6 +652,11 @@ fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
             .map_err(|_| BackendError::InvalidState)?
             .to_le_bytes();
         s.priority[word * 4..word * 4 + 4].copy_from_slice(&bytes);
+    }
+    for word in 0..(HARMONY_GIC_NR_IRQS as usize / 16) {
+        let (group, attr) = vgic_config_attr(word);
+        s.config[word] = u32::try_from(k.get_vgic_attr(group, attr, false)?)
+            .map_err(|_| BackendError::InvalidState)?;
     }
     s.pmr =
         u8::try_from(vgic_cpu_sysreg(k, ICC_PMR_EL1)?).map_err(|_| BackendError::InvalidState)?;
@@ -696,6 +716,14 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
     {
         return Err(BackendError::InvalidState);
     }
+    let config_words = HARMONY_GIC_NR_IRQS as usize / 16;
+    if s.config[..config_words]
+        .iter()
+        .any(|&word| word & !0xaaaa_aaaa != 0)
+        || s.config[config_words..].iter().any(|&word| word != 0)
+    {
+        return Err(BackendError::InvalidState);
+    }
     Ok(())
 }
 
@@ -704,6 +732,12 @@ fn validate_vgic_host<K: Arm64Kvm + ?Sized>(k: &K, s: &Arm64GicState) -> Result<
     let fixed = vgic_cpu_sysreg(k, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
     if s.ctlr & !ICC_CTLR_GUEST_WRITABLE != fixed {
         return Err(BackendError::InvalidState);
+    }
+    for word in 0..2 {
+        let (group, attr) = vgic_config_attr(word);
+        if u64::from(s.config[word]) != k.get_vgic_attr(group, attr, false)? {
+            return Err(BackendError::InvalidState);
+        }
     }
     Ok(())
 }
@@ -727,6 +761,10 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
 
 fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
     validate_vgic_host(k, s)?;
+    for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
+        let (group, attr) = vgic_config_attr(word);
+        k.set_vgic_attr(group, attr, false, u64::from(s.config[word]))?;
+    }
     let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
     for word in 0..words {
         let (group, attr) = vgic_bitmap_attr(word, GIC_IGROUPR);
@@ -1184,6 +1222,17 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
+        if !self.configured {
+            for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
+                let (group, attr) = vgic_config_attr(word);
+                self.kvm.set_vgic_attr(group, attr, false, 0)?;
+                if self.kvm.get_vgic_attr(group, attr, false)? != 0 {
+                    return Err(BackendError::Unsupported {
+                        what: "KVM VGIC SPI level trigger baseline",
+                    });
+                }
+            }
+        }
         let _ = &policy.sysreg_traps;
         self.configured = true;
         Ok(())
@@ -1982,11 +2031,15 @@ mod tests {
             .unwrap();
         fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false, 0b10)
             .unwrap();
+        let (config_group, config_attr) = vgic_config_attr(2);
+        fake.set_vgic_attr(config_group, config_attr, false, 0x20000)
+            .unwrap();
         let saved = save_vgic(&fake).unwrap();
         assert_eq!(saved.gicd_ctlr, 0b10);
         assert_eq!(saved.line_level[0], 0);
         assert_eq!(saved.line_level[1], 0xa5a5_5a5a);
         assert_eq!(saved.priority[32..36], [0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(saved.config[2], 0x20000);
         assert_eq!(saved.pmr, 0x7f);
         assert_eq!(saved.bpr0, 7);
         assert_eq!(saved.bpr1, 6);
@@ -2047,6 +2100,14 @@ mod tests {
             },
             Arm64GicState { bpr0: 8, ..saved },
             Arm64GicState { bpr1: 8, ..saved },
+            Arm64GicState {
+                config: {
+                    let mut config = saved.config;
+                    config[2] = 1;
+                    config
+                },
+                ..saved
+            },
         ] {
             assert!(matches!(
                 validate_vgic_state(&invalid),
@@ -2102,6 +2163,48 @@ mod tests {
             Err(BackendError::InvalidState)
         ));
         assert!(foreign.calls.is_empty());
+    }
+
+    #[test]
+    fn vgic_private_trigger_configuration_rejects_foreign_host_before_mutation() {
+        let mut source = FakeKvm::new();
+        let (group, attr) = vgic_config_attr(0);
+        source
+            .set_vgic_attr(group, attr, false, 0xaaaa_aaaa)
+            .unwrap();
+        let saved = save_vgic(&source).unwrap();
+        let mut target = FakeKvm::new();
+        let state = Arm64VcpuState {
+            gic: Some(saved),
+            ..Arm64VcpuState::default()
+        };
+        assert!(matches!(
+            restore_vcpu(&mut target, &state),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(target.calls.is_empty());
+    }
+
+    #[test]
+    fn policy_normalizes_spi_triggers_without_clobbering_later_guest_configuration() {
+        let mut fake = FakeKvm::new();
+        let (private_group, private_attr) = vgic_config_attr(0);
+        fake.set_vgic_attr(private_group, private_attr, false, 0xaaaa_aaaa)
+            .unwrap();
+        for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
+            let (group, attr) = vgic_config_attr(word);
+            fake.set_vgic_attr(group, attr, false, 0xaaaa_aaaa).unwrap();
+        }
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut state = backend.save().unwrap();
+        let gic = state.gic.as_mut().unwrap();
+        assert_eq!(gic.config[..6], [0xaaaa_aaaa, 0, 0, 0, 0, 0]);
+        gic.config[2] = 0x20000;
+        backend.restore(&state).unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert_eq!(backend.save().unwrap().gic.unwrap().config[2], 0x20000);
     }
 
     #[test]

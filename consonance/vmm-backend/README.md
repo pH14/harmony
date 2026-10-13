@@ -329,6 +329,16 @@ binary point hidden by that mode. This also makes run-end capture and state
 hashing fail closed if a guest sets CBPR. The ignored
 `guest_gic_cpu_interface_survives_fresh_restore` ARM KVM test exercises guest
 writes, cold restore, and this fail-closed boundary.
+The VGIC record also retains distributor SPI trigger configuration. Restore
+checks the immutable redistributor SGI/PPI configuration before changing vCPU
+state, then writes SPI configuration before the remaining distributor state.
+Policy setup programs KVM's initially edge-triggered SPIs to the common level
+baseline before first guest entry and verifies the device accepted the writes.
+The fixed SGI/PPI configuration is edge/level, respectively, on the measured
+ARM KVM host and in the userspace model.
+The ignored `guest_gic_spi_trigger_survives_fresh_restore` ARM KVM test compares
+guest readback of that baseline and of a programmed edge after uninterrupted
+execution and cold restore.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the

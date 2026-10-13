@@ -93,11 +93,12 @@ replay-compatible. Snapshot restore requires the same runtime contract.
 The same hash is an unconditional state-hash chunk and diagnostic component,
 including when full snapshot hashing is disabled.
 
-Device blobs use the current version 15 format and retain unread serial input
+Device blobs use the current version 16 format and retain unread serial input
 in FIFO order. Presence fields describe the
 optional GIC, doorbell, and pvclock records; pvclock records preserve the page
 GPA, registration capability, and pending-versus-armed handshake state.
 The GIC record includes both binary point registers, CPU-interface control,
 both group enables, and active-priority registers alongside distributor and
-redistributor state. These fields enter architectural comparison and state
-identity.
+redistributor state. It also includes per-INTID trigger configuration, so a
+guest-programmed SPI edge/level choice survives snapshot restore and enters
+architectural comparison and state identity.
