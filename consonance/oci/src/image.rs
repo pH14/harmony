@@ -140,6 +140,7 @@ pub struct StagedImage {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Ownership {
     owners: BTreeMap<PathBuf, Owner>,
+    modes: BTreeMap<PathBuf, u32>,
 }
 
 impl Ownership {
@@ -159,15 +160,33 @@ impl Ownership {
         self.owners.insert(path, owner);
     }
 
+    pub fn mode_of(&self, path: &Path, staged_mode: u32) -> u32 {
+        self.modes
+            .get(&normalized(path))
+            .copied()
+            .unwrap_or(staged_mode)
+    }
+
+    fn record_mode(&mut self, path: &Path, mode: u32) {
+        let path = normalized(path);
+        if !path.as_os_str().is_empty() {
+            self.modes.insert(path, mode);
+        }
+    }
+
     fn remove_tree(&mut self, path: &Path) {
         let path = normalized(path);
         self.owners
+            .retain(|recorded, _| !recorded.starts_with(&path));
+        self.modes
             .retain(|recorded, _| !recorded.starts_with(&path));
     }
 
     fn remove_below(&mut self, path: &Path) {
         let path = normalized(path);
         self.owners
+            .retain(|recorded, _| recorded == &path || !recorded.starts_with(&path));
+        self.modes
             .retain(|recorded, _| recorded == &path || !recorded.starts_with(&path));
     }
 }
@@ -646,6 +665,7 @@ const MAX_HEADER_DATA: u64 = 1 << 16;
 struct Member {
     name: Vec<u8>,
     is_dir: bool,
+    mode: u32,
     owner: Owner,
     hardlink_target: Option<Vec<u8>>,
 }
@@ -791,6 +811,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 members.push(Member {
                     name: path.or(gnu_name).unwrap_or_else(|| ustar_name(&block)),
                     is_dir: typeflag == b'5',
+                    mode: (parse_octal(&block[100..108])? & 0o7777) as u32,
                     owner,
                     hardlink_target: (typeflag == b'1').then(|| {
                         link_path
@@ -1130,12 +1151,27 @@ fn apply_layer_tracked(
 }
 
 fn record_owners(members: &[Member], owners: &mut Ownership) {
+    let explicit_dirs: BTreeSet<PathBuf> = members
+        .iter()
+        .filter(|member| member.is_dir && whiteout(member.path()).is_none())
+        .map(|member| normalized(member.path()))
+        .collect();
     for member in members {
         let path = member.path();
         match whiteout(path) {
             Some(Whiteout::Opaque(dir)) => owners.remove_below(dir),
             Some(Whiteout::Entry(target)) => owners.remove_tree(&target),
             None => {}
+        }
+    }
+    for member in members {
+        let path = normalized(member.path());
+        let mut parent = path.parent();
+        while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
+            if !explicit_dirs.contains(dir) {
+                owners.record_mode(dir, 0o755);
+            }
+            parent = dir.parent();
         }
     }
     for member in members {
@@ -1147,6 +1183,7 @@ fn record_owners(members: &[Member], owners: &mut Ownership) {
             owners.remove_tree(path);
         }
         owners.record(path, member.owner);
+        owners.record_mode(path, member.mode);
     }
 }
 
@@ -2947,6 +2984,79 @@ mod tests {
         assert_eq!(owners["harmony-oci/rootfs/var"], Owner::ROOT);
         assert_eq!(owners["harmony-oci/rootfs/node"], Owner::ROOT);
         assert_eq!(owners["harmony-oci/rootfs"], Owner::ROOT);
+    }
+
+    #[test]
+    fn preparation_preserves_special_modes_from_layer_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir_all(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar","upper.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let layer = [
+            raw_member_with_mode(b"bin/", b'5', "", b"", Owner::ROOT, 0o755),
+            raw_member_with_mode(b"bin/tool", b'0', "", b"exec", Owner::ROOT, 0o4755),
+            raw_member_with_mode(b"shared/", b'5', "", b"", Owner::ROOT, 0o2775),
+            raw_member_with_mode(b"shared/implicit/data", b'0', "", b"x", Owner::ROOT, 0o644),
+            raw_member_with_mode(b"overlaid/", b'5', "", b"", Owner::ROOT, 0o2775),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &layer);
+        write_archive(
+            &layout,
+            "upper.tar",
+            &raw_member(b"overlaid/child", b'0', "", b"upper"),
+        );
+
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("staging")).unwrap();
+        let prepared = super::super::bundle::prepare(
+            &staged,
+            &super::super::bundle::LaunchRequest::new(Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.identity_hex(),
+            "a06bc8cccefe1eb523103dd2e1bd63ea3d24af1938ffdeff886f453844613c40"
+        );
+        let inflated = Command::new("gzip")
+            .arg("-dc")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(&prepared.rootfs_segment)?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(inflated.status.success());
+        let mut at = 0;
+        let mut modes = BTreeMap::new();
+        loop {
+            let mode = u32::from_str_radix(
+                std::str::from_utf8(&inflated.stdout[at + 14..at + 22]).unwrap(),
+                16,
+            )
+            .unwrap();
+            let (name, _, next) = cpio_entry(&inflated.stdout, at);
+            if name == "TRAILER!!!" {
+                break;
+            }
+            modes.insert(name, mode & 0o7777);
+            at = next;
+        }
+        assert_eq!(modes["harmony-oci/rootfs/bin/tool"], 0o4755);
+        assert_eq!(modes["harmony-oci/rootfs/shared"], 0o2775);
+        assert_eq!(modes["harmony-oci/rootfs/shared/implicit"], 0o755);
+        assert_eq!(modes["harmony-oci/rootfs/overlaid"], 0o755);
     }
 }
 
