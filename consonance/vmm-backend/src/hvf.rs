@@ -405,6 +405,8 @@ fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
         || state.mp_state != MpState::Runnable
         || !state.vtimer.masked
         || state.vtimer.cntv_ctl_el0 & !0b10 != 0
+        || u32::try_from(state.simd_fp.fpcr).is_err()
+        || u32::try_from(state.simd_fp.fpsr).is_err()
     {
         return Err(BackendError::InvalidState);
     }
