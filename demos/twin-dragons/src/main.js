@@ -1267,8 +1267,10 @@ function startSearch(level = bootLevel) {
           }
           heat.retain({ ...point, observation: project(o, map) }, now);
           sparks.push({ ...project(o, map), time: now });
-          if (followDiscovery(o, first, focusedLevel, userSelected, cleared))
-            setRoom(o.level);
+          if (followDiscovery(o, first, focusedLevel, userSelected, cleared)) {
+            if (branchPreview) branchPreview.room = o.level;
+            else setRoom(o.level);
+          }
         }
         sparks = sparks.slice(-120);
         if (
@@ -1416,11 +1418,6 @@ function updateStats() {
 function renderMapRows(owner) {
   const focusedMap = document.activeElement?.closest(".map-row")?.dataset.map;
   const rooms = owner?.rooms || [mapLevel];
-  for (const [id, image] of panoramas)
-    if (!rooms.includes(id)) {
-      image.src = "";
-      panoramas.delete(id);
-    }
   $("room-tabs").replaceChildren(...rooms.map((id) => {
     const tab = document.createElement("button");
     tab.dataset.map = id;
