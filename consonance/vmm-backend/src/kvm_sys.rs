@@ -57,6 +57,7 @@ pub struct KvmBackend {
     nested_physical_bits: u32,
     sysenter_virtual_bits: u32,
     supported_xsave_bv: u64,
+    event_valid_flags: u32,
     host_amd_compatible: bool,
     sysenter_32bit: bool,
     nested_state_guard: crate::arch::x86::NestedStateGuard,
@@ -100,6 +101,7 @@ impl KvmBackend {
         })
         .map_err(kvm_err)?;
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
+        let event_valid_flags = vcpu.get_vcpu_events().map_err(kvm_err)?.flags;
         let supported = kvm
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .map_err(kvm_err)?;
@@ -136,6 +138,7 @@ impl KvmBackend {
             nested_physical_bits: 0,
             sysenter_virtual_bits,
             supported_xsave_bv,
+            event_valid_flags,
             host_amd_compatible,
             sysenter_32bit: host_amd_compatible,
             nested_state_guard: Default::default(),
@@ -1069,6 +1072,9 @@ impl Backend for KvmBackend {
             self.sysenter_virtual_bits,
             self.sysenter_32bit,
         )?;
+        if state.events.flags != self.event_valid_flags {
+            return Err(BackendError::InvalidState);
+        }
         match (self.nested_state_config, &state.nested_state) {
             (Some((format, maximum)), Some(bytes)) => {
                 format.validate(bytes, maximum)?;
