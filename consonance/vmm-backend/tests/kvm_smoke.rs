@@ -995,6 +995,37 @@ fn cr8_restore_rejects_out_of_range_priority_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
+fn rflags_restore_requires_fixed_bit_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    // SAFETY: guest RAM is page-aligned, remains allocated until after the backend is dropped, and no host slice aliases it while the guest runs.
+    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
+    configure(&mut backend);
+    let baseline = backend.save().expect("save baseline");
+
+    let mut invalid = baseline.clone();
+    invalid.regs.rflags &= !2;
+    invalid.regs.rax ^= 1;
+    assert!(matches!(
+        backend.validate_restore_state(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(matches!(
+        backend.restore(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert_eq!(backend.save().expect("save after rejection"), baseline);
+
+    let mut valid = baseline.clone();
+    valid.regs.rflags |= 2;
+    valid.regs.rax ^= 1;
+    backend.restore(&valid).expect("restore valid RFLAGS");
+    let restored = backend.save().expect("save valid RFLAGS");
+    assert_eq!(restored.regs, valid.regs);
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
 fn msr_filter_is_loud() {
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,

@@ -750,6 +750,7 @@ fn validate_restore_shape_keys_and_xsave_len() {
         xsave: vec![0u8; 4096],
         ..Default::default()
     };
+    good.regs.rflags = 2;
     assert!(validate_restore_shape(&good, Some(&filter), 4096, 48).is_ok());
 
     good.msrs.remove(&0x175);
@@ -768,10 +769,11 @@ fn validate_restore_shape_keys_and_xsave_len() {
         Err(BackendError::InvalidState)
     ));
 
-    let empty = VcpuState {
+    let mut empty = VcpuState {
         xsave: vec![0u8; 4096],
         ..Default::default()
     };
+    empty.regs.rflags = 2;
     assert!(validate_restore_shape(&empty, None, 4096, 48).is_ok());
     assert!(validate_restore_shape(&good, None, 4096, 48).is_err());
 }
@@ -802,6 +804,7 @@ fn validate_restore_shape_requires_coherent_sregs_msr_aliases() {
         xsave: vec![0; 4096],
         ..Default::default()
     };
+    coherent.regs.rflags = 2;
     coherent.sregs.efer = coherent.msrs[&EFER];
     coherent.sregs.fs.base = coherent.msrs[&FS_BASE];
     coherent.sregs.gs.base = coherent.msrs[&GS_BASE];
@@ -834,6 +837,7 @@ fn validate_restore_shape_requires_preservable_sysenter_values() {
         xsave: vec![0; 4096],
         ..Default::default()
     };
+    state.regs.rflags = 2;
     assert!(validate_restore_shape(&state, Some(&filter), 4096, 48).is_ok());
 
     for (index, value) in [
@@ -859,9 +863,25 @@ fn validate_restore_shape_requires_four_bit_cr8() {
         xsave: vec![0; 4096],
         ..Default::default()
     };
+    state.regs.rflags = 2;
     state.sregs.cr8 = 0x0f;
     assert!(validate_restore_shape(&state, None, 4096, 48).is_ok());
     state.sregs.cr8 = 0x10;
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48),
+        Err(BackendError::InvalidState)
+    ));
+}
+
+#[test]
+fn validate_restore_shape_requires_fixed_rflags_bit() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2;
+    assert!(validate_restore_shape(&state, None, 4096, 48).is_ok());
+    state.regs.rflags = 0;
     assert!(matches!(
         validate_restore_shape(&state, None, 4096, 48),
         Err(BackendError::InvalidState)
