@@ -6,6 +6,8 @@ pub const SGI_PPI_COUNT: u32 = 32;
 
 pub(crate) const BITMAP_WORDS: usize = 32;
 
+pub(crate) const CONFIG_WORDS: usize = 64;
+
 pub(crate) const PRIORITY_BYTES: usize = 1020;
 
 pub const GICD_FRAME_SIZE: u64 = 0x1_0000;
@@ -16,7 +18,7 @@ pub const CNTV_CTL_ENABLE: u64 = 1;
 
 pub const CNTV_CTL_IMASK: u64 = 1 << 1;
 
-pub const GIC_STATE_VERSION: u32 = 4;
+pub const GIC_STATE_VERSION: u32 = 5;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GicState {
@@ -30,6 +32,7 @@ pub struct GicState {
     pub pending: [u32; BITMAP_WORDS],
     pub active: [u32; BITMAP_WORDS],
     pub line_level: [u32; BITMAP_WORDS],
+    pub config: [u32; CONFIG_WORDS],
     pub priority: [u8; PRIORITY_BYTES],
     pub pmr: u8,
     pub bpr0: u8,

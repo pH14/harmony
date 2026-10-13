@@ -2,8 +2,8 @@
 
 use crate::error::GicError;
 use crate::state::{
-    BITMAP_WORDS, CNTV_CTL_ENABLE, CNTV_CTL_IMASK, GIC_STATE_VERSION, GICD_FRAME_SIZE,
-    GICR_FRAME_SIZE, GicState, PRIORITY_BYTES, SGI_PPI_COUNT,
+    BITMAP_WORDS, CNTV_CTL_ENABLE, CNTV_CTL_IMASK, CONFIG_WORDS, GIC_STATE_VERSION,
+    GICD_FRAME_SIZE, GICR_FRAME_SIZE, GicState, PRIORITY_BYTES, SGI_PPI_COUNT,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -32,6 +32,7 @@ const ISACTIVER_BASE: u64 = 0x0300;
 const ICACTIVER_BASE: u64 = 0x0380;
 const IPRIORITYR_BASE: u64 = 0x0400;
 const IPRIORITYR_END: u64 = 0x0400 + PRIORITY_BYTES as u64;
+const ICFGR_BASE: u64 = 0x0c00;
 
 const GICD_CTLR_ENABLE_GRP1: u32 = 1 << 1;
 const GICD_CTLR_ARE: u32 = 1 << 4;
@@ -60,6 +61,8 @@ pub struct Gicv3 {
     pending: [u32; BITMAP_WORDS],
     active: [u32; BITMAP_WORDS],
     line_level: [u32; BITMAP_WORDS],
+    config: [u32; CONFIG_WORDS],
+    edge: [u32; BITMAP_WORDS],
     priority: [u8; PRIORITY_BYTES],
     pmr: u8,
     bpr0: u8,
@@ -96,6 +99,10 @@ impl Gicv3 {
         }
         let mut enable = [0; BITMAP_WORDS];
         enable[0] = u32::from(u16::MAX);
+        let mut config = [0; CONFIG_WORDS];
+        config[0] = 0xaaaa_aaaa;
+        let mut edge = [0; BITMAP_WORDS];
+        edge[0] = u32::from(u16::MAX);
         Ok(Gicv3 {
             impl_spis: cfg.impl_spis,
             timer_hz: cfg.timer_hz,
@@ -106,6 +113,8 @@ impl Gicv3 {
             pending: [0; BITMAP_WORDS],
             active: [0; BITMAP_WORDS],
             line_level: [0; BITMAP_WORDS],
+            config,
+            edge,
             priority: [0; PRIORITY_BYTES],
             pmr: 0,
             bpr0: 0,
@@ -212,6 +221,13 @@ impl Gicv3 {
                     }
                     return self.priority_word(first);
                 }
+                if let Some(w) = config_word_index(offset) {
+                    return if w < 2 || w >= self.intid_limit() as usize / 16 {
+                        0
+                    } else {
+                        self.config[w]
+                    };
+                }
                 0
             }
         }
@@ -268,6 +284,13 @@ impl Gicv3 {
                     if first >= SGI_PPI_COUNT as usize {
                         self.write_priority_word(first, value);
                     }
+                    return;
+                }
+                if let Some(w) = config_word_index(offset)
+                    && w >= 2
+                    && w < self.intid_limit() as usize / 16
+                {
+                    self.write_config_word(w, value);
                 }
             }
         }
@@ -305,6 +328,9 @@ impl Gicv3 {
             }
             _ if (IPRIORITYR_BASE..IPRIORITYR_BASE + u64::from(SGI_PPI_COUNT)).contains(&r) => {
                 self.priority_word((r - IPRIORITYR_BASE) as usize)
+            }
+            _ if config_word_index(r).is_some_and(|w| w < 2) => {
+                self.config[config_word_index(r).unwrap()]
             }
             _ => 0,
         }
@@ -370,6 +396,18 @@ impl Gicv3 {
         }
     }
 
+    fn write_config_word(&mut self, word: usize, value: u32) {
+        let value = value & 0xaaaa_aaaa;
+        self.config[word] = value;
+        let edge_bits = (0..16).fold(0u32, |bits, index| {
+            bits | (((value >> (index * 2 + 1)) & 1) << index)
+        });
+        let bitmap_word = word / 2;
+        let shift = (word % 2) * 16;
+        self.edge[bitmap_word] =
+            (self.edge[bitmap_word] & !(0xffff << shift)) | (edge_bits << shift);
+    }
+
     pub fn raise(&mut self, intid: u32) -> Result<(), GicError> {
         if !self.implemented(intid) {
             return Err(GicError::BadIntId(intid));
@@ -394,7 +432,12 @@ impl Gicv3 {
         if !self.implemented(intid) {
             return Err(GicError::BadIntId(intid));
         }
-        self.line_level[(intid / 32) as usize] |= 1 << (intid % 32);
+        let word = (intid / 32) as usize;
+        let bit = 1 << (intid % 32);
+        if self.line_level[word] & bit == 0 && self.edge[word] & bit != 0 {
+            self.pending[word] |= bit;
+        }
+        self.line_level[word] |= bit;
         Ok(())
     }
 
@@ -453,7 +496,7 @@ impl Gicv3 {
         'candidates: for chunk in 0..BITMAP_WORDS / 4 {
             let words: [u32; 4] = core::array::from_fn(|word| {
                 let w = chunk * 4 + word;
-                (self.pending[w] | self.line_level[w])
+                (self.pending[w] | (self.line_level[w] & !self.edge[w]))
                     & self.enable[w]
                     & self.group[w]
                     & !self.active[w]
@@ -626,6 +669,7 @@ impl Gicv3 {
             pending: self.pending,
             active: self.active,
             line_level: self.line_level,
+            config: self.config,
             priority: self.priority,
             pmr: self.pmr,
             bpr0: self.bpr0,
@@ -671,6 +715,15 @@ impl Gicv3 {
             }
         }
         let limit = g.intid_limit() as usize;
+        if state.config[0] != 0xaaaa_aaaa || state.config[1] != 0 {
+            return Err(GicError::InvalidState);
+        }
+        for (word, &config) in state.config.iter().enumerate() {
+            let mask = if word < limit / 16 { 0xaaaa_aaaa } else { 0 };
+            if config & !mask != 0 {
+                return Err(GicError::InvalidState);
+            }
+        }
         if state.priority[limit..].iter().any(|&b| b != 0) {
             return Err(GicError::InvalidState);
         }
@@ -680,6 +733,9 @@ impl Gicv3 {
         g.pending = state.pending;
         g.active = state.active;
         g.line_level = state.line_level;
+        for (word, &config) in state.config[..limit / 16].iter().enumerate() {
+            g.write_config_word(word, config);
+        }
         g.priority = state.priority;
         g.pmr = state.pmr;
         g.bpr0 = state.bpr0;
@@ -706,6 +762,14 @@ impl Gicv3 {
 fn word_index(offset: u64, base: u64) -> Option<usize> {
     if (base..base + 4 * BITMAP_WORDS as u64).contains(&offset) {
         Some(((offset - base) / 4) as usize)
+    } else {
+        None
+    }
+}
+
+fn config_word_index(offset: u64) -> Option<usize> {
+    if (ICFGR_BASE..ICFGR_BASE + 4 * CONFIG_WORDS as u64).contains(&offset) {
+        Some(((offset - ICFGR_BASE) / 4) as usize)
     } else {
         None
     }
@@ -786,6 +850,18 @@ mod tests {
         assert!(state.group[3..].iter().all(|&word| word == 0));
         assert_eq!(state.enable[0], u32::from(u16::MAX));
         assert!(state.enable[1..].iter().all(|&word| word == 0));
+        assert_eq!(state.config[..6], [0xaaaa_aaaa, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, SGI_FRAME_BASE + ICFGR_BASE, 0)
+                .unwrap(),
+            0xaaaa_aaaa
+        );
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, SGI_FRAME_BASE + ICFGR_BASE + 4, 0)
+                .unwrap(),
+            0
+        );
+        assert_eq!(g.mmio_read(GicFrame::Dist, ICFGR_BASE + 8, 0).unwrap(), 0);
     }
 
     #[test]
@@ -845,6 +921,60 @@ mod tests {
         g.raise(40).unwrap();
         g.assert_line(40).unwrap();
         assert_eq!(g.peek_interrupt(), Some(40));
+    }
+
+    #[test]
+    fn spi_trigger_configuration_round_trips_and_controls_line_latching() {
+        let mut g = gic();
+        arm(&mut g, 40, 0x20);
+        let offset = ICFGR_BASE + 4 * (40 / 16) as u64;
+        assert_eq!(g.mmio_read(GicFrame::Dist, offset, 0).unwrap(), 0);
+        g.mmio_write(GicFrame::Dist, offset, 2 << (2 * (40 % 16)), 0)
+            .unwrap();
+        assert_eq!(g.mmio_read(GicFrame::Dist, offset, 0).unwrap(), 0x20000);
+        assert_eq!(g.snapshot().config[2], 0x20000);
+        let mut restored = Gicv3::restore(&g.snapshot(), 0).unwrap();
+        assert_eq!(
+            restored.mmio_read(GicFrame::Dist, offset, 0).unwrap(),
+            0x20000
+        );
+        restored.assert_line(40).unwrap();
+        assert_eq!(restored.take_interrupt(), Some(40));
+        restored.eoi(40).unwrap();
+        assert_eq!(restored.peek_interrupt(), None);
+        restored.assert_line(40).unwrap();
+        assert_eq!(restored.peek_interrupt(), None);
+        restored.deassert_line(40).unwrap();
+        restored.assert_line(40).unwrap();
+        assert_eq!(restored.peek_interrupt(), Some(40));
+    }
+
+    #[test]
+    fn private_trigger_configuration_is_read_only_and_invalid_state_is_rejected() {
+        let mut g = gic();
+        let offset = SGI_FRAME_BASE + ICFGR_BASE;
+        let initial = g.mmio_read(GicFrame::Redist, offset, 0).unwrap();
+        g.mmio_write(GicFrame::Redist, offset, 0xaaaa_aaaa, 0)
+            .unwrap();
+        assert_eq!(g.mmio_read(GicFrame::Redist, offset, 0).unwrap(), initial);
+        let mut invalid = g.snapshot();
+        invalid.config[2] = 1;
+        assert_eq!(
+            Gicv3::restore(&invalid, 0).unwrap_err(),
+            GicError::InvalidState
+        );
+        invalid.config[2] = 0;
+        invalid.config[0] = 0;
+        assert_eq!(
+            Gicv3::restore(&invalid, 0).unwrap_err(),
+            GicError::InvalidState
+        );
+        invalid.config[0] = 0xaaaa_aaaa;
+        invalid.config[7] = 2;
+        assert_eq!(
+            Gicv3::restore(&invalid, 0).unwrap_err(),
+            GicError::InvalidState
+        );
     }
 
     #[test]
