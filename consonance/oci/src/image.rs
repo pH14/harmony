@@ -220,7 +220,9 @@ pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
 
 pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
     let tarball_path = Path::new(image);
-    if (tarball_path.is_absolute() || tarball_path.exists()) && !exact::path(tarball_path)? {
+    if (tarball_path.is_absolute() || std::fs::symlink_metadata(tarball_path).is_ok())
+        && !exact::path(tarball_path)?
+    {
         return Err(ImageError::UnsafePath(image.to_string()));
     }
     std::fs::create_dir_all(stage_dir)?;
@@ -2145,6 +2147,14 @@ mod tests {
         let aliased_parent = dir.path().join("parent/image");
         assert!(matches!(
             stage(aliased_parent.to_str().unwrap(), &staging),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(!staging.exists());
+
+        let bad_target = parent.join("bad-target");
+        std::os::unix::fs::symlink("../LAYOUT", &bad_target).unwrap();
+        assert!(matches!(
+            stage(bad_target.to_str().unwrap(), &staging),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(!staging.exists());
