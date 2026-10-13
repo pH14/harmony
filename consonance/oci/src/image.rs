@@ -1374,7 +1374,9 @@ fn apply_whiteouts(
                 return Err(ImageError::UnsafePath(member.shown()));
             }
             if meta.is_dir() {
-                opaque_modes.insert(normalized(parent), meta.permissions().mode() & 0o7777);
+                opaque_modes
+                    .entry(normalized(parent))
+                    .or_insert(meta.permissions().mode() & 0o7777);
                 std::fs::remove_dir_all(&dir)?;
                 std::fs::create_dir_all(&dir)?;
             }
@@ -3837,6 +3839,7 @@ mod tests {
         ]
         .concat();
         let upper = [
+            raw_member(b"restricted/.wh..wh..opq", b'0', "", b""),
             raw_member(b"restricted/.wh..wh..opq", b'0', "", b""),
             raw_member(b"restricted/new", b'0', "", b"new"),
         ]
