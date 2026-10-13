@@ -858,7 +858,10 @@ fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, Imag
 }
 
 fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
-    let out = Command::new("tar")
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg("umask 022; exec tar \"$@\"")
+        .arg("tar")
         .arg("-xpf")
         .arg(tarball)
         .arg("--no-same-owner")
@@ -2225,6 +2228,29 @@ mod tests {
                 & 0o7777;
             assert_eq!(on_disk, mode, "{name}");
         }
+    }
+
+    #[test]
+    fn implicit_layer_parent_has_a_fixed_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let member = raw_member_with_mode(b"implicit/file", b'0', "", b"data", Owner::ROOT, 0o644);
+        let layer = write_archive(dir.path(), "implicit.tar", &member);
+
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(rootfs.join("implicit"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::read(rootfs.join("implicit/file")).unwrap(),
+            b"data"
+        );
     }
 
     fn cpio_entry(bytes: &[u8], at: usize) -> (String, Owner, usize) {
