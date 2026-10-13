@@ -87,7 +87,7 @@ sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized. The embedded sidecar
 binds the source setup RAM, so changing only the outer `image_identity` cannot
-import its pages over another setup.
+import its pages over a setup with different RAM.
 `SparseSnapshot::logical_identity` returns a copy whose x86 sidecar carries the
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
