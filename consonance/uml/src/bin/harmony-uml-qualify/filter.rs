@@ -159,23 +159,32 @@ pub fn deny_seccomp_install(command: &mut Command) {
 }
 
 pub fn deny_personality_change(command: &mut Command) {
+    personality_change_filter(command, false);
+}
+
+pub fn deny_personality_change_preserving_layout(command: &mut Command) {
+    personality_change_filter(command, true);
+}
+
+fn personality_change_filter(command: &mut Command, preserve_layout: bool) {
     let mut program = personality_program();
-    // SAFETY: the closure runs in the forked child before exec. It clears the
-    // child's ADDR_NO_RANDOMIZE bit with personality(2), then installs a
-    // program allocated before the fork using prctl(2). Neither call touches
-    // shared memory or allocates.
+    // SAFETY: the forked child only calls personality(2) and prctl(2) before
+    // exec using a filter allocated before the fork, without shared-memory
+    // access or allocation.
     unsafe {
         command.pre_exec(move || {
-            let current = libc::personality(u32::MAX as libc::c_ulong);
-            if current < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if current & libc::ADDR_NO_RANDOMIZE != 0
-                && libc::personality(
-                    (current as libc::c_ulong) & !(libc::ADDR_NO_RANDOMIZE as libc::c_ulong),
-                ) < 0
-            {
-                return Err(io::Error::last_os_error());
+            if !preserve_layout {
+                let current = libc::personality(u32::MAX as libc::c_ulong);
+                if current < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if current & libc::ADDR_NO_RANDOMIZE != 0
+                    && libc::personality(
+                        (current as libc::c_ulong) & !(libc::ADDR_NO_RANDOMIZE as libc::c_ulong),
+                    ) < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
             }
             install(&mut program)
         });
