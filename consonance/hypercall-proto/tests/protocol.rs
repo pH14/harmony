@@ -758,6 +758,25 @@ fn pvclock_registrar_state_round_trips() {
 }
 
 #[test]
+fn block_media_identity_is_bound_to_saved_state() {
+    let source = MemBlockDevice::new(vec![0x11; 512]).unwrap();
+    let mut different = MemBlockDevice::new(vec![0x22; 512]).unwrap();
+    let saved = source.save_state();
+    let before = different.save_state();
+
+    assert_ne!(
+        saved, before,
+        "different sectors must have different state identities"
+    );
+    assert_eq!(different.restore_state(&saved), Err(ProtoError::BadState));
+    assert_eq!(different.save_state(), before);
+
+    let mut same = MemBlockDevice::new(vec![0x11; 512]).unwrap();
+    same.restore_state(&saved).unwrap();
+    assert_eq!(same.save_state(), saved);
+}
+
+#[test]
 fn pvclock_registrar_restore_revalidates_the_gpa() {
     let blob = |ram_len: u64, gpa: u64| {
         let mut b = Vec::new();
