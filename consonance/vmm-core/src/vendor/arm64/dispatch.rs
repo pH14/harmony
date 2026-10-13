@@ -2,7 +2,7 @@
 
 use hypercall_proto::{Service, Status};
 use vm_state::Arm64VmState;
-use vmm_backend::{Arm64, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
+use vmm_backend::{Arm64, Arm64GicState, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
 use crate::snapshot::SnapshotError;
 use crate::vendor::arm64::contract;
@@ -14,6 +14,46 @@ use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{PvclockSnapshot, Step, Vmm, VmmError};
 
 pub(crate) const PSTATE_I: u64 = 1 << 7;
+
+fn in_kernel_group1_preempts(gic: &Arm64GicState, priority: u8) -> Result<bool, VmmError> {
+    if gic.ctlr & 1 != 0 || gic.bpr1 > 7 {
+        return Err(VmmError::ContractViolation(
+            "in-kernel GIC CPU interface is unsupported at idle".to_string(),
+        ));
+    }
+    let priority_bits = ((gic.ctlr >> 8) & 7) as u32 + 1;
+    if !(5..=7).contains(&priority_bits) {
+        return Err(VmmError::ContractViolation(
+            "in-kernel GIC priority width is unsupported at idle".to_string(),
+        ));
+    }
+    let active_index = (0..4).find_map(|register| {
+        let active = gic.ap0r[register] | gic.ap1r[register];
+        (active != 0).then(|| register as u32 * 32 + active.trailing_zeros())
+    });
+    let Some(active_index) = active_index else {
+        return Ok(true);
+    };
+    let mut answer = None;
+    for preemption_bits in 5..=priority_bits {
+        if active_index >= 1 << preemption_bits {
+            continue;
+        }
+        let minimum_shift = 8 - preemption_bits;
+        let group_shift = u32::from(gic.bpr1).max(minimum_shift);
+        let active_priority = active_index << minimum_shift;
+        let deliverable = u32::from(priority) >> group_shift < active_priority >> group_shift;
+        if answer.is_some_and(|previous| previous != deliverable) {
+            return Err(VmmError::ContractViolation(
+                "in-kernel GIC preemption width is ambiguous at idle".to_string(),
+            ));
+        }
+        answer = Some(deliverable);
+    }
+    answer.ok_or_else(|| {
+        VmmError::ContractViolation("in-kernel GIC active priority is invalid at idle".to_string())
+    })
+}
 
 const ICC_PMR_EL1: u32 = 0x0030_100c;
 const ICC_IAR1_EL1: u32 = 0x0030_3018;
@@ -742,7 +782,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         .map_err(|error| {
             VmmError::ContractViolation(format!("in-kernel GIC state is invalid at idle: {error}"))
         })?;
-        Ok(model.input_deliverable(super::board::PVCLOCK_PPI))
+        let ppi = super::board::PVCLOCK_PPI;
+        if !model.input_unmasked(ppi) {
+            return Ok(false);
+        }
+        in_kernel_group1_preempts(&gic, gic.priority[ppi as usize])
     }
 
     pub(crate) fn next_timer_deadline_vns_arm64(&self) -> Option<u64> {
@@ -1420,6 +1464,7 @@ mod tests {
         let mut gic = new_gic().snapshot();
         let bit = 1u32 << PVCLOCK_PPI;
         gic.gicd_ctlr = 2;
+        gic.ctlr = 0x8400;
         gic.group[0] = bit;
         gic.enable[0] = bit;
         gic.line_level[0] = bit;
@@ -1519,6 +1564,7 @@ mod tests {
             gic.enable[0] = if enabled { bit } else { 0 };
             gic.group[0] = if grouped { bit } else { 0 };
             gic.gicd_ctlr = if distributor { 2 } else { 0 };
+            gic.ctlr = 0x8400;
             gic.igrpen1 = cpu_group;
             gic.pmr = pmr;
             gic.priority[PVCLOCK_PPI as usize] = 0x80;
@@ -1575,6 +1621,192 @@ mod tests {
                 deliverable.then_some(1_000_000_000),
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn in_kernel_clockevent_idle_uses_active_priority_and_binary_point() {
+        use crate::vmm::VtimeWiring;
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
+
+        let cases = [
+            ("preempts", 4, 1 << 14, true),
+            ("same priority group", 5, 1 << 14, false),
+            ("all priorities grouped", 7, 1 << 14, false),
+            ("priority dropped", 7, 0, true),
+        ];
+        for (name, bpr1, ap1r0, deliverable) in cases {
+            let mut gic = new_gic().snapshot();
+            let ppi_bit = 1u32 << PVCLOCK_PPI;
+            gic.gicd_ctlr = 2;
+            gic.ctlr = 0x8400;
+            gic.igrpen1 = true;
+            gic.pmr = 0xff;
+            gic.bpr1 = bpr1;
+            gic.group[0] = ppi_bit;
+            gic.enable[0] = ppi_bit;
+            gic.priority[PVCLOCK_PPI as usize] = 0x60;
+            gic.line_level[0] = ppi_bit;
+            gic.active[1] = 1 << 8;
+            gic.priority[40] = 0x70;
+            gic.ap1r[0] = ap1r0;
+
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-kernel-gic",
+                arch: Arm64Caps {
+                    in_kernel_gic: true,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
+                    gic_ctlr_fixed_bits: 0x8400,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            backend.set_state(Arm64VcpuState {
+                gic: Some(records::gic_to_backend(&gic)),
+                ..Arm64VcpuState::default()
+            });
+            let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new_virtual_time(
+                    vtime::VClockConfig {
+                        guest_hz: CNTFRQ_HZ,
+                        guest_base: 0,
+                        vns_base: 0,
+                    },
+                    7,
+                )
+                .unwrap(),
+            );
+            vmm.devices.clockevent.line_asserted = true;
+
+            assert_eq!(
+                vmm.pending_deliverable_interrupt_arm64().unwrap(),
+                deliverable,
+                "{name}"
+            );
+            assert_eq!(
+                vmm.on_idle().unwrap() == Step::Continued,
+                deliverable,
+                "{name}"
+            );
+
+            vmm.devices.clockevent.line_asserted = false;
+            vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+            vmm.enable_pvclock();
+            assert_eq!(vmm.pvclock_register(0x1000).0, Status::Ok);
+            assert_eq!(
+                vmm.deliverable_timer_deadline_vns_arm64().unwrap(),
+                deliverable.then_some(1_000_000_000),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_kernel_preemption_fails_closed_when_host_preemption_width_is_ambiguous() {
+        let mut gic = records::gic_to_backend(&new_gic().snapshot());
+        gic.ctlr = 0x8500;
+        gic.bpr1 = 4;
+        gic.ap1r[0] = 1 << 14;
+        assert!(matches!(
+            in_kernel_group1_preempts(&gic, 0x60),
+            Err(VmmError::ContractViolation(message)) if message.contains("ambiguous")
+        ));
+        gic.bpr1 = 5;
+        assert!(!in_kernel_group1_preempts(&gic, 0x60).unwrap());
+        gic.ap0r[0] = 1;
+        assert!(!in_kernel_group1_preempts(&gic, 0x00).unwrap());
+
+        gic.ap0r[0] = 0;
+        gic.ap1r[0] = 0;
+        gic.ap1r[1] = 1 << 8;
+        gic.bpr1 = 4;
+        assert!(in_kernel_group1_preempts(&gic, 0x80).unwrap());
+        gic.bpr1 = 7;
+        assert!(!in_kernel_group1_preempts(&gic, 0x80).unwrap());
+
+        gic.ctlr = 0x8600;
+        gic.ap1r[1] = 0;
+        gic.ap1r[3] = 1;
+        gic.bpr1 = 4;
+        assert!(in_kernel_group1_preempts(&gic, 0xa0).unwrap());
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "live ARM KVM; run with --ignored on a /dev/kvm host"]
+    fn live_in_kernel_preemption_matches_guest_acknowledgment() {
+        use vmm_backend::{Arm64KvmBackend, GicIntId, LiveKvm};
+
+        const RAM: u64 = 0x4000_0000;
+        const OUTPUT: u64 = 0x0900_0000;
+
+        #[repr(C, align(16384))]
+        struct GuestMemory([u8; 16384]);
+
+        for (bpr1, expected) in [(4, true), (5, false)] {
+            let mut memory = Box::new(GuestMemory([0; 16384]));
+            for (slot, word) in
+                memory
+                    .0
+                    .chunks_exact_mut(4)
+                    .zip([0xd538_cc00_u32, 0xf900_0080, 0x1400_0000])
+            {
+                slot.copy_from_slice(&word.to_le_bytes());
+            }
+            let mut backend = Arm64KvmBackend::new(LiveKvm::new().unwrap());
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            unsafe {
+                // SAFETY: memory remains pinned and exclusively owned until the backend is dropped.
+                backend.map_memory(Gpa(RAM), &mut memory.0)
+            }
+            .unwrap();
+            backend.invalidate_instruction_cache(memory.0.as_ptr() as usize, memory.0.len());
+            let mut state = backend.save().unwrap();
+            assert_eq!((state.gic.as_ref().unwrap().ctlr >> 8) & 7, 4);
+            state.core.pc = RAM;
+            state.core.pstate = 0x3c5;
+            state.core.x[4] = OUTPUT;
+            state.sysregs.sctlr_el1 &= !1;
+            let gic = state.gic.as_mut().unwrap();
+            gic.gicd_ctlr = 2;
+            gic.group[0] |= 1 << PVCLOCK_PPI;
+            gic.enable[0] |= 1 << PVCLOCK_PPI;
+            gic.priority[PVCLOCK_PPI as usize] = 0x60;
+            gic.group[1] |= 1 << 8;
+            gic.enable[1] |= 1 << 8;
+            gic.active[1] |= 1 << 8;
+            gic.priority[40] = 0x70;
+            gic.ap1r[0] = 1 << 14;
+            gic.bpr1 = bpr1;
+            gic.pmr = 0xff;
+            gic.igrpen1 = true;
+            backend.restore(&state).unwrap();
+            backend
+                .set_pending_irq(Some(GicIntId(PVCLOCK_PPI)))
+                .unwrap();
+            let saved_gic = backend.save().unwrap().gic.unwrap();
+            assert_eq!(saved_gic.bpr1, bpr1);
+            assert_eq!(saved_gic.ap1r[0], 1 << 14);
+            let model = gicv3::Gicv3::restore(&records::gic_from_backend(&saved_gic), 0).unwrap();
+            assert!(model.input_unmasked(PVCLOCK_PPI));
+            assert!(model.input_deliverable(PVCLOCK_PPI));
+            assert_eq!(
+                in_kernel_group1_preempts(&saved_gic, saved_gic.priority[PVCLOCK_PPI as usize])
+                    .unwrap(),
+                expected
+            );
+            let answer = match backend.run() {
+                Ok(Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(OUTPUT),
+                    write: Some(value),
+                    ..
+                })) => value,
+                other => panic!("unexpected exit: {other:?}"),
+            };
+            assert_eq!(answer, if expected { PVCLOCK_PPI as u64 } else { 1023 });
+            drop(backend);
         }
     }
 
