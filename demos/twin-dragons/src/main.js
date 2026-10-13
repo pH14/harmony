@@ -513,7 +513,7 @@ function drawOverview(strip, now) {
   } else {
     for (const cell of heat.cells.values()) {
       if (cell.level !== id) continue;
-      const color = heat.color(cell, now);
+      const color = heat.color(cell);
       if (!color) continue;
       ctx.fillStyle = `rgba(${color},.75)`;
       ctx.fillRect(cell.x * 32 * kx, cellTop(cell.y) * ky, 32 * kx, 32 * ky);
@@ -1974,7 +1974,7 @@ function drawArea(canvas, now) {
       ctx.fillRect(0, 0, mapWidth, mapHeight);
       for (const cell of areaHeat.cells.values()) {
         if (cell.level !== mapLevel) continue;
-        const color = areaHeat.color(cell, now);
+        const color = areaHeat.color(cell);
         if (!color) continue;
         const x = cell.x * 32,
           y = cellTop(cell.y);

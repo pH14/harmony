@@ -6,58 +6,56 @@ import { Heatmap, cellKey, routeIds, validateTape } from "../src/heat.js";
 import twinDragons, { decode } from "../src/games/twin-dragons.js";
 import { QUICKNES_REVISION as CORE_REVISION, canonicalize } from "../src/cores/quicknes.js";
 const ROM_SHA256 = twinDragons.rom.sha256;
-test("heat cools without discarding histories, and separates rooms", () => {
+test("heat cools with the search's rollouts without discarding histories, and separates rooms", () => {
   const heat = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: 7 };
   const cell = heat.visit(point, 100);
   assert.equal(cellKey(point.observation), "0:1:5");
-  assert.equal(heat.value(cell, 6100), 0.5);
-  heat.visit(point, 6100);
+  heat.work = 2000;
+  assert.equal(heat.value(cell), 0.5);
+  heat.visit(point, 100);
   assert.equal(cell.heat, 1.5);
   assert.deepEqual(cell.ids, [7]);
   assert.equal(cell.visits, 2);
-  assert.equal(heat.value(cell, 12100), 0.75);
+  heat.work = 4000;
+  assert.equal(heat.value(cell), 0.75);
   heat.visit(
     { ...point, observation: { ...point.observation, level: 40 } },
-    12100,
+    100,
   );
   assert.equal(heat.cells.size, 2);
   assert.deepEqual(cell.ids, [7]);
-  for (let n = 0; n < 16; n++) heat.visit({ ...point, retained: n }, 12100);
+  for (let n = 0; n < 16; n++) heat.visit({ ...point, retained: n }, 100);
   assert.equal(cell.ids.length, 12);
   assert.equal(cell.ids[0], 15);
 });
-test("paused and inactive searches retain heat until their own clock resumes", () => {
+test("a search's heat holds still while other searches run", () => {
   const original = new Heatmap(),
     child = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: 7 },
     cell = original.visit(point, 100);
-  original.setRunning(false, 6100);
-  const frozen = original.value(cell, 6100);
-  child.visit({ ...point, retained: "1:0" }, 6100);
-  assert.equal(original.clock(603100), 6100);
-  assert.equal(original.value(cell, 603100), frozen);
-  assert.notDeepEqual(
-    child.color(child.cells.get("0:1:5"), 603100),
-    original.color(cell, 603100),
-  );
-  original.setRunning(true, 603100);
-  original.setRunning(true, 606100);
-  assert.equal(original.clock(609100), 12100);
-  assert.equal(original.value(cell, 609100), frozen / 2);
+  const frozen = original.value(cell);
+  child.visit({ ...point, retained: "1:0" }, 100);
+  child.work += 10000;
+  assert.equal(original.value(cell), frozen);
   assert.deepEqual(cell.ids, [7]);
   assert.equal(cell.visits, 1);
 });
-test("cooled exploration remains visible without inventing visits or states", () => {
+test("colors compare each cell with the hottest cell of its own level", () => {
   const heat = new Heatmap(),
-    cell = heat.visit(
-      { observation: { level: 0, x: 52, y: 184 }, retained: null },
-      0,
-    );
-  assert.deepEqual(heat.color(cell, 600000), [64, 124, 181]);
-  assert.equal(cell.visits, 1);
-  assert.deepEqual(cell.ids, []);
-  assert.equal(heat.cells.has("0:2:5"), false);
+    cool = heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 0);
+  heat.work = 20000;
+  const hot = heat.visit({ observation: { level: 0, x: 116, y: 184 }, retained: null }, 0);
+  const other = heat.visit({ observation: { level: 3, x: 52, y: 184 }, retained: null }, 0);
+  assert.deepEqual(heat.color(hot), [245, 89, 62]);
+  assert.deepEqual(heat.color(other), [245, 89, 62], "Each level has its own hottest cell");
+  const color = heat.color(cool);
+  assert.ok(color[2] > color[0], "A cooled cell stays visible and turns blue");
+  assert.equal(cool.visits, 1);
+  assert.deepEqual(cool.ids, []);
+  heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 0);
+  heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 0);
+  assert.deepEqual(heat.color(cool), [245, 89, 62], "Colors follow new visits");
 });
 test("route numbers survive new arrivals, the rolling window and repeat visits", () => {
   const heat = new Heatmap(),
@@ -181,7 +179,7 @@ test("heat marks actual crossed cells once per attempt without creating routes o
   assert.equal(cell.heat, 1, "Retained endpoints must not count activity twice");
   assert.deepEqual(cell.ids, ["1:7"]);
   heat.visitMotion([restored], maps, 100);
-  assert.equal(cell.heat, 2, "A fresh attempt counts even if it visits the same cell");
+  assert.ok(Math.abs(cell.heat - 2) < 0.001, "A fresh attempt counts even if it visits the same cell");
 });
 
 test("motion heat excludes menus, unknown levels and off-map positions", () => {

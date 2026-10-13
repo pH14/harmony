@@ -2,6 +2,7 @@
 import { MOTION_STRIDE, NO_ROOM } from "./swarm.js";
 
 export const CELL_SIZE = 32;
+const HALF_LIFE = 2000;
 export const cellRow = (y) => Math.floor((y - 8) / CELL_SIZE);
 export const cellTop = (row) => row * CELL_SIZE + 8;
 export const cellKey = (o) =>
@@ -11,6 +12,8 @@ export class Heatmap {
     this.cells = new Map();
     this.elapsed = 0;
     this.runningSince = 0;
+    this.work = 0;
+    this.peaks = null;
   }
   clock(now) {
     return (
@@ -32,7 +35,7 @@ export class Heatmap {
         x: Math.floor(point.observation.x / 32),
         y: cellRow(point.observation.y),
         heat: 0,
-        time: this.clock(now),
+        work: this.work,
         visits: 0,
         ids: [],
         routes: new Map(),
@@ -49,13 +52,15 @@ export class Heatmap {
   }
   visit(point, now) {
     const cell = this.retain(point, now);
-    cell.heat = this.value(cell, now) + 1;
-    cell.time = this.clock(now);
+    cell.heat = this.value(cell) + 1;
+    cell.work = this.work;
     cell.visits++;
+    this.peaks = null;
     return cell;
   }
   visitMotion(trails, maps, now) {
     for (const samples of trails) {
+      this.work++;
       const visited = new Set();
       for (let i = 0; i < samples.length; i += MOTION_STRIDE) {
         const level = samples[i + 1], map = maps.get(level);
@@ -69,14 +74,16 @@ export class Heatmap {
       }
     }
   }
-  value(cell, now) {
-    return (
-      cell.heat * Math.pow(0.5, Math.max(0, this.clock(now) - cell.time) / 6000)
-    );
+  value(cell) {
+    return cell.heat * Math.pow(0.5, (this.work - cell.work) / HALF_LIFE);
   }
-  color(cell, now) {
-    const value = this.value(cell, now);
-    const v = Math.min(1, value / 22),
+  color(cell) {
+    if (this.peaks === null) {
+      this.peaks = new Map();
+      for (const c of this.cells.values()) this.peaks.set(c.level, Math.max(this.peaks.get(c.level) || 0, this.value(c)));
+    }
+    const peak = this.peaks.get(cell.level),
+      v = peak > 0 ? Math.sqrt(this.value(cell) / peak) : 0,
       stops = [
         [64, 124, 181],
         [74, 212, 132],
