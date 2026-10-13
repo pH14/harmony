@@ -1201,6 +1201,7 @@ fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
         .arg("-xpf")
         .arg(tarball)
         .arg("--no-same-owner")
+        .arg("--no-xattrs")
         .arg("-C")
         .arg(dest)
         .output()?;
@@ -3211,6 +3212,37 @@ mod tests {
                 read_members(&layer),
                 Err(ImageError::Tar(message)) if message == "archive carries platform-specific ACL metadata"
             ));
+        }
+    }
+
+    #[test]
+    fn stage_ignores_host_extended_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let staging = dir.path().join("stage");
+
+        for (key, value) in [
+            ("SCHILY.xattr.com.apple.rootless", "x"),
+            ("LIBARCHIVE.xattr.com.apple.rootless", "eA=="),
+        ] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                raw_member(b"foo", b'0', "", b"payload"),
+            ]
+            .concat();
+            write_archive(&layout, "layer.tar", &body);
+            let staged = stage(layout.to_str().unwrap(), &staging).unwrap();
+            assert_eq!(
+                std::fs::read(staged.rootfs.join("foo")).unwrap(),
+                b"payload"
+            );
         }
     }
 
