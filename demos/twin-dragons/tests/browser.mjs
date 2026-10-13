@@ -1240,7 +1240,7 @@ try {
     true,
   );
   await page.locator("#memory-limit").evaluate((notice) => {
-    notice.textContent = "Memory or search limit reached";
+    notice.textContent = "The search used its 1,536 MiB memory limit. Delete a branch or restart the search to free memory.";
     notice.hidden = false;
   });
   assert.equal(

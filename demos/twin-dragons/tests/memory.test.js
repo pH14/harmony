@@ -5,7 +5,8 @@ import { StateCache, memoryBudget } from "../src/memory.js";
 test("coarse pointers and small devices use the smaller search budget", () => {
   assert.equal(memoryBudget(undefined, true).snapshotsMiB, 32);
   assert.equal(memoryBudget(4, false).snapshotsMiB, 32);
-  assert.equal(memoryBudget(8, false).snapshotsMiB, 128);
+  assert.equal(memoryBudget(8, false).snapshotsMiB, 1024);
+  assert.equal(memoryBudget(undefined, false).searchMiB, 1536);
 });
 test("desktops leave two cores for the page and the coordinator", () => {
   assert.equal(memoryBudget(8, false, 8).workers, 6);

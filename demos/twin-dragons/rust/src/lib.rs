@@ -409,7 +409,6 @@ struct Job {
 
 const MIN_SNAPSHOT_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_ACTIVE_ENTRIES: usize = 256;
-const MAX_ARCHIVE_HISTORY: usize = 400_000;
 
 fn snapshot_digest(bytes: &[u8]) -> u64 {
     let mut a: u32 = 0x811c_9dc5;
@@ -509,7 +508,7 @@ impl Explorer {
     }
 
     pub fn set_snapshot_budget(&mut self, bytes: u32) {
-        self.max_snapshot_bytes = (bytes as usize).clamp(MIN_SNAPSHOT_BUDGET, 128 * 1024 * 1024);
+        self.max_snapshot_bytes = (bytes as usize).max(MIN_SNAPSHOT_BUDGET);
     }
 
     pub fn retired_snapshots(&self) -> u32 {
@@ -682,9 +681,7 @@ impl Explorer {
         self.archive.record_selection_outcome(job.parent, productive);
         self.enforce_snapshot_budget();
         self.executions += 1;
-        self.stopped = self.won
-            || self.archive.live_entry_count() >= MAX_ARCHIVE_HISTORY
-            || self.executions >= 100000;
+        self.stopped = self.won;
         if self.stopped {
             self.pending.clear();
         }

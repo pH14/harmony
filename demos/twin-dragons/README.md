@@ -95,9 +95,8 @@ determines every search choice, and the worker count and timing change only
 throughput and presentation. The first search uses seed 27, and Restart
 increments it. Seed 27 enters Level 2 after about 1,760 paths, Level 3 after
 about 8,850 and finishes the game after about 14,200. A history is bounded to
-10,000 actions and 200,000 frames. Runs stop when a path finishes the game,
-after 100,000 paths or 400,000 archive history entries, or when the search
-WASM buffers reach their limit.
+10,000 actions and 200,000 frames. Runs stop when a path finishes the game or
+when the search WASM buffers reach their limit.
 
 The coordinator sends one rollout per message and keeps two messages
 outstanding per worker. Each worker caches up to 64 parent snapshots by id;
@@ -114,7 +113,7 @@ Phones, coarse-pointer devices and devices reporting at most 4 GiB of RAM run
 2 or 3. The `workers` URL parameter overrides the count, from 1 to 16. The
 Details pane shows the count. Each rollout worker holds a 16 MiB QuickNES heap
 and up to 0.8 MB of cached parents. Small devices use 32 MiB of snapshots and
-96 MiB of coordinator WASM buffers; other devices use 128 MiB and 192 MiB. A
+96 MiB of coordinator WASM buffers; other devices use 1,024 MiB and 1,536 MiB. A
 Twin Dragons snapshot is 12,792 bytes before compression, and 60,000 paths
 retain about 10 MB of compressed snapshots.
 
@@ -136,7 +135,8 @@ the search. Winning the game takes 9,700 to 15,600 rollouts across 18 seeds, so
 a paced search finishes in about 2 to 3 minutes on any device that keeps up.
 The `pace` URL parameter sets the starting rate in rollouts per second, and
 `pace=0` removes the limit. The Search speed slider under Details changes the
-rate while the search runs: 10, 30, the game's pace, 300, 1,000 or unlimited. The browser tests run with `pace=0`, and the throughput
+rate while the search runs: 10, 30, the game's pace, 300, 1,000 or unlimited.
+The browser tests run with `pace=0`, and the throughput
 figures below are unpaced.
 
 Throughput scales with the worker count. On the 8 performance cores of an

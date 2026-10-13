@@ -1410,14 +1410,14 @@ function startSearch(level = bootLevel) {
         }
       } else if (data.type === "limit") {
         paused = true;
-        $("status").textContent = data.won ? "Game won" : "Search limit reached";
+        $("status").textContent = data.won ? "Game won" : "Memory limit reached";
         updateSearchControl();
         $("goal-status").textContent = data.won
           ? "Game complete"
-          : "Search limit reached";
+          : "Memory limit reached";
         $("pause").disabled = true;
         $("memory-limit").hidden = data.won;
-        $("memory-limit").textContent = "Memory or search limit reached";
+        $("memory-limit").textContent = `The search used its ${fmt(budget.searchMiB)} MiB memory limit. Delete a branch or restart the search to free memory.`;
         $("status-dot").className = "paused";
       }
     } catch (e) {
