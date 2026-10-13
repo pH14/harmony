@@ -105,7 +105,8 @@ archives that only extract because a host resolves a hardlink target
 case-insensitively or interprets a non-file payload differently.
 An entry whose name ends in `/` must carry the directory typeflag; some host
 tar tools otherwise treat a regular file as a directory and parse its payload
-as additional members that admission never saw.
+as additional members that admission never saw. Empty effective member names,
+including empty pax or GNU name overrides, are also rejected.
 Filesystem members are limited to ordinary files, directories, symlinks, and
 hardlinks. Other tar typeflags are rejected before extraction because host tar
 tools disagree on unknown members and special-file creation.
