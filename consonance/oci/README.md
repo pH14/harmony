@@ -97,8 +97,10 @@ Local layout and archive paths also require exact spelling at every component;
 symlink targets are checked component by component, including dangling links.
 Case-aliased host paths are rejected before staging.
 Hardlink targets must name an earlier member of the same archive with the
-exact same spelling. This also excludes archives that only extract because a
-host resolves a hardlink target case-insensitively.
+exact same spelling, and hardlink members cannot carry data in either their
+tar header or a pax size override. This also excludes archives that only
+extract because a host resolves a hardlink target case-insensitively or
+interprets a hardlink payload differently.
 The hardlink inherits that earlier entry's owner and mode because both paths
 name the same inode when the layer is extracted.
 
