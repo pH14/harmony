@@ -113,6 +113,8 @@ A member also cannot have multiple pax headers, which those tar tools handle
 differently.
 An archive cannot change the member type at the same path: a symlink followed
 by a regular file produces different final entries under macOS and GNU tar.
+Repeated symlinks at one path are also rejected because macOS keeps the last
+target while GNU tar can keep the first. Repeated ordinary files remain allowed.
 Filesystem members are limited to ordinary files, directories, symlinks, and
 hardlinks. Other tar typeflags are rejected before extraction because host tar
 tools disagree on unknown members and special-file creation.
