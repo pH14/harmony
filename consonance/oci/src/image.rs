@@ -35,6 +35,10 @@ pub enum ImageError {
     InvalidRuntimeField { field: &'static str },
     #[error("image names a path outside its layout or rootfs: {0}")]
     UnsafePath(String),
+    #[error("image path is non-ASCII and not portable across host filesystems: {0}")]
+    NonPortableName(String),
+    #[error("image path {path:?} aliases {other:?} on case-insensitive hosts")]
+    CaseCollision { path: String, other: String },
     #[error("tar: {0}")]
     Tar(String),
     #[error(transparent)]
@@ -257,8 +261,9 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
     let rootfs = stage_dir.join("rootfs");
     std::fs::create_dir_all(&rootfs)?;
     let mut owners = Ownership::default();
+    let mut portable_names = BTreeMap::new();
     for layer in &layers {
-        apply_layer(layer, &rootfs, &mut owners)?;
+        apply_layer_tracked(layer, &rootfs, &mut owners, &mut portable_names)?;
     }
     Ok(StagedImage {
         rootfs,
@@ -442,6 +447,42 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
         for (at, byte) in key.iter().enumerate() {
             if *byte == b'/' && non_directories.contains(&key[..at]) {
                 return Err(ImageError::UnsafePath(member.shown()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_portable_names(
+    members: &[Member],
+    names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), ImageError> {
+    for member in members {
+        let mut folded = Vec::new();
+        let mut exact = Vec::new();
+        for component in member.path().components() {
+            let Component::Normal(part) = component else {
+                continue;
+            };
+            let bytes = part.as_bytes();
+            if !bytes.is_ascii() {
+                return Err(ImageError::NonPortableName(member.shown()));
+            }
+            if !folded.is_empty() {
+                folded.push(b'/');
+                exact.push(b'/');
+            }
+            folded.extend(bytes.to_ascii_lowercase());
+            exact.extend_from_slice(bytes);
+            if let Some(other) = names.get(&folded) {
+                if other != &exact {
+                    return Err(ImageError::CaseCollision {
+                        path: member.shown(),
+                        other: String::from_utf8_lossy(other).into_owned(),
+                    });
+                }
+            } else {
+                names.insert(folded.clone(), exact.clone());
             }
         }
     }
@@ -790,7 +831,9 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
 }
 
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
-    check_members(&read_members(archive)?)?;
+    let members = read_members(archive)?;
+    check_members(&members)?;
+    check_portable_names(&members, &mut BTreeMap::new())?;
     untar(archive, dest)
 }
 
@@ -877,9 +920,20 @@ fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
     }
 }
 
+#[cfg(test)]
 fn apply_layer(layer: &Path, rootfs: &Path, owners: &mut Ownership) -> Result<(), ImageError> {
+    apply_layer_tracked(layer, rootfs, owners, &mut BTreeMap::new())
+}
+
+fn apply_layer_tracked(
+    layer: &Path,
+    rootfs: &Path,
+    owners: &mut Ownership,
+    portable_names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), ImageError> {
     let members = read_members(layer)?;
     check_members(&members)?;
+    check_portable_names(&members, portable_names)?;
     apply_whiteouts(&members, rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
     let staged = tempfile::tempdir_in(staging)?;
@@ -1571,6 +1625,124 @@ mod tests {
         ));
         assert!(victim.join("sentinel").exists());
         assert!(!victim.join("pwn").exists());
+    }
+
+    #[test]
+    fn case_distinct_layer_members_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let body = [
+            raw_member(b"A", b'0', "", b"first"),
+            raw_member(b"a", b'0', "", b"second"),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "case-files.tar", &body);
+
+        assert!(matches!(
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        let names: Vec<_> = std::fs::read_dir(&rootfs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["sentinel"]);
+        assert_eq!(
+            std::fs::read(rootfs.join("sentinel")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
+    fn case_distinct_ancestor_components_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let body = [
+            raw_member(b"Dir/first", b'0', "", b"first"),
+            raw_member(b"dir/second", b'0', "", b"second"),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "case-ancestors.tar", &body);
+
+        assert!(matches!(
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        assert_eq!(std::fs::read_dir(rootfs).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn case_distinct_names_across_layers_are_rejected_before_the_upper_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = write_archive(
+            dir.path(),
+            "lower.tar",
+            &raw_member(b"A", b'0', "", b"lower"),
+        );
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &raw_member(b"a", b'0', "", b"upper"),
+        );
+        let mut owners = Ownership::default();
+        let mut names = BTreeMap::new();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+
+        assert!(matches!(
+            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        let entries: Vec<_> = std::fs::read_dir(&rootfs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["A"]);
+        assert_eq!(std::fs::read(rootfs.join("A")).unwrap(), b"lower");
+    }
+
+    #[test]
+    fn staging_rejects_case_distinct_names_across_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["lower.tar","upper.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        write_archive(&layout, "lower.tar", &raw_member(b"A", b'0', "", b"lower"));
+        write_archive(&layout, "upper.tar", &raw_member(b"a", b'0', "", b"upper"));
+        let staging = dir.path().join("staging");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn archive_names_outside_ascii_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "unicode.tar",
+            &raw_member(b"caf\xc3\xa9", b'0', "", b"data"),
+        );
+
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::NonPortableName(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
     }
 
     #[test]
