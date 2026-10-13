@@ -84,6 +84,9 @@ case-insensitive, Unicode-normalizing filesystems common on macOS. A Unicode
 normalization pass alone would not cover arbitrary non-UTF-8 Linux names or
 every host filesystem's case rules, so non-ASCII archive paths fail closed.
 Existing Harmony workload images use ASCII paths.
+Hardlink targets must name an earlier member of the same archive with the
+exact same spelling. This also excludes archives that only extract because a
+host resolves a hardlink target case-insensitively.
 
 A layer that ships a child without an entry for its parent directory gives the
 implicit parent mode 0755, regardless of the host process's umask. The merge

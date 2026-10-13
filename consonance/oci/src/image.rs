@@ -369,6 +369,9 @@ pub fn resolve_process_credentials(
 }
 
 fn check_relative(path: &Path) -> Result<(), ImageError> {
+    if path.as_os_str().as_bytes().contains(&0) {
+        return Err(ImageError::UnsafePath(path.to_string_lossy().into_owned()));
+    }
     for component in path.components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
@@ -489,6 +492,31 @@ fn check_portable_names(
     Ok(())
 }
 
+fn check_hardlinks(members: &[Member]) -> Result<(), ImageError> {
+    let mut seen = BTreeSet::new();
+    for member in members {
+        if let Some(target) = &member.hardlink_target {
+            let path = Path::new(std::ffi::OsStr::from_bytes(target));
+            check_relative(path)?;
+            if !target.is_ascii() {
+                return Err(ImageError::NonPortableName(
+                    path.to_string_lossy().into_owned(),
+                ));
+            }
+            let exact = normalized(path);
+            if exact.as_os_str().is_empty() || !seen.contains(&exact) {
+                return Err(ImageError::UnsafePath(format!(
+                    "hardlink {} has no earlier exact target {}",
+                    member.shown(),
+                    path.display()
+                )));
+            }
+        }
+        seen.insert(normalized(member.path()));
+    }
+    Ok(())
+}
+
 const TAR_BLOCK: usize = 512;
 const MAX_MEMBERS: usize = 1 << 20;
 const MAX_HEADER_DATA: u64 = 1 << 16;
@@ -497,6 +525,7 @@ struct Member {
     name: Vec<u8>,
     is_dir: bool,
     owner: Owner,
+    hardlink_target: Option<Vec<u8>>,
 }
 
 impl Member {
@@ -575,6 +604,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
     let mut stream = open_archive(archive)?;
     let mut members: Vec<Member> = Vec::new();
     let mut long_name: Option<Vec<u8>> = None;
+    let mut long_link: Option<Vec<u8>> = None;
     let mut pax = Pax::default();
     let mut block = [0u8; TAR_BLOCK];
     while read_block(&mut stream, &mut block)? {
@@ -595,7 +625,13 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 long_name = Some(data);
             }
             b'K' => {
-                header_data(&mut stream, size)?;
+                let mut data = header_data(&mut stream, size)?;
+                data.truncate(
+                    data.iter()
+                        .position(|byte| *byte == 0)
+                        .unwrap_or(data.len()),
+                );
+                long_link = Some(data);
             }
             b'x' => {
                 let data = header_data(&mut stream, size)?;
@@ -622,8 +658,10 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     size: pax_size,
                     uid,
                     gid,
+                    link_path,
                 } = std::mem::take(&mut pax);
                 let gnu_name = long_name.take();
+                let gnu_link = long_link.take();
                 let owner = Owner {
                     uid: owner_id(uid, &block[108..116])?,
                     gid: owner_id(gid, &block[116..124])?,
@@ -632,6 +670,11 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     name: path.or(gnu_name).unwrap_or_else(|| ustar_name(&block)),
                     is_dir: typeflag == b'5',
                     owner,
+                    hardlink_target: (typeflag == b'1').then(|| {
+                        link_path
+                            .or(gnu_link)
+                            .unwrap_or_else(|| tar_field(&block[157..257]))
+                    }),
                 });
                 let size = pax_size.unwrap_or(size);
                 let data = size
@@ -749,22 +792,23 @@ fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
 }
 
 fn ustar_name(block: &[u8; TAR_BLOCK]) -> Vec<u8> {
-    let field = |from: usize, to: usize| {
-        block[from..to]
-            .split(|byte| *byte == 0)
-            .next()
-            .unwrap_or_default()
-            .to_vec()
-    };
-    let name = field(0, 100);
+    let name = tar_field(&block[0..100]);
     if &block[257..263] != b"ustar\0" {
         return name;
     }
-    let prefix = field(345, 500);
+    let prefix = tar_field(&block[345..500]);
     if prefix.is_empty() {
         return name;
     }
     [prefix, vec![b'/'], name].concat()
+}
+
+fn tar_field(bytes: &[u8]) -> Vec<u8> {
+    bytes
+        .split(|byte| *byte == 0)
+        .next()
+        .unwrap_or_default()
+        .to_vec()
 }
 
 #[derive(Default)]
@@ -773,6 +817,7 @@ struct Pax {
     size: Option<u64>,
     uid: Option<u64>,
     gid: Option<u64>,
+    link_path: Option<Vec<u8>>,
 }
 
 fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
@@ -800,6 +845,7 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
         let value = value.strip_suffix(b"\n").unwrap_or(value);
         match key {
             b"path" => pax.path = Some(value.to_vec()),
+            b"linkpath" => pax.link_path = Some(value.to_vec()),
             b"size" => {
                 let size = std::str::from_utf8(value)
                     .ok()
@@ -834,6 +880,7 @@ fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
     let members = read_members(archive)?;
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
+    check_hardlinks(&members)?;
     untar(archive, dest)
 }
 
@@ -934,6 +981,7 @@ fn apply_layer_tracked(
     let members = read_members(layer)?;
     check_members(&members)?;
     check_portable_names(&members, portable_names)?;
+    check_hardlinks(&members)?;
     apply_whiteouts(&members, rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
     let staged = tempfile::tempdir_in(staging)?;
@@ -1743,6 +1791,70 @@ mod tests {
             Err(ImageError::NonPortableName(_))
         ));
         assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn hardlink_target_requires_an_earlier_exact_archive_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let body = [
+            raw_member(b"A", b'0', "", b"data"),
+            raw_member(b"link", b'1', "a", b""),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "case-hardlink.tar", &body);
+
+        assert!(matches!(
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read(rootfs.join("sentinel")).unwrap(),
+            b"unchanged"
+        );
+
+        let body = [
+            raw_member(b"A", b'0', "", b"data"),
+            raw_member(b"link", b'1', "A", b""),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "exact-hardlink.tar", &body);
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
+        assert_eq!(std::fs::read(rootfs.join("link")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn hardlink_target_checks_pax_and_gnu_longlink_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let pax = pax_record("linkpath", "a");
+        for (name, header) in [
+            (
+                "pax-hardlink.tar",
+                raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes()),
+            ),
+            (
+                "gnu-hardlink.tar",
+                raw_member(b"././@LongLink", b'K', "", b"a\0"),
+            ),
+        ] {
+            let body = [
+                raw_member(b"A", b'0', "", b"data"),
+                header,
+                raw_member(b"link", b'1', "A", b""),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), name, &body);
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::UnsafePath(_))
+            ));
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+        }
     }
 
     #[test]
