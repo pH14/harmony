@@ -38,6 +38,8 @@ pub enum StoreError {
     VmStateIntegrity,
     #[error("builder misuse: {0}")]
     BuilderMisuse(&'static str),
+    #[error("target page {gfn} does not follow page {previous}")]
+    TargetPageOrder { previous: u64, gfn: u64 },
     #[error("i/o error")]
     Io(#[from] std::io::Error),
 }
@@ -400,6 +402,24 @@ impl Store {
     ) -> Result<Rebase, StoreError> {
         self.live_layer(origin)?;
         self.live_layer(near)?;
+        let mut previous = None;
+        for &(gfn, _) in target {
+            if gfn >= self.cfg.mem_pages {
+                return Err(StoreError::GfnOutOfRange {
+                    gfn,
+                    mem_pages: self.cfg.mem_pages,
+                });
+            }
+            if let Some(prior) = previous
+                && prior >= gfn
+            {
+                return Err(StoreError::TargetPageOrder {
+                    previous: prior,
+                    gfn,
+                });
+            }
+            previous = Some(gfn);
+        }
         let mut rebase = Rebase::default();
         for (index, &(gfn, hash)) in target.iter().enumerate() {
             let (near_hash, _) = self.page_entry(self.resolve(near.0, gfn), gfn)?;
@@ -1202,6 +1222,42 @@ mod tests {
             store.read_page(direct, gfn, &mut right).unwrap();
             assert_eq!(left, right, "page {gfn}");
         }
+    }
+
+    #[test]
+    fn rebase_rejects_reordered_and_duplicate_target_pages() {
+        let mut store = Store::new(cfg(3));
+        let mut builder = store.begin_base();
+        builder.write_page(1, &[1; PAGE_SIZE]).unwrap();
+        let origin = builder.seal(Vec::new());
+        let near = snap_with(&mut store, origin, &[(1, 2)]);
+        let changed = *blake3::hash(&[3; PAGE_SIZE]).as_bytes();
+        let extra = *blake3::hash(&[4; PAGE_SIZE]).as_bytes();
+        let rows = [(1, &changed), (0, &extra)];
+
+        assert!(matches!(
+            store.rebase(origin, near, &rows),
+            Err(StoreError::TargetPageOrder {
+                previous: 1,
+                gfn: 0
+            })
+        ));
+        let duplicate = [(1, &changed), (1, &extra)];
+        assert!(matches!(
+            store.rebase(origin, near, &duplicate),
+            Err(StoreError::TargetPageOrder {
+                previous: 1,
+                gfn: 1
+            })
+        ));
+        let out_of_range = [(3, &store.zero_hash)];
+        assert!(matches!(
+            store.rebase(origin, near, &out_of_range),
+            Err(StoreError::GfnOutOfRange {
+                gfn: 3,
+                mem_pages: 3
+            })
+        ));
     }
 
     #[test]

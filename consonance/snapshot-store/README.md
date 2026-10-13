@@ -58,6 +58,11 @@ hash differs from the one supplied, and interns it under that hash.
 `DeltaBuilder::write_changed_page` compares the page with the parent's stored
 copy and records it only when the bytes differ, so a caller that rewrites a
 mostly unchanged region does not hash the unchanged pages.
+`rebase` requires in-range target page rows in strictly increasing guest-frame
+order and rejects out-of-range, reordered, or duplicate rows before it selects
+pages from the nearby snapshot. This keeps a malformed delta from restoring an
+origin page over a target page or silently dropping a nonexistent zero page
+during import.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
