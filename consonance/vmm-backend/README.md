@@ -106,6 +106,11 @@ The vCPU event validity flags in a snapshot must match the flags KVM reports
 for the VM. KVM accepts a different mask but returns its own after restore,
 changing the saved identity. Restore rejects that mismatch before any state
 write.
+Event preflight also requires zero software-interrupt and SIPI fields that KVM
+never reports, an interrupt shadow using only the STI and MOV-SS bits, at most
+two pending NMIs, and canonical one-bit event fields. It also rejects a triple
+fault when the VM lacks that event capability. KVM otherwise accepts some of
+these values and changes them on the next save.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
