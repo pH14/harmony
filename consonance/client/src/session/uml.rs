@@ -323,14 +323,14 @@ impl SearchSession for UmlSession {
     }
 
     fn cache_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
-        let state = self.live()?.state_hash()?;
+        let state = self.live()?.bridge_state_digest()?;
         let setup = self
             .snapshots
             .get(&self.setup.0)
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?
             .digest()?;
         let mut digest = Sha256::new();
-        digest.update(b"harmony-uml-cache-identity-v1\0");
+        digest.update(b"harmony-uml-cache-identity-v2\0");
         digest.update(setup);
         digest.update(state);
         Ok(digest.finalize().into())
