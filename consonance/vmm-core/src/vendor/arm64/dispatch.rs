@@ -789,6 +789,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             .ok_or_else(|| {
                 VmmError::ContractViolation("in-kernel GIC state is absent at idle".to_string())
             })?;
+        if gic.ctlr & 1 != 0 {
+            return Err(VmmError::ContractViolation(
+                "in-kernel GIC CPU interface is unsupported at idle".to_string(),
+            ));
+        }
         if !gic.distributor_group1_enabled
             || !gic.group1
             || !gic.enabled
@@ -1684,6 +1689,19 @@ mod tests {
             assert!(vmm.pending_deliverable_interrupt_arm64().unwrap(), "{name}");
             assert_eq!(vmm.on_idle().unwrap(), Step::Continued, "{name}");
         }
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_vgic_attr(6, sysreg(3, 0, 12, 12, 4), true, 0x8401)
+            .unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
+        vmm.devices.clockevent.line_asserted = true;
+        assert!(matches!(
+            vmm.pending_deliverable_interrupt_arm64(),
+            Err(VmmError::ContractViolation(message)) if message.contains("unsupported")
+        ));
     }
 
     #[test]
