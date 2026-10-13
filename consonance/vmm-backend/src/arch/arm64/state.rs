@@ -100,6 +100,12 @@ pub struct Arm64SysregFile {
     pub tpidr_el1: u64,
     pub tpidrro_el0: u64,
     pub cntkctl_el1: u64,
+    pub contextidr_el1: u64,
+    pub amair_el1: u64,
+    pub par_el1: u64,
+    pub csselr_el1: u64,
+    pub afsr0_el1: u64,
+    pub afsr1_el1: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

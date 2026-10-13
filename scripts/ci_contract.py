@@ -235,8 +235,14 @@ ARM64_BASELINE_TEST = (
 # `<os>-<arch>` of a machine that has one. The pre-push hook runs the entry for
 # the machine it is on.
 HOST_TESTS = {
-    "macos-aarch64": ("vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST),
-    "linux-aarch64": (ARM64_BASELINE_TEST,),
+    "macos-aarch64": (
+        "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
+        "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+    ),
+    "linux-aarch64": (
+        ARM64_BASELINE_TEST,
+        "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+    ),
 }
 
 KVM_SERVICED_EXIT_TESTS = (

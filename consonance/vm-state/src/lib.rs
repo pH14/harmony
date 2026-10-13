@@ -19,7 +19,7 @@ pub use types::{
 
 pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
-pub const VM_STATE_VERSION: u16 = 7;
+pub const VM_STATE_VERSION: u16 = 8;
 
 pub const ARCH_X86_64: u16 = 1;
 
