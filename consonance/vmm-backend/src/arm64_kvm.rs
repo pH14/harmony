@@ -2488,6 +2488,26 @@ mod tests {
         ));
         assert_eq!(directly_pending.next_store(), 32);
 
+        let mut route_cycle_program = direct_program.clone();
+        route_cycle_program.insert(25, 0xf900_00c0);
+        let mut route_cycle = LiveRouteGuest::new(&route_cycle_program);
+        assert_eq!(route_cycle.next_store(), 1);
+        let route_cycle_cut = route_cycle.backend.save().unwrap();
+        assert_eq!(route_cycle.next_store(), 32);
+
+        let mut fresh_zero_program = Vec::from(program);
+        fresh_zero_program[20] = 0xd280_0000;
+        fresh_zero_program.splice(22..22, [0xd280_0020]);
+        fresh_zero_program.insert(23, 0xf900_00c0);
+        let mut fresh_zero = LiveRouteGuest::new(&fresh_zero_program);
+        assert_eq!(fresh_zero.next_store(), 1);
+        let fresh_zero_cut = fresh_zero.backend.save().unwrap();
+        assert_eq!(route_cycle_cut.gic, fresh_zero_cut.gic);
+        assert_eq!(fresh_zero.next_store(), 32);
+        let mut cold_zero = LiveRouteGuest::new(&fresh_zero_program);
+        cold_zero.backend.restore(&fresh_zero_cut).unwrap();
+        assert_eq!(cold_zero.next_store(), 32);
+
         let mut target = LiveRouteGuest::new(&[0x1400_0000]);
         let before = target.backend.save().unwrap();
         let mut incoming = before;
