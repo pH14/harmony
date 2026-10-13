@@ -2,8 +2,8 @@
 import { MOTION_STRIDE, motionPoint } from "./swarm.js";
 
 export const RAM_BYTES = 2048;
-export const ROUND_PATHS = 32;
-export const ROUNDS_AHEAD = 2;
+export const ROUND_PATHS = 16;
+export const ROUNDS_AHEAD = 4;
 
 export function parsePlan(plan) {
   const jobs = [];

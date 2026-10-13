@@ -26,7 +26,7 @@ const extended = process.env.TWIN_DRAGONS_PROGRESS_PATHS === "25000";
 const target = extended ? 2 : 1,
   budget = extended ? 25000 : 6000;
 await mkdir("test-results", { recursive: true });
-for (const seed of extended ? [21] : [2, 9]) {
+for (const seed of extended ? [11] : [27, 34]) {
   engine.restore(root);
   const search = new Explorer(seed),
     rounds = new RoundSearch(search, [engine]),
@@ -96,7 +96,7 @@ function parallelRun(pool) {
     rounds = new RoundSearch(explorer, pool),
     batches = [],
     found = [];
-  for (let r = 0; r < 24; r++) {
+  for (let r = 0; r < 48; r++) {
     const { batch, jobs } = rounds.round();
     batches.push(batch);
     let cursor = 0;

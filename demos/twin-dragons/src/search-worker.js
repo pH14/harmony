@@ -69,7 +69,7 @@ function updateMemory(batch, search) {
     wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength;
   batch.stopped = !!search.localStopped || memoryLimit();
 }
-const CHUNK_PATHS = 4,
+const CHUNK_PATHS = 1,
   CHUNKS_AHEAD = 2,
   PARENT_CACHE = 64,
   FLUSH_MS = 16;
