@@ -52,4 +52,17 @@ assert.ok(box.x >= view.x + view.width && box.x - (view.x + view.width) < 40, "T
 assert.equal(await page.locator('#camera-toggle [data-camera="room"]').textContent(), "Manual view");
 assert.deepEqual(errors, []);
 console.log("Tobu Tobu Girl shows a whole-level strip that moves the view.");
+
+const wide = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+await wide.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
+await wide.goto(`${url}/?pace=300`);
+const wideStrip = wide.locator('.level-overview[data-map="0"]');
+await wideStrip.waitFor();
+await wide.waitForFunction(() => Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 100, null, { timeout: 60000 });
+const wideBox = await wideStrip.boundingBox(), wideView = await wide.locator('.area-map[data-map="0"]').boundingBox();
+assert.ok(wideBox.y >= wideView.y + wideView.height, "The Twin Dragons level strip sits under the game view");
+await wide.mouse.click(wideBox.x + wideBox.width * 0.9, wideBox.y + wideBox.height / 2);
+const centerX = Number(await wide.locator('.area-map[data-map="0"]').getAttribute("data-center-x"));
+assert.ok(centerX > 2304 * 0.75, `Clicking near the end of the strip moves the view toward the end of the level (${centerX})`);
+console.log("Twin Dragons shows a whole-level strip under the view that moves it.");
 await browser.close();

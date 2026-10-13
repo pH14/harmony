@@ -57,7 +57,7 @@ try {
       if(await part.evaluate(p=>p.dataset.panLeft==='true'||p.dataset.panRight==='true')){
         panned++;
         const dir=await part.evaluate(p=>p.dataset.panRight==='true'?1:-1),before=+await canvases.first().getAttribute('data-center-x');
-        assert.equal(await part.locator('.room-track').count(),1,'Each room camera shows where it sits within the room');
+        assert.equal(await page.locator(`.map-row[data-map="${room}"] .level-overview`).count(),1,'Each room camera has a whole-level strip that shows where it sits within the room');
         const edge=part.locator(`.pan-edge[data-dir="${dir}"]`);
         if(phone)await edge.tap();else{await canvases.first().hover();await edge.hover();}
         await page.waitForFunction(([room,before,dir])=>dir*(+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.centerX-before)>8,[room,before,dir]);

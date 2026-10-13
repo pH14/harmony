@@ -407,24 +407,44 @@ function overview(level) {
     Object.assign(view, panelCenter(canvasPanel(c), zoom, view, c));
   }
 }
-function scrollRoom(id, y) {
+function scrollRoom(id, point) {
   for (const c of document.querySelectorAll(`.map-row[data-map="${id}"] .area-map`)) {
     const view = roomView(id, c);
-    Object.assign(view, panelCenter(canvasPanel(c), view.zoom, { x: view.x, y }, c));
+    Object.assign(view, panelCenter(canvasPanel(c), view.zoom, { x: point.x ?? view.x, y: point.y ?? view.y }, c));
   }
+}
+function scrollAlong(id, c, delta) {
+  const view = roomView(id, c), panel = canvasPanel(c);
+  const scale = Math.min(c.width / panel.width, c.height / panel.height) * view.zoom;
+  const step = delta / scale, next = panelCenter(panel, view.zoom, game.vertical ? { x: view.x, y: view.y + step } : { x: view.x + step, y: view.y }, c);
+  if (Math.abs(next.x - view.x) + Math.abs(next.y - view.y) < 0.5) return false;
+  moveCameraByHand();
+  scrollRoom(id, next);
+  drawMap(performance.now());
+  return true;
+}
+function wheelDelta(e, size) {
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? size : 1;
+  return (game.vertical ? e.deltaY : Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : 0) * unit;
 }
 function levelOverview(id) {
   const map = maps.get(id), strip = document.createElement("canvas");
   strip.className = "level-overview";
   strip.dataset.map = id;
-  strip.height = TALL_CAMERA_VIEWPORT.desktop.height;
-  strip.width = Math.max(8, Math.round(map.width * strip.height / map.height));
+  if (game.vertical) {
+    strip.height = TALL_CAMERA_VIEWPORT.desktop.height;
+    strip.width = Math.max(8, Math.round(map.width * strip.height / map.height));
+  } else {
+    strip.width = 1600;
+    strip.height = Math.max(8, Math.round(map.height * strip.width / map.width));
+    strip.style.setProperty("--aspect", map.width / map.height);
+  }
   strip.title = "The whole level. Click or drag to move the view.";
   strip.setAttribute("aria-hidden", "true");
   const seek = (e) => {
     const r = strip.getBoundingClientRect();
     moveCameraByHand();
-    scrollRoom(id, ((e.clientY - r.top) / r.height) * map.height);
+    scrollRoom(id, game.vertical ? { y: ((e.clientY - r.top) / r.height) * map.height } : { x: ((e.clientX - r.left) / r.width) * map.width });
     drawMap(performance.now());
   };
   strip.addEventListener("pointerdown", (e) => {
@@ -434,25 +454,49 @@ function levelOverview(id) {
   strip.addEventListener("pointermove", (e) => {
     if (strip.hasPointerCapture(e.pointerId)) seek(e);
   });
+  strip.addEventListener("wheel", (e) => {
+    const c = mapCanvas(id), r = strip.getBoundingClientRect();
+    if (!c) return;
+    const delta = wheelDelta(e, game.vertical ? r.height : r.width) * (game.vertical ? map.height / r.height : map.width / r.width);
+    const view = roomView(id, c), panel = canvasPanel(c);
+    if (delta && scrollAlong(id, c, delta * Math.min(c.width / panel.width, c.height / panel.height) * view.zoom)) e.preventDefault();
+  }, { passive: false });
   return strip;
 }
-function drawOverview(strip) {
-  const id = Number(strip.dataset.map), map = maps.get(id), ctx = strip.getContext("2d"), k = strip.height / map.height;
+function drawOverview(strip, now) {
+  const id = Number(strip.dataset.map), map = maps.get(id), ctx = strip.getContext("2d");
+  const kx = strip.width / map.width, ky = strip.height / map.height;
+  ctx.imageSmoothingEnabled = true;
   ctx.fillStyle = "#122b42";
   ctx.fillRect(0, 0, strip.width, strip.height);
   const image = panorama(id);
   if (image) ctx.drawImage(image, 0, 0, strip.width, strip.height);
   ctx.fillStyle = "rgba(7,24,43,.4)";
   ctx.fillRect(0, 0, strip.width, strip.height);
-  ctx.fillStyle = "#ffd96a";
-  for (const p of swarmRooms.get(id) || []) ctx.fillRect(Math.round((p.x + 8) * k) - 1, Math.round((p.y + 8) * k) - 1, 3, 3);
+  if (visualization === "movement") {
+    const dot = game.vertical ? 3 : 4;
+    ctx.fillStyle = "#ffd96a";
+    for (const p of swarmRooms.get(id) || [])
+      ctx.fillRect(Math.round((p.x + 8) * kx - dot / 2), Math.round((p.y + 8) * ky - dot / 2), dot, dot);
+  } else {
+    for (const cell of heat.cells.values()) {
+      if (cell.level !== id) continue;
+      const color = heat.color(cell, now);
+      if (!color) continue;
+      ctx.fillStyle = `rgba(${color},.75)`;
+      ctx.fillRect(cell.x * 32 * kx, cellTop(cell.y) * ky, 32 * kx, 32 * ky);
+    }
+  }
   const c = mapCanvas(id);
   if (!c) return;
   const view = roomView(id, c), panel = canvasPanel(c);
-  const half = c.height / 2 / (Math.min(c.width / panel.width, c.height / panel.height) * view.zoom);
+  const scale = Math.min(c.width / panel.width, c.height / panel.height) * view.zoom;
+  const halfW = c.width / 2 / scale, halfH = c.height / 2 / scale, line = game.vertical ? 3 : 4;
+  const x0 = Math.max(0, (view.x - halfW) * kx), x1 = Math.min(strip.width, (view.x + halfW) * kx);
+  const y0 = Math.max(0, (view.y - halfH) * ky), y1 = Math.min(strip.height, (view.y + halfH) * ky);
   ctx.strokeStyle = "rgba(255,255,255,.95)";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, Math.max(1.5, (view.y - half) * k), strip.width - 3, Math.min(strip.height - 3, 2 * half * k));
+  ctx.lineWidth = line;
+  ctx.strokeRect(x0 + line / 2, y0 + line / 2, x1 - x0 - line, y1 - y0 - line);
 }
 function updateCameraToggle() {
   $("camera-toggle").dataset.value = camera.mode;
@@ -1716,13 +1760,11 @@ function renderMapRows(owner) {
         c.style.touchAction = game.vertical ? "none" : "pan-y";
         c.tabIndex = 0;
         if (c !== canvas) bindMap(c);
-        const track = document.createElement("div");
-        track.className = "room-track";
-        track.setAttribute("aria-hidden", "true");
-        track.append(document.createElement("i"), document.createElement("b"));
-        part.append(c, panEdge(c, -1), panEdge(c, 1), track);
-        if (game.vertical) part.append(levelOverview(id));
-        parts.append(part);
+        part.append(c, panEdge(c, -1), panEdge(c, 1));
+        if (game.vertical) {
+          part.append(levelOverview(id));
+          parts.append(part);
+        } else parts.append(part, levelOverview(id));
       });
       row.append(heading, parts);
       return row;
@@ -1790,19 +1832,11 @@ function updateRoomChrome(c) {
   const id = Number(c.dataset.map), map = canvasPanel(c), view = roomView(id, c);
   const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom, half = c.width / 2 / scale;
   const before = view.x - half - map.x, after = map.x + map.width - view.x - half;
-  const target = camera.follow && !camera.focus ? camera.targets.get(id) : null;
-  const state = [before > 1, after > 1, (Math.max(0, before) / map.width).toFixed(4), Math.min(1, (2 * half) / map.width).toFixed(4),
-    target?.canvas === c ? ((target.x - map.x) / map.width).toFixed(3) : ""];
-  const key = state.join();
+  const key = `${before > 1},${after > 1}`;
   if (part.dataset.chrome === key) return;
   part.dataset.chrome = key;
-  part.dataset.panLeft = state[0];
-  part.dataset.panRight = state[1];
-  part.dataset.scroll = Number(state[3]) < 0.995;
-  part.style.setProperty("--view-left", `${state[2] * 100}%`);
-  part.style.setProperty("--view-span", `${state[3] * 100}%`);
-  part.dataset.following = state[4] !== "";
-  if (state[4] !== "") part.style.setProperty("--frontier", `${Math.max(0, Math.min(1, state[4])) * 100}%`);
+  part.dataset.panLeft = before > 1;
+  part.dataset.panRight = after > 1;
 }
 let spriteBudget = swarm.maxTrails, drawCost = 0, frameGap = 1000 / 60;
 function drawMap(now) {
@@ -1819,7 +1853,7 @@ function drawMap(now) {
     drawArea(c, now);
     updateRoomChrome(c);
   }
-  for (const strip of document.querySelectorAll(".level-overview")) drawOverview(strip);
+  for (const strip of document.querySelectorAll(".level-overview")) drawOverview(strip, now);
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
   drawCost = drawCost * 0.9 + (performance.now() - start) * 0.1;
   const behind = drawCost > 6 && frameGap > 20, ahead = drawCost < 4 || frameGap < 18;
@@ -1967,18 +2001,11 @@ function mapCoordinates(e) {
 }
 function bindMap(c) {
   let pinch;
-  if (game.vertical)
-    c.addEventListener("wheel", (e) => {
-      const id = Number(c.dataset.map), view = roomView(id, c), panel = canvasPanel(c), r = c.getBoundingClientRect();
-      const scale = Math.min(c.width / panel.width, c.height / panel.height) * view.zoom;
-      const lines = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
-      const next = panelCenter(panel, view.zoom, { x: view.x, y: view.y + (e.deltaY * lines * c.height) / r.height / scale }, c);
-      if (Math.abs(next.y - view.y) < 0.5) return;
-      e.preventDefault();
-      moveCameraByHand();
-      scrollRoom(id, next.y);
-      drawMap(performance.now());
-    }, { passive: false });
+  c.addEventListener("wheel", (e) => {
+    const r = c.getBoundingClientRect(), size = game.vertical ? r.height : r.width;
+    const delta = wheelDelta(e, size);
+    if (delta && scrollAlong(Number(c.dataset.map), c, (delta * (game.vertical ? c.height : c.width)) / size)) e.preventDefault();
+  }, { passive: false });
   c.addEventListener("pointerenter", (e) => {
     if (e.pointerType === "mouse") camera.held = Infinity;
   });
