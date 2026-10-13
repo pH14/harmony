@@ -168,7 +168,7 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
 
     let mut fresh = vmm(vec![]);
     fresh.restore_snapshot(v.guest_memory(), &decoded).unwrap();
-    assert_eq!(fresh.inspect_vcpu(), v.inspect_vcpu());
+    assert_eq!(fresh.inspect_vcpu().unwrap(), v.inspect_vcpu().unwrap());
     assert_eq!(
         fresh.state_hash().unwrap(),
         v.state_hash().unwrap(),
@@ -663,6 +663,7 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     assert!(v.has_pending_guest_interrupt().unwrap());
     assert!(
         v.state_components()
+            .unwrap()
             .iter()
             .any(|(label, _)| *label == "arm-clockevent"),
         "non-default clockevent state must be independently localizable"
@@ -866,17 +867,25 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
         }),
     ]);
     wire_virtual_time_clock(&mut disarm);
-    for _ in 0..4 {
+    for _ in 0..3 {
         assert_eq!(disarm.step().unwrap(), Step::Continued);
     }
-    assert!(!disarm.has_pending_guest_interrupt().unwrap());
     assert!(
         !disarm
             .state_components()
+            .unwrap()
             .iter()
             .any(|(label, _)| *label == "arm-clockevent"),
         "a fully disarmed never-fired device returns to canonical default state"
     );
+    assert_eq!(disarm.step().unwrap(), Step::Continued);
+    assert!(!disarm.has_pending_guest_interrupt().unwrap());
+    assert!(matches!(
+        disarm.state_components(),
+        Err(VmmError::Backend(
+            vmm_backend::BackendError::PendingCompletion
+        ))
+    ));
 
     for control in [0, 3, u64::from(u32::MAX) + 1] {
         let mut bad = vmm(vec![Exit::Common(CommonExit::Mmio {
@@ -982,8 +991,8 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
 
     assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
 
-    let ca = a.state_components();
-    let cb = b.state_components();
+    let ca = a.state_components().unwrap();
+    let cb = b.state_components().unwrap();
     let gic_a = ca
         .iter()
         .find(|(l, _)| *l == "gic")
@@ -1009,7 +1018,13 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
     }
 
     let mut unwired = vmm(vec![]);
-    assert!(!unwired.state_components().iter().any(|(l, _)| *l == "gic"));
+    assert!(
+        !unwired
+            .state_components()
+            .unwrap()
+            .iter()
+            .any(|(l, _)| *l == "gic")
+    );
 }
 
 #[test]
@@ -1023,7 +1038,7 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
 
     let base = Arm64VcpuState::default();
     let mut baseline = make(base);
-    let baseline_components = baseline.state_components();
+    let baseline_components = baseline.state_components().unwrap();
 
     let mut general = base;
     general.core.x[30] = 1;
@@ -1052,7 +1067,7 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
             candidate.state_hash().unwrap(),
             "{expected} must feed the canonical VCPU hash"
         );
-        let candidate_components = candidate.state_components();
+        let candidate_components = candidate.state_components().unwrap();
         let differing: Vec<&str> = baseline_components
             .iter()
             .filter_map(|(label, digest)| {
@@ -1071,7 +1086,11 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
         restored
             .restore_snapshot(candidate.guest_memory(), &snapshot)
             .unwrap();
-        assert_eq!(restored.inspect_vcpu(), state, "{expected} restore");
+        assert_eq!(
+            restored.inspect_vcpu().unwrap(),
+            state,
+            "{expected} restore"
+        );
         assert_eq!(
             restored.state_hash().unwrap(),
             candidate.state_hash().unwrap(),
@@ -1163,7 +1182,7 @@ fn arm64_boot_composes_a_ready_vmm() {
     let backend = MockArm64Backend::new();
     let mut v = bringup::boot(backend, &image, "console=ttyAMA0", 16 * 1024 * 1024).unwrap();
 
-    let vcpu = v.inspect_vcpu();
+    let vcpu = v.inspect_vcpu().unwrap();
     assert_eq!(vcpu.core.pc, 0x4000_0000);
     assert_eq!(vcpu.core.pstate, 0x3c5);
     let dtb_gpa = vcpu.core.x[0];

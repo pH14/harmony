@@ -290,7 +290,7 @@ mod tests {
         let backend = MockArm64Backend::new();
         let mut vmm = compose(backend, &tiny_image(), "console=ttyAMA0", ram_len).unwrap();
 
-        let vcpu = vmm.inspect_vcpu();
+        let vcpu = vmm.inspect_vcpu().unwrap();
         assert_eq!(vcpu.core.pc, RAM_BASE);
         assert_eq!(vcpu.core.pstate, entry::PSTATE_EL1H_DAIF);
         let dtb_gpa = vcpu.core.x[0];
@@ -327,7 +327,7 @@ mod tests {
         )
         .unwrap();
 
-        let dtb_gpa = vmm.inspect_vcpu().core.x[0];
+        let dtb_gpa = vmm.inspect_vcpu().unwrap().core.x[0];
         let dtb_off = usize::try_from(dtb_gpa - RAM_BASE).unwrap();
         let memory = vmm.guest_memory();
         let parsed = dtb::parse(&memory[dtb_off..]).unwrap();

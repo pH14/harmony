@@ -43,6 +43,8 @@ intentionally changes the VCPU identity.
 Dirty-page drains and resets distinguish unsupported tracking from backend
 errors. Unsupported tracking permits a full capture; an operational error
 retires the live VMM and fails the snapshot instead of publishing partial state.
+Register, event-injection, and component observations also surface backend CPU
+read errors instead of reporting a fabricated default state.
 
 Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page

@@ -454,7 +454,7 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &mut StockVmm) {
         )
         .expect("write to string");
     }
-    for (label, digest) in vmm.state_components() {
+    for (label, digest) in vmm.state_components().unwrap() {
         writeln!(out, "COMPONENT {label} {}", hex(&digest)).expect("write to string");
     }
     if let Ok(vcpu) = vmm.vcpu_record() {
@@ -703,8 +703,8 @@ fn x2_component_diff_two_boots() {
 type StockVmm = Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
 
 fn dump_state_diff(vmm_a: &mut StockVmm, vmm_b: &mut StockVmm) {
-    let comps_a = vmm_a.state_components();
-    let comps_b = vmm_b.state_components();
+    let comps_a = vmm_a.state_components().unwrap();
+    let comps_b = vmm_b.state_components().unwrap();
     assert_eq!(
         comps_a.len(),
         comps_b.len(),

@@ -932,7 +932,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Read { gpa, len } => self.read(*gpa, *len),
             Request::Regs => {
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                Ok(Ok(Reply::Regs(regs_view(vmm))))
+                Ok(Ok(Reply::Regs(regs_view(vmm)?)))
             }
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
             Request::RecordedEnv => Ok(self.recorded_env_reply()),
@@ -1774,12 +1774,12 @@ fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
     (total, serial[start..end].to_vec())
 }
 
-fn regs_view<B: Backend<A: Vendor>>(vmm: &mut Vmm<B>) -> RegsView {
+fn regs_view<B: Backend<A: Vendor>>(vmm: &mut Vmm<B>) -> Result<RegsView, VmmError> {
     let vns = vmm.effective_vns().unwrap_or(0);
-    let mut view = <B::A as Vendor>::regs_view(&vmm.inspect_vcpu());
+    let mut view = <B::A as Vendor>::regs_view(&vmm.inspect_vcpu()?);
     view.moment = Moment(vns);
     view.vtime = vns;
-    view
+    Ok(view)
 }
 
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
