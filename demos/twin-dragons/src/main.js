@@ -281,6 +281,7 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null) 
 }
 const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3;
+let cameraBeforeHistory = "";
 const camera = { follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, emptySince: 0, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
@@ -378,6 +379,7 @@ function drivenRooms() {
   return cameraRooms().filter((room) => camera.only == null || room === camera.only);
 }
 for (const button of $("camera-toggle").children) button.onclick = () => {
+  cameraBeforeHistory = "";
   if (button.dataset.camera === "room") {
     stopCamera();
     for (const room of cameraRooms()) overview(room);
@@ -390,6 +392,11 @@ for (const button of $("camera-toggle").children) button.onclick = () => {
   }
   drawMap(performance.now());
 };
+function restoreCamera() {
+  const mode = cameraBeforeHistory;
+  cameraBeforeHistory = "";
+  if (mode) $("camera-toggle").querySelector(`[data-camera="${mode}"]`).click();
+}
 function latestRoom() {
   const rooms = catalog.levels.find((level) => level.rooms.includes(mapLevel))?.rooms || [mapLevel];
   return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
@@ -1016,7 +1023,10 @@ function revealTransport(ok) {
 function inspect(cell) {
   hideRoutePreview();
   if (!cell || branchBusy) return;
-  stopCamera();
+  if (cell.ids.length) {
+    cameraBeforeHistory ||= $("camera-toggle").dataset.value;
+    stopCamera();
+  }
   revealNext = true;
   stopControl();
   music.stop();
@@ -1042,7 +1052,10 @@ function inspect(cell) {
   if (cell.ids.length) {
     openInspector();
     worker.postMessage({ type: "states", ids: cell.ids, request: ++request });
-  } else closeInspector({ restoreFocus: false });
+  } else {
+    closeInspector({ restoreFocus: false });
+    restoreCamera();
+  }
 }
 function startSearch(level = bootLevel) {
   if (!catalog.levels.some((entry) => entry.id === level)) throw new Error("Unknown level");
@@ -2022,6 +2035,7 @@ function stopControl() {
 $("close-inspector").onclick = () => {
   const retained = !!current && !playSession, draft = !!playSession;
   closeInspector();
+  restoreCamera();
   if (draft) leaveTourGameplay();
   if (retained) {
     $("history-rail").hidden = false;
@@ -2234,7 +2248,10 @@ updateSoundControl();
 window.addEventListener("keydown", (e) => {
   if (e.code === "Escape") {
     if (controlMode) stopControl();
-    else if (!$("inspector").hidden && !$("info").open) closeInspector();
+    else if (!$("inspector").hidden && !$("info").open) {
+      closeInspector();
+      restoreCamera();
+    }
     return;
   }
   if (
