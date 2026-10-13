@@ -27,12 +27,20 @@ pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
 
 #[cfg(target_os = "linux")]
+fn fixed_host_personality(current: libc::c_ulong) -> libc::c_ulong {
+    current | (libc::ADDR_NO_RANDOMIZE as libc::c_ulong)
+}
+
+#[cfg(target_os = "linux")]
 fn fixed_host_layout(command: &mut Command) {
-    // SAFETY: the child calls personality(2) only on itself before exec, without
-    // allocation or shared-memory access.
+    // SAFETY: the child calls personality(2) only on itself before exec,
+    // without allocation or shared-memory access.
     unsafe {
         command.pre_exec(|| {
-            let _ = libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong);
+            let current = libc::personality(u32::MAX as libc::c_ulong);
+            if current >= 0 {
+                let _ = libc::personality(fixed_host_personality(current as libc::c_ulong));
+            }
             Ok(())
         });
     }
@@ -569,8 +577,17 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn fixed_host_personality_preserves_inherited_flags() {
+        let inherited = (libc::UNAME26 | libc::STICKY_TIMEOUTS) as libc::c_ulong;
+        let fixed = fixed_host_personality(inherited);
+        assert_eq!(fixed & inherited, inherited);
+        assert_ne!(fixed & libc::ADDR_NO_RANDOMIZE as libc::c_ulong, 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
-    fn a_pinned_kernel_requests_fixed_layout_before_exec() {
+    fn a_pinned_kernel_preserves_personality_and_requests_fixed_layout_before_exec() {
         let mut probe = Command::new("sh");
         probe.arg("-c").arg("true");
         // SAFETY: this test changes only the forked child's personality before
@@ -622,11 +639,30 @@ mod tests {
         );
         let launch = Launch::new(directory.path().to_path_buf());
         let mut command = launch.command(&profile, directory.path()).unwrap();
-        let output = command.output().unwrap();
+        // SAFETY: personality changes only the calling test thread's Linux task
+        // state. The original value is restored immediately after the child
+        // exits, before any assertion on its output.
+        let output = unsafe {
+            let inherited = libc::personality(u32::MAX as libc::c_ulong);
+            assert!(inherited >= 0);
+            if libc::personality((inherited as libc::c_ulong) | (libc::UNAME26 as libc::c_ulong))
+                < 0
+            {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EPERM) {
+                    return;
+                }
+                panic!("inherited personality setup failed: {error}");
+            }
+            let output = command.output();
+            assert!(libc::personality(inherited as libc::c_ulong) >= 0);
+            output.unwrap()
+        };
         assert!(output.status.success());
         let flags =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
         assert_ne!(flags & libc::ADDR_NO_RANDOMIZE as u32, 0);
+        assert_ne!(flags & libc::UNAME26 as u32, 0);
     }
 
     #[test]
