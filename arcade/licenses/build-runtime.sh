@@ -54,5 +54,22 @@ cargo vendor --locked --manifest-path "$demo/rust/Cargo.toml" "$build/rust-depen
 tar -czf "$demo/public/licenses/rust-dependencies.tar.gz" -C "$build" rust-dependencies
 rm -rf "$build/rust-dependencies"
 
-(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs)
+tobu=$build/tobu-tobu-girl
+if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then
+    "$root/workloads/gb/scripts/build-tobu-tobu-girl-rom.sh" "$tobu"
+else
+    # The pinned Game Boy toolchain runs only on x86-64 Linux.
+    mkdir -p "$tobu"
+    docker run --rm --platform linux/amd64 -v "$root:/harmony:ro" -v "$tobu:/out" debian:13 bash -c \
+        'apt-get update -qq && apt-get install -qq -y curl ca-certificates xz-utils bzip2 make perl python3 >/dev/null && /harmony/workloads/gb/scripts/build-tobu-tobu-girl-rom.sh /out'
+fi
+mkdir -p "$demo/public/tobu-tobu-girl"
+cp "$tobu/tobudx.gb" "$demo/public/tobu-tobu-girl/tobu-tobu-girl.gb"
+cp "$tobu/UPSTREAM-LICENSE.txt" "$demo/public/licenses/tobu-tobu-girl-LICENSE.txt"
+"$demo/tools/build-sameboy-runtime.sh"
+cp "$build/sameboy/LICENSE" "$demo/public/licenses/sameboy-LICENSE.txt"
+git -C "$build/sameboy" archive --format=tar.gz --output="$demo/public/licenses/sameboy-source.tar.gz" HEAD
+cp "$demo/tools/sameboy-frontend.c" "$demo/tools/build-sameboy-runtime.sh" "$demo/public/licenses/"
+
+(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs && node tools/build-tobu-maps.mjs)
 git -C "$root" archive --format=tar.gz --output="$demo/public/licenses/harmony-source.tar.gz" HEAD
