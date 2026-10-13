@@ -195,9 +195,12 @@ the guest to its setup snapshot point and captures it. Each snapshot is a full
 `uml::Checkpoint`; a restore is in place while the guest is paused and starts
 a fresh process otherwise. The initramfs override is pinned before the first
 boot; its sealed bytes define the root identity and serve every later fresh
-process. The caller supplies the admitted profile identity; boot checks it
-against the newly pinned profile before
-starting a guest. A publish exports the checkpoint into one extent,
+process. The caller supplies the admitted profile and exact host processor
+identity; boot checks both against the pinned profile and processor before
+starting a guest. The root identity includes that host identity, so an import
+from a different physical processor is refused before the checkpoint store
+changes. Fresh restore spawns recheck the same admitted processor and host
+identity. A publish exports the checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
 or inject interrupts. `store_bytes` is the allocated size of every held
@@ -245,7 +248,8 @@ are snapshots and may overlap; reading diagnostics does not advance execution.
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic
 setup. UML roots contain all nonzero guest and private-image pages, plus service
-sidecars, and bind the profile, initramfs, memory, arguments and seed. They can be
+sidecars, and bind the profile, exact host processor identity, initramfs,
+memory, arguments and seed. They can be
 imported over a fresh launch whose host-private setup bytes differ. Cache deltas
 still require their original setup identity. Neither interface interprets
 workload commands.

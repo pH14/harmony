@@ -213,11 +213,16 @@ User-mode Linux guest (`UmlSession` in
 [consonance-client](../../consonance/client/README.md)) as an ordinary user on
 any Linux host, with no KVM. The profile is verified at start, its kernel
 replaces `runner.options.kernel`, and each session runs in the search thread. The profile
-identity, host architecture, CPU model and CPU feature flags join the
+identity, host architecture, physical processor, CPU model and CPU feature flags join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
 VM state. A profile changed after workload admission is rejected before guest
-boot, so that identity always names the profile the session pins. Each snapshot
+boot, so that identity always names the profile the session pins. Search admits
+one processor from the selected coordinator placement for the whole campaign.
+Host worker threads still run on their assigned cores, while every UML guest
+child is pinned to the admitted processor; this prevents guest-visible CPUID
+or MIDR differences from entering snapshots passed between workers, at the
+cost of contention among concurrent guests. Each snapshot
 is a full guest image of about the guest's RAM, so a
 worker's store fills its budget faster than under KVM.
 
