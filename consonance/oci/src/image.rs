@@ -219,11 +219,14 @@ pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
 }
 
 pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
+    let tarball_path = Path::new(image);
+    if (tarball_path.is_absolute() || tarball_path.exists()) && !exact::path(tarball_path)? {
+        return Err(ImageError::UnsafePath(image.to_string()));
+    }
     std::fs::create_dir_all(stage_dir)?;
     let isolated = tempfile::Builder::new()
         .prefix("image-stage-")
         .tempdir_in(stage_dir)?;
-    let tarball_path = Path::new(image);
     let staged = if tarball_path.exists() {
         stage_from_path(tarball_path, isolated.path())
     } else {
@@ -261,6 +264,9 @@ fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError
 }
 
 fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageError> {
+    if !exact::path(input)? {
+        return Err(ImageError::UnsafePath(input.display().to_string()));
+    }
     let layout = if input.is_dir() {
         input.to_path_buf()
     } else {
@@ -2100,6 +2106,51 @@ mod tests {
         std::os::unix::fs::symlink("INDEX.JSON", layout.join("manifest.json")).unwrap();
 
         let staged = stage(layout.to_str().unwrap(), &dir.path().join("stage")).unwrap();
+        assert!(staged.rootfs.is_dir());
+    }
+
+    #[test]
+    fn staging_refuses_a_case_aliased_layout_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let blobs = layout.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            layout.join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), br#"{"config":{}}"#).unwrap();
+
+        let aliased = dir.path().join("LAYOUT");
+        assert!(matches!(
+            stage_from_path(&aliased, &dir.path().join("stage")),
+            Err(ImageError::UnsafePath(_))
+        ));
+        let staging = dir.path().join("public-stage");
+        assert!(matches!(
+            stage(aliased.to_str().unwrap(), &staging),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(!staging.exists());
+
+        let parent = dir.path().join("Parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::os::unix::fs::symlink("../layout", parent.join("image")).unwrap();
+        let aliased_parent = dir.path().join("parent/image");
+        assert!(matches!(
+            stage(aliased_parent.to_str().unwrap(), &staging),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(!staging.exists());
+
+        let exact_link = parent.join("image");
+        let staged = stage(exact_link.to_str().unwrap(), &staging).unwrap();
         assert!(staged.rootfs.is_dir());
     }
 
