@@ -1222,6 +1222,35 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn start_rejects_foreign_checkpoint_before_launch() {
+        let first = Checkpoints::new();
+        let foreign = checkpoint(snapshot(&first, None, &[(0, 1)]), 5, Some(120));
+        let second = Checkpoints::new();
+        let launch = Launch {
+            memory_mib: 1,
+            console_tail_bytes: 0,
+            console_limit_bytes: 0,
+            wall_limit: Duration::from_secs(1),
+            kernel_arguments: Vec::new(),
+            initramfs: None,
+            work_parent: std::env::temp_dir(),
+            bridge: None,
+        };
+        assert!(matches!(
+            Session::start(
+                Command::new("false"),
+                tempfile::tempdir().unwrap(),
+                &launch,
+                &second,
+                Some(&foreign),
+            ),
+            Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+        ));
+        assert!(second.stats().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn import_bounds_the_private_image_before_storing_pages() {
         let checkpoints = Checkpoints::new();
         let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
