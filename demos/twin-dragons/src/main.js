@@ -1314,7 +1314,7 @@ function startSearch(level = bootLevel) {
         }
       } else if (data.type === "limit") {
         paused = true;
-        $("status").textContent = "Search limit reached";
+        $("status").textContent = data.won ? "Game won" : "Search limit reached";
         updateSearchControl();
         $("goal-status").textContent = data.won
           ? "Game complete"
