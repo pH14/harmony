@@ -1280,6 +1280,7 @@ impl Backend for HvfBackend {
                 asid_bits: Arm64AsidBits::Eight,
                 smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                 psci_profile: crate::arch::arm64::Arm64PsciProfile::HvfSingleVcpu,
+                gic_ctlr_fixed_bits: 0,
             },
         }
     }

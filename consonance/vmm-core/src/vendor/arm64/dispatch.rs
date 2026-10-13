@@ -1456,6 +1456,7 @@ mod tests {
                     asid_bits: Arm64AsidBits::Eight,
                     smccc_workaround_levels: levels,
                     psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
+                    gic_ctlr_fixed_bits: 0,
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1587,6 +1588,7 @@ mod tests {
                     asid_bits: Arm64AsidBits::Eight,
                     smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                     psci_profile: profile,
+                    gic_ctlr_fixed_bits: 0,
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
