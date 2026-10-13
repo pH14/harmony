@@ -166,8 +166,8 @@ fn cut_replays(
     for step in 1..=options.cuts {
         let cut = (step * reference.len() / options.cuts).max(1);
         let path = directory.path().join(format!("cut-{cut}.json"));
-        let recording = Recording::new(profile, host, base, SEED, &reference[..cut])
-            .map_err(io::Error::other)?;
+        let recording =
+            Recording::new(profile, host, base, &reference[..cut]).map_err(io::Error::other)?;
         std::fs::write(&path, serde_json::to_vec_pretty(&recording)?)?;
         let loaded: Recording = serde_json::from_slice(&std::fs::read(&path)?)?;
         let refused = loaded
@@ -222,8 +222,9 @@ fn seed_changes_events(options: &Options, profile: &VerifiedProfile) -> io::Resu
 }
 
 fn refusal(profile: &VerifiedProfile, host: &HostIdentity) -> Value {
-    let base = Launch::new(std::env::temp_dir());
-    let recording = match Recording::new(profile, host, &base, SEED, &[]) {
+    let mut base = Launch::new(std::env::temp_dir());
+    base.bridge = Some(Bridge::new(SEED));
+    let recording = match Recording::new(profile, host, &base, &[]) {
         Ok(recording) => recording,
         Err(error) => return check("replay_refuses_other_host", false, json!(error.to_string())),
     };
