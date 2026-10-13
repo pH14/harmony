@@ -79,8 +79,7 @@ impl UmlGuest {
     pub fn load(profile: &Path, work_parent: PathBuf) -> Result<Self, String> {
         let verified = uml::Profile::load(profile)
             .map_err(|error| format!("User-mode Linux profile: {error}"))?;
-        let host = uml::HostIdentity::current()
-            .map_err(|error| format!("User-mode Linux host identity: {error}"))?;
+        let host = Self::default_host()?;
         let identity = Self::identity(verified.identity_sha256(), &host);
         Ok(Self {
             profile: profile.to_path_buf(),
@@ -89,6 +88,24 @@ impl UmlGuest {
             identity,
             work_parent,
         })
+    }
+
+    fn default_host() -> Result<uml::HostIdentity, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let pool = consonance_client::placement::CorePool::detect()?;
+            let processor = pool
+                .plan(1)?
+                .coordinator
+                .ok_or("User-mode Linux needs a coordinator processor")?;
+            uml::HostIdentity::for_processor(processor)
+                .map_err(|error| format!("User-mode Linux host identity: {error}"))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            uml::HostIdentity::current()
+                .map_err(|error| format!("User-mode Linux host identity: {error}"))
+        }
     }
 
     fn identity(profile: &str, host: &uml::HostIdentity) -> String {
@@ -102,10 +119,15 @@ impl UmlGuest {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn admit_processor(&mut self, processor: usize) -> Result<(), String> {
-        self.host = uml::HostIdentity::for_processor(processor)
+    pub(crate) fn verify_processor(&self, processor: usize) -> Result<(), String> {
+        let current = uml::HostIdentity::for_processor(processor)
             .map_err(|error| format!("User-mode Linux host processor {processor}: {error}"))?;
-        self.identity = Self::identity(&self.profile_identity_sha256, &self.host);
+        if current != self.host {
+            return Err(format!(
+                "User-mode Linux host identity changed after admission: expected {:?}, current {current:?}",
+                self.host
+            ));
+        }
         Ok(())
     }
 
@@ -1389,6 +1411,18 @@ mod tests {
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
         assert_eq!(launch.expected_host, guest.host);
         assert_eq!(std::fs::read(launch.initramfs).unwrap(), b"initramfs");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn uml_replay_and_search_admit_the_same_coordinator_processor() {
+        let pool = consonance_client::placement::CorePool::detect().unwrap();
+        let replay = UmlGuest::default_host().unwrap();
+        for workers in 1..=pool.max_workers() {
+            let planned = pool.plan(workers as u32).unwrap();
+            assert_eq!(planned.coordinator, Some(replay.processor));
+        }
     }
 
     fn unbooted_target() -> FaultTarget {

@@ -222,7 +222,9 @@ one processor from the selected coordinator placement for the whole campaign.
 Host worker threads still run on their assigned cores, while every UML guest
 child is pinned to the admitted processor; this prevents guest-visible CPUID
 or MIDR differences from entering snapshots passed between workers, at the
-cost of contention among concurrent guests. Each snapshot
+cost of contention among concurrent guests. Standalone debug and replay use
+the same coordinator selection, so they do not switch guest processors when
+they leave the search worker pool. Each snapshot
 is a full guest image of about the guest's RAM, so a
 worker's store fills its budget faster than under KVM.
 
