@@ -7682,6 +7682,8 @@ mod tests {
             deadline: Moment(cutoff + 100),
         };
         let live = server.handle(&exec);
+        assert_eq!(server.vmm().unwrap().effective_vns(), Some(cutoff + 100));
+        let live_hash = hash(&mut server);
 
         assert_eq!(
             server.handle(&Request::Replay(cut)).unwrap(),
@@ -7690,6 +7692,8 @@ mod tests {
         assert_eq!(hash(&mut server), before);
         assert_eq!(server.vmm().unwrap().idle_wake_vns, None);
         let replayed = server.handle(&exec);
+        assert_eq!(server.vmm().unwrap().effective_vns(), Some(cutoff + 100));
+        assert_eq!(hash(&mut server), live_hash);
         assert!(
             matches!(live, Ok(Ok(Reply::ExecResult { ok: false, .. }))),
             "live {live:?}, replayed {replayed:?}"
