@@ -248,6 +248,23 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(suffix)
     }
 
+    fn preflight_imported_service(
+        &self,
+        sdk: &SdkSnapshot,
+        policy: &ServiceConfig,
+    ) -> Result<(), PortableSnapshotError> {
+        let handler = (self.service_factory)(policy)?;
+        if handler.identity() != policy.identity || handler.configuration() != policy.configuration
+        {
+            return Err(PortableSnapshotError::Malformed(
+                "portable service implementation differs from policy",
+            ));
+        }
+        let mut environment = RecordedEnv::new(0, handler);
+        sdk.recorded.restore_into(&mut environment)?;
+        Ok(())
+    }
+
     pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
         let engine = SnapshotEngine::new(vmm.guest_memory().len());
         let seed = vmm.entropy_state().unwrap_or(0);
@@ -674,6 +691,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if self.sparse_base_ram_digest(setup)? != portable.base_ram_digest {
             return Err(PortableSnapshotError::Malformed("sparse base RAM differs"));
         }
+        self.preflight_imported_service(sdk, &portable.policy)?;
         let id = self.next_snap;
         let next_snap = self
             .next_snap
@@ -810,6 +828,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "portable state hash preimage",
             ));
         }
+        self.preflight_imported_service(sdk, &portable.policy)?;
         let id = self.next_snap;
         let next_snap = self
             .next_snap
@@ -4587,6 +4606,163 @@ mod tests {
                 "sparse export target lacks a canonical state-blob suffix"
             ))
         ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "portable import and replay use mapped snapshot storage"
+    )]
+    fn unsupported_service_import_rejects_before_commit_and_matching_service_replays() {
+        #[derive(Clone)]
+        struct RefusingService;
+        impl environment::channel::ServiceHandler for RefusingService {
+            fn identity(&self) -> &[u8] {
+                b"test-service-v1"
+            }
+            fn configuration(&self) -> &[u8] {
+                &[7]
+            }
+            fn respond(
+                &mut self,
+                _: environment::Moment,
+                _: &environment::channel::Question,
+            ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+            {
+                Ok(environment::channel::ServiceResponse::Answered(
+                    environment::channel::Answer::Nominal,
+                ))
+            }
+            fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+                Ok(Vec::new())
+            }
+            fn restore_state(
+                &mut self,
+                _: &[u8],
+            ) -> Result<(), environment::channel::ChannelError> {
+                Err(environment::channel::ChannelError::Malformed)
+            }
+            fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+                Box::new(self.clone())
+            }
+        }
+
+        let mut source = payload_server();
+        hello(&mut source);
+        let policy = ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: vec![7],
+        };
+        source.recorded.set_config(policy.clone());
+        source.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                0xBA5E,
+                Box::new(TestService {
+                    response: vec![7],
+                    calls: 0,
+                }),
+            ),
+            &policy,
+        );
+        let cut = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(cut, &mut full).unwrap();
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+
+        let mut full_destination = payload_server();
+        full_destination.set_service_factory(nominal_factory());
+        hello(&mut full_destination);
+        let full_before = full_destination.snapshot_store_stats();
+        let full_next = full_destination.next_snap;
+        let full_hash = hash(&mut full_destination);
+        assert!(matches!(
+            full_destination.import_portable_snapshot(full.as_slice()),
+            Err(PortableSnapshotError::Environment(_))
+        ));
+        assert_eq!(full_destination.snapshot_store_stats(), full_before);
+        assert_eq!(full_destination.next_snap, full_next);
+        assert_eq!(hash(&mut full_destination), full_hash);
+        full_destination.set_service_factory(std::sync::Arc::new(|_| {
+            Ok(Box::new(TestService {
+                response: vec![8],
+                calls: 0,
+            }))
+        }));
+        assert!(matches!(
+            full_destination.import_portable_snapshot(full.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "portable service implementation differs from policy"
+            ))
+        ));
+        assert_eq!(full_destination.snapshot_store_stats(), full_before);
+        assert_eq!(full_destination.next_snap, full_next);
+        assert_eq!(hash(&mut full_destination), full_hash);
+        full_destination
+            .set_service_factory(std::sync::Arc::new(|_| Ok(Box::new(RefusingService))));
+        assert!(matches!(
+            full_destination.import_portable_snapshot(full.as_slice()),
+            Err(PortableSnapshotError::Environment(
+                environment::channel::ChannelError::Malformed
+            ))
+        ));
+        assert_eq!(full_destination.snapshot_store_stats(), full_before);
+        assert_eq!(full_destination.next_snap, full_next);
+        assert_eq!(hash(&mut full_destination), full_hash);
+        full_destination.set_service_factory(nominal_factory());
+        let full_base = snap(&mut full_destination);
+        assert_eq!(
+            full_destination
+                .handle(&Request::Replay(full_base))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut full_destination), full_hash);
+
+        let mut sparse_destination = payload_server();
+        sparse_destination.set_service_factory(nominal_factory());
+        hello(&mut sparse_destination);
+        let base = snap(&mut sparse_destination);
+        let sparse_before = sparse_destination.snapshot_store_stats();
+        let sparse_next = sparse_destination.next_snap;
+        let sparse_hash = hash(&mut sparse_destination);
+        assert!(matches!(
+            sparse_destination.import_sparse_snapshot(base, sparse.clone()),
+            Err(PortableSnapshotError::Environment(_))
+        ));
+        assert_eq!(sparse_destination.snapshot_store_stats(), sparse_before);
+        assert_eq!(sparse_destination.next_snap, sparse_next);
+        assert_eq!(hash(&mut sparse_destination), sparse_hash);
+        assert_eq!(
+            sparse_destination.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut sparse_destination), sparse_hash);
+
+        let mut matched_full = payload_server();
+        hello(&mut matched_full);
+        let imported = matched_full
+            .import_portable_snapshot(full.as_slice())
+            .unwrap();
+        assert_eq!(
+            matched_full.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut matched_full), source_hash);
+
+        let mut matched_sparse = payload_server();
+        hello(&mut matched_sparse);
+        let matched_base = snap(&mut matched_sparse);
+        let imported = matched_sparse
+            .import_sparse_snapshot(matched_base, sparse)
+            .unwrap();
+        assert_eq!(
+            matched_sparse
+                .handle(&Request::Replay(imported.id))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut matched_sparse), source_hash);
     }
 
     #[test]
