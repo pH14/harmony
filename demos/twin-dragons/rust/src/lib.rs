@@ -5,7 +5,7 @@ use searcher::search::{
     rand::RomuDuoJrRand,
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::{BTreeMap, VecDeque}};
+use std::{cell::Cell, cmp::Ordering, collections::{BTreeMap, VecDeque}};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(
@@ -65,6 +65,10 @@ const TOBU_MAP_HEIGHTS: [u16; 3] = [2000, 2896, 3792];
 const TOBU_SPRITE_LEFT: u16 = 24;
 const TOBU_SPRITE_CENTER: u16 = 155;
 const SMB_LEVEL_COUNT: u8 = 32;
+
+thread_local! {
+    static TIER_RANK_SHIFT: Cell<u32> = const { Cell::new(3) };
+}
 const SMB_PLAY: u8 = 1;
 const SMB_VICTORY: u8 = 2;
 const SMB_PLAYING_TASK: u8 = 3;
@@ -112,6 +116,12 @@ impl Game {
             Game::TwinDragons => false,
             Game::TobuTobuGirl => o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE,
             Game::SuperMarioBros => o.health != 0 && !o.won() && (o.goal || o.gamestate == SMB_VICTORY),
+        }
+    }
+    fn tier_rank_shift(self) -> u32 {
+        match self {
+            Game::TwinDragons | Game::TobuTobuGirl => 3,
+            Game::SuperMarioBros => 1,
         }
     }
     fn starts_at_level_one(self, o: Observation) -> bool {
@@ -180,6 +190,9 @@ impl ArchiveKey for Observation {
     }
     fn preferences() -> usize {
         1
+    }
+    fn tier_rank_shift() -> u32 {
+        TIER_RANK_SHIFT.with(Cell::get)
     }
     fn preference_cmp(self, _: usize, other: Self) -> Ordering {
         match self.game {
@@ -456,6 +469,7 @@ impl Explorer {
     }
 
     fn root(game: Game, seed: u32, prefix: Vec<Action>, genesis: bool) -> Result<Explorer, JsValue> {
+        TIER_RANK_SHIFT.with(|shift| shift.set(game.tier_rank_shift()));
         let obs = game.decode(&memory()?).map_err(js_error)?;
         if !game.admissible(obs) || (genesis && !game.starts_at_level_one(obs)) {
             return Err(js_error("Game setup did not reach level one"));
@@ -674,6 +688,10 @@ impl Explorer {
                 retained: id,
                 frame,
             });
+            if obs.won() {
+                ended = true;
+                break;
+            }
         }
         if !ended && transition.is_empty() && steps.len() / stride != job.actions.len() {
             return Err(js_error("rollout result ended early"));
