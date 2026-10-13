@@ -53,7 +53,8 @@ cargo test -p vmm-core --lib vendor::arm64::contract -- --ignored
 The userspace `gicv3` model is used by the HVF composition; stock arm64 KVM
 owns its GIC in the kernel and does not expose an arbitrary userspace INTID
 injection fabric. The shared run loop therefore treats that distinction as a
-backend boundary.
+backend boundary. The public pending-interrupt query reports the asserted
+clockevent PPI on KVM and the userspace GIC's pending INTID on HVF.
 
 When the paravirtual clockevent is due, `dispatch` queries the backend's IRQ
 mask and defers delivery while `PSTATE.I` is set. HVF supplies that bit directly;
