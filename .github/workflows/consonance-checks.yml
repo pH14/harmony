@@ -371,6 +371,10 @@ jobs:
             -p vmm-backend --test kvm_smoke rflags_restore_rejects_nonarchitectural_bits_before_mutation \
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/rflags.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/rflags.txt
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
+            -p vmm-backend --test kvm_smoke rflags_vm_restore_rejects_real_mode_before_mutation \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/rflags-vm.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/rflags-vm.txt
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-core --lib \
             vendor::x86::logical_identity_live_tests::public_snapshot_replay_recapture_preserves_xsave_identity \
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/identity.txt

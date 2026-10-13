@@ -321,6 +321,7 @@ CONSONANCE_CHECKS = Workflow(
                            "vmm-backend::kvm_smoke sysenter_restore_rejects_values_kvm_cannot_preserve",
                            "vmm-backend::kvm_smoke cr8_restore_rejects_out_of_range_priority_before_mutation",
                            "vmm-backend::kvm_smoke rflags_restore_rejects_nonarchitectural_bits_before_mutation",
+                           "vmm-backend::kvm_smoke rflags_vm_restore_rejects_real_mode_before_mutation",
                            PUBLIC_SNAPSHOT_IDENTITY_TEST),
             scope="consonance_kvm",
             select="rust_checks"),
