@@ -520,6 +520,13 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
     let mut keys: Vec<(Vec<u8>, &Member)> = Vec::new();
     for member in members {
         check_relative(member.path())?;
+        if member.path().components().any(|component| {
+            matches!(component, Component::Normal(part) if part.as_bytes().starts_with(b"._"))
+        }) {
+            return Err(ImageError::Tar(
+                "archive carries an AppleDouble metadata name".into(),
+            ));
+        }
         let key = member_key(member.path());
         if key.is_empty() {
             continue;
@@ -1559,6 +1566,7 @@ mod tests {
         }
         let tarball = dir.join(format!("{name}.tar"));
         let status = Command::new("tar")
+            .env("COPYFILE_DISABLE", "1")
             .arg("-cf")
             .arg(&tarball)
             .arg("-C")
@@ -1650,6 +1658,7 @@ mod tests {
         let archive = |layout: &Path, name: &str, entries: &[&str]| {
             let path = dir.path().join(name);
             let status = Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
                 .arg("-cf")
                 .arg(&path)
                 .arg("-C")
@@ -1895,6 +1904,7 @@ mod tests {
         let base = dir.path().join("base.tar");
         assert!(
             Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
                 .arg("-cf")
                 .arg(&base)
                 .arg("-C")
@@ -3111,6 +3121,45 @@ mod tests {
     }
 
     #[test]
+    fn stage_rejects_nested_appledouble_name_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let mut apple_double = Vec::new();
+        apple_double.extend_from_slice(&0x0005_1607u32.to_be_bytes());
+        apple_double.extend_from_slice(&0x0002_0000u32.to_be_bytes());
+        apple_double.extend_from_slice(b"Mac OS X        ");
+        apple_double.extend_from_slice(&2u16.to_be_bytes());
+        apple_double.extend_from_slice(&9u32.to_be_bytes());
+        apple_double.extend_from_slice(&50u32.to_be_bytes());
+        apple_double.extend_from_slice(&32u32.to_be_bytes());
+        apple_double.extend_from_slice(&2u32.to_be_bytes());
+        apple_double.extend_from_slice(&82u32.to_be_bytes());
+        apple_double.extend_from_slice(&8u32.to_be_bytes());
+        apple_double.extend_from_slice(&[0; 32]);
+        apple_double.extend_from_slice(b"forkdata");
+        let body = [
+            raw_member(b"dir/sub/._foo", b'0', "", &apple_double),
+            raw_member(b"dir/sub/foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let staging = dir.path().join("stage");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::Tar(message)) if message == "archive carries an AppleDouble metadata name"
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
     fn read_members_reads_a_binary_size_field() {
         let dir = tempfile::tempdir().unwrap();
         let mut member = raw_member(b"big", b'0', "", b"data");
@@ -3194,6 +3243,7 @@ mod tests {
         let layer = dir.path().join("ok.tar");
         assert!(
             Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
                 .arg("-cf")
                 .arg(&layer)
                 .arg("-C")
@@ -3227,6 +3277,7 @@ mod tests {
         let layer = dir.path().join("ro.tar");
         assert!(
             Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
                 .arg("-cf")
                 .arg(&layer)
                 .arg("-C")
