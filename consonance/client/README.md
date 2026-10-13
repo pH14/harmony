@@ -85,14 +85,16 @@ by adapters that need page and sidecar sharing across related checkpoints.
 Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the
 sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
-retained by reference until a snapshot is serialized.
+retained by reference until a snapshot is serialized. The embedded sidecar
+binds the source setup RAM, so changing only the outer `image_identity` cannot
+import its pages over another setup.
 `SparseSnapshot::logical_identity` returns a copy whose x86 sidecar carries the
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
-The embedded complete and sparse portable snapshots use format version 7.
-Older embedded versions are rejected. The outer sparse archive layout remains
-version 2.
+Embedded complete portable snapshots use format version 7; sparse sidecars use
+version 8. Older embedded versions are rejected. The outer sparse archive layout
+remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
 presence metadata; exported artifacts retain those bytes and checksum them.

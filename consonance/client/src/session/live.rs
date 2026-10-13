@@ -966,6 +966,57 @@ mod tests {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn rewritten_outer_identity_cannot_import_a_foreign_sparse_base() {
+        use vmm_core::vendor::arm64::image_loader;
+
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let source_config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
+            .with_identity_tag("same-workload");
+        let mut destination_config = source_config.clone();
+        destination_config.cmdline.push_str(" debug");
+        let mut source = mock_arm_session(source_config, &image);
+        let mut destination = mock_arm_session(destination_config, &image);
+        let source_base = source
+            .client
+            .transport()
+            .vmm()
+            .unwrap()
+            .guest_memory()
+            .to_vec();
+        let destination_base = destination.client.transport().vmm().unwrap().guest_memory();
+        assert_ne!(source_base, destination_base);
+        let mut changed = source_base;
+        changed[10 * PAGE_SIZE..11 * PAGE_SIZE].fill(0xa5);
+        source
+            .client
+            .transport_mut()
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&changed)
+            .unwrap();
+        let (target, _) = source.snapshot().unwrap();
+        let source_hash = source.state_hash().unwrap();
+        let sparse = source.export_sparse_snapshot(target, None).unwrap();
+        assert_ne!(sparse.image_identity(), destination.image_identity());
+        let mut serialized = serde_json::to_value(&sparse).unwrap();
+        serialized["image_identity"] = serde_json::json!(destination.image_identity());
+        let forged: SparseSnapshot = serde_json::from_value(serialized).unwrap();
+        let before_hash = destination.state_hash().unwrap();
+        let before_store = destination.store_bytes();
+        assert!(destination.import_sparse_snapshot(&forged).is_err());
+        assert_eq!(destination.store_bytes(), before_store);
+        assert_eq!(destination.state_hash().unwrap(), before_hash);
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), before_hash);
+
+        let mut matched = mock_arm_session(source.config.clone(), &image);
+        let imported = matched.import_sparse_snapshot(&sparse).unwrap();
+        matched.replay_snapshot(imported).unwrap();
+        assert_eq!(matched.state_hash().unwrap(), source_hash);
+    }
+
     #[test]
     fn cleanup_attempts_every_handle_and_preserves_primary_error() {
         let mut dropped = Vec::new();
