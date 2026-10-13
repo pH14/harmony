@@ -15,15 +15,15 @@ pub(crate) fn entry(parent: &Path, name: &OsStr) -> io::Result<Option<PathBuf>> 
 }
 
 pub(crate) fn path(path: &Path) -> io::Result<bool> {
-    path_inner(path, &mut 0)
-}
-
-fn path_inner(path: &Path, symlink_hops: &mut usize) -> io::Result<bool> {
-    let mut cursor = if path.is_absolute() {
+    let cursor = if path.is_absolute() {
         PathBuf::from("/")
     } else {
         std::env::current_dir()?.canonicalize()?
     };
+    path_inner(path, cursor, &mut 0)
+}
+
+fn path_inner(path: &Path, mut cursor: PathBuf, symlink_hops: &mut usize) -> io::Result<bool> {
     for component in path.components() {
         match component {
             Component::RootDir => cursor = PathBuf::from("/"),
@@ -43,12 +43,7 @@ fn path_inner(path: &Path, symlink_hops: &mut usize) -> io::Result<bool> {
                         return Ok(false);
                     }
                     let target = std::fs::read_link(&found)?;
-                    let target = if target.is_absolute() {
-                        target
-                    } else {
-                        parent.join(target)
-                    };
-                    if !path_inner(&target, symlink_hops)? {
+                    if !path_inner(&target, parent, symlink_hops)? {
                         return Ok(false);
                     }
                 }
@@ -63,6 +58,9 @@ fn path_inner(path: &Path, symlink_hops: &mut usize) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::path;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
 
     #[test]
     fn local_path_rejects_case_alias_in_symlink_target() {
@@ -71,5 +69,32 @@ mod tests {
         let alias = dir.path().join("image");
         std::os::unix::fs::symlink("LAYOUT", &alias).unwrap();
         assert!(!path(&alias).unwrap());
+    }
+
+    #[test]
+    fn relative_symlink_does_not_require_readable_ancestors() {
+        if std::env::var_os("HARMONY_EXACT_PATH_CHILD").is_some() {
+            assert!(path(Path::new("layout")).unwrap());
+            assert!(path(Path::new("image")).unwrap());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().join("outer");
+        let work = outer.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir(work.join("layout")).unwrap();
+        std::os::unix::fs::symlink("layout", work.join("image")).unwrap();
+        std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "exact::tests::relative_symlink_does_not_require_readable_ancestors",
+            ])
+            .env("HARMONY_EXACT_PATH_CHILD", "1")
+            .current_dir(&work)
+            .status()
+            .unwrap();
+        std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(status.success());
     }
 }

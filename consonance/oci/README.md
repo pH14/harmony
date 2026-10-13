@@ -95,7 +95,9 @@ reuse a blob through a relative symlink whose target resolves, component by
 component, to exact names inside that layout.
 Local layout and archive paths also require exact spelling at every component;
 symlink targets are checked component by component, including dangling links.
-Case-aliased host paths are rejected before staging.
+Relative targets are resolved from the link's parent, so readable ancestors
+above that directory are not required. Case-aliased host paths are rejected
+before staging.
 Hardlink targets must name an earlier member of the same archive with the
 exact same spelling, and hardlink members cannot carry data in either their
 tar header or a pax size override. This also excludes archives that only
