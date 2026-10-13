@@ -44,6 +44,7 @@ const GIC_ISACTIVER: u64 = 0x0300;
 const GIC_ICACTIVER: u64 = 0x0380;
 const GIC_IPRIORITYR: u64 = 0x0400;
 const GIC_ICFGR: u64 = 0x0c00;
+const GIC_IROUTER: u64 = 0x6000;
 const GICR_ISACTIVER0: u64 = GICR_SGI_BASE + 0x0300;
 const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
 const HARMONY_GIC_IMPL_SPIS: u32 = 64;
@@ -605,11 +606,39 @@ fn vgic_config_attr(word: usize) -> (u32, u64) {
     }
 }
 
+fn vgic_router_attr(spi: usize) -> u64 {
+    GIC_IROUTER + ((32 + spi) as u64) * 8
+}
+
+fn require_zero_vgic_routes<K: Arm64Kvm + ?Sized>(k: &K) -> Result<()> {
+    for spi in 0..HARMONY_GIC_IMPL_SPIS as usize {
+        if k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, vgic_router_attr(spi), true)? != 0 {
+            return Err(BackendError::Unsupported {
+                what: "vGIC with nonzero SPI routing affinity",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn clear_vgic_routes<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
+    for spi in 0..HARMONY_GIC_IMPL_SPIS as usize {
+        k.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            vgic_router_attr(spi),
+            true,
+            0,
+        )?;
+    }
+    require_zero_vgic_routes(k)
+}
+
 fn vgic_level_attr(block: u32) -> u64 {
     VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
 }
 
 fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
+    require_zero_vgic_routes(k)?;
     let mut s = Arm64GicState {
         impl_spis: HARMONY_GIC_IMPL_SPIS,
         timer_hz: HARMONY_TIMER_HZ,
@@ -761,6 +790,7 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
 
 fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
     validate_vgic_host(k, s)?;
+    clear_vgic_routes(k)?;
     for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
         let (group, attr) = vgic_config_attr(word);
         k.set_vgic_attr(group, attr, false, u64::from(s.config[word]))?;
@@ -2205,6 +2235,35 @@ mod tests {
         backend.restore(&state).unwrap();
         backend.set_policy(&Arm64Policy::default()).unwrap();
         assert_eq!(backend.save().unwrap().gic.unwrap().config[2], 0x20000);
+    }
+
+    #[test]
+    fn nonzero_spi_route_rejects_capture_and_restore_clears_reused_target() {
+        assert_eq!(vgic_router_attr(0), 0x6100);
+        assert_eq!(vgic_router_attr(63), 0x62f8);
+        let source = FakeKvm::new();
+        let saved = save_vgic(&source).unwrap();
+        let mut target = FakeKvm::new();
+        target
+            .set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                vgic_router_attr(63),
+                true,
+                1,
+            )
+            .unwrap();
+        assert!(matches!(
+            save_vgic(&target),
+            Err(BackendError::Unsupported { .. })
+        ));
+        restore_vgic(&mut target, &saved).unwrap();
+        assert_eq!(save_vgic(&target).unwrap(), saved);
+        assert_eq!(
+            target
+                .get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, vgic_router_attr(63), true)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
