@@ -49,8 +49,9 @@
   `environment::sdk`: entropy, events, assertion violations, standing-service
   questions answered by a `ServiceHandler`, payload pulls and coverage.
   `branch` installs a seed, handler and payloads after checking that reseeding
-  keeps the handler identity and configuration unchanged. A rejected branch
-  leaves the live services untouched. `run_until` runs to a
+  with both the branch seed and the decode seed zero keeps the handler identity
+  and configuration unchanged. A rejected branch leaves the live services
+  untouched. `run_until` runs to a
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays
   unanswered when the deadline is checked again. Each returns a `Stop`: an

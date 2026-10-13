@@ -75,8 +75,9 @@ the server and reusable; the restored VM owns the state it can mutate.
 Seeded branches require a wired entropy stream. A branch into a VM without one
 is rejected before the live VM is replaced, leaving the session usable.
 The branch preparation also checks the service identity and configuration after
-both handler reseeds. A handler that changes its advertised contract is rejected
-before CPU or RAM restore, leaving the live execution intact.
+the decode seed zero and both branch handler reseeds. A handler that changes its
+advertised contract is rejected before CPU or RAM restore, leaving the live
+execution intact.
 Control-server imports require both SDK and control-state sections because every
 control snapshot captures both; missing sections are rejected before minting a
 handle. The SDK hash chunk also binds its captured event history, including
