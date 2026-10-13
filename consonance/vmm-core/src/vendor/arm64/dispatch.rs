@@ -132,12 +132,16 @@ fn should_reassert_clockevent(intid: u32, line_asserted: bool) -> bool {
 }
 
 fn is_gicd_irouter(addr: u64) -> bool {
+    is_gicd_irouter_half(addr) && addr.is_multiple_of(8)
+}
+
+fn is_gicd_irouter_half(addr: u64) -> bool {
     use super::board::{GICD, IMPL_SPIS};
 
     const IROUTER_BASE: u64 = 0x6000;
     let first_spi = GICD.0 + IROUTER_BASE + 32 * 8;
     let end = first_spi + u64::from(IMPL_SPIS) * 8;
-    (first_spi..end).contains(&addr) && addr.is_multiple_of(8)
+    (first_spi..end).contains(&addr) && addr.is_multiple_of(4)
 }
 
 pub(crate) fn normalize_virtual_time_exit_arm64(
@@ -524,7 +528,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                      stock-backend boot never wires it"
                 )));
             }
-            if size == 8 && is_gicd_irouter(addr) {
+            if is_gicd_irouter_half(addr) {
                 return match write {
                     None => {
                         self.backend.complete_read(0)?;
@@ -1415,6 +1419,10 @@ mod tests {
         assert!(!is_gicd_irouter(first - 8));
         assert!(!is_gicd_irouter(first + 4));
         assert!(!is_gicd_irouter(last + 8));
+        assert!(is_gicd_irouter_half(first + 4));
+        assert!(is_gicd_irouter_half(last + 4));
+        assert!(!is_gicd_irouter_half(first - 4));
+        assert!(!is_gicd_irouter_half(last + 8));
     }
 
     #[test]
@@ -1915,6 +1923,20 @@ mod tests {
             Step::Continued
         );
         assert!(vmm.dispatch_mmio_arm64(Gpa(irouter), 8, Some(1)).is_err());
+        assert_eq!(
+            vmm.dispatch_mmio_arm64(Gpa(irouter), 4, Some(0)).unwrap(),
+            Step::Continued
+        );
+        assert_eq!(
+            vmm.dispatch_mmio_arm64(Gpa(irouter + 4), 4, Some(0))
+                .unwrap(),
+            Step::Continued
+        );
+        assert!(vmm.dispatch_mmio_arm64(Gpa(irouter), 4, Some(1)).is_err());
+        assert!(
+            vmm.dispatch_mmio_arm64(Gpa(irouter + 4), 4, Some(1))
+                .is_err()
+        );
     }
 
     #[test]
