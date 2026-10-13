@@ -66,6 +66,16 @@ impl Session {
         super::identity_with_config(kernel, initramfs, config)
     }
 
+    #[must_use]
+    pub fn identity_with_config_and_payloads(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &SessionConfig,
+        setup_payloads: &[Vec<u8>],
+    ) -> String {
+        super::identity_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
+    }
+
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, Box<dyn Error>> {
         Self::new_with_config(kernel, initramfs, SessionConfig::default())
     }
@@ -85,7 +95,12 @@ impl Session {
         setup_payloads: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
-        let image_identity = super::image_identity_with_config(kernel, initramfs, &config);
+        let image_identity = super::image_identity_with_config_and_payloads(
+            kernel,
+            initramfs,
+            &config,
+            &setup_payloads,
+        );
         Self::new_with_config_and_payloads_inner(
             kernel,
             initramfs,
@@ -869,11 +884,25 @@ mod tests {
 
     #[cfg(target_arch = "aarch64")]
     fn mock_arm_session(config: SessionConfig, image: &[u8]) -> Session {
+        mock_arm_session_with_payloads(config, image, None)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn mock_arm_session_with_payloads(
+        config: SessionConfig,
+        image: &[u8],
+        setup_payloads: Option<Vec<Vec<u8>>>,
+    ) -> Session {
         use vmm_backend::MockArm64Backend;
         use vmm_core::vendor::arm64::{board, bringup};
         use vmm_core::vmm::{Vmm, VmmError, VtimeWiring};
 
-        let image_identity = image_identity_with_config(image, b"", &config);
+        let image_identity = image_identity_with_config_and_payloads(
+            image,
+            b"",
+            &config,
+            setup_payloads.as_deref().unwrap_or(&[]),
+        );
         let boot_config = config.clone();
         let boot_image = image.to_vec();
         let boot = move || -> Result<Vmm<Box<dyn Backend<A = HostArch>>>, VmmError> {
@@ -900,6 +929,10 @@ mod tests {
         let live = boot().unwrap();
         let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> = Box::new(boot);
         let mut client = Client::connect(ControlServer::new(live, factory), server_caps()).unwrap();
+        if let Some(payloads) = setup_payloads {
+            let genesis = snapshot_handle(&mut client, "genesis snapshot").unwrap();
+            branch_payload(&mut client, genesis.id, payloads, config.seed).unwrap();
+        }
         let setup = snapshot_handle(&mut client, "setup snapshot").unwrap();
         Session {
             client,
@@ -1133,6 +1166,106 @@ mod tests {
         matched.replay_snapshot(imported_child).unwrap();
         assert_eq!(matched.state_hash().unwrap(), source_hash);
         index.release(source_child_lease);
+        index.release(lease);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn setup_payload_identity_rejects_foreign_cached_extent() {
+        use crate::cache::{LocalIndex, Namespace};
+        use vmm_core::vendor::arm64::image_loader;
+
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let mut source = mock_arm_session_with_payloads(
+            config.clone(),
+            &image,
+            Some(vec![b"alpha setup payload".to_vec()]),
+        );
+        let mut destination = mock_arm_session_with_payloads(
+            config,
+            &image,
+            Some(vec![b"beta setup payload".to_vec()]),
+        );
+        assert_eq!(source.setup, destination.setup);
+        assert_eq!(
+            source.client.transport().vmm().unwrap().guest_memory(),
+            destination.client.transport().vmm().unwrap().guest_memory()
+        );
+        let source_hash = source.state_hash().unwrap();
+        let destination_hash = destination.state_hash().unwrap();
+        let source_payloads = source
+            .client
+            .transport()
+            .recorded_env()
+            .payloads()
+            .map(|entries| entries.to_vec());
+        let destination_payloads = destination
+            .client
+            .transport()
+            .recorded_env()
+            .payloads()
+            .map(|entries| entries.to_vec());
+        assert_ne!(source_hash, destination_hash);
+        assert_ne!(source_payloads, destination_payloads);
+        let (target, _) = source.snapshot().unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let lease = source
+            .publish_snapshot(
+                &index,
+                Namespace::new(&[b"payload-probe"]),
+                b"source",
+                None,
+                target,
+                1,
+            )
+            .unwrap();
+        let before_store = destination.store_bytes();
+        let before_handles = destination.snapshot_times.len();
+        let rejected = destination
+            .import_cached(&index, &lease, destination.setup)
+            .unwrap_err();
+        assert!(
+            rejected
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_ne!(source.image_identity(), destination.image_identity());
+        assert_eq!(destination.store_bytes(), before_store);
+        assert_eq!(destination.snapshot_times.len(), before_handles);
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+        assert_eq!(
+            destination
+                .client
+                .transport()
+                .recorded_env()
+                .payloads()
+                .map(|entries| entries.to_vec()),
+            destination_payloads
+        );
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+
+        let mut matched = mock_arm_session_with_payloads(
+            source.config.clone(),
+            &image,
+            Some(vec![b"alpha setup payload".to_vec()]),
+        );
+        assert_eq!(source.image_identity(), matched.image_identity());
+        let (imported, _) = matched
+            .import_cached(&index, &lease, matched.setup)
+            .unwrap();
+        matched.replay_snapshot(imported).unwrap();
+        assert_eq!(matched.state_hash().unwrap(), source_hash);
+        assert_eq!(
+            matched
+                .client
+                .transport()
+                .recorded_env()
+                .payloads()
+                .map(|entries| entries.to_vec()),
+            source_payloads
+        );
         index.release(lease);
     }
 

@@ -22,7 +22,10 @@ operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
 The image identity always includes kernel, initramfs, RAM size, seed, setup run
-budget, command line, and guest contract. A nonempty `identity_tag` adds a
+budget, command line, and guest contract. Sessions booted with setup payloads
+also bind their ordered, length-delimited payload bytes; the empty list keeps
+the ordinary session identity. `identity_with_config_and_payloads` computes
+the same identity before boot. A nonempty `identity_tag` adds a
 workload domain; it does not replace those setup inputs. Sparse snapshot pages
 are relative to setup RAM, so a session checks this identity before importing
 pages from another session. Tagged snapshots made with the earlier identity
