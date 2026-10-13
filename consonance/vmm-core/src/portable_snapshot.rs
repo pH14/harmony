@@ -28,7 +28,7 @@ const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 #[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = VERSION;
+const SPARSE_VERSION: u16 = 8;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_TAINTED;
@@ -40,7 +40,7 @@ const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_CONTROL_LEN)
     .saturating_add(MAX_POLICY_LEN)
     .saturating_add(MAX_SUFFIX_LEN)
-    .saturating_add(128);
+    .saturating_add(160);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparsePortableSnapshot {
@@ -83,6 +83,7 @@ pub(crate) struct SparsePortableSidecar {
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
+    pub(crate) base_ram_digest: [u8; 32],
     pub(crate) state_blob_suffix: Vec<u8>,
     pub(crate) control_state: Vec<u8>,
 }
@@ -96,6 +97,7 @@ pub(crate) struct SparsePortableSidecarRef<'a> {
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
+    pub(crate) base_ram_digest: [u8; 32],
     pub(crate) state_blob_suffix: &'a [u8],
     pub(crate) control_state: &'a [u8],
 }
@@ -326,6 +328,7 @@ pub fn logical_x86_sparse_sidecar(bytes: &[u8]) -> Result<Vec<u8>, PortableSnaps
         trace_events: sidecar.trace_events,
         trace_schedules: sidecar.trace_schedules,
         tainted: sidecar.tainted,
+        base_ram_digest: sidecar.base_ram_digest,
         state_blob_suffix: &sidecar.state_blob_suffix,
         control_state: &sidecar.control_state,
     })
@@ -350,7 +353,7 @@ pub(crate) fn encode_sparse_sidecar(
 
     let mut out = Vec::new();
     out.extend_from_slice(&SPARSE_MAGIC);
-    put_u16(&mut out, VERSION)?;
+    put_u16(&mut out, SPARSE_VERSION)?;
     put_u16(&mut out, flags)?;
     put_len(&mut out, sidecar.vm_state.len())?;
     put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
@@ -361,6 +364,7 @@ pub(crate) fn encode_sparse_sidecar(
     put_u64(&mut out, sidecar.sdk_events)?;
     put_u64(&mut out, sidecar.trace_events)?;
     put_u64(&mut out, sidecar.trace_schedules)?;
+    out.extend_from_slice(&sidecar.base_ram_digest);
     out.extend_from_slice(sidecar.vm_state);
     if let Some(bytes) = &sdk {
         out.extend_from_slice(bytes);
@@ -399,6 +403,8 @@ pub(crate) fn decode_sparse_sidecar(
     let sdk_events = input.u64()?;
     let trace_events = input.u64()?;
     let trace_schedules = input.u64()?;
+    let mut base_ram_digest = [0; 32];
+    base_ram_digest.copy_from_slice(input.take(32)?);
     let vm_state = input.section(vm_state_len)?;
     let sdk_bytes = input.section(sdk_len)?;
     let policy_bytes = input.section(policy_len)?;
@@ -416,6 +422,7 @@ pub(crate) fn decode_sparse_sidecar(
         trace_events,
         trace_schedules,
         tainted: flags & SPARSE_FLAG_TAINTED != 0,
+        base_ram_digest,
         state_blob_suffix,
         control_state,
     })
@@ -816,6 +823,7 @@ mod tests {
             trace_events: 17,
             trace_schedules: 5,
             tainted: true,
+            base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"state-suffix",
             control_state: b"control-state",
         })
@@ -919,13 +927,14 @@ mod tests {
                 trace_events: 17,
                 trace_schedules: 5,
                 tainted: true,
+                base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
                 control_state: control,
             })
             .unwrap();
             assert_eq!(
                 u16::from_le_bytes(sparse[8..10].try_into().unwrap()),
-                VERSION
+                SPARSE_VERSION
             );
             let restored = decode_sparse_sidecar(&sparse).unwrap();
             assert_eq!(restored.vm_state, vm);
@@ -965,13 +974,14 @@ mod tests {
             trace_events: 17,
             trace_schedules: 5,
             tainted: true,
+            base_ram_digest: [0xa5; 32],
             state_blob_suffix: &suffix,
             control_state: &[],
         })
         .unwrap();
         assert_eq!(
             u16::from_le_bytes(encoded[8..10].try_into().unwrap()),
-            VERSION
+            SPARSE_VERSION
         );
         assert!(encoded.len() > MAX_SPARSE_SIDECAR_LEN);
 
@@ -1027,13 +1037,14 @@ mod tests {
             trace_events: 0,
             trace_schedules: 0,
             tainted: false,
+            base_ram_digest: [0xa5; 32],
             state_blob_suffix: &[],
             control_state: &[],
         })
         .unwrap();
         assert_eq!(
             u16::from_le_bytes(sparse[8..10].try_into().unwrap()),
-            VERSION
+            SPARSE_VERSION
         );
         assert_eq!(
             decode_sparse_sidecar(&sparse).unwrap().sdk.unwrap().events,
@@ -1120,7 +1131,7 @@ mod tests {
         assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, VERSION);
+        assert_eq!(SPARSE_VERSION, 8);
         assert_eq!(
             (SPARSE_FLAG_SDK, SPARSE_FLAG_TAINTED, SPARSE_KNOWN_FLAGS),
             (1, 2, 3)
@@ -1133,7 +1144,7 @@ mod tests {
                 + MAX_CONTROL_LEN
                 + MAX_POLICY_LEN
                 + MAX_SUFFIX_LEN
-                + 128
+                + 160
         );
 
         for old_version in [1_u16, 2, 3, 4, 5, 6, VERSION + 1] {
@@ -1277,6 +1288,7 @@ mod tests {
             trace_events: 17,
             trace_schedules: 5,
             tainted: true,
+            base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
             control_state: &[],
         })
@@ -1294,6 +1306,7 @@ mod tests {
             trace_events: 17,
             trace_schedules: 5,
             tainted: true,
+            base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
             control_state,
         })
@@ -1306,7 +1319,7 @@ mod tests {
         assert_eq!(&bytes[..8], b"HMSSNAP1");
         assert_eq!(
             u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-            VERSION
+            SPARSE_VERSION
         );
         let decoded = decode_sparse_sidecar(&bytes).unwrap();
         assert_eq!(decoded.vm_state, b"strict-vm-state");
@@ -1317,6 +1330,7 @@ mod tests {
         assert_eq!(decoded.trace_events, 17);
         assert_eq!(decoded.trace_schedules, 5);
         assert!(decoded.tainted);
+        assert_eq!(decoded.base_ram_digest, [0xa5; 32]);
         assert!(decoded.control_state.is_empty());
         assert!(!bytes.windows(4).any(|tag| tag == b"MEM\0"));
         assert!(!bytes.windows(4).any(|tag| tag == b"SHA2"));
@@ -1371,7 +1385,7 @@ mod tests {
             let bytes = sparse_sidecar_fixture_with_control_state(&control_state);
             assert_eq!(
                 u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-                VERSION
+                SPARSE_VERSION
             );
             assert_eq!(
                 u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
@@ -1389,6 +1403,7 @@ mod tests {
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
                 tainted: decoded.tainted,
+                base_ram_digest: decoded.base_ram_digest,
                 state_blob_suffix: &decoded.state_blob_suffix,
                 control_state: &decoded.control_state,
             })
@@ -1484,7 +1499,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, 3, 4, 5, 6, VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, SPARSE_VERSION + 1] {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
@@ -1513,6 +1528,7 @@ mod tests {
                 trace_events: 17,
                 trace_schedules: 5,
                 tainted,
+                base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"canonical-suffix",
                 control_state: &[],
             })
@@ -1596,6 +1612,7 @@ mod tests {
                 trace_events: 0,
                 trace_schedules: 0,
                 tainted: false,
+                base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
                 control_state: &[],
             }),
@@ -2030,6 +2047,7 @@ mod tests {
                 trace_events: 17,
                 trace_schedules: 5,
                 tainted: false,
+                base_ram_digest: [0xa5; 32],
                 state_blob_suffix: suffix,
                 control_state,
             })
@@ -2073,7 +2091,7 @@ mod tests {
             let sidecar = encode(&vm_bytes, &suffix);
             assert_eq!(
                 u16::from_le_bytes(sidecar[8..10].try_into().unwrap()),
-                VERSION
+                SPARSE_VERSION
             );
             assert_eq!(sidecar.len(), initial_sidecar.len());
             assert_eq!(sidecar.len() % SHARED_STATE_CHUNK_SIZE, 0);
@@ -2213,6 +2231,7 @@ mod tests {
                 trace_events: 0,
                 trace_schedules: 0,
                 tainted: false,
+                base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
                 control_state: &[],
             })

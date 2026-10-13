@@ -182,6 +182,7 @@ struct SnapshotMeta {
     trace_schedules: u64,
     tainted: bool,
     state_hash: Option<[u8; 32]>,
+    base_ram_digest: std::cell::Cell<Option<[u8; 32]>>,
     state_blob_suffix: Vec<u8>,
     policy: ServiceConfig,
     control_state: Vec<u8>,
@@ -419,7 +420,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(target, target_id)?;
+        let sidecar = self.sparse_sidecar(base, target, target_id)?;
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
@@ -441,7 +442,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(target, target_id)?;
+        let sidecar = self.sparse_sidecar(setup, target, target_id)?;
         let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
         let (mut cost, pages) = self.export_telemetry.get();
         cost.add(started.elapsed().as_nanos());
@@ -461,11 +462,40 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))
     }
 
+    fn sparse_base_ram_digest(&self, base: SnapId) -> Result<[u8; 32], PortableSnapshotError> {
+        let base_id = self.store_id(base)?;
+        let meta = self
+            .snapshot_meta
+            .get(&base.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
+        if let Some(digest) = meta.base_ram_digest.get() {
+            return Ok(digest);
+        }
+        let memory_len = self
+            .engine
+            .mem_pages()
+            .checked_mul(snapshot_store::PAGE_SIZE as u64)
+            .ok_or(PortableSnapshotError::Malformed(
+                "sparse base RAM length overflow",
+            ))?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"consonance-sparse-base-ram-v1\0");
+        hasher.update(memory_len.to_le_bytes());
+        for gfn in 0..self.engine.mem_pages() {
+            hasher.update(self.engine.read_page(base_id, gfn)?);
+        }
+        let digest = hasher.finalize().into();
+        meta.base_ram_digest.set(Some(digest));
+        Ok(digest)
+    }
+
     fn sparse_sidecar(
         &self,
+        base: SnapId,
         target: SnapId,
         target_id: snapshot_store::SnapshotId,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
+        let base_ram_digest = self.sparse_base_ram_digest(base)?;
         let meta = self
             .snapshot_meta
             .get(&target.0)
@@ -486,6 +516,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
             tainted: meta.tainted,
+            base_ram_digest,
             state_blob_suffix: &meta.state_blob_suffix,
         })
     }
@@ -507,6 +538,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
         let receipt = self.import_sparse_untimed(
+            base,
             base,
             pages.iter().map(|(gfn, _)| *gfn),
             sidecar,
@@ -541,6 +573,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let mut written = 0usize;
         let receipt = self.import_sparse_untimed(
+            setup,
             near,
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
@@ -578,6 +611,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     fn import_sparse_untimed(
         &mut self,
+        setup: SnapId,
         base: SnapId,
         gfns: impl Iterator<Item = u64>,
         sidecar: &[u8],
@@ -637,6 +671,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse state hash preimage",
             ));
         }
+        if self.sparse_base_ram_digest(setup)? != portable.base_ram_digest {
+            return Err(PortableSnapshotError::Malformed("sparse base RAM differs"));
+        }
         let id = self.next_snap;
         let next_snap = self
             .next_snap
@@ -667,6 +704,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_schedules: portable.trace_schedules,
                 tainted: portable.tainted,
                 state_hash: None,
+                base_ram_digest: std::cell::Cell::new(None),
                 state_blob_suffix: portable.state_blob_suffix,
                 policy: portable.policy,
                 control_state: portable.control_state,
@@ -803,6 +841,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_schedules: portable.trace_schedules,
                 tainted: portable.tainted,
                 state_hash: Some(portable.state_hash),
+                base_ram_digest: std::cell::Cell::new(None),
                 state_blob_suffix: Vec::new(),
                 policy: portable.policy,
                 control_state: portable.control_state,
@@ -1180,6 +1219,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_schedules,
                 tainted: self.timeline_tainted,
                 state_hash: None,
+                base_ram_digest: std::cell::Cell::new(None),
                 state_blob_suffix,
                 policy,
                 control_state,
@@ -4669,6 +4709,7 @@ mod tests {
             trace_events: decoded.trace_events,
             trace_schedules: decoded.trace_schedules,
             tainted: decoded.tainted,
+            base_ram_digest: decoded.base_ram_digest,
             state_blob_suffix: &decoded.state_blob_suffix,
         })
         .unwrap();
@@ -4755,6 +4796,78 @@ mod tests {
         );
         assert_eq!(run_all(&mut source), run_all(&mut destination));
         assert_eq!(hash(&mut source), hash(&mut destination));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "sparse replay materializes snapshot-store mappings")]
+    fn sparse_import_requires_the_source_base_ram_for_pages_and_deltas() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let source_base = snap(&mut source);
+        let mut source_image = source.vmm().unwrap().guest_memory().to_vec();
+        source_image[4096..8192].fill(0xa5);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&source_image)
+            .unwrap();
+        let target = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let sparse = source.export_sparse_snapshot(source_base, target).unwrap();
+        assert_eq!(sparse.pages.len(), 1);
+        let delta = source
+            .export_sparse_delta(source_base, None, target)
+            .unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let mut destination_image = destination.vmm().unwrap().guest_memory().to_vec();
+        destination_image[3 * 4096..4 * 4096].fill(0x5a);
+        destination
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&destination_image)
+            .unwrap();
+        let destination_base = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        let before_hash = hash(&mut destination);
+        assert!(matches!(
+            destination.import_sparse_snapshot(destination_base, sparse.clone()),
+            Err(PortableSnapshotError::Malformed("sparse base RAM differs"))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), Some(destination_base));
+        assert_eq!(hash(&mut destination), before_hash);
+        assert!(matches!(
+            destination.import_sparse_delta(
+                destination_base,
+                destination_base,
+                &delta.pages,
+                &delta.sidecar,
+            ),
+            Err(PortableSnapshotError::Malformed("sparse base RAM differs"))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), Some(destination_base));
+        assert_eq!(
+            destination
+                .handle(&Request::Replay(destination_base))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut destination), before_hash);
+
+        let mut matched = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut matched);
+        let matched_base = snap(&mut matched);
+        let imported = matched
+            .import_sparse_snapshot(matched_base, sparse)
+            .unwrap();
+        assert_eq!(
+            matched.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut matched), source_hash);
     }
 
     #[test]
@@ -4929,6 +5042,7 @@ mod tests {
             trace_events: decoded.trace_events,
             trace_schedules: decoded.trace_schedules,
             tainted: decoded.tainted,
+            base_ram_digest: decoded.base_ram_digest,
             state_blob_suffix: &decoded.state_blob_suffix,
         })
         .unwrap();
@@ -5039,6 +5153,7 @@ mod tests {
             trace_events: sidecar.trace_events,
             trace_schedules: sidecar.trace_schedules,
             tainted: sidecar.tainted,
+            base_ram_digest: sidecar.base_ram_digest,
             state_blob_suffix: &sidecar.state_blob_suffix,
         })
         .unwrap();
@@ -5140,6 +5255,7 @@ mod tests {
             trace_events: sidecar.trace_events,
             trace_schedules: sidecar.trace_schedules,
             tainted: sidecar.tainted,
+            base_ram_digest: sidecar.base_ram_digest,
             state_blob_suffix: &sidecar.state_blob_suffix,
         })
         .unwrap();
@@ -5250,6 +5366,7 @@ mod tests {
             trace_events: sidecar.trace_events,
             trace_schedules: sidecar.trace_schedules,
             tainted: false,
+            base_ram_digest: sidecar.base_ram_digest,
             state_blob_suffix: &sidecar.state_blob_suffix,
         })
         .unwrap();
@@ -5487,6 +5604,7 @@ mod tests {
             trace_events: sidecar.trace_events,
             trace_schedules: sidecar.trace_schedules,
             tainted: sidecar.tainted,
+            base_ram_digest: sidecar.base_ram_digest,
             state_blob_suffix: &sidecar.state_blob_suffix,
             control_state: &sidecar.control_state,
         })
