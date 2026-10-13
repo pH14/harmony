@@ -1057,8 +1057,11 @@ dialog h2 {
 .segments button { background: transparent; color: var(--muted); padding: 6px 10px; font-size: 11px; }
 .segments button[aria-pressed="true"] { background: var(--selection); color: var(--text); }
 .toggles button { display: inline-flex; align-items: center; gap: 5px; }
-.toggles button::before { content: ""; width: 9px; height: 9px; border: 1.5px solid currentColor; border-radius: 3px; opacity: .6; }
-.toggles button[aria-pressed="true"]::before { opacity: 1; border-color: var(--accent); background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 5.2l2 2L8 3' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 100% no-repeat; }
+.toggles button::before { content: ""; flex: none; filter: grayscale(1); opacity: .45; transition: filter .15s, opacity .15s; }
+.toggles button[data-viz="movement"]::before { width: 5px; height: 5px; margin: 0 1px 0 8px; border-radius: 50%; background: currentColor; box-shadow: -4px 0 0 -1px currentColor, -7px 0 0 -1.5px currentColor; }
+.toggles button[data-viz="heat"]::before { width: 14px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, rgb(64,124,181), rgb(74,212,132), rgb(249,174,65), rgb(245,89,62)); }
+.toggles button[aria-pressed="true"]::before { filter: none; opacity: 1; }
+.toggles button[data-viz="movement"][aria-pressed="true"]::before { color: var(--accent); }
 .screen { background: #1c1c1c; }
 #frame-label, .screen.updating::after { background: #1c1c1ce6; color: #dcdcdc; }
 #hover { background: var(--surface); }
