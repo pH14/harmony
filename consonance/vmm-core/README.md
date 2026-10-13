@@ -38,7 +38,7 @@ fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor
 fingerprint encodings cover the complete state records used for restore, while
 the complete portable artifact digest covers the same persisted bytes. The
-VMST uses the current version 7 wire format; a present `xsave_restore_bv`
+VMST uses the current version 8 wire format; a present `xsave_restore_bv`
 intentionally changes the VCPU identity.
 Dirty-page drains and resets distinguish unsupported tracking from backend
 errors. Unsupported tracking permits a full capture; an operational error

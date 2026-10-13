@@ -65,7 +65,7 @@ fn bad_magic() {
 #[test]
 fn unsupported_versions_are_rejected() {
     let blob = valid();
-    for version in [3, 4, 5, VM_STATE_VERSION + 1] {
+    for version in (0..VM_STATE_VERSION).chain([VM_STATE_VERSION + 1]) {
         let mut unsupported = blob.clone();
         unsupported[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(

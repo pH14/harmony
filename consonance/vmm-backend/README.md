@@ -242,6 +242,13 @@ KVM leaves `MMFR0.ASIDBits` out of its writable ID register mask and fails
 `LiveKvm::new` reads the vCPU's `ID_AA64MMFR0_EL1` after `KVM_ARM_VCPU_INIT` and
 reports that width.
 
+Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
+`PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
+translation, exception, and thread registers. The shared
+`arm64_sysreg_snapshot` hardware test compares uninterrupted execution, capture
+without restore, restore after a detour, and restore into a fresh VM. Its
+aligned guest-memory fixture also runs under Miri through the mock backend.
+
 ARM KVM saves the guest's system registers as the guest left them and never
 normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and
 while the identity baseline advertised 16-bit, clearing it left the guest kernel

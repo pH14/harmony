@@ -66,7 +66,10 @@ records. Snapshot capture still reads complete architectural state.
 
 `records` converts live arm64 vCPU and GIC state to the `vm-state` records. The
 architectural comparator in the parent module compares vCPU and canonical GIC
-fields independently of snapshot hashes.
+fields independently of snapshot hashes. Context ID, auxiliary memory
+attributes, translation results, cache selection, and auxiliary fault status
+registers survive capture and restore and affect both full and component
+identities. VM-state version 8 carries these fields explicitly.
 
 Device blobs use the current version 14 format and retain unread serial input
 in FIFO order. Presence fields describe the

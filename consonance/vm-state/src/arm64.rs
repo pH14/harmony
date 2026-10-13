@@ -75,6 +75,12 @@ pub struct Arm64Sysregs {
     pub tpidr_el1: u64,
     pub tpidrro_el0: u64,
     pub cntkctl_el1: u64,
+    pub contextidr_el1: u64,
+    pub amair_el1: u64,
+    pub par_el1: u64,
+    pub csselr_el1: u64,
+    pub afsr0_el1: u64,
+    pub afsr1_el1: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -165,6 +171,12 @@ struct Arm64SysregsWire {
     tpidr_el1: U64,
     tpidrro_el0: U64,
     cntkctl_el1: U64,
+    contextidr_el1: U64,
+    amair_el1: U64,
+    par_el1: U64,
+    csselr_el1: U64,
+    afsr0_el1: U64,
+    afsr1_el1: U64,
 }
 
 impl From<&Arm64Sysregs> for Arm64SysregsWire {
@@ -183,6 +195,12 @@ impl From<&Arm64Sysregs> for Arm64SysregsWire {
             tpidr_el1: s.tpidr_el1.into(),
             tpidrro_el0: s.tpidrro_el0.into(),
             cntkctl_el1: s.cntkctl_el1.into(),
+            contextidr_el1: s.contextidr_el1.into(),
+            amair_el1: s.amair_el1.into(),
+            par_el1: s.par_el1.into(),
+            csselr_el1: s.csselr_el1.into(),
+            afsr0_el1: s.afsr0_el1.into(),
+            afsr1_el1: s.afsr1_el1.into(),
         }
     }
 }
@@ -203,6 +221,12 @@ impl From<&Arm64SysregsWire> for Arm64Sysregs {
             tpidr_el1: w.tpidr_el1.get(),
             tpidrro_el0: w.tpidrro_el0.get(),
             cntkctl_el1: w.cntkctl_el1.get(),
+            contextidr_el1: w.contextidr_el1.get(),
+            amair_el1: w.amair_el1.get(),
+            par_el1: w.par_el1.get(),
+            csselr_el1: w.csselr_el1.get(),
+            afsr0_el1: w.afsr0_el1.get(),
+            afsr1_el1: w.afsr1_el1.get(),
         }
     }
 }
@@ -583,6 +607,12 @@ mod tests {
         s.regs.pstate = 0x3c5;
         s.sysregs.sctlr_el1 = 0x30d0_0800;
         s.sysregs.cntkctl_el1 = 0;
+        s.sysregs.contextidr_el1 = 4660;
+        s.sysregs.amair_el1 = 4661;
+        s.sysregs.par_el1 = 4662;
+        s.sysregs.csselr_el1 = 4663;
+        s.sysregs.afsr0_el1 = 4664;
+        s.sysregs.afsr1_el1 = 4665;
         s.simd_fp.q[0] = [0x5A; 16];
         s.simd_fp.q[31] = [0xA5; 16];
         s.simd_fp.fpcr = 0x0040_0000;

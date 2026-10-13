@@ -49,6 +49,12 @@ pub(crate) fn to_vm_sysregs(s: &Arm64SysregFile) -> Arm64Sysregs {
         tpidr_el1: s.tpidr_el1,
         tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
+        contextidr_el1: s.contextidr_el1,
+        amair_el1: s.amair_el1,
+        par_el1: s.par_el1,
+        csselr_el1: s.csselr_el1,
+        afsr0_el1: s.afsr0_el1,
+        afsr1_el1: s.afsr1_el1,
     }
 }
 
@@ -67,6 +73,12 @@ pub(crate) fn from_vm_sysregs(s: &Arm64Sysregs) -> Arm64SysregFile {
         tpidr_el1: s.tpidr_el1,
         tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
+        contextidr_el1: s.contextidr_el1,
+        amair_el1: s.amair_el1,
+        par_el1: s.par_el1,
+        csselr_el1: s.csselr_el1,
+        afsr0_el1: s.afsr0_el1,
+        afsr1_el1: s.afsr1_el1,
     }
 }
 
@@ -776,6 +788,12 @@ mod tests {
         live.core.pstate = 0x3c5;
         live.sysregs.sctlr_el1 = 0x30d0_0800;
         live.sysregs.cntkctl_el1 = 3;
+        live.sysregs.contextidr_el1 = 4660;
+        live.sysregs.amair_el1 = 4661;
+        live.sysregs.par_el1 = 4662;
+        live.sysregs.csselr_el1 = 4663;
+        live.sysregs.afsr0_el1 = 4664;
+        live.sysregs.afsr1_el1 = 4665;
         live.mp_state = vmm_backend::MpState::Halted;
 
         let mut snap = Arm64VmState::default();

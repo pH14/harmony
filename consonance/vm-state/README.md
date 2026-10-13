@@ -9,7 +9,7 @@ hypervisor dependencies.
 
 ## Format
 
-Version 7 is a little-endian TLV container: a 10-byte header (magic, version,
+Version 8 is a little-endian TLV container: a 10-byte header (magic, version,
 architecture tag, and section count) followed by sections in ascending tag
 order. X86 records always use the current SREGS and DEBUGREGS layouts with the
 captured CPU fields (`flags` and `pdptrs`). The engine-state and
