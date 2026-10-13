@@ -212,6 +212,20 @@ fn guest_gic_cpu_interface_survives_fresh_restore() {
 }
 
 #[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn kvm_irq_mask_read_matches_full_capture() {
+    let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
+    let mut state = guest.save();
+    assert!(state.core.pstate & (1 << 7) != 0);
+    assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(true));
+    state.core.pstate &= !(1 << 7);
+    guest.restore(&state);
+    assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(false));
+    assert_eq!(guest.save().core.pstate & (1 << 7), 0);
+}
+
+#[test]
 #[cfg(all(
     target_arch = "aarch64",
     any(target_os = "macos", target_os = "linux"),
