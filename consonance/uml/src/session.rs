@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn dropping_checkpoint_during_delta_callback_releases_snapshot() {
+    fn dropping_checkpoints_during_delta_callbacks_releases_snapshots() {
         let checkpoints = Checkpoints::new();
         let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
         let target = checkpoint(
@@ -1016,8 +1016,14 @@ mod tests {
             5,
             Some(120),
         );
+        let temporary = checkpoint(snapshot(&checkpoints, None, &[(2, 3)]), 5, Some(120));
         let shared = target.with_bridge_of(&target);
 
+        assert_eq!(checkpoints.stats().unwrap().snapshots, 4);
+        checkpoints
+            .delta(&base, None, &target, |_, _| drop(temporary))
+            .unwrap();
+        assert_eq!(checkpoints.stats().unwrap().snapshots, 3);
         checkpoints
             .delta(&base, None, &target, |_, _| drop(shared))
             .unwrap();
