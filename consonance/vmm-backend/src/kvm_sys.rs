@@ -1068,7 +1068,8 @@ impl Backend for KvmBackend {
             self.sysenter_virtual_bits,
             self.sysenter_32bit,
         )?;
-        if state.events.flags != self.event_valid_flags {
+        if state.events.flags | kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD != self.event_valid_flags
+        {
             return Err(BackendError::InvalidState);
         }
         let events = &state.events;
