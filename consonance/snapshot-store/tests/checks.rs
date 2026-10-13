@@ -11,6 +11,70 @@ fn page(seed: u8) -> [u8; PAGE_SIZE] {
 }
 
 #[test]
+fn foreign_snapshot_id_cannot_select_another_store_snapshot() {
+    let mut source = store(1);
+    let mut source_builder = source.begin_base();
+    source_builder.write_page(0, &page(1)).unwrap();
+    let foreign = source_builder.seal(vec![1]);
+
+    let mut target = store(1);
+    let mut target_builder = target.begin_base();
+    target_builder.write_page(0, &page(2)).unwrap();
+    let local = target_builder.seal(vec![2]);
+    let before = target.store_stats();
+    let mut out = page(0);
+
+    assert!(matches!(
+        target.read_page(foreign, 0, &mut out),
+        Err(StoreError::UnknownSnapshot(id)) if id == foreign
+    ));
+    assert!(
+        matches!(target.vm_state(foreign), Err(StoreError::UnknownSnapshot(id)) if id == foreign)
+    );
+    assert!(matches!(target.stats(foreign), Err(StoreError::UnknownSnapshot(id)) if id == foreign));
+    assert!(
+        matches!(target.materialize(foreign), Err(StoreError::UnknownSnapshot(id)) if id == foreign)
+    );
+    assert!(matches!(
+        target.page_ref_eq(local, 0, foreign, 0),
+        Err(StoreError::UnknownSnapshot(id)) if id == foreign
+    ));
+    assert!(
+        matches!(target.derive(foreign), Err(StoreError::UnknownSnapshot(id)) if id == foreign)
+    );
+    assert!(matches!(
+        target.flatten_base(foreign, &page(0), &[], Vec::new()),
+        Err(StoreError::UnknownSnapshot(id)) if id == foreign
+    ));
+    assert!(
+        matches!(target.retain(foreign), Err(StoreError::UnknownSnapshot(id)) if id == foreign)
+    );
+    assert!(
+        matches!(target.release(foreign), Err(StoreError::UnknownSnapshot(id)) if id == foreign)
+    );
+    assert!(matches!(
+        target.page_delta(local, None, foreign),
+        Err(StoreError::UnknownSnapshot(id)) if id == foreign
+    ));
+    assert!(matches!(
+        target.restore_pages(Some(local), foreign, &[]),
+        Err(StoreError::UnknownSnapshot(id)) if id == foreign
+    ));
+    assert!(matches!(
+        target.diff_pages(Some(foreign), local),
+        Err(StoreError::UnknownSnapshot(id)) if id == foreign
+    ));
+    assert!(matches!(
+        target.rebase(local, foreign, &[]),
+        Err(StoreError::UnknownSnapshot(id)) if id == foreign
+    ));
+    assert_eq!(target.store_stats(), before);
+    target.read_page(local, 0, &mut out).unwrap();
+    assert_eq!(out, page(2));
+    assert_eq!(target.vm_state(local).unwrap(), [2]);
+}
+
+#[test]
 fn recycling_released_pages_preserves_live_branches_and_rejects_old_handles() {
     let mut s = store(8);
     let mut builder = s.begin_base();

@@ -9,13 +9,21 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const PAGE_SIZE: usize = 4096;
 
 static ZERO_PAGE: [u8; PAGE_SIZE] = [0u8; PAGE_SIZE];
+static NEXT_STORE_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub struct SnapshotId(u64);
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub struct SnapshotId(u64, u64);
+
+impl std::fmt::Debug for SnapshotId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_tuple("SnapshotId").field(&self.0).finish()
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct StoreConfig {
@@ -108,6 +116,7 @@ struct Layer {
 
 pub struct Store {
     cfg: StoreConfig,
+    store_id: u64,
     next_id: u64,
     layers: BTreeMap<u64, Layer>,
     collectible: Vec<u64>,
@@ -124,6 +133,9 @@ impl Store {
     pub fn new(cfg: StoreConfig) -> Store {
         Store {
             cfg,
+            store_id: NEXT_STORE_ID
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("snapshot store identifiers exhausted"),
             next_id: 0,
             layers: BTreeMap::new(),
             collectible: Vec::new(),
@@ -476,10 +488,10 @@ impl Store {
         while left != right {
             let id = left.max(right).expect("distinct ancestry cursors");
             let Some(layer) = self.layers.get(&id) else {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id, self.store_id)));
             };
             if layer.parent.is_some_and(|parent| parent >= id) {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id, self.store_id)));
             }
             changed_gfns.extend(layer.pages.iter().map(|&(gfn, _)| gfn));
             if left == Some(id) {
@@ -685,6 +697,9 @@ impl Store {
     }
 
     fn live_layer(&self, snap: SnapshotId) -> Result<&Layer, StoreError> {
+        if snap.1 != self.store_id {
+            return Err(StoreError::UnknownSnapshot(snap));
+        }
         self.layers
             .get(&snap.0)
             .filter(|l| l.refcount > 0)
@@ -692,6 +707,9 @@ impl Store {
     }
 
     fn live_layer_mut(&mut self, snap: SnapshotId) -> Result<&mut Layer, StoreError> {
+        if snap.1 != self.store_id {
+            return Err(StoreError::UnknownSnapshot(snap));
+        }
         self.layers
             .get_mut(&snap.0)
             .filter(|l| l.refcount > 0)
@@ -823,7 +841,10 @@ impl BuilderCore<'_> {
         }
         if let Some(parent) = self.parent
             && !self.pages.contains_key(&gfn)
-            && self.store.stored_page(SnapshotId(parent), gfn)?[..] == *data
+            && self
+                .store
+                .stored_page(SnapshotId(parent, self.store.store_id), gfn)?[..]
+                == *data
         {
             return Ok(());
         }
@@ -938,7 +959,7 @@ impl BuilderCore<'_> {
                 resolve_cache: RefCell::default(),
             },
         );
-        SnapshotId(id)
+        SnapshotId(id, self.store.store_id)
     }
 }
 
@@ -1685,7 +1706,7 @@ mod tests {
     fn diff_pages_rejects_unknown_ids() {
         let mut store = Store::new(cfg(1));
         let base = store.begin_base().seal(vec![]);
-        let unknown = SnapshotId(u64::MAX);
+        let unknown = SnapshotId(u64::MAX, store.store_id);
 
         assert!(matches!(
             store.diff_pages(Some(unknown), base),
