@@ -13,6 +13,7 @@ fn backend(asid_bits: Arm64AsidBits) -> MockArm64Backend {
         arch: Arm64Caps {
             in_kernel_gic: false,
             asid_bits,
+            smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
         },
     });
     backend

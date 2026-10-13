@@ -72,6 +72,12 @@ attributes, translation results, cache selection, and auxiliary fault status
 registers survive capture and restore and affect both full and component
 identities. VM-state version 8 carries these fields explicitly.
 
+The runtime arm64 contract extends the fixed CPU baseline and host ASID width
+with the three SMCCC workaround firmware levels observed by the backend after
+the guest CPU policy is installed. Snapshot restore requires the same runtime
+contract. The same hash is an unconditional state-hash chunk and diagnostic
+component, including when full snapshot hashing is disabled.
+
 Device blobs use the current version 14 format and retain unread serial input
 in FIFO order. Presence fields describe the
 optional GIC, doorbell, and pvclock records; pvclock records preserve the page

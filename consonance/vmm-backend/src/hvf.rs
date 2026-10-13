@@ -1278,6 +1278,7 @@ impl Backend for HvfBackend {
             arch: Arm64Caps {
                 in_kernel_gic: false,
                 asid_bits: Arm64AsidBits::Eight,
+                smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
             },
         }
     }

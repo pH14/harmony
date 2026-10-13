@@ -828,7 +828,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             }),
         };
         s.devices = records::encode_device_blob(&dev);
-        s.contract_hash = contract::contract_hash(self.backend.capabilities().arch.asid_bits);
+        s.contract_hash = contract::runtime_contract_hash(self.backend.capabilities().arch);
         s
     }
 
@@ -836,7 +836,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         &self,
         s: &Arm64VmState,
     ) -> Result<(Arm64VcpuState, u64, Arm64RestorePrep), VmmError> {
-        if s.contract_hash != contract::contract_hash(self.backend.capabilities().arch.asid_bits) {
+        if s.contract_hash != contract::runtime_contract_hash(self.backend.capabilities().arch) {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
         let dev = records::decode_device_blob(&s.devices.0)?;
@@ -1384,6 +1384,7 @@ mod tests {
             arch: Arm64Caps {
                 in_kernel_gic: true,
                 asid_bits: Arm64AsidBits::Eight,
+                smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
             },
         });
         backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1400,6 +1401,49 @@ mod tests {
         vmm.service_pending_irqs_arm64().unwrap();
         assert_eq!(vmm.backend().pending_irq(), None);
         assert!(!vmm.has_pending_guest_interrupt().unwrap());
+    }
+
+    #[test]
+    fn firmware_workaround_levels_distinguish_restore_and_state_identity() {
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
+
+        let machine = |levels| {
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-arm64",
+                arch: Arm64Caps {
+                    in_kernel_gic: false,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: levels,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut source = machine(Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS);
+        let mut same = machine(Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS);
+        let mut different = machine([2, 3, 1]);
+
+        assert_eq!(source.state_hash().unwrap(), same.state_hash().unwrap());
+        assert_ne!(
+            source.state_hash().unwrap(),
+            different.state_hash().unwrap()
+        );
+        let contract = |vmm: &mut Vmm<MockArm64Backend>| {
+            vmm.state_components()
+                .unwrap()
+                .into_iter()
+                .find(|(name, _)| *name == "contract")
+                .unwrap()
+                .1
+        };
+        assert_eq!(contract(&mut source), contract(&mut same));
+        assert_ne!(contract(&mut source), contract(&mut different));
+        let snapshot = source.save_vm_state().unwrap();
+        same.restore_vm_state(&snapshot).unwrap();
+        assert!(matches!(
+            different.restore_vm_state(&snapshot),
+            Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+        ));
     }
 
     #[test]

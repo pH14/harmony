@@ -82,6 +82,10 @@ pub trait Vendor: Arch + Sized {
 
     fn hash_device_chunks(vcpu: &Self::VcpuState, devices: &Self::Devices, out: &mut Vec<u8>);
 
+    fn contract_identity_hash<B: Backend<A = Self>>(_vmm: &Vmm<B>) -> Option<[u8; 32]> {
+        None
+    }
+
     fn regs_view(vcpu: &Self::VcpuState) -> RegsView;
 
     fn vcpu_components(vcpu: &Self::VcpuState, out: &mut Vec<(&'static str, [u8; 32])>);

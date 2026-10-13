@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
-use vmm_backend::{Arm64AsidBits, Arm64Policy, IdRegModel, SysregTrapPolicy};
+use vmm_backend::{Arm64AsidBits, Arm64Caps, Arm64Policy, IdRegModel, SysregTrapPolicy};
 
 use crate::virtual_time::VirtualTimeTiming;
 
@@ -78,6 +78,16 @@ pub fn contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
         Arm64AsidBits::Sixteen => &SIXTEEN,
     };
     *hash.get_or_init(|| compute_contract_hash(asid_bits))
+}
+
+pub fn runtime_contract_hash(caps: Arm64Caps) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"harmony-arm64-runtime-contract-v1\0");
+    h.update(contract_hash(caps.asid_bits));
+    for level in caps.smccc_workaround_levels {
+        h.update(level.to_le_bytes());
+    }
+    h.finalize().into()
 }
 
 fn compute_contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
