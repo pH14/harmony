@@ -131,6 +131,8 @@ PAX `SCHILY.acl.*` records are rejected for the same reason: macOS can enforce
 an ACL that blocks the layer merge, while GNU tar ignores it without `--acls`.
 PAX `SCHILY.realsize` is rejected as an unsupported sparse-file size record:
 macOS tar expands the extracted file to that size while GNU tar ignores it.
+PAX `SUN.holesdata` is also rejected: macOS tar applies its sparse map to file
+contents while GNU tar ignores it.
 Layer extraction disables extended-attribute restoration. macOS tar otherwise
 tries to restore protected PAX xattrs and can fail where GNU tar succeeds;
 extended attributes are not represented in the guest CPIO image.
