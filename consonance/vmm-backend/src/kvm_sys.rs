@@ -1075,6 +1075,32 @@ impl Backend for KvmBackend {
         if state.events.flags != self.event_valid_flags {
             return Err(BackendError::InvalidState);
         }
+        let events = &state.events;
+        if events.interrupt_soft != 0
+            || events.sipi_vector != 0
+            || events.interrupt_shadow & !3 != 0
+            || events.nmi_pending > 2
+            || (self.event_valid_flags & kvm_bindings::KVM_VCPUEVENT_VALID_TRIPLE_FAULT == 0
+                && events.triple_fault_pending != 0)
+            || [
+                events.exception_injected,
+                events.exception_has_error_code,
+                events.exception_pending,
+                events.exception_has_payload,
+                events.interrupt_injected,
+                events.nmi_injected,
+                events.nmi_masked,
+                events.smi_smm,
+                events.smi_pending,
+                events.smi_inside_nmi,
+                events.smi_latched_init,
+                events.triple_fault_pending,
+            ]
+            .iter()
+            .any(|&bit| bit > 1)
+        {
+            return Err(BackendError::InvalidState);
+        }
         match (self.nested_state_config, &state.nested_state) {
             (Some((format, maximum)), Some(bytes)) => {
                 format.validate(bytes, maximum)?;
