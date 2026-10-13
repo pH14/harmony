@@ -646,7 +646,15 @@ fn vgic_level_attr(block: u32) -> u64 {
     VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
 }
 
-fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
+fn has_pending_or_asserted_spi(s: &Arm64GicState) -> bool {
+    let words = HARMONY_GIC_NR_IRQS as usize / 32;
+    s.pending[1..words]
+        .iter()
+        .chain(s.line_level[1..words].iter())
+        .any(|&word| word != 0)
+}
+
+fn read_vgic_state<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
     require_zero_vgic_routes(k)?;
     let mut s = Arm64GicState {
         impl_spis: HARMONY_GIC_IMPL_SPIS,
@@ -721,6 +729,16 @@ fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
     Ok(s)
 }
 
+fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
+    let s = read_vgic_state(k)?;
+    if has_pending_or_asserted_spi(&s) {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with pending or asserted SPI",
+        });
+    }
+    Ok(s)
+}
+
 fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
     if s.version != GIC_STATE_VERSION
         || s.impl_spis != HARMONY_GIC_IMPL_SPIS
@@ -733,6 +751,7 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.ctlr & 1 != 0
         || s.bpr0 > 7
         || s.bpr1 > 7
+        || has_pending_or_asserted_spi(s)
     {
         return Err(BackendError::InvalidState);
     }
@@ -2042,7 +2061,7 @@ mod tests {
             KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
             vgic_level_attr(32),
             false,
-            0xa5a5_5a5a,
+            0,
         )
         .unwrap();
         let (priority_group, priority_attr) = vgic_priority_attr(8);
@@ -2076,7 +2095,7 @@ mod tests {
         let saved = save_vgic(&fake).unwrap();
         assert_eq!(saved.gicd_ctlr, 0b10);
         assert_eq!(saved.line_level[0], 0);
-        assert_eq!(saved.line_level[1], 0xa5a5_5a5a);
+        assert_eq!(saved.line_level[1], 0);
         assert_eq!(saved.priority[32..36], [0x11, 0x22, 0x33, 0x44]);
         assert_eq!(saved.config[2], 0x20000);
         assert_eq!(saved.pmr, 0x7f);
@@ -2301,6 +2320,188 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn pending_or_asserted_spi_rejects_capture_and_restore_before_mutation() {
+        let mut fake = FakeKvm::new();
+        let baseline = save_vgic(&fake).unwrap();
+        for (group, attr, value) in [
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GIC_ISPENDR + 4, 1),
+            (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(32), 1),
+        ] {
+            fake.set_vgic_attr(group, attr, false, value).unwrap();
+            assert!(matches!(
+                save_vgic(&fake),
+                Err(BackendError::Unsupported { .. })
+            ));
+            fake.set_vgic_attr(group, attr, false, 0).unwrap();
+        }
+        assert_eq!(save_vgic(&fake).unwrap(), baseline);
+
+        for (pending, line_level) in [(1, 0), (0, 1)] {
+            let mut invalid = baseline;
+            invalid.pending[1] = pending;
+            invalid.line_level[1] = line_level;
+            let state = Arm64VcpuState {
+                gic: Some(invalid),
+                ..Arm64VcpuState::default()
+            };
+            let mut target = FakeKvm::new();
+            assert!(matches!(
+                restore_vcpu(&mut target, &state),
+                Err(BackendError::InvalidState)
+            ));
+            assert!(target.calls.is_empty());
+        }
+    }
+
+    #[repr(C, align(16384))]
+    struct LiveRouteMemory([u8; 16384]);
+
+    fn map_route_memory<B: Backend<A = Arm64>>(
+        backend: &mut B,
+        memory: &mut Box<LiveRouteMemory>,
+    ) -> Result<()> {
+        // SAFETY: the boxed allocation is page aligned and callers retain it
+        // until the backend is dropped, so its address stays valid for the map.
+        unsafe { backend.map_memory(Gpa(0x4000_0000), &mut memory.0) }
+    }
+
+    #[test]
+    fn route_memory_mapping_is_miri_reachable() {
+        let mut backend = crate::MockArm64Backend::new();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut memory = Box::new(LiveRouteMemory([0; 16384]));
+        map_route_memory(&mut backend, &mut memory).unwrap();
+        assert_eq!(backend.save().unwrap().core.pc, 0);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+    struct LiveRouteGuest {
+        backend: Arm64KvmBackend<crate::LiveKvm>,
+        _memory: Box<LiveRouteMemory>,
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+    impl LiveRouteGuest {
+        fn new(program: &[u32]) -> Self {
+            let mut backend = Arm64KvmBackend::new(crate::LiveKvm::new().unwrap());
+            let mut memory = Box::new(LiveRouteMemory([0; 16384]));
+            for (slot, word) in memory.0.chunks_exact_mut(4).zip(program) {
+                slot.copy_from_slice(&word.to_le_bytes());
+            }
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            map_route_memory(&mut backend, &mut memory).unwrap();
+            backend.invalidate_instruction_cache(memory.0.as_ptr() as usize, memory.0.len());
+            let mut initial = backend.save().unwrap();
+            initial.core.pc = 0x4000_0000;
+            initial.core.pstate = 0x3c5;
+            initial.sysregs.sctlr_el1 &= !1;
+            backend.restore(&initial).unwrap();
+            Self {
+                backend,
+                _memory: memory,
+            }
+        }
+
+        fn next_store(&mut self) -> u64 {
+            match self.backend.run() {
+                Ok(Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(0x0900_0000),
+                    write: Some(value),
+                    ..
+                })) => value,
+                other => panic!("expected an ARM observation, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+    #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+    fn routed_away_pending_spi_refuses_capture_and_restore() {
+        let program = [
+            0xd2a1_0001,
+            0xf28c_2001,
+            0xd2a1_0002,
+            0xf280_1082,
+            0xd2a1_0003,
+            0xf280_2083,
+            0xd2a1_0004,
+            0xf280_4084,
+            0xd2a1_0005,
+            0xd2a1_2006,
+            0xd2a1_0008,
+            0xf281_8108,
+            0xd2a1_0149,
+            0xf280_0289,
+            0x5280_000a,
+            0xb900_012a,
+            0xd2a1_000b,
+            0xf280_840b,
+            0x5280_140a,
+            0xb900_016a,
+            0xd280_0020,
+            0xf900_0020,
+            0xb900_0040,
+            0x5280_0247,
+            0xb900_0107,
+            0xb900_00a7,
+            0xb900_0060,
+            0xb900_0080,
+            0xd280_0000,
+            0xf900_0020,
+            0xd280_0020,
+            0xd518_cca0,
+            0xd280_1e00,
+            0xd518_4600,
+            0xd280_0020,
+            0xd518_cce0,
+            0xd503_3f9f,
+            0xd503_3fdf,
+            0xd538_cc40,
+            0xf900_00c0,
+            0xd538_cc40,
+            0xf900_00c0,
+            0x1400_0000,
+        ];
+        let mut routed_away = LiveRouteGuest::new(&program);
+        assert_eq!(routed_away.next_store(), 1023);
+        let hidden = read_vgic_state(routed_away.backend.kvm()).unwrap();
+        assert_eq!(hidden.pending[1] & 1, 1);
+        assert!(matches!(
+            routed_away.backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert_eq!(routed_away.next_store(), 1023);
+
+        let mut direct_program = Vec::from(program);
+        direct_program.splice(22..22, [0xd280_0000, 0xf900_0020, 0xd280_0020]);
+        let mut directly_pending = LiveRouteGuest::new(&direct_program);
+        assert_eq!(directly_pending.next_store(), 32);
+        let deliverable = read_vgic_state(directly_pending.backend.kvm()).unwrap();
+        assert_eq!(hidden, deliverable);
+        assert!(matches!(
+            directly_pending.backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert_eq!(directly_pending.next_store(), 32);
+
+        let mut target = LiveRouteGuest::new(&[0x1400_0000]);
+        let before = target.backend.save().unwrap();
+        let mut incoming = before;
+        incoming.gic = Some(hidden);
+        assert!(matches!(
+            target.backend.restore(&incoming),
+            Err(BackendError::InvalidState)
+        ));
+        let after = target.backend.save().unwrap();
+        assert_eq!(after.core, before.core);
+        assert_eq!(after.gic, before.gic);
+        eprintln!(
+            "SPI32 route-history HPPIR=1023 direct HPPIR=32 captured-GIC-equal=true capture=refused restore=refused"
+        );
     }
 
     #[test]
@@ -3213,6 +3414,8 @@ mod tests {
             Exit::Common(CommonExit::Mmio { .. })
         ));
         assert_eq!(spi.take_accepted_interrupt(), Some(GicIntId(65)));
+        assert!(matches!(spi.save(), Err(BackendError::Unsupported { .. })));
+        spi.set_pending_irq(None).unwrap();
         assert_eq!(spi.save().unwrap().gic.unwrap().active[2], 1 << 1);
 
         let mut fake = FakeKvm::new();

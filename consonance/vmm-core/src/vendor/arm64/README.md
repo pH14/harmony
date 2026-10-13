@@ -106,3 +106,8 @@ The record omits SPI routing because the only supported single-vCPU route is
 zero: KVM rejects capture of any nonzero `GICD_IROUTER` value, and restore
 clears all routes to zero. Consequently there is no additional device-blob
 field or version change for the route policy.
+The KVM backend also refuses capture or state hashing while any SPI is pending
+or has an asserted input line, because its hidden delivery queue can differ
+after guest routing changes even when the captured GIC registers agree. KVM
+restore rejects such records before mutation; the userspace GIC continues to
+capture its represented pending-SPI state.
