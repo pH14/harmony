@@ -717,13 +717,32 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             self.devices.gic.is_some(),
             self.backend.capabilities().arch.in_kernel_gic,
         ) {
-            return Ok(self.devices.clockevent.line_asserted);
+            return if self.devices.clockevent.line_asserted {
+                self.in_kernel_clockevent_deliverable()
+            } else {
+                Ok(false)
+            };
         }
         Ok(self
             .devices
             .gic
             .as_ref()
             .is_some_and(|g| g.peek_interrupt().is_some()))
+    }
+
+    fn in_kernel_clockevent_deliverable(&mut self) -> Result<bool, VmmError> {
+        let state = self.backend.save()?;
+        let gic = state.gic.ok_or_else(|| {
+            VmmError::ContractViolation("in-kernel GIC state is absent at idle".to_string())
+        })?;
+        let model = gicv3::Gicv3::restore(
+            &records::gic_from_backend(&gic),
+            self.current_vns().unwrap_or_default(),
+        )
+        .map_err(|error| {
+            VmmError::ContractViolation(format!("in-kernel GIC state is invalid at idle: {error}"))
+        })?;
+        Ok(model.input_deliverable(super::board::PVCLOCK_PPI))
     }
 
     pub(crate) fn next_timer_deadline_vns_arm64(&self) -> Option<u64> {
@@ -751,27 +770,35 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             .map(|deadline_vns| (deadline_vns, super::board::PVCLOCK_PPI))
     }
 
-    pub(crate) fn deliverable_timer_deadline_vns_arm64(&self) -> Option<u64> {
+    pub(crate) fn deliverable_timer_deadline_vns_arm64(&mut self) -> Result<Option<u64>, VmmError> {
         let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
         let generic = self.devices.gic.as_ref().and_then(|gic| {
             gic.next_timer_deadline()
                 .filter(|_| gic.armed_timer_deliverable())
         });
-        let clockevent = self
+        let clockevent = if let Some(deadline) = self
             .devices
             .clockevent
             .deadline
             .filter(|_| self.pvclock_registration().is_some())
-            .filter(|_| {
-                self.devices.gic.as_ref().map_or(in_kernel_gic, |gic| {
-                    gic.input_deliverable(super::board::PVCLOCK_PPI)
-                })
-            })
-            .and_then(|deadline| self.guest_clock_deadline_vns(deadline).ok());
-        match (generic, clockevent) {
+        {
+            let deliverable = if let Some(gic) = self.devices.gic.as_ref() {
+                gic.input_deliverable(super::board::PVCLOCK_PPI)
+            } else if in_kernel_gic {
+                self.in_kernel_clockevent_deliverable()?
+            } else {
+                false
+            };
+            deliverable
+                .then(|| self.guest_clock_deadline_vns(deadline).ok())
+                .flatten()
+        } else {
+            None
+        };
+        Ok(match (generic, clockevent) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (only, None) | (None, only) => only,
-        }
+        })
     }
 
     pub(crate) fn has_pending_guest_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
@@ -1388,6 +1415,19 @@ mod tests {
             },
         });
         backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut gic = new_gic().snapshot();
+        let bit = 1u32 << PVCLOCK_PPI;
+        gic.gicd_ctlr = 2;
+        gic.group[0] = bit;
+        gic.enable[0] = bit;
+        gic.line_level[0] = bit;
+        gic.pmr = 0xff;
+        gic.igrpen1 = true;
+        let state = Arm64VcpuState {
+            gic: Some(records::gic_to_backend(&gic)),
+            ..Arm64VcpuState::default()
+        };
+        backend.set_state(state);
         let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
         assert!(!vmm.has_pending_guest_interrupt().unwrap());
 
@@ -1444,6 +1484,92 @@ mod tests {
             different.restore_vm_state(&snapshot),
             Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
         ));
+    }
+
+    #[test]
+    fn in_kernel_clockevent_idle_waits_when_the_ppi_is_not_deliverable() {
+        use crate::vmm::VtimeWiring;
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
+
+        let cases = [
+            ("ready", true, true, true, true, 0xff, false, true),
+            ("disabled", false, true, true, true, 0xff, false, false),
+            ("ungrouped", true, false, true, true, 0xff, false, false),
+            (
+                "distributor off",
+                true,
+                true,
+                false,
+                true,
+                0xff,
+                false,
+                false,
+            ),
+            ("CPU group off", true, true, true, false, 0xff, false, false),
+            ("PMR masked", true, true, true, true, 0x80, false, false),
+            ("active", true, true, true, true, 0xff, true, false),
+        ];
+        let bit = 1u32 << PVCLOCK_PPI;
+        for (name, enabled, grouped, distributor, cpu_group, pmr, active, deliverable) in cases {
+            let mut gic = new_gic().snapshot();
+            gic.enable[0] = if enabled { bit } else { 0 };
+            gic.group[0] = if grouped { bit } else { 0 };
+            gic.gicd_ctlr = if distributor { 2 } else { 0 };
+            gic.igrpen1 = cpu_group;
+            gic.pmr = pmr;
+            gic.priority[PVCLOCK_PPI as usize] = 0x80;
+            gic.line_level[0] = bit;
+            gic.active[0] = if active { bit } else { 0 };
+
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-kernel-gic",
+                arch: Arm64Caps {
+                    in_kernel_gic: true,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let state = Arm64VcpuState {
+                gic: Some(records::gic_to_backend(&gic)),
+                ..Arm64VcpuState::default()
+            };
+            backend.set_state(state);
+            let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new_virtual_time(
+                    vtime::VClockConfig {
+                        guest_hz: CNTFRQ_HZ,
+                        guest_base: 0,
+                        vns_base: 0,
+                    },
+                    7,
+                )
+                .unwrap(),
+            );
+            vmm.devices.clockevent.line_asserted = true;
+
+            assert_eq!(
+                vmm.pending_deliverable_interrupt_arm64().unwrap(),
+                deliverable,
+                "{name}"
+            );
+            assert_eq!(
+                vmm.on_idle().unwrap() == Step::Continued,
+                deliverable,
+                "{name}"
+            );
+
+            vmm.devices.clockevent.line_asserted = false;
+            vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+            vmm.enable_pvclock();
+            assert_eq!(vmm.pvclock_register(0x1000).0, Status::Ok);
+            assert_eq!(
+                vmm.deliverable_timer_deadline_vns_arm64().unwrap(),
+                deliverable.then_some(1_000_000_000),
+                "{name}"
+            );
+        }
     }
 
     #[test]

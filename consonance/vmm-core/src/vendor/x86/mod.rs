@@ -127,11 +127,14 @@ impl Vendor for X86 {
         ))
     }
 
-    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
-        let lapic = vmm.devices().lapic.as_ref()?;
-        lapic
-            .next_timer_deadline()
-            .filter(|_| lapic.armed_timer_deliverable())
+    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
+        vmm: &mut Vmm<B>,
+    ) -> Result<Option<u64>, VmmError> {
+        Ok(vmm.devices().lapic.as_ref().and_then(|lapic| {
+            lapic
+                .next_timer_deadline()
+                .filter(|_| lapic.armed_timer_deliverable())
+        }))
     }
 
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(
