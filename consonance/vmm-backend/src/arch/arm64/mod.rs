@@ -98,6 +98,7 @@ pub struct Arm64Caps {
     pub asid_bits: Arm64AsidBits,
     pub smccc_workaround_levels: [u64; 3],
     pub psci_profile: Arm64PsciProfile,
+    pub gic_ctlr_fixed_bits: u64,
 }
 
 impl Arm64Caps {

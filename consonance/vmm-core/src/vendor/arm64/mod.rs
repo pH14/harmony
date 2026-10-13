@@ -38,6 +38,10 @@ pub fn compare_gic_architecture(
     scalar!(timer_intid);
     scalar!(gicd_ctlr);
     scalar!(pmr);
+    scalar!(bpr0);
+    scalar!(bpr1);
+    scalar!(ctlr);
+    scalar!(igrpen0);
     scalar!(igrpen1);
     scalar!(cntv_ctl);
     scalar!(cntv_cval);
@@ -63,6 +67,8 @@ pub fn compare_gic_architecture(
     array!(active);
     array!(line_level);
     array!(priority);
+    array!(ap0r);
+    array!(ap1r);
     Ok(())
 }
 
@@ -205,7 +211,13 @@ impl Arm64ArchitecturalState {
             writeln!(out, "gic.priority.{index} {value:02x}")?;
         }
         writeln!(out, "gic.pmr {:02x}", gic.pmr)?;
+        writeln!(out, "gic.bpr0 {:02x}", gic.bpr0)?;
+        writeln!(out, "gic.bpr1 {:02x}", gic.bpr1)?;
+        write_u64(&mut out, "gic.ctlr", gic.ctlr)?;
+        write_bool(&mut out, "gic.igrpen0", gic.igrpen0)?;
         write_bool(&mut out, "gic.igrpen1", gic.igrpen1)?;
+        write_u32_array(&mut out, "gic.ap0r", &gic.ap0r)?;
+        write_u32_array(&mut out, "gic.ap1r", &gic.ap1r)?;
         write_u64(&mut out, "gic.cntv_ctl", gic.cntv_ctl)?;
         write_u64(&mut out, "gic.cntv_cval", gic.cntv_cval)?;
         write_bool(&mut out, "gic.timer_fired", gic.timer_fired)
@@ -708,7 +720,45 @@ mod comparator_tests {
                 index: None,
             })
         );
+        let mut planted = expected.clone();
+        planted.bpr1 = 7;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "bpr1",
+                index: None,
+            })
+        );
+        let mut planted = expected.clone();
+        planted.ap1r[2] = 1;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "ap1r",
+                index: Some(2),
+            })
+        );
         assert_eq!(compare_gic_architecture(&expected, &expected), Ok(()));
+    }
+
+    #[test]
+    fn gic_cpu_interface_changes_the_unconditional_device_hash_chunk() {
+        let mut vcpu = Arm64VcpuState {
+            gic: Some(records::gic_to_backend(&board::new_gic().snapshot())),
+            ..Arm64VcpuState::default()
+        };
+        let devices = Arm64Devices::new();
+        let mut before = Vec::new();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut before);
+        vcpu.gic.as_mut().unwrap().bpr1 = 7;
+        let mut after = Vec::new();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut after);
+        assert_ne!(before, after);
+        vcpu.gic.as_mut().unwrap().bpr1 = 0;
+        vcpu.gic.as_mut().unwrap().ap1r[0] = 1;
+        after.clear();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut after);
+        assert_ne!(before, after);
     }
 
     #[test]

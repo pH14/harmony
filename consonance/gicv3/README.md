@@ -17,6 +17,10 @@ arithmetic.
 configuration and clears state beyond the configured SPI limit. The firing
 deadline is derived from the current V-time and timer registers rather than
 stored in the state record.
+The record also carries the GIC CPU-interface binary points, control, group
+enables, and active-priority registers needed by KVM's in-kernel controller.
+The userspace controller's current Group-1 arbitration uses its own PMR and
+active INTID state; these additional CPU-interface fields remain zero on HVF.
 
 The model covers SGIs, PPIs, and configured SPIs for one security state and one
 redistributor. Group 0/FIQ, LPIs, interrupt routing, SGI generation through

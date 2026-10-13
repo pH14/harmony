@@ -49,7 +49,7 @@ const HARMONY_GIC_IMPL_SPIS: u32 = 64;
 pub(crate) const HARMONY_GIC_NR_IRQS: u32 = 32 + HARMONY_GIC_IMPL_SPIS;
 const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
-const GIC_STATE_VERSION: u32 = 3;
+const GIC_STATE_VERSION: u32 = 4;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -60,7 +60,28 @@ const fn vgic_sysreg(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
 }
 
 const ICC_PMR_EL1: u64 = vgic_sysreg(3, 0, 4, 6, 0);
+const ICC_BPR0_EL1: u64 = vgic_sysreg(3, 0, 12, 8, 3);
+const ICC_AP0R0_EL1: u64 = vgic_sysreg(3, 0, 12, 8, 4);
+const ICC_AP1R0_EL1: u64 = vgic_sysreg(3, 0, 12, 9, 0);
+const ICC_BPR1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 3);
+const ICC_CTLR_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 4);
+const ICC_IGRPEN0_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 6);
 const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
+const ICC_CTLR_GUEST_WRITABLE: u64 = 0b11;
+const ICC_CTLR_PRIBITS_SHIFT: u32 = 8;
+
+fn vgic_apr_count(ctlr: u64) -> Result<usize> {
+    match ((ctlr >> ICC_CTLR_PRIBITS_SHIFT) & 0b111) + 1 {
+        4 | 5 => Ok(1),
+        6 => Ok(2),
+        7 | 8 => Ok(4),
+        _ => Err(BackendError::InvalidState),
+    }
+}
+
+fn vgic_cpu_sysreg<K: Arm64Kvm + ?Sized>(k: &K, reg: u64) -> Result<u64> {
+    k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, reg, true)
+}
 
 #[cfg(any(
     all(target_os = "linux", target_arch = "aarch64"),
@@ -579,6 +600,13 @@ fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
     s.gicd_ctlr =
         u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)? & 0b10)
             .map_err(|_| BackendError::InvalidState)?;
+    s.ctlr = vgic_cpu_sysreg(k, ICC_CTLR_EL1)?;
+    if s.ctlr & 1 != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with ICC_CTLR_EL1.CBPR set",
+        });
+    }
+    let apr_count = vgic_apr_count(s.ctlr)?;
 
     let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
     for word in 0..words {
@@ -606,13 +634,28 @@ fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
             .to_le_bytes();
         s.priority[word * 4..word * 4 + 4].copy_from_slice(&bytes);
     }
-    s.pmr = u8::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_PMR_EL1, true)?)
-        .map_err(|_| BackendError::InvalidState)?;
-    s.igrpen1 = match k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_IGRPEN1_EL1, true)? {
+    s.pmr =
+        u8::try_from(vgic_cpu_sysreg(k, ICC_PMR_EL1)?).map_err(|_| BackendError::InvalidState)?;
+    s.bpr0 =
+        u8::try_from(vgic_cpu_sysreg(k, ICC_BPR0_EL1)?).map_err(|_| BackendError::InvalidState)?;
+    s.bpr1 =
+        u8::try_from(vgic_cpu_sysreg(k, ICC_BPR1_EL1)?).map_err(|_| BackendError::InvalidState)?;
+    s.igrpen0 = match vgic_cpu_sysreg(k, ICC_IGRPEN0_EL1)? {
         0 => false,
         1 => true,
         _ => return Err(BackendError::InvalidState),
     };
+    s.igrpen1 = match vgic_cpu_sysreg(k, ICC_IGRPEN1_EL1)? {
+        0 => false,
+        1 => true,
+        _ => return Err(BackendError::InvalidState),
+    };
+    for index in 0..apr_count {
+        s.ap0r[index] = u32::try_from(vgic_cpu_sysreg(k, ICC_AP0R0_EL1 + index as u64)?)
+            .map_err(|_| BackendError::InvalidState)?;
+        s.ap1r[index] = u32::try_from(vgic_cpu_sysreg(k, ICC_AP1R0_EL1 + index as u64)?)
+            .map_err(|_| BackendError::InvalidState)?;
+    }
     Ok(s)
 }
 
@@ -625,6 +668,15 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.cntv_ctl != 0
         || s.cntv_cval != 0
         || s.timer_fired
+        || s.ctlr & 1 != 0
+        || s.bpr0 > 7
+        || s.bpr1 > 7
+    {
+        return Err(BackendError::InvalidState);
+    }
+    let apr_count = vgic_apr_count(s.ctlr)?;
+    if s.ap0r[apr_count..].iter().any(|&value| value != 0)
+        || s.ap1r[apr_count..].iter().any(|&value| value != 0)
     {
         return Err(BackendError::InvalidState);
     }
@@ -638,6 +690,15 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         .iter()
         .any(|&byte| byte != 0)
     {
+        return Err(BackendError::InvalidState);
+    }
+    Ok(())
+}
+
+fn validate_vgic_host<K: Arm64Kvm + ?Sized>(k: &K, s: &Arm64GicState) -> Result<()> {
+    validate_vgic_state(s)?;
+    let fixed = vgic_cpu_sysreg(k, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
+    if s.ctlr & !ICC_CTLR_GUEST_WRITABLE != fixed {
         return Err(BackendError::InvalidState);
     }
     Ok(())
@@ -660,7 +721,7 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
 }
 
 fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
-    validate_vgic_state(s)?;
+    validate_vgic_host(k, s)?;
     let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
     for word in 0..words {
         let (group, attr) = vgic_bitmap_attr(word, GIC_IGROUPR);
@@ -696,6 +757,27 @@ fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()
             s.priority[first + 3],
         ]);
         k.set_vgic_attr(group, attr, false, u64::from(value))?;
+    }
+    k.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, s.ctlr)?;
+    for (reg, value) in [
+        (ICC_BPR0_EL1, u64::from(s.bpr0)),
+        (ICC_BPR1_EL1, u64::from(s.bpr1)),
+        (ICC_IGRPEN0_EL1, u64::from(s.igrpen0)),
+    ] {
+        k.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, reg, true, value)?;
+    }
+    for index in 0..vgic_apr_count(s.ctlr)? {
+        for (base, value) in [
+            (ICC_AP0R0_EL1, s.ap0r[index]),
+            (ICC_AP1R0_EL1, s.ap1r[index]),
+        ] {
+            k.set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+                base + index as u64,
+                true,
+                u64::from(value),
+            )?;
+        }
     }
     k.set_vgic_attr(
         KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
@@ -759,6 +841,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
 
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
     validate_restore_vcpu_state(s)?;
+    validate_vgic_host(k, s.gic.as_ref().ok_or(BackendError::InvalidState)?)?;
     for i in 0..31u64 {
         k.set_one_reg(core_reg(i * 2), s.core.x[i as usize])?;
     }
@@ -892,6 +975,7 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     completions: StoreCompletions,
     mmio_owed: bool,
     smccc_workaround_levels: [u64; 3],
+    gic_ctlr_fixed_bits: u64,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -914,6 +998,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             completions: StoreCompletions::default(),
             mmio_owed: false,
             smccc_workaround_levels: [u64::MAX; 3],
+            gic_ctlr_fixed_bits: 0,
         }
     }
 
@@ -1087,6 +1172,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         for (index, register) in SMCCC_WORKAROUND_REGISTERS.into_iter().enumerate() {
             self.smccc_workaround_levels[index] = self.kvm.get_one_reg(register)?;
         }
+        self.gic_ctlr_fixed_bits =
+            vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
+        vgic_apr_count(self.gic_ctlr_fixed_bits)?;
         let _ = &policy.sysreg_traps;
         self.configured = true;
         Ok(())
@@ -1261,7 +1349,11 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
-        validate_restore_vcpu_state(state)
+        validate_restore_vcpu_state(state)?;
+        validate_vgic_host(
+            &self.kvm,
+            state.gic.as_ref().ok_or(BackendError::InvalidState)?,
+        )
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
@@ -1297,6 +1389,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 asid_bits: self.kvm.asid_bits(),
                 smccc_workaround_levels: self.smccc_workaround_levels,
                 psci_profile: crate::arch::arm64::Arm64PsciProfile::KvmPsci10,
+                gic_ctlr_fixed_bits: self.gic_ctlr_fixed_bits,
             },
         }
     }
@@ -1340,6 +1433,10 @@ impl FakeKvm {
         {
             fake.regs.insert(id, level);
         }
+        fake.vgic_attrs.insert(
+            (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true),
+            0x8400,
+        );
         fake
     }
 
@@ -1851,6 +1948,17 @@ mod tests {
         .unwrap();
         fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_PMR_EL1, true, 0x7f)
             .unwrap();
+        for (reg, value) in [
+            (ICC_BPR0_EL1, 7),
+            (ICC_BPR1_EL1, 6),
+            (ICC_CTLR_EL1, 0x8402),
+            (ICC_IGRPEN0_EL1, 1),
+            (ICC_AP0R0_EL1, 0x1234),
+            (ICC_AP1R0_EL1, 0x5678),
+        ] {
+            fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, reg, true, value)
+                .unwrap();
+        }
         fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_IGRPEN1_EL1, true, 1)
             .unwrap();
         fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false, 0b10)
@@ -1861,7 +1969,13 @@ mod tests {
         assert_eq!(saved.line_level[1], 0xa5a5_5a5a);
         assert_eq!(saved.priority[32..36], [0x11, 0x22, 0x33, 0x44]);
         assert_eq!(saved.pmr, 0x7f);
+        assert_eq!(saved.bpr0, 7);
+        assert_eq!(saved.bpr1, 6);
+        assert_eq!(saved.ctlr, 0x8402);
+        assert!(saved.igrpen0);
         assert!(saved.igrpen1);
+        assert_eq!(saved.ap0r, [0x1234, 0, 0, 0]);
+        assert_eq!(saved.ap1r, [0x5678, 0, 0, 0]);
         validate_vgic_state(&saved).unwrap();
 
         let mut restored = FakeKvm::new();
@@ -1908,6 +2022,12 @@ mod tests {
                 timer_fired: true,
                 ..saved
             },
+            Arm64GicState {
+                ctlr: saved.ctlr | 1,
+                ..saved
+            },
+            Arm64GicState { bpr0: 8, ..saved },
+            Arm64GicState { bpr1: 8, ..saved },
         ] {
             assert!(matches!(
                 validate_vgic_state(&invalid),
@@ -1927,6 +2047,72 @@ mod tests {
             validate_vgic_state(&invalid_priority),
             Err(BackendError::InvalidState)
         ));
+        let mut invalid_apr = saved;
+        invalid_apr.ap1r[1] = 1;
+        assert!(matches!(
+            validate_vgic_state(&invalid_apr),
+            Err(BackendError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn vgic_cpu_interface_rejects_hidden_bpr_and_foreign_host_before_mutation() {
+        let mut source = FakeKvm::new();
+        source
+            .set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, 0x8401)
+            .unwrap();
+        assert!(matches!(
+            save_vgic(&source),
+            Err(BackendError::Unsupported { .. })
+        ));
+
+        source
+            .set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, 0x8400)
+            .unwrap();
+        let saved = save_vgic(&source).unwrap();
+        let mut foreign = FakeKvm::new();
+        foreign
+            .set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, 0x9400)
+            .unwrap();
+        let state = Arm64VcpuState {
+            gic: Some(saved),
+            ..Arm64VcpuState::default()
+        };
+        assert!(matches!(
+            restore_vcpu(&mut foreign, &state),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(foreign.calls.is_empty());
+    }
+
+    #[test]
+    fn vgic_apr_count_tracks_host_priority_width() {
+        for (priority_bits, expected_count) in [(4, 1), (5, 1), (6, 2), (7, 4), (8, 4)] {
+            let ctlr = 0x8000 | ((priority_bits - 1) << ICC_CTLR_PRIBITS_SHIFT);
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, ctlr)
+                .unwrap();
+            for index in 0..expected_count {
+                fake.set_vgic_attr(
+                    KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+                    ICC_AP1R0_EL1 + index as u64,
+                    true,
+                    (index + 1) as u64,
+                )
+                .unwrap();
+            }
+            let saved = save_vgic(&fake).unwrap();
+            assert_eq!(
+                saved.ap1r.iter().filter(|&&value| value != 0).count(),
+                expected_count
+            );
+            let mut restored = FakeKvm::new();
+            restored
+                .set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, ctlr)
+                .unwrap();
+            restore_vgic(&mut restored, &saved).unwrap();
+            assert_eq!(save_vgic(&restored).unwrap(), saved);
+        }
     }
 
     #[test]

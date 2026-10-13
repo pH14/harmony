@@ -160,6 +160,58 @@ fn guest_system_registers_survive_reused_and_fresh_restore() {
 }
 
 #[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_gic_cpu_interface_survives_fresh_restore() {
+    for (name, msr, mrs, value) in [
+        ("BPR0", 0xd518_c860, 0xd538_c860, 7),
+        ("BPR1", 0xd518_cc60, 0xd538_cc60, 7),
+        ("AP0R0", 0xd518_c880, 0xd538_c880, 1),
+        ("AP1R0", 0xd518_c900, 0xd538_c900, 1),
+        ("CTLR", 0xd518_cc80, 0xd538_cc80, 2),
+        ("IGRPEN0", 0xd518_ccc0, 0xd538_ccc0, 1),
+    ] {
+        let program = [
+            0xd2a1_2004,
+            0xd280_0000 | (value << 5),
+            msr,
+            0xd503_3fdf,
+            mrs,
+            0xf900_0080,
+            mrs,
+            0xf900_0080,
+            0x1400_0000,
+        ];
+        let mut source = Guest::new(live_backend(), &program);
+        let first = source.next_store();
+        let cut = source.save();
+        let uninterrupted = source.next_store();
+        drop(source);
+        let mut target = Guest::new(live_backend(), &program);
+        target.restore(&cut);
+        let resumed = target.next_store();
+        assert_eq!(first, uninterrupted, "{name} uninterrupted");
+        assert_eq!(first, resumed, "{name} fresh restore");
+    }
+
+    let cbpr_program = [
+        0xd2a1_2004,
+        0xd280_0020,
+        0xd518_cc80,
+        0xd503_3fdf,
+        0xd538_cc80,
+        0xf900_0080,
+        0x1400_0000,
+    ];
+    let mut guest = Guest::new(live_backend(), &cbpr_program);
+    assert_ne!(guest.next_store() & 1, 0);
+    assert!(matches!(
+        guest.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+}
+
+#[test]
 #[cfg(all(
     target_arch = "aarch64",
     any(target_os = "macos", target_os = "linux"),
