@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Heatmap } from "../src/heat.js";
-import { Swarm, swarmPoint, NO_ROOM } from "../src/swarm.js";
+import { Swarm, swarmPoint, ghosts, NO_ROOM } from "../src/swarm.js";
 
 test("swarm interpolation never connects rooms, death or reload gaps", () => {
   const samples = new Uint16Array([0, 0, 10, 20, 0, 4, 0, 18, 28, 2,
@@ -101,9 +101,9 @@ test("detailed frames report rollout age and same-room ghosts", () => {
   swarm.add(0, [new Uint16Array([0, 0, 10, 100, 0, 30, 0, 70, 100, 0])], 0);
   const [point] = swarm.frame(0, 250, false, 16, true).get(0);
   assert.ok(point.life > 0.4 && point.life < 0.6);
-  assert.equal(point.ghosts.length, 2);
-  assert.ok(point.ghosts.every((ghost) => ghost.x < point.x));
-  assert.deepEqual(swarm.frame(0, 250, true, 16, true).get(0)[0].ghosts, []);
+  assert.equal(ghosts(point).length, 2);
+  assert.ok(ghosts(point).every((ghost) => ghost.x < point.x));
+  assert.deepEqual(ghosts(swarm.frame(0, 250, true, 16, true).get(0)[0]), []);
 });
 
 test("a sprite cap samples trails across the swarm and keeps each sampled trail across frames", () => {

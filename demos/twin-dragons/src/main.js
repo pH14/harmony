@@ -6,7 +6,7 @@ import { RoutePreviews } from "./preview.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, ROM_SHA256, CORE_REVISION } from "./emulator.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
-import { Swarm, SPRITE } from "./swarm.js";
+import { Swarm, SPRITE, ghosts } from "./swarm.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -104,6 +104,7 @@ let playSession = null,
   renderedFrame = 0,
   seekStarted = 0,
   lastMapPaint = 0,
+  statsDirty = false,
   lastDetailPaint = 0;
 const searchViews = new Map(),
   reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -255,28 +256,44 @@ function branchIcon() {
   return branchIcons.get("player");
 }
 sprites.addEventListener("load", () => renderBranches());
-function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null) {
+const ghostDot = document.createElement("canvas");
+ghostDot.width = ghostDot.height = 32;
+{
+  const dot = ghostDot.getContext("2d");
+  dot.fillStyle = "#eaf6ff";
+  dot.beginPath();
+  dot.arc(16, 16, 16, 0, Math.PI * 2);
+  dot.fill();
+}
+function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, visible = null) {
   if (!sprites.complete || !sprites.naturalWidth) return 0;
   const map = maps.get(level), points = rooms?.get(level) || [];
   const size = Math.max(1, Math.min(2.5, 18 / (SPRITE.height * screenScale)));
-  ctx.save();
-  ctx.fillStyle = "#eaf6ff";
+  const radius = 1.7 * size, margin = 32 * size;
+  const shown = [];
   let count = 0;
   for (const raw of points) {
     const p = project(raw, map);
     if (p.x < 0 || p.x >= map.width || p.y < 0 || p.y >= map.height) continue;
     if (panel && (p.x < panel.x - 48 || p.x >= panel.x + panel.width + 48 || p.y < panel.y - 48 || p.y >= panel.y + panel.height + 48)) continue;
-    for (const [i, ghost] of (raw.ghosts || []).entries()) {
+    if (!panel || panelContains(panel, { x: p.x, y: p.y - 8 })) count++;
+    if (visible && (p.x < visible.left - margin || p.x > visible.right + margin || p.y < visible.top - margin || p.y > visible.bottom + margin)) continue;
+    shown.push(p, raw);
+  }
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  for (let i = 1; i < shown.length; i += 2)
+    ghosts(shown[i]).forEach((ghost, index) => {
       const g = project(ghost, map);
-      ctx.globalAlpha = i ? 0.12 : 0.22;
-      ctx.beginPath();
-      ctx.arc(g.x, g.y - 8, 1.7 * size, 0, Math.PI * 2);
-      ctx.fill();
-    }
+      ctx.globalAlpha = index ? 0.12 : 0.22;
+      ctx.drawImage(ghostDot, g.x - radius, g.y - 8 - radius, radius * 2, radius * 2);
+    });
+  ctx.imageSmoothingEnabled = false;
+  for (let i = 0; i < shown.length; i += 2) {
+    const p = shown[i], raw = shown[i + 1];
     ctx.globalAlpha = raw.life === undefined ? 0.8 : Math.min(1, raw.life / 0.05 + 0.2) * (0.97 - 0.32 * raw.life);
     ctx.drawImage(sprites, (p.pose >> 1) * SPRITE.width, (p.pose & 1) * SPRITE.height, SPRITE.width, SPRITE.height,
       p.x - (SPRITE.originX + 8) * size, p.y - 8 - (SPRITE.originY + 8) * size, SPRITE.width * size, SPRITE.height * size);
-    if (!panel || panelContains(panel, { x: p.x, y: p.y - 8 })) count++;
   }
   ctx.restore();
   return count;
@@ -309,12 +326,20 @@ function maxZoom(c) {
   return c?.dataset.viewport === "true" ? Math.max(6, closeUpZoom(c) * 2.5) : 6;
 }
 function frontier(level) {
-  const map = maps.get(level);
-  const points = (swarmRooms.get(level) || []).map((p) => project(p, map))
-    .filter((p) => p.x >= 0 && p.x < map.width && p.y >= 0 && p.y < map.height);
-  if (points.length < 4) return null;
-  const xs = points.map((p) => p.x).sort((a, b) => a - b), x = xs[Math.floor(xs.length * 0.8)];
-  const ys = points.filter((p) => Math.abs(p.x - x) < 160).map((p) => p.y).sort((a, b) => a - b);
+  const map = maps.get(level), raw = swarmRooms.get(level) || [];
+  const px = new Float64Array(raw.length), py = new Float64Array(raw.length);
+  let n = 0;
+  for (const p of raw) {
+    const x = p.x + 8, y = p.y + 8;
+    if (x < 0 || x >= map.width || y < 0 || y >= map.height) continue;
+    px[n] = x;
+    py[n++] = y;
+  }
+  if (n < 4) return null;
+  const x = px.slice(0, n).sort()[Math.floor(n * 0.8)];
+  const ys = [];
+  for (let i = 0; i < n; i++) if (Math.abs(px[i] - x) < 160) ys.push(py[i]);
+  ys.sort((a, b) => a - b);
   return { x, y: (ys[ys.length >> 1] ?? map.height / 2) - 8 };
 }
 function reachedFrontier(level) {
@@ -649,7 +674,8 @@ function panorama(level) {
 }
 const canvas = $("map"),
   film = $("film").getContext("2d");
-const fmt = (n) => Math.round(n || 0).toLocaleString();
+const numberFormat = new Intl.NumberFormat(),
+  fmt = (n) => numberFormat.format(Math.round(n || 0));
 function showError(error) {
   $("error").hidden = false;
   $("error").textContent = String(error?.message || error);
@@ -1254,7 +1280,7 @@ function startSearch(level = bootLevel) {
           lastAuto = now;
           worker.postMessage({ type: "states", ids: [latestBest], request: 0 });
         }
-        updateStats();
+        statsDirty = true;
         offerTour();
       } else if (data.type === "states") {
         for (const state of data.states) stateCache.set(state.id, state);
@@ -1349,10 +1375,18 @@ $("completion").onclick = () => {
   watchRequested = true;
   worker.postMessage({ type: "states", ids: [witness.id], request: ++request });
 };
+function setText(id, text) {
+  const node = $(id);
+  if (node.textContent !== text) node.textContent = text;
+}
+function setTitle(id, text) {
+  const node = $(id);
+  if (node.title !== text) node.title = text;
+}
 function updateStats() {
   const others = [...searchViews].filter(([id]) => id !== activeSearch).map(([, view]) => view.stats || {});
   const total = (key) => others.reduce((sum, other) => sum + (other[key] || 0), stats[key] || 0);
-  $("hero-timelines").textContent = fmt(total("executions"));
+  setText("hero-timelines", fmt(total("executions")));
   const anyVisited = !!$("room-tabs").querySelector(".visited");
   for (const tab of $("room-tabs").children) {
     const seen = seenMaps.has(Number(tab.dataset.map));
@@ -1363,22 +1397,21 @@ function updateStats() {
     }
     tab.classList.toggle("visited", seen);
   }
-  $("attempts").textContent = fmt(stats.executions);
-  $("states").textContent = fmt(stats.states);
-  $("cells").textContent = fmt(heat.cells.size);
-  $("goal-title").textContent = gameWon
+  setText("attempts", fmt(stats.executions));
+  setText("states", fmt(stats.states));
+  setText("cells", fmt(heat.cells.size));
+  setText("goal-title", gameWon
     ? "Game complete"
-    : `Level ${focusedLevel + 1}${cleared.has(focusedLevel) ? " ✓" : ""}`;
+    : `Level ${focusedLevel + 1}${cleared.has(focusedLevel) ? " ✓" : ""}`);
   const witness = completionWitness();
   $("completion").hidden = !witness;
-  if (witness) $("completion").textContent = witness.label;
-  $("states").title =
-    `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`;
-  $("work").textContent = fmt(stats.frames);
-  $("memory").textContent = `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`;
-  $("memory").title = "Retained snapshots across all search branches";
-  $("workers").textContent = fmt(budget.workers);
-  $("workers").title = "Web Workers running game rollouts in parallel";
+  if (witness) setText("completion", witness.label);
+  setTitle("states", `Shared snapshot memory: ${fmt(stats.snapshot_bytes / 1048576)} MiB; ${budget.snapshotsMiB} MiB limit. Search memory: ${fmt(stats.wasm_bytes / 1048576)} MiB.`);
+  setText("work", fmt(stats.frames));
+  setText("memory", `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`);
+  setTitle("memory", "Retained snapshots across all search branches");
+  setText("workers", fmt(budget.workers));
+  setTitle("workers", "Web Workers running game rollouts in parallel");
 }
 function renderMapRows(owner) {
   const focusedMap = document.activeElement?.closest(".map-row")?.dataset.map;
@@ -1615,7 +1648,12 @@ function drawArea(canvas, now) {
     }
   }
   if (mode !== "heat")
-    canvas.dataset.swarmCount = drawPlayers(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width), preview ? preview.movement ?? null : swarmRooms, canvasPanel(canvas));
+    canvas.dataset.swarmCount = drawPlayers(ctx, mapLevel, scale * (canvas.clientWidth / canvas.width), preview ? preview.movement ?? null : swarmRooms, canvasPanel(canvas), {
+      left: areaCenter - canvas.width / 2 / scale,
+      right: areaCenter + canvas.width / 2 / scale,
+      top: areaCenterY - canvas.height / 2 / scale,
+      bottom: areaCenterY + canvas.height / 2 / scale,
+    });
   for (const p of preview || mode === "movement" ? [] : sparks) {
     if (p.level !== mapLevel) continue;
     const age = (now - p.time) / 1600;
@@ -2402,6 +2440,10 @@ function animate(now) {
   lastTime = now;
   if (wallElapsed) frameGap = frameGap * 0.9 + Math.min(100, wallElapsed) * 0.1;
   const mapMoving = !paused || !!camera.focus || !!panHold || playing || controlMode;
+  if (statsDirty) {
+    statsDirty = false;
+    updateStats();
+  }
   if (mapMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
     lastMapPaint = now;

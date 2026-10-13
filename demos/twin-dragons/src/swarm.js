@@ -86,8 +86,10 @@ export class Swarm {
       if (!point) continue;
       if (detail) {
         point.life = still ? 0 : Math.min(1, frame / trail.duration);
-        point.ghosts = still ? [] : [6, 12].map((lag) => frame >= lag && swarmPoint(trail.samples, frame - lag))
-          .filter((ghost) => ghost && ghost.level === point.level);
+        if (!still) {
+          point.samples = trail.samples;
+          point.frame = frame;
+        }
       }
       if (!rooms.has(point.level)) rooms.set(point.level, []);
       rooms.get(point.level).push(point);
@@ -95,4 +97,14 @@ export class Swarm {
     }
     return rooms;
   }
+}
+
+export function ghosts(point) {
+  if (!point.samples) return [];
+  const result = [];
+  for (const lag of [6, 12]) {
+    const ghost = point.frame >= lag && swarmPoint(point.samples, point.frame - lag);
+    if (ghost && ghost.level === point.level) result.push(ghost);
+  }
+  return result;
 }

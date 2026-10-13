@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { MOTION_STRIDE, NO_ROOM } from "./swarm.js";
-import { project } from "./world.js";
 
 export const CELL_SIZE = 32;
 export const cellRow = (y) => Math.floor((y - 8) / CELL_SIZE);
@@ -61,12 +60,12 @@ export class Heatmap {
       for (let i = 0; i < samples.length; i += MOTION_STRIDE) {
         const level = samples[i + 1], map = maps.get(level);
         if (level === NO_ROOM || !map || samples[i + 2] >= map.width) continue;
-        const observation = project({ level, x: samples[i + 2], y: samples[i + 3] }, map);
-        if (observation.x < 0 || observation.x >= map.width || observation.y < 0 || observation.y >= map.height) continue;
-        const key = cellKey(observation);
+        const x = samples[i + 2] + 8, y = samples[i + 3] + 8;
+        if (x >= map.width || y >= map.height) continue;
+        const key = (level * 4096 + Math.floor(x / CELL_SIZE)) * 64 + cellRow(y);
         if (visited.has(key)) continue;
         visited.add(key);
-        this.visit({ observation, retained: null }, now);
+        this.visit({ observation: { level, x, y }, retained: null }, now);
       }
     }
   }
