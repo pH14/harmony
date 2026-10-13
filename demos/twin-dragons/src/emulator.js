@@ -44,6 +44,7 @@ export async function createEngine(base, inputs = {}) {
     throw new Error("Invalid QuickNES snapshot size");
   const engine = {
     mod,
+    stateSize: size,
     run(buttons, frames, render = false) {
       if (
         !Number.isInteger(frames) ||
@@ -70,6 +71,12 @@ export async function createEngine(base, inputs = {}) {
       if (!mod._nes_save(scratch, size))
         throw new Error("Snapshot capture failed");
       return canonicalize(mod.HEAPU8.slice(scratch, scratch + size));
+    },
+    captureInto(target) {
+      if (!mod._nes_save(scratch, size))
+        throw new Error("Snapshot capture failed");
+      target.set(mod.HEAPU8.subarray(scratch, scratch + size));
+      canonicalize(target);
     },
     restore(bytes) {
       if (bytes.length !== size) throw new Error("Snapshot size mismatch");

@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
 import { createEngine } from "./emulator.js";
-import { SearchLoop } from "./loop.js";
+import { parsePlan, RAM_BYTES, ROUND_PATHS, ROUNDS_AHEAD } from "./rollout.js";
 import { validateTape } from "./heat.js";
 import { branchInfo } from "./branch.js";
 import { snapshotHash } from "./media.js";
-import { RolloutRecorder, motionPoint } from "./swarm.js";
 let initialized = false,
   wasm,
   budget,
   engine,
-  recorder,
   genesis,
   bootLevel = 0,
   active = 0,
@@ -71,63 +69,191 @@ function updateMemory(batch, search) {
     wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength;
   batch.stopped = !!search.localStopped || memoryLimit();
 }
-const WORK_MS = 16;
-const channel = new MessageChannel(),
-  scheduled = new Map();
-let nextTask = 0;
-channel.port1.onmessage = ({ data }) => {
-  const callback = scheduled.get(data);
-  scheduled.delete(data);
-  callback?.();
-};
-const loop = new SearchLoop(() => {
-  if (!initialized || busy) return false;
-  try {
-    const search = searches.get(active);
-    shareSnapshotBudget(search);
-    recorder.begin();
-    const points = [],
-      start = performance.now();
-    let batch, motion;
-    try {
-      do {
-        batch = JSON.parse(search.explorer.advance(1));
-        points.push(...batch.points);
-      } while (!batch.stopped && performance.now() - start < WORK_MS);
-    } finally {
-      motion = recorder.finish();
+const CHUNK_PATHS = 4,
+  CHUNKS_AHEAD = 2,
+  PARENT_CACHE = 64,
+  FLUSH_MS = 16;
+const pool = [],
+  chunks = new Map();
+let running = false,
+  nextChunk = 0,
+  flushTimer = null;
+const parentKey = (search, id) => search.key * 4294967296 + id;
+function planRound(search) {
+  if (search.explorer.stopped()) return;
+  const jobs = parsePlan(search.explorer.plan(ROUND_PATHS));
+  const round = { jobs, next: 0 };
+  for (const job of jobs) {
+    job.search = search;
+    job.round = round;
+    job.key = parentKey(search, job.parent);
+    job.snapshot = search.explorer.snapshot(job.parent);
+  }
+  search.rounds.push(round);
+  search.queue.push(...jobs);
+}
+function cancel(search) {
+  for (const round of search.rounds) for (const job of round.jobs) job.cancelled = true;
+  search.rounds = [];
+  search.queue = [];
+}
+function drain(search) {
+  while (search.rounds.length) {
+    const round = search.rounds[0];
+    if (round.next < round.jobs.length) shareSnapshotBudget(search);
+    while (round.next < round.jobs.length && round.jobs[round.next].result) {
+      const job = round.jobs[round.next++];
+      search.explorer.merge(job.result);
+      if (job.trail) search.motion.push(job.trail);
+      job.result = job.trail = job.snapshot = null;
+      if (search.explorer.stopped()) {
+        cancel(search);
+        return;
+      }
     }
-    batch.points = points.map((p) => ({
+    if (round.next < round.jobs.length) return;
+    search.rounds.shift();
+    planRound(search);
+  }
+}
+function send(slot, jobs) {
+  const added = [], evicted = new Set(), size = engine.stateSize;
+  for (const job of jobs) {
+    if (slot.cache.has(job.key)) {
+      slot.cache.delete(job.key);
+      slot.cache.set(job.key, true);
+    } else {
+      added.push(job);
+      evicted.delete(job.key);
+      slot.cache.set(job.key, true);
+      if (slot.cache.size > PARENT_CACHE) {
+        const oldest = slot.cache.keys().next().value;
+        slot.cache.delete(oldest);
+        evicted.add(oldest);
+      }
+    }
+  }
+  const snapshots = new Uint8Array(added.length * size);
+  added.forEach((job, i) => snapshots.set(job.snapshot, i * size));
+  const chunk = ++nextChunk;
+  chunks.set(chunk, { slot, jobs });
+  slot.chunks++;
+  slot.worker.postMessage({
+    type: "run",
+    chunk,
+    added: added.map((job) => job.key),
+    evicted: [...evicted],
+    snapshots: snapshots.buffer,
+    jobs: jobs.map((job) => ({ key: job.key, actions: job.actions, record: true })),
+  }, [snapshots.buffer]);
+}
+function pump() {
+  if (!running || busy) return;
+  const search = searches.get(active);
+  if (!search) return;
+  for (let pass = 0; pass < CHUNKS_AHEAD; pass++)
+    for (const slot of pool) {
+      if (!search.queue.length) return;
+      if (slot.chunks >= CHUNKS_AHEAD || !slot.ready) continue;
+      send(slot, search.queue.splice(0, CHUNK_PATHS));
+    }
+}
+function finished({ chunk, buffer, steps, trails }) {
+  const entry = chunks.get(chunk);
+  chunks.delete(chunk);
+  entry.slot.chunks--;
+  const stride = RAM_BYTES + engine.stateSize;
+  let offset = 0;
+  const touched = new Set();
+  entry.jobs.forEach((job, i) => {
+    const bytes = new Uint8Array(buffer, offset, steps[i] * stride);
+    offset += job.actions.length * stride;
+    if (job.cancelled || !searches.has(job.search.id)) return;
+    job.result = bytes;
+    job.trail = trails[i];
+    touched.add(job.search);
+  });
+  for (const search of touched) drain(search);
+  pump();
+  scheduleFlush();
+}
+function scheduleFlush() {
+  if (flushTimer === null) flushTimer = setTimeout(flush, FLUSH_MS);
+}
+function flush() {
+  flushTimer = null;
+  if (!running || busy) return;
+  const search = searches.get(active);
+  try {
+    const batch = JSON.parse(search.explorer.take_batch());
+    const motion = search.motion;
+    search.motion = [];
+    batch.points = batch.points.map((p) => ({
       ...p,
       retained: p.retained === null ? null : externalId(active, p.retained),
     }));
     search.localStopped = batch.stopped;
     updateMemory(batch, search);
     search.stats = batch;
+    batch.workers = pool.length;
     postMessage({ type: "batch", active, ...batch, motion }, motion.map((trail) => trail.buffer));
-    if (batch.stopped) postMessage({ type: "limit", won: batch.won });
-    return !batch.stopped;
+    if (batch.stopped) {
+      running = false;
+      postMessage({ type: "limit", won: batch.won });
+    }
   } catch (e) {
     error(e);
-    return false;
   }
-}, {
-  schedule(callback) {
-    scheduled.set(++nextTask, callback);
-    channel.port2.postMessage(nextTask);
-    return nextTask;
-  },
-  cancel: (id) => scheduled.delete(id),
-});
+}
+function pause() {
+  running = false;
+}
+function resume() {
+  if (running) return;
+  running = true;
+  pump();
+  scheduleFlush();
+}
+function addSearch(id, search) {
+  search.id = id;
+  search.key = id;
+  search.rounds = [];
+  search.queue = [];
+  search.motion = [];
+  searches.set(id, search);
+  for (let r = 0; r < ROUNDS_AHEAD; r++) planRound(search);
+}
+async function startPool(count, base) {
+  const [rom, wasm] = await Promise.all(["twin-dragons.nes", "engine/quicknes.wasm"].map(async (name) =>
+    new Uint8Array(await (await fetch(new URL(name, base))).arrayBuffer())));
+  await Promise.all(Array.from({ length: count }, () => new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./rollout-worker.js", import.meta.url), { type: "module" });
+    const slot = { worker, cache: new Map(), chunks: 0, ready: false };
+    worker.onerror = (e) => reject(new Error(e.message || "Rollout worker failed"));
+    worker.onmessage = ({ data }) => {
+      try {
+        if (data.type === "ready") {
+          slot.ready = true;
+          resolve();
+        } else if (data.type === "done") finished(data);
+        else if (data.type === "error") throw new Error(data.message);
+      } catch (e) {
+        error(e);
+      }
+    };
+    worker.postMessage({ type: "init", base, rom, wasm });
+    pool.push(slot);
+  })));
+}
 function error(e) {
-  loop.pause();
+  pause();
   postMessage({ type: "error", message: String(e?.message || e) });
 }
 onmessage = async ({ data }) => {
   try {
     if (data.type === "init") {
       const gen = ++generation;
-      loop.pause();
+      pause();
       initialized = false;
       engine = await createEngine(data.base);
       budget = data.budget;
@@ -135,22 +261,23 @@ onmessage = async ({ data }) => {
       globalThis.harmonyEngine = engine;
       bootLevel = data.boot_level ?? 0;
       genesis = engine.boot(bootLevel);
-      recorder = new RolloutRecorder(engine, () => motionPoint(engine));
       wasm = await init();
+      if (gen !== generation) return;
+      await startPool(data.workers ?? 1, data.base);
       if (gen !== generation) return;
       const explorer = bootLevel === 0 ? new Explorer(data.seed ?? 1) : Explorer.from_history(data.seed ?? 1, "[]");
       explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
-      searches.set(0, { explorer, branch: null });
+      addSearch(0, { explorer, branch: null });
       initialized = true;
       ready();
-      loop.resume();
+      resume();
     } else if (data.type === "pause") {
-      loop.pause();
+      pause();
       postMessage({ type: "paused" });
-    } else if (data.type === "resume" && initialized && !busy) loop.resume();
+    } else if (data.type === "resume" && initialized && !busy) resume();
     else if (data.type === "switch" && initialized && !busy) {
       if (!searches.has(data.active)) throw new Error("Unknown search branch");
-      loop.pause();
+      pause();
       active = data.active;
       const stats = searches.get(active).stats;
       if (stats) updateMemory(stats, searches.get(active));
@@ -158,14 +285,15 @@ onmessage = async ({ data }) => {
       ready(stopped);
       if (stats) postMessage({ type: "batch", active, ...stats, points: [] });
       if (stopped) postMessage({ type: "limit", won: !!stats?.won });
-      else loop.resume();
+      else resume();
     } else if (data.type === "delete" && initialized && !busy) {
       const removed = searches.get(data.id);
       if (!data.id || !removed) throw new Error("Unknown deletable search branch");
-      loop.pause();
+      pause();
       const wasActive = active === data.id;
       if (wasActive) active = removed.parent ?? 0;
       for (const search of searches.values()) if (search.parent === data.id) search.parent = removed.parent ?? 0;
+      cancel(removed);
       searches.delete(data.id);
       removed.explorer.free();
       const search = searches.get(active), stats = search.stats;
@@ -175,9 +303,9 @@ onmessage = async ({ data }) => {
       ready(paused, data.id);
       if (stats) postMessage({ type: "batch", active, ...stats, points: [] });
       if (stopped) postMessage({ type: "limit", won: !!stats?.won });
-      else if (!paused) loop.resume();
+      else if (!paused) resume();
     } else if (data.type === "fork" && initialized && !busy) {
-      loop.pause();
+      pause();
       busy = true;
       try {
         if (searches.size >= 8)
@@ -213,12 +341,12 @@ onmessage = async ({ data }) => {
         );
         explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
         const id = nextBranch++;
-        searches.set(id, { explorer, branch: branchInfo(tape.branch, frames), parent: active,
+        addSearch(id, { explorer, branch: branchInfo(tape.branch, frames), parent: active,
           origin: { frames, level: JSON.parse(explorer.state(0)).observation.level } });
         active = id;
         busy = false;
         ready();
-        loop.resume();
+        resume();
       } catch (e) {
         busy = false;
         postMessage({ type: "branch-error", message: String(e?.message || e) });

@@ -5,19 +5,15 @@ use searcher::search::{
     rand::RomuDuoJrRand,
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{cmp::Ordering, collections::{BTreeMap, VecDeque}};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(
-    inline_js = "export function step(b,n){globalThis.harmonyEngine.run(b,n)} export function capture(){return globalThis.harmonyEngine.capture()} export function restore(s){globalThis.harmonyEngine.restore(s)} export function memory(){return globalThis.harmonyEngine.memory()} "
+    inline_js = "export function capture(){return globalThis.harmonyEngine.capture()} export function memory(){return globalThis.harmonyEngine.memory()} "
 )]
 extern "C" {
     #[wasm_bindgen(catch)]
-    fn step(buttons: u8, frames: u8) -> Result<(), JsValue>;
-    #[wasm_bindgen(catch)]
-    fn capture() -> Result<Vec<u8>, JsValue>;
-    #[wasm_bindgen(catch)]
-    fn restore(bytes: &[u8]) -> Result<(), JsValue>;
+        fn capture() -> Result<Vec<u8>, JsValue>;
     #[wasm_bindgen(catch)]
     fn memory() -> Result<Vec<u8>, JsValue>;
 }
@@ -214,7 +210,18 @@ pub struct Explorer {
     max_snapshot_bytes: usize,
     retired_snapshots: u32,
     prefix: Vec<Action>,
+    pending: VecDeque<Job>,
+    points: Vec<Point>,
+    snapshot_size: usize,
 }
+
+struct Job {
+    parent: usize,
+    actions: Vec<Action>,
+    frame: u32,
+}
+
+const RAM_BYTES: usize = 0x800;
 
 const MIN_SNAPSHOT_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_ACTIVE_ENTRIES: usize = 256;
@@ -303,6 +310,9 @@ impl Explorer {
             max_snapshot_bytes: 128 * 1024 * 1024,
             retired_snapshots: 0,
             prefix,
+            pending: VecDeque::new(),
+            points: Vec::new(),
+            snapshot_size: raw.len(),
         })
     }
 
@@ -344,9 +354,9 @@ impl Explorer {
         }
     }
 
-    pub fn advance(&mut self, jobs: u32) -> Result<String, JsValue> {
-        let mut points = Vec::new();
-        for _ in 0..jobs.min(8) {
+    pub fn plan(&mut self, jobs: u32) -> Result<Vec<u32>, JsValue> {
+        let mut plan = Vec::new();
+        for _ in 0..jobs {
             if self.stopped {
                 break;
             }
@@ -355,72 +365,123 @@ impl Explorer {
                 .select_parent(&mut self.rng)
                 .map_err(js_error)?;
             self.archive.record_selection(parent, &selection);
-            restore(&self.snapshot(parent)?)?;
             let prefix = self.history(parent)?;
-            let mut frame: u32 = prefix.iter().map(|a| u32::from(a.frames)).sum();
+            let start: u32 = prefix.iter().map(|a| u32::from(a.frames)).sum();
+            let mut frame = start;
             let mut previous = prefix.last().copied();
-            let mut current_parent = parent;
-            let mut suffix = Vec::new();
-            let mut productive = false;
+            let mut actions = Vec::new();
             let count = 1 + below(&mut self.rng, 8);
             for action_count in (prefix.len()..).take(count) {
                 let action = draw(&mut self.rng, previous);
                 if frame + u32::from(action.frames) > 200_000 || action_count >= 10_000 {
                     break;
                 }
-                step(action.buttons, action.frames)?;
-                self.frames += u64::from(action.frames);
                 frame += u32::from(action.frames);
-                suffix.push(action);
+                actions.push(action);
                 previous = Some(action);
-                let obs = decode(&memory()?).map_err(js_error)?;
-                if !admissible(obs) {
-                    self.deaths += 1;
-                    break;
-                }
-                let retained_before = self.archive.live_entry_count();
-                let id = self
-                    .archive
-                    .insert(
-                        Some(current_parent),
-                        u64::from(self.executions) + 1,
-                        ArchiveCandidate {
-                            suffix: suffix.clone(),
-                            key: obs,
-                            milestones: (),
-                        },
-                        (),
-                    )
-                    .map_err(js_error)?;
-                if let Some(id) = id
-                    && let std::collections::btree_map::Entry::Vacant(entry) =
-                        self.snapshots.entry(id)
-                {
-                    let raw = capture()?;
-                    let compressed = compress_snapshot(&raw);
-                    self.snapshot_bytes += compressed.len();
-                    entry.insert(compressed);
-                    self.digests.insert(id, snapshot_digest(&raw));
-                }
-                productive |= self.archive.live_entry_count() > retained_before;
-                if let Some(id) = id {
-                    current_parent = id;
-                    suffix.clear();
-                }
-                points.push(Point {
-                    observation: obs,
-                    retained: id,
-                    frame,
-                });
             }
-            self.archive.record_selection_outcome(parent, productive);
-            self.enforce_snapshot_budget();
-            self.executions += 1;
-            self.won |= points.iter().any(|p| p.observation.won());
-            self.stopped = self.won
-                || self.archive.live_entry_count() >= MAX_ARCHIVE_HISTORY
-                || self.executions >= 100000;
+            plan.push(u32::try_from(parent).map_err(js_error)?);
+            plan.push(actions.len() as u32);
+            plan.extend(
+                actions
+                    .iter()
+                    .map(|a| (u32::from(a.buttons) << 8) | u32::from(a.frames)),
+            );
+            self.pending.push_back(Job {
+                parent,
+                actions,
+                frame: start,
+            });
         }
+        Ok(plan)
+    }
+
+    pub fn pending(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    pub fn merge(&mut self, steps: &[u8]) -> Result<(), JsValue> {
+        let job = self
+            .pending
+            .pop_front()
+            .ok_or_else(|| js_error("no rollout is pending"))?;
+        if self.stopped {
+            return Ok(());
+        }
+        let stride = RAM_BYTES + self.snapshot_size;
+        if !steps.len().is_multiple_of(stride) || steps.len() / stride > job.actions.len() {
+            return Err(js_error("rollout result does not match its plan"));
+        }
+        let mut frame = job.frame;
+        let mut current_parent = job.parent;
+        let mut suffix = Vec::new();
+        let mut productive = false;
+        let mut ended = false;
+        for (action, step) in job.actions.iter().zip(steps.chunks_exact(stride)) {
+            let (ram, raw) = step.split_at(RAM_BYTES);
+            self.frames += u64::from(action.frames);
+            frame += u32::from(action.frames);
+            suffix.push(*action);
+            let obs = decode(ram).map_err(js_error)?;
+            if !admissible(obs) {
+                self.deaths += 1;
+                ended = true;
+                break;
+            }
+            let retained_before = self.archive.live_entry_count();
+            let id = self
+                .archive
+                .insert(
+                    Some(current_parent),
+                    u64::from(self.executions) + 1,
+                    ArchiveCandidate {
+                        suffix: suffix.clone(),
+                        key: obs,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .map_err(js_error)?;
+            if let Some(id) = id
+                && let std::collections::btree_map::Entry::Vacant(entry) = self.snapshots.entry(id)
+            {
+                let compressed = compress_snapshot(raw);
+                self.snapshot_bytes += compressed.len();
+                entry.insert(compressed);
+                self.digests.insert(id, snapshot_digest(raw));
+            }
+            productive |= self.archive.live_entry_count() > retained_before;
+            if let Some(id) = id {
+                current_parent = id;
+                suffix.clear();
+            }
+            self.won |= obs.won();
+            self.points.push(Point {
+                observation: obs,
+                retained: id,
+                frame,
+            });
+        }
+        if !ended && steps.len() / stride != job.actions.len() {
+            return Err(js_error("rollout result ended early"));
+        }
+        self.archive.record_selection_outcome(job.parent, productive);
+        self.enforce_snapshot_budget();
+        self.executions += 1;
+        self.stopped = self.won
+            || self.archive.live_entry_count() >= MAX_ARCHIVE_HISTORY
+            || self.executions >= 100000;
+        if self.stopped {
+            self.pending.clear();
+        }
+        Ok(())
+    }
+
+    pub fn take_batch(&mut self) -> Result<String, JsValue> {
         serde_json::to_string(&Batch {
             executions: self.executions,
             states: self.snapshots.len(),
@@ -429,7 +490,7 @@ impl Explorer {
             snapshot_bytes: self.snapshot_bytes,
             stopped: self.stopped,
             won: self.won,
-            points,
+            points: std::mem::take(&mut self.points),
         })
         .map_err(js_error)
     }

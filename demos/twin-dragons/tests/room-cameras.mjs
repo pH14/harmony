@@ -31,7 +31,7 @@ try {
       const NativeWorker=Worker;
       window.Worker=class extends NativeWorker {
         constructor(...args) {super(...args);window.testWorker=this;this.addEventListener('message',({data})=>{
-          if(data.type==='ready'){window.root=data.state;window.points=[];}
+          if(data.type==='ready'){window.root=data.state;window.points=[];if(data.state.id==='1:0')this.postMessage({type:'pause'});}
           if(data.type==='batch')window.points.push(...data.points.filter(p=>p.retained!==null));
         });}
         postMessage(data,...rest){if(data.type==='states'&&data.request>0)window.lastStateRequest=data.ids;super.postMessage(data,...rest);}
@@ -81,7 +81,8 @@ try {
       await page.setViewportSize({width:390,height:844});
       await page.waitForTimeout(200);
     }
-    // A recorded, hash-verified native history makes the selected cell independent of search speed.
+    // A recorded, hash-verified native history makes the selected cell independent of search speed. The
+    // forked search pauses as soon as it starts, so later states cannot push the root out of its cell's list.
     await page.locator('#goal-title').click();await page.locator('.level-card[data-level="0"]').click();
     await page.waitForFunction(()=>window.root?.boot_level===0&&!document.querySelector('#pause').disabled);
     await page.evaluate(tape=>window.testWorker.postMessage({type:'fork',tape,seed:3}),tape);

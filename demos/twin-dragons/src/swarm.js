@@ -3,51 +3,6 @@ import { settled } from "./emulator.js";
 export const MOTION_STRIDE = 5;
 export const NO_ROOM = 65535;
 
-export class RolloutRecorder {
-  constructor(engine, position) {
-    this.position = position;
-    const run = engine.run.bind(engine), restore = engine.restore.bind(engine);
-    engine.restore = (bytes) => {
-      restore(bytes);
-      if (this.recording) {
-        this.flush();
-        this.frame = 0;
-        this.samples = [];
-        this.sample();
-      }
-    };
-    engine.run = (buttons, frames, render = false) => {
-      if (!this.recording || !this.samples) return run(buttons, frames, render);
-      for (let done = 0; done < frames;) {
-        const n = Math.min(4, frames - done);
-        done += n;
-        run(buttons, n, render && done === frames);
-        this.frame += n;
-        this.sample();
-      }
-    };
-  }
-  begin() {
-    this.recording = true;
-    this.trails = [];
-    this.samples = null;
-  }
-  sample() {
-    this.samples.push(this.frame, ...this.position());
-  }
-  flush() {
-    if (this.samples?.length > MOTION_STRIDE)
-      this.trails.push(new Uint16Array(this.samples));
-  }
-  finish() {
-    this.flush();
-    const trails = this.trails;
-    this.recording = false;
-    this.samples = this.trails = null;
-    return trails;
-  }
-}
-
 export const SPRITE = { width: 32, height: 24, originX: 8, originY: 4 };
 
 export function playerPose(ram) {

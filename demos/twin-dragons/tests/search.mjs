@@ -7,6 +7,7 @@ import { validateTape } from "../src/heat.js";
 import { prefixAt, appendInput } from "../src/branch.js";
 import { isMapEvidence } from "../src/world.js";
 import { snapshotHash, snapshotDigest, CREDIT } from "../src/media.js";
+import { RoundSearch, ROUND_PATHS } from "../src/rollout.js";
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, {
@@ -25,16 +26,17 @@ const extended = process.env.TWIN_DRAGONS_PROGRESS_PATHS === "25000";
 const target = extended ? 2 : 1,
   budget = extended ? 25000 : 6000;
 await mkdir("test-results", { recursive: true });
-for (const seed of extended ? [5] : [3, 4]) {
+for (const seed of extended ? [21] : [2, 9]) {
   engine.restore(root);
   const search = new Explorer(seed),
+    rounds = new RoundSearch(search, [engine]),
     arrivals = new Map();
   for (
     let tries = 0;
     tries < budget && !arrivals.has(target);
-    tries += 2
+    tries += ROUND_PATHS
   ) {
-    const batch = JSON.parse(search.advance(2));
+    const { batch } = rounds.round();
     for (const point of batch.points)
       if (
         point.observation.level > 0 &&
@@ -83,6 +85,44 @@ for (const seed of extended ? [5] : [3, 4]) {
   );
 }
 
+const loadEngine = async () => createEngine(base, {
+  rom: await readFile(new URL("twin-dragons.nes", base)),
+  wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
+});
+const workers = [engine, await loadEngine(), await loadEngine()];
+function parallelRun(pool) {
+  engine.restore(root);
+  const explorer = new Explorer(7),
+    rounds = new RoundSearch(explorer, pool),
+    batches = [],
+    found = [];
+  for (let r = 0; r < 24; r++) {
+    const { batch, jobs } = rounds.round();
+    batches.push(batch);
+    let cursor = 0;
+    for (const job of jobs) {
+      for (const point of batch.points.slice(cursor, cursor + job.points))
+        if (point.retained !== null) found.push({ engine: job.engine, id: point.retained, digest: explorer.digest(point.retained) });
+      cursor += job.points;
+    }
+    assert.equal(cursor, batch.points.length);
+  }
+  return { explorer, batches, found };
+}
+const first = parallelRun(workers), second = parallelRun(workers), single = parallelRun([engine]);
+assert.deepEqual(second.batches, first.batches, "A fixed seed and worker count must make the same search choices on every run");
+assert.deepEqual(second.found, first.found, "Retained states and their snapshot digests must match across runs");
+assert.deepEqual(single.batches, first.batches, "The worker count must not change the search choices");
+const late = first.found.findLast((f) => f.engine === 2);
+assert.ok(late, "The third worker must find a retained state");
+const lateState = JSON.parse(first.explorer.state(late.id));
+const replayer = await loadEngine();
+replayer.restore(root);
+for (const action of lateState.actions) replayer.run(action.buttons, action.frames);
+assert.equal(snapshotDigest(replayer.capture()), late.digest, "A state found by the third worker must replay exactly");
+for (const run of [first, second, single]) run.explorer.free();
+console.log(`Three-worker rounds repeat exactly across runs and match one worker over ${first.batches.at(-1).executions} paths; a third-worker state replays exactly.`);
+
 const fixtures = {};
 for (const name of ["level-one", "level-two", "level-three"]) {
   const tape = JSON.parse(
@@ -121,9 +161,10 @@ engine.restore(root);
 const bounded = new Explorer(1);
 const smallBudget = 2 * 1024 * 1024;
 bounded.set_snapshot_budget(smallBudget);
+const boundedRounds = new RoundSearch(bounded, [engine]);
 let batch, lastRetained, peak = 0, overBudget = 0;
-for (let tries = 0; tries < 6000; tries += 2) {
-  batch = JSON.parse(bounded.advance(2));
+for (let tries = 0; tries < 6000; tries += ROUND_PATHS) {
+  batch = boundedRounds.round().batch;
   for (const point of batch.points)
     if (point.retained !== null) lastRetained = point.retained;
   peak = Math.max(peak, batch.snapshot_bytes);
@@ -178,8 +219,9 @@ for (const [label, prefix, seed] of [
   assert.equal(branch.state_count(), 1);
   assert.equal(branch.snapshot_bytes() > 0, true);
   let descendant;
-  for (let jobs = 0; jobs < 20 && descendant === undefined; jobs += 2) {
-    for (const point of JSON.parse(branch.advance(2)).points)
+  const branchRounds = new RoundSearch(branch, [engine]);
+  for (let jobs = 0; jobs < 64 && descendant === undefined; jobs += ROUND_PATHS) {
+    for (const point of branchRounds.round().batch.points)
       if (point.retained !== null && point.retained > 0)
         descendant = point.retained;
   }

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Heatmap } from "../src/heat.js";
-import { Swarm, RolloutRecorder, swarmPoint, NO_ROOM } from "../src/swarm.js";
+import { Swarm, swarmPoint, NO_ROOM } from "../src/swarm.js";
 
 test("swarm interpolation never connects rooms, death or reload gaps", () => {
   const samples = new Uint16Array([0, 0, 10, 20, 0, 4, 0, 18, 28, 2,
@@ -33,28 +33,6 @@ test("one global swarm allowance evicts payloads across branches and resets full
   const capped = new Swarm(1000, 1);
   capped.add(0, [samples, samples], 0);
   assert.equal(capped.trails.size, 1);
-});
-
-test("recorder isolates restored rollouts and leaves nonrecorded execution alone", () => {
-  let x = 0;
-  const runs = [];
-  const engine = { restore: (n) => { x = n; }, run: (b, n, render) => { x += n; runs.push([b, n, render]); } };
-  const recorder = new RolloutRecorder(engine, () => [0, x, 20, 0]);
-  engine.run(128, 9, true);
-  assert.deepEqual(runs, [[128, 9, true]]);
-  recorder.begin();
-  engine.restore(10);
-  engine.run(128, 9, true);
-  engine.restore(50);
-  engine.run(0, 2);
-  const trails = recorder.finish();
-  assert.equal(trails.length, 2);
-  assert.deepEqual([...trails[0]], [0, 0, 10, 20, 0, 4, 0, 14, 20, 0,
-    8, 0, 18, 20, 0, 9, 0, 19, 20, 0]);
-  assert.deepEqual([...trails[1]], [0, 0, 50, 20, 0, 2, 0, 52, 20, 0]);
-  assert.deepEqual(runs.slice(1, 4), [[128, 4, false], [128, 4, false], [128, 1, true]]);
-  engine.run(128, 9);
-  assert.deepEqual(runs.at(-1), [128, 9, false]);
 });
 
 test("incoming attempts play once, expire without looping and release their bytes", () => {

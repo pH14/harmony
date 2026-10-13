@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
 import { readFile, mkdir } from "node:fs/promises";
 import { createEngine } from "../src/emulator.js";
-import { RolloutRecorder, motionPoint, NO_ROOM } from "../src/swarm.js";
+import { NO_ROOM } from "../src/swarm.js";
 import { Heatmap, cellKey } from "../src/heat.js";
 import { project, isMapEvidence } from "../src/world.js";
 import { TOUR_KEY } from "../src/tour.js";
+import { RoundSearch, ROUND_PATHS, runRollout, stepBytes } from "../src/rollout.js";
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
 const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const base = new URL("../public/", import.meta.url);
@@ -17,23 +18,22 @@ const engine = await createEngine(base, {
 await init({ module_or_path: await readFile(new URL("../rust/pkg/twin_dragons_browser_bg.wasm", import.meta.url)) });
 globalThis.harmonyEngine = engine;
 const root = engine.boot(), catalog = JSON.parse(await readFile(new URL("maps.json", base)));
-const original = new Explorer(2), expected = [];
-for (let i = 0; i < 64; i++) {
-  const batch = JSON.parse(original.advance(2));
+const original = new Explorer(2), expected = [], plain = new RoundSearch(original, [engine]);
+for (let i = 0; i < 4; i++) {
+  const { batch } = plain.round();
   expected.push({ batch, snapshots: batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, original.digest(p.retained)]) });
 }
 original.free();
 engine.restore(root);
-const recorder = new RolloutRecorder(engine, () => motionPoint(engine)), recorded = new Explorer(2);
+const recorded = new Explorer(2), sampled = new RoundSearch(recorded, [engine], { record: true });
 let recordedPoints = 0;
 const sampledHeat = new Heatmap(), endpointKeys = new Set(), mapCatalog = new Map(catalog.maps.map(m => [m.id, m]));
 for (const before of expected) {
-  recorder.begin();
-  const batch = JSON.parse(recorded.advance(2)), trails = recorder.finish();
+  const { batch, trails } = sampled.round();
   assert.deepEqual(batch, before.batch, "Sampling must preserve all random choices, work counts and retained states");
   for (const [id, snapshot] of before.snapshots)
     assert.equal(recorded.digest(id), snapshot, "Sampling must preserve every archived endpoint byte");
-  assert.equal(trails.length, 2);
+  assert.equal(trails.length, ROUND_PATHS);
   assert.ok(trails.every((trail) => trail.length <= 1205));
   recordedPoints += trails.reduce((n, t) => n + t.length / 5, 0);
   sampledHeat.visitMotion(trails, mapCatalog, 0);
@@ -55,16 +55,14 @@ for (const name of ["level-one", "level-two"]) {
   engine.restore(root);
   for (const a of tape.actions) engine.run(a.buttons, a.frames);
   const endpoint = engine.capture();
-  recorder.begin();
-  engine.restore(root);
-  for (const a of tape.actions) engine.run(a.buttons, a.frames);
-  const [trail] = recorder.finish();
+  const actions = Uint32Array.from(tape.actions, (a) => (a.buttons << 8) | a.frames);
+  const { trail } = runRollout(engine, root, actions, new Uint8Array(actions.length * stepBytes(engine)), 0, true);
   assert.deepEqual(engine.capture(), endpoint, "Sampled level transitions must match unsampled execution");
   const rooms = new Set([...trail].filter((_, index) => index % 5 === 1));
   assert.ok(rooms.has(0));
   if (name === "level-two") assert.ok(rooms.has(1) && rooms.has(NO_ROOM), "The level change must be sampled with its loading frames hidden");
 }
-console.log(`Swarm sampling: 128 actual rollouts, ${recordedPoints} poses, every archived endpoint and recorded campaign transitions match unsampled execution.`);
+console.log(`Swarm sampling: ${4 * ROUND_PATHS} actual rollouts, ${recordedPoints} poses, every archived endpoint and recorded campaign transitions match unsampled execution.`);
 
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const url = process.env.DEMO_URL || "http://127.0.0.1:4173";

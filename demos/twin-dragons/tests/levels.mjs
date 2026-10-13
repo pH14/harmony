@@ -4,6 +4,7 @@ import { snapshotDigest } from '../src/media.js';
 import { readFile } from 'node:fs/promises';
 import { createEngine } from '../src/emulator.js';
 import { isMapEvidence } from '../src/world.js';
+import { RoundSearch } from '../src/rollout.js';
 import init, { Explorer } from '../rust/pkg/twin_dragons_browser.js';
 const base = new URL('../public/', import.meta.url);
 const engine = await createEngine(base, {
@@ -26,9 +27,10 @@ for (const level of catalog.levels) {
   assert.ok(isMapEvidence(observation, catalog.levels));
   const search = level.id ? Explorer.from_history(2, '[]') : new Explorer(2);
   search.set_snapshot_budget(4 * 1048576);
+  const rounds = new RoundSearch(search, [engine]);
   let batch;
-  for (let n = 0; n < 15; n++) batch = JSON.parse(search.advance(2));
-  assert.equal(batch.executions, 30, `Level ${level.id} must actually search`);
+  for (let n = 0; n < 2; n++) batch = rounds.round().batch;
+  assert.equal(batch.executions, 64, `Level ${level.id} must actually search`);
   const id = batch.points.findLast(p => p.retained !== null)?.retained ?? 0;
   const state = JSON.parse(search.state(id)), snapshot = search.digest(id);
   assert.deepEqual(engine.boot(level.id), root, 'Repeated bootstrap is byte deterministic');
@@ -36,7 +38,7 @@ for (const level of catalog.levels) {
   assert.equal(snapshotDigest(engine.capture()), snapshot, `Level ${level.id} archive must replay exactly`);
   const child = Explorer.from_history(3, JSON.stringify(state.actions));
   assert.equal(child.digest(0), snapshot, 'Fork is rooted at the replayed endpoint');
-  assert.equal(JSON.parse(child.advance(2)).executions, 2);
+  assert.equal(new RoundSearch(child, [engine]).round().batch.executions, 32);
   child.free(); search.free();
 }
 console.log('All 3 level roots: healthy authentic boot, fresh search, exact archived replay, repeated warp and rooted fork passed.');
