@@ -1121,7 +1121,14 @@ fn writable_layer_mode(mode: u32) -> u32 {
     mode | 0o700
 }
 
-fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
+fn merge_layer(
+    staged: &Path,
+    rootfs: &Path,
+    relative: &Path,
+    implicit_dirs: &BTreeSet<PathBuf>,
+    opaque_modes: &BTreeMap<PathBuf, u32>,
+    preserved_modes: &mut BTreeMap<PathBuf, u32>,
+) -> Result<(), ImageError> {
     let mut entries: Vec<_> = std::fs::read_dir(staged)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
@@ -1131,6 +1138,7 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
         }
         let source = staged.join(&name);
         let target = rootfs.join(&name);
+        let path = relative.join(&name);
         let meta = std::fs::symlink_metadata(&source)?;
         let existing = std::fs::symlink_metadata(&target).ok();
         if meta.is_dir() {
@@ -1145,11 +1153,28 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
                 }
                 None => std::fs::create_dir(&target)?,
             }
-            let mode = meta.permissions().mode() & 0o7777;
+            let mode = match &existing {
+                Some(found) if found.is_dir() && implicit_dirs.contains(&path) => {
+                    let mode = opaque_modes
+                        .get(&path)
+                        .copied()
+                        .unwrap_or(found.permissions().mode() & 0o7777);
+                    preserved_modes.insert(path.clone(), mode);
+                    mode
+                }
+                _ => meta.permissions().mode() & 0o7777,
+            };
             let open = std::fs::Permissions::from_mode(writable_layer_mode(mode));
             std::fs::set_permissions(&source, open.clone())?;
             std::fs::set_permissions(&target, open)?;
-            merge_layer(&source, &target)?;
+            merge_layer(
+                &source,
+                &target,
+                &path,
+                implicit_dirs,
+                opaque_modes,
+                preserved_modes,
+            )?;
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))?;
         } else {
             match &existing {
@@ -1232,21 +1257,50 @@ fn apply_layer_tracked(
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
-    apply_whiteouts(&members, rootfs)?;
+    let opaque_modes = apply_whiteouts(&members, rootfs)?;
+    let implicit_dirs = implicit_layer_dirs(&members);
     let staging = rootfs.parent().unwrap_or(rootfs);
     let staged = tempfile::tempdir_in(staging)?;
     untar(layer, staged.path())?;
-    merge_layer(staged.path(), rootfs)?;
-    record_owners(&members, owners);
+    let mut preserved_modes = BTreeMap::new();
+    merge_layer(
+        staged.path(),
+        rootfs,
+        Path::new(""),
+        &implicit_dirs,
+        &opaque_modes,
+        &mut preserved_modes,
+    )?;
+    record_owners(&members, owners, &implicit_dirs, &preserved_modes);
     Ok(())
 }
 
-fn record_owners(members: &[Member], owners: &mut Ownership) {
+fn implicit_layer_dirs(members: &[Member]) -> BTreeSet<PathBuf> {
     let explicit_dirs: BTreeSet<PathBuf> = members
         .iter()
         .filter(|member| member.is_dir && whiteout(member.path()).is_none())
         .map(|member| normalized(member.path()))
         .collect();
+    let mut implicit_dirs = BTreeSet::new();
+    for member in members {
+        let path = normalized(member.path());
+        let mut parent = path.parent();
+        while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
+            if !explicit_dirs.contains(dir) {
+                implicit_dirs.insert(dir.to_path_buf());
+            }
+            parent = dir.parent();
+        }
+    }
+    implicit_dirs
+}
+
+fn record_owners(
+    members: &[Member],
+    owners: &mut Ownership,
+    implicit_dirs: &BTreeSet<PathBuf>,
+    preserved_modes: &BTreeMap<PathBuf, u32>,
+) {
     for member in members {
         let path = member.path();
         match whiteout(path) {
@@ -1255,14 +1309,11 @@ fn record_owners(members: &[Member], owners: &mut Ownership) {
             None => {}
         }
     }
-    for member in members {
-        let path = normalized(member.path());
-        let mut parent = path.parent();
-        while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
-            if !explicit_dirs.contains(dir) {
-                owners.record_mode(dir, 0o755);
-            }
-            parent = dir.parent();
+    for dir in implicit_dirs {
+        if !preserved_modes.contains_key(dir) {
+            owners.remove_tree(dir);
+            owners.record(dir, Owner::ROOT);
+            owners.record_mode(dir, 0o755);
         }
     }
     for member in members {
@@ -1301,7 +1352,11 @@ fn whiteout(path: &Path) -> Option<Whiteout<'_>> {
     }
 }
 
-fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> {
+fn apply_whiteouts(
+    members: &[Member],
+    rootfs: &Path,
+) -> Result<BTreeMap<PathBuf, u32>, ImageError> {
+    let mut opaque_modes = BTreeMap::new();
     for member in members {
         let path = member.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -1319,6 +1374,7 @@ fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> 
                 return Err(ImageError::UnsafePath(member.shown()));
             }
             if meta.is_dir() {
+                opaque_modes.insert(normalized(parent), meta.permissions().mode() & 0o7777);
                 std::fs::remove_dir_all(&dir)?;
                 std::fs::create_dir_all(&dir)?;
             }
@@ -1336,7 +1392,7 @@ fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> 
             }
         }
     }
-    Ok(())
+    Ok(opaque_modes)
 }
 
 #[cfg(test)]
@@ -3729,6 +3785,84 @@ mod tests {
         std::fs::write(marker, b"ok").unwrap();
     }
 
+    #[test]
+    fn implicit_upper_parent_preserves_lower_directory_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = raw_member_with_mode(b"restricted/", b'5', "", b"", SERVICE, 0o700);
+        let upper =
+            raw_member_with_mode(b"restricted/file", b'0', "", b"payload", Owner::ROOT, 0o644);
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        apply_layer(&upper, &rootfs, &mut owners).unwrap();
+
+        let mode = std::fs::symlink_metadata(rootfs.join("restricted"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o700);
+        assert_eq!(owners.mode_of(Path::new("restricted"), mode), 0o700);
+        assert_eq!(owners.owner_of(Path::new("restricted")), SERVICE);
+        assert_eq!(
+            std::fs::read(rootfs.join("restricted/file")).unwrap(),
+            b"payload"
+        );
+
+        let explicit = raw_member_with_mode(b"restricted/", b'5', "", b"", Owner::ROOT, 0o750);
+        let explicit = write_archive(dir.path(), "explicit.tar", &explicit);
+        apply_layer(&explicit, &rootfs, &mut owners).unwrap();
+        let mode = std::fs::symlink_metadata(rootfs.join("restricted"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o750);
+        assert_eq!(owners.mode_of(Path::new("restricted"), mode), 0o750);
+        assert_eq!(owners.owner_of(Path::new("restricted")), Owner::ROOT);
+    }
+
+    #[test]
+    fn opaque_upper_parent_preserves_lower_directory_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = [
+            raw_member_with_mode(b"restricted/", b'5', "", b"", SERVICE, 0o700),
+            raw_member(b"restricted/old", b'0', "", b"old"),
+        ]
+        .concat();
+        let upper = [
+            raw_member(b"restricted/.wh..wh..opq", b'0', "", b""),
+            raw_member(b"restricted/new", b'0', "", b"new"),
+        ]
+        .concat();
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        apply_layer(&upper, &rootfs, &mut owners).unwrap();
+
+        let mode = std::fs::symlink_metadata(rootfs.join("restricted"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o700);
+        assert_eq!(owners.mode_of(Path::new("restricted"), mode), 0o700);
+        assert_eq!(owners.owner_of(Path::new("restricted")), SERVICE);
+        assert!(!rootfs.join("restricted/old").exists());
+        assert_eq!(
+            std::fs::read(rootfs.join("restricted/new")).unwrap(),
+            b"new"
+        );
+    }
+
     fn cpio_entry(bytes: &[u8], at: usize) -> (String, Owner, usize) {
         let field = |i: usize| {
             let text = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
@@ -3890,10 +4024,10 @@ mod tests {
         );
         assert_eq!(metadata["harmony-oci/rootfs/shared"].0, 0o2775);
         assert_eq!(metadata["harmony-oci/rootfs/shared/implicit"].0, 0o755);
-        assert_eq!(metadata["harmony-oci/rootfs/overlaid"].0, 0o755);
+        assert_eq!(metadata["harmony-oci/rootfs/overlaid"].0, 0o2775);
         assert_eq!(
             prepared.identity_hex(),
-            "1825f2d18ba46aefc692b982b0643f12fd7a94256310e60f31f385d5d19f6a27"
+            "24e2ec5f193edc67f64cb5cfd447cbd3ff60af3a6a3f3f6b17c2f2519ca855cd"
         );
     }
 }
@@ -3950,14 +4084,30 @@ mod acceptance_regressions {
         std::fs::write(root.path().join("entry"), b"old").unwrap();
         std::fs::create_dir(staged.path().join("entry")).unwrap();
         std::fs::write(staged.path().join("entry/child"), b"child").unwrap();
-        merge_layer(staged.path(), root.path()).unwrap();
+        merge_layer(
+            staged.path(),
+            root.path(),
+            Path::new(""),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(root.path().join("entry/child")).unwrap(),
             b"child"
         );
         let staged = tempfile::tempdir().unwrap();
         std::fs::write(staged.path().join("entry"), b"replacement").unwrap();
-        merge_layer(staged.path(), root.path()).unwrap();
+        merge_layer(
+            staged.path(),
+            root.path(),
+            Path::new(""),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(root.path().join("entry")).unwrap(),
             b"replacement"
