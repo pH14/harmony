@@ -1080,6 +1080,9 @@ impl Backend for KvmBackend {
             || events.sipi_vector != 0
             || events.interrupt_shadow & !3 != 0
             || events.nmi_pending > 2
+            || (events.exception_pending == 0 && events.exception_has_payload != 0)
+            || (events.smi_smm == 0 && events.smi_inside_nmi != 0)
+            || events.smi_latched_init != 0
             || (self.event_valid_flags & kvm_bindings::KVM_VCPUEVENT_VALID_TRIPLE_FAULT == 0
                 && events.triple_fault_pending != 0)
             || [
