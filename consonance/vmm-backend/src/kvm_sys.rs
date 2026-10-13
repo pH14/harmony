@@ -60,7 +60,7 @@ pub struct KvmBackend {
     event_valid_flags: u32,
     host_amd_compatible: bool,
     sysenter_32bit: bool,
-    nested_state_guard: crate::arch::x86::NestedStateGuard,
+    state_mutation_guard: crate::arch::x86::StateMutationGuard,
     regions: MemRegions,
     mem_slot_count: u32,
     dirty_log: bool,
@@ -141,7 +141,7 @@ impl KvmBackend {
             event_valid_flags,
             host_amd_compatible,
             sysenter_32bit: host_amd_compatible,
-            nested_state_guard: Default::default(),
+            state_mutation_guard: Default::default(),
             regions: MemRegions::new(),
             mem_slot_count: 0,
             dirty_log: true,
@@ -302,7 +302,7 @@ impl KvmBackend {
     }
 
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
         let next = finish_staged_completion(page, &mut self.pending, &mut self.completion, || {
@@ -341,7 +341,7 @@ impl KvmBackend {
     }
 
     fn enter_guest(&mut self) -> Result<Exit<X86>> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         loop {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
@@ -756,7 +756,7 @@ impl KvmBackend {
     }
 
     fn run_guarded_entry(&mut self) -> Result<()> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         self.check_completion_clear()?;
         // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
         let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
@@ -856,7 +856,7 @@ impl Backend for KvmBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (dirty logging disabled)",
@@ -893,11 +893,7 @@ impl Backend for KvmBackend {
                 },
             )
         };
-        let mut gfns = if self.nested_state_config.is_some() {
-            self.nested_state_guard.mutate(drain)?
-        } else {
-            drain()?
-        };
+        let mut gfns = self.state_mutation_guard.mutate(drain)?;
         gfns.sort_unstable();
         gfns.dedup();
         Ok(gfns)
@@ -1018,7 +1014,7 @@ impl Backend for KvmBackend {
     }
 
     fn save(&mut self) -> Result<VcpuState> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
@@ -1063,7 +1059,7 @@ impl Backend for KvmBackend {
     }
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(
             state,
@@ -1174,7 +1170,7 @@ impl Backend for KvmBackend {
             Ok(())
         };
         if self.nested_state_config.is_some() {
-            self.nested_state_guard.mutate(restore)?;
+            self.state_mutation_guard.mutate(restore)?;
         } else {
             restore()?;
         }
@@ -1428,6 +1424,56 @@ mod xsave_diagnostic {
         assert_eq!(after_rejection.regs, before_rejection.regs);
         assert_eq!(after_rejection.sregs, before_rejection.sregs);
         assert_eq!(after_rejection.msrs, before_rejection.msrs);
+    }
+
+    #[test]
+    #[ignore = "live x86 KVM dirty-log failure boundary; requires /dev/kvm"]
+    fn failed_dirty_drain_cannot_retry_after_prior_slot_was_cleared() {
+        let program = [0xc6, 0x06, 0x00, 0x30, 0x42, 0xf4];
+        let mut control = entry_fixture(&program, 3, 3);
+        control.backend.drain_dirty_pages().unwrap();
+        assert!(matches!(
+            control.backend.run(),
+            Ok(Exit::Common(CommonExit::Idle))
+        ));
+        assert_eq!(control.ram.as_mut_bytes()[0x3000], 0x42);
+        assert!(control.backend.drain_dirty_pages().unwrap().contains(&3));
+
+        let mut fixture = entry_fixture(&program, 3, 3);
+        fixture.backend.drain_dirty_pages().unwrap();
+        assert!(matches!(
+            fixture.backend.run(),
+            Ok(Exit::Common(CommonExit::Idle))
+        ));
+        assert_eq!(fixture.ram.as_mut_bytes()[0x3000], 0x42);
+        let restore_state = fixture.backend.save().unwrap();
+        fixture
+            .backend
+            .dirty_slots
+            .push((u32::MAX, 0x10000, 0x1000));
+        assert!(matches!(
+            fixture.backend.drain_dirty_pages(),
+            Err(BackendError::Io(_))
+        ));
+        fixture.backend.dirty_slots.pop();
+        let retry = fixture.backend.drain_dirty_pages();
+        println!("DIRTY_DRAIN_RETRY {retry:?}");
+        assert!(matches!(
+            retry,
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            fixture.backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            fixture.backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            fixture.backend.restore(&restore_state),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 
     struct EntryFixture {

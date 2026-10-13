@@ -12,7 +12,7 @@ pub use nested::{
 };
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use nested::{
-    NestedStateGuard, canonicalize_nested_metadata, drain_dirty_pages_with_nested_reprotection,
+    StateMutationGuard, canonicalize_nested_metadata, drain_dirty_pages_with_nested_reprotection,
     guest_physical_bits, nested_probe, reload_nested_memory_slots, validate_nested_addresses,
 };
 
