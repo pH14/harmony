@@ -43,9 +43,6 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preferences() -> usize {
         0
     }
-    fn tier_rank_shift() -> u32 {
-        TIER_RANK_SHIFT
-    }
     fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
     }
@@ -139,13 +136,13 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_pace_yield_cell_recent_count_decay_v1";
+pub const SELECTOR_IDENTIFIER: &str = "tier_pace_yield_cell_recent_count_decay_v2";
 
 const TIER_RANK_CAP: u8 = 8;
 
-const TIER_RANK_SHIFT: u32 = 3;
+const TIER_RANK_SHIFT: u32 = 1;
 
-const MAX_TIER_RANK_SHIFT: u32 = (u64::BITS - 1) / TIER_RANK_CAP as u32;
+const _: () = assert!(TIER_RANK_SHIFT * (TIER_RANK_CAP as u32) < u64::BITS);
 
 const COUNT_DECAY_EXPONENT: u32 = 2;
 
@@ -162,19 +159,9 @@ fn count_decay(draws: u64) -> u64 {
     (COUNT_DECAY_SCALE / divisor).max(1)
 }
 
-fn checked_tier_rank_shift(shift: u32) -> Result<u32, Box<dyn Error>> {
-    if shift > MAX_TIER_RANK_SHIFT {
-        return Err(format!(
-            "tier rank shift {shift} exceeds the largest supported shift {MAX_TIER_RANK_SHIFT}"
-        )
-        .into());
-    }
-    Ok(shift)
-}
-
 #[must_use]
-fn tier_weight(rank: u8, shift: u32) -> u64 {
-    1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * shift)
+fn tier_weight(rank: u8) -> u64 {
+    1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * TIER_RANK_SHIFT)
 }
 
 fn draw_weighted(
@@ -2684,7 +2671,6 @@ where
     }
 
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
-        let shift = checked_tier_rank_shift(K::tier_rank_shift())?;
         let tiers = self.tiers.len();
         let halvings = self.tiers.iter().next_back().map_or(0, |(progress, tier)| {
             let runs = self.tier_runs(*progress);
@@ -2710,13 +2696,13 @@ where
                 (runs.current.saturating_sub(1) / pace)
                     .max(1)
                     .ilog2()
-                    .min(shift)
+                    .min(TIER_RANK_SHIFT)
             } else {
                 0
             }
         });
         let weights = (0..tiers).map(|rank| {
-            let weight = tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift);
+            let weight = tier_weight(u8::try_from(rank).unwrap_or(u8::MAX));
             if rank == 0 && tiers > 1 {
                 weight >> halvings
             } else {
@@ -3554,8 +3540,8 @@ mod tests {
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
-        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, MAX_TIER_RANK_SHIFT, SelectorAccounting,
-        SelectorDraw, SelectorPath, TierCells, WeightedSet, checked_tier_rank_shift, tier_weight,
+        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
+        TIER_RANK_SHIFT, TierCells, WeightedSet, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -4428,37 +4414,6 @@ mod tests {
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
 
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct WideShiftKey(u8);
-
-    impl ArchiveKey for WideShiftKey {
-        type Place = u8;
-        type Progress = u8;
-        type Identity = ();
-
-        fn place(self) -> Self::Place {
-            self.0
-        }
-
-        fn progress(self) -> Self::Progress {
-            self.0
-        }
-
-        fn identity(self) -> Self::Identity {}
-
-        fn tier_rank_shift() -> u32 {
-            MAX_TIER_RANK_SHIFT + 1
-        }
-
-        type Lineage = ();
-
-        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
-            self
-        }
-
-        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
-    }
-
     fn materialized_weighted_reference(
         rand: &mut RomuDuoJrRand,
         weights: &[u64],
@@ -4704,7 +4659,7 @@ mod tests {
     fn indexed_candidates_preserve_complete_parent_selection() {
         use std::hint::black_box;
         for count in [1, 16, 256, 4096] {
-            let mut archive = Archive::<u64, TierKey<3>, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u64, TierKey, (), ()>::new(|_| 1);
             for tier in 0..count {
                 archive
                     .insert(
@@ -4751,9 +4706,9 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct TierKey<const SHIFT: u32>(usize);
+    struct TierKey(usize);
 
-    impl<const SHIFT: u32> ArchiveKey for TierKey<SHIFT> {
+    impl ArchiveKey for TierKey {
         type Place = ();
         type Progress = usize;
         type Identity = ();
@@ -4763,24 +4718,22 @@ mod tests {
             self.0
         }
         fn identity(self) {}
-        fn tier_rank_shift() -> u32 {
-            SHIFT
-        }
         fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
             self
         }
         fn record(_: &mut Self::Lineage, _: Self) {}
     }
 
-    fn compare_streamed_tiers<const SHIFT: u32>() {
+    #[test]
+    fn streamed_tiers_preserve_materialized_selection_and_rng_state() {
         for count in [0, 1, 2, 7, 8, 9, 16, 255, 256, 257, 4096] {
-            let mut archive = Archive::<u8, TierKey<SHIFT>, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u8, TierKey, (), ()>::new(|_| 1);
             for tier in 0..count {
                 archive.tiers.insert(tier * 3 + 5, TierCells::default());
             }
             let tiers = archive.tiers.keys().rev().copied().collect::<Vec<_>>();
             let weights = (0..tiers.len())
-                .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), SHIFT))
+                .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)))
                 .collect::<Vec<_>>();
             for seed in 0..32 {
                 let mut reference = RomuDuoJrRand::with_seed(seed);
@@ -4805,56 +4758,13 @@ mod tests {
     }
 
     #[test]
-    fn streamed_tiers_preserve_materialized_selection_and_rng_state() {
-        compare_streamed_tiers::<0>();
-        compare_streamed_tiers::<1>();
-        compare_streamed_tiers::<2>();
-        compare_streamed_tiers::<3>();
-        compare_streamed_tiers::<4>();
-        compare_streamed_tiers::<5>();
-        compare_streamed_tiers::<6>();
-        compare_streamed_tiers::<7>();
-    }
-
-    #[test]
-    fn tier_weights_keep_their_values_and_an_overflowing_shift_is_rejected() {
-        assert_eq!(MAX_TIER_RANK_SHIFT, 7);
-        assert_eq!(
-            (0..=9).map(|rank| tier_weight(rank, 1)).collect::<Vec<_>>(),
-            vec![256, 128, 64, 32, 16, 8, 4, 2, 1, 1]
-        );
-        assert_eq!(
-            (0..=9).map(|rank| tier_weight(rank, 3)).collect::<Vec<_>>(),
-            [24, 21, 18, 15, 12, 9, 6, 3, 0, 0].map(|exponent| 1_u64 << exponent)
-        );
-        assert_eq!(tier_weight(0, MAX_TIER_RANK_SHIFT), 1 << 56);
-        assert_eq!(checked_tier_rank_shift(MAX_TIER_RANK_SHIFT).ok(), Some(7));
-
-        let mut archive = Archive::<u8, WideShiftKey, (), ()>::new(|_| 1);
-        for place in [1, 2] {
-            archive
-                .insert(
-                    None,
-                    0,
-                    ArchiveCandidate {
-                        suffix: vec![place],
-                        key: WideShiftKey(place),
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("insert a wide-shift entry")
-                .expect("retain a wide-shift entry");
+    fn each_tier_rank_weighs_a_fixed_fraction_of_the_rank_above() {
+        let weights = (0..=9).map(tier_weight).collect::<Vec<_>>();
+        for rank in 0..8 {
+            assert_eq!(weights[rank], weights[rank + 1] << TIER_RANK_SHIFT);
         }
-        let mut rand = RomuDuoJrRand::with_seed(0x5417_0008);
-        let error = archive
-            .select_parent(&mut rand)
-            .expect_err("a shift above the largest supported one is rejected")
-            .to_string();
-        assert_eq!(
-            error,
-            "tier rank shift 8 exceeds the largest supported shift 7"
-        );
+        assert_eq!(weights[8], 1);
+        assert_eq!(weights[9], 1);
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -8230,7 +8140,7 @@ mod tests {
     fn the_progress_order_beats_the_key_order_when_choosing_the_top_tier() {
         let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0002, 1024);
-        assert!(counts[0] > counts[1] * 4);
+        assert!(counts[0] * 2 > counts[1] * 3, "{counts:?}");
     }
 
     fn unrecorded_draw_counts(archive: &mut TestArchive, seed: u64, draws: usize) -> Vec<u64> {
@@ -8276,7 +8186,7 @@ mod tests {
         }
         archive.tier_runs_mut((2, 1)).wins = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0009, 4096);
-        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        assert!(counts[0] * 2 > counts[1] * 3, "{counts:?}");
     }
 
     fn roughly_equal(left: u64, right: u64) -> bool {
@@ -8310,7 +8220,7 @@ mod tests {
             archive.record_selection(1, &next);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000a, 4096);
-        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        assert!(counts[0] * 2 > counts[1] * 3, "{counts:?}");
     }
 
     #[test]
@@ -8340,7 +8250,7 @@ mod tests {
             archive.record_selection(2, &middle);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
-        assert!(counts[1] > counts[2] * 5, "{counts:?}");
+        assert!(counts[1] * 2 > counts[2] * 3, "{counts:?}");
     }
 
     #[test]
@@ -8399,13 +8309,10 @@ mod tests {
             archive.record_selection(0, &draw);
         }
         let full = top_tier_draws(&mut archive, 0x7ea1_0006, 4096);
-        assert!(full[0] > full[1] * 5, "{full:?}");
+        assert!(full[0] * 2 > full[1] * 3, "{full:?}");
         archive.record_selection(0, &draw);
         let halved = top_tier_draws(&mut archive, 0x7ea1_0007, 4096);
-        assert!(
-            halved[0] > halved[1] * 2 && halved[0] < halved[1] * 6,
-            "{halved:?}"
-        );
+        assert!(roughly_equal(halved[0], halved[1]), "{halved:?}");
     }
 
     fn top_tier_draws(archive: &mut TestArchive, seed: u64, draws: usize) -> [u64; 2] {

@@ -29,9 +29,8 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
 }
 
 const PROGRESS_BAND: u16 = 64;
-const BAND_RANK_SHIFT: u32 = 1;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -92,10 +91,6 @@ impl ArchiveKey for SmbArchiveKey {
 
     fn identity(self) -> Self::Identity {
         self.room_x_bucket
-    }
-
-    fn tier_rank_shift() -> u32 {
-        BAND_RANK_SHIFT
     }
 
     fn preferences() -> usize {
@@ -545,7 +540,6 @@ mod tests {
         assert_eq!(on_screen.progress(), key.progress());
         assert_eq!(on_screen.identity(), 6);
         assert_eq!(SmbArchiveKey::capacity(), 2);
-        assert_eq!(SmbArchiveKey::tier_rank_shift(), 1);
         assert_eq!(SmbArchiveKey::preferences(), 1);
         let faster = SmbArchiveKey { clock: 250, ..key };
         assert_eq!(faster.place(), key.place());
