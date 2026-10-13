@@ -9,13 +9,18 @@ revision=26bb785c9deddb66a17717b21bb4e328f03ade32
 if [ ! -d "$build/quicknes/.git" ]; then
     git clone --quiet https://github.com/libretro/QuickNES_Core.git "$build/quicknes"
 fi
-git -C "$build/quicknes" checkout --quiet --detach "$revision"
+git -C "$build/quicknes" checkout --quiet --force --detach "$revision"
+git -C "$build/quicknes" clean --quiet -fdx
 test "$(git -C "$build/quicknes" rev-parse HEAD)" = "$revision"
-# Keep the browser core unmodified. Its runtime identity is distinct from the
-# native Harmony build, which applies its own idle-loop optimization.
-make -C "$build/quicknes" clean >/dev/null
+# The browser core carries the native build's idle-loop patch, which skips
+# whole iterations of wait loops without changing emulated state or timing.
+idle_patch=$build/quicknes-idle-loop.patch
+awk '/<<.PATCH.$/ { if (!seen++) { on = 1; next } } on && /^PATCH$/ { exit } on' \
+    "$root/scripts/build-quicknes-core.sh" >"$idle_patch"
+test "$(sha256sum <"$idle_patch" | cut -d ' ' -f 1)" = d1ecfe8b161502ad1d3fa9af3eef74be2006db693f71cb6fa7a210b4624ef702
+patch -d "$build/quicknes" -f -p1 <"$idle_patch" >/dev/null
 make -C "$build/quicknes" -j4 platform=emscripten DEBUG=0 OPTIMIZE="-O3 -flto" \
-    GIT_VERSION="$revision" CC=emcc CXX=em++ AR=emar TARGET=quicknes.a >"$build/quicknes-build.log" 2>&1
+    GIT_VERSION="$revision-idle-loop" CC=emcc CXX=em++ AR=emar TARGET=quicknes.a >"$build/quicknes-build.log" 2>&1
 em++ -O3 -flto -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
     "$build/quicknes/quicknes.a" -I"$build/quicknes/libretro/libretro-common/include" \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker,node \
@@ -26,6 +31,7 @@ em++ -O3 -flto -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
 cp "$build/twin-dragons/twin-dragons.nes" "$demo/public/twin-dragons.nes"
 wasm-pack build "$demo/rust" --target web --release --out-dir pkg --no-opt
 cp "$build/quicknes/LICENSE" "$demo/public/licenses/QuickNES.txt"
+cp "$idle_patch" "$demo/public/licenses/quicknes-idle-loop.patch"
 cp "$demo/CREDITS.md" "$demo/public/licenses/CREDITS.md"
 # Ship only the upstream zlib license beside the altered ROM. The upstream
 # archive also holds sound files whose rights are reserved, so the build reads
