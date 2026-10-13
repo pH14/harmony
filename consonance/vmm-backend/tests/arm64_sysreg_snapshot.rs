@@ -181,19 +181,20 @@ fn smccc_workaround_features_match_backend_levels() {
         guest.restore(&state);
         let observed = guest.next_store();
         let expected = match (index, levels[index]) {
-            (0 | 2, 0) => Some(u64::MAX),
-            (0 | 2, 1) => Some(0),
-            (0 | 2, 2) => Some(1),
-            (1, 0) => Some(u64::MAX),
-            (1, 3) => Some(u64::MAX - 1),
-            _ => None,
-        };
-        if let Some(expected) = expected {
-            assert_eq!(
-                observed, expected,
-                "feature {feature:#x}, level {}",
+            (0 | 2, 0) => u64::MAX,
+            (0 | 2, 1) => 0,
+            (0 | 2, 2) => 1,
+            (1, 0) => u64::MAX,
+            (1, 3) => u64::MAX - 1,
+            _ => panic!(
+                "unknown workaround feature {feature:#x}, level {}, HVC answer {observed:#x}",
                 levels[index]
-            );
-        }
+            ),
+        };
+        assert_eq!(
+            observed, expected,
+            "feature {feature:#x}, level {}",
+            levels[index]
+        );
     }
 }
