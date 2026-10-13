@@ -310,6 +310,18 @@ fn warm_translation_to_page_a(guest: &mut Guest) {
 
 #[test]
 #[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn smccc_workaround_two_is_unavailable_to_the_frozen_guest() {
+    let mut guest = Guest::new(&[0xd400_0002, str_x(0, 4), B_SELF]);
+    guest.start.core.x[0] = 0x8000_0001;
+    guest.start.core.x[1] = 0x8000_7fff;
+    guest.start.core.x[4] = MMIO_GPA;
+    guest.restart();
+
+    assert_eq!(guest.next_store(), u64::MAX);
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
 fn restore_drops_guest_translations_cached_before_it() {
     let mut guest = Guest::new(&read_page(false));
 
