@@ -33,8 +33,14 @@ pub enum MemoryError {
     ForeignSnapshot,
 }
 
+#[derive(Default)]
+struct CheckpointStore {
+    pages: RefCell<Option<Pages>>,
+    pending_releases: RefCell<Vec<SnapshotId>>,
+}
+
 #[derive(Clone, Default)]
-pub struct Checkpoints(Rc<RefCell<Option<Pages>>>);
+pub struct Checkpoints(Rc<CheckpointStore>);
 
 pub(crate) struct Pages {
     pub(crate) store: Store,
@@ -74,14 +80,18 @@ impl Checkpoints {
     }
 
     pub fn stats(&self) -> Option<StoreStats> {
-        self.0
-            .borrow()
-            .as_ref()
-            .map(|pages| pages.store.store_stats())
+        let mut pages = self.0.pages.borrow_mut();
+        pages.as_mut().map(|pages| {
+            self.collect_releases(pages);
+            pages.store.store_stats()
+        })
     }
 
     pub(crate) fn pages(&self, physmem_bytes: usize) -> Result<RefMut<'_, Pages>, MemoryError> {
-        let mut pages = self.0.borrow_mut();
+        let mut pages = self.0.pages.borrow_mut();
+        if let Some(held) = pages.as_mut() {
+            self.collect_releases(held);
+        }
         match pages.as_ref() {
             Some(held) if held.physmem_bytes != physmem_bytes => {
                 return Err(MemoryError::Size {
@@ -108,7 +118,25 @@ impl Checkpoints {
     }
 
     pub(crate) fn held(&self) -> Result<RefMut<'_, Pages>, MemoryError> {
-        RefMut::filter_map(self.0.borrow_mut(), Option::as_mut).map_err(|_| MemoryError::Empty)
+        let mut pages = self.0.pages.borrow_mut();
+        if let Some(held) = pages.as_mut() {
+            self.collect_releases(held);
+        }
+        RefMut::filter_map(pages, Option::as_mut).map_err(|_| MemoryError::Empty)
+    }
+
+    fn collect_releases(&self, pages: &mut Pages) {
+        let mut pending = self.0.pending_releases.borrow_mut();
+        if pending.is_empty() {
+            return;
+        }
+        for id in pending.drain(..) {
+            pages
+                .store
+                .release(id)
+                .expect("a dropped checkpoint has a live snapshot");
+        }
+        pages.store.gc();
     }
 
     pub(crate) fn adopt(&self, id: SnapshotId) -> Snapshot {
@@ -291,11 +319,15 @@ impl std::fmt::Debug for Snapshot {
 
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        if let Ok(mut pages) = self.checkpoints.0.try_borrow_mut()
+        self.checkpoints
+            .0
+            .pending_releases
+            .borrow_mut()
+            .push(self.id);
+        if let Ok(mut pages) = self.checkpoints.0.pages.try_borrow_mut()
             && let Some(pages) = pages.as_mut()
-            && pages.store.release(self.id).is_ok()
         {
-            pages.store.gc();
+            self.checkpoints.collect_releases(pages);
         }
     }
 }
