@@ -1529,8 +1529,10 @@ function updateRoomChrome(c) {
   part.dataset.following = state[4] !== "";
   if (state[4] !== "") part.style.setProperty("--frontier", `${Math.max(0, Math.min(1, state[4])) * 100}%`);
 }
+let spriteBudget = swarm.maxTrails, drawCost = 0;
 function drawMap(now) {
-  swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, undefined, true);
+  const start = performance.now();
+  swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, Math.round(spriteBudget), true);
   updatePan(now);
   updateCamera(now);
   for (const c of document.querySelectorAll(".area-map")) {
@@ -1538,6 +1540,8 @@ function drawMap(now) {
     updateRoomChrome(c);
   }
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
+  drawCost = drawCost * 0.9 + (performance.now() - start) * 0.1;
+  spriteBudget = Math.min(swarm.maxTrails, Math.max(128, spriteBudget * (drawCost > 6 ? 0.9 : drawCost < 4 ? 1.02 : 1)));
 }
 function drawArea(canvas, now) {
   const preview = branchPreview && searchViews.get(branchPreview.id);

@@ -105,3 +105,11 @@ test("detailed frames report rollout age and same-room ghosts", () => {
   assert.ok(point.ghosts.every((ghost) => ghost.x < point.x));
   assert.deepEqual(swarm.frame(0, 250, true, 16, true).get(0)[0].ghosts, []);
 });
+
+test("a sprite cap samples trails across the swarm and keeps each sampled trail across frames", () => {
+  const swarm = new Swarm(1 << 20, 100);
+  const trails = Array.from({ length: 40 }, (_, i) => new Uint16Array([0, 0, i, 20, 0, 60, 0, i + 50, 20, 0]));
+  swarm.add(0, trails, 0);
+  assert.deepEqual(swarm.frame(0, 0, false, 10).get(0).map((p) => p.x), [0, 4, 8, 12, 16, 20, 24, 28, 32, 36]);
+  assert.deepEqual(swarm.frame(0, 500, false, 10).get(0).map((p) => p.x), [25, 29, 33, 37, 41, 45, 49, 53, 57, 61]);
+});

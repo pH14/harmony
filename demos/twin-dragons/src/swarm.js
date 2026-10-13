@@ -76,11 +76,11 @@ export class Swarm {
   }
   frame(branch, milliseconds, still = false, maxPoints = this.maxTrails, detail = false) {
     this.prune(branch, milliseconds);
-    const rooms = new Map();
+    const rooms = new Map(), step = Math.max(1, Math.ceil(this.trails.size / maxPoints));
     let count = 0;
-    for (const trail of this.trails.values()) {
+    for (const [id, trail] of this.trails) {
       if (count >= maxPoints) break;
-      if (trail.branch !== branch) continue;
+      if (trail.branch !== branch || id % step) continue;
       const frame = still ? 0 : Math.max(0, milliseconds - trail.started) * 0.06;
       const point = swarmPoint(trail.samples, frame);
       if (!point) continue;
