@@ -1170,11 +1170,7 @@ impl Backend for KvmBackend {
 
             Ok(())
         };
-        if self.nested_state_config.is_some() {
-            self.state_mutation_guard.mutate(restore)?;
-        } else {
-            restore()?;
-        }
+        self.state_mutation_guard.mutate(restore)?;
 
         self.run_page().set_cr8(state.sregs.cr8);
         self.pending_irq = None;

@@ -1701,3 +1701,26 @@ fn resume_flag_preserves_instruction_breakpoint_continuation() {
         "original and cold endpoint RAM differ"
     );
 }
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn nonnested_failed_restore_poisoned_after_partial_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let mut invalid = backend.save().expect("save baseline");
+    invalid.sregs.cr2 ^= 0x1000;
+    invalid.debugregs.flags = 1;
+    backend
+        .validate_restore_state(&invalid)
+        .expect("debug-register ioctl failure is after shape preflight");
+    assert!(backend.restore(&invalid).is_err());
+    assert!(matches!(
+        backend.save(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+    assert!(matches!(
+        backend.run(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+}
