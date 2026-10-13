@@ -110,6 +110,14 @@ fn started() -> Instant {
 impl UmlSession {
     pub fn boot(config: &UmlLaunch, factory: ServiceFactory) -> Result<Self, Box<dyn Error>> {
         let profile = uml::Profile::load(&config.profile)?;
+        if let Some(expected) = &config.expected_profile_identity_sha256 {
+            if profile.identity_sha256() != expected {
+                return Err(SessionError::Control(
+                    "the UML profile identity changed after workload admission".into(),
+                )
+                .into());
+            }
+        }
         let mut launch = Launch::new(config.work_parent.clone());
         launch.memory_mib = config.memory_mib;
         launch.set_initramfs(&config.initramfs)?;
@@ -548,7 +556,7 @@ mod tests {
     use std::path::PathBuf;
     use uml::{Artifact, Profile, VirtualTimeCosts};
 
-    fn profile() -> VerifiedProfile {
+    fn profile_fixture() -> (tempfile::TempDir, VerifiedProfile) {
         let directory = tempfile::tempdir().unwrap();
         let mut elf = vec![0_u8; 120];
         elf[..4].copy_from_slice(b"\x7fELF");
@@ -588,7 +596,12 @@ mod tests {
             serde_json::to_vec(&profile).unwrap(),
         )
         .unwrap();
-        uml::Profile::load(directory.path()).unwrap()
+        let profile = uml::Profile::load(directory.path()).unwrap();
+        (directory, profile)
+    }
+
+    fn profile() -> VerifiedProfile {
+        profile_fixture().1
     }
 
     fn unbooted_session() -> UmlSession {
@@ -618,6 +631,28 @@ mod tests {
         index
             .publish(Namespace::new(&[b"test"]), key, None, extent, 1)
             .unwrap()
+    }
+
+    #[test]
+    fn profile_changed_after_admission_rejects_before_guest_boot() {
+        let (directory, admitted) = profile_fixture();
+        let path = directory.path().join("profile.json");
+        let mut changed: Profile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        changed.kernel_version.push_str("-changed");
+        std::fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let config = UmlLaunch {
+            profile: directory.path().to_path_buf(),
+            expected_profile_identity_sha256: Some(admitted.identity_sha256().to_owned()),
+            initramfs: directory.path().join("rootfs"),
+            memory_mib: 128,
+            kernel_arguments: Vec::new(),
+            work_parent: directory.path().to_path_buf(),
+            seed: 1,
+            setup_budget: 1,
+            progress_limit: Duration::from_secs(1),
+        };
+        let error = UmlSession::boot(&config, nominal_factory()).err().unwrap();
+        assert!(error.to_string().contains("profile identity changed"));
     }
 
     #[test]

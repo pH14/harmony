@@ -1180,6 +1180,7 @@ mod tests {
             let mut config = config(&[]);
             config.backend = GuestBackend::Uml(crate::consonance::UmlGuest {
                 profile: "profile".into(),
+                profile_identity_sha256: identity.to_owned(),
                 identity: identity.to_owned(),
                 work_parent: "work".into(),
             });
