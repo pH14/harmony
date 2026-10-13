@@ -247,11 +247,15 @@ KVM leaves `MMFR0.ASIDBits` out of its writable ID register mask and fails
 `LiveKvm::new` reads the vCPU's `ID_AA64MMFR0_EL1` after `KVM_ARM_VCPU_INIT` and
 reports that width.
 
-HVF answers `SMCCC_ARCH_FEATURES(ARCH_WORKAROUND_2)` as not supported (`-1`),
-matching ARM KVM with the optional firmware feature bitmaps disabled. The
-owned arm64 Linux guest treats `-2` as unaffected by Spectre-v4 but `-1` as
-vulnerable. The frozen guest CPU identity has no SSBS feature, so this firmware
-answer controls retained mitigation state and must agree across backends.
+HVF answers `SMCCC_ARCH_FEATURES(ARCH_WORKAROUND_1/2/3)` as `1/-1/0`.
+ARM KVM's responses to these three queries depend on the host's Spectre-v2,
+Spectre-v4, and BHB states even when optional firmware bitmaps are disabled.
+After applying the guest ID-register policy, ARM KVM reads its three firmware
+workaround pseudo-registers and admits only levels `2/0/1`, which produce the
+same guest responses. Other host levels fail before guest entry. The owned
+arm64 Linux guest treats workaround 2's `-2` as unaffected by Spectre-v4 but
+`-1` as vulnerable; its frozen CPU identity has no SSBS feature, so this answer
+controls retained mitigation state.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the

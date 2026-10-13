@@ -393,6 +393,14 @@ const OPTIONAL_FIRMWARE_BITMAPS: [u64; 4] = [
     KVM_REG_ARM_VENDOR_HYP_BMAP,
     KVM_REG_ARM_VENDOR_HYP_BMAP_2,
 ];
+const KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_1: u64 = KVM_REG_ARM_PSCI_VERSION | 1;
+const KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2: u64 = KVM_REG_ARM_PSCI_VERSION | 2;
+const KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_3: u64 = KVM_REG_ARM_PSCI_VERSION | 3;
+const SMCCC_WORKAROUND_LEVELS: [(u64, u64); 3] = [
+    (KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_1, 2),
+    (KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_2, 0),
+    (KVM_REG_ARM_SMCCC_ARCH_WORKAROUND_3, 1),
+];
 
 const fn core_reg(index: u64) -> u64 {
     KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE | index
@@ -1074,6 +1082,16 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             let id = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG | u64::from(enc);
             self.kvm.set_one_reg(id, value)?;
         }
+        for (register, expected) in SMCCC_WORKAROUND_LEVELS {
+            let host = self.kvm.get_one_reg(register)?;
+            if host != expected {
+                return Err(BackendError::Arm64FirmwareMismatch {
+                    register,
+                    expected,
+                    host,
+                });
+            }
+        }
         let _ = &policy.sysreg_traps;
         self.configured = true;
         Ok(())
@@ -1318,7 +1336,11 @@ pub struct FakeKvm {
 #[cfg(any(test, feature = "mock"))]
 impl FakeKvm {
     pub fn new() -> Self {
-        Self::default()
+        let mut fake = Self::default();
+        for (id, level) in SMCCC_WORKAROUND_LEVELS {
+            fake.regs.insert(id, level);
+        }
+        fake
     }
 
     pub fn push_run(&mut self, view: KvmRunView) -> &mut Self {
@@ -2080,6 +2102,25 @@ mod tests {
 
         for id in OPTIONAL_FIRMWARE_BITMAPS {
             assert_eq!(backend.kvm().reg(id), Some(0));
+        }
+    }
+
+    #[test]
+    fn firmware_workaround_levels_must_match_the_guest_contract() {
+        for (id, expected) in SMCCC_WORKAROUND_LEVELS {
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            let different = if expected == 0 { 3 } else { 0 };
+            fake.set_one_reg(id, different).unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            assert!(matches!(
+                backend.set_policy(&Arm64Policy::default()),
+                Err(BackendError::Arm64FirmwareMismatch {
+                    register,
+                    expected: required,
+                    host,
+                }) if register == id && required == expected && host == different
+            ));
         }
     }
 
