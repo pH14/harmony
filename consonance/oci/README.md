@@ -76,6 +76,15 @@ unpacks the initramfs. An image that hands its data to a service account, such
 as a database cluster owned by its own uid, is therefore readable by that
 account in the guest and by nobody else.
 
+Archive path components must be ASCII. Admission checks their case-folded
+prefixes before extraction and rejects names that differ only by ASCII case,
+including collisions between layers. This bounds staging to names whose byte
+identity has the same meaning on case-sensitive Linux filesystems and the
+case-insensitive, Unicode-normalizing filesystems common on macOS. A Unicode
+normalization pass alone would not cover arbitrary non-UTF-8 Linux names or
+every host filesystem's case rules, so non-ASCII archive paths fail closed.
+Existing Harmony workload images use ASCII paths.
+
 A layer that ships a child without an entry for its parent directory gives the
 implicit parent mode 0755, regardless of the host process's umask. The merge
 applies that mode over the lower layer's. Explicit directory modes still come
