@@ -44,20 +44,16 @@ const PLAYING: u8 = 1;
 const LOADING: u8 = 2;
 
 impl ArchiveKey for Observation {
-    type Place = (u8, u8, bool, u16, u16);
-    type Progress = ();
+    type Place = (u8, bool, u16, u16);
+    type Progress = u8;
     type Identity = (u16, u16);
     type Lineage = ();
     fn place(self) -> Self::Place {
-        (
-            self.cleared,
-            self.level,
-            self.loading,
-            self.x / 32,
-            self.y / 32,
-        )
+        (self.level, self.loading, self.x / 32, self.y / 32)
     }
-    fn progress(self) -> Self::Progress {}
+    fn progress(self) -> Self::Progress {
+        self.cleared
+    }
     fn identity(self) -> Self::Identity {
         (self.x / 16, self.y / 16)
     }
@@ -162,7 +158,7 @@ fn draw(rng: &mut RomuDuoJrRand, previous: Option<Action>) -> Action {
     let frames = if below(rng, 2) == 0 {
         2 + below(rng, 11)
     } else {
-        48 + below(rng, 73)
+        6 + below(rng, 13)
     };
     Action {
         buttons,
@@ -370,7 +366,7 @@ impl Explorer {
             let mut frame = start;
             let mut previous = prefix.last().copied();
             let mut actions = Vec::new();
-            let count = 1 + below(&mut self.rng, 8);
+            let count = 1 + below(&mut self.rng, 24);
             for action_count in (prefix.len()..).take(count) {
                 let action = draw(&mut self.rng, previous);
                 if frame + u32::from(action.frames) > 200_000 || action_count >= 10_000 {
@@ -711,7 +707,7 @@ mod tests {
             assert_eq!(a.buttons & 12, 0);
             assert_ne!(a.buttons & 0x30, 0x30);
             assert_ne!(a.buttons & 0xc0, 0xc0);
-            assert!((2..=12).contains(&a.frames) || (48..=120).contains(&a.frames));
+            assert!((2..=18).contains(&a.frames));
             prev = Some(a);
         }
     }

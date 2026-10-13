@@ -42,8 +42,8 @@ await page.addInitScript((tourKey) => {
         if (data.type === "states") window.tdTestStates = data.states;
         if (data.type === "batch")
           for (const point of data.points)
-            if (point.retained != null && point.retained !== 0 && !String(point.retained).endsWith(":0") && !point.observation.loading && point.observation.health > 0 && point.observation.level === 0)
-              (window.tdTestRecentRetained ??= []).push({ key: point.retained, x: point.observation.x, y: point.observation.y });
+            if (point.retained != null && point.retained !== 0 && !String(point.retained).endsWith(":0") && !point.observation.loading && point.observation.health > 0)
+              (window.tdTestRecentRetained ??= []).push({ key: point.retained, level: point.observation.level, x: point.observation.x, y: point.observation.y });
         if (data.type === "states" && data.request === -4180)
           window.tdTestLiveState?.(data.states.length > 0);
         if (data.type === "batch" && data.active === 1)
@@ -63,7 +63,7 @@ await page.addInitScript((tourKey) => {
           window.tdTestRouteCells
         ) {
           const canvas = document.querySelector(
-              '.map-row[data-map="0"] .area-map',
+              '.map-row .area-map',
             ),
             width = Number(canvas?.dataset.mapWidth),
             height = Number(canvas?.dataset.mapHeight);
@@ -72,7 +72,7 @@ await page.addInitScript((tourKey) => {
               o = { ...raw, x: raw.x + 8, y: raw.y + 8 };
             if (
               point.retained === null ||
-              o.level !== 0 ||
+              o.level !== Number(canvas?.dataset.map) ||
               o.loading ||
               o.health === 0 ||
               o.x < 96 ||
@@ -81,7 +81,7 @@ await page.addInitScript((tourKey) => {
               o.y >= height
             )
               continue;
-            const key = `${Math.floor(o.x / 32)}:${Math.floor((o.y - 8) / 32)}`;
+            const key = `${o.level}:${Math.floor(o.x / 32)}:${Math.floor((o.y - 8) / 32)}`;
             if (!window.tdTestRouteCells.has(key))
               window.tdTestRouteCells.set(key, {
                 ids: new Set(),
@@ -279,13 +279,14 @@ try {
     "The hidden automatic preview must not highlight a replay position on the map",
   );
   const { x, y } = await page.evaluate(() => {
+    const level = Number(document.querySelector("#map").dataset.map);
     const cell = [...window.tdTestRouteCells.values()]
-      .filter((entry) => entry.ids.size > 1)
+      .filter((entry) => entry.ids.size > 1 && entry.observation.level === level)
       .sort((a, b) => b.ids.size - a.ids.size)[0];
     window.tdTestRouteCells = null;
     return cell.observation;
   });
-  const introMap = page.locator('.map-row[data-map="0"] .area-map').first();
+  const introMap = page.locator('.map-row .area-map').first();
   await introMap.scrollIntoViewIfNeeded();
   const clickIntroCell = async () => {
     const click = await introMap.evaluate(
@@ -350,7 +351,7 @@ try {
   await page.waitForFunction(
     () =>
       Number(
-        document.querySelector('.map-row[data-map="0"] .area-map').dataset
+        document.querySelector('.map-row .area-map').dataset
           .tracePoints,
       ) > 1,
   );
@@ -619,7 +620,7 @@ try {
       document.querySelector("#verification").textContent ===
         "Exact replay ✓" && document.querySelector("#map").dataset.map === "1",
   );
-  assert.equal(await page.locator("#goal-title").innerText(), "Level 2");
+  assert.match(await page.locator("#goal-title").innerText(), /^Level 2( ✓)?$/);
   const levelFrames = new Map();
   emulator.restore(emulatorRoot);
   let frame = 0, lastLevelOne = 0;
@@ -644,7 +645,7 @@ try {
           .textContent.startsWith("FRAME " + frame.toLocaleString() + " /"),
       { level, frame },
     );
-    assert.equal(await page.locator("#goal-title").innerText(), `Level ${level + 1}`);
+    assert.match(await page.locator("#goal-title").innerText(), new RegExp(`^Level ${level + 1}( ✓)?$`));
   }
   const beforeGoal = lastLevelOne - 30;
   await page.locator("#scrub").fill(String(beforeGoal));
@@ -668,7 +669,7 @@ try {
         .querySelector("#frame-label")
         .textContent.startsWith("FRAME 0 /"),
   );
-  assert.equal(await page.locator("#goal-title").innerText(), "Level 1");
+  assert.match(await page.locator("#goal-title").innerText(), /^Level 1( ✓)?$/);
   console.log("Cached scrub and playback follow the Level 1 to Level 2 transition.");
   const longFrames = await selectFixture(
     {
@@ -779,7 +780,7 @@ try {
             document.activeElement === document.querySelector("#branch-tree button[aria-pressed=true]"),
           overlay: (() => {
             const canvas = document.querySelector(
-              '.map-row[data-map="0"] .area-map',
+              '.map-row .area-map',
             );
             return window.tdTestHeatPixels(canvas);
           })(),
@@ -793,7 +794,7 @@ try {
   );
   const readOverlay = () =>
     page
-      .locator('.map-row[data-map="0"] .area-map')
+      .locator('.map-row .area-map')
       .first()
       .evaluate((canvas) => window.tdTestHeatPixels(canvas));
   let originalOverlay = await readOverlay();
@@ -1171,8 +1172,8 @@ try {
   );
   assert.equal(await page.locator("#reset").getAttribute("aria-label"), "Restart Search");
   assert.equal(await page.locator(".map-row").count(), 1);
-  assert.equal(await page.locator('.map-row[data-map="0"] .area-map').first().isVisible(), true);
-  await page.locator('.map-row[data-map="0"] .area-map').first().focus();
+  assert.equal(await page.locator('.map-row .area-map').first().isVisible(), true);
+  await page.locator('.map-row .area-map').first().focus();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
   assert.equal(await page.locator("#map").getAttribute("data-map"), "0");
@@ -1238,7 +1239,8 @@ try {
   );
   await page.setViewportSize({ width: 390, height: 844 });
   const phonePosition = await page.evaluate(async () => {
-    const recent = window.tdTestRecentRetained.slice(-200).reverse();
+    const level = Number(document.querySelector("#map").dataset.map);
+    const recent = window.tdTestRecentRetained.filter((candidate) => candidate.level === level).slice(-200).reverse();
     for (const candidate of recent) {
       if (Math.floor((candidate.x + 8) / 32) === Math.floor(128 / 32)) continue;
       const live = await new Promise((resolve) => {
@@ -1406,11 +1408,11 @@ try {
   );
   await page.waitForFunction(
     () =>
-      document.querySelector('.map-row[data-map="0"] .area-map[data-origin-frame]:not([data-origin-frame=""])').dataset
+      document.querySelector('.map-row .area-map[data-origin-frame]:not([data-origin-frame=""])').dataset
         .originPulse === "true",
   );
   const originRoomVisible = await page
-    .locator('.map-row[data-map="0"] .room-part:has(canvas[data-origin-frame]:not([data-origin-frame=""]))').first()
+    .locator('.map-row .room-part:has(canvas[data-origin-frame]:not([data-origin-frame=""]))').first()
     .evaluate((row) => {
       const bounds = row.getBoundingClientRect();
       return bounds.top >= 0 && bounds.bottom <= innerHeight;
@@ -1427,13 +1429,13 @@ try {
   await page.locator("#pause").click();
   await page.waitForFunction(
     () =>
-      document.querySelector('.map-row[data-map="0"] .area-map[data-origin-frame]:not([data-origin-frame=""])').dataset
+      document.querySelector('.map-row .area-map[data-origin-frame]:not([data-origin-frame=""])').dataset
         .originPulse === "false",
   );
   assert.ok(
     Number(
       await page
-        .locator('.map-row[data-map="0"] .area-map[data-origin-frame]:not([data-origin-frame=""])').first()
+        .locator('.map-row .area-map[data-origin-frame]:not([data-origin-frame=""])').first()
         .getAttribute("data-trace-points"),
     ) > 1,
   );

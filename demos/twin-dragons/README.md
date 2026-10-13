@@ -69,14 +69,17 @@ the third level is cleared.
 
 The search runs in one coordinator worker and a pool of rollout workers. The
 coordinator owns the Dissonance archive and parent selector. Each rollout
-worker holds its own QuickNES instance. The archive place is (levels cleared,
-level, loading, x / 32, y / 32), and its identity within a place is (x / 16,
-y / 16). The place rows match the map's cell rows. Within a place it prefers
-more cleared levels, then more health. A state with zero health or on the
+worker holds its own QuickNES instance. The archive place is (level, loading,
+x / 32, y / 32), its progress is the number of levels cleared, and its identity
+within a place is (x / 16, y / 16). The place rows match the map's cell rows.
+The parent selector weighs each progress tier 8 times the tier below, so new
+work concentrates on the furthest level without a direction preference. Within
+a place it prefers more health. A state with zero health or on the
 title screen ends a rollout. The 32-pixel heatmap projection is separate from
 archive identity.
 
-Rollouts have one to eight controller actions. The coordinator plans rollouts
+Rollouts have 1 to 24 controller actions. Each action holds its buttons for 2
+to 12 frames or 6 to 18 frames, with equal odds. The coordinator plans rollouts
 in rounds of 16. For each rollout it selects a parent and draws the actions
 from the seeded generator. It plans four rounds ahead and plans a new round
 each time the oldest round has fully merged. Rollout workers run the actions
@@ -85,10 +88,11 @@ after each action, plus a motion trail. The coordinator merges results into
 the archive in plan order, whatever order they arrive in. The seed therefore
 determines every search choice, and the worker count and timing change only
 throughput and presentation. The first search uses seed 27, and Restart
-increments it. Seed 27 enters Level 2 after about 3,000 paths. A history is
-bounded to 10,000 actions and 200,000 frames. Runs stop after 100,000 paths
-or 400,000 archive history entries, or when the search WASM buffers reach
-their limit.
+increments it. Seed 27 enters Level 2 after about 1,760 paths, Level 3 after
+about 8,850 and finishes the game after about 14,200. A history is bounded to
+10,000 actions and 200,000 frames. Runs stop when a path finishes the game,
+after 100,000 paths or 400,000 archive history entries, or when the search
+WASM buffers reach their limit.
 
 The coordinator sends one rollout per message and keeps two messages
 outstanding per worker. Each worker caches up to 64 parent snapshots by id;
@@ -248,7 +252,7 @@ snapshot. It also forks mid-action and from manual play in Levels 1 and 2 and
 checks the audio emulator against the search emulator. The fixtures came from
 real seed 3 and seed 5 searches and contain only controller inputs.
 `TWIN_DRAGONS_PROGRESS_PATHS=25000 npm run test:search` requires seed 11 to
-enter Level 3, which it does at about 21,800 paths. `tests/parallel.mjs` loads
+enter Level 3, which it does at about 5,700 paths. `tests/parallel.mjs` loads
 the page twice with three workers and once with one, and requires the first
 120 archived histories and digests to match.
 

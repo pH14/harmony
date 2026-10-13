@@ -18,12 +18,16 @@ async function open(options) {
         this.addEventListener('message', ({data}) => {
           if (data.type === 'ready') window.tdReady = {active: data.active, root: data.state, searches: data.searches};
           if (data.type === 'batch') window.tdMemory = data.snapshot_bytes;
+          if (data.type === 'batch')
+            for (const point of data.points)
+              if (point.retained !== null && !point.observation.loading && point.observation.health > 0)
+                (window.tdRetained ??= new Map()).set(point.observation.level, point.observation);
           if (data.type === 'paused') window.tdPaused = (window.tdPaused || 0) + 1;
         });
       }
     };
   }, TOUR_KEY);
-  await page.goto(process.env.DEMO_URL || 'http://127.0.0.1:4173/');
+  await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?workers=1`);
   await page.waitForFunction(() => window.tdReady && !document.querySelector('#pause').disabled);
   return page;
 }
@@ -31,16 +35,18 @@ async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
   await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus', null, { timeout: 10000 });
   await (touch ? page.locator('#camera-toggle [data-camera="room"]').tap() : page.locator('#camera-toggle [data-camera="room"]').click());
-  const room = await page.evaluate(() => window.tdReady.root.observation.level);
-  await page.locator(`.map-row[data-map="${room}"] .area-map`).scrollIntoViewIfNeeded();
-  const point = await page.evaluate(() => {
-    const o = window.tdReady.root.observation;
+  const target = await page.evaluate(() => {
+    const root = window.tdReady.root.observation;
+    return document.querySelector(`.map-row[data-map="${root.level}"]`) ? root : window.tdRetained.get(Number(document.querySelector('#map').dataset.map));
+  });
+  await page.locator(`.map-row[data-map="${target.level}"] .area-map`).scrollIntoViewIfNeeded();
+  const point = await page.evaluate((o) => {
     const c = document.querySelector(`.map-row[data-map="${o.level}"] .area-map`), r = c.getBoundingClientRect();
     const scale = Math.min(c.width / Number(c.dataset.mapWidth), c.height / Number(c.dataset.mapHeight)) * Number(c.dataset.zoom);
     const x = Math.floor((o.x + 8) / 32) * 32 + 16, y = Math.floor(o.y / 32) * 32 + 24;
     return {room: o.level, x: r.left + ((x - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width / c.width,
       y: r.top + ((y - Number(c.dataset.centerY)) * scale + c.height / 2) * r.height / c.height};
-  });
+  }, target);
   if (touch) await page.touchscreen.tap(point.x, point.y);
   else await page.mouse.click(point.x, point.y);
   await page.waitForFunction(() => !document.querySelector('#inspector').hidden && !document.querySelector('#take-control').disabled);
