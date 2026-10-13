@@ -337,6 +337,7 @@ CONSONANCE_CHECKS = Workflow(
                            "vmm-backend::kvm_smoke event_dependent_fields_restore_rejects_unrestorable_values_before_mutation",
                            "vmm-backend::kvm_smoke unusable_segment_restore_requires_canonical_shape_before_mutation",
                            "vmm-core::x86_kvm_pcide_preflight pcide_restore_requires_ia32e_mode_before_entry",
+                           "vmm-backend kvm_sys::xsave_diagnostic::failed_dirty_drain_cannot_retry_after_prior_slot_was_cleared",
                            PUBLIC_SNAPSHOT_IDENTITY_TEST),
             scope="consonance_kvm",
             select="rust_checks"),
