@@ -220,16 +220,18 @@ pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
 
 pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
     let tarball_path = Path::new(image);
-    if (tarball_path.is_absolute() || std::fs::symlink_metadata(tarball_path).is_ok())
-        && !exact::path(tarball_path)?
-    {
+    let explicit_path =
+        tarball_path.is_absolute() || image.starts_with("./") || image.starts_with("../");
+    let exact_local = (explicit_path || std::fs::symlink_metadata(tarball_path).is_ok())
+        && exact::path(tarball_path)?;
+    if explicit_path && !exact_local {
         return Err(ImageError::UnsafePath(image.to_string()));
     }
     std::fs::create_dir_all(stage_dir)?;
     let isolated = tempfile::Builder::new()
         .prefix("image-stage-")
         .tempdir_in(stage_dir)?;
-    let staged = if tarball_path.exists() {
+    let staged = if exact_local {
         stage_from_path(tarball_path, isolated.path())
     } else {
         let tarball = export_from_tool(image, isolated.path())?;
@@ -2223,6 +2225,62 @@ mod tests {
         let exact_link = parent.join("image");
         let staged = stage(exact_link.to_str().unwrap(), &staging).unwrap();
         assert!(staged.rootfs.is_dir());
+    }
+
+    #[test]
+    fn case_aliased_local_entry_does_not_shadow_image_reference() {
+        if std::env::var_os("HARMONY_IMAGE_REF_CHILD").is_some() {
+            assert!(matches!(
+                stage("./app", Path::new("explicit-stage")),
+                Err(ImageError::UnsafePath(_))
+            ));
+            assert!(!Path::new("explicit-stage").exists());
+            let staged = stage("app", Path::new("stage")).unwrap();
+            assert!(staged.rootfs.is_dir());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        std::fs::create_dir(work.join("App")).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "image.tar",
+            &[
+                raw_member(
+                    b"manifest.json",
+                    b'0',
+                    "",
+                    br#"[{"Config":"config.json","Layers":[]}]"#,
+                ),
+                raw_member(b"config.json", b'0', "", br#"{"config":{}}"#),
+            ]
+            .concat(),
+        );
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let tool = bin.join("docker");
+        std::fs::write(
+            &tool,
+            b"#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\nif [ \"$1\" = image ] && [ \"$2\" = inspect ]; then echo sha256:fixture; exit 0; fi\nif [ \"$1\" = image ] && [ \"$2\" = save ]; then cp \"$FAKE_IMAGE_TAR\" \"$4\"; exit $?; fi\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::tests::case_aliased_local_entry_does_not_shadow_image_reference",
+            ])
+            .current_dir(&work)
+            .env("HARMONY_IMAGE_REF_CHILD", "1")
+            .env("FAKE_IMAGE_TAR", &archive)
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     #[test]
