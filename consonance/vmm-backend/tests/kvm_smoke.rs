@@ -923,6 +923,47 @@ fn save_restore_round_trips_on_real_kvm() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
+fn sysenter_restore_rejects_values_kvm_cannot_preserve() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    // SAFETY: guest RAM is page-aligned, remains allocated until after the backend is dropped, and no host slice aliases it while the guest runs.
+    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
+    configure(&mut backend);
+    let baseline = backend.save().expect("save baseline");
+
+    for (index, value) in [
+        (0x174, 1 << 32),
+        (0x175, 0x0000_8000_0000_0000),
+        (0x176, 1 << 48),
+    ] {
+        let mut invalid = baseline.clone();
+        invalid.regs.rax ^= 1;
+        invalid.msrs.insert(index, value);
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut canonical = baseline.clone();
+    canonical.msrs.insert(0x174, u64::from(u32::MAX));
+    canonical.msrs.insert(0x175, 0x0000_7fff_ffff_ffff);
+    canonical.msrs.insert(0x176, 0xffff_8000_0000_0000);
+    backend
+        .restore(&canonical)
+        .expect("restore canonical values");
+    let restored = backend.save().expect("save canonical values");
+    assert_eq!(restored.msrs, canonical.msrs);
+    assert_eq!(restored.regs, canonical.regs);
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
 fn msr_filter_is_loud() {
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,

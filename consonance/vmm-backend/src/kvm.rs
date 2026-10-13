@@ -471,6 +471,21 @@ pub(crate) fn cpuid_entries(model: &CpuidModel) -> Vec<kvm_cpuid_entry2> {
         .collect()
 }
 
+pub(crate) fn guest_virtual_bits(model: &CpuidModel) -> u32 {
+    model
+        .entries
+        .iter()
+        .find(|entry| entry.leaf == 0x8000_0008 && entry.subleaf == 0)
+        .map(|entry| (entry.eax >> 8) & 0xff)
+        .filter(|bits| (48..=64).contains(bits))
+        .unwrap_or(48)
+}
+
+fn canonical_address(address: u64, bits: u32) -> bool {
+    let shift = 64 - bits;
+    ((address << shift) as i64 >> shift) as u64 == address
+}
+
 pub(crate) fn ensure_full_msr_count(serviced: usize, requested: usize) -> Result<()> {
     if serviced != requested {
         return Err(BackendError::Internal(
@@ -508,10 +523,14 @@ pub(crate) fn validate_restore_shape(
     state: &VcpuState,
     filter: Option<&MsrFilter>,
     xsave_len: usize,
+    virtual_bits: u32,
 ) -> Result<()> {
     const EFER: u32 = 0xc000_0080;
     const FS_BASE: u32 = 0xc000_0100;
     const GS_BASE: u32 = 0xc000_0101;
+    const SYSENTER_CS: u32 = 0x174;
+    const SYSENTER_ESP: u32 = 0x175;
+    const SYSENTER_EIP: u32 = 0x176;
 
     let mut expected: Vec<u32> = filter
         .map(|f| f.allow_indices().collect())
@@ -531,6 +550,22 @@ pub(crate) fn validate_restore_shape(
         (GS_BASE, state.sregs.gs.base),
     ] {
         if state.msrs.get(&index).is_some_and(|&msr| msr != value) {
+            return Err(BackendError::InvalidState);
+        }
+    }
+    if state
+        .msrs
+        .get(&SYSENTER_CS)
+        .is_some_and(|&value| value > u64::from(u32::MAX))
+    {
+        return Err(BackendError::InvalidState);
+    }
+    for index in [SYSENTER_ESP, SYSENTER_EIP] {
+        if state
+            .msrs
+            .get(&index)
+            .is_some_and(|&value| !canonical_address(value, virtual_bits))
+        {
             return Err(BackendError::InvalidState);
         }
     }
