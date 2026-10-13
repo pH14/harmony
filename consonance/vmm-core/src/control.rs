@@ -115,6 +115,18 @@ pub enum ServeError {
     Poisoned,
 }
 
+fn capture_refusal<T>(error: VmmError) -> Result<Result<T, ControlError>, ServeError> {
+    match error {
+        VmmError::ContractViolation(reason) => Ok(Err(ControlError::SnapshotRefused { reason })),
+        VmmError::Backend(vmm_backend::BackendError::Unsupported { what }) => {
+            Ok(Err(ControlError::SnapshotRefused {
+                reason: what.to_owned(),
+            }))
+        }
+        other => Err(other.into()),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PortableSnapshotReceipt {
     pub id: SnapId,
@@ -970,7 +982,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Hash { scope } => match scope {
                 HashScope::Whole => {
                     let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                    let mut suffix = vmm.state_blob_suffix()?;
+                    let mut suffix = match vmm.state_blob_suffix() {
+                        Ok(suffix) => suffix,
+                        Err(error) => return capture_refusal(error),
+                    };
                     self.capture_control_state()
                         .encode_and_append_hash(&mut suffix);
                     append_taint_hash(&mut suffix, self.timeline_tainted);
@@ -998,7 +1013,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Read { gpa, len } => self.read(*gpa, *len),
             Request::Regs => {
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                Ok(Ok(Reply::Regs(regs_view(vmm)?)))
+                match regs_view(vmm) {
+                    Ok(view) => Ok(Ok(Reply::Regs(view))),
+                    Err(error) => capture_refusal(error),
+                }
             }
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
             Request::RecordedEnv => Ok(self.recorded_env_reply()),
@@ -1164,10 +1182,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let (vm_state, vcpu) = match vmm.capture_vm_state() {
             Ok(s) => s,
-            Err(VmmError::ContractViolation(reason)) => {
-                return Ok(Err(ControlError::SnapshotRefused { reason }));
-            }
-            Err(e) => return Err(e.into()),
+            Err(error) => return capture_refusal(error),
         };
         let sdk_channel = match vmm.sdk_snapshot() {
             Ok(state) => state,
