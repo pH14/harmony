@@ -69,7 +69,8 @@ truncated or sign-extended value on the next save. Restore preflight rejects a
 nonzero upper half of CS and noncanonical ESP or EIP values before changing
 the vCPU. KVM canonicalizes ESP and EIP at its host LA57 capability width,
 independent of the guest CPUID width. SVM also discards their upper halves for
-AMD-compatible guests, so preflight requires 32-bit values in that case.
+AMD-compatible guests. To cover older kernels, preflight requires 32-bit
+values on SVM unless the guest advertises the GenuineIntel vendor.
 CR8 holds a four-bit task-priority value. KVM also accepts larger values in
 `KVM_SET_SREGS2` but reads them back changed, so restore rejects those values
 during preflight.

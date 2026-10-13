@@ -692,7 +692,7 @@ impl KvmBackend {
         let cpuid = CpuId::from_entries(&entries)
             .map_err(|_| BackendError::Internal("CPUID table too large for KVM"))?;
         self.vcpu.set_cpuid2(&cpuid).map_err(kvm_err)?;
-        self.sysenter_32bit = self.host_amd_compatible && guest_amd_compatible(model);
+        self.sysenter_32bit = self.host_amd_compatible && !guest_intel_vendor(model);
         self.cpuid_installed = true;
         Ok(())
     }
