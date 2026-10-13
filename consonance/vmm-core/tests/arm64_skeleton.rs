@@ -86,7 +86,7 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
     b.set_policy(&Arm64Policy::default()).unwrap();
     b.set_state(vcpu);
     let mut v = Vmm::new(b, GuestRam::new(RAM).unwrap());
-    v.inject_serial_input(b"never-snapshotted");
+    v.inject_serial_input(b"snapshot-input");
 
     let s: Arm64VmState = v.save_vm_state().unwrap();
     assert_eq!(s.regs.pc, 0x0020_0000);

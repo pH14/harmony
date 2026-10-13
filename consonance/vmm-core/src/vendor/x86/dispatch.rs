@@ -548,6 +548,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             report_stream: self.report_stream.clone(),
             uart: UartState {
                 capture: self.devices.uart.capture().to_vec(),
+                input: self.devices.uart.pending_input(),
                 regs: *self.devices.uart.shadow_regs(),
                 dlab: self.devices.uart.dlab(),
                 dlm: self.devices.uart.dlm(),
@@ -659,9 +660,13 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if let (Some(legacy), Some(ls)) = (self.devices.legacy.as_mut(), dev.legacy) {
             legacy.restore(ls.config_address, ls.master_imr, ls.slave_imr);
         }
-        self.devices
-            .uart
-            .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
+        self.devices.uart.restore(
+            dev.uart.capture,
+            dev.uart.regs,
+            dev.uart.dlab,
+            dev.uart.dlm,
+            dev.uart.input,
+        );
         self.pvclock_commit_restore(dev.pvclock.as_ref());
         self.report_stream = dev.report_stream;
     }

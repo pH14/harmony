@@ -591,6 +591,7 @@ mod tests {
                 clock_offset: 0xdead_beef,
                 report_stream: vec![1, 2, 3],
                 uart_capture: b"integrity".to_vec(),
+                uart_input: b"pending".to_vec(),
                 uart_regs: [13, 1, 0x70, 0x301, 0x10],
                 gic: Some(gic.snapshot()),
                 doorbell: Vec::new(),
