@@ -491,6 +491,25 @@ fn restore_rejects_a_timer_state_hvf_cannot_hold() {
 
 #[test]
 #[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn restore_rejects_pstate_bits_hvf_discards_before_mutation() {
+    let mut guest = Guest::new(&[B_SELF]);
+    let baseline = guest.save();
+    let mut invalid = baseline;
+    invalid.core.x[0] = 0x1234;
+    invalid.core.pstate |= 1 << 32;
+    assert!(matches!(
+        guest.backend.validate_restore_state(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(matches!(
+        guest.backend.restore(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(same_state(&guest.save(), &baseline));
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
 fn set_policy_rejects_an_id_field_above_the_host() {
     let _vm = ONE_VM_PER_PROCESS
         .lock()
