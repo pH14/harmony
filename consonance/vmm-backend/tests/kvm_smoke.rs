@@ -1163,6 +1163,43 @@ fn segment_one_bit_restore_rejects_oversized_flags_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
+fn xsave_reserved_header_restore_rejects_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+    assert!(baseline.xsave.len() >= 576);
+
+    for offset in [528, 543, 575] {
+        let mut invalid = baseline.clone();
+        invalid.xsave[offset] = 1;
+        invalid.sregs.cr2 ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr2 ^= 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate XSAVE");
+    backend.restore(&valid).expect("restore XSAVE");
+    assert_eq!(
+        backend.save().expect("save valid XSAVE").sregs.cr2,
+        valid.sregs.cr2
+    );
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
 fn msr_filter_is_loud() {
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,

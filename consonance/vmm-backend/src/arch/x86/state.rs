@@ -146,6 +146,7 @@ pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
 const XSTATE_BV: usize = 512;
 const XCOMP_BV: usize = 520;
 const XSAVE_HEADER_END: usize = XCOMP_BV + 8;
+const XSAVE_RESERVED: std::ops::Range<usize> = XSAVE_HEADER_END..576;
 const X87_CONTROL: std::ops::Range<usize> = 0..24;
 const X87_ST: std::ops::Range<usize> = 32..160;
 const SSE_MXCSR: std::ops::Range<usize> = 24..28;
@@ -209,6 +210,12 @@ pub fn canonicalize_xsave_with_restore_bv(image: &mut [u8]) -> Option<u64> {
 }
 
 pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<u8>> {
+    if image
+        .get(XSAVE_RESERVED)
+        .is_some_and(|reserved| reserved.iter().any(|&byte| byte != 0))
+    {
+        return Err(BackendError::InvalidState);
+    }
     let Some(restore_bv) = restore_bv else {
         return Ok(image.to_vec());
     };
@@ -463,6 +470,22 @@ mod tests {
             restore_xsave_image(&short, Some(1)),
             Err(BackendError::InvalidState)
         ));
+    }
+
+    #[test]
+    fn restore_rejects_nonzero_reserved_xsave_header_bytes() {
+        for offset in [528, 543, 575] {
+            for restore_bv in [None, Some(0)] {
+                let mut image = init_image(0);
+                image[offset] = 1;
+                let before = image.clone();
+                assert!(matches!(
+                    restore_xsave_image(&image, restore_bv),
+                    Err(BackendError::InvalidState)
+                ));
+                assert_eq!(image, before);
+            }
+        }
     }
 
     #[test]
