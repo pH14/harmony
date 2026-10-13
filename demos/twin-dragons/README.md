@@ -235,8 +235,10 @@ to `entry(level)`.
 
 The page shows one room at a time. When a level has several rooms, such as the
 Super Mario Bros. bonus areas, tabs above the view switch between them. Auto
-view moves to the room holding a clearing rollout, or to a room that has had
-1.5 times as many live sprites as the shown room for 2.5 seconds. The level row
+view moves to a room that has had 1.5 times as many live sprites as the shown
+room for 2.5 seconds. A newly found room in the shown level does not move the
+view by itself, so one rollout entering a bonus room leaves the view on the
+busy room. The level row
 above the map lists the levels the search has reached. Once it holds four or
 more, all but the last two and the shown level collapse into a +N button that
 expands the full list. The row wraps instead of scrolling sideways.

@@ -596,15 +596,14 @@ function latestRoom() {
   return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
 }
 function followRoom(now, immediate = false) {
-  const rooms = levelRooms(), live = (id) => swarmRooms.get(id) || [];
-  const finisher = live(mapLevel).some((p) => p.finish) ? mapLevel : rooms.find((id) => live(id).some((p) => p.finish));
-  const busiest = finisher ?? rooms.reduce((best, id) => (live(id).length > live(best).length * 1.5 ? id : best), mapLevel);
+  const live = (id) => swarmRooms.get(id)?.length || 0;
+  const busiest = levelRooms().reduce((best, id) => (live(id) > live(best) * 1.5 ? id : best), mapLevel);
   if (busiest === mapLevel) {
     camera.busierSince = 0;
     return null;
   }
   camera.busierSince ||= now;
-  return finisher != null || immediate || now - camera.busierSince > 2500 ? busiest : null;
+  return immediate || now - camera.busierSince > 2500 ? busiest : null;
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
   const introRoom = intro ? mapLevel : null;
@@ -1560,7 +1559,7 @@ function startSearch(level = bootLevel) {
           }
           heat.retain({ ...point, observation: project(o, map) }, now);
           const shown = branchPreview?.room ?? mapLevel;
-          if (followDiscovery(o, first, focusedLevel, userSelected, cleared) && levelIndex(o.level) >= levelIndex(shown)) {
+          if (followDiscovery(o, first, focusedLevel, userSelected, cleared) && levelIndex(o.level) > levelIndex(shown)) {
             if (branchPreview) branchPreview.room = o.level;
             else setRoom(o.level);
           }
