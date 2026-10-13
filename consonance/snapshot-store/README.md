@@ -73,6 +73,10 @@ multiplying every query across its ancestry. Cache entries do not own page
 references: immutable ancestry keeps the resolved content alive for the layer's
 lifetime, and collecting the layer also drops its cache.
 
+Snapshot IDs pair the seal-time sequence with a process-local store identity.
+The store identity is only a handle guard; it is absent from snapshot bytes,
+hashes, and exported records. Passing an ID from another store returns
+`UnknownSnapshot`, even when both stores have a layer with the same sequence.
 Snapshot IDs are reference-counted. `retain` adds a live reference,
 `release` makes an ID unobservable at zero, and `gc` removes layers no longer
 reachable from a live snapshot or its ancestors. `stats` and `store_stats`

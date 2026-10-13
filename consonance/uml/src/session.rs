@@ -1176,7 +1176,7 @@ mod tests {
         let foreign = checkpoint(snapshot(&first, None, &[(0, 1)]), 5, Some(120));
         let second = Checkpoints::new();
         let local = checkpoint(snapshot(&second, None, &[(0, 2)]), 5, Some(120));
-        assert_eq!(foreign.memory.id(), local.memory.id());
+        assert_ne!(foreign.memory.id(), local.memory.id());
         assert_ne!(foreign.digest().unwrap(), local.digest().unwrap());
         let before = second.stats().unwrap();
         let sidecar = local.sidecar().unwrap();
