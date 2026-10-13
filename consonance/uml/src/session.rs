@@ -1102,6 +1102,66 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn import_rejects_malformed_page_rows_without_creating_a_snapshot() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(
+            snapshot(&checkpoints, None, &[(0, 1), (1, 1)]),
+            5,
+            Some(120),
+        );
+        let near = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(1, 2)]),
+            5,
+            Some(120),
+        );
+        let target = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(0, 0), (1, 3)]),
+            5,
+            Some(120),
+        );
+        let rows = owned_delta(&checkpoints, &base, &target);
+        assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), [0, 1]);
+        let valid: Vec<_> = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let reordered = [valid[1], valid[0]];
+        let duplicate = [valid[0], valid[0]];
+        let out_of_range = [(IMAGE_PAGES + 4, valid[0].1, valid[0].2)];
+        let sidecar = target.sidecar().unwrap();
+        let before = checkpoints.stats().unwrap();
+        let base_digest = base.digest().unwrap();
+        let near_digest = near.digest().unwrap();
+
+        for pages in [&reordered[..], &duplicate[..]] {
+            assert!(matches!(
+                checkpoints.import(&base, &near, pages, &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::Store(
+                    snapshot_store::StoreError::TargetPageOrder { .. }
+                )))
+            ));
+            assert_eq!(checkpoints.stats().unwrap(), before);
+            assert_eq!(base.digest().unwrap(), base_digest);
+            assert_eq!(near.digest().unwrap(), near_digest);
+        }
+        assert!(matches!(
+            checkpoints.import(&base, &near, &out_of_range, &sidecar, &nominal_factory()),
+            Err(SessionError::Memory(MemoryError::Store(
+                snapshot_store::StoreError::GfnOutOfRange { .. }
+            )))
+        ));
+        assert_eq!(checkpoints.stats().unwrap(), before);
+        assert_eq!(base.digest().unwrap(), base_digest);
+        assert_eq!(near.digest().unwrap(), near_digest);
+
+        let imported = checkpoints
+            .import(&base, &near, &valid, &sidecar, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported.digest().unwrap(), target.digest().unwrap());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn import_bounds_the_private_image_before_storing_pages() {
         let checkpoints = Checkpoints::new();
         let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
