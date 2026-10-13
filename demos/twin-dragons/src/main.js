@@ -2865,7 +2865,7 @@ const tour = new GuidedTour({
       worker.postMessage({ type: "resume" });
       updateSearchControl();
     }
-    if ($("inspector").hidden) applyCameraMode();
+    applyCameraMode();
     return restoration;
   },
 });

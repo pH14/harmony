@@ -581,15 +581,19 @@ try {
     false,
     "Blocked storage must not repeatedly reopen onboarding",
   );
+  await blocked.locator('#camera-toggle [data-camera="room"]').click();
   await blocked.locator("#tour-open").click();
   await ready(blocked, 0);
   await opening(blocked);
+  await next(blocked, 1);
   await blocked.keyboard.press("Escape");
   assert.equal(
     await blocked.locator('#camera-toggle [aria-pressed="true"]').count(),
     1,
     "Leaving the tour must leave exactly one view mode selected",
   );
+  assert.equal(await blocked.locator('#camera-toggle [data-camera="room"]').getAttribute("aria-pressed"), "true");
+  await blocked.waitForFunction(() => [...document.querySelectorAll(".area-map")].every((c) => +c.dataset.zoom === 1), null, { timeout: 5000 });
   await blocked.close();
   assert.deepEqual(errors, []);
   console.log(
