@@ -62,6 +62,9 @@ outer cgroup hierarchy or widening the parent device policy.
 
 Rootfs and control-segment assembly are internal to `bundle::prepare`, which
 validates their combined mount layout before producing executable bytes.
+Both segments use a fixed gzip header and a pinned Rust DEFLATE encoder. The
+prepared bytes and identity therefore do not depend on the host's `gzip`
+implementation or version.
 
 Layers are extracted with `tar -p --no-same-owner`: each entry takes the mode
 its header recorded, whatever the host umask, and belongs to the staging user
