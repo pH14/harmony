@@ -1686,6 +1686,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         cmd: &str,
         deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
+        if self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .pending_service_question()
+            .is_some()
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         self.timeline_tainted = true;
         let nonce = self.exec_nonce;
         self.exec_nonce = self.exec_nonce.wrapping_add(1);
@@ -8296,6 +8305,84 @@ mod tests {
         assert!(!ok, "deadline-0 exec on a non-shell mock does not complete");
         assert!(output.is_empty());
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
+    }
+
+    #[test]
+    fn exec_rejects_pending_service_decision_without_staging_serial_input() {
+        use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+
+        let mut s = payload_server();
+        hello(&mut s);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        s.recorded.set_config(config.clone());
+        s.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(s.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = s.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        let at = vmm.effective_vns().unwrap();
+        let before = hash(&mut s);
+        let queued = s.vmm().unwrap().devices().uart.pending_input();
+
+        assert_eq!(
+            s.handle(&Request::Exec {
+                cmd: "echo rejected".into(),
+                deadline: Moment(at + 100),
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut s), before);
+        assert_eq!(s.vmm().unwrap().devices().uart.pending_input(), queued);
+        assert_eq!(s.exec_nonce, 0);
+        assert!(matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))));
+        assert_eq!(
+            s.vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
+        assert_eq!(
+            s.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(at)),
+                    on: StopMask::NONE,
+                },
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(ServiceAnswer::Nominal.encode()),
+                }),
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(at) }))
+        );
+        assert!(s.vmm().unwrap().pending_service_question().is_none());
+        assert_eq!(s.vmm().unwrap().devices().uart.pending_input(), queued);
     }
 
     #[test]
