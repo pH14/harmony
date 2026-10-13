@@ -38,6 +38,8 @@ The `nes_emu` library sources use **LGPL-2.1-or-later**. The libretro
 distribution ships **GPL-2.0** terms, which this demo applies to the compiled
 QuickNES browser core. Its C++ shim (`tools/frontend.cpp`) is
 **GPL-2.0-or-later**. See the shipped `QuickNES.txt` and source-file notices.
+The browser core applies Harmony's idle-loop patch
+(`quicknes-idle-loop.patch`), which changes only CPU speed.
 The compiled core is distributed with its corresponding source and build recipe.
 
 The browser interface and Harmony/Dissonance Rust code are

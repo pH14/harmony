@@ -10,7 +10,7 @@ export const BOOT = [
 ];
 const runtimeURL = (name, base) => {
   const url = new URL("engine/" + name, base);
-  url.searchParams.set("v", "audio-replay-2");
+  url.searchParams.set("v", "idle-loop-1");
   return url.href;
 };
 export async function createEngine(base, inputs = {}) {

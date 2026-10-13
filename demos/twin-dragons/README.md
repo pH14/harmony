@@ -28,7 +28,11 @@ site needs no shared memory, cross-origin isolation, server computation or
 credentials.
 
 `tools/build-runtime.sh` builds the pinned QuickNES core, the Rust worker, the
-maps and the sprite sheet. It gets the ROM from
+maps and the sprite sheet. The core carries the idle-loop patch from
+`scripts/build-quicknes-core.sh`, the native Harmony build; the browser build
+extracts it from that script, checks its SHA-256 and ships it in `licenses/`.
+The patch skips whole iterations of the game's wait-for-interrupt loop and
+leaves emulated state and timing unchanged. It gets the ROM from
 `workloads/nes/scripts/build-twin-dragons-rom.sh`, which downloads the pinned
 upstream release and zeroes its sound-effect data. The same script's pinned
 source archive supplies level data, tiles and tables for the maps. The build

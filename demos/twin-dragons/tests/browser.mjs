@@ -1111,6 +1111,7 @@ try {
     "licenses/harmony-source.tar.gz",
     "licenses/rust-dependencies.tar.gz",
     "licenses/quicknes-source.tar.gz",
+    "licenses/quicknes-idle-loop.patch",
     "licenses/twin-dragons-LICENSE.txt",
     "twin-dragons.nes",
     "maps/0.png",
