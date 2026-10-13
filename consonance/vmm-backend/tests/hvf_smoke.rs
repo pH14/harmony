@@ -437,7 +437,7 @@ fn every_vcpu_state_class_survives_a_restore() {
         }),
         ("vtimer", |state| {
             state.vtimer.cntv_cval_el0 ^= 0x1234;
-            state.vtimer.cntv_ctl_el0 ^= 0b01;
+            state.vtimer.cntv_ctl_el0 ^= 0b10;
         }),
         ("pending-interrupts", |state| {
             state.interrupts.irq = !state.interrupts.irq;
@@ -465,9 +465,12 @@ fn every_vcpu_state_class_survives_a_restore() {
 fn restore_rejects_a_timer_state_hvf_cannot_hold() {
     let mut guest = Guest::new(&[B_SELF]);
     let baseline = guest.save();
-    let invalid: [(&str, Perturbation); 2] = [
+    let invalid: [(&str, Perturbation); 3] = [
         ("unmasked", |state| state.vtimer.masked = false),
         ("control-bits", |state| state.vtimer.cntv_ctl_el0 |= 0b100),
+        ("control-enabled", |state| {
+            state.vtimer.cntv_ctl_el0 |= 0b001
+        }),
     ];
     for (name, perturb) in invalid {
         let mut state = baseline;
