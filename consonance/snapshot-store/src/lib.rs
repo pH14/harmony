@@ -217,12 +217,9 @@ impl Store {
             dirty_set.insert(gfn);
         }
 
+        let mut verified_pages = BTreeSet::new();
         for (&gfn, &pref) in &inherited {
-            if let PageRef::Data(id) = pref
-                && !self.pages.get(id.get() - 1).is_some_and(Option::is_some)
-            {
-                return Err(StoreError::PageIntegrity { gfn });
-            }
+            self.page_entry(pref, gfn, &mut verified_pages)?;
         }
         for &pref in inherited.values() {
             if let PageRef::Data(id) = pref {
@@ -768,11 +765,23 @@ impl Store {
         result
     }
 
-    fn intern_page(&mut self, hash: PageHash, data: &[u8]) -> NonZeroUsize {
+    fn intern_page(
+        &mut self,
+        hash: PageHash,
+        data: &[u8],
+        gfn: u64,
+    ) -> Result<NonZeroUsize, StoreError> {
         if let Some(&id) = self.page_index.get(&hash) {
-            let entry = self.pages[id.get() - 1].as_mut().expect("interned page");
+            let entry = self
+                .pages
+                .get_mut(id.get() - 1)
+                .and_then(Option::as_mut)
+                .ok_or(StoreError::PageIntegrity { gfn })?;
+            if entry.data.as_ref() != data {
+                return Err(StoreError::PageIntegrity { gfn });
+            }
             entry.refs = entry.refs.saturating_add(1);
-            return id;
+            return Ok(id);
         }
         let entry = PageEntry {
             hash,
@@ -790,7 +799,7 @@ impl Store {
             }
         };
         self.page_index.insert(hash, id);
-        id
+        Ok(id)
     }
 
     fn release_page_ref(&mut self, id: NonZeroUsize) -> u64 {
@@ -846,7 +855,7 @@ impl BuilderCore<'_> {
                 hash, self.store.zero_hash,
                 "non-zero page hashed to zero_hash"
             );
-            PageRef::Data(self.store.intern_page(hash, data))
+            PageRef::Data(self.store.intern_page(hash, data, gfn)?)
         };
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
@@ -871,6 +880,8 @@ impl BuilderCore<'_> {
                 .stored_page(SnapshotId(parent, self.store.store_id), gfn)?[..]
                 == *data
         {
+            let inherited = self.store.resolve(parent, gfn);
+            self.store.checked_page_ref(inherited, gfn)?;
             return Ok(());
         }
         self.write_page(gfn, data)
@@ -901,7 +912,7 @@ impl BuilderCore<'_> {
             if &hash != expected {
                 return Err(StoreError::PageIntegrity { gfn });
             }
-            PageRef::Data(self.store.intern_page(hash, data))
+            PageRef::Data(self.store.intern_page(hash, data, gfn)?)
         };
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
@@ -1965,6 +1976,84 @@ mod tests {
             store.rebase(origin, near, &[]),
             Err(StoreError::PageIntegrity { gfn: 0 })
         ));
+    }
+
+    #[test]
+    fn interned_corrupt_page_cannot_replace_valid_write_data() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x5a; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(snap.0, 0) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let before_refs = store.pages[id.get() - 1].as_ref().unwrap().refs;
+        let before_stats = store.store_stats();
+        let valid = [0x5a; PAGE_SIZE];
+        let hash = *blake3::hash(&valid).as_bytes();
+
+        let mut builder = store.derive(snap).unwrap();
+        assert!(matches!(
+            builder.write_hashed_page(1, &valid, &hash),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            builder.write_page(1, &valid),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        drop(builder);
+        assert_eq!(
+            store.pages[id.get() - 1].as_ref().unwrap().refs,
+            before_refs
+        );
+        assert_eq!(store.store_stats(), before_stats);
+    }
+
+    #[test]
+    fn changed_write_rejects_corrupt_parent_before_skipping_equal_bytes() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x5a; PAGE_SIZE]).unwrap();
+        let parent = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(parent.0, 0) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let bytes = store.pages[id.get() - 1].as_ref().unwrap().data.to_vec();
+        let before_stats = store.store_stats();
+
+        let mut builder = store.derive(parent).unwrap();
+        assert!(matches!(
+            builder.write_changed_page(0, &bytes),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        drop(builder);
+        assert_eq!(store.store_stats(), before_stats);
+    }
+
+    #[test]
+    fn flatten_rejects_corrupt_inherited_page_before_acquiring_refs() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x5a; PAGE_SIZE]).unwrap();
+        let parent = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(parent.0, 0) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let before_refs = store.pages[id.get() - 1].as_ref().unwrap().refs;
+        let before_stats = store.store_stats();
+
+        assert!(matches!(
+            store.flatten_base(parent, &[0; PAGE_SIZE], &[], vec![]),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        assert_eq!(
+            store.pages[id.get() - 1].as_ref().unwrap().refs,
+            before_refs
+        );
+        assert_eq!(store.store_stats(), before_stats);
     }
 
     #[test]
