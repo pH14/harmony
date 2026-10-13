@@ -14,6 +14,12 @@ let prepared = bundle::prepare(&staged, &request)?;
 let initramfs = prepared.initramfs(platform_initramfs);
 ```
 
+Each `image::stage` call creates its own directory beneath the supplied staging
+directory. Reusing that directory, including after a failed stage, cannot carry
+files from an earlier image into the next guest rootfs or its identity. The
+caller owns the staging directory and removes it when the prepared image is no
+longer needed.
+
 `PreparedExecution` owns the deterministic rootfs and platform control
 segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is
 placed at `/harmony-oci/rootfs`; the control segment owns
