@@ -404,7 +404,7 @@ fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&state.core)
         || state.mp_state != MpState::Runnable
         || !state.vtimer.masked
-        || state.vtimer.cntv_ctl_el0 & !0b11 != 0
+        || state.vtimer.cntv_ctl_el0 & !0b10 != 0
     {
         return Err(BackendError::InvalidState);
     }
@@ -492,7 +492,7 @@ impl HvfBackend {
             let _ = unsafe { hv_vm_destroy() };
             return Err(error);
         }
-        Ok(Self {
+        let backend = Self {
             vcpu,
             exit,
             configured: false,
@@ -506,7 +506,9 @@ impl HvfBackend {
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
             host_id_regs: std::collections::BTreeMap::new(),
-        })
+        };
+        backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
+        Ok(backend)
     }
 
     fn ensure_flush_stub(&mut self) -> Result<u64> {
@@ -1133,6 +1135,9 @@ impl Backend for HvfBackend {
             hv_vcpu_get_trap_debug_reg_accesses(self.vcpu, &mut state.debug.trap_debug_reg_accesses)
         })?;
         state.vtimer.cntv_ctl_el0 = self.sysreg(HV_SYS_REG_CNTV_CTL_EL0)? & 0b11;
+        if state.vtimer.cntv_ctl_el0 & 1 != 0 {
+            return Err(BackendError::InvalidState);
+        }
         state.vtimer.cntv_cval_el0 = self.sysreg(HV_SYS_REG_CNTV_CVAL_EL0)?;
         // SAFETY: outputs are live and this is the owning thread.
         hv("hv_vcpu_get_vtimer_mask", unsafe {

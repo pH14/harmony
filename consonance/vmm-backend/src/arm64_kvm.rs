@@ -714,6 +714,7 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
         || s.debug.trap_debug_reg_accesses
         || !s.vtimer.masked
         || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
+        || s.vtimer.cntv_ctl_el0 & 1 != 0
         || s.interrupts.irq
         || s.interrupts.fiq
         || u32::try_from(s.simd_fp.fpsr).is_err()
@@ -835,6 +836,9 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     }
     s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
     s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)? & CNTV_CTL_WRITABLE_BITS;
+    if s.vtimer.cntv_ctl_el0 & 1 != 0 {
+        return Err(BackendError::InvalidState);
+    }
     s.vtimer.cntv_cval_el0 = k.get_one_reg(CNTV_CVAL_EL0)?;
     s.vtimer.counter = k.get_one_reg(CNTVCT_EL0)?;
     s.vtimer.masked = true;
@@ -1179,6 +1183,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.gic_ctlr_fixed_bits =
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
+        self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
         let _ = &policy.sysreg_traps;
         self.configured = true;
         Ok(())
@@ -2312,6 +2317,7 @@ mod tests {
     fn default_policy_denies_host_rng_time_and_vendor_firmware_services() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
+        fake.set_one_reg(CNTV_CTL_EL0, 1).unwrap();
         let mut backend = Arm64KvmBackend::new(fake);
 
         backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -2319,6 +2325,7 @@ mod tests {
         for id in OPTIONAL_FIRMWARE_BITMAPS {
             assert_eq!(backend.kvm().reg(id), Some(0));
         }
+        assert_eq!(backend.kvm().reg(CNTV_CTL_EL0), Some(0));
     }
 
     #[test]
@@ -2580,6 +2587,15 @@ mod tests {
     }
 
     #[test]
+    fn save_rejects_an_enabled_architected_virtual_timer() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_one_reg(CNTV_CTL_EL0, 1).unwrap();
+
+        assert!(matches!(save_vcpu(&fake), Err(BackendError::InvalidState)));
+    }
+
+    #[test]
     fn restore_vcpu_rejects_each_noncanonical_field_independently() {
         let mut source = FakeKvm::new();
         source.vcpu_init().unwrap();
@@ -2593,6 +2609,8 @@ mod tests {
         timer_unmasked.vtimer.masked = false;
         let mut timer_ctl_reserved = valid;
         timer_ctl_reserved.vtimer.cntv_ctl_el0 = 1 << 2;
+        let mut timer_ctl_enabled = valid;
+        timer_ctl_enabled.vtimer.cntv_ctl_el0 = 1;
         let mut irq = valid;
         irq.interrupts.irq = true;
         let mut fiq = valid;
@@ -2603,6 +2621,7 @@ mod tests {
             ("trap-debug-register-accesses", trap_debug_reg_accesses),
             ("host-timer-unmasked", timer_unmasked),
             ("host-timer-control-reserved", timer_ctl_reserved),
+            ("host-timer-control-enabled", timer_ctl_enabled),
             ("pending IRQ", irq),
             ("pending FIQ", fiq),
         ] {

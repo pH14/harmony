@@ -243,6 +243,11 @@ the guest runs, so a save taken after a restore reports a later value than the
 one restored, and it stays out of the state hash and the divergence components
 for that reason.
 
+The owned ARM guest cannot program its architected virtual timer controls.
+Both backends set `CNTV_CTL_EL0` to zero before guest entry and reject an
+enabled timer during capture or restore. This keeps a restored checkpoint from
+arming a host-time interrupt outside the Harmony clockevent path.
+
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
 guest RAM or backend state is changed.
