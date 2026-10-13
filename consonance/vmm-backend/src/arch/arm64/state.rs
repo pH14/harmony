@@ -60,6 +60,43 @@ pub struct Arm64GicState {
     pub timer_fired: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Arm64GicIdleState {
+    pub distributor_group1_enabled: bool,
+    pub group1: bool,
+    pub enabled: bool,
+    pub active: bool,
+    pub priority: u8,
+    pub pmr: u8,
+    pub bpr1: u8,
+    pub ctlr: u64,
+    pub igrpen1: bool,
+    pub ap0r: [u32; 4],
+    pub ap1r: [u32; 4],
+}
+
+impl Arm64GicIdleState {
+    pub fn from_gic(gic: &Arm64GicState, intid: u32) -> Option<Self> {
+        if !(16..32).contains(&intid) {
+            return None;
+        }
+        let mask = 1u32 << intid;
+        Some(Self {
+            distributor_group1_enabled: gic.gicd_ctlr & 2 != 0,
+            group1: gic.group[0] & mask != 0,
+            enabled: gic.enable[0] & mask != 0,
+            active: gic.active[0] & mask != 0,
+            priority: gic.priority[intid as usize],
+            pmr: gic.pmr,
+            bpr1: gic.bpr1,
+            ctlr: gic.ctlr,
+            igrpen1: gic.igrpen1,
+            ap0r: gic.ap0r,
+            ap1r: gic.ap1r,
+        })
+    }
+}
+
 impl Default for Arm64GicState {
     fn default() -> Self {
         Self {

@@ -60,18 +60,21 @@ When the paravirtual clockevent is due, `dispatch` queries the backend's IRQ
 mask and defers delivery while `PSTATE.I` is set. HVF and ARM KVM supply that
 bit directly; backends without the query retain the full-state read. Idle
 handling uses the same query before deciding whether it may advance to a wake
-deadline. For KVM,
-idle also reads the in-kernel GIC state and applies the same PPI deliverability
-rules as the userspace GIC. A disabled, group-masked, priority-masked, or active
-clockevent PPI neither causes an immediate idle retry nor makes a future
-clockevent deadline an idle wakeup. KVM idle also compares the PPI's priority
-group against the CPU-interface active-priority registers and binary point;
+deadline. For KVM, idle reads the clockevent PPI and relevant CPU-interface
+registers directly and applies the same PPI deliverability rules as the
+userspace GIC. This bounded read remains available when pending SPI or routing
+state makes full snapshot capture inadmissible. A disabled, group-masked,
+priority-masked, or active clockevent PPI neither causes an immediate idle
+retry nor makes a future clockevent deadline an idle wakeup. KVM idle also
+compares the PPI's priority group against the CPU-interface active-priority
+registers and binary point;
 an active interrupt can block preemption even when its raw priority is lower.
-When the host's preemption width cannot be inferred unambiguously from captured
-GIC state, idle fails closed instead of guessing whether the clockevent can
-wake the guest. Idle also fails closed when a guest binary-point change leaves
-an active priority for which KVM's trapped interrupt-acknowledgment path and
-direct hardware acknowledgment could disagree.
+When the host's preemption width cannot be inferred unambiguously from the
+targeted GIC fields, idle fails closed instead of guessing whether the
+clockevent can wake the guest. Idle also fails closed when a guest binary-point
+change leaves an active priority for which KVM's trapped
+interrupt-acknowledgment path and direct hardware acknowledgment could
+disagree.
 Due-timer polling remains behind the existing registration, deadline, and virtual-clock
 checks, and idle polling remains behind the virtual-clock check. It changes
 neither virtual time nor the schedule, deferral, delivery, and acknowledgement

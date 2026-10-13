@@ -213,6 +213,17 @@ the rest of the vCPU. Both reject pending completions before the read. Other
 backends currently return `None`.
 The boxed backend forwards the query so live sessions use the same path.
 
+`Backend::read_arm64_gic_idle_state` reads only the in-kernel GIC fields needed
+to decide whether a selected PPI can wake an idle ARM guest: distributor Group
+1 enable, that PPI's group, enable, active, and priority fields, and the CPU
+interface's mask, Group 1 enable, binary point, control, and active-priority
+registers. ARM KVM uses this read after settling an owed MMIO access. It does
+not capture a vCPU or scan SPI routes. Snapshot capture continues to reject
+pending or asserted SPIs and nonzero SPI routes, while idle can still inspect
+the clockevent PPI in those guest states. The boxed backend forwards the
+targeted read, the ARM mock projects its held GIC state, and HVF and x86
+backends return no in-kernel GIC state.
+
 The ignored HVF `irq_mask_polling_matches_full_capture` comparison alternates
 full capture and direct reads in one binary, both alone and after each exit of
 a synthetic guest loop. It checks every guest output, RAM, exit counts, and
