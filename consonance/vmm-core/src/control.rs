@@ -617,6 +617,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 };
                 let rows: Vec<_> = pages.iter().map(|&(gfn, hash, _)| (gfn, hash)).collect();
                 let rebase = engine.rebase(setup_id, near_id, &rows)?;
+                let mut keep = rebase.keep.iter().copied().peekable();
+                for (index, &(gfn, hash, data)) in pages.iter().enumerate() {
+                    if keep.peek().copied() == Some(index) {
+                        keep.next();
+                    } else if blake3::hash(data).as_bytes() != hash {
+                        return Err(SnapshotError::Store(
+                            snapshot_store::StoreError::PageIntegrity { gfn },
+                        )
+                        .into());
+                    }
+                }
                 let mut merged: Vec<(u64, &[u8; 32], &[u8; 4096])> = rebase
                     .keep
                     .iter()
@@ -5142,6 +5153,24 @@ mod tests {
             .restore_guest_memory(&near_image)
             .unwrap();
         let near = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        let latest = destination.latest_snapshot();
+        let mut corrupted_reused = *resolved[1].2;
+        corrupted_reused[9] ^= 1;
+        let corrupted = vec![
+            resolved[0],
+            (resolved[1].0, resolved[1].1, &corrupted_reused),
+        ];
+        assert!(matches!(
+            destination.import_sparse_delta(destination_setup, near, &corrupted, &sidecar),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 3
+                })
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), latest);
         let pages_before = destination.host_telemetry().import_pages;
         let rebased = destination
             .import_sparse_delta(destination_setup, near, &resolved, &sidecar)
