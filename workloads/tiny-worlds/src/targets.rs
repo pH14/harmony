@@ -242,14 +242,19 @@ impl Config {
                 * stocks
                 + usize::from(s.stock)
         };
-        let size = (usize::from(self.width) * usize::from(HISTORIES) * stocks)
-            << (self.cannons + self.guarded);
-        let mut best = vec![0_u8; size];
         let start = self.initial();
-        best[index(start)] = start.health;
-        let mut pending = std::collections::VecDeque::from([start]);
-        while let Some(s) = pending.pop_front() {
-            if s.health < best[index(s)] {
+        let mut best = std::collections::BTreeMap::from([(index(start), start.health)]);
+        let needed = |s: State| {
+            let shielded = if self.double_aims == 0 {
+                (s.barriers & guards & s.cannons).count_ones()
+            } else {
+                0
+            };
+            s.cannons.count_ones() + shielded
+        };
+        let mut pending = std::collections::BinaryHeap::from([(self.down(start), start)]);
+        while let Some((_, s)) = pending.pop() {
+            if s.health < best[&index(s)] || u32::from(s.stock) < needed(s) {
                 continue;
             }
             for action in 0..4 {
@@ -257,9 +262,18 @@ impl Config {
                 if self.goal(next) {
                     return Ok(true);
                 }
-                if next.health > best[index(next)] {
-                    best[index(next)] = next.health;
-                    pending.push_back(next);
+                if best
+                    .get(&index(next))
+                    .is_none_or(|&kept| next.health > kept)
+                {
+                    best.insert(index(next), next.health);
+                    if best.len() > crate::MAX_REACHABLE_STATES {
+                        return Err(format!(
+                            "reachability search exceeded {} states",
+                            crate::MAX_REACHABLE_STATES
+                        ));
+                    }
+                    pending.push((self.down(next), next));
                 }
             }
         }
@@ -497,11 +511,23 @@ mod tests {
                 scale: None,
             },
             crate::test_seed(),
-            3000,
+            100_000,
             true,
         )
         .unwrap();
         assert_eq!(report["verified"], true);
-        assert_eq!(report["evidence"]["targets"]["first_down_execution"][0], 0);
+        assert_eq!(report["success"], true);
+        let evidence: Evidence =
+            serde_json::from_value(report["evidence"]["targets"].clone()).unwrap();
+        assert_eq!(evidence.first_down_execution.len(), 3);
+        for found in [&evidence.first_down_execution, &evidence.first_down_work] {
+            let found: Vec<u64> = found.iter().map(|at| at.unwrap()).collect();
+            assert_eq!(found[0], 0);
+            assert!(found[1] > 0);
+            assert!(found.windows(2).all(|pair| pair[0] <= pair[1]));
+        }
+        assert!(evidence.landed > 0);
+        assert!(evidence.landed <= evidence.shots);
+        assert!(evidence.double_kills <= evidence.landed);
     }
 }
