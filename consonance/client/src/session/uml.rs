@@ -110,13 +110,11 @@ fn started() -> Instant {
 impl UmlSession {
     pub fn boot(config: &UmlLaunch, factory: ServiceFactory) -> Result<Self, Box<dyn Error>> {
         let profile = uml::Profile::load(&config.profile)?;
-        if let Some(expected) = &config.expected_profile_identity_sha256 {
-            if profile.identity_sha256() != expected {
-                return Err(SessionError::Control(
-                    "the UML profile identity changed after workload admission".into(),
-                )
-                .into());
-            }
+        if profile.identity_sha256() != config.expected_profile_identity_sha256 {
+            return Err(SessionError::Control(
+                "the UML profile identity changed after workload admission".into(),
+            )
+            .into());
         }
         let mut launch = Launch::new(config.work_parent.clone());
         launch.memory_mib = config.memory_mib;
@@ -642,7 +640,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
         let config = UmlLaunch {
             profile: directory.path().to_path_buf(),
-            expected_profile_identity_sha256: Some(admitted.identity_sha256().to_owned()),
+            expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
             initramfs: directory.path().join("rootfs"),
             memory_mib: 128,
             kernel_arguments: Vec::new(),
