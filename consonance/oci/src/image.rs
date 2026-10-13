@@ -5,8 +5,8 @@ pub use crate::credentials::{CredentialsError, ProcessCredentials};
 use crate::exact;
 use guest_image::Owner;
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -394,15 +394,49 @@ fn contained_join(root: &Path, relative: &str) -> Result<PathBuf, ImageError> {
     }
     let real_root = root.canonicalize()?;
     let mut exact_path = real_root.clone();
-    for component in Path::new(relative).components() {
-        let Component::Normal(part) = component else {
+    let mut pending: VecDeque<OsString> = Path::new(relative)
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_os_string()),
+            _ => None,
+        })
+        .collect();
+    let mut symlink_hops = 0;
+    while let Some(part) = pending.pop_front() {
+        if part == OsStr::new("..") {
+            if exact_path == real_root {
+                return Err(ImageError::UnsafePath(relative.to_string()));
+            }
+            exact_path.pop();
             continue;
-        };
-        let Some(next) = exact::entry(&exact_path, part)? else {
+        }
+        let Some(next) = exact::entry(&exact_path, &part)? else {
             return Err(ImageError::Io(std::io::ErrorKind::NotFound.into()));
         };
         if std::fs::symlink_metadata(&next)?.file_type().is_symlink() {
-            return Err(ImageError::UnsafePath(relative.to_string()));
+            symlink_hops += 1;
+            if symlink_hops > 40 {
+                return Err(ImageError::UnsafePath(relative.to_string()));
+            }
+            let target = std::fs::read_link(&next)?;
+            if target.is_absolute() {
+                return Err(ImageError::UnsafePath(relative.to_string()));
+            }
+            let mut target_parts = Vec::new();
+            for component in target.components() {
+                match component {
+                    Component::CurDir => {}
+                    Component::ParentDir => target_parts.push(OsString::from("..")),
+                    Component::Normal(part) => target_parts.push(part.to_os_string()),
+                    Component::RootDir | Component::Prefix(_) => {
+                        return Err(ImageError::UnsafePath(relative.to_string()));
+                    }
+                }
+            }
+            for part in target_parts.into_iter().rev() {
+                pending.push_front(part);
+            }
+            continue;
         }
         exact_path = next;
     }
@@ -1972,6 +2006,46 @@ mod tests {
             stage(layout.to_str().unwrap(), &dir.path().join("staging")),
             Err(ImageError::Unrecognized(_))
         ));
+    }
+
+    #[test]
+    fn docker_save_layers_can_reuse_a_prior_layer_by_relative_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir_all(layout.join("a")).unwrap();
+        std::fs::create_dir_all(layout.join("b")).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["a/layer.tar","b/layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        write_archive(
+            &layout.join("a"),
+            "layer.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        std::os::unix::fs::symlink("../a/layer.tar", layout.join("b/layer.tar")).unwrap();
+
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("staging")).unwrap();
+        assert_eq!(std::fs::read(staged.rootfs.join("file")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn layout_symlink_targets_require_exact_names_and_stay_inside_the_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir_all(layout.join("a")).unwrap();
+        std::fs::create_dir_all(layout.join("b")).unwrap();
+        std::fs::write(layout.join("a/layer.tar"), b"layer").unwrap();
+        for (name, target) in [("case", "../a/LAYER.TAR"), ("escape", "../../outside")] {
+            std::os::unix::fs::symlink(target, layout.join("b/layer.tar")).unwrap();
+            assert!(
+                contained_join(&layout, "b/layer.tar").is_err(),
+                "{name} symlink resolved"
+            );
+            std::fs::remove_file(layout.join("b/layer.tar")).unwrap();
+        }
     }
 
     #[test]

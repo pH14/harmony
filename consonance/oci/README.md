@@ -88,7 +88,9 @@ Whiteout targets must match the spelling of the lower name they remove; after
 an exact whiteout, a new entry may reuse that path with different case. Whiteout
 lookups never follow a staged symlink parent. OCI control-file, mount, and
 account-file lookups match each existing path component exactly rather than
-using host case-folding; account paths cannot use symlinks.
+using host case-folding; account paths cannot use symlinks. OCI layouts may
+reuse a blob through a relative symlink whose target resolves, component by
+component, to exact names inside that layout.
 Hardlink targets must name an earlier member of the same archive with the
 exact same spelling. This also excludes archives that only extract because a
 host resolves a hardlink target case-insensitively.
