@@ -64,7 +64,12 @@ deadline. For KVM,
 idle also reads the in-kernel GIC state and applies the same PPI deliverability
 rules as the userspace GIC. A disabled, group-masked, priority-masked, or active
 clockevent PPI neither causes an immediate idle retry nor makes a future
-clockevent deadline an idle wakeup. Due-timer
+clockevent deadline an idle wakeup. KVM idle also compares the PPI's priority
+group against the CPU-interface active-priority registers and binary point;
+an active interrupt can block preemption even when its raw priority is lower.
+When the host's preemption width cannot be inferred unambiguously from captured
+GIC state, idle fails closed instead of guessing whether the clockevent can
+wake the guest. Due-timer
 polling remains behind the existing registration, deadline, and virtual-clock
 checks, and idle polling remains behind the virtual-clock check. It changes
 neither virtual time nor the schedule, deferral, delivery, and acknowledgement

@@ -489,6 +489,11 @@ impl Gicv3 {
     }
 
     pub fn input_deliverable(&self, intid: u32) -> bool {
+        self.input_unmasked(intid)
+            && u16::from(self.priority[intid as usize]) < self.running_priority()
+    }
+
+    pub fn input_unmasked(&self, intid: u32) -> bool {
         if !self.implemented(intid) || self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1
         {
             return false;
@@ -500,8 +505,7 @@ impl Gicv3 {
         {
             return false;
         }
-        let priority = u16::from(self.priority[intid as usize]);
-        priority < u16::from(self.pmr) && priority < self.running_priority()
+        self.priority[intid as usize] < self.pmr
     }
 
     pub fn take_interrupt(&mut self) -> Option<u32> {
