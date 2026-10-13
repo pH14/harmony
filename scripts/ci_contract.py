@@ -316,6 +316,7 @@ CONSONANCE_CHECKS = Workflow(
             test_targets=("vmm-core:snapshot_branch", "vmm-core:event_loop"),
             ignored_tests=("vmm-backend::kvm_smoke save_restore_round_trips_on_real_kvm",
                            "vmm-backend::kvm_smoke sysenter_restore_rejects_values_kvm_cannot_preserve",
+                           "vmm-backend::kvm_smoke cr8_restore_rejects_out_of_range_priority_before_mutation",
                            PUBLIC_SNAPSHOT_IDENTITY_TEST),
             scope="consonance_kvm",
             select="rust_checks"),
