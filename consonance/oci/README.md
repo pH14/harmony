@@ -125,6 +125,9 @@ tools disagree on unknown members and special-file creation.
 The hardlink inherits that earlier entry's owner and mode because both paths
 name the same inode when the layer is extracted.
 
+PAX `SCHILY.fflags` records are rejected before extraction: macOS tar can apply
+immutable file flags that prevent staging, while GNU tar ignores the record.
+
 A layer that ships a child without an entry for its parent directory gives the
 implicit parent mode 0755, regardless of the host process's umask. The merge
 applies that mode over the lower layer's. Explicit directory modes still come
