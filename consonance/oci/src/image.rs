@@ -222,16 +222,15 @@ pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
     let tarball_path = Path::new(image);
     let explicit_path =
         tarball_path.is_absolute() || image.starts_with("./") || image.starts_with("../");
-    let exact_local = (explicit_path || std::fs::symlink_metadata(tarball_path).is_ok())
-        && exact::path(tarball_path)?;
-    if explicit_path && !exact_local {
+    let local_candidate = explicit_path || exact::local_candidate(tarball_path)?;
+    if local_candidate && !exact::path(tarball_path)? {
         return Err(ImageError::UnsafePath(image.to_string()));
     }
     std::fs::create_dir_all(stage_dir)?;
     let isolated = tempfile::Builder::new()
         .prefix("image-stage-")
         .tempdir_in(stage_dir)?;
-    let staged = if exact_local {
+    let staged = if local_candidate {
         stage_from_path(tarball_path, isolated.path())
     } else {
         let tarball = export_from_tool(image, isolated.path())?;
@@ -2229,14 +2228,26 @@ mod tests {
 
     #[test]
     fn case_aliased_local_entry_does_not_shadow_image_reference() {
-        if std::env::var_os("HARMONY_IMAGE_REF_CHILD").is_some() {
-            assert!(matches!(
-                stage("./app", Path::new("explicit-stage")),
-                Err(ImageError::UnsafePath(_))
-            ));
-            assert!(!Path::new("explicit-stage").exists());
-            let staged = stage("app", Path::new("stage")).unwrap();
-            assert!(staged.rootfs.is_dir());
+        if let Ok(mode) = std::env::var("HARMONY_IMAGE_REF_CHILD") {
+            match mode.as_str() {
+                "alias" => {
+                    assert!(matches!(
+                        stage("./app", Path::new("explicit-stage")),
+                        Err(ImageError::UnsafePath(_))
+                    ));
+                    assert!(!Path::new("explicit-stage").exists());
+                    let staged = stage("app", Path::new("stage")).unwrap();
+                    assert!(staged.rootfs.is_dir());
+                }
+                "bad-link" | "dangling-link" => {
+                    assert!(matches!(
+                        stage("app", Path::new("rejected-stage")),
+                        Err(ImageError::UnsafePath(_))
+                    ));
+                    assert!(!Path::new("rejected-stage").exists());
+                }
+                _ => panic!("unknown test mode"),
+            }
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -2266,21 +2277,30 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let status = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "image::tests::case_aliased_local_entry_does_not_shadow_image_reference",
-            ])
-            .current_dir(&work)
-            .env("HARMONY_IMAGE_REF_CHILD", "1")
-            .env("FAKE_IMAGE_TAR", &archive)
-            .env(
-                "PATH",
-                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-            )
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let child = |mode| {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::tests::case_aliased_local_entry_does_not_shadow_image_reference",
+                ])
+                .current_dir(&work)
+                .env("HARMONY_IMAGE_REF_CHILD", mode)
+                .env("FAKE_IMAGE_TAR", &archive)
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .status()
+                .unwrap()
+        };
+        assert!(child("alias").success());
+        std::fs::remove_dir(work.join("App")).unwrap();
+        std::fs::create_dir(work.join("layout")).unwrap();
+        std::os::unix::fs::symlink("LAYOUT", work.join("app")).unwrap();
+        assert!(child("bad-link").success());
+        std::fs::remove_file(work.join("app")).unwrap();
+        std::os::unix::fs::symlink("missing", work.join("app")).unwrap();
+        assert!(child("dangling-link").success());
     }
 
     #[test]

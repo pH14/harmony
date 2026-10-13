@@ -23,6 +23,49 @@ pub(crate) fn path(path: &Path) -> io::Result<bool> {
     path_inner(path, cursor, &mut 0)
 }
 
+pub(crate) fn local_candidate(input: &Path) -> io::Result<bool> {
+    if input.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    let mut cursor = if input.is_absolute() {
+        PathBuf::from("/")
+    } else {
+        std::env::current_dir()?.canonicalize()?
+    };
+    for component in input.components() {
+        match component {
+            Component::RootDir => cursor = PathBuf::from("/"),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cursor = cursor.canonicalize()?;
+                cursor.pop();
+            }
+            Component::Normal(name) => {
+                let parent = cursor.canonicalize()?;
+                let found = match entry(&parent, name) {
+                    Ok(Some(found)) => found,
+                    Ok(None) => return Ok(false),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                        ) =>
+                    {
+                        return Ok(false);
+                    }
+                    Err(error) => return Err(error),
+                };
+                if std::fs::symlink_metadata(&found)?.file_type().is_symlink() && !path(&found)? {
+                    return Ok(true);
+                }
+                cursor = found;
+            }
+            Component::Prefix(_) => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
 fn path_inner(path: &Path, mut cursor: PathBuf, symlink_hops: &mut usize) -> io::Result<bool> {
     for component in path.components() {
         match component {
