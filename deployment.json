@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "5a7e8b458",
+    "commit": "ed0684646",
     "build": "locally verified static build",
-    "checks": "Production build, 52 helper tests, Rust adapter tests, and the levels, search and browser checks in Chrome.",
-    "asset_manifest_sha256": "e11985355ec3a8cb2512a8ae4e78ce06b677515d365e68327712fe2e4dbd5897"
+    "checks": "Production build, 52 helper tests, Rust adapter tests and every browser check in Chrome.",
+    "asset_manifest_sha256": "8efd97c635cd6eca30ade431edd8a5cd182e74cd44a0ae38009e3fedeb6cba33"
   }
 }

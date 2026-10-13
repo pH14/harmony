@@ -14,9 +14,9 @@ test "$(git -C "$build/quicknes" rev-parse HEAD)" = "$revision"
 # Keep the browser core unmodified. Its runtime identity is distinct from the
 # native Harmony build, which applies its own idle-loop optimization.
 make -C "$build/quicknes" clean >/dev/null
-make -C "$build/quicknes" -j4 platform=emscripten DEBUG=0 OPTIMIZE=-O2 \
+make -C "$build/quicknes" -j4 platform=emscripten DEBUG=0 OPTIMIZE="-O3 -flto" \
     GIT_VERSION="$revision" CC=emcc CXX=em++ AR=emar TARGET=quicknes.a >"$build/quicknes-build.log" 2>&1
-em++ -O2 -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
+em++ -O3 -flto -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
     "$build/quicknes/quicknes.a" -I"$build/quicknes/libretro/libretro-common/include" \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker,node \
     '-sEXPORTED_RUNTIME_METHODS=["HEAPU8"]' -sALLOW_MEMORY_GROWTH=1 -sFILESYSTEM=0 -sINITIAL_MEMORY=16777216 \
