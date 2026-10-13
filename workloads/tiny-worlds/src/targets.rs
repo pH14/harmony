@@ -528,6 +528,7 @@ mod tests {
         }
         assert!(evidence.landed > 0);
         assert!(evidence.landed <= evidence.shots);
-        assert!(evidence.double_kills <= evidence.landed);
+        assert!(evidence.double_kills > 0);
+        assert!(evidence.double_kills + evidence.decoy_hits <= evidence.landed);
     }
 }
