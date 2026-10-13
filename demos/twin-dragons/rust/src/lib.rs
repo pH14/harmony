@@ -30,6 +30,7 @@ pub enum Game {
     TwinDragons,
     TobuTobuGirl,
     SuperMarioBros,
+    MegaMan2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -74,6 +75,38 @@ const SMB_ADVANCED_FLAG: u8 = 5;
 const SMB_MAP_HEIGHT: u16 = 224;
 const SMB_SPRITE_TOP: u16 = 9;
 const SMB_BAND: u16 = 64;
+const MM2_ORDER: [u8; 14] = [7, 5, 6, 1, 3, 0, 2, 4, 8, 9, 10, 11, 12, 13];
+const MM2_LEVEL_COUNT: u8 = 14;
+const MM2_SCREEN_HEIGHT: u16 = 224;
+const MM2_CROP_TOP: u8 = 8;
+const MM2_BAND: u16 = 128;
+const MM2_FULL: u8 = 28;
+const MM2_STAGES: [(u8, &[u8]); 14] = [
+    (0, &[0x47, 0x40, 0x4a, 0x40, 0x20, 0x20, 0x00]),
+    (0, &[0x49, 0x40, 0x28, 0x20, 0x00]),
+    (0, &[0x44, 0x40, 0x20, 0x20, 0x20, 0x80, 0x80, 0x44, 0x40, 0x40, 0x40, 0x22, 0x20, 0x00]),
+    (0, &[0x44, 0x40, 0x40, 0x40, 0x26, 0x24, 0x20, 0x00]),
+    (
+        0,
+        &[
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x44, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x22, 0x20, 0x00,
+        ],
+    ),
+    (0, &[0x46, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x24, 0x20, 0x00]),
+    (0, &[0x49, 0x40, 0x28, 0x20, 0x00]),
+    (
+        0,
+        &[
+            0x80, 0x80, 0x81, 0x80, 0x80, 0x80, 0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x21, 0x20, 0x00,
+        ],
+    ),
+    (24, &[0x88, 0x80, 0x80, 0x80, 0x80, 0x80, 0x04]),
+    (22, &[0x45, 0x40, 0x40, 0x40, 0x45, 0x40, 0x40, 0x00]),
+    (24, &[0x40, 0x40, 0x40, 0x44, 0x40, 0x40, 0x40, 0x40, 0x22, 0x00]),
+    (22, &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x41, 0x40, 0x40, 0x40, 0x40, 0x23, 0x00]),
+    (24, &[0x00]),
+    (22, &[0x40, 0x40, 0x40, 0x25, 0x00]),
+];
 const SMB_MAIN_AREAS: [u8; 32] = [
     37, 64, 38, 96, 40, 1, 39, 98, 36, 53, 32, 99, 34, 65, 44, 97, 42, 49, 38, 98, 46, 35, 45, 96, 51, 1, 39, 100,
     48, 50, 33, 101,
@@ -85,12 +118,13 @@ impl Game {
             "twin-dragons" => Ok(Game::TwinDragons),
             "tobu-tobu-girl" => Ok(Game::TobuTobuGirl),
             "super-mario-bros" => Ok(Game::SuperMarioBros),
+            "mega-man-2" => Ok(Game::MegaMan2),
             _ => Err("unknown game"),
         }
     }
     fn ram_bytes(self) -> usize {
         match self {
-            Game::TwinDragons | Game::SuperMarioBros => 0x800,
+            Game::TwinDragons | Game::SuperMarioBros | Game::MegaMan2 => 0x800,
             Game::TobuTobuGirl => 0x400,
         }
     }
@@ -99,6 +133,7 @@ impl Game {
             Game::TwinDragons => decode(ram),
             Game::TobuTobuGirl => decode_tobu(ram),
             Game::SuperMarioBros => decode_smb(ram),
+            Game::MegaMan2 => decode_mm2(ram),
         }
     }
     fn admissible(self, o: Observation) -> bool {
@@ -106,6 +141,7 @@ impl Game {
             Game::TwinDragons => o.health != 0 && o.gamestate != 0,
             Game::TobuTobuGirl => !o.loading || o.gamestate == TOBU_ENDING,
             Game::SuperMarioBros => (o.health != 0 && o.gamestate == SMB_PLAY && !o.goal) || o.won(),
+            Game::MegaMan2 => (o.health != 0 && !o.loading && !o.goal) || o.won(),
         }
     }
     fn level_complete(self, o: Observation) -> bool {
@@ -113,12 +149,13 @@ impl Game {
             Game::TwinDragons => false,
             Game::TobuTobuGirl => o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE,
             Game::SuperMarioBros => o.health != 0 && !o.won() && (o.goal || o.gamestate == SMB_VICTORY),
+            Game::MegaMan2 => o.health != 0 && !o.won() && o.goal,
         }
     }
     fn starts_at_level_one(self, o: Observation) -> bool {
         match self {
             Game::TwinDragons => o.gamestate == PLAYING && o.level == 0,
-            Game::TobuTobuGirl | Game::SuperMarioBros => !o.loading && o.level == 0,
+            Game::TobuTobuGirl | Game::SuperMarioBros | Game::MegaMan2 => !o.loading && o.level == 0,
         }
     }
     fn validate_actions(self, actions: &[Action]) -> Result<(), &'static str> {
@@ -127,7 +164,7 @@ impl Game {
         }
         let mut frames = 0_u32;
         for a in actions {
-            let menu_buttons = self == Game::TobuTobuGirl;
+            let menu_buttons = matches!(self, Game::TobuTobuGirl | Game::MegaMan2);
             if a.frames == 0
                 || (!menu_buttons && a.frames > 120)
                 || (!menu_buttons && a.buttons & 12 != 0)
@@ -160,6 +197,7 @@ impl ArchiveKey for Observation {
                 u16::from(self.scene) * 512 + self.climb,
                 (self.y / 16) << 8 | u16::from(self.time),
             ),
+            Game::MegaMan2 => (self.level, self.loading, self.x / 32, (self.y / 32) << 8 | u16::from(self.time)),
         }
     }
     fn progress(self) -> Self::Progress {
@@ -167,6 +205,7 @@ impl ArchiveKey for Observation {
             Game::TwinDragons => (self.cleared, 0),
             Game::TobuTobuGirl => (self.cleared, self.climb / TOBU_BAND),
             Game::SuperMarioBros => (self.cleared, self.climb / SMB_BAND),
+            Game::MegaMan2 => (self.cleared, (self.climb / MM2_BAND) * 32 + u16::from(self.time)),
         }
     }
     fn identity(self) -> Self::Identity {
@@ -174,6 +213,7 @@ impl ArchiveKey for Observation {
             Game::TwinDragons => (self.x / 16, self.y / 16),
             Game::TobuTobuGirl => (0, 0),
             Game::SuperMarioBros => (self.climb % 16, 0),
+            Game::MegaMan2 => (self.x / 16 % 2, self.y / 16 % 2),
         }
     }
     fn capacity() -> usize {
@@ -190,6 +230,7 @@ impl ArchiveKey for Observation {
             Game::TwinDragons => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
             Game::TobuTobuGirl => (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb)),
             Game::SuperMarioBros => (self.cleared, self.clock).cmp(&(other.cleared, other.clock)),
+            Game::MegaMan2 => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
         }
     }
     fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
@@ -204,6 +245,7 @@ impl Observation {
             Game::TwinDragons => self.cleared >= LEVEL_COUNT,
             Game::TobuTobuGirl => self.gamestate == TOBU_ENDING,
             Game::SuperMarioBros => self.cleared >= SMB_LEVEL_COUNT,
+            Game::MegaMan2 => self.cleared >= MM2_LEVEL_COUNT,
         }
     }
 }
@@ -328,6 +370,86 @@ pub fn decode_smb(ram: &[u8]) -> Result<Observation, &'static str> {
         time: ram[0x7f8],
         fuel: u8::from(ram[0x6d9] == ram[0x6da]),
         clock: u16::from(ram[0x7f8]) * 100 + u16::from(ram[0x7f9]) * 10 + u16::from(ram[0x7fa]),
+    })
+}
+
+fn mm2_cell(stage: u8, screen: u8) -> (u16, u16) {
+    let (start, entries) = MM2_STAGES[usize::from(stage.min(13))];
+    let mut placed = Vec::new();
+    let (mut col, mut row, mut first) = (0_i32, 0_i32, i32::from(start));
+    for &entry in entries {
+        let count = i32::from(entry & 31) + 1;
+        for k in 0..count {
+            placed.push((first + k, col + k, row));
+        }
+        first += count;
+        col += count - 1;
+        if entry & 0x40 != 0 {
+            row += 1;
+        } else if entry & 0x80 != 0 {
+            row -= 1;
+        } else if entry & 0x20 != 0 {
+            col += 1;
+        }
+    }
+    let top = placed.iter().map(|p| p.2).min().unwrap_or(0);
+    let found = placed
+        .iter()
+        .find(|p| p.0 == i32::from(screen))
+        .or_else(|| placed.iter().find(|p| p.0 == i32::from(start)))
+        .copied()
+        .unwrap_or((0, 0, 0));
+    (found.1 as u16, (found.2 - top) as u16)
+}
+
+pub fn decode_mm2(ram: &[u8]) -> Result<Observation, &'static str> {
+    if ram.len() != 0x800 {
+        return Err("emulator memory must contain 2 KiB work RAM");
+    }
+    let stage = ram[0x2a];
+    let state = ram[0x2c];
+    let bank = ram[0x29];
+    let phase = ram[0xb1];
+    let level = MM2_ORDER.iter().position(|&s| s == stage).unwrap_or(0) as u8;
+    let (col, row) = mm2_cell(stage, ram[0x440]);
+    let start = MM2_STAGES[usize::from(stage.min(13))].0;
+    let dead = ram[0x6c0] == 0 || state == 0 || (state == 1 && ram[0x4a0] >= 0xe0);
+    let in_play = bank == 0x0e && stage < 14 && (2..=10).contains(&state);
+    let last_castle_boss = stage != 12 || (ram[0xbc] == 0xff && ram[0xb3] == 12);
+    let complete = bank == 0x0e
+        && stage < 14
+        && if stage < 8 {
+            phase >= 0xfe
+        } else {
+            phase == 0xff && last_castle_boss
+        };
+    let won = stage == 13 && complete;
+    let boss_damage = if phase >= 0xfe {
+        MM2_FULL
+    } else if phase >= 2 && ram[0x6c1] > 0 {
+        MM2_FULL.saturating_sub(ram[0x6c1])
+    } else {
+        0
+    };
+    Ok(Observation {
+        game: Game::MegaMan2,
+        x: col * 256 + u16::from(ram[0x460]),
+        y: (row * MM2_SCREEN_HEIGHT + u16::from(ram[0x4a0].saturating_sub(MM2_CROP_TOP)))
+            .min(row * MM2_SCREEN_HEIGHT + MM2_SCREEN_HEIGHT - 1),
+        health: if dead { 0 } else { ram[0x6c0] },
+        level: u16::from(level),
+        next_level: 0,
+        gamestate: phase,
+        goal: complete,
+        on_ground: state == 3,
+        facing: u8::from(ram[0x420] & 0x40 != 0),
+        loading: !in_play,
+        cleared: if won { MM2_LEVEL_COUNT } else { level + u8::from(complete) },
+        scene: ram[0x38],
+        climb: u16::from(ram[0x440].saturating_sub(start)) * 256 + u16::from(ram[0x460]),
+        time: boss_damage,
+        fuel: 0,
+        clock: 0,
     })
 }
 

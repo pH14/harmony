@@ -4,7 +4,7 @@ A static demonstration of state-space exploration. Emulators compiled to
 WebAssembly run a game, and a Rust worker uses the Dissonance `Archive` and
 parent selector to search it. The site plays three games: the NES game Twin
 Dragons on QuickNES, the Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and
-Super Mario Bros. on QuickNES from a ROM the visitor supplies. The `game` URL
+Super Mario Bros. and Mega Man 2 on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. Each
 game has one map per level. All execution happens on the visitor's computer,
 so hosting needs only static files.
@@ -224,6 +224,14 @@ part on screen. Clicking or dragging the strip moves the view there, and a
 sideways scroll on the map or the strip pans it. A room the visitor has not
 seen yet opens at the close-up, centered on the frontier or the level start.
 
+A game with `grid: true` has maps that run in two directions. Its view is 4:3,
+and the whole-level map sits beside it, or under it on screens narrower than
+720 pixels. Clicking the map moves the view on both axes, and a scroll moves it
+on both. The game's `route(level, x, y)` ranks a map point by its order along
+the level, and the frontier is the 80th-percentile live sprite in that order.
+With nothing live, the camera goes to the furthest heat cell in that order, or
+to `entry(level)`.
+
 The page shows one room at a time. When a level has several rooms, such as the
 Super Mario Bros. bonus areas, tabs above the view switch between them. Auto
 view moves to the room holding a clearing rollout, or to a room that has had
@@ -372,6 +380,53 @@ Seed 27 reaches World 1-2 from World 1-1 after about 2,300 rollouts.
 `tests/smb.mjs` reads the ROM from `SMB_ROM` or
 `~/workspace/roms/Super Mario Bros. (World).nes` and skips when it is absent.
 
+### Mega Man 2
+
+The site ships nothing from Mega Man 2. The level selector accepts the ROM with
+SHA-256 `49136b41…1edf`, and the page keeps it in IndexedDB as for Super Mario
+Bros. The 14 levels are the eight Robot Master stages in the order Crash, Flash,
+Metal, Air, Bubble, Heat, Wood and Quick, then Wily 1 to 6.
+
+| Address | Meaning |
+| --- | --- |
+| `$2A` | stage |
+| `$2C` | player state: 0 dying, 1 fallen, 3 standing, 6 airborne, 9 ladder, 10 ladder top |
+| `$29` | bank; `$0E` is play |
+| `$38` | room |
+| `$440`, `$460`, `$4A0` | player screen, x and y |
+| `$6C0`, `$6C1` | player and boss health |
+| `$B1` | boss phase; `$FE` defeated, `$FF` cleared |
+| `$B3`, `$BC` | current boss and Wily 5 refights |
+| `$9A`, `$9B` | weapons and items |
+| `$F7` | menu mode; `$90` is stage select |
+
+Each stage's room table sits at offset `$3400` of the stage's bank. Each byte is
+one room: the low 5 bits are the screen count less 1, and the top bits give the
+exit (`$40` down, `$80` up, `$20` right through a door, 0 at the boss). The
+Wily stages share banks with the Robot Masters and start at the room and screen
+in the checkpoint tables at `$3B33` and `$3B39`. `layout(stage)` places each
+screen on a grid of 256 by 224 cells from that table, so a map is one image per
+stage. `boot(level)` picks Heat Man from stage select and writes the target
+stage during the load. A Wily boot also awards every weapon.
+
+The archive place is (level, loading, x / 32, y / 32 and boss damage), progress
+is (levels cleared, half-screens along the route × 32 + boss damage), and the
+preference is more health. A rollout ends at death, a defeated boss or a menu.
+After a Robot Master, `transition` waits for the weapon screen, presses Start
+until stage select appears, and picks the next unbeaten stage in the order
+above, or Wily once all eight are beaten. After a Wily stage it waits for the
+next stage.
+
+The map builder flies Mega Man through each room at fixed heights, keeps his
+health full, clears enemies, hides sprites and rolls back to a snapshot on
+death. When he stops moving it moves him forward. It copies a camera frame into
+the map whenever the camera is still in the expected room. It finds a room's
+exit by trying a grid of positions with the exit's direction held, with
+rendering off. The Wily 2, 3 and 6 maps stop partway, because the builder
+does not yet find some of their exits. Seed 3 climbs about 420 pixels of Crash
+Man's stage in 3,000 rollouts. `tests/mm2.mjs` reads the ROM from `MM2_ROM` or
+`~/workspace/roms/mm2.nes` and skips when it is absent.
+
 ## Verification and publishing
 
 ```sh
@@ -417,7 +472,10 @@ the map moves to Level 2 within 1.5 seconds after the first clearing rollout
 leaves Level 1, and not before, in Twin Dragons and Tobu Tobu Girl, and that
 the level strip moves the view in both. `tests/smb.mjs` also checks that
 cleared levels collapse into the +N button and that nothing scrolls sideways
-at 1,280 and 390 pixels wide. `tests/replay-pause.mjs` checks that the path
+at 1,280 and 390 pixels wide. `tests/mm2.mjs` boots every stage, builds three
+maps, replays a Crash Man state exactly, compares the Rust and browser
+decoders, and checks that the stage map moves the view on both axes.
+`tests/replay-pause.mjs` checks that the path
 counter stays still while a visitor's replay plays and advances during the
 automatic replay pick and after the replay pauses, ends or closes.
 `CHROME_CHANNEL=chrome` uses an installed Chrome, and

@@ -4,9 +4,10 @@ import { loadSameBoy } from "./cores/sameboy.js";
 import twinDragons from "./games/twin-dragons.js";
 import tobuTobuGirl from "./games/tobu-tobu-girl.js";
 import superMarioBros from "./games/super-mario-bros.js";
+import megaMan2 from "./games/mega-man-2.js";
 
 const CORES = { quicknes: loadQuickNES, sameboy: loadSameBoy };
-export const GAMES = new Map([twinDragons, tobuTobuGirl, superMarioBros].map((game) => [game.id, game]));
+export const GAMES = new Map([twinDragons, tobuTobuGirl, superMarioBros, megaMan2].map((game) => [game.id, game]));
 
 export async function sha256Hex(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]

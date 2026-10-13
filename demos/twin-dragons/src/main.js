@@ -9,7 +9,7 @@ import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, MOTION_STRIDE } from "./swarm.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
-import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
+import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
   prefixAt,
   appendInput,
@@ -41,6 +41,7 @@ const compactReplay = matchMedia("(max-width: 800px), (pointer: coarse) and (max
 document.title = `Harmony Plays ${game.system}`;
 document.documentElement.dataset.game = game.id;
 document.documentElement.classList.toggle("vertical-game", !!game.vertical);
+document.documentElement.classList.toggle("grid-game", !!game.grid);
 document.documentElement.style.setProperty("--screen-ratio", game.screen.width / game.screen.height);
 const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets))).json());
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
@@ -367,8 +368,15 @@ function maxZoom(c) {
 function frontier(level) {
   const map = maps.get(level), raw = swarmRooms.get(level) || [];
   const left = (p) => (p.samples ? p.samples.at(-MOTION_STRIDE) - p.frame : 0);
-  const finisher = raw.filter((p) => p.finish).sort((a, b) => left(a) - left(b) || (game.vertical ? a.y - b.y : b.x - a.x))[0];
+  const order = (p) => game.route(level, p.x + 8, p.y + 8);
+  const finisher = raw.filter((p) => p.finish).sort((a, b) => left(a) - left(b) || (game.grid ? order(b) - order(a) : game.vertical ? a.y - b.y : b.x - a.x))[0];
   if (finisher) return { x: finisher.x + 8, y: finisher.y };
+  if (game.grid) {
+    const ranked = raw.map((p) => [order(p), p]).filter(([rank]) => rank >= 0).sort((a, b) => a[0] - b[0]);
+    if (ranked.length < 4) return null;
+    const p = ranked[Math.floor(ranked.length * 0.8)][1];
+    return { x: p.x + 8, y: p.y };
+  }
   const px = new Float64Array(raw.length), py = new Float64Array(raw.length);
   let n = 0;
   for (const p of raw) {
@@ -393,10 +401,12 @@ function frontier(level) {
 }
 function reachedFrontier(level) {
   const map = maps.get(level);
+  const center = (cell) => ({ x: cell.x * 32 + 16, y: cellTop(cell.y) + 16 });
+  const rank = (cell) => game.route(level, center(cell).x, center(cell).y);
   let best = null;
   for (const cell of heat.cells.values())
-    if (cell.level === level && (!best || (game.vertical ? cell.y < best.y : cell.x > best.x))) best = cell;
-  return best ? { x: best.x * 32 + 16, y: cellTop(best.y) + 16 } : { x: 0, y: map.height };
+    if (cell.level === level && (!best || (game.grid ? rank(cell) > rank(best) : game.vertical ? cell.y < best.y : cell.x > best.x))) best = cell;
+  return best ? center(best) : game.grid ? game.entry(level) : { x: 0, y: map.height };
 }
 function steerCamera(level, c, target, zoom, zoomRate, panRate) {
   const view = roomView(level, c);
@@ -412,7 +422,7 @@ function overview(level) {
   camera.overview = true;
   roomView(level).zoom = 1;
   for (const c of document.querySelectorAll(`.map-row[data-map="${level}"] .area-map`)) {
-    const view = roomView(level, c), zoom = game.vertical ? closeUpZoom(c) : 1;
+    const view = roomView(level, c), zoom = game.vertical || game.grid ? closeUpZoom(c) : 1;
     view.zoom = roomView(level).zoom = zoom;
     Object.assign(view, panelCenter(canvasPanel(c), zoom, view, c));
   }
@@ -424,17 +434,23 @@ function scrollRoom(id, point) {
   }
 }
 function scrollAlong(id, c, delta) {
+  return game.vertical ? scrollView(id, c, 0, delta) : scrollView(id, c, delta, 0);
+}
+function scrollView(id, c, dx, dy) {
   const view = roomView(id, c), panel = canvasPanel(c);
   const scale = Math.min(c.width / panel.width, c.height / panel.height) * view.zoom;
-  const step = delta / scale, next = panelCenter(panel, view.zoom, game.vertical ? { x: view.x, y: view.y + step } : { x: view.x + step, y: view.y }, c);
+  const next = panelCenter(panel, view.zoom, { x: view.x + dx / scale, y: view.y + dy / scale }, c);
   if (Math.abs(next.x - view.x) + Math.abs(next.y - view.y) < 0.5) return false;
   moveCameraByHand();
   scrollRoom(id, next);
   drawMap(performance.now());
   return true;
 }
+function wheelUnit(e, size) {
+  return e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? size : 1;
+}
 function wheelDelta(e, size) {
-  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? size : 1;
+  const unit = wheelUnit(e, size);
   return (game.vertical ? e.deltaY : Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : 0) * unit;
 }
 function levelOverview(id) {
@@ -444,6 +460,10 @@ function levelOverview(id) {
   if (game.vertical) {
     strip.height = TALL_CAMERA_VIEWPORT.desktop.height;
     strip.width = Math.max(8, Math.round(map.width * strip.height / map.height));
+  } else if (game.grid) {
+    const box = { width: 240, height: GRID_CAMERA_VIEWPORT.desktop.height }, fit = Math.min(box.width / map.width, box.height / map.height);
+    strip.width = Math.max(8, Math.round(map.width * fit * 2));
+    strip.height = Math.max(8, Math.round(map.height * fit * 2));
   } else {
     strip.width = 1600;
     strip.height = Math.max(8, Math.round(map.height * strip.width / map.width));
@@ -454,7 +474,8 @@ function levelOverview(id) {
   const seek = (e) => {
     const r = strip.getBoundingClientRect();
     moveCameraByHand();
-    scrollRoom(id, game.vertical ? { y: ((e.clientY - r.top) / r.height) * map.height } : { x: ((e.clientX - r.left) / r.width) * map.width });
+    const x = ((e.clientX - r.left) / r.width) * map.width, y = ((e.clientY - r.top) / r.height) * map.height;
+    scrollRoom(id, game.grid ? { x, y } : game.vertical ? { y } : { x });
     drawMap(performance.now());
   };
   strip.addEventListener("pointerdown", (e) => {
@@ -467,9 +488,14 @@ function levelOverview(id) {
   strip.addEventListener("wheel", (e) => {
     const c = mapCanvas(id), r = strip.getBoundingClientRect();
     if (!c) return;
+    const view = roomView(id, c), panel = canvasPanel(c), scale = Math.min(c.width / panel.width, c.height / panel.height) * view.zoom;
+    if (game.grid) {
+      const unit = wheelUnit(e, r.height);
+      if (scrollView(id, c, e.deltaX * unit * scale * map.width / r.width, e.deltaY * unit * scale * map.height / r.height)) e.preventDefault();
+      return;
+    }
     const delta = wheelDelta(e, game.vertical ? r.height : r.width) * (game.vertical ? map.height / r.height : map.width / r.width);
-    const view = roomView(id, c), panel = canvasPanel(c);
-    if (delta && scrollAlong(id, c, delta * Math.min(c.width / panel.width, c.height / panel.height) * view.zoom)) e.preventDefault();
+    if (delta && scrollAlong(id, c, delta * scale)) e.preventDefault();
   }, { passive: false });
   return strip;
 }
@@ -564,7 +590,7 @@ function applyCameraMode(mode = camera.mode) {
   drawMap(performance.now());
 }
 for (const button of $("camera-toggle").children) button.onclick = () => applyCameraMode(button.dataset.camera);
-if (game.vertical)
+if (game.vertical || game.grid)
   Object.assign(document.querySelector('#camera-toggle [data-camera="room"]'), {
     textContent: "Manual view",
     title: "Stop following the search. Scroll the map or drag the level strip to move.",
@@ -589,7 +615,7 @@ function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null)
   Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, jumped: 0, targets: new Map(), focus: null, mode: "follow", follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
     const c = mapCanvas(room);
-    if (c) steerCamera(room, c, { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
+    if (c) steerCamera(room, c, game.grid ? game.entry(room) : { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
   }
   updateCameraToggle();
 }
@@ -1794,18 +1820,23 @@ function renderMapRows(owner) {
         part.className = "room-part";
         const c = id === mapLevel && index === 0 ? canvas : document.createElement("canvas");
         c.className = "area-map";
-        const viewports = game.vertical ? TALL_CAMERA_VIEWPORT : CAMERA_VIEWPORT;
+        const viewports = game.vertical ? TALL_CAMERA_VIEWPORT : game.grid ? GRID_CAMERA_VIEWPORT : CAMERA_VIEWPORT;
         const viewport = phoneLayout.matches ? viewports.phone : viewports.desktop;
         c.width = viewport.width;
         c.height = viewport.height;
         c.dataset.viewport = true;
         Object.assign(c.dataset, { map: id, panel: index, panelX: panel.x, panelY: panel.y,
           mapWidth: panel.width, mapHeight: panel.height, roomWidth: map.width, roomHeight: map.height });
-        c.style.touchAction = game.vertical ? "none" : "pan-y";
+        c.style.touchAction = game.vertical || game.grid ? "none" : "pan-y";
         c.tabIndex = 0;
         if (c !== canvas) bindMap(c);
         part.append(c, panEdge(c, -1), panEdge(c, 1));
-        if (game.vertical) {
+        if (game.grid) {
+          const pair = document.createElement("div");
+          pair.className = "room-pair";
+          pair.append(part, levelOverview(id));
+          parts.append(pair);
+        } else if (game.vertical) {
           part.append(levelOverview(id));
           parts.append(part);
         } else parts.append(part, levelOverview(id));
@@ -2038,6 +2069,11 @@ function bindMap(c) {
   let pinch;
   c.addEventListener("wheel", (e) => {
     const r = c.getBoundingClientRect(), size = game.vertical ? r.height : r.width;
+    if (game.grid) {
+      const unit = wheelUnit(e, r.height);
+      if (scrollView(Number(c.dataset.map), c, (e.deltaX * unit * c.width) / r.width, (e.deltaY * unit * c.height) / r.height)) e.preventDefault();
+      return;
+    }
     const delta = wheelDelta(e, size);
     if (delta && scrollAlong(Number(c.dataset.map), c, (delta * (game.vertical ? c.height : c.width)) / size)) e.preventDefault();
   }, { passive: false });
