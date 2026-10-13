@@ -52,6 +52,15 @@ layers = ["protocol", "image-audit"]
 disposition = "The owned kernel programs the deterministic Harmony clockevent; executable-image scans reject programming the host counter domains."
 
 [[instruction]]
+id = "arm64-live-timer-control"
+arch = "arm64"
+channel = "time"
+operations = ["MRS CNTP_CTL_EL0", "MSR CNTP_CTL_EL0", "MRS CNTV_CTL_EL0", "MSR CNTV_CTL_EL0"]
+claim = "execute"
+layers = ["protocol", "image-audit", "guest-kernel-trap"]
+disposition = "The owned kernel uses only the Harmony clockevent; executable-image scans reject architected timer control reads and writes, and EL0 timer access is disabled."
+
+[[instruction]]
 id = "arm64-cache-identity"
 arch = "arm64"
 channel = "implementation-identity"
