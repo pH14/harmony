@@ -568,7 +568,7 @@ mod tests {
         assert_eq!(child_path(KERNEL_FD), PathBuf::from("/proc/self/fd/240"));
         assert_eq!(child_path(ROOTFS_FD), PathBuf::from("/proc/self/fd/241"));
         assert_eq!(child_path(INITRAMFS_FD), PathBuf::from("/proc/self/fd/242"));
-        assert!(KERNEL_FD > 4 && KERNEL_FD < ROOTFS_FD && ROOTFS_FD < INITRAMFS_FD);
+        const { assert!(KERNEL_FD > 4 && KERNEL_FD < ROOTFS_FD && ROOTFS_FD < INITRAMFS_FD) };
     }
 
     fn write_profile(directory: &Path, edit: impl FnOnce(&mut Profile)) {
