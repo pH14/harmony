@@ -78,6 +78,9 @@ RFLAGS bit 1 is fixed at one, while bits 3, 5, 15, and 22 through 63 are
 reserved. KVM accepts a cleared bit 1 through `KVM_SET_REGS` and reads it
 back set. It also accepts reserved bits but rejects guest entry with them set.
 Restore preflight rejects both cases before applying any vCPU state.
+The VM flag is valid only for virtual-8086 execution in protected mode; KVM
+accepts it in real or long mode but fails the next guest entry. Preflight
+rejects those mode combinations before restore.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
