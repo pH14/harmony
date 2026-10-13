@@ -15,12 +15,16 @@ machine for a seed. `state_hash` covers all architectural state. The separate
 seed-sensitive output without confusing latent PRNG/device state for an
 observable difference.
 
-`compare_runs` hashes both machines at a caller-selected interval until they
-halt or reach a limit. It reports identical runs, a checkpoint bracket, or a
-halt-count mismatch, and records whether the limit—not termination—ended the
-comparison. `bisect_divergence` verifies the bracket endpoints and binary
-searches fresh executions in `O(log(hi - lo))` probes. Its first-divergence
-claim assumes the observed difference remains persistent within the bracket.
+`compare_runs` checks both machines immediately after spawn, then hashes them
+at a caller-selected interval until they halt or reach a limit. It reports
+identical runs, a checkpoint bracket, or a halt-count mismatch, and records
+whether the limit—not termination—ended the
+comparison. A zero-work mismatch is reported even when the limit is zero.
+`bisect_divergence` checks the initial state when the lower bound is zero,
+returns zero if the machines already differ there, and otherwise verifies the
+bracket endpoints and binary searches fresh executions in `O(log(hi - lo))`
+probes. Its first-divergence claim assumes the observed difference remains
+persistent within the bracket.
 
 ## Reference machines
 
