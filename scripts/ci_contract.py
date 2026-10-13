@@ -328,6 +328,7 @@ CONSONANCE_CHECKS = Workflow(
                            "vmm-backend::kvm_smoke segment_encoding_restore_rejects_oversized_fields_before_mutation",
                            "vmm-backend::kvm_smoke segment_one_bit_restore_rejects_oversized_flags_before_mutation",
                            "vmm-backend::kvm_smoke xsave_reserved_header_restore_rejects_before_mutation",
+                           "vmm-backend::kvm_smoke xsave_header_inputs_restore_rejects_before_mutation",
                            "vmm-backend::kvm_smoke unusable_segment_restore_requires_canonical_shape_before_mutation",
                            "vmm-core::x86_kvm_pcide_preflight pcide_restore_requires_ia32e_mode_before_entry",
                            PUBLIC_SNAPSHOT_IDENTITY_TEST),

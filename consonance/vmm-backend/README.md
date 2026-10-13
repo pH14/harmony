@@ -97,6 +97,11 @@ normalizes other combinations during save, so restore checks this shape first.
 The XSAVE header's reserved bytes 528 through 575 must be zero. KVM rejects a
 nonzero byte at `KVM_SET_XSAVE` after earlier restore writes, so preflight
 checks that range before changing the vCPU.
+KVM restore also requires standard XSAVE layout, state bits from its supported
+CPUID mask, and no reserved MXCSR bits. These inputs likewise fail at
+`KVM_SET_XSAVE` after earlier writes, so preflight checks them first. The pure
+XSAVE image helper can retain a compacted image for non-KVM callers; the KVM
+restore path rejects it because its ioctl accepts standard layout only.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
