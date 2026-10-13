@@ -18,11 +18,22 @@ printf '%s\n' \
     'done' \
     'mkdir -p "$out"' \
     'cp "$FAKE_REPORT" "$out/report.json"' \
+    'if [[ -n ${FAKE_OUTPUT:-} ]]; then printf "%s\n" "$FAKE_OUTPUT"; fi' \
     'exit "${FAKE_EXIT_STATUS:-0}"' \
     >"${work}/tools/harmony"
 chmod +x "${work}/tools/harmony"
 printf x >"${work}/guest/bzImage"
 printf x >"${work}/guest/initramfs-oci.cpio.gz"
+mkdir -p "${work}/guest/uml"
+printf x >"${work}/guest/uml/profile.json"
+printf x >"${work}/guest/uml/linux"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'while (($#)); do' \
+    '  if [[ "$1" == -- ]]; then shift; exec "$@"; fi' \
+    '  shift' \
+    'done' >"${work}/guest/uml/harmony-uml-qualify"
+chmod +x "${work}/guest/uml/harmony-uml-qualify"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf '[{"Wait":50}]\n' >"${work}/input.json"
 
@@ -56,6 +67,61 @@ if (
     exit 1
 fi
 grep -q 'fail: infra-failure (CLI exit 23)' "${work}/reports/pgcic.sample-input/panel-status.json"
+
+uml_run=$(jq -c '.bug = true | .stop = "Assertion"
+    | .violations = ["case-assertion"]
+    | .state_hash = "" | .state_hash_encoding = "unavailable"' <<<"$run")
+jq -cn --argjson run "$uml_run" '{mode:"replay",replays:[$run,$run]}' \
+    >"${work}/uml-report.json"
+(
+    cd "${work}"
+    export BACKEND=uml CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/uml-report.json" FAKE_EXIT_STATUS=2
+    export FAKE_OUTPUT='error: full UML state identity is unavailable'
+    export GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" reproduce "${work}/input.json"
+)
+jq -e '.cli_exit_status == 2 and .state_hash_count == "unavailable"
+    and (.oracle | startswith("pass: observed replay"))' \
+    "${work}/reports/pgcic.reproduce-input/panel-status.json" >/dev/null
+
+if (
+    cd "${work}"
+    export BACKEND=uml CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/uml-report.json" FAKE_EXIT_STATUS=2
+    export GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" reproduce "${work}/input.json"
+); then
+    printf 'FAIL UML replay accepted a CLI exit without the identity refusal\n'
+    exit 1
+fi
+grep -q 'fail: infra-failure (CLI exit 2)' \
+    "${work}/reports/pgcic.reproduce-input/panel-status.json"
+
+jq '.replays[0].state_hash_encoding = "engine_digest"' \
+    "${work}/uml-report.json" >"${work}/mixed-identity-report.json"
+if (
+    cd "${work}"
+    export BACKEND=uml CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/mixed-identity-report.json" FAKE_EXIT_STATUS=2
+    export FAKE_OUTPUT='error: full UML state identity is unavailable'
+    export GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" reproduce "${work}/input.json"
+); then
+    printf 'FAIL UML replay accepted a mixed-identity report\n'
+    exit 1
+fi
+grep -q 'fail: infra-failure (CLI exit 2)' \
+    "${work}/reports/pgcic.reproduce-input/panel-status.json"
 
 if (
     cd "${work}"

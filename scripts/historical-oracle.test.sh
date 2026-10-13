@@ -9,16 +9,18 @@ work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 
 export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+export BACKEND=consonance
 failures=0
 
 expect() {
     local want=$1 name=$2 body=$3 mode=$4 repeats=${5:-} actions=${6:-}
+    local expected_label=${7:-pass}
     local report="${work}/report.json"
     printf '%s' "${body}" >"${report}"
     local got status=0
     got=$("${oracle}" "${mode}" "${report}" "${repeats}" "${actions}" 2>&1) || status=$?
     local verdict=fail
-    [[ "${got}" == pass ]] && verdict=pass
+    [[ "${status}" -eq 0 && "${got}" == "${expected_label}" ]] && verdict=pass
     if [[ "${verdict}" != "${want}" ]]; then
         printf 'FAIL %-46s wanted %s, got %s (exit %s)\n' "${name}" "${want}" "${got}" "${status}"
         failures=$((failures + 1))
@@ -57,6 +59,23 @@ expect fail 'a sample replay whose detector stayed silent' \
     "$(replay_report "${silent}")" sample 1 7
 expect fail 'a replay answered by a cached prefix' \
     "$(replay_report "${cached}")" sample 1 7
+
+unavailable_clean=$(jq '.state_hash = "" | .state_hash_encoding = "unavailable"' <<<"${clean}")
+unavailable_corrupt=$(jq '.state_hash = "" | .state_hash_encoding = "unavailable"' <<<"${corrupt}")
+export BACKEND=uml
+expect pass 'UML clean samples carry observation-only evidence' \
+    "$(replay_report "${unavailable_clean},${unavailable_clean}")" sample 2 7 \
+    'pass: observed replay; state identity unavailable (#554)'
+expect pass 'UML reproducer keeps the assertion without a full-state hash' \
+    "$(replay_report "${unavailable_corrupt},${unavailable_corrupt}")" reproduce 2 7 \
+    'pass: observed replay; state identity unavailable (#554)'
+expect fail 'UML mixed known and unavailable hashes are rejected' \
+    "$(replay_report "${unavailable_clean},${clean}")" sample 2 7
+expect fail 'UML bridge-only hashes cannot claim full-state identity' \
+    "$(replay_report "${clean},${clean}")" sample 2 7
+export BACKEND=consonance
+expect fail 'KVM empty unavailable hashes cannot count as one digest' \
+    "$(replay_report "${unavailable_clean},${unavailable_clean}")" sample 2 7
 
 checked=$(jq '.settle_actions = 3 | .settle_ticks = 7 | .guest_horizons += 3 |
     .check = {disturbance_generation:3, run:7,
