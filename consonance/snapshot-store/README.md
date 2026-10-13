@@ -21,6 +21,11 @@ efficient. Page contents are interned store-wide by BLAKE3, while the all-zero
 page is implicit. `vm_state` is opaque but its seal-time digest is checked before
 it is returned. Outside restore plans, corrupted page data or state produces an
 integrity error rather than silently returning bytes.
+An intern-table hit also compares the resident bytes with the already-hashed
+incoming page before reusing it, so a stale resident entry cannot contaminate
+a new write or import. `write_changed_page` verifies an inherited page before
+skipping a write whose bytes match it. Flattening verifies all inherited pages
+before acquiring their references or creating a new base.
 
 Layer page tables are immutable sorted arrays of guest frame numbers and
 word-sized page references. Digests stay in the content index and resident-page
@@ -77,6 +82,11 @@ after it. With 8,192 references to one interned page, verified export and
 rebase averaged 0.65 ms and 0.45 ms. These are local measurements, not a latency
 budget; rehashing distinct bytes is the cost of detecting resident corruption
 before their hashes or near-page reuse are trusted.
+In the same microbenchmark, flattening a 32 MiB distinct-page image with no
+dirty pages rose from 0.47 to 21.35 ms; unchanged-page writes across that image
+rose from 1.79 to 21.86 ms. Writing 8,192 pages that intern to one existing page
+rose from 20.27 to 21.08 ms, because hashing the incoming bytes already
+dominates the additional byte comparison on each index hit.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
