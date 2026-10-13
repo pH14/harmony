@@ -26,6 +26,18 @@ const BRIDGE_FD: i32 = 3;
 pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
 
+#[cfg(target_os = "linux")]
+fn fixed_host_layout(command: &mut Command) {
+    // SAFETY: the child calls personality(2) only on itself before exec, without
+    // allocation or shared-memory access.
+    unsafe {
+        command.pre_exec(|| {
+            let _ = libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong);
+            Ok(())
+        });
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Launch {
     pub memory_mib: u32,
@@ -180,6 +192,7 @@ impl Launch {
             .process_group(0);
         #[cfg(target_os = "linux")]
         {
+            fixed_host_layout(&mut command);
             profile.pass_artifacts(&mut command);
             if let Some(image) = &self.initramfs {
                 image.pass(&mut command);
@@ -553,6 +566,68 @@ fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn a_pinned_kernel_requests_fixed_layout_before_exec() {
+        let mut probe = Command::new("sh");
+        probe.arg("-c").arg("true");
+        // SAFETY: this test changes only the forked child's personality before
+        // exec; the syscall touches no shared memory or Rust allocator state.
+        unsafe {
+            probe.pre_exec(|| {
+                if libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        match probe.status() {
+            Ok(status) => assert!(status.success()),
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return,
+            Err(error) => panic!("fixed layout probe failed: {error}"),
+        }
+
+        use std::os::unix::fs::PermissionsExt;
+
+        use crate::profile::{Artifact, Profile, VirtualTimeCosts};
+
+        let directory = tempfile::tempdir().unwrap();
+        let kernel = directory.path().join("kernel");
+        std::fs::write(&kernel, b"#!/bin/sh\ncat /proc/self/personality\n").unwrap();
+        std::fs::set_permissions(&kernel, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let artifact = |name: &str| Artifact {
+            name: name.to_owned(),
+            sha256: String::new(),
+        };
+        let profile = VerifiedProfile::for_test(
+            directory.path().to_path_buf(),
+            Profile {
+                schema: 2,
+                architecture: std::env::consts::ARCH.to_owned(),
+                kernel_version: String::new(),
+                userspace: "seccomp".to_owned(),
+                patch_series_sha256: String::new(),
+                host_libraries: Vec::new(),
+                executable: artifact("kernel"),
+                config: artifact("config"),
+                rootfs: artifact("rootfs"),
+                virtual_time: VirtualTimeCosts {
+                    syscall_vns: 0,
+                    clock_read_vns: 0,
+                },
+            },
+            String::new(),
+        );
+        let launch = Launch::new(directory.path().to_path_buf());
+        let mut command = launch.command(&profile, directory.path()).unwrap();
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let flags =
+            u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
+        assert_ne!(flags & libc::ADDR_NO_RANDOMIZE as u32, 0);
+    }
 
     #[test]
     fn command_line_paths_reject_whitespace() {

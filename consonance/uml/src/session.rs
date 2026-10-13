@@ -1307,16 +1307,11 @@ mod tests {
         let first = Checkpoints::new();
         let foreign = checkpoint(snapshot(&first, None, &[(0, 1)]), 5, Some(120));
         let second = Checkpoints::new();
-        let launch = Launch {
-            memory_mib: 1,
-            console_tail_bytes: 0,
-            console_limit_bytes: 0,
-            wall_limit: Duration::from_secs(1),
-            kernel_arguments: Vec::new(),
-            initramfs: None,
-            work_parent: std::env::temp_dir(),
-            bridge: None,
-        };
+        let mut launch = Launch::new(std::env::temp_dir());
+        launch.memory_mib = 1;
+        launch.console_tail_bytes = 0;
+        launch.console_limit_bytes = 0;
+        launch.wall_limit = Duration::from_secs(1);
         assert!(matches!(
             Session::start(
                 Command::new("false"),
