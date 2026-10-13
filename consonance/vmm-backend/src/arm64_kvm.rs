@@ -606,16 +606,23 @@ fn vgic_config_attr(word: usize) -> (u32, u64) {
     }
 }
 
-fn vgic_router_attr(spi: usize) -> u64 {
-    GIC_IROUTER + ((32 + spi) as u64) * 8
+fn vgic_router_attr(spi: usize, half: usize) -> u64 {
+    GIC_IROUTER + ((32 + spi) as u64) * 8 + (half as u64) * 4
 }
 
 fn require_zero_vgic_routes<K: Arm64Kvm + ?Sized>(k: &K) -> Result<()> {
     for spi in 0..HARMONY_GIC_IMPL_SPIS as usize {
-        if k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, vgic_router_attr(spi), true)? != 0 {
-            return Err(BackendError::Unsupported {
-                what: "vGIC with nonzero SPI routing affinity",
-            });
+        for half in 0..2 {
+            if k.get_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                vgic_router_attr(spi, half),
+                false,
+            )? != 0
+            {
+                return Err(BackendError::Unsupported {
+                    what: "vGIC with nonzero SPI routing affinity",
+                });
+            }
         }
     }
     Ok(())
@@ -623,12 +630,14 @@ fn require_zero_vgic_routes<K: Arm64Kvm + ?Sized>(k: &K) -> Result<()> {
 
 fn clear_vgic_routes<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
     for spi in 0..HARMONY_GIC_IMPL_SPIS as usize {
-        k.set_vgic_attr(
-            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
-            vgic_router_attr(spi),
-            true,
-            0,
-        )?;
+        for half in 0..2 {
+            k.set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                vgic_router_attr(spi, half),
+                false,
+                0,
+            )?;
+        }
     }
     require_zero_vgic_routes(k)
 }
@@ -2239,31 +2248,59 @@ mod tests {
 
     #[test]
     fn nonzero_spi_route_rejects_capture_and_restore_clears_reused_target() {
-        assert_eq!(vgic_router_attr(0), 0x6100);
-        assert_eq!(vgic_router_attr(63), 0x62f8);
+        assert_eq!(vgic_router_attr(0, 0), 0x6100);
+        assert_eq!(vgic_router_attr(0, 1), 0x6104);
+        assert_eq!(vgic_router_attr(63, 0), 0x62f8);
+        assert_eq!(vgic_router_attr(63, 1), 0x62fc);
         let source = FakeKvm::new();
         let saved = save_vgic(&source).unwrap();
         let mut target = FakeKvm::new();
-        target
-            .set_vgic_attr(
-                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
-                vgic_router_attr(63),
-                true,
-                1,
-            )
-            .unwrap();
-        assert!(matches!(
-            save_vgic(&target),
-            Err(BackendError::Unsupported { .. })
-        ));
+        for (spi, half) in [(0, 0), (0, 1), (63, 0), (63, 1)] {
+            target
+                .set_vgic_attr(
+                    KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                    vgic_router_attr(spi, half),
+                    false,
+                    1,
+                )
+                .unwrap();
+            assert!(matches!(
+                save_vgic(&target),
+                Err(BackendError::Unsupported { .. })
+            ));
+            target
+                .set_vgic_attr(
+                    KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                    vgic_router_attr(spi, half),
+                    false,
+                    0,
+                )
+                .unwrap();
+        }
+        for half in 0..2 {
+            target
+                .set_vgic_attr(
+                    KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                    vgic_router_attr(63, half),
+                    false,
+                    1,
+                )
+                .unwrap();
+        }
         restore_vgic(&mut target, &saved).unwrap();
         assert_eq!(save_vgic(&target).unwrap(), saved);
-        assert_eq!(
-            target
-                .get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, vgic_router_attr(63), true)
-                .unwrap(),
-            0
-        );
+        for half in 0..2 {
+            assert_eq!(
+                target
+                    .get_vgic_attr(
+                        KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                        vgic_router_attr(63, half),
+                        false,
+                    )
+                    .unwrap(),
+                0
+            );
+        }
     }
 
     #[test]
