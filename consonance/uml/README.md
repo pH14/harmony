@@ -56,6 +56,8 @@
   store. The sidecar and checkpoint digest bind the guest RAM size even when
   its additional pages are all zero. The live session rejects oversized
   bridge requests before they can become checkpoints.
+  Imported page payloads must match their hashes even when the nearby snapshot
+  already has the claimed page; the import then reuses that resident page.
   `Checkpoint::digest` hashes a checkpoint's pages and services state.
   Checkpoint handles belong to their `Checkpoints` store. Export, import, and
   live restore reject a handle from another store before using its snapshot ID;
