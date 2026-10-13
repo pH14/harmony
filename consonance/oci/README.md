@@ -111,6 +111,8 @@ Members cannot combine GNU and pax overrides for a name or link target because
 macOS and GNU tar choose different values when both are present.
 A member also cannot have multiple pax headers, which those tar tools handle
 differently.
+An archive cannot change the member type at the same path: a symlink followed
+by a regular file produces different final entries under macOS and GNU tar.
 Filesystem members are limited to ordinary files, directories, symlinks, and
 hardlinks. Other tar typeflags are rejected before extraction because host tar
 tools disagree on unknown members and special-file creation.
