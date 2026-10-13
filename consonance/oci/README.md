@@ -127,6 +127,11 @@ name the same inode when the layer is extracted.
 
 PAX `SCHILY.fflags` records are rejected before extraction: macOS tar can apply
 immutable file flags that prevent staging, while GNU tar ignores the record.
+Archive members with a `._`-prefixed path component are also rejected before
+extraction. macOS tar can consume an AppleDouble member as metadata for a later
+file, while GNU tar preserves it as a separate rootfs file.
+Set `COPYFILE_DISABLE=1` when creating a layer with macOS tar so host metadata
+does not introduce AppleDouble members.
 
 A layer that ships a child without an entry for its parent directory gives the
 implicit parent mode 0755, regardless of the host process's umask. The merge
