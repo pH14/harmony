@@ -235,6 +235,15 @@ impl Checkpoints {
         let request = length(&mut reader)
             .and_then(|request| reader.take(request).map_err(SessionError::Protocol))?
             .to_vec();
+        if !reader.0.is_empty() {
+            return Err(malformed("trailing bytes"));
+        }
+        if !(STAMP_LEN..=STAMP_LEN + MAX_FRAME).contains(&request.len()) {
+            return Err(malformed("pending request length"));
+        }
+        if stamp(&request).is_some_and(|moment| moment < services.latest) {
+            return Err(malformed("pending request is behind the recorded services"));
+        }
         let memory = self.import_pages(&base.memory, &near.memory, pages, image_bytes)?;
         Ok(Checkpoint {
             memory,
@@ -1035,6 +1044,39 @@ mod tests {
                 Err(SessionError::Protocol(_))
             ));
         }
+
+        let mut trailing = sidecar.clone();
+        trailing.push(0x5a);
+        let request_field = sidecar.len() - STAMP_LEN - 8;
+        let mut short = sidecar[..request_field + 9].to_vec();
+        short[request_field..request_field + 8].copy_from_slice(&1_u64.to_le_bytes());
+        let mut oversized = sidecar[..request_field + 8].to_vec();
+        let oversized_len = STAMP_LEN + MAX_FRAME + 1;
+        oversized[request_field..request_field + 8]
+            .copy_from_slice(&(oversized_len as u64).to_le_bytes());
+        oversized.resize(request_field + 8 + oversized_len, 0);
+        let mut behind = sidecar.clone();
+        behind[request_field + 8..request_field + 16].copy_from_slice(&89_u64.to_le_bytes());
+        for (name, malformed) in [
+            ("trailing", trailing),
+            ("short request", short),
+            ("oversized request", oversized),
+            ("backward request", behind),
+        ] {
+            assert!(
+                matches!(
+                    subscriber.import(
+                        &subscriber_base,
+                        &subscriber_base,
+                        &borrowed,
+                        &malformed,
+                        &nominal_factory(),
+                    ),
+                    Err(SessionError::Protocol(_))
+                ),
+                "{name} sidecar was accepted"
+            );
+        }
     }
 
     #[test]
@@ -1088,7 +1130,7 @@ mod tests {
             Checkpoint {
                 memory: store.adopt(id),
                 services: Services::new(7),
-                request: Vec::new(),
+                request: 0_u64.to_le_bytes().to_vec(),
             }
         }
         let first = Checkpoints::new();
