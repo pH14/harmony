@@ -641,6 +641,14 @@ impl Session {
     }
 
     fn serve(&mut self, until: Until) -> Result<Stop, SessionError> {
+        if let Some(moment) = self.pending.as_deref().and_then(stamp)
+            && matches!(
+                until,
+                Until::Moment(deadline) | Until::SnapshotPoint(deadline) if moment >= deadline
+            )
+        {
+            return Ok(Stop::Deadline(moment));
+        }
         let mut held = self.pending.take();
         let mut due = None;
         let mut snapshot_point = false;
@@ -1129,6 +1137,69 @@ mod tests {
             .unwrap();
         assert_eq!(imported_full.bytes(), crate::memory::IMAGE_BYTES as u64);
         assert_eq!(checkpoints.stats().unwrap().snapshots, before + 2);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn pending_deadline_does_not_answer_the_held_event() {
+        use std::os::unix::process::CommandExt;
+
+        if std::env::var_os("HARMONY_UML_DEADLINE_CHILD").is_some() {
+            use hypercall_proto::{ServiceId, encode_request};
+
+            // SAFETY: the launcher's bridge setup passes the guest socket at fd 3.
+            let socket = unsafe { OwnedFd::from_raw_fd(3) };
+            for moment in [100_u64, 200] {
+                let mut request = vec![0_u8; STAMP_LEN + MAX_FRAME];
+                request[..STAMP_LEN].copy_from_slice(&moment.to_le_bytes());
+                let length = encode_request(
+                    ServiceId::Event,
+                    1,
+                    7,
+                    b"\x00\x00\x00\x00{}",
+                    &mut request[STAMP_LEN..],
+                )
+                .unwrap();
+                bridge::send(&socket, &request[..STAMP_LEN + length]).unwrap();
+                let mut response = vec![0_u8; MAX_FRAME];
+                bridge::receive(&socket, &mut response).unwrap();
+            }
+            return;
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(crate::bridge::Bridge::new(7));
+        launch.wall_limit = Duration::from_secs(5);
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" --exact session::tests::pending_deadline_does_not_answer_the_held_event --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_DEADLINE_CHILD", "1")
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut session = Session::start(command, work, &launch, &checkpoints, None).unwrap();
+        let first = session.run_until(0).unwrap();
+        let zero_hash = session.state_hash().unwrap();
+        let zero_events = session.events().len();
+        let second = session.run_until(100).unwrap();
+        let second_hash = session.state_hash().unwrap();
+        let second_events = session.events().len();
+        let continued = session.run_until(150).unwrap();
+        let continued_hash = session.state_hash().unwrap();
+        let continued_events = session.events().len();
+        session.kill().unwrap();
+
+        assert_eq!(first, Stop::Deadline(100));
+        assert_eq!(zero_events, 0);
+        assert_eq!(second, Stop::Deadline(100));
+        assert_eq!(second_events, 0);
+        assert_eq!(second_hash, zero_hash);
+        assert_eq!(continued, Stop::Deadline(200));
+        assert_eq!(continued_events, 1);
+        assert_ne!(continued_hash, zero_hash);
     }
 
     #[test]
