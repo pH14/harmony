@@ -583,6 +583,20 @@ pub(crate) fn validate_restore_shape(
     {
         return Err(BackendError::InvalidState);
     }
+    for segment in [
+        state.sregs.cs,
+        state.sregs.ds,
+        state.sregs.es,
+        state.sregs.fs,
+        state.sregs.gs,
+        state.sregs.ss,
+        state.sregs.tr,
+        state.sregs.ldt,
+    ] {
+        if segment.type_ > 0x0f || segment.dpl > 3 {
+            return Err(BackendError::InvalidState);
+        }
+    }
     for (index, value) in [
         (EFER, state.sregs.efer),
         (FS_BASE, state.sregs.fs.base),
