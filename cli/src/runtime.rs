@@ -125,7 +125,8 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
         if c.uml_profile.is_none() {
             c.uml_profile = Some(acquire("uml", isa, offline)?.join(isa));
         }
-        c.kernel = Some(uml::Profile::load(c.uml_profile.as_ref().unwrap())?.executable());
+        let profile = uml::Profile::load(c.uml_profile.as_ref().unwrap())?;
+        c.kernel = Some(profile.directory().join(&profile.profile().executable.name));
     }
     for path in [&mut c.kernel, &mut c.base_initramfs, &mut c.uml_profile]
         .into_iter()

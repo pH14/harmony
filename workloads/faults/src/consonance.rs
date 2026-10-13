@@ -81,7 +81,7 @@ impl UmlGuest {
             .map_err(|error| format!("User-mode Linux host identity: {error}"))?;
         let identity = format!(
             "profile={};architecture={};cpu={};features={:x}",
-            verified.identity_sha256,
+            verified.identity_sha256(),
             host.architecture,
             host.cpu_model,
             Sha256::digest(host.cpu_features.as_bytes())
@@ -91,12 +91,6 @@ impl UmlGuest {
             identity,
             work_parent,
         })
-    }
-
-    pub fn executable(profile: &Path) -> Result<PathBuf, String> {
-        uml::Profile::load(profile)
-            .map(|verified| verified.executable())
-            .map_err(|error| format!("User-mode Linux profile: {error}"))
     }
 
     fn kernel_arguments(knobs: &[String]) -> Vec<String> {

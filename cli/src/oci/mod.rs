@@ -43,7 +43,7 @@ pub fn execute(
         launch.kernel_arguments.extend(knobs.iter().cloned());
         let temp = tempfile::NamedTempFile::new()?;
         fs::write(temp.path(), initramfs)?;
-        launch.initramfs = Some(temp.path().to_path_buf());
+        launch.set_initramfs(temp.path())?;
         let exit = uml::Guest::spawn(&launch, &profile)?.wait()?;
         fs::write(out.join("serial.log"), &exit.console)?;
         if !matches!(exit.reason, uml::ExitReason::Exited(0)) || !exit.leftovers.is_empty() {

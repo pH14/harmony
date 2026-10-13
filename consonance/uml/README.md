@@ -9,7 +9,10 @@
   userspace mode, the host architecture and the empty host library list, then
   re-hashes the executable, config and rootfs and checks that the executable
   has no ELF interpreter. `VerifiedProfile::identity_sha256` hashes the parsed
-  profile.
+  profile. On Linux it copies and re-hashes those three files into sealed
+  memory-backed descriptors before returning. The executable and rootfs
+  descriptors remain open through child spawn, so later path changes cannot
+  substitute different bytes for the verified profile.
 - `HostIdentity::current` reads the CPU model and feature flags from
   `/proc/cpuinfo`.
 - `Launch` builds the UML command line: memory size, initramfs,
@@ -20,7 +23,9 @@
   `GLIBC_TUNABLES`. With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
   It refuses extra kernel arguments that would replace these settings or
   attach host files, disks, consoles or network devices, because a
-  `Recording` cannot carry those host resources.
+  `Recording` cannot carry those host resources. `set_initramfs` likewise
+  copies an override into a sealed descriptor when configured, and every
+  later launch from that `Launch` uses the same bytes.
 - `Bridge` serves the guest's `/dev/harmony` requests on a `SOCK_SEQPACKET`
   pair from a thread of its own. It answers entropy from the seed, records
   each event with its virtual time, and fails the run if virtual time goes

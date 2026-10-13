@@ -217,8 +217,8 @@ mod linux {
             "denial": denial,
             "host": host,
             "host_kernel": host_kernel(),
-            "profile": profile.profile,
-            "profile_identity_sha256": profile.identity_sha256,
+            "profile": profile.profile(),
+            "profile_identity_sha256": profile.identity_sha256(),
             "checks": checks,
         }))
     }

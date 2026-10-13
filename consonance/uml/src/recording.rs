@@ -47,13 +47,13 @@ impl Recording {
         launch: &Launch,
         events: &[Event],
     ) -> Result<Self, ReplayRefused> {
-        if launch.initramfs.is_some() {
+        if launch.has_initramfs_override() {
             return Err(ReplayRefused::Initramfs);
         }
         let seed = launch.bridge.ok_or(ReplayRefused::NoBridge)?.seed;
         Ok(Self {
             schema: SCHEMA,
-            profile_identity_sha256: profile.identity_sha256.clone(),
+            profile_identity_sha256: profile.identity_sha256().to_owned(),
             host: host.clone(),
             seed,
             memory_mib: launch.memory_mib,
@@ -71,10 +71,10 @@ impl Recording {
         if self.schema != SCHEMA {
             return Err(ReplayRefused::Schema(self.schema));
         }
-        if self.profile_identity_sha256 != profile.identity_sha256 {
+        if self.profile_identity_sha256 != profile.identity_sha256() {
             return Err(ReplayRefused::Profile {
                 recorded: self.profile_identity_sha256.clone(),
-                current: profile.identity_sha256.clone(),
+                current: profile.identity_sha256().to_owned(),
             });
         }
         if &self.host != host {
@@ -112,9 +112,9 @@ mod tests {
             name: "linux".to_owned(),
             sha256: "0".repeat(64),
         };
-        VerifiedProfile {
-            directory: PathBuf::from("/profile"),
-            profile: Profile {
+        VerifiedProfile::for_test(
+            PathBuf::from("/profile"),
+            Profile {
                 schema: 2,
                 architecture: "x86_64".to_owned(),
                 kernel_version: "6.18.35".to_owned(),
@@ -129,8 +129,8 @@ mod tests {
                     clock_read_vns: 1,
                 },
             },
-            identity_sha256: identity.to_owned(),
-        }
+            identity.to_owned(),
+        )
     }
 
     fn host(model: &str) -> HostIdentity {
@@ -182,11 +182,17 @@ mod tests {
         let text = serde_json::to_string(&recording).unwrap();
         assert_eq!(serde_json::from_str::<Recording>(&text).unwrap(), recording);
 
-        launch.initramfs = Some(PathBuf::from("/image.cpio.gz"));
-        assert!(matches!(
-            Recording::new(&profile("a"), &host("model=1"), &launch, &events),
-            Err(ReplayRefused::Initramfs)
-        ));
+        #[cfg(not(miri))]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let initramfs = directory.path().join("image.cpio.gz");
+            std::fs::write(&initramfs, b"image").unwrap();
+            launch.set_initramfs(&initramfs).unwrap();
+            assert!(matches!(
+                Recording::new(&profile("a"), &host("model=1"), &launch, &events),
+                Err(ReplayRefused::Initramfs)
+            ));
+        }
     }
 
     #[test]
