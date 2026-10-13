@@ -25,6 +25,9 @@ operation. Timer deadlines are applied at exit boundaries. An idle guest can
 advance to the next deterministic deadline through the same clock; no host
 clock is consulted. A guest idling in its polling loop writes the idle register
 (arm64) or idle port (x86), which advances the clock the same way as a halt.
+Control `Run` and `Exec` set their own idle wake from the active deadline before
+each guest step, so a preceding request cannot alter a replayed command's idle
+continuation.
 
 The run loop also times each backend run and each exit it services, keyed by
 exit reason, address or port, and direction. `ControlServer::host_telemetry`
