@@ -300,6 +300,12 @@ kill. In the game's one power-on kill, the kill followed the stocked arrival by
 39 million tries, and in an earlier power-on run the room took 13.5% of the
 top tier's draws.
 
+The one layout without a kill in either arm has no winning sequence of shots,
+and the reachability check rejects it. Arena reachability follows every shot,
+including the misses, and keeps the most stock for each combination of the
+other state values, among them the action history that places shots. It stops exploring a fight state whose
+stock or health cannot cover the shots still needed.
+
 The graph world is sized for scaled runs. It has `nodes` states in a line,
 each also carrying stock and health from 0 to 15. Action 0 moves to the next
 node, so the goal at the last node is reachable from every state; the
