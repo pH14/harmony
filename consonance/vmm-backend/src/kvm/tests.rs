@@ -24,6 +24,21 @@ struct SynRun {
 
 const PIO_OFF: usize = 8192;
 
+fn set_usable_test_segments(state: &mut VcpuState) {
+    for segment in [
+        &mut state.sregs.cs,
+        &mut state.sregs.ds,
+        &mut state.sregs.es,
+        &mut state.sregs.fs,
+        &mut state.sregs.gs,
+        &mut state.sregs.ss,
+        &mut state.sregs.tr,
+        &mut state.sregs.ldt,
+    ] {
+        segment.present = 1;
+    }
+}
+
 impl SynRun {
     fn new() -> Self {
         let len = 16384;
@@ -751,6 +766,7 @@ fn validate_restore_shape_keys_and_xsave_len() {
         ..Default::default()
     };
     good.regs.rflags = 2;
+    set_usable_test_segments(&mut good);
     assert!(validate_restore_shape(&good, Some(&filter), 4096, 48, false).is_ok());
 
     good.msrs.remove(&0x175);
@@ -774,6 +790,7 @@ fn validate_restore_shape_keys_and_xsave_len() {
         ..Default::default()
     };
     empty.regs.rflags = 2;
+    set_usable_test_segments(&mut empty);
     assert!(validate_restore_shape(&empty, None, 4096, 48, false).is_ok());
     assert!(validate_restore_shape(&good, None, 4096, 48, false).is_err());
 }
@@ -805,6 +822,7 @@ fn validate_restore_shape_requires_coherent_sregs_msr_aliases() {
         ..Default::default()
     };
     coherent.regs.rflags = 2;
+    set_usable_test_segments(&mut coherent);
     coherent.sregs.efer = coherent.msrs[&EFER];
     coherent.sregs.fs.base = coherent.msrs[&FS_BASE];
     coherent.sregs.gs.base = coherent.msrs[&GS_BASE];
@@ -838,6 +856,7 @@ fn validate_restore_shape_requires_preservable_sysenter_values() {
         ..Default::default()
     };
     state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
     assert!(validate_restore_shape(&state, Some(&filter), 4096, 48, false).is_ok());
 
     for (index, value) in [
@@ -881,6 +900,7 @@ fn validate_restore_shape_requires_four_bit_cr8() {
         ..Default::default()
     };
     state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
     state.sregs.cr8 = 0x0f;
     assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
     state.sregs.cr8 = 0x10;
@@ -897,6 +917,7 @@ fn validate_restore_shape_requires_architectural_rflags() {
         ..Default::default()
     };
     state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
     assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
     state.regs.rflags = 0;
     assert!(matches!(
@@ -921,6 +942,7 @@ fn validate_restore_shape_requires_legal_virtual_8086_mode() {
         ..Default::default()
     };
     state.regs.rflags = 2 | (1 << 17);
+    set_usable_test_segments(&mut state);
     assert!(matches!(
         validate_restore_shape(&state, None, 4096, 48, false),
         Err(BackendError::InvalidState)
@@ -943,6 +965,7 @@ fn validate_restore_shape_requires_ia32e_paging_for_pcide() {
         ..Default::default()
     };
     state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
     state.sregs.cr4 = 1 << 17;
     for (cr0, cr4, efer) in [
         (0, 1 << 17, 0),
@@ -979,7 +1002,7 @@ fn validate_restore_shape_requires_segment_encoding_widths() {
         }
     }
 
-    let state = VcpuState {
+    let mut state = VcpuState {
         regs: VcpuRegs {
             rflags: 2,
             ..Default::default()
@@ -987,6 +1010,7 @@ fn validate_restore_shape_requires_segment_encoding_widths() {
         xsave: vec![0; 4096],
         ..Default::default()
     };
+    set_usable_test_segments(&mut state);
     for index in 0..8 {
         let mut candidate = state.clone();
         segment(&mut candidate, index).type_ = 0x0f;
@@ -1020,6 +1044,7 @@ fn validate_restore_shape_requires_one_bit_segment_fields() {
                 xsave: vec![0; 4096],
                 ..Default::default()
             };
+            set_usable_test_segments(&mut state);
             let segment = match segment_index {
                 0 => &mut state.sregs.cs,
                 1 => &mut state.sregs.ds,
@@ -1044,6 +1069,64 @@ fn validate_restore_shape_requires_one_bit_segment_fields() {
                 Err(BackendError::InvalidState)
             ));
         }
+    }
+}
+
+#[test]
+fn validate_restore_shape_requires_canonical_unusable_segments() {
+    fn segment(state: &mut VcpuState, index: usize) -> &mut Segment {
+        match index {
+            0 => &mut state.sregs.cs,
+            1 => &mut state.sregs.ds,
+            2 => &mut state.sregs.es,
+            3 => &mut state.sregs.fs,
+            4 => &mut state.sregs.gs,
+            5 => &mut state.sregs.ss,
+            6 => &mut state.sregs.tr,
+            7 => &mut state.sregs.ldt,
+            _ => unreachable!(),
+        }
+    }
+
+    let mut state = VcpuState {
+        regs: VcpuRegs {
+            rflags: 2,
+            ..Default::default()
+        },
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    for index in 0..8 {
+        let segment = segment(&mut state, index);
+        segment.present = 1;
+        segment.type_ = 3;
+        segment.limit = 0xffff;
+    }
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+
+    for index in 0..8 {
+        let mut candidate = state.clone();
+        segment(&mut candidate, index).present = 0;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+
+        let mut candidate = state.clone();
+        segment(&mut candidate, index).unusable = 1;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+
+        let mut candidate = state.clone();
+        *segment(&mut candidate, index) = Segment {
+            base: 0x1234,
+            selector: 3,
+            unusable: 1,
+            ..Segment::default()
+        };
+        assert!(validate_restore_shape(&candidate, None, 4096, 48, false).is_ok());
     }
 }
 

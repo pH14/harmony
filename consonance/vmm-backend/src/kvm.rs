@@ -606,6 +606,15 @@ pub(crate) fn validate_restore_shape(
             ]
             .into_iter()
             .any(|value| value > 1)
+            || (segment.present == 0 && segment.unusable == 0)
+            || (segment.unusable == 1
+                && segment
+                    != Segment {
+                        base: segment.base,
+                        selector: segment.selector,
+                        unusable: 1,
+                        ..Segment::default()
+                    })
         {
             return Err(BackendError::InvalidState);
         }
