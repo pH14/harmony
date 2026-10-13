@@ -96,7 +96,8 @@
   and the work directory name. `state_hash` hashes the services state and the
   pending request. Sessions are Linux only.
 - `Recording` names the profile, host, seed, memory, boot arguments, event
-  count and event hash of a run. It derives the seed from the live launch's
+  count and event hash of a run. Schema 2 includes the selected host processor.
+  It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
   replay. Recording creation and replay checks read the current host identity
   themselves, so a caller cannot supply a stale or forged host identity.
