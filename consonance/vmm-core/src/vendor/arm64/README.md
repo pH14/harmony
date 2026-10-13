@@ -59,7 +59,11 @@ clockevent PPI on KVM and the userspace GIC's pending INTID on HVF.
 When the paravirtual clockevent is due, `dispatch` queries the backend's IRQ
 mask and defers delivery while `PSTATE.I` is set. HVF supplies that bit directly;
 backends without the query retain the full-state read. Idle handling uses the
-same query before deciding whether it may advance to a wake deadline. Due-timer
+same query before deciding whether it may advance to a wake deadline. For KVM,
+idle also reads the in-kernel GIC state and applies the same PPI deliverability
+rules as the userspace GIC. A disabled, group-masked, priority-masked, or active
+clockevent PPI neither causes an immediate idle retry nor makes a future
+clockevent deadline an idle wakeup. Due-timer
 polling remains behind the existing registration, deadline, and virtual-clock
 checks, and idle polling remains behind the virtual-clock check. It changes
 neither virtual time nor the schedule, deferral, delivery, and acknowledgement

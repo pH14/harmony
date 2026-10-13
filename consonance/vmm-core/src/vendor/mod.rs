@@ -62,7 +62,9 @@ pub trait Vendor: Arch + Sized {
 
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)>;
 
-    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64>;
+    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
+        vmm: &mut Vmm<B>,
+    ) -> Result<Option<u64>, VmmError>;
 
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
