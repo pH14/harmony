@@ -284,6 +284,17 @@ expose an explicit PSCI profile capability. The shared
 HVC results. This profile is a replay compatibility boundary, not a claim that
 the two PSCI implementations have equal behavior.
 
+ARM KVM captures and restores the GIC CPU interface through the VGIC device
+registers: priority mask, both binary point registers, `ICC_CTLR_EL1`, both
+group enables, and every available Group-0 and Group-1 active-priority register.
+The number of active-priority registers follows the host's `PriBits` field.
+Restore checks the immutable `ICC_CTLR_EL1` fields before changing vCPU state;
+those fields also enter the runtime contract. Snapshot capture rejects
+`ICC_CTLR_EL1.CBPR=1`, because KVM does not expose the independent Group-1
+binary point hidden by that mode. The ignored
+`guest_gic_cpu_interface_survives_fresh_restore` ARM KVM test exercises guest
+writes, cold restore, and this fail-closed boundary.
+
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
 translation, exception, and thread registers. The shared

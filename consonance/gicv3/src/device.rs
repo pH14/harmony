@@ -62,7 +62,13 @@ pub struct Gicv3 {
     line_level: [u32; BITMAP_WORDS],
     priority: [u8; PRIORITY_BYTES],
     pmr: u8,
+    bpr0: u8,
+    bpr1: u8,
+    ctlr: u64,
+    igrpen0: bool,
     igrpen1: bool,
+    ap0r: [u32; 4],
+    ap1r: [u32; 4],
     cntv_ctl: u64,
     cntv_cval: u64,
     timer_fired: bool,
@@ -102,7 +108,13 @@ impl Gicv3 {
             line_level: [0; BITMAP_WORDS],
             priority: [0; PRIORITY_BYTES],
             pmr: 0,
+            bpr0: 0,
+            bpr1: 0,
+            ctlr: 0,
+            igrpen0: false,
             igrpen1: false,
+            ap0r: [0; 4],
+            ap1r: [0; 4],
             cntv_ctl: 0,
             cntv_cval: 0,
             timer_fired: false,
@@ -612,7 +624,13 @@ impl Gicv3 {
             line_level: self.line_level,
             priority: self.priority,
             pmr: self.pmr,
+            bpr0: self.bpr0,
+            bpr1: self.bpr1,
+            ctlr: self.ctlr,
+            igrpen0: self.igrpen0,
             igrpen1: self.igrpen1,
+            ap0r: self.ap0r,
+            ap1r: self.ap1r,
             cntv_ctl: self.cntv_ctl,
             cntv_cval: self.cntv_cval,
             timer_fired: self.timer_fired,
@@ -660,7 +678,13 @@ impl Gicv3 {
         g.line_level = state.line_level;
         g.priority = state.priority;
         g.pmr = state.pmr;
+        g.bpr0 = state.bpr0;
+        g.bpr1 = state.bpr1;
+        g.ctlr = state.ctlr;
+        g.igrpen0 = state.igrpen0;
         g.igrpen1 = state.igrpen1;
+        g.ap0r = state.ap0r;
+        g.ap1r = state.ap1r;
         g.cntv_ctl = state.cntv_ctl;
         g.cntv_cval = state.cntv_cval;
         g.timer_fired = state.timer_fired;
