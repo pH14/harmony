@@ -535,6 +535,18 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
             }
         }
     }
+    let mut kinds: BTreeMap<Vec<u8>, u8> = BTreeMap::new();
+    for (_, member) in keys {
+        let exact = normalized(member.path()).as_os_str().as_bytes().to_vec();
+        if kinds
+            .insert(exact, member.kind)
+            .is_some_and(|kind| kind != member.kind)
+        {
+            return Err(ImageError::Tar(
+                "archive changes a member's type at the same path".into(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -672,6 +684,7 @@ const MAX_HEADER_DATA: u64 = 1 << 16;
 
 struct Member {
     name: Vec<u8>,
+    kind: u8,
     is_dir: bool,
     mode: u32,
     owner: Owner,
@@ -861,6 +874,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 }
                 members.push(Member {
                     name,
+                    kind: if typeflag == 0 { b'0' } else { typeflag },
                     is_dir: typeflag == b'5',
                     mode: (parse_octal(&block[100..108])? & 0o7777) as u32,
                     owner,
@@ -2542,6 +2556,35 @@ mod tests {
                 std::fs::read(rootfs.join("sentinel")).unwrap(),
                 b"unchanged"
             );
+        }
+    }
+
+    #[test]
+    fn same_path_type_changes_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        std::fs::write(outside.join("victim"), b"unchanged").unwrap();
+        let symlink = raw_member(b"node", b'2', "../outside/victim", b"");
+        let regular = raw_member(b"node", b'0', "", b"new");
+        for (name, body) in [
+            ("symlink-file", [symlink.clone(), regular.clone()].concat()),
+            ("file-symlink", [regular.clone(), symlink.clone()].concat()),
+        ] {
+            let layer = write_archive(dir.path(), &format!("type-change-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive changes a member's type at the same path"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+            assert_eq!(std::fs::read(outside.join("victim")).unwrap(), b"unchanged");
         }
     }
 
