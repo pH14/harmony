@@ -1529,7 +1529,7 @@ function updateRoomChrome(c) {
   part.dataset.following = state[4] !== "";
   if (state[4] !== "") part.style.setProperty("--frontier", `${Math.max(0, Math.min(1, state[4])) * 100}%`);
 }
-let spriteBudget = swarm.maxTrails, drawCost = 0;
+let spriteBudget = swarm.maxTrails, drawCost = 0, frameGap = 1000 / 60;
 function drawMap(now) {
   const start = performance.now();
   swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, Math.round(spriteBudget), true);
@@ -1541,7 +1541,8 @@ function drawMap(now) {
   }
   $("map-hint").style.opacity = stats.executions > 25 ? "0" : "1";
   drawCost = drawCost * 0.9 + (performance.now() - start) * 0.1;
-  spriteBudget = Math.min(swarm.maxTrails, Math.max(128, spriteBudget * (drawCost > 6 ? 0.9 : drawCost < 4 ? 1.02 : 1)));
+  const behind = drawCost > 6 && frameGap > 20, ahead = drawCost < 4 || frameGap < 18;
+  spriteBudget = Math.min(swarm.maxTrails, Math.max(256, spriteBudget * (behind ? 0.9 : ahead ? 1.02 : 1)));
 }
 function drawArea(canvas, now) {
   const preview = branchPreview && searchViews.get(branchPreview.id);
@@ -2399,6 +2400,7 @@ function animate(now) {
   const wallElapsed = lastTime ? now - lastTime : 0,
     elapsed = Math.min(100, wallElapsed);
   lastTime = now;
+  if (wallElapsed) frameGap = frameGap * 0.9 + Math.min(100, wallElapsed) * 0.1;
   const mapMoving = !paused || !!camera.focus || !!panHold || playing || controlMode;
   if (mapMoving || now - lastMapPaint >= 1000 / 30) {
     drawMap(now);
