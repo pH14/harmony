@@ -147,7 +147,10 @@ an existing lower-layer directory's mode and ownership. A newly created
 implicit parent has mode 0755 and root ownership, regardless of the host
 process's umask. An explicit directory entry applies its header's mode and
 ownership over the lower layer's. An opaque whiteout removes lower-layer
-children while retaining the directory's metadata.
+children while retaining the directory's metadata. Whiteout removal temporarily
+opens only the affected lower directories, then restores their modes, so a
+read-only lower directory behaves the same under ordinary and privileged host
+users.
 
 `RuntimeConfig::user` retains the image `Config.User` value. The supported
 Linux forms are `uid`, `uid:gid`, `user`, `user:group`, `uid:group`, and
