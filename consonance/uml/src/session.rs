@@ -30,9 +30,12 @@ const OMIT_HOST_MEMORY: u64 = 1;
 const CONTROL_LEN: usize = 16;
 const POLL: Duration = Duration::from_millis(5);
 const RESTORE_ARGUMENT: &str = "harmony_restore";
-const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP2";
+const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP3";
 
-fn checked_sidecar(sidecar: &[u8]) -> Result<(u64, Reader<'_>), SessionError> {
+fn checked_sidecar(
+    sidecar: &[u8],
+    expected_physical_bytes: u64,
+) -> Result<(u64, Reader<'_>), SessionError> {
     let mut reader = Reader(
         sidecar
             .strip_prefix(SIDECAR_MAGIC)
@@ -41,6 +44,14 @@ fn checked_sidecar(sidecar: &[u8]) -> Result<(u64, Reader<'_>), SessionError> {
     let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
     if image_bytes > crate::memory::IMAGE_BYTES as u64 {
         return Err(MemoryError::ImageTooLarge(image_bytes).into());
+    }
+    let physical_bytes = reader.u64().map_err(SessionError::Protocol)?;
+    if physical_bytes != expected_physical_bytes {
+        return Err(MemoryError::ImportedMemorySize {
+            got: physical_bytes,
+            expected: expected_physical_bytes,
+        }
+        .into());
     }
     Ok((image_bytes, reader))
 }
@@ -159,7 +170,7 @@ impl Checkpoint {
 
     pub fn digest(&self) -> Result<[u8; 32], SessionError> {
         let mut digest = Sha256::new();
-        digest.update(b"harmony-uml-checkpoint-v1\0");
+        digest.update(b"harmony-uml-checkpoint-v2\0");
         self.memory.digest(&mut digest)?;
         digest.update(self.sidecar()?);
         Ok(digest.finalize().into())
@@ -168,9 +179,10 @@ impl Checkpoint {
     pub fn sidecar(&self) -> Result<Vec<u8>, SessionError> {
         let services = self.services.encode().map_err(SessionError::Protocol)?;
         let mut out =
-            Vec::with_capacity(SIDECAR_MAGIC.len() + 24 + services.len() + self.request.len());
+            Vec::with_capacity(SIDECAR_MAGIC.len() + 32 + services.len() + self.request.len());
         out.extend_from_slice(SIDECAR_MAGIC);
         out.extend_from_slice(&self.bytes().to_le_bytes());
+        out.extend_from_slice(&self.memory.physmem_bytes()?.to_le_bytes());
         out.extend_from_slice(&(services.len() as u64).to_le_bytes());
         out.extend_from_slice(&services);
         out.extend_from_slice(&(self.request.len() as u64).to_le_bytes());
@@ -200,7 +212,8 @@ impl Checkpoints {
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
         self.require_owned_snapshot(&near.memory)?;
-        checked_sidecar(sidecar)?;
+        let expected_physical_bytes = self.held()?.physmem_bytes as u64;
+        checked_sidecar(sidecar, expected_physical_bytes)?;
         let base = Checkpoint {
             memory: self.zero()?,
             services: near.services.clone(),
@@ -235,7 +248,8 @@ impl Checkpoints {
         self.require_owned_snapshot(&base.memory)?;
         self.require_owned_snapshot(&near.memory)?;
         let malformed = |what: &str| SessionError::Protocol(format!("checkpoint sidecar: {what}"));
-        let (image_bytes, mut reader) = checked_sidecar(sidecar)?;
+        let expected_physical_bytes = self.held()?.physmem_bytes as u64;
+        let (image_bytes, mut reader) = checked_sidecar(sidecar, expected_physical_bytes)?;
         let length = |reader: &mut Reader<'_>| {
             reader
                 .u64()
@@ -1349,6 +1363,42 @@ mod tests {
         assert_eq!(continued, Stop::Deadline(200));
         assert_eq!(continued_events, 1);
         assert_ne!(continued_hash, zero_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn import_rejects_a_different_physical_memory_size_before_storing_pages() {
+        let publisher = Checkpoints::new();
+        let source = checkpoint(snapshot(&publisher, None, &[(0, 1)]), 5, Some(120));
+        let sidecar = source.sidecar().unwrap();
+
+        let destination = Checkpoints::new();
+        let mut held = destination.pages(PHYSMEM_BYTES + PAGE_SIZE).unwrap();
+        let root = held.root;
+        let mut builder = held.store.derive(root).unwrap();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        let id = builder.seal(image_state(24));
+        drop(held);
+        let near = checkpoint(destination.adopt(id), 5, Some(120));
+        assert_ne!(source.digest().unwrap(), near.digest().unwrap());
+        let before = destination.stats().unwrap();
+        let digest = near.digest().unwrap();
+
+        for full in [false, true] {
+            let result = if full {
+                destination.import_full(&near, &[], &sidecar, &nominal_factory())
+            } else {
+                destination.import(&near, &near, &[], &sidecar, &nominal_factory())
+            };
+            assert!(matches!(
+                result,
+                Err(SessionError::Memory(MemoryError::ImportedMemorySize { got, expected }))
+                    if got == PHYSMEM_BYTES as u64
+                        && expected == (PHYSMEM_BYTES + PAGE_SIZE) as u64
+            ));
+            assert_eq!(destination.stats().unwrap(), before);
+            assert_eq!(near.digest().unwrap(), digest);
+        }
     }
 
     #[test]

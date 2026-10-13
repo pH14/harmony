@@ -52,7 +52,9 @@
   import rejects trailing sidecar bytes, a private image length above the
   256 MiB live image limit, and pending requests whose size or virtual moment
   could not have come from a paused guest. Both import paths check the image
-  length before touching the page store. The live session rejects oversized
+  length and match the recorded physical-memory size before touching the page
+  store. The sidecar and checkpoint digest bind the guest RAM size even when
+  its additional pages are all zero. The live session rejects oversized
   bridge requests before they can become checkpoints.
   `Checkpoint::digest` hashes a checkpoint's pages and services state.
   Checkpoint handles belong to their `Checkpoints` store. Export, import, and
