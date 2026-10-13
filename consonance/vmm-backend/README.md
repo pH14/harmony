@@ -202,6 +202,8 @@ captured registers are past the access and a restore never leaves a completion
 to land on the restored registers. The backend counts and times those entries
 and reports the totals through `Backend::store_completions`, since they are
 host cost the exit table cannot see.
+HVF rejects a restore with PSTATE bits above bit 31 before changing registers:
+its CPSR setter accepts those bits but discards them on the next capture.
 
 `Backend::read_irq_mask` optionally reads the CPU's architectural IRQ mask
 without capturing a complete snapshot. `Some(true)` means the mask is set;

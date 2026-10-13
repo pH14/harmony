@@ -1173,14 +1173,18 @@ impl Backend for HvfBackend {
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
-        validate_restore_vcpu_state(state)
+        validate_restore_vcpu_state(state)?;
+        if state.core.pstate >> 32 != 0 {
+            return Err(BackendError::InvalidState);
+        }
+        Ok(())
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        validate_restore_vcpu_state(state)?;
+        self.validate_restore_state(state)?;
         self.flush_guest_translations()?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
