@@ -835,18 +835,16 @@ fn image_identity(kernel: &[u8], initramfs: &[u8]) -> [u8; 32] {
 
 fn image_identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> [u8; 32] {
     let mut digest = Sha256::new();
-    if config.identity_tag.is_empty() {
-        digest.update(b"consonance-session-image-v2\0");
-        update_digest_field(&mut digest, kernel);
-        update_digest_field(&mut digest, initramfs);
-        digest.update(config.ram_bytes.to_le_bytes());
-        digest.update(config.seed.to_le_bytes());
-        digest.update(config.run_budget.to_le_bytes());
-        update_digest_field(&mut digest, config.cmdline.as_bytes());
-    } else {
-        digest.update(config.identity_tag.as_bytes());
-        update_digest_field(&mut digest, kernel);
-        update_digest_field(&mut digest, initramfs);
+    digest.update(b"consonance-session-image-v2\0");
+    update_digest_field(&mut digest, kernel);
+    update_digest_field(&mut digest, initramfs);
+    digest.update(config.ram_bytes.to_le_bytes());
+    digest.update(config.seed.to_le_bytes());
+    digest.update(config.run_budget.to_le_bytes());
+    update_digest_field(&mut digest, config.cmdline.as_bytes());
+    if !config.identity_tag.is_empty() {
+        digest.update(b"\0consonance-identity-tag-v1\0");
+        update_digest_field(&mut digest, config.identity_tag.as_bytes());
     }
     if config.guest_contract == GuestContract::NestedHost {
         digest.update(b"\0consonance-nested-host-v1\0");
@@ -1274,6 +1272,41 @@ mod tests {
         assert_ne!(
             identity_with_config(b"kernel-a", b"initramfs", &tagged),
             identity_with_config(b"kernel-b", b"initramfs", &tagged)
+        );
+    }
+
+    #[test]
+    fn tagged_image_identity_includes_execution_setup() {
+        let base = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
+            .with_identity_tag("same-workload");
+        let identity = image_identity_with_config(b"kernel", b"initramfs", &base);
+        let mut changed = base.clone();
+        changed.cmdline.push_str(" debug");
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different command line changes the boot RAM base"
+        );
+        changed = base.clone();
+        changed.seed += 1;
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different seed changes setup state"
+        );
+        changed = base.clone();
+        changed.ram_bytes += PAGE_SIZE;
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different RAM size changes the sparse base"
+        );
+        changed = base.clone();
+        changed.run_budget += 1;
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different setup run budget can change setup state"
         );
     }
 
