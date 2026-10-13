@@ -441,6 +441,7 @@ const fn sysreg_id(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
 const CORE_SP: u64 = 62;
 const CORE_PC: u64 = 64;
 const CORE_PSTATE: u64 = 66;
+const PSTATE_I: u64 = 1 << 7;
 const CORE_SP_EL1: u64 = 68;
 const CORE_ELR_EL1: u64 = 70;
 const CORE_SPSR_EL1: u64 = 72;
@@ -1284,6 +1285,16 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn take_accepted_interrupt(&mut self) -> Option<GicIntId> {
         self.accepted_irq.take()
+    }
+
+    fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.settle_mmio()?;
+        Ok(Some(
+            self.kvm.get_one_reg(core_reg(CORE_PSTATE))? & PSTATE_I != 0,
+        ))
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
@@ -2429,6 +2440,62 @@ mod tests {
 
         b.completion_staged = false;
         assert_eq!(b.save().unwrap(), state);
+    }
+
+    #[test]
+    fn irq_mask_read_uses_one_register_and_observes_completed_mmio() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_one_reg(core_reg(CORE_PSTATE), 0x3c5).unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        let before = backend
+            .kvm()
+            .state_reads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(backend.read_irq_mask().unwrap(), Some(true));
+        let after = backend
+            .kvm()
+            .state_reads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(after - before, 1);
+        assert!(backend.save().unwrap().core.pstate & PSTATE_I != 0);
+        let after_save = backend
+            .kvm()
+            .state_reads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(after_save - after > 100);
+
+        backend
+            .kvm
+            .set_one_reg(core_reg(CORE_PSTATE), 0x345)
+            .unwrap();
+        backend.mmio_owed = true;
+        assert_eq!(backend.read_irq_mask().unwrap(), Some(false));
+        assert_eq!(backend.kvm().calls.last(), Some(&"complete_mmio_exit"));
+        assert!(!backend.mmio_owed);
+
+        let reads = backend
+            .kvm()
+            .state_reads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        backend.pending = Pending::SysregRead;
+        assert!(matches!(
+            backend.read_irq_mask(),
+            Err(BackendError::PendingCompletion)
+        ));
+        backend.pending = Pending::None;
+        backend.completion_staged = true;
+        assert!(matches!(
+            backend.read_irq_mask(),
+            Err(BackendError::PendingCompletion)
+        ));
+        assert_eq!(
+            backend
+                .kvm()
+                .state_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            reads
+        );
     }
 
     #[test]
