@@ -204,6 +204,8 @@ and reports the totals through `Backend::store_completions`, since they are
 host cost the exit table cannot see.
 HVF rejects a restore with PSTATE bits above bit 31 before changing registers:
 its CPSR setter accepts those bits but discards them on the next capture.
+Its FPCR and FPSR setters likewise discard bits above bit 31, so restore
+preflight rejects those values before changing the vCPU.
 
 `Backend::read_irq_mask` optionally reads the CPU's architectural IRQ mask
 without capturing a complete snapshot. `Some(true)` means the mask is set;

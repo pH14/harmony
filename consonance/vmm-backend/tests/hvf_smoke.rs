@@ -510,6 +510,31 @@ fn restore_rejects_pstate_bits_hvf_discards_before_mutation() {
 
 #[test]
 #[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn restore_rejects_fp_status_bits_hvf_discards_before_mutation() {
+    let mut guest = Guest::new(&[B_SELF]);
+    let baseline = guest.save();
+    for fpcr in [true, false] {
+        let mut invalid = baseline;
+        invalid.core.x[0] = 0x1234;
+        if fpcr {
+            invalid.simd_fp.fpcr |= 1 << 32;
+        } else {
+            invalid.simd_fp.fpsr |= 1 << 32;
+        }
+        assert!(matches!(
+            guest.backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            guest.backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(same_state(&guest.save(), &baseline));
+    }
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
 fn set_policy_rejects_an_id_field_above_the_host() {
     let _vm = ONE_VM_PER_PROCESS
         .lock()
