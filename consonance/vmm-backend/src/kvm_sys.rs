@@ -1051,8 +1051,8 @@ impl Backend for KvmBackend {
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
         self.check_completion_clear()?;
-        self.drain_staged_completion()?;
         self.validate_restore_state(state)?;
+        self.drain_staged_completion()?;
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
         let restore = || {
@@ -1309,7 +1309,12 @@ mod xsave_diagnostic {
     #[ignore = "native KVM restore boundary guards; requires /dev/kvm"]
     fn snapshot_restore_drains_an_acknowledged_write_completion() {
         let mut backend = KvmBackend::new().unwrap();
-        backend.set_policy(&diagnostic_policy()).unwrap();
+        let mut policy = diagnostic_policy();
+        policy.msr_filter.allow_inkernel.push(MsrRange {
+            base: 0xc000_0100,
+            count: 1,
+        });
+        backend.set_policy(&policy).unwrap();
         let before = backend.save().unwrap();
         let mut replacement = before.clone();
         replacement.regs.rip ^= 0x100;
@@ -1327,6 +1332,23 @@ mod xsave_diagnostic {
         assert_eq!(backend.pending, Pending::None);
         assert_eq!(backend.exit_counts(), counts);
         assert_eq!(backend.save().unwrap(), replacement);
+
+        let before_rejection = backend.save().unwrap();
+        let mut inconsistent = before_rejection.clone();
+        inconsistent.sregs.fs.base ^= 1;
+        inconsistent.regs.rax ^= 1;
+        backend.completion = ACKNOWLEDGED_WRITE;
+        assert!(matches!(
+            backend.restore(&inconsistent),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.completion, ACKNOWLEDGED_WRITE);
+        assert_eq!(backend.pending, Pending::None);
+        backend.completion = Stage::CLEAR;
+        let after_rejection = backend.save().unwrap();
+        assert_eq!(after_rejection.regs, before_rejection.regs);
+        assert_eq!(after_rejection.sregs, before_rejection.sregs);
+        assert_eq!(after_rejection.msrs, before_rejection.msrs);
     }
 
     struct EntryFixture {

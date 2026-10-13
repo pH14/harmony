@@ -2,8 +2,8 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
-    Backend, CommonExit, CpuidModel, Exit, ExitCounts, Gpa, KvmBackend, MsrFilter, MsrRange,
-    VcpuState, X86Exit, X86Policy,
+    Backend, BackendError, CommonExit, CpuidModel, Exit, ExitCounts, Gpa, KvmBackend, MsrFilter,
+    MsrRange, VcpuState, X86Exit, X86Policy,
 };
 
 struct GuestMem {
@@ -834,6 +834,10 @@ fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
 fn save_restore_round_trips_on_real_kvm() {
+    const EFER: u32 = 0xc000_0080;
+    const FS_BASE: u32 = 0xc000_0100;
+    const GS_BASE: u32 = 0xc000_0101;
+
     let mut backend = new_backend_or_explain();
     let mut mem = GuestMem::new(0x10000);
     // SAFETY: as above.
@@ -856,6 +860,65 @@ fn save_restore_round_trips_on_real_kvm() {
     backend.restore(&a).expect("restore a");
     let b = backend.save().expect("save b");
     assert_eq!(a, b, "restore→save must be a fixpoint on real KVM");
+
+    let mut aliases = new_backend_or_explain();
+    aliases
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![
+                    MsrRange {
+                        base: EFER,
+                        count: 1,
+                    },
+                    MsrRange {
+                        base: FS_BASE,
+                        count: 2,
+                    },
+                ],
+            },
+        })
+        .expect("set alias policy");
+    let mut coherent = aliases.save().expect("save aliases");
+    coherent.sregs.efer = 0x100;
+    coherent.sregs.fs.base = 0x1234_5000;
+    coherent.sregs.gs.base = 0x6789_0000;
+    coherent.msrs.insert(EFER, coherent.sregs.efer);
+    coherent.msrs.insert(FS_BASE, coherent.sregs.fs.base);
+    coherent.msrs.insert(GS_BASE, coherent.sregs.gs.base);
+    aliases
+        .restore(&coherent)
+        .expect("restore coherent aliases");
+    let baseline = aliases.save().expect("save coherent aliases");
+    assert_eq!(baseline.sregs.efer, baseline.msrs[&EFER]);
+    assert_eq!(baseline.sregs.fs.base, baseline.msrs[&FS_BASE]);
+    assert_eq!(baseline.sregs.gs.base, baseline.msrs[&GS_BASE]);
+    assert_eq!(baseline.sregs.efer, 0x100);
+    assert_eq!(baseline.sregs.fs.base, 0x1234_5000);
+    assert_eq!(baseline.sregs.gs.base, 0x6789_0000);
+
+    for index in [EFER, FS_BASE, GS_BASE] {
+        let mut inconsistent = baseline.clone();
+        inconsistent.regs.rax ^= 1;
+        match index {
+            EFER => inconsistent.sregs.efer ^= 0x100,
+            FS_BASE => inconsistent.sregs.fs.base ^= 1,
+            GS_BASE => inconsistent.sregs.gs.base ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            aliases.validate_restore_state(&inconsistent),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            aliases.restore(&inconsistent),
+            Err(BackendError::InvalidState)
+        ));
+        let after = aliases.save().expect("save after rejected restore");
+        assert_eq!(after.regs, baseline.regs, "{index:#x} changed registers");
+        assert_eq!(after.sregs, baseline.sregs, "{index:#x} changed sregs");
+        assert_eq!(after.msrs, baseline.msrs, "{index:#x} changed MSRs");
+    }
 }
 
 #[test]
