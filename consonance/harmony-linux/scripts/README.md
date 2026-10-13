@@ -10,6 +10,12 @@ walk covers both ordinary instructions and words marked as data by mapping
 symbols. Timer programming remains prohibited; owned code uses the Harmony
 clock and clockevent instead.
 
+The scanner also rejects physical and virtual timer control reads and writes.
+The owned arm64 kernel no longer touches those controls: its virtual timer
+shutdown disarms the Harmony MMIO clockevent, and its unreachable physical
+timer paths stop if selected. A control write could enable a host-time timer;
+KVM also omits physical timer control from its saved vCPU state.
+
 `build-platform-runtime.sh` builds the native architecture's kernel, static
 supervisor, OCI runtime, and OCI smoke fixture, then seals their manifest. Run
 `make -C consonance/harmony-linux fetch` first. Install the pinned
