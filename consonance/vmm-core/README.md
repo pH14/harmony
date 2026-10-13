@@ -89,9 +89,12 @@ hashing remains optional. A mapped x86 doorbell cannot seal because the
 x86 VM-state record has no dedicated doorbell pages; the production dedicated
 mapping belongs to arm64 and is preserved in its device record.
 Whole-state hashes include this control state and the recorded prefix used for
-duplicate-input rejection. Writers always emit the current format, and readers
-reject older envelopes. Complete reads allocate incrementally from received
-bytes, and sparse section lengths are bounded by the supplied input.
+duplicate-input rejection. A tainted control timeline also contributes a
+dedicated hash chunk, so an imported artifact cannot clear the taint and make
+`RecordedEnv` available under the same claimed identity. Writers always emit
+the current format, and readers reject older envelopes. Complete reads
+allocate incrementally from received bytes, and sparse section lengths are
+bounded by the supplied input.
 Whole-VM capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.

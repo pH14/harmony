@@ -196,6 +196,12 @@ fn hash_state_blob_parts(memory: &[u8], suffix: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn append_taint_hash(suffix: &mut Vec<u8>, tainted: bool) {
+    if tainted {
+        crate::vmm::put_chunk(suffix, b"TANT", &[1]);
+    }
+}
+
 fn reseed_marker_requires_arrival(marker: u64, restored_floor: u64) -> bool {
     marker > restored_floor
 }
@@ -221,6 +227,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         vm_state: &<B::A as Vendor>::Snapshot,
         sdk: &SdkSnapshot,
         control_state: &[u8],
+        tainted: bool,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
         let Some(vmm) = self.vmm.as_ref() else {
             return Err(PortableSnapshotError::Malformed(
@@ -236,6 +243,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .project_state_blob_suffix_from_snapshot(vm_state, sdk)
             .map_err(map_restore_preflight_error)?;
         crate::vmm::put_chunk(&mut suffix, b"CPLN", control_state);
+        append_taint_hash(&mut suffix, tainted);
         Ok(suffix)
     }
 
@@ -618,8 +626,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         ControlState::decode_for_policy(&portable.control_state, &portable.policy)
             .map_err(PortableSnapshotError::Malformed)?;
-        if self.project_imported_hash_suffix(&decoded, sdk, &portable.control_state)?
-            != portable.state_blob_suffix
+        if self.project_imported_hash_suffix(
+            &decoded,
+            sdk,
+            &portable.control_state,
+            portable.tainted,
+        )? != portable.state_blob_suffix
         {
             return Err(PortableSnapshotError::Malformed(
                 "sparse state hash preimage",
@@ -749,7 +761,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         ControlState::decode_for_policy(&portable.control_state, &portable.policy)
             .map_err(PortableSnapshotError::Malformed)?;
-        let suffix = self.project_imported_hash_suffix(&decoded, sdk, &portable.control_state)?;
+        let suffix = self.project_imported_hash_suffix(
+            &decoded,
+            sdk,
+            &portable.control_state,
+            portable.tainted,
+        )?;
         if hash_state_blob_parts(&portable.memory, &suffix) != portable.state_hash {
             return Err(PortableSnapshotError::Malformed(
                 "portable state hash preimage",
@@ -898,6 +915,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     let mut suffix = vmm.state_blob_suffix()?;
                     self.capture_control_state()
                         .encode_and_append_hash(&mut suffix);
+                    append_taint_hash(&mut suffix, self.timeline_tainted);
                     let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                     Ok(Ok(Reply::Hash(hash_state_blob_parts(
                         vmm.guest_memory(),
@@ -1116,6 +1134,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         });
         let control = self.capture_control_state();
         let control_state = control.encode_and_append_hash(&mut state_blob_suffix);
+        append_taint_hash(&mut state_blob_suffix, self.timeline_tainted);
         let policy = self.recorded.config().clone();
         let parent = self.derive_parent.take();
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
@@ -5155,6 +5174,118 @@ mod tests {
         );
         assert_eq!(drain_sdk(&mut sparse_destination), original_events);
         assert_eq!(hash(&mut sparse_destination), source_hash);
+        assert_eq!(hash(&mut source), source_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn imported_taint_must_match_the_claimed_hash() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        exec(&mut source, "ls /");
+        let (cut, tainted) = snap_tainted(&mut source);
+        assert!(tainted);
+        let source_hash = hash(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(cut, &mut full).unwrap();
+        let portable = super::PortableSnapshot::read_from(
+            full.as_slice(),
+            source.vmm().unwrap().guest_memory().len(),
+        )
+        .unwrap();
+        assert!(portable.tainted);
+        let mut cleared_full = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: portable.sdk.as_ref(),
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: false,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut cleared_full)
+        .unwrap();
+        let mut original_full = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut original_full);
+        let original = original_full
+            .import_portable_snapshot(full.as_slice())
+            .unwrap();
+        assert!(original.tainted);
+        assert_eq!(original.state_hash, source_hash);
+        assert_eq!(replay(&mut original_full, original.id), Ok(Reply::Unit));
+        assert_eq!(hash(&mut original_full), source_hash);
+        assert_eq!(
+            recorded_env_res(&mut original_full),
+            Err(ControlError::Tainted)
+        );
+        let mut altered_full = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut altered_full);
+        let before_store = altered_full.snapshot_store_stats();
+        let before_hash = hash(&mut altered_full);
+        assert!(matches!(
+            altered_full.import_portable_snapshot(cleared_full.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "portable state hash preimage"
+            ))
+        ));
+        assert_eq!(altered_full.snapshot_store_stats(), before_store);
+        assert_eq!(altered_full.latest_snapshot(), None);
+        assert_eq!(hash(&mut altered_full), before_hash);
+
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+        let sidecar = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
+        assert!(sidecar.tainted);
+        let cleared_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
+            vm_state: &sidecar.vm_state,
+            sdk: sidecar.sdk.as_ref(),
+            policy: &sidecar.policy,
+            control_state: &sidecar.control_state,
+            at: sidecar.at,
+            sdk_events: sidecar.sdk_events,
+            trace_events: sidecar.trace_events,
+            trace_schedules: sidecar.trace_schedules,
+            tainted: false,
+            state_blob_suffix: &sidecar.state_blob_suffix,
+        })
+        .unwrap();
+        let mut original_sparse = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut original_sparse);
+        let base = snap(&mut original_sparse);
+        let original = original_sparse
+            .import_sparse_snapshot(base, sparse.clone())
+            .unwrap();
+        assert!(original.tainted);
+        assert_eq!(replay(&mut original_sparse, original.id), Ok(Reply::Unit));
+        assert_eq!(hash(&mut original_sparse), source_hash);
+        assert_eq!(
+            recorded_env_res(&mut original_sparse),
+            Err(ControlError::Tainted)
+        );
+        let mut altered_sparse = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut altered_sparse);
+        let base = snap(&mut altered_sparse);
+        let before_store = altered_sparse.snapshot_store_stats();
+        let before_hash = hash(&mut altered_sparse);
+        assert!(matches!(
+            altered_sparse.import_sparse_snapshot(
+                base,
+                super::SparsePortableSnapshot {
+                    pages: sparse.pages,
+                    sidecar: cleared_sidecar,
+                },
+            ),
+            Err(PortableSnapshotError::Malformed(
+                "sparse state hash preimage"
+            ))
+        ));
+        assert_eq!(altered_sparse.snapshot_store_stats(), before_store);
+        assert_eq!(altered_sparse.latest_snapshot(), Some(base));
+        assert_eq!(hash(&mut altered_sparse), before_hash);
         assert_eq!(hash(&mut source), source_hash);
     }
 
