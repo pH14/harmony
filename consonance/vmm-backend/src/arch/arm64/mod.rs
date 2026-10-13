@@ -4,8 +4,8 @@ mod state;
 
 pub use state::{
     ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64CoreRegs, Arm64DebugState,
-    Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState,
-    Arm64VtimerState,
+    Arm64GicIdleState, Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile,
+    Arm64VcpuState, Arm64VtimerState,
 };
 pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 

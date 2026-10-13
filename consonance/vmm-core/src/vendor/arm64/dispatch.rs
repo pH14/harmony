@@ -2,7 +2,7 @@
 
 use hypercall_proto::{Service, Status};
 use vm_state::Arm64VmState;
-use vmm_backend::{Arm64, Arm64GicState, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
+use vmm_backend::{Arm64, Arm64GicIdleState, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
 use crate::snapshot::SnapshotError;
 use crate::vendor::arm64::contract;
@@ -15,7 +15,7 @@ use crate::vmm::{PvclockSnapshot, Step, Vmm, VmmError};
 
 pub(crate) const PSTATE_I: u64 = 1 << 7;
 
-fn in_kernel_group1_preempts(gic: &Arm64GicState, priority: u8) -> Result<bool, VmmError> {
+fn in_kernel_group1_preempts(gic: &Arm64GicIdleState, priority: u8) -> Result<bool, VmmError> {
     if gic.ctlr & 1 != 0 || gic.bpr1 > 7 {
         return Err(VmmError::ContractViolation(
             "in-kernel GIC CPU interface is unsupported at idle".to_string(),
@@ -782,22 +782,23 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     }
 
     fn in_kernel_clockevent_deliverable(&mut self) -> Result<bool, VmmError> {
-        let state = self.backend.save()?;
-        let gic = state.gic.ok_or_else(|| {
-            VmmError::ContractViolation("in-kernel GIC state is absent at idle".to_string())
-        })?;
-        let model = gicv3::Gicv3::restore(
-            &records::gic_from_backend(&gic),
-            self.current_vns().unwrap_or_default(),
-        )
-        .map_err(|error| {
-            VmmError::ContractViolation(format!("in-kernel GIC state is invalid at idle: {error}"))
-        })?;
         let ppi = super::board::PVCLOCK_PPI;
-        if !model.input_unmasked(ppi) {
+        let gic = self
+            .backend
+            .read_arm64_gic_idle_state(ppi)?
+            .ok_or_else(|| {
+                VmmError::ContractViolation("in-kernel GIC state is absent at idle".to_string())
+            })?;
+        if !gic.distributor_group1_enabled
+            || !gic.group1
+            || !gic.enabled
+            || gic.active
+            || !gic.igrpen1
+            || gic.priority >= gic.pmr
+        {
             return Ok(false);
         }
-        in_kernel_group1_preempts(&gic, gic.priority[ppi as usize])
+        in_kernel_group1_preempts(&gic, gic.priority)
     }
 
     pub(crate) fn next_timer_deadline_vns_arm64(&self) -> Option<u64> {
@@ -1640,6 +1641,52 @@ mod tests {
     }
 
     #[test]
+    fn in_kernel_clockevent_idle_survives_uncapturable_spi_state() {
+        use crate::vmm::VtimeWiring;
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
+
+        let sysreg = |op0: u64, op1: u64, crn: u64, crm: u64, op2: u64| {
+            op0 << 14 | op1 << 11 | crn << 7 | crm << 3 | op2
+        };
+        for (name, attr) in [("pending SPI", 0x0204), ("routed SPI", 0x6100)] {
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            for (group, register, width64, value) in [
+                (1, 0, false, 2),
+                (5, 0x1_0080, false, 1 << PVCLOCK_PPI),
+                (5, 0x1_0100, false, 1 << PVCLOCK_PPI),
+                (5, 0x1_0418, false, 0x60 << 24),
+                (6, sysreg(3, 0, 4, 6, 0), true, 0xff),
+                (6, sysreg(3, 0, 12, 12, 7), true, 1),
+                (1, attr, false, 1),
+            ] {
+                fake.set_vgic_attr(group, register, width64, value).unwrap();
+            }
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            assert!(matches!(
+                backend.save(),
+                Err(vmm_backend::BackendError::Unsupported { .. })
+            ));
+            let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new_virtual_time(
+                    vtime::VClockConfig {
+                        guest_hz: CNTFRQ_HZ,
+                        guest_base: 0,
+                        vns_base: 0,
+                    },
+                    7,
+                )
+                .unwrap(),
+            );
+            vmm.devices.clockevent.line_asserted = true;
+            assert!(vmm.pending_deliverable_interrupt_arm64().unwrap(), "{name}");
+            assert_eq!(vmm.on_idle().unwrap(), Step::Continued, "{name}");
+        }
+    }
+
+    #[test]
     fn in_kernel_clockevent_idle_uses_active_priority_and_binary_point() {
         use crate::vmm::VtimeWiring;
         use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
@@ -1720,7 +1767,11 @@ mod tests {
 
     #[test]
     fn in_kernel_preemption_fails_closed_when_host_preemption_width_is_ambiguous() {
-        let mut gic = records::gic_to_backend(&new_gic().snapshot());
+        let mut gic = Arm64GicIdleState::from_gic(
+            &records::gic_to_backend(&new_gic().snapshot()),
+            PVCLOCK_PPI,
+        )
+        .unwrap();
         gic.ctlr = 0x8500;
         gic.bpr1 = 4;
         gic.ap1r[0] = 1 << 14;
@@ -1754,7 +1805,11 @@ mod tests {
 
     #[test]
     fn in_kernel_preemption_fails_closed_when_trapped_iar_disagrees() {
-        let mut gic = records::gic_to_backend(&new_gic().snapshot());
+        let mut gic = Arm64GicIdleState::from_gic(
+            &records::gic_to_backend(&new_gic().snapshot()),
+            PVCLOCK_PPI,
+        )
+        .unwrap();
         gic.ctlr = 0x8400;
         gic.bpr1 = 5;
         gic.ap1r[0] = 1 << 14;
@@ -1823,9 +1878,9 @@ mod tests {
             let model = gicv3::Gicv3::restore(&records::gic_from_backend(&saved_gic), 0).unwrap();
             assert!(model.input_unmasked(PVCLOCK_PPI));
             assert!(model.input_deliverable(PVCLOCK_PPI));
+            let idle_gic = Arm64GicIdleState::from_gic(&saved_gic, PVCLOCK_PPI).unwrap();
             assert_eq!(
-                in_kernel_group1_preempts(&saved_gic, saved_gic.priority[PVCLOCK_PPI as usize])
-                    .unwrap(),
+                in_kernel_group1_preempts(&idle_gic, idle_gic.priority).unwrap(),
                 expected
             );
             let answer = match backend.run() {
