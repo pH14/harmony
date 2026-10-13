@@ -361,6 +361,14 @@ and verifies all SPI routes, including on a reused target that previously ran
 a guest with a nonzero route. The ignored
 `guest_nonzero_spi_route_rejects_capture_and_zero_route_restores` test checks
 guest readback, refusal, reused-target reset, and cold restore.
+KVM's VGIC can retain a pending SPI outside its vCPU delivery queue after a
+guest routes the SPI away, pends it, and routes it back. The same captured VGIC
+registers can then report different `ICC_HPPIR1_EL1` results. KVM capture and
+state hashing therefore refuse any pending SPI or asserted SPI input line, and
+restore rejects such a KVM GIC record before changing the target. The userspace
+GIC retains its own pending-SPI state. The ignored
+`routed_away_pending_spi_refuses_capture_and_restore` ARM KVM test compares the
+two live routing histories and verifies both refusal paths.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
