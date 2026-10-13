@@ -184,7 +184,12 @@ impl Services {
         handler: Box<dyn ServiceHandler>,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), String> {
+        let identity = handler.identity().to_vec();
+        let configuration = handler.configuration().to_vec();
         let mut env = RecordedEnv::new(seed, handler);
+        if env.handler().identity() != identity || env.handler().configuration() != configuration {
+            return Err("service handler identity or configuration changed on reseed".to_owned());
+        }
         env.set_payloads(Some(payloads))
             .map_err(|error| format!("payload tape: {error}"))?;
         self.env = env;
@@ -505,7 +510,111 @@ pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> Br
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use environment::channel::{Answer, ChannelError, Question, ServiceResponse};
     use hypercall_proto::encode_request;
+
+    #[derive(Clone)]
+    struct ReseedContractHandler {
+        identity: Vec<u8>,
+        configuration: Vec<u8>,
+        change_identity: bool,
+    }
+
+    impl ReseedContractHandler {
+        fn new(change_identity: bool) -> Self {
+            Self {
+                identity: b"before-identity".to_vec(),
+                configuration: b"before-configuration".to_vec(),
+                change_identity,
+            }
+        }
+    }
+
+    impl ServiceHandler for ReseedContractHandler {
+        fn identity(&self) -> &[u8] {
+            &self.identity
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &self.configuration
+        }
+
+        fn respond(
+            &mut self,
+            _moment: u64,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Nominal))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(ChannelError::Malformed)
+            }
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            if self.change_identity {
+                self.identity = if seed == 0 {
+                    b"before-identity".to_vec()
+                } else {
+                    b"after-identity".to_vec()
+                };
+            } else {
+                self.configuration = if seed == 0 {
+                    b"before-configuration".to_vec()
+                } else {
+                    b"after-configuration".to_vec()
+                };
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn branch_rejects_reseed_contract_drift_before_replacing_services() {
+        for change_identity in [true, false] {
+            let handler = ReseedContractHandler::new(change_identity);
+            let mut source = Services::new(1);
+            source.env = RecordedEnv::new(7, Box::new(handler) as Box<dyn ServiceHandler>);
+            let encoded = source.encode().unwrap();
+            let factory: ServiceFactory = Arc::new(move |config| {
+                Ok(Box::new(ReseedContractHandler {
+                    identity: config.identity.clone(),
+                    configuration: config.configuration.clone(),
+                    change_identity,
+                }))
+            });
+            assert!(Services::decode(&encoded, &factory).is_err());
+
+            let mut services = Services::new(1);
+            let before = services.env.snapshot_state().unwrap().encode();
+            assert!(
+                services
+                    .branch(
+                        7,
+                        Box::new(ReseedContractHandler::new(change_identity)),
+                        Vec::new(),
+                    )
+                    .is_err()
+            );
+            assert_eq!(services.env.snapshot_state().unwrap().encode(), before);
+            assert!(
+                services
+                    .branch(7, Box::new(NominalHandler), Vec::new())
+                    .is_ok()
+            );
+        }
+    }
 
     fn exchange(guest: &OwnedFd, moment: u64, service: ServiceId, payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![0_u8; STAMP_LEN + MAX_FRAME];
