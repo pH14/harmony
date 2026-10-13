@@ -19,7 +19,13 @@
   reserves those numbers for its lifetime and refuses profiles if another host
   resource already occupies one.
 - `HostIdentity::current` reads the CPU model and feature flags from
-  `/proc/cpuinfo`.
+  `/proc/cpuinfo`. On Linux it selects the first processor allowed by the
+  process affinity mask once per process and includes that processor number in
+  the identity. Later identity reads and UML launches refuse a mask that no
+  longer allows it. The launcher pins every guest to that selected processor
+  in its final pre-exec step, after caller-supplied callbacks, so a recording
+  cannot silently run on a different CPU model. Qualification's pinned replay
+  perturbation verifies the guest's enforced processor.
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a

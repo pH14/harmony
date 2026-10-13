@@ -155,7 +155,8 @@ fn replays(
                         return;
                     }
                     let perturbation = PERTURBATIONS[index % PERTURBATIONS.len()];
-                    let outcome = perturbed(profile, &base, perturbation, cpus[index % cpus.len()]);
+                    let outcome =
+                        perturbed(profile, &base, perturbation, cpus[index % cpus.len()], host);
                     results
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -200,6 +201,7 @@ fn replays(
             "final_virtual_ns": reference.events.last().map(|event| event.moment),
             "replays": options.replays,
             "perturbations": counts,
+            "pinned_guest_processor": host.processor,
             "wall_ms_median": walls.get(walls.len() / 2),
             "wall_ms_max": walls.last(),
             "mismatches": mismatches,
@@ -351,6 +353,7 @@ fn perturbed(
     launch: &Launch,
     perturbation: Perturbation,
     cpu: usize,
+    _host: &HostIdentity,
 ) -> io::Result<Exit> {
     let work = launch.work_directory()?;
     let mut command = launch
@@ -391,6 +394,17 @@ fn perturbed(
                 return Err(error);
             }
         };
+        #[cfg(target_os = "linux")]
+        if perturbation == Perturbation::Pinned {
+            let observed = allowed_cpus_for(guest.pid())?;
+            if observed != [_host.processor] {
+                stop.store(true, Ordering::Relaxed);
+                return Err(io::Error::other(format!(
+                    "UML guest affinity {observed:?} did not match enforced host processor {}",
+                    _host.processor
+                )));
+            }
+        }
         if perturbation == Perturbation::Paused {
             let group = guest.pid();
             let stop = &stop;
@@ -431,10 +445,14 @@ fn pin(cpu: usize) -> io::Result<()> {
 }
 
 fn allowed_cpus() -> io::Result<Vec<usize>> {
+    allowed_cpus_for(0)
+}
+
+fn allowed_cpus_for(pid: i32) -> io::Result<Vec<usize>> {
     // SAFETY: cpu_set_t is plain data for which all-zero bytes are the empty set.
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     // SAFETY: `set` is a live, writable cpu_set_t of the size passed.
-    if unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut set) } != 0 {
+    if unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), &mut set) } != 0 {
         return Err(io::Error::last_os_error());
     }
     let cpus: Vec<usize> = (0..libc::CPU_SETSIZE as usize)

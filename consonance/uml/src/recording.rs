@@ -136,6 +136,7 @@ mod tests {
     fn host(model: &str) -> HostIdentity {
         HostIdentity {
             architecture: "x86_64".to_owned(),
+            processor: 0,
             cpu_model: model.to_owned(),
             cpu_features: "fpu tsc".to_owned(),
         }
@@ -165,6 +166,12 @@ mod tests {
         features.cpu_features.push_str(" avx512f");
         assert!(matches!(
             recording.check(&profile("a"), &features),
+            Err(ReplayRefused::Host { .. })
+        ));
+        let mut processor = host("model=1");
+        processor.processor = 2;
+        assert!(matches!(
+            recording.check(&profile("a"), &processor),
             Err(ReplayRefused::Host { .. })
         ));
 
