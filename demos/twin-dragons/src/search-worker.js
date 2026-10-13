@@ -294,6 +294,13 @@ onmessage = async ({ data }) => {
       initialized = true;
       ready();
       resume();
+    } else if (data.type === "pace") {
+      pace = data.pace;
+      allowance = 0;
+      refilled = performance.now();
+      clearTimeout(paceTimer);
+      paceTimer = null;
+      pump();
     } else if (data.type === "pause") {
       pause();
       postMessage({ type: "paused" });
