@@ -1400,6 +1400,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             _ => return Ok(Err(ControlError::Unsupported)),
         };
+        let decode_env = RecordedEnv::new(0, prepared_handler.clone());
+        if decode_env.handler().identity() != restore_config.identity
+            || decode_env.handler().configuration() != restore_config.configuration
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         let mut prepared_env = RecordedEnv::new(seed.unwrap_or(0), prepared_handler);
         if seed.is_some()
             && (prepared_env.handler().identity() != restore_config.identity
@@ -4305,6 +4311,7 @@ mod tests {
             configuration: Vec<u8>,
             trigger: u8,
             reseeds: u8,
+            zero_only: bool,
         }
 
         impl environment::channel::ServiceHandler for ReseedingService {
@@ -4342,7 +4349,13 @@ mod tests {
                 }
             }
 
-            fn reseed(&mut self, _: u64) {
+            fn reseed(&mut self, seed: u64) {
+                if self.zero_only {
+                    if seed == 0 {
+                        self.configuration = b"after".to_vec();
+                    }
+                    return;
+                }
                 self.reseeds += 1;
                 if self.reseeds == self.trigger {
                     self.configuration = b"after".to_vec();
@@ -4356,7 +4369,7 @@ mod tests {
             }
         }
 
-        for late in [false, true] {
+        for (late, zero_only) in [(false, false), (true, false), (false, true)] {
             let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
             hello(&mut s);
             let base = snap(&mut s);
@@ -4370,6 +4383,7 @@ mod tests {
                         configuration: config.configuration.clone(),
                         trigger,
                         reseeds: 0,
+                        zero_only,
                     }))
                 } else {
                     nominal(config)
@@ -4387,9 +4401,13 @@ mod tests {
             assert_eq!(
                 s.handle(&Request::Branch { snap: base, env }).unwrap(),
                 Err(ControlError::Unsupported),
-                "late reseed: {late}"
+                "late reseed: {late}, zero only: {zero_only}"
             );
-            assert_eq!(hash(&mut s), before, "late reseed: {late}");
+            assert_eq!(
+                hash(&mut s),
+                before,
+                "late reseed: {late}, zero only: {zero_only}"
+            );
         }
     }
 

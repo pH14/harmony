@@ -186,6 +186,12 @@ impl Services {
     ) -> Result<(), String> {
         let identity = handler.identity().to_vec();
         let configuration = handler.configuration().to_vec();
+        let decode_env = RecordedEnv::new(0, handler.clone());
+        if decode_env.handler().identity() != identity
+            || decode_env.handler().configuration() != configuration
+        {
+            return Err("service handler identity or configuration changed on reseed".to_owned());
+        }
         let mut env = RecordedEnv::new(seed, handler);
         if env.handler().identity() != identity || env.handler().configuration() != configuration {
             return Err("service handler identity or configuration changed on reseed".to_owned());
@@ -518,6 +524,7 @@ mod tests {
         identity: Vec<u8>,
         configuration: Vec<u8>,
         change_identity: bool,
+        zero_only: bool,
     }
 
     impl ReseedContractHandler {
@@ -526,6 +533,7 @@ mod tests {
                 identity: b"before-identity".to_vec(),
                 configuration: b"before-configuration".to_vec(),
                 change_identity,
+                zero_only: false,
             }
         }
     }
@@ -561,16 +569,16 @@ mod tests {
 
         fn reseed(&mut self, seed: u64) {
             if self.change_identity {
-                self.identity = if seed == 0 {
-                    b"before-identity".to_vec()
-                } else {
+                self.identity = if self.zero_only == (seed == 0) {
                     b"after-identity".to_vec()
+                } else {
+                    b"before-identity".to_vec()
                 };
             } else {
-                self.configuration = if seed == 0 {
-                    b"before-configuration".to_vec()
-                } else {
+                self.configuration = if self.zero_only == (seed == 0) {
                     b"after-configuration".to_vec()
+                } else {
+                    b"before-configuration".to_vec()
                 };
             }
         }
@@ -582,31 +590,29 @@ mod tests {
 
     #[test]
     fn branch_rejects_reseed_contract_drift_before_replacing_services() {
-        for change_identity in [true, false] {
-            let handler = ReseedContractHandler::new(change_identity);
+        for (change_identity, zero_only) in
+            [(true, false), (false, false), (true, true), (false, true)]
+        {
+            let handler = ReseedContractHandler {
+                zero_only,
+                ..ReseedContractHandler::new(change_identity)
+            };
             let mut source = Services::new(1);
-            source.env = RecordedEnv::new(7, Box::new(handler) as Box<dyn ServiceHandler>);
+            source.env = RecordedEnv::new(7, Box::new(handler.clone()) as Box<dyn ServiceHandler>);
             let encoded = source.encode().unwrap();
             let factory: ServiceFactory = Arc::new(move |config| {
                 Ok(Box::new(ReseedContractHandler {
                     identity: config.identity.clone(),
                     configuration: config.configuration.clone(),
                     change_identity,
+                    zero_only,
                 }))
             });
             assert!(Services::decode(&encoded, &factory).is_err());
 
             let mut services = Services::new(1);
             let before = services.env.snapshot_state().unwrap().encode();
-            assert!(
-                services
-                    .branch(
-                        7,
-                        Box::new(ReseedContractHandler::new(change_identity)),
-                        Vec::new(),
-                    )
-                    .is_err()
-            );
+            assert!(services.branch(7, Box::new(handler), Vec::new()).is_err());
             assert_eq!(services.env.snapshot_state().unwrap().encode(), before);
             assert!(
                 services
