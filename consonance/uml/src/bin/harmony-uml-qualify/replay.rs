@@ -2,6 +2,7 @@
 
 use std::io;
 use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -43,6 +44,7 @@ pub fn checks(
 ) -> io::Result<Vec<Value>> {
     let cpus = allowed_cpus()?;
     let mut checks = Vec::new();
+    checks.push(host_layout_modes(options, profile)?);
     for fixture in FIXTURES {
         checks.push(replays(options, profile, host, fixture, &cpus)?);
     }
@@ -50,6 +52,58 @@ pub fn checks(
     checks.push(seed_changes_events(options, profile)?);
     checks.push(refusal(profile, host));
     Ok(checks)
+}
+
+fn host_layout_modes(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {
+    let mut probe = Command::new("/bin/true");
+    // SAFETY: the child calls personality(2) only on itself before exec,
+    // without allocation or shared-memory access.
+    unsafe {
+        probe.pre_exec(|| {
+            if libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let supported = match probe.status() {
+        Ok(status) if status.success() => true,
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => false,
+        Ok(status) => return Err(io::Error::other(format!("layout probe exited {status}"))),
+        Err(error) => return Err(error),
+    };
+    let launch = seeded(options, "values", SEED);
+    let run = |randomized| -> io::Result<(u32, Exit)> {
+        let work = launch.work_directory()?;
+        let mut command = launch
+            .command(profile, work.path())
+            .map_err(io::Error::other)?;
+        if randomized {
+            filter::deny_personality_change(&mut command);
+        }
+        let guest = Guest::start(command, work, &launch).map_err(io::Error::other)?;
+        let flags = std::fs::read_to_string(format!("/proc/{}/personality", guest.pid()))?;
+        let flags = u32::from_str_radix(flags.trim(), 16).map_err(io::Error::other)?;
+        Ok((flags, guest.wait()?))
+    };
+    let (fixed_flags, fixed_exit) = run(false)?;
+    let (randomized_flags, randomized_exit) = run(true)?;
+    let bit = libc::ADDR_NO_RANDOMIZE as u32;
+    let passed = (!supported || fixed_flags & bit != 0)
+        && randomized_flags & bit == 0
+        && completed(&fixed_exit)
+        && completed(&randomized_exit);
+    Ok(check(
+        "host_layout_modes",
+        passed,
+        json!({
+            "host_allows_fixed_layout": supported,
+            "fixed_personality": format!("{fixed_flags:08x}"),
+            "randomized_personality": format!("{randomized_flags:08x}"),
+            "fixed_exit": summary(&fixed_exit),
+            "randomized_exit": summary(&randomized_exit),
+        }),
+    ))
 }
 
 pub fn seeded(options: &Options, fixture: &str, seed: u64) -> Launch {
