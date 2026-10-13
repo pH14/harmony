@@ -194,13 +194,19 @@ pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
 }
 
 pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
+    std::fs::create_dir_all(stage_dir)?;
+    let isolated = tempfile::Builder::new()
+        .prefix("image-stage-")
+        .tempdir_in(stage_dir)?;
     let tarball_path = Path::new(image);
-    if tarball_path.exists() {
-        stage_from_path(tarball_path, stage_dir)
+    let staged = if tarball_path.exists() {
+        stage_from_path(tarball_path, isolated.path())
     } else {
-        let tarball = export_from_tool(image, stage_dir)?;
-        stage_from_path(&tarball, stage_dir)
-    }
+        let tarball = export_from_tool(image, isolated.path())?;
+        stage_from_path(&tarball, isolated.path())
+    }?;
+    let _ = isolated.keep();
+    Ok(staged)
 }
 
 fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError> {
@@ -1195,6 +1201,115 @@ mod tests {
             .unwrap();
         assert!(status.success());
         tarball
+    }
+
+    #[test]
+    fn staging_a_second_image_in_the_same_directory_has_no_prior_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = |name: &str, file: &str, data: &[u8]| {
+            let layout = dir.path().join(name);
+            std::fs::create_dir_all(&layout).unwrap();
+            std::fs::write(
+                layout.join("manifest.json"),
+                br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+            )
+            .unwrap();
+            std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+            let layer = tar_layer(dir.path(), name, &[(file, data)]);
+            std::fs::copy(layer, layout.join("layer.tar")).unwrap();
+            layout
+        };
+        let first = layout("first", "old", b"old");
+        let second = layout("second", "new", b"new");
+        let reused = dir.path().join("reused");
+        std::fs::create_dir_all(&reused).unwrap();
+
+        let original = stage(first.to_str().unwrap(), &reused).unwrap();
+        assert_eq!(std::fs::read(original.rootfs.join("old")).unwrap(), b"old");
+        let after_reuse = stage(second.to_str().unwrap(), &reused).unwrap();
+        let fresh_dir = dir.path().join("fresh");
+        std::fs::create_dir_all(&fresh_dir).unwrap();
+        let fresh = stage(second.to_str().unwrap(), &fresh_dir).unwrap();
+
+        assert_ne!(original.rootfs, after_reuse.rootfs);
+        assert_eq!(std::fs::read(original.rootfs.join("old")).unwrap(), b"old");
+        assert!(!after_reuse.rootfs.join("old").exists());
+        assert_eq!(
+            std::fs::read(after_reuse.rootfs.join("new")).unwrap(),
+            b"new"
+        );
+        assert_eq!(
+            super::super::bundle::build_rootfs_segment(&after_reuse.rootfs, &after_reuse.owners)
+                .unwrap(),
+            super::super::bundle::build_rootfs_segment(&fresh.rootfs, &fresh.owners).unwrap()
+        );
+    }
+
+    #[test]
+    fn staging_an_oci_archive_after_a_docker_archive_uses_only_the_oci_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let docker = dir.path().join("docker");
+        std::fs::create_dir_all(&docker).unwrap();
+        std::fs::write(
+            docker.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            docker.join("config.json"),
+            br#"{"config":{"Cmd":["/old"]}}"#,
+        )
+        .unwrap();
+        let old_layer = tar_layer(dir.path(), "old-layer", &[("old", b"old")]);
+        std::fs::copy(old_layer, docker.join("layer.tar")).unwrap();
+
+        let oci = dir.path().join("oci");
+        let blobs = oci.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            oci.join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[{"digest":"sha256:l"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), br#"{"config":{"Cmd":["/new"]}}"#).unwrap();
+        let new_layer = tar_layer(dir.path(), "new-layer", &[("new", b"new")]);
+        std::fs::copy(new_layer, blobs.join("l")).unwrap();
+
+        let archive = |layout: &Path, name: &str, entries: &[&str]| {
+            let path = dir.path().join(name);
+            let status = Command::new("tar")
+                .arg("-cf")
+                .arg(&path)
+                .arg("-C")
+                .arg(layout)
+                .args(entries)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            path
+        };
+        let docker_archive = archive(
+            &docker,
+            "docker-archive.tar",
+            &["manifest.json", "config.json", "layer.tar"],
+        );
+        let oci_archive = archive(&oci, "oci-archive.tar", &["index.json", "blobs"]);
+        let reused = dir.path().join("reused");
+        let original = stage(docker_archive.to_str().unwrap(), &reused).unwrap();
+        assert_eq!(original.config.cmd, ["/old"]);
+
+        let after_reuse = stage(oci_archive.to_str().unwrap(), &reused).unwrap();
+        assert_eq!(after_reuse.config.cmd, ["/new"]);
+        assert_eq!(
+            std::fs::read(after_reuse.rootfs.join("new")).unwrap(),
+            b"new"
+        );
+        assert!(!after_reuse.rootfs.join("old").exists());
     }
 
     #[test]
