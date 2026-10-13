@@ -1334,6 +1334,9 @@ where
             );
         }
         out.extend_from_slice(&parts.vendor_chunks);
+        if let Some(contract) = <B::A as Vendor>::contract_identity_hash(self) {
+            put_chunk(&mut out, b"CNTR", &contract);
+        }
         append_sdk_snapshot(&mut out, sdk);
         if let Some(pvclock) = parts.pvclock {
             let mut bytes = 1_u64.to_le_bytes().to_vec();
@@ -2847,6 +2850,12 @@ mod tests {
                 .project_state_blob_suffix_from_snapshot(&snapshot, &sdk)
                 .unwrap();
             assert_eq!(projected, live);
+            let mut mismatched = snapshot.clone();
+            mismatched.contract_hash[0] ^= 1;
+            assert!(matches!(
+                vmm.project_state_blob_suffix_from_snapshot(&mismatched, &sdk),
+                Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+            ));
         }
     }
 
