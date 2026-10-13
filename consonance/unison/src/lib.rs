@@ -78,6 +78,18 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     let mut last_match: Option<u64> = None;
     let mut checkpoints_compared = 0u64;
     let mut t = 0u64;
+    let (initial_a, initial_b) = (ma.run_to(0)?, mb.run_to(0)?);
+    if initial_a != initial_b {
+        return Ok(CompareReport {
+            verdict: Verdict::HaltMismatch {
+                a: (initial_a == RunOutcome::Halted).then_some(ma.work()),
+                b: (initial_b == RunOutcome::Halted).then_some(mb.work()),
+            },
+            checkpoints_compared,
+            halted_at: None,
+            limit_reached: false,
+        });
+    }
     if ma.state_hash()? != mb.state_hash()? {
         return Ok(CompareReport {
             verdict: Verdict::Diverged {
@@ -388,6 +400,28 @@ mod tests {
                 Verdict::Diverged {
                     last_match: None,
                     first_mismatch: 0,
+                }
+            );
+            assert_eq!(report.checkpoints_compared, 0);
+            assert!(!report.limit_reached);
+        }
+    }
+
+    #[test]
+    fn halt_at_spawn_is_reported_as_a_halt_mismatch() {
+        let f = factory();
+        let halted = FlakyFactory {
+            inner: factory(),
+            diverge_at: 0,
+            perturb: Perturbation::ForceHalt,
+        };
+        for limit in [0, 10] {
+            let report = compare_runs(&f, &halted, 3, 5, limit).unwrap();
+            assert_eq!(
+                report.verdict,
+                Verdict::HaltMismatch {
+                    a: None,
+                    b: Some(0),
                 }
             );
             assert_eq!(report.checkpoints_compared, 0);
