@@ -5202,6 +5202,36 @@ mod tests {
     });
 
     #[test]
+    fn pending_serial_input_keeps_interruptible_idle_guest_runnable() {
+        let mut mock = configured_mock(vec![
+            UNMASK_IRQ4,
+            Exit::Arch(X86Exit::Io {
+                port: 0x03F9,
+                size: 1,
+                write: Some(0x01),
+            }),
+            Exit::Common(CommonExit::Idle),
+        ]);
+        mock.set_defer_accept(true);
+        mock.set_state(VcpuState {
+            regs: vmm_backend::VcpuRegs {
+                rflags: RFLAGS_IF | 0x2,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut v = lapic_vmm(mock);
+        v.inject_serial_input(b"x");
+
+        assert_eq!(v.step().unwrap(), Step::Continued);
+        assert_eq!(v.step().unwrap(), Step::Continued);
+        assert_eq!(v.pending_serial_vector(), Some(COM1_IRQ_VECTOR));
+        assert_eq!(v.step().unwrap(), Step::Continued);
+        assert_eq!(v.backend.pending_irq(), Some(COM1_IRQ_VECTOR));
+        assert!(v.terminal.is_none());
+    }
+
+    #[test]
     fn serial_thre_interrupt_injects_com1_vector() {
         let mut mock = configured_mock(vec![
             UNMASK_IRQ4,

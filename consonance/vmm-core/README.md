@@ -86,7 +86,8 @@ selecting historical layouts. Both device records preserve unread serial input
 in FIFO order. Restore replaces any residual input, and state identity includes
 the unread queue even when full snapshot hashing is disabled. The x86 device
 identity also includes the UART divisor high byte independently of the DLAB
-register window.
+register window. An enabled, unmasked serial interrupt keeps an interruptible
+idle guest runnable while its input remains queued.
 
 The architecture-neutral engine record preserves terminal reasons and deferred
 SDK reentry state in the current VM-state container. A terminal restore does not

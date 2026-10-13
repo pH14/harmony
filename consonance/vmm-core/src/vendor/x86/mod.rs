@@ -111,7 +111,8 @@ impl Vendor for X86 {
             .devices()
             .lapic
             .as_ref()
-            .is_some_and(|l| l.peek_interrupt().is_some()))
+            .is_some_and(|l| l.peek_interrupt().is_some())
+            || vmm.pending_serial_vector().is_some())
     }
 
     fn next_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
