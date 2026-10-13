@@ -34,6 +34,15 @@ layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code reads the pvclock page, executable-image scans reject raw reads, and EL0 physical-counter access is disabled."
 
 [[instruction]]
+id = "arm64-live-timer-value"
+arch = "arm64"
+channel = "time"
+operations = ["MRS CNTP_TVAL_EL0", "MRS CNTV_TVAL_EL0"]
+claim = "execute"
+layers = ["protocol", "image-audit", "guest-kernel-trap"]
+disposition = "Remaining timer intervals expose live counters even without timer programming; executable-image scans reject reads and EL0 timer access is disabled."
+
+[[instruction]]
 id = "arm64-live-timer-programming"
 arch = "arm64"
 channel = "time"
