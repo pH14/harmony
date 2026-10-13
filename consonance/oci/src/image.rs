@@ -1094,7 +1094,10 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
                     "archive carries platform-specific ACL metadata".into(),
                 ));
             }
-            key if key == b"SCHILY.realsize" || key.starts_with(b"GNU.sparse.") => {
+            key if key == b"SCHILY.realsize"
+                || key == b"SUN.holesdata"
+                || key.starts_with(b"GNU.sparse.") =>
+            {
                 return Err(ImageError::Tar(
                     "archive uses an unsupported sparse pax record".into(),
                 ));
@@ -3263,6 +3266,37 @@ mod tests {
                 b'x',
                 "",
                 pax_record("SCHILY.realsize", "70").as_bytes(),
+            ),
+            raw_member(b"foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let staging = dir.path().join("stage");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::Tar(message)) if message == "archive uses an unsupported sparse pax record"
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stage_rejects_solaris_sparse_holes_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let body = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("SUN.holesdata", " 0 3 5 7").as_bytes(),
             ),
             raw_member(b"foo", b'0', "", b"payload"),
         ]
