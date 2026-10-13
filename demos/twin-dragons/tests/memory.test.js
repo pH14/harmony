@@ -7,6 +7,13 @@ test("coarse pointers and small devices use the smaller search budget", () => {
   assert.equal(memoryBudget(4, false).snapshotsMiB, 32);
   assert.equal(memoryBudget(8, false).snapshotsMiB, 128);
 });
+test("desktops leave two cores for the page and the coordinator", () => {
+  assert.equal(memoryBudget(8, false, 8).workers, 6);
+  assert.equal(memoryBudget(8, false, 16).workers, 8);
+  assert.equal(memoryBudget(8, false, 2).workers, 1);
+  assert.equal(memoryBudget(4, true, 4).workers, 3);
+  assert.equal(memoryBudget(8, false, 8, 7).workers, 7);
+});
 test("preview eviction respects bytes, count, and recent reads", () => {
   const cache = new StateCache(2000, 2);
   const state = { actions: [], snapshot: new Uint8Array(100) };

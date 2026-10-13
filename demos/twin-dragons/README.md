@@ -101,7 +101,10 @@ only when the worker lacks it. Results come back in one transferred buffer
 per message. Pause stops sending new rollouts and holds results until resume,
 so the counters freeze at once.
 
-Desktops run `navigator.hardwareConcurrency - 1` rollout workers, at most 8.
+Desktops run `navigator.hardwareConcurrency - 2` rollout workers, at most 8, so
+the page and the coordinator each keep a core. WebKit throughput drops about 4
+times when the rollout workers use every core: on 8 cores of the machine below,
+6 workers run 132,000 frames per second and 7 run 30,000.
 Phones, coarse-pointer devices and devices reporting at most 4 GiB of RAM run
 2 or 3. The `workers` URL parameter overrides the count, from 1 to 16. The
 Details pane shows the count. Each rollout worker holds a 16 MiB QuickNES heap
@@ -124,13 +127,16 @@ switch. The advancing search gets the global budget minus the bytes the others h
 a 2 MiB floor.
 
 Throughput scales with the worker count. On the 8 performance cores of an
-Intel Core Ultra 9 285HX one rollout worker runs about 33,500 game frames per
-second, 4 run 133,000, 6 run 198,000 and 8 run 235,000 (2,100 paths per
-second). Workers wait on the round boundary less than 1% of the time. QuickNES
-emulation takes 97% of a rollout worker's time, and the core is built with
-`-O3` and link-time optimization. With the CPU slowed 6 times on a 4-core
-phone layout, 3 workers run about 15,000 frames per second and reach Level 2
-in about 30 seconds, against 80 seconds for one worker.
+Intel Core Ultra 9 285HX in Chrome, 6 rollout workers run about 217,000 game
+frames per second, 7 run 236,000 and 8 run 243,000 (3,600 paths per second),
+and 8 workers reach Level 2 in 0.7 seconds and Level 3 in 2.6 seconds. Workers
+wait on the round boundary less than 1% of the time. The core is built with
+`-O3` and link-time optimization. On a 4-core phone layout with 3 workers and
+the CPU slowed 6 times, the search runs about 18,600 frames per second. A
+rollout first reaches the middle of Level 1 after 3.9 seconds, Level 2 after
+9.3 seconds and Level 3 after 36 seconds. Slowed 4 times, the same
+milestones take 2.6, 6.1 and 23 seconds. The page holds 60 frames per second
+in both cases.
 
 The map samples swarm sprites evenly when drawing falls behind. While display
 frames run late and drawing the maps takes more than 6 ms, the sprite budget

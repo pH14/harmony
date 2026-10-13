@@ -2,7 +2,7 @@
 export function memoryBudget(deviceMemory, coarsePointer, cores = 4, requested = 0) {
   const small = coarsePointer || (deviceMemory > 0 && deviceMemory <= 4);
   const workers = requested >= 1 && requested <= 16 ? Math.floor(requested) :
-    small ? Math.min(Math.max((cores || 4) - 1, 2), 3) : Math.min(Math.max((cores || 4) - 1, 1), 8);
+    small ? Math.min(Math.max((cores || 4) - 1, 2), 3) : Math.min(Math.max((cores || 4) - 2, 1), 8);
   return { snapshotsMiB: small ? 32 : 128, searchMiB: small ? 96 : 192, workers };
 }
 export class StateCache {
