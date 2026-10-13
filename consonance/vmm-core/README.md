@@ -84,7 +84,9 @@ x86 device format is version 7 and the current arm64 device format is version
 14; each uses presence fields so optional devices retain their state without
 selecting historical layouts. Both device records preserve unread serial input
 in FIFO order. Restore replaces any residual input, and state identity includes
-the unread queue even when full snapshot hashing is disabled.
+the unread queue even when full snapshot hashing is disabled. The x86 device
+identity also includes the UART divisor high byte independently of the DLAB
+register window.
 
 The architecture-neutral engine record preserves terminal reasons and deferred
 SDK reentry state in the current VM-state container. A terminal restore does not
