@@ -18,8 +18,10 @@
 # fixed guest frequency through its compiled Harmony accessor instead. The
 # implementation-defined REVIDR_EL1 and AIDR_EL1 values are rejected for the
 # same reason; the owned kernel records neutral values instead. CNTP_TVAL_EL0
-# and CNTV_TVAL_EL0 reads also expose the live counter through the remaining
-# timer interval, even when the guest never programs a timer.
+# and CNTV_TVAL_EL0 reads expose the live counter through the remaining timer
+# interval, even when the guest never programs a timer. Architected timer
+# control reads and writes are excluded because an enabled timer follows host
+# time and the physical timer control is absent from the snapshot state.
 import importlib.util
 import re
 import subprocess
@@ -33,8 +35,10 @@ HOST_ID_READS = {
 }
 TIMER_PROGRAMS = {
     (2, 0): "CNTP_TVAL_EL0",
+    (2, 1): "CNTP_CTL_EL0",
     (2, 2): "CNTP_CVAL_EL0",
     (3, 0): "CNTV_TVAL_EL0",
+    (3, 1): "CNTV_CTL_EL0",
     (3, 2): "CNTV_CVAL_EL0",
 }
 
@@ -54,6 +58,8 @@ def decode_counter_read(word: int):
         return OP2.get(op2)
     if op2 == 0:
         return {2: "CNTP_TVAL_EL0", 3: "CNTV_TVAL_EL0"}.get(crm)
+    if op2 == 1:
+        return {2: "CNTP_CTL_EL0", 3: "CNTV_CTL_EL0"}.get(crm)
     return None
 
 
@@ -63,7 +69,7 @@ def decode_host_identity_read(word: int):
 
 
 def decode_timer_program(word: int):
-    """Return a live-domain TVAL/CVAL target for an MSR, else None."""
+    """Return a live-domain timer target for an MSR, else None."""
     if word & 0xFFF00000 != 0xD5100000:
         return None
     o0 = (word >> 19) & 0x1
@@ -111,10 +117,10 @@ def scan(path: str):
         identity = decode_host_identity_read(word)
         timer = decode_timer_program(word)
         mnem_counter = low.startswith("mrs") and bool(
-            re.search(r"\b(cnt(frq|pct|vct)(ss)?|cnt[vp]_tval)_el0\b", low)
+            re.search(r"\b(cnt(frq|pct|vct)(ss)?|cnt[vp]_(tval|ctl))_el0\b", low)
         )
         mnem_timer = low.startswith("msr") and bool(
-            re.search(r"cnt[vp]_(tval|cval)_el0", low)
+            re.search(r"cnt[vp]_(tval|ctl|cval)_el0", low)
         )
         mnem_identity = low.startswith("mrs") and bool(
             re.search(r"(revidr|aidr)_el1", low)
@@ -177,7 +183,7 @@ def main():
             for addr, raw, asm, reg in timer_programs:
                 print(f"    {addr}: {raw}  {asm}   [{reg}]")
         else:
-            print(f"[CLEAN]  {name}: no CNTV/CNTP CVAL/TVAL programs (raw ELF/mask self-check passed)")
+            print(f"[CLEAN]  {name}: no CNTV/CNTP CTL/CVAL/TVAL programs (raw ELF/mask self-check passed)")
     sys.exit(1 if any_live else 0)
 
 

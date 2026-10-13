@@ -153,9 +153,13 @@ _start:
 	mrs x3, aidr_el1
 	mrs x4, cntp_tval_el0
 	mrs x5, cntv_tval_el0
+	mrs x6, cntp_ctl_el0
+	mrs x7, cntv_ctl_el0
 	.word 0xd53be21f // executable data mapping: mrs xzr, cntp_tval_el0
 	.word 0xd53be31f // executable data mapping: mrs xzr, cntv_tval_el0
 	.word 0xd51be340 // executable data mapping: msr cntv_cval_el0, x0
+	.word 0xd51be23f // executable data mapping: msr cntp_ctl_el0, xzr
+	.word 0xd51be33f // executable data mapping: msr cntv_ctl_el0, xzr
 	ret
 EOF
 cc -nostdlib -static -Wl,-e,_start -o "$scan_probe_elf" "$scan_probe"
@@ -163,13 +167,13 @@ if python3 "$scan" "$scan_probe_elf" >"$scan_probe_log" 2>&1; then
     echo "FAIL: AA-5 counter scanner accepted the planted CNTVCT_EL0 probe" >&2
     exit 1
 fi
-if ! grep -q '^\[REJECT\].*8 host-dependent register read' "$scan_probe_log"; then
-    echo "FAIL: AA-5 scanner did not identify all eight planted host-dependent reads" >&2
+if ! grep -q '^\[REJECT\].*10 host-dependent register read' "$scan_probe_log"; then
+    echo "FAIL: AA-5 scanner did not identify all ten planted host-dependent reads" >&2
     cat "$scan_probe_log" >&2
     exit 1
 fi
-if ! grep -q '^\[REJECT\].*1 live-domain timer program' "$scan_probe_log"; then
-    echo "FAIL: AA-5 counter scanner did not identify the planted CNTV_CVAL program" >&2
+if ! grep -q '^\[REJECT\].*3 live-domain timer program' "$scan_probe_log"; then
+    echo "FAIL: AA-5 counter scanner did not identify the planted CVAL and CTL programs" >&2
     cat "$scan_probe_log" >&2
     exit 1
 fi
