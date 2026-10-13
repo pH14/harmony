@@ -1709,6 +1709,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 session.finish_timeout();
                 break;
             }
+            vmm.set_idle_wake_vns(Some(deadline.0));
             match vmm.step()? {
                 Step::Continued => {}
                 Step::SdkStop => {
@@ -7628,6 +7629,76 @@ mod tests {
                 vtime: Moment(deadline)
             })
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
+    fn exec_idle_wake_matches_live_and_replayed_snapshots() {
+        let make = |exits| {
+            let mut backend = MockBackend::with_exits(exits);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            backend.set_state(vmm_backend::VcpuState {
+                regs: vmm_backend::VcpuRegs {
+                    rflags: (1 << 9) | 0x2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
+            vmm.wire_snapshot_hashing();
+            vmm.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            vmm
+        };
+        let idle = || Exit::Common(CommonExit::Idle);
+        let mut server = ControlServer::new(
+            make(vec![idle(), idle()]),
+            Box::new(move || Ok(make(vec![idle()]))),
+        );
+        hello(&mut server);
+        let cutoff = 500;
+        assert_eq!(
+            run_with_deadline(&mut server, cutoff),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(cutoff)
+            }))
+        );
+        assert_eq!(server.vmm().unwrap().idle_wake_vns, Some(cutoff));
+        let cut = snap(&mut server);
+        let before = hash(&mut server);
+        let exec = Request::Exec {
+            cmd: "true".into(),
+            deadline: Moment(cutoff + 100),
+        };
+        let live = server.handle(&exec);
+
+        assert_eq!(
+            server.handle(&Request::Replay(cut)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert_eq!(server.vmm().unwrap().idle_wake_vns, None);
+        let replayed = server.handle(&exec);
+        assert!(
+            matches!(live, Ok(Ok(Reply::ExecResult { ok: false, .. }))),
+            "live {live:?}, replayed {replayed:?}"
+        );
+        assert!(
+            matches!(replayed, Ok(Ok(Reply::ExecResult { ok: false, .. }))),
+            "replayed {replayed:?}"
+        );
+        assert_eq!(live.unwrap().unwrap(), replayed.unwrap().unwrap());
     }
 
     fn idle_seeded_env(seed: u64) -> Reproducer {
