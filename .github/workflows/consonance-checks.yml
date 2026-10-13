@@ -392,7 +392,7 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/xsave-header-inputs.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/xsave-header-inputs.txt
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
-            -p vmm-backend --test kvm_smoke event_flags_restore_requires_host_mask_before_mutation \
+            -p vmm-backend --test kvm_smoke event_flags_restore_checks_effective_set_mask_before_mutation \
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/event-flags.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/event-flags.txt
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
@@ -407,6 +407,10 @@ jobs:
             -p vmm-backend --test kvm_smoke unusable_segment_restore_requires_canonical_shape_before_mutation \
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/segment-shape.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/segment-shape.txt
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
+            -p vmm-backend --test kvm_smoke nonnested_failed_restore_poisoned_after_partial_mutation \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/nonnested-restore-poison.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/nonnested-restore-poison.txt
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
             -p vmm-core --test x86_kvm_pcide_preflight pcide_restore_requires_ia32e_mode_before_entry \
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/pcide.txt

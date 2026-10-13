@@ -103,10 +103,10 @@ CPUID mask, and no reserved MXCSR bits. These inputs likewise fail at
 XSAVE image helper can retain a compacted image for non-KVM callers; the KVM
 restore path rejects it because its ioctl accepts standard layout only.
 The vCPU event validity flags sent to KVM must match the flags KVM reports
-for the VM. The restore adapter always adds the payload-valid bit so it can
-clear a previous exception payload; a typed snapshot may omit that selector
-while retaining the same event state. Preflight compares the effective KVM
-write mask before any state write.
+for the VM. The restore adapter always adds the payload-valid bit. Without it,
+KVM drops a pending exception and its payload; a typed snapshot may omit that
+selector while retaining the same event state. Preflight compares the
+effective KVM write mask before any state write.
 Event preflight also requires zero software-interrupt and SIPI fields that KVM
 never reports, an interrupt shadow using only the STI and MOV-SS bits, at most
 two pending NMIs, and canonical one-bit event fields. It also rejects a triple
@@ -157,7 +157,7 @@ matrix checks all RAM bytes, while recorded search exercises longer histories.
 Any error during an x86 KVM dirty drain, including a nested-state read or
 validation failure, poisons that backend. A later slot failure may leave earlier
 dirty bits cleared, so retrying cannot recover the complete page set. Errors
-during nested CPU-state mutation also poison the backend.
+during any x86 CPU-state restore mutation also poison the backend.
 Further entry, preparation, capture and restore fail; a deleted slot cannot
 be reused after an incomplete reload. Portable fault injection exercises each
 slot-removal/replacement error and the final nested-state installation boundary.
