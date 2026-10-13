@@ -1400,11 +1400,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             _ => return Ok(Err(ControlError::Unsupported)),
         };
-        let decode_env = RecordedEnv::new(0, prepared_handler.clone());
-        if decode_env.handler().identity() != restore_config.identity
-            || decode_env.handler().configuration() != restore_config.configuration
-        {
-            return Ok(Err(ControlError::Unsupported));
+        if seed.is_some() {
+            let decode_env = RecordedEnv::new(0, prepared_handler.clone());
+            if decode_env.handler().identity() != restore_config.identity
+                || decode_env.handler().configuration() != restore_config.configuration
+            {
+                return Ok(Err(ControlError::Unsupported));
+            }
         }
         let mut prepared_env = RecordedEnv::new(seed.unwrap_or(0), prepared_handler);
         if seed.is_some()
@@ -4305,7 +4307,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_rejects_service_contract_drift_from_either_reseed() {
+    fn branch_rejects_service_contract_drift_and_replay_reports_restore_failure() {
         #[derive(Clone)]
         struct ReseedingService {
             configuration: Vec<u8>,
@@ -4409,6 +4411,43 @@ mod tests {
                 "late reseed: {late}, zero only: {zero_only}"
             );
         }
+
+        let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut s);
+        let policy = ServiceConfig {
+            identity: b"reseed-contract-v1".to_vec(),
+            configuration: b"before".to_vec(),
+        };
+        s.recorded.set_config(policy.clone());
+        s.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                7,
+                Box::new(ReseedingService {
+                    configuration: b"before".to_vec(),
+                    trigger: 1,
+                    reseeds: 0,
+                    zero_only: true,
+                }),
+            ),
+            &policy,
+        );
+        let nominal = nominal_factory();
+        s.set_service_factory(std::sync::Arc::new(move |config| {
+            if config.identity == b"reseed-contract-v1" {
+                Ok(Box::new(ReseedingService {
+                    configuration: config.configuration.clone(),
+                    trigger: 1,
+                    reseeds: 0,
+                    zero_only: true,
+                }))
+            } else {
+                nominal(config)
+            }
+        }));
+        let base = snap(&mut s);
+        let before = hash(&mut s);
+        assert_eq!(replay(&mut s, base), Err(ControlError::RestoreFailed));
+        assert_eq!(hash(&mut s), before);
     }
 
     #[test]
