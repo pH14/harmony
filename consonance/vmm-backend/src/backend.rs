@@ -60,6 +60,13 @@ pub trait Backend {
         Ok(None)
     }
 
+    fn read_arm64_gic_idle_state(
+        &mut self,
+        _intid: u32,
+    ) -> Result<Option<crate::arch::arm64::Arm64GicIdleState>> {
+        Ok(None)
+    }
+
     fn complete_read(&mut self, value: u64) -> Result<()>;
 
     fn complete_fault(&mut self) -> Result<()>;
@@ -156,6 +163,13 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn read_irq_mask(&mut self) -> Result<Option<bool>> {
         (**self).read_irq_mask()
+    }
+
+    fn read_arm64_gic_idle_state(
+        &mut self,
+        intid: u32,
+    ) -> Result<Option<crate::arch::arm64::Arm64GicIdleState>> {
+        (**self).read_arm64_gic_idle_state(intid)
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {

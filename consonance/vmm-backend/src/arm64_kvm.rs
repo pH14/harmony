@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::arch::arm64::{
-    Arm64, Arm64AsidBits, Arm64GicState, Arm64VcpuState, GicIntId, canonicalize_core_regs,
-    has_noncanonical_core_regs,
+    Arm64, Arm64AsidBits, Arm64GicIdleState, Arm64GicState, Arm64VcpuState, GicIntId,
+    canonicalize_core_regs, has_noncanonical_core_regs,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -652,6 +652,53 @@ fn has_pending_or_asserted_spi(s: &Arm64GicState) -> bool {
         .iter()
         .chain(s.line_level[1..words].iter())
         .any(|&word| word != 0)
+}
+
+fn read_vgic_idle_state<K: Arm64Kvm + ?Sized>(k: &K, intid: u32) -> Result<Arm64GicIdleState> {
+    if !(16..32).contains(&intid) {
+        return Err(BackendError::InvalidState);
+    }
+    let bit = 1u64 << intid;
+    let read_bitmap = |base| {
+        let (group, attr) = vgic_bitmap_attr(0, base);
+        k.get_vgic_attr(group, attr, false)
+    };
+    let (priority_group, priority_attr) = vgic_priority_attr(intid as usize / 4);
+    let priority_word = k.get_vgic_attr(priority_group, priority_attr, false)?;
+    let ctlr = vgic_cpu_sysreg(k, ICC_CTLR_EL1)?;
+    let apr_count = vgic_apr_count(ctlr)?;
+    let mut ap0r = [0; 4];
+    let mut ap1r = [0; 4];
+    for index in 0..apr_count {
+        ap0r[index] = u32::try_from(vgic_cpu_sysreg(k, ICC_AP0R0_EL1 + index as u64)?)
+            .map_err(|_| BackendError::InvalidState)?;
+        ap1r[index] = u32::try_from(vgic_cpu_sysreg(k, ICC_AP1R0_EL1 + index as u64)?)
+            .map_err(|_| BackendError::InvalidState)?;
+    }
+    Ok(Arm64GicIdleState {
+        distributor_group1_enabled: k.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_CTLR,
+            false,
+        )? & 2
+            != 0,
+        group1: read_bitmap(GIC_IGROUPR)? & bit != 0,
+        enabled: read_bitmap(GIC_ISENABLER)? & bit != 0,
+        active: read_bitmap(GIC_ISACTIVER)? & bit != 0,
+        priority: ((priority_word >> ((intid % 4) * 8)) & 0xff) as u8,
+        pmr: u8::try_from(vgic_cpu_sysreg(k, ICC_PMR_EL1)?)
+            .map_err(|_| BackendError::InvalidState)?,
+        bpr1: u8::try_from(vgic_cpu_sysreg(k, ICC_BPR1_EL1)?)
+            .map_err(|_| BackendError::InvalidState)?,
+        ctlr,
+        igrpen1: match vgic_cpu_sysreg(k, ICC_IGRPEN1_EL1)? {
+            0 => false,
+            1 => true,
+            _ => return Err(BackendError::InvalidState),
+        },
+        ap0r,
+        ap1r,
+    })
 }
 
 fn read_vgic_state<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
@@ -1410,6 +1457,14 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         Ok(Some(
             self.kvm.get_one_reg(core_reg(CORE_PSTATE))? & PSTATE_I != 0,
         ))
+    }
+
+    fn read_arm64_gic_idle_state(&mut self, intid: u32) -> Result<Option<Arm64GicIdleState>> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.settle_mmio()?;
+        Ok(Some(read_vgic_idle_state(&self.kvm, intid)?))
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
@@ -2356,6 +2411,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn idle_gic_read_ignores_unpublishable_spi_state() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        for (group, attr, width64, value) in [
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false, 2),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GIC_ISPENDR + 4, false, 1),
+            (
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                vgic_router_attr(0, 0),
+                false,
+                1,
+            ),
+            (
+                KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+                GICR_SGI_BASE + GIC_IGROUPR,
+                false,
+                1 << 27,
+            ),
+            (
+                KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+                GICR_SGI_BASE + GIC_ISENABLER,
+                false,
+                1 << 27,
+            ),
+            (
+                KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+                GICR_SGI_BASE + GIC_IPRIORITYR + 24,
+                false,
+                0x60 << 24,
+            ),
+            (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_PMR_EL1, true, 0xff),
+            (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_BPR1_EL1, true, 5),
+            (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_IGRPEN1_EL1, true, 1),
+            (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true, 0x8500),
+            (
+                KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+                ICC_AP1R0_EL1 + 1,
+                true,
+                1 << 8,
+            ),
+        ] {
+            backend
+                .kvm
+                .set_vgic_attr(group, attr, width64, value)
+                .unwrap();
+        }
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        let idle = backend.read_arm64_gic_idle_state(27).unwrap().unwrap();
+        assert!(idle.distributor_group1_enabled);
+        assert!(idle.group1);
+        assert!(idle.enabled);
+        assert!(!idle.active);
+        assert_eq!(idle.priority, 0x60);
+        assert_eq!(idle.pmr, 0xff);
+        assert_eq!(idle.bpr1, 5);
+        assert_eq!(idle.ctlr, 0x8500);
+        assert!(idle.igrpen1);
+        assert_eq!(idle.ap1r, [0, 1 << 8, 0, 0]);
+        assert_eq!(idle.ap0r, [0; 4]);
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.read_arm64_gic_idle_state(32),
+            Err(BackendError::InvalidState)
+        ));
+    }
+
     #[repr(C, align(16384))]
     struct LiveRouteMemory([u8; 16384]);
 
@@ -2475,6 +2605,10 @@ mod tests {
             routed_away.backend.save(),
             Err(BackendError::Unsupported { .. })
         ));
+        assert_eq!(
+            routed_away.backend.read_arm64_gic_idle_state(27).unwrap(),
+            Arm64GicIdleState::from_gic(&hidden, 27)
+        );
         assert_eq!(routed_away.next_store(), 1023);
 
         let mut direct_program = Vec::from(program);
@@ -2487,6 +2621,13 @@ mod tests {
             directly_pending.backend.save(),
             Err(BackendError::Unsupported { .. })
         ));
+        assert_eq!(
+            directly_pending
+                .backend
+                .read_arm64_gic_idle_state(27)
+                .unwrap(),
+            Arm64GicIdleState::from_gic(&deliverable, 27)
+        );
         assert_eq!(directly_pending.next_store(), 32);
 
         let mut route_cycle_program = direct_program.clone();

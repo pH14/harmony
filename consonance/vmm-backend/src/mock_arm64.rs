@@ -3,7 +3,8 @@
 use std::collections::VecDeque;
 
 use crate::arch::arm64::{
-    Arm64, Arm64Completion, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState, GicIntId,
+    Arm64, Arm64Completion, Arm64Exit, Arm64GicIdleState, Arm64Injection, Arm64Policy,
+    Arm64VcpuState, GicIntId,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -251,6 +252,14 @@ impl Backend for MockArm64Backend {
 
     fn take_accepted_interrupt(&mut self) -> Option<GicIntId> {
         self.accepted_irq.pop_front()
+    }
+
+    fn read_arm64_gic_idle_state(&mut self, intid: u32) -> Result<Option<Arm64GicIdleState>> {
+        Ok(self
+            .state
+            .gic
+            .as_ref()
+            .and_then(|gic| Arm64GicIdleState::from_gic(gic, intid)))
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
