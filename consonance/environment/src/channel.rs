@@ -696,6 +696,13 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             if let Answer::Data(bytes) = answer {
                 check_len(bytes.len())?;
             }
+            if candidate.identity() != self.handler.identity()
+                || candidate.configuration() != self.handler.configuration()
+            {
+                return Err(ChannelError::Handler(
+                    "handler identity or configuration changed while answering".to_owned(),
+                ));
+            }
             self.handler = candidate;
         }
         Ok(response)
@@ -1036,6 +1043,7 @@ mod tests {
         identity: Vec<u8>,
         configuration: Vec<u8>,
         state: Vec<u8>,
+        respond_change: Option<bool>,
     }
 
     impl ChangingContractHandler {
@@ -1044,6 +1052,7 @@ mod tests {
                 identity: vec![identity],
                 configuration: vec![configuration],
                 state: state.to_vec(),
+                respond_change: None,
             }
         }
     }
@@ -1060,8 +1069,15 @@ mod tests {
         fn respond(
             &mut self,
             _moment: Moment,
-            _question: &Question,
+            question: &Question,
         ) -> Result<ServiceResponse, ChannelError> {
+            if question.service() == 19 {
+                match self.respond_change {
+                    Some(true) => self.identity = vec![9],
+                    Some(false) => self.configuration = vec![9],
+                    None => {}
+                }
+            }
             Ok(ServiceResponse::Answered(Answer::Data(
                 self.configuration.clone(),
             )))
@@ -1405,6 +1421,27 @@ mod tests {
         let question = Question::new(u16::MAX, vec![]).unwrap();
         assert!(env.decide(&question).is_err());
         assert_eq!(env.handler().counter, 0);
+    }
+
+    #[test]
+    fn answered_request_rejects_handler_contract_drift_without_committing() {
+        for change_identity in [true, false] {
+            let mut handler = ChangingContractHandler::new(1, 2, [3, 4]);
+            handler.respond_change = Some(change_identity);
+            let mut env = RecordedEnv::new(17, handler);
+            let before = env.snapshot_state().unwrap().encode();
+            assert!(matches!(
+                env.decide(&Question::new(19, Vec::new()).unwrap()),
+                Err(ChannelError::Handler(_))
+            ));
+            assert_eq!(env.snapshot_state().unwrap().encode(), before);
+            assert_eq!(env.handler().identity(), &[1]);
+            assert_eq!(env.handler().configuration(), &[2]);
+            assert_eq!(
+                env.decide(&Question::new(20, Vec::new()).unwrap()),
+                Ok(ServiceResponse::Answered(Answer::Data(vec![2])))
+            );
+        }
     }
 
     #[test]
