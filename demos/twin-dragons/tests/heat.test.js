@@ -170,17 +170,17 @@ test("heat marks actual crossed cells once per attempt without creating routes o
   ]);
   const restored = new Uint16Array([0, 49, 200, 184, 0, 4, 49, 216, 184, 0]);
   heat.visitMotion([trail, restored], maps, 100);
-  assert.deepEqual([...heat.cells.keys()], ["0:0:6", "0:1:6", "0:2:6", "49:0:6", "49:1:6", "49:6:6", "49:7:6"]);
+  assert.deepEqual([...heat.cells.keys()], ["0:0:5", "0:1:5", "0:2:5", "49:0:5", "49:1:5", "49:6:5", "49:7:5"]);
   for (const cell of heat.cells.values()) {
     assert.equal(cell.visits, 1);
     assert.equal(cell.heat, 1);
     assert.deepEqual(cell.ids, []);
   }
-  assert.equal(heat.cells.has("49:3:6"), false, "A restore must not paint a connecting path");
+  assert.equal(heat.cells.has("49:3:5"), false, "A restore must not paint a connecting path");
   const endpoint = { observation: { level: 49, x: 224, y: 192 }, retained: "1:7" };
   heat.retain(endpoint, 100);
   heat.retain(endpoint, 100);
-  const cell = heat.cells.get("49:7:6");
+  const cell = heat.cells.get("49:7:5");
   assert.equal(cell.heat, 1, "Retained endpoints must not count activity twice");
   assert.deepEqual(cell.ids, ["1:7"]);
   heat.visitMotion([restored], maps, 100);

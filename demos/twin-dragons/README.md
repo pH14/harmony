@@ -65,7 +65,7 @@ the third level is cleared.
 
 The browser driver is a bounded single-worker adapter. Its archive place is
 (levels cleared, level, loading, x / 32, y / 32), and its identity within a
-place is (x / 16, y / 16). Within a place it prefers more cleared levels, then
+place is (x / 16, y / 16). The place rows match the map's cell rows. Within a place it prefers more cleared levels, then
 more health. A state with zero health or on the title screen ends a rollout.
 The 32-pixel heatmap projection is separate from archive identity.
 
@@ -73,13 +73,23 @@ Rollouts have one to eight controller actions. The seed determines every search
 choice; wall time changes only animation, heat decay and presentation. The
 first search uses seed 3, and Restart increments it. Seed 3 enters Level 2
 after about 3,000 paths. A history is bounded to 10,000 actions and 200,000
-frames. Runs stop after 100,000 paths, about 20,000 archive entries, or a
-shared compressed snapshot budget. Phones, coarse-pointer devices and devices
-reporting at most 4 GiB of RAM use 32 MiB of snapshots and 96 MiB of search
-WASM buffers. Other devices use 128 MiB and 192 MiB. A Twin Dragons snapshot is
-12,792 bytes before compression, and 60,000 paths retain about 10 MB of
-compressed snapshots. Up to eight searches are retained in one worker, with
-only one advancing at a time.
+frames. Runs stop after 100,000 paths or 400,000 archive history entries, or
+when the search WASM buffers reach their limit. Phones, coarse-pointer devices
+and devices reporting at most 4 GiB of RAM use 32 MiB of snapshots and 96 MiB
+of search WASM buffers. Other devices use 128 MiB and 192 MiB. A Twin Dragons
+snapshot is 12,792 bytes before compression, and 60,000 paths retain about
+10 MB of compressed snapshots.
+
+The snapshot budget never stops a search. Every entry the archive retires
+releases its snapshot at the end of each rollout. When resident snapshots
+exceed the budget, the adapter lowers the archive's `max_entries` cap by about
+1.5%, never below 256 active entries, so each later admission retires an older
+entry. The archive selects only active entries, so a restore never needs a
+released snapshot. Each admitted state keeps a 64-bit digest of its raw
+snapshot, so replays of retired paths still verify exactly. Up to eight
+searches are retained in one worker, with only one advancing at a time. The
+advancing search gets the global budget minus the bytes the others hold, with
+a 2 MiB floor.
 
 Each level's root comes from a fixed boot route. `boot(level)` restores a
 power-on snapshot and presses nothing for 60 frames, Start for 2 frames, and
@@ -113,24 +123,64 @@ sprite PNGs carry the game and artwork credits in their text metadata.
 
 ## Interaction
 
-The segmented view control offers Movement, Heatmap and Both. Movement shows
-the level maps with small player sprites replaying recorded search rollouts.
-One recorder samples the search emulator every four game frames, without
-changing inputs, random draws or captured endpoints. Loading frames and frames
-with zero health are hidden. Heatmap warms 32-pixel cells from blue through red
-with a six-second half-life measured while that search runs. Both draws the
-sprites over the heatmap.
+The page opens with a one-line pitch, one live total (timelines tried across
+every search branch) and Take the tour. The per-search counters sit in a
+collapsed Details disclosure at the bottom of the Searches pane. The footer
+holds the Harmony link, Credits & source and the Dark mode / Light mode switch.
 
-Clicking a cell with retained states opens History, listing up to twelve routes
-to that cell. Selecting a route replays its controller history in a second
-emulator and compares the endpoint snapshot byte for byte. Play from here hands
-control to the visitor: arrows or WASD move, Z or Space jumps and X breathes
-fire. Branch search from here verifies the controller prefix and starts a
-separate search rooted at that state. The Searches pane shows the branch tree.
-Long levels wrap into broad sections under a sticky whole-level navigator. A
-guided tour explains the search, routes, replay, human play and branching.
+Two toggles, Movement and Heatmap, choose what the map shows. Either or both
+can be on, and the last one on stays on. Movement alone is the default.
+Movement shows the level map with small dragon sprites replaying recorded
+search rollouts. One recorder samples the search emulator every four game
+frames, without changing inputs, random draws or captured endpoints. Loading
+frames and frames with zero health are hidden. Each sprite fades in as its
+rollout starts and eases to about two-thirds opacity as it finishes, followed
+by two faint dots at its position six and twelve game frames earlier. Sprites
+are drawn at least 18 CSS pixels tall, up to 2.5 times their native size.
+Heatmap warms 32-pixel cells from blue through red with a six-second half-life
+measured while that search runs. Cell rows start 8 pixels below a 32-pixel
+boundary of the map, on the 16-pixel tile grid, so a dragon standing on a
+floor sits inside one cell.
 
-Replays play the game's music. The sound effects are absent from this build.
+Each level shows through one camera viewport: a 4:1 strip on desktop and a 2:1
+view on phones. The camera holds the full level height on screen and follows
+the search frontier (the 80th-percentile x of live sprites, smoothed), or the
+furthest cell the search has reached, or the level start. Following pauses
+while the mouse is over the map and for 2.5 seconds after a touch. Auto view
+and Full view sit beside the visualization toggles. Full view fits the whole
+level and stops following. A drag, pinch or edge pan holds the camera where the
+visitor left it, and following resumes 10 seconds after the last movement.
+Selecting a cell stops following. Hovering the map shows chevrons at its left
+and right edges; resting on one pans that way, and a tap on a touch screen
+glides about half a screen. A thin track along the bottom shows which part of
+the level is on screen, with a gold dot at the point the camera is chasing.
+
+On a first visit the camera opens at 1.3 times the close-up, follows for 1.5
+seconds, then eases to the close-up over 0.8 seconds. Returning and
+reduced-motion visitors start at the close-up.
+
+Clicking a cell with retained states opens History, listing up to twelve saved
+paths to that cell. Selecting a path draws its trail in gold and replays its
+controller history in a second emulator, comparing the endpoint byte for byte.
+Play from here hands control to the visitor: arrows or WASD move, Z or Space
+jumps and X breathes fire. Branch search from here verifies the controller
+prefix and starts a separate search rooted at that state. The fork point
+ripples in gold, the camera centers on it for 2.6 seconds, and the new row
+slides into Searches. Each Searches row shows the idle dragon sprite as its
+icon. On phones History is a full-width bottom sheet; closing it leaves a
+History bar docked at the bottom edge that reopens it.
+
+The guided tour has five steps: Multiverse exploration spotlights the live
+map; Zooming in selects a cell, draws its route and lights History; Your turn
+covers Play from here; Hand it back covers branching or discarding the played
+draft; and Search branches spotlights the Searches pane. Next on Your turn
+skips Hand it back until the visitor has played. The tour opens once after the
+opening camera finishes and the search has populated a cell.
+
+Replay and play round the frame count owed to elapsed time, so a 60 Hz display
+steps one game frame per display frame. The map repaints every display frame
+while the search runs and at 30 Hz while it is paused. Replays play the game's
+music. The sound effects are absent from this build.
 
 ## Verification and publishing
 
@@ -156,10 +206,18 @@ real seed 3 and seed 5 searches and contain only controller inputs.
 `TWIN_DRAGONS_PROGRESS_PATHS=25000 npm run test:search` requires seed 5 to
 enter Level 3, which it does at about 18,500 paths.
 
+`tests/search.mjs` also runs a 2 MiB snapshot budget for 3,000 rollouts and
+checks that the search keeps going, retires snapshots and still replays
+exactly. `tests/media.test.js` checks the snapshot digest against the Rust
+reference vectors.
+
 The browser tests cover the swarm, heatmap, route selection, exact replay,
 scrubbing across the Level 1 to Level 2 change, 1x and 4x playback, human play,
-branching, the guided tour on desktop and phone, the level selector, wrapped
-maps and the credits. `CHROME_CHANNEL=chrome` uses an installed Chrome, and
+branching, the guided tour on desktop and phone, the level selector and the
+credits. `tests/room-cameras.mjs` checks one camera viewport per level on
+desktop and phone, Full view and Auto view, edge panning and the level track,
+rotation, and a retained-state hit near the far end of Level 1 using the
+hash-verified `level-one` history. `CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
 
 `Checks / Dissonance Workloads / Twin Dragons Browser` rebuilds and tests the

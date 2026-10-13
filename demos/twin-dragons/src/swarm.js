@@ -119,7 +119,7 @@ export class Swarm {
       }
     }
   }
-  frame(branch, milliseconds, still = false, maxPoints = this.maxTrails) {
+  frame(branch, milliseconds, still = false, maxPoints = this.maxTrails, detail = false) {
     this.prune(branch, milliseconds);
     const rooms = new Map();
     let count = 0;
@@ -129,6 +129,11 @@ export class Swarm {
       const frame = still ? 0 : Math.max(0, milliseconds - trail.started) * 0.06;
       const point = swarmPoint(trail.samples, frame);
       if (!point) continue;
+      if (detail) {
+        point.life = still ? 0 : Math.min(1, frame / trail.duration);
+        point.ghosts = still ? [] : [6, 12].map((lag) => frame >= lag && swarmPoint(trail.samples, frame - lag))
+          .filter((ghost) => ghost && ghost.level === point.level);
+      }
       if (!rooms.has(point.level)) rooms.set(point.level, []);
       rooms.get(point.level).push(point);
       count++;

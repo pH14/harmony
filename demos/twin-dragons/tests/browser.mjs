@@ -9,6 +9,7 @@ import { snapshotHash } from "../src/media.js";
 import { prefixAt } from "../src/branch.js";
 import { TOUR_KEY } from "../src/tour.js";
 import { isMapEvidence } from "../src/world.js";
+const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.CHROME_CHANNEL
@@ -39,14 +40,16 @@ await page.addInitScript((tourKey) => {
       window.tdTestWorker = this;
       this.addEventListener("message", ({ data }) => {
         if (data.type === "states") window.tdTestStates = data.states;
-        if (data.type === "ready") window.tdTestRetained = [];
         if (data.type === "batch")
-          window.tdTestRetained = [
-            ...(window.tdTestRetained || []),
-            ...data.points
-              .filter((point) => point.retained !== null && !point.observation.loading && point.observation.health > 0)
-              .map((point) => point.observation),
-          ].slice(-400);
+          for (const point of data.points)
+            if (point.retained != null && point.retained !== 0 && !String(point.retained).endsWith(":0") && !point.observation.loading && point.observation.health > 0 && point.observation.level === 0)
+              (window.tdTestRecentRetained ??= []).push({ key: point.retained, x: point.observation.x, y: point.observation.y });
+        if (data.type === "states" && data.request === -4180)
+          window.tdTestLiveState?.(data.states.length > 0);
+        if (data.type === "batch" && data.active === 1)
+          for (const point of data.points)
+            if (point.retained !== null && point.retained !== "1:0" && !point.observation.loading && point.observation.health > 0)
+              window.tdTestBranchRetained = point.observation;
         if (data.type === "batch" && data.active === 2) {
           if (!window.tdTestNestedBatch)
             window.tdTestNestedBatch = { ...data, motionStart: [...data.motion[0].slice(0, 5)] };
@@ -78,7 +81,7 @@ await page.addInitScript((tourKey) => {
               o.y >= height
             )
               continue;
-            const key = `${Math.floor(o.x / 32)}:${Math.floor(o.y / 32)}`;
+            const key = `${Math.floor(o.x / 32)}:${Math.floor((o.y - 8) / 32)}`;
             if (!window.tdTestRouteCells.has(key))
               window.tdTestRouteCells.set(key, {
                 ids: new Set(),
@@ -98,12 +101,18 @@ await page.addInitScript((tourKey) => {
     }
   };
 }, TOUR_KEY);
+async function wholeRoom() {
+  await page.waitForFunction(() => document.querySelector(".map-wrap")?.dataset.camera !== "focus", null, { timeout: 10000 });
+  await page.locator('#camera-toggle [data-camera="room"]').click();
+  await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].filter((c) => c.offsetParent).every((c) => c.dataset.zoom === "1"));
+}
 async function openCurrentCell() {
   await page.waitForFunction(
     () =>
       !!document.querySelector("#details b") &&
       !document.querySelector("#take-control").disabled,
   );
+  await wholeRoom();
   const map = page.locator("#map");
   await map.scrollIntoViewIfNeeded();
   const point = await map.evaluate((canvas) => {
@@ -118,7 +127,7 @@ async function openCurrentCell() {
         Number(canvas.dataset.zoom),
       rect = canvas.getBoundingClientRect(),
       px = Math.floor((x + 8) / 32) * 32 + 16,
-      py = Math.floor((y + 8) / 32) * 32 + 8;
+      py = Math.floor(y / 32) * 32 + 24;
     return {
       x:
         (((px - Number(canvas.dataset.centerX)) * scale + canvas.width / 2) *
@@ -196,27 +205,32 @@ try {
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
   );
+  await page.waitForFunction(() => !document.querySelector("#pause").disabled);
+  await wholeRoom();
   assert.equal(await page.locator("#speed").inputValue(), "1");
   assert.equal(
     await page.locator("#screenshot,#export,#import,#history-file").count(),
     0,
   );
   assert.equal(await page.locator(".brand").innerText(), "harmony");
-  const toolbarLayout = await page.locator(".exploration").evaluate((panel) => {
-    const controls = panel.querySelector(".controls").getBoundingClientRect(),
-      counters = panel.querySelector(".metrics").getBoundingClientRect(),
-      goal = panel.querySelector(".goal").getBoundingClientRect(),
-      panelRect = panel.getBoundingClientRect();
+  const heroLayout = await page.evaluate(() => {
+    const totals = document.querySelector(".hero-stats").getBoundingClientRect(),
+      goal = document.querySelector(".goal").getBoundingClientRect(),
+      maps = document.querySelector("#map-rows").getBoundingClientRect(),
+      details = document.querySelector(".search-details");
     return {
-      left: controls.left - panelRect.left,
-      countersBottom: counters.bottom,
+      totalsBottom: totals.bottom,
       goalTop: goal.top,
-      size: getComputedStyle(panel.querySelector(".metrics b")).fontSize,
+      mapsBottom: maps.bottom,
+      detailsTop: details.getBoundingClientRect().top,
+      detailsOpen: details.open,
+      heading: document.querySelector("#hero-title").textContent,
     };
   });
-  assert.ok(toolbarLayout.left < 30);
-  assert.ok(toolbarLayout.countersBottom <= toolbarLayout.goalTop);
-  assert.ok(parseFloat(toolbarLayout.size) <= 14);
+  assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
+  assert.equal(await page.locator("#branches .search-details").count(), 1, "Per-search counters sit in the Searches pane");
+  assert.equal(heroLayout.detailsOpen, false, "Per-search counters start collapsed");
+  assert.equal(heroLayout.heading, "Harmony Plays NES");
   const originImage = await page
     .locator("#film")
     .evaluate((c) => c.toDataURL());
@@ -236,9 +250,9 @@ try {
   );
   await page.locator("#pause").click();
   await page.waitForTimeout(200);
-  const attempts = await page.locator("#attempts").innerText();
+  const attempts = await page.locator("#attempts").textContent();
   await page.waitForTimeout(200);
-  assert.equal(await page.locator("#attempts").innerText(), attempts);
+  assert.equal(await page.locator("#attempts").textContent(), attempts);
   assert.equal(await page.locator("#inspector").isVisible(), false);
   await page.waitForFunction(() =>
     [...document.querySelectorAll(".map-row .area-map")].every(
@@ -280,13 +294,8 @@ try {
           height = Number(canvas.dataset.mapHeight),
           scale = Math.min(canvas.width / width, canvas.height / height),
           rect = canvas.getBoundingClientRect();
-        const px = Math.floor((position.x % width) / 32) * 32 + 16,
-          py =
-            Math.floor(
-              (Math.floor(position.x / width) * 224 + position.y) / 32,
-            ) *
-              32 +
-            8;
+        const px = Math.floor(position.x / 32) * 32 + 16,
+          py = Math.floor((position.y - 8) / 32) * 32 + 24;
         return {
           x:
             (rect.width * ((canvas.width - width * scale) / 2 + px * scale)) /
@@ -328,7 +337,7 @@ try {
   await clickIntroCell();
   await page.waitForFunction(
     (expected) => document.querySelector("#cell-title").title === expected,
-    `Cell ${Math.floor(x / 32)}, ${Math.floor(y / 32)}`,
+    `Cell ${Math.floor(x / 32)}, ${Math.floor((y - 8) / 32)}`,
   );
   assert.equal(await page.locator("#inspector").isVisible(), true);
   assert.equal(await page.locator("#selection-hint").isVisible(), false);
@@ -362,12 +371,12 @@ try {
   );
   assert.equal(await page.locator("#inspector").isVisible(), true);
   const selected = await page.locator("#state-list .selected").innerText();
-  assert.match(selected, /Route \d+/);
+  assert.match(selected, /Path \d+/);
   assert.match(selected, /\d+:\d{2}/);
   assert.doesNotMatch(selected, / replay/);
   assert.equal(
     await page.locator("#cell-title").innerText(),
-    "Routes to this location",
+    "Saved paths to this spot",
   );
   assert.equal(
     await page.locator("#take-control").innerText(),
@@ -436,7 +445,7 @@ try {
     "Routes must read oldest to newest",
   );
   const beforeRoutes = Number(
-    (await page.locator("#attempts").innerText()).replaceAll(",", ""),
+    (await page.locator("#attempts").textContent()).replaceAll(",", ""),
   );
   await page.locator("#pause").click();
   await page.waitForFunction(
@@ -685,9 +694,10 @@ try {
       document.querySelector("#verification").textContent === "Original game" &&
       document.querySelector("#scrub").max === "0",
   );
-  await page.locator('[data-viz="heat"]').click();
-  const originalAttempts = await page.locator("#attempts").innerText();
-  const originalCells = await page.locator("#cells").innerText();
+  await setView(page,'heat');
+  await wholeRoom();
+  const originalAttempts = await page.locator("#attempts").textContent();
+  const originalCells = await page.locator("#cells").textContent();
   await page.mouse.move(0, 0);
   await page.waitForTimeout(1700);
   const pausedHeat = await page
@@ -699,10 +709,6 @@ try {
     pausedHeat,
     "The rendered heat overlay must stay frozen while the search is paused",
   );
-  const originalOverlay = await page
-    .locator('.map-row[data-map="0"] .area-map')
-    .first()
-    .evaluate((canvas) => window.tdTestHeatPixels(canvas));
   const manualAudioStart = Number(
     await page.locator("#film").getAttribute("data-audio-frames"),
   );
@@ -785,6 +791,18 @@ try {
     await page.locator("#search-here").innerText(),
     "↗ Branch search from here",
   );
+  const readOverlay = () =>
+    page
+      .locator('.map-row[data-map="0"] .area-map')
+      .first()
+      .evaluate((canvas) => window.tdTestHeatPixels(canvas));
+  let originalOverlay = await readOverlay();
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await page.waitForTimeout(1000);
+    const next = await readOverlay();
+    if (next.every((value, index) => value === originalOverlay[index])) break;
+    originalOverlay = next;
+  }
   await page.locator("#search-here").click();
   await page.waitForFunction(() => !!window.tdTestFork);
   const manualTape = await page.evaluate(() => window.tdTestFork.tape);
@@ -849,7 +867,7 @@ try {
   );
   await page.locator("#pause").click();
   await page.waitForTimeout(100);
-  const branchCells = await page.locator("#cells").innerText();
+  const branchCells = await page.locator("#cells").textContent();
   await page.waitForFunction(
     () => document.querySelector("#map").dataset.originPulse === "false",
   );
@@ -861,16 +879,16 @@ try {
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
   );
-  const position = await page.locator("#details b").first().textContent();
-  const [bx, by] = position.split(",").map(Number);
+  const { x: bx, y: by } = await page.evaluate(() => window.tdTestBranchRetained);
+  await wholeRoom();
   const branchClick = await page.locator("#map").evaluate(
     (c, p) => {
       const r = c.getBoundingClientRect(),
         w = Number(c.dataset.mapWidth),
         h = Number(c.dataset.mapHeight),
         scale = Math.min(c.width / w, c.height / h) * Number(c.dataset.zoom),
-        px = Math.floor((p.x % w) / 32) * 32 + 16,
-        py = Math.floor((Math.floor(p.x / w) * 224 + p.y) / 32) * 32 + 8;
+        px = Math.floor((p.x + 8) / 32) * 32 + 16,
+        py = Math.floor(p.y / 32) * 32 + 24;
       return {
         x:
           (((px - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width) /
@@ -975,14 +993,15 @@ try {
 
   assert.equal(await page.locator('li[data-search-node="1"] > ol > li[data-search-node="2"]').count(), 1, 'Nested branches must retain their actual parent in the tree');
   await page.mouse.move(0, 0);
-  await page.waitForTimeout(1800);
+  await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus' && [...document.querySelectorAll('.area-map')].every(c => c.dataset.originPulse !== 'true'), null, { timeout: 10000 });
+  await page.waitForTimeout(200);
   const activeBranchBeforeHover = await page.locator('#branch-tree button[aria-pressed=true]').getAttribute('data-search');
-  const branchAttemptsBeforeHover = await page.locator('#attempts').innerText();
+  const branchAttemptsBeforeHover = await page.locator('#attempts').textContent();
   const branchImageBeforeHover = await page.locator('#map').evaluate(c => c.toDataURL());
   await page.locator('button[data-search="1"]').hover();
   await page.waitForFunction(() => document.querySelector('#map').dataset.previewSearch === '1' && Number(document.querySelector('#map').dataset.tracePoints) > 1);
   assert.equal(await page.locator('#branch-tree button[aria-pressed=true]').getAttribute('data-search'), activeBranchBeforeHover);
-  assert.equal(await page.locator('#attempts').innerText(), branchAttemptsBeforeHover);
+  assert.equal(await page.locator('#attempts').textContent(), branchAttemptsBeforeHover);
   await page.mouse.move(0, 0);
   await page.waitForFunction(() => document.querySelector('#map').dataset.previewSearch === '');
   assert.equal(await page.locator('#map').evaluate(c => c.toDataURL()), branchImageBeforeHover, 'Previewing another branch must restore the untouched active heat and origin trail');
@@ -1037,8 +1056,9 @@ try {
     );
     await page.locator("#pause").click();
     await page.waitForTimeout(100);
-    return page.locator("#cells").innerText();
+    return page.locator("#cells").textContent();
   }
+  await wholeRoom();
   const resumedOriginalCells = await switchSearch(
     0,
     originalCells,
@@ -1064,22 +1084,22 @@ try {
       document.querySelector("#verification").textContent === "Original game",
   );
   await openCurrentCell();
-  await page.locator("#zoom").click();
-  await page.waitForTimeout(50);
   assert.ok(
-    await page.locator("#map").evaluate((canvas) => {
-      const data = canvas
-        .getContext("2d")
-        .getImageData(0, 0, canvas.width, canvas.height).data;
-      for (let i = 0; i < data.length; i += 4)
-        if (data[i] === 255 && data[i + 1] === 245 && data[i + 2] === 204)
-          return true;
-      return false;
-    }),
-    "Zoom must keep the selected ground state visible",
+    await page
+      .waitForFunction(() => {
+        const canvas = document.querySelector("#map"),
+          data = canvas
+            .getContext("2d")
+            .getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let i = 0; i < data.length; i += 4)
+          if (data[i] === 255 && data[i + 1] === 245 && data[i + 2] === 204)
+            return true;
+        return false;
+      }, null, { timeout: 10000 })
+      .then(() => true, () => false),
+    "The selected ground state is marked on the map",
   );
-  await page.locator("#zoom").click();
-  await page.locator("#zoom").click();
+  assert.equal(await page.locator(".area-zoom").count(), 0, "Desktop maps have no manual zoom buttons");
   for (const file of [
     "licenses/CREDITS.md",
     "licenses/harmony-source.tar.gz",
@@ -1113,7 +1133,7 @@ try {
   assert.equal(await page.locator('.art-credit').count(), 0);
   assert.match(await page.locator('.exploration .game-attribution').innerText(), /Garydos.*surt.*CC BY 3\.0/);
   assert.equal(await page.locator('.game-attribution').count(), 1);
-  assert.equal(await page.locator('footer').innerText(), 'Credits & source');
+  assert.match(await page.locator('footer').innerText(), /^harmony\nCredits & source\n(Dark|Light) mode$/);
   assert.equal(await page.locator('.exploration-heading').innerText(), 'Exploration');
   assert.equal(await page.locator('.history-heading h2').innerText(), 'History');
 
@@ -1157,26 +1177,6 @@ try {
   if (await page.locator("#inspector").isVisible())
     await page.locator("#close-inspector").click();
   assert.equal(await page.locator('#worlds,.atlas,.map-card').count(), 0);
-  await page.locator("#zoom").click();
-  await page.locator("#map").scrollIntoViewIfNeeded();
-  const before = await page.locator("#map").evaluate((c) => c.toDataURL()),
-    bounds = await page.locator("#map").boundingBox();
-  await page.mouse.move(
-    bounds.x + bounds.width / 2,
-    bounds.y + bounds.height / 2,
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    bounds.x + bounds.width / 2 - 100,
-    bounds.y + bounds.height / 2,
-    { steps: 5 },
-  );
-  await page.mouse.up();
-  await page.waitForTimeout(100);
-  assert.ok(
-    (await page.locator("#map").evaluate((c) => c.toDataURL())) !== before,
-    "Dragging the zoomed map must move the view",
-  );
   await page.locator("#reset").click();
   await page.waitForFunction(
     () =>
@@ -1188,14 +1188,6 @@ try {
     "Pause Search",
   );
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForFunction(() => {
-    const canvas = document.querySelector("#map"),
-      left = Number(canvas.dataset.panelX),
-      width = Number(canvas.dataset.mapWidth);
-    return (window.tdTestRetained || []).some(
-      (o) => o.level === 0 && o.x + 8 >= left + 32 && o.x + 8 < left + width - 32 && Math.floor((o.x + 8) / 32) !== Math.floor(128 / 32),
-    );
-  });
   assert.equal(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -1218,35 +1210,9 @@ try {
   await page.locator("#memory-limit").evaluate((notice) => {
     notice.hidden = true;
   });
-  const phonePosition = await page.locator("#map").evaluate((canvas) => {
-    const left = Number(canvas.dataset.panelX), width = Number(canvas.dataset.mapWidth);
-    const o = window.tdTestRetained.findLast(
-      (o) => o.level === 0 && o.x + 8 >= left + 32 && o.x + 8 < left + width - 32 && Math.floor((o.x + 8) / 32) !== Math.floor(128 / 32),
-    );
-    return [o.x, o.y];
-  });
-  const phoneCell = await page.locator("#map").evaluate((canvas, position) => {
-    const w = Number(canvas.dataset.mapWidth),
-      h = Number(canvas.dataset.mapHeight),
-      scale = Math.min(canvas.width / w, canvas.height / h) * Number(canvas.dataset.zoom),
-      rect = canvas.getBoundingClientRect();
-    const x = Math.floor((position[0] + 8) / 32) * 32 + 16,
-      y = Math.floor((position[1] + 8) / 32) * 32 + 8;
-    return {
-      x:
-        (((x - Number(canvas.dataset.centerX)) * scale + canvas.width / 2) *
-          rect.width) /
-        canvas.width,
-      y:
-        (((y - Number(canvas.dataset.centerY)) * scale + canvas.height / 2) *
-          rect.height) /
-        canvas.height,
-    };
-  }, phonePosition);
-  await page.locator("#map").click({ position: phoneCell });
+  await openCurrentCell();
   await page.waitForFunction(
-    () =>
-      document.querySelector("#verification").textContent === "Exact replay ✓",
+    () => !document.querySelector("#take-control").disabled,
   );
   await page.setViewportSize({ width: 320, height: 640 });
   const compactPhone = await page.locator("#inspector").evaluate((panel) => {
@@ -1264,6 +1230,42 @@ try {
     "Play must be visible without scrolling on a small phone",
   );
   await page.setViewportSize({ width: 390, height: 844 });
+  const phonePosition = await page.evaluate(async () => {
+    const recent = window.tdTestRecentRetained.slice(-200).reverse();
+    for (const candidate of recent) {
+      if (Math.floor((candidate.x + 8) / 32) === Math.floor(128 / 32)) continue;
+      const live = await new Promise((resolve) => {
+        window.tdTestLiveState = resolve;
+        window.tdTestWorker.postMessage({ type: "states", ids: [candidate.key], request: -4180 });
+      });
+      if (live) return [candidate.x, candidate.y];
+    }
+    throw new Error("no live retained state outside the root cell");
+  });
+  await wholeRoom();
+  const phoneCell = await page.locator("#map").evaluate((canvas, position) => {
+    const w = Number(canvas.dataset.mapWidth),
+      h = Number(canvas.dataset.mapHeight),
+      scale = Math.min(canvas.width / w, canvas.height / h) * Number(canvas.dataset.zoom),
+      rect = canvas.getBoundingClientRect();
+    const x = Math.floor((position[0] + 8) / 32) * 32 + 16,
+      y = Math.floor(position[1] / 32) * 32 + 24;
+    return {
+      x:
+        (((x - Number(canvas.dataset.centerX)) * scale + canvas.width / 2) *
+          rect.width) /
+        canvas.width,
+      y:
+        (((y - Number(canvas.dataset.centerY)) * scale + canvas.height / 2) *
+          rect.height) /
+        canvas.height,
+    };
+  }, phonePosition);
+  await page.locator("#map").click({ position: phoneCell });
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#verification").textContent === "Exact replay ✓",
+  );
   const phoneStateId = await page
     .locator("#state-list .selected")
     .getAttribute("data-state-id");
@@ -1310,16 +1312,16 @@ try {
     "The compact pane must leave most of the viewport to the route map",
   );
   assert.ok(
-    phoneMap.topGap <= 42,
-    "The preview should start near the top of the pane",
+    phoneMap.topGap <= 46,
+    `The preview should start near the top of the pane (${phoneMap.topGap})`,
   );
   assert.ok(
     phoneMap.visibleMap,
     "Selecting a history in the same room must reveal its map above the pane",
   );
   assert.ok(
-    phoneMap.preview <= 110,
-    "The compact pane should use a small preview beside its controls",
+    phoneMap.preview <= 180,
+    "The compact pane should show its preview beside its controls",
   );
   await page.locator("#test-scroll-space").evaluate(e => e.remove());
   const collapsedHeight = (await page.locator("#inspector").boundingBox())

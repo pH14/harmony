@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { snapshotDigest } from "./media.js";
 import { ReplayTimeline, prefixTrail } from "./replay.js";
 export class RoutePreviews {
   constructor(create, maxImages = 16, checkpointBytes = 2 * 1048576, point) {
@@ -78,7 +79,7 @@ export class RoutePreviews {
       if (epoch !== this.epoch) return null;
     }
     const actual = engine.capture();
-    if (actual.length !== state.snapshot.length || actual.some((byte, i) => byte !== state.snapshot[i]))
+    if (state.snapshot ? actual.length !== state.snapshot.length || actual.some((byte, i) => byte !== state.snapshot[i]) : state.digest && snapshotDigest(actual) !== state.digest)
       throw new Error("Preview snapshot mismatch");
     const pixels = state.frames === 0 ? runtime.pixels : engine.pixels();
     this.remember(state.id, pixels);

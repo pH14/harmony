@@ -8,6 +8,7 @@ import { Heatmap, cellKey } from "../src/heat.js";
 import { project, isMapEvidence } from "../src/world.js";
 import { TOUR_KEY } from "../src/tour.js";
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
+const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, {
   rom: await readFile(new URL("twin-dragons.nes", base)),
@@ -19,7 +20,7 @@ const root = engine.boot(), catalog = JSON.parse(await readFile(new URL("maps.js
 const original = new Explorer(2), expected = [];
 for (let i = 0; i < 64; i++) {
   const batch = JSON.parse(original.advance(2));
-  expected.push({ batch, snapshots: batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, original.snapshot(p.retained)]) });
+  expected.push({ batch, snapshots: batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, original.digest(p.retained)]) });
 }
 original.free();
 engine.restore(root);
@@ -31,7 +32,7 @@ for (const before of expected) {
   const batch = JSON.parse(recorded.advance(2)), trails = recorder.finish();
   assert.deepEqual(batch, before.batch, "Sampling must preserve all random choices, work counts and retained states");
   for (const [id, snapshot] of before.snapshots)
-    assert.deepEqual(recorded.snapshot(id), snapshot, "Sampling must preserve every archived endpoint byte");
+    assert.equal(recorded.digest(id), snapshot, "Sampling must preserve every archived endpoint byte");
   assert.equal(trails.length, 2);
   assert.ok(trails.every((trail) => trail.length <= 1205));
   recordedPoints += trails.reduce((n, t) => n + t.length / 5, 0);
@@ -81,7 +82,7 @@ try {
       const maps = new Map(catalog.maps.map(m => [m.id, m]));
       const RealWorker = window.Worker;
       window.tdTestHeat = new Map();
-      const cellKey = p => `${p.level}:${Math.floor((p.x + 8) / 32)}:${Math.floor((p.y + 8) / 32)}`;
+      const cellKey = p => `${p.level}:${Math.floor((p.x + 8) / 32)}:${Math.floor(p.y / 32)}`;
       window.Worker = class extends RealWorker {
         constructor(...args) {
           super(...args);
@@ -106,22 +107,22 @@ try {
       };
     }, { key: TOUR_KEY, catalog });
     await page.goto(url);
-    await page.waitForSelector("#attempts");
+    await page.waitForSelector("#attempts", { state: "attached" });
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");
-    assert.deepEqual(await page.locator("#visualization button").allTextContents(), ["Movement", "Heatmap", "Both"]);
+    assert.deepEqual(await page.locator("#visualization button").allTextContents(), ["Movement", "Heatmap"]);
     await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 240);
-    await page.locator('[data-viz="movement"]').click();
+    await setView(page,'movement');
     await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");
     assert.equal(await page.locator("#heat-legend").count(), 0);
-    const target = page.locator('.map-row[data-map="0"] .area-map').first();
+    const target = page.locator('.map-row[data-map="0"] .area-map');
     assert.equal(await target.getAttribute("data-overlay"), "movement");
     assert.equal(await target.evaluate((c) => getComputedStyle(c).filter), "none", "Movement must retain the original map colors");
     assert.equal(await target.getAttribute("data-trace-points"), "0");
     assert.equal(await target.getAttribute("data-marker-frame"), "");
     await page.locator("#pause").click();
     await page.waitForTimeout(150);
-    const attempts = await page.locator("#attempts").innerText();
+    const attempts = await page.locator("#attempts").textContent();
     const coverage = await page.evaluate(() => {
       const cells = window.tdTestHeat.get(0);
       return { expected: new Set([...cells.motion, ...cells.endpoints]).size, transit: [...cells.motion].filter(k => !cells.endpoints.has(k)).length, actual: Number(document.querySelector("#cells").textContent.replaceAll(",", "")) };
@@ -132,15 +133,15 @@ try {
     const before = await pixels();
     await page.waitForTimeout(220);
     assert.equal(await pixels(), before, "Paused search must freeze the actual incoming attempts");
-    assert.equal(await page.locator("#attempts").innerText(), attempts);
+    assert.equal(await page.locator("#attempts").textContent(), attempts);
     await page.screenshot({ path: `test-results/swarm-${name}.png` });
-    await page.locator('[data-viz="heat"]').click();
+    await setView(page,'heat');
     assert.equal(await target.getAttribute("data-overlay"), "heat");
     assert.equal(await target.getAttribute("data-swarm-count"), "0");
     assert.equal(await page.locator("#heat-legend").count(), 0);
     await page.waitForTimeout(1700);
     const heatPixels = await pixels();
-    await page.locator('[data-viz="both"]').click();
+    await setView(page,'both');
     assert.equal(await target.getAttribute("data-overlay"), "both");
     assert.ok(Number(await target.getAttribute("data-swarm-count")) > 0);
     assert.equal(await page.locator("#heat-legend").count(), 0);
@@ -172,14 +173,14 @@ try {
     await page.locator("#tour-open").click();
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement", "The tour opens on real Movement");
     if (name === "desktop") {
-      for (const step of [1, 2]) {
+      for (const step of [1]) {
         await page.locator("#tour-next").click();
         await page.waitForFunction(step => +document.querySelector("#guided-tour").dataset.step === step && document.querySelector(".tour-card").getAttribute("aria-busy") === "false", step);
       }
     }
     await page.locator("#tour-skip").click();
     if (name === "desktop") {
-      await page.locator('[data-viz="both"]').click();
+      await setView(page,'both');
       const traced = page.locator('.area-map').filter({ visible: true });
       const room = await traced.evaluateAll((cs) => cs.find((c) => Number(c.dataset.tracePoints) > 0)?.dataset.map);
       assert.notEqual(room, undefined);
@@ -190,11 +191,11 @@ try {
       assert.equal(await page.locator("#visualization").getAttribute("data-value"), 'both', 'Inspecting a populated cell must keep Both');
       assert.equal(await page.locator('#inspector').isVisible(), true);
       await page.screenshot({ path: 'test-results/swarm-both-route.png' });
-      await page.locator('[data-viz="movement"]').click();
+      await setView(page,'movement');
       await routeMap.focus();
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('#visualization').dataset.value === 'movement' && document.querySelector('#verification').textContent === 'Exact replay ✓' && [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.tracePoints) > 0));
-      await page.locator('[data-viz="both"]').click();
+      await setView(page,'both');
       await page.locator("#take-control").click();
       await page.keyboard.down("ArrowRight");
       await page.waitForTimeout(140);
@@ -204,9 +205,9 @@ try {
       await page.waitForFunction(() => document.querySelector("#branch-tree button[aria-pressed=true]").dataset.search === "1" && !document.querySelector("#branch-tree button[aria-pressed=true]").disabled && document.querySelector("#inspector").hidden);
       await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 30);
       await page.locator("#pause").click();
-      await page.locator('[data-viz="both"]').click();
+      await setView(page,'both');
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
-      const branchAttempts = Number((await page.locator("#attempts").innerText()).replaceAll(",", ""));
+      const branchAttempts = Number((await page.locator("#attempts").textContent()).replaceAll(",", ""));
       const ghosts = () => page.locator(".area-map[data-panel=\"0\"]").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
       assert.ok(await ghosts() <= branchAttempts + 2, "A new branch must not display the original search's players");
       await page.locator('#branch-tree button[data-search="0"]').click();
@@ -214,7 +215,7 @@ try {
       await page.locator("#pause").click();
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].reduce((n, c) => n + Number(c.dataset.swarmCount), 0) > 0);
       assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both");
-    } else await page.locator('[data-viz="both"]').click();
+    } else await setView(page,'both');
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both");
     await page.locator("#reset").click();
     await page.waitForFunction(() => document.querySelector("#reset").disabled === false);

@@ -3,6 +3,7 @@ import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { TOUR_KEY } from '../src/tour.js';
+const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const browser = await chromium.launch({headless: true, ...(process.env.CHROME_CHANNEL ? {channel: process.env.CHROME_CHANNEL} : {})});
 const errors = [];
 async function open(options) {
@@ -28,14 +29,15 @@ async function open(options) {
 }
 async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
+  await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus', null, { timeout: 10000 });
+  await (touch ? page.locator('#camera-toggle [data-camera="room"]').tap() : page.locator('#camera-toggle [data-camera="room"]').click());
+  const room = await page.evaluate(() => window.tdReady.root.observation.level);
+  await page.locator(`.map-row[data-map="${room}"] .area-map`).scrollIntoViewIfNeeded();
   const point = await page.evaluate(() => {
-    const o = window.tdReady.root.observation, panels = [...document.querySelectorAll(`.map-row[data-map="${o.level}"] .area-map`)];
-    const worldX = o.x + 8, worldY = o.y + 8;
-    const x = Math.floor(worldX / 32) * 32 + 16, y = Math.floor(worldY / 32) * 32 + 8;
-    const c = panels.find(c => worldX >= +c.dataset.panelX && worldX < +c.dataset.panelX + c.width && worldY - 8 >= +c.dataset.panelY && worldY - 8 < +c.dataset.panelY + c.height);
-    c.scrollIntoView({block: 'center', behavior: 'instant'});
-    const r = c.getBoundingClientRect();
+    const o = window.tdReady.root.observation;
+    const c = document.querySelector(`.map-row[data-map="${o.level}"] .area-map`), r = c.getBoundingClientRect();
     const scale = Math.min(c.width / Number(c.dataset.mapWidth), c.height / Number(c.dataset.mapHeight)) * Number(c.dataset.zoom);
+    const x = Math.floor((o.x + 8) / 32) * 32 + 16, y = Math.floor(o.y / 32) * 32 + 24;
     return {room: o.level, x: r.left + ((x - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width / c.width,
       y: r.top + ((y - Number(c.dataset.centerY)) * scale + c.height / 2) * r.height / c.height};
   });
@@ -92,7 +94,8 @@ try {
     assert.equal(origin.level,nativeRoot.observation.level);
     const time = `${Math.floor(origin.frames/3600)}:${String(Math.floor(origin.frames/60)%60).padStart(2,'0')}.${Math.floor(origin.frames%60/6)}`;
     const label = desktop.locator(`[data-search="${id}"]`);
-    assert.ok((await label.innerText()).startsWith(`↳ ${time}\n`));
+    assert.ok((await label.innerText()).startsWith(`${time}\n`));
+    assert.equal(await label.locator('.branch-icon').count(), 1, 'Each branch shows a dragon icon');
     assert.equal(await label.locator('.search-origin').innerText(), await desktop.locator(`.map-row[data-map="${origin.level}"] .area-label`).innerText());
     assert.match(await label.getAttribute('title'),new RegExp(`frame ${origin.frames.toLocaleString('en-US')} · branch ${id}`));
     assert.equal(await label.evaluate(b => {
@@ -102,20 +105,20 @@ try {
     assert.ok(Math.abs(await desktop.locator('.exploration').evaluate(e => e.getBoundingClientRect().width) - width) < 1, 'Tree depth must not resize the maps');
     if (id === 1) {
       for (const mode of ['movement','both','heat']) {
-        await desktop.locator(`[data-viz="${mode}"]`).click();
+        await setView(desktop,mode);
         await desktop.locator('[data-search="0"]').hover();
-        await desktop.waitForFunction(mode => [...document.querySelectorAll('.area-map, .room-overview')].every(c => c.dataset.previewSearch === '0' && c.dataset.overlay === mode) && (mode === 'heat' || [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.swarmCount) > 0)),mode);
+        await desktop.waitForFunction(mode => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === '0' && c.dataset.overlay === mode) && (mode === 'heat' || [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.swarmCount) > 0)),mode);
         assert.equal(await desktop.locator('#visualization').getAttribute('data-value'),mode);
         assert.equal(await desktop.locator('[data-search="1"]').getAttribute('aria-pressed'),'true');
-        const frozen = await desktop.locator('.area-map, .room-overview').evaluateAll(maps => maps.map(c => c.toDataURL()));
-        const attempts = Number((await desktop.locator('#attempts').innerText()).replaceAll(',',''));
+        const frozen = await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL()));
+        const attempts = Number((await desktop.locator('#attempts').textContent()).replaceAll(',',''));
         await desktop.waitForTimeout(300);
-        assert.deepEqual(await desktop.locator('.area-map, .room-overview').evaluateAll(maps => maps.map(c => c.toDataURL())),frozen,'Hovered players and branch overlays stay frozen while the active search runs');
+        assert.deepEqual(await desktop.locator('.area-map').evaluateAll(maps => maps.map(c => c.toDataURL())),frozen,'Hovered players and branch overlays stay frozen while the active search runs');
         await desktop.waitForFunction(n => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) > n,attempts);
         await desktop.mouse.move(0,0);
-        await desktop.waitForFunction(() => [...document.querySelectorAll('.area-map, .room-overview')].every(c => c.dataset.previewSearch === ''));
+        await desktop.waitForFunction(() => [...document.querySelectorAll('.area-map')].every(c => c.dataset.previewSearch === ''));
       }
-      await desktop.locator('[data-viz="movement"]').click();
+      await setView(desktop,'movement');
     }
   }
   const parentTime = (await desktop.locator('[data-search="3"]').innerText()).split('\n')[0].replace('↳ ','');
@@ -145,7 +148,7 @@ try {
 
   await desktop.close();
   const phone = await open({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, deviceScaleFactor: 1});
-  assert.ok((await phone.locator('#branches').boundingBox()).height <= 60, 'A single mobile search should use one compact row');
+  assert.ok((await phone.locator('#branches nav').boundingBox()).height <= 60, 'A single mobile search should use one compact row');
   await inspectRoot(phone, true);
   await play(phone);
   assert.equal(await phone.locator('.state-picker').isVisible(), false, 'Playing hides the retained-route list');
