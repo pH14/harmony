@@ -112,7 +112,7 @@ impl UmlSession {
         let profile = uml::Profile::load(&config.profile)?;
         let mut launch = Launch::new(config.work_parent.clone());
         launch.memory_mib = config.memory_mib;
-        launch.initramfs = Some(config.initramfs.clone());
+        launch.set_initramfs(&config.initramfs)?;
         launch.kernel_arguments.clone_from(&config.kernel_arguments);
         launch.bridge = Some(Bridge::new(config.seed));
         launch.wall_limit = Duration::MAX;
@@ -145,7 +145,7 @@ impl UmlSession {
         };
         let mut identity = Sha256::new();
         identity.update(b"harmony-uml-root-v1\0");
-        identity.update(profile.identity_sha256.as_bytes());
+        identity.update(profile.identity_sha256().as_bytes());
         identity.update(config.seed.to_le_bytes());
         identity.update(config.memory_mib.to_le_bytes());
         identity.update(config.setup_budget.to_le_bytes());
@@ -153,7 +153,11 @@ impl UmlSession {
             identity.update((argument.len() as u64).to_le_bytes());
             identity.update(argument.as_bytes());
         }
-        identity.update(std::fs::read(&config.initramfs)?);
+        identity.update(
+            launch
+                .initramfs_bytes()?
+                .ok_or_else(|| SessionError::Control("the pinned initramfs is missing".into()))?,
+        );
         let mut this = Self {
             session: Some(session),
             profile,
@@ -544,32 +548,53 @@ mod tests {
     use std::path::PathBuf;
     use uml::{Artifact, Profile, VirtualTimeCosts};
 
-    fn unbooted_session() -> UmlSession {
-        let artifact = Artifact {
-            name: "unused".into(),
-            sha256: String::new(),
+    fn profile() -> VerifiedProfile {
+        let directory = tempfile::tempdir().unwrap();
+        let mut elf = vec![0_u8; 120];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        elf[0x20..0x28].copy_from_slice(&64_u64.to_le_bytes());
+        elf[0x36..0x38].copy_from_slice(&56_u16.to_le_bytes());
+        elf[0x38..0x3a].copy_from_slice(&1_u16.to_le_bytes());
+        elf[64..68].copy_from_slice(&1_u32.to_le_bytes());
+        std::fs::write(directory.path().join("linux"), elf).unwrap();
+        std::fs::write(directory.path().join("config"), b"config").unwrap();
+        std::fs::write(directory.path().join("rootfs"), b"rootfs").unwrap();
+        let artifact = |name: &str| Artifact {
+            name: name.into(),
+            sha256: format!(
+                "{:x}",
+                Sha256::digest(std::fs::read(directory.path().join(name)).unwrap())
+            ),
         };
+        let profile = Profile {
+            schema: 2,
+            architecture: std::env::consts::ARCH.into(),
+            kernel_version: String::new(),
+            userspace: "seccomp".into(),
+            patch_series_sha256: String::new(),
+            host_libraries: Vec::new(),
+            executable: artifact("linux"),
+            config: artifact("config"),
+            rootfs: artifact("rootfs"),
+            virtual_time: VirtualTimeCosts {
+                syscall_vns: 1,
+                clock_read_vns: 1,
+            },
+        };
+        std::fs::write(
+            directory.path().join("profile.json"),
+            serde_json::to_vec(&profile).unwrap(),
+        )
+        .unwrap();
+        uml::Profile::load(directory.path()).unwrap()
+    }
+
+    fn unbooted_session() -> UmlSession {
         UmlSession {
             session: None,
-            profile: VerifiedProfile {
-                directory: PathBuf::new(),
-                profile: Profile {
-                    schema: 2,
-                    architecture: std::env::consts::ARCH.into(),
-                    kernel_version: String::new(),
-                    userspace: "seccomp".into(),
-                    patch_series_sha256: String::new(),
-                    host_libraries: Vec::new(),
-                    executable: artifact.clone(),
-                    config: artifact.clone(),
-                    rootfs: artifact,
-                    virtual_time: VirtualTimeCosts {
-                        syscall_vns: 1,
-                        clock_read_vns: 1,
-                    },
-                },
-                identity_sha256: String::new(),
-            },
+            profile: profile(),
             launch: Launch::new(PathBuf::new()),
             seed: 7,
             root_identity: [7; 32],

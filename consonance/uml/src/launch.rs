@@ -16,6 +16,8 @@ use tempfile::TempDir;
 use crate::bridge::{self, Bridge, BridgeLog, Event};
 use crate::console::ConsoleTail;
 use crate::process::group_members;
+#[cfg(target_os = "linux")]
+use crate::profile::PinnedImage;
 use crate::profile::VerifiedProfile;
 
 const POLL: Duration = Duration::from_millis(5);
@@ -31,9 +33,12 @@ pub struct Launch {
     pub console_limit_bytes: u64,
     pub wall_limit: Duration,
     pub kernel_arguments: Vec<String>,
-    pub initramfs: Option<PathBuf>,
     pub work_parent: PathBuf,
     pub bridge: Option<Bridge>,
+    #[cfg(target_os = "linux")]
+    initramfs: Option<Arc<PinnedImage>>,
+    #[cfg(not(target_os = "linux"))]
+    initramfs: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,9 +96,43 @@ impl Launch {
             console_limit_bytes: 16 << 20,
             wall_limit: Duration::from_secs(60),
             kernel_arguments: Vec::new(),
-            initramfs: None,
             work_parent,
             bridge: None,
+            initramfs: None,
+        }
+    }
+
+    pub fn set_initramfs(&mut self, path: &Path) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            self.initramfs = Some(Arc::new(PinnedImage::from_path(
+                path,
+                c"harmony-uml-initramfs",
+                false,
+            )?));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.initramfs = Some(path.to_path_buf());
+        }
+        Ok(())
+    }
+
+    pub fn has_initramfs_override(&self) -> bool {
+        self.initramfs.is_some()
+    }
+
+    pub fn initramfs_bytes(&self) -> io::Result<Option<Vec<u8>>> {
+        #[cfg(target_os = "linux")]
+        {
+            self.initramfs
+                .as_ref()
+                .map(|image| image.bytes())
+                .transpose()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.initramfs.as_ref().map(std::fs::read).transpose()
         }
     }
 
@@ -105,6 +144,12 @@ impl Launch {
         {
             return Err(LaunchError::Reserved(argument.clone()));
         }
+        #[cfg(target_os = "linux")]
+        let initramfs = self
+            .initramfs
+            .as_ref()
+            .map_or_else(|| profile.rootfs(), |image| image.path());
+        #[cfg(not(target_os = "linux"))]
         let initramfs = self.initramfs.clone().unwrap_or_else(|| profile.rootfs());
         let mut command = Command::new(profile.executable());
         command
@@ -133,6 +178,13 @@ impl Launch {
             .env("GLIBC_TUNABLES", "glibc.pthread.rseq=0")
             .stdin(Stdio::null())
             .process_group(0);
+        #[cfg(target_os = "linux")]
+        {
+            profile.pass_artifacts(&mut command);
+            if let Some(image) = &self.initramfs {
+                image.pass(&mut command);
+            }
+        }
         Ok(command)
     }
 
