@@ -964,6 +964,51 @@ fn validate_restore_shape_requires_ia32e_paging_for_pcide() {
 }
 
 #[test]
+fn validate_restore_shape_requires_segment_encoding_widths() {
+    fn segment(state: &mut VcpuState, index: usize) -> &mut Segment {
+        match index {
+            0 => &mut state.sregs.cs,
+            1 => &mut state.sregs.ds,
+            2 => &mut state.sregs.es,
+            3 => &mut state.sregs.fs,
+            4 => &mut state.sregs.gs,
+            5 => &mut state.sregs.ss,
+            6 => &mut state.sregs.tr,
+            7 => &mut state.sregs.ldt,
+            _ => unreachable!(),
+        }
+    }
+
+    let state = VcpuState {
+        regs: VcpuRegs {
+            rflags: 2,
+            ..Default::default()
+        },
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    for index in 0..8 {
+        let mut candidate = state.clone();
+        segment(&mut candidate, index).type_ = 0x0f;
+        segment(&mut candidate, index).dpl = 3;
+        assert!(validate_restore_shape(&candidate, None, 4096, 48, false).is_ok());
+
+        segment(&mut candidate, index).type_ = 0x10;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+
+        segment(&mut candidate, index).type_ = 0x0f;
+        segment(&mut candidate, index).dpl = 4;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+    }
+}
+
+#[test]
 fn sysenter_policy_follows_host_la57_and_guest_vendor() {
     assert_eq!(kvm_sysenter_virtual_bits(&[]), 48);
     let mut la57 = kvm_cpuid_entry2 {
