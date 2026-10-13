@@ -538,13 +538,17 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
     let mut kinds: BTreeMap<Vec<u8>, u8> = BTreeMap::new();
     for (_, member) in keys {
         let exact = normalized(member.path()).as_os_str().as_bytes().to_vec();
-        if kinds
-            .insert(exact, member.kind)
-            .is_some_and(|kind| kind != member.kind)
-        {
-            return Err(ImageError::Tar(
-                "archive changes a member's type at the same path".into(),
-            ));
+        if let Some(kind) = kinds.insert(exact, member.kind) {
+            if kind != member.kind {
+                return Err(ImageError::Tar(
+                    "archive changes a member's type at the same path".into(),
+                ));
+            }
+            if kind == b'2' {
+                return Err(ImageError::Tar(
+                    "archive repeats a symlink at the same path".into(),
+                ));
+            }
         }
     }
     Ok(())
@@ -2586,6 +2590,49 @@ mod tests {
             );
             assert_eq!(std::fs::read(outside.join("victim")).unwrap(), b"unchanged");
         }
+    }
+
+    #[test]
+    fn repeated_symlinks_at_one_path_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        for (name, first, second) in [
+            ("ab", "../outside/a", "../outside/b"),
+            ("ba", "../outside/b", "../outside/a"),
+        ] {
+            let body = [
+                raw_member(b"node", b'2', first, b""),
+                raw_member(b"node", b'2', second, b""),
+            ]
+            .concat();
+            let layer = write_archive(dir.path(), &format!("symlink-repeat-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive repeats a symlink at the same path"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_regular_members_at_one_path_keep_the_last_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let body = [
+            raw_member(b"node", b'0', "", b"first"),
+            raw_member(b"node", b'0', "", b"last"),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "regular-repeat.tar", &body);
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
+        assert_eq!(std::fs::read(rootfs.join("node")).unwrap(), b"last");
     }
 
     #[test]
