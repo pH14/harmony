@@ -1494,14 +1494,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .unwrap_or(0);
             self.recorded.record_reseed(restored_floor, stream);
         }
-        if let Some(control) = source_control {
-            self.exec_nonce = control.exec_nonce;
-            if seed.is_none() {
-                self.schedule = control.pending.effects().clone();
-                self.reseed_schedule = control.pending.reseeds().clone();
-                self.schedule_poisoned = control.poisoned;
-                self.recorded = control.recorded;
-            }
+        self.exec_nonce = source_control.exec_nonce;
+        if seed.is_none() {
+            self.schedule = source_control.pending.effects().clone();
+            self.reseed_schedule = source_control.pending.reseeds().clone();
+            self.schedule_poisoned = source_control.poisoned;
+            self.recorded = source_control.recorded;
         }
         {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
@@ -5269,9 +5267,7 @@ mod tests {
         hello(&mut source);
         let cut = snap(&mut source);
         let meta = source.snapshot_meta.get_mut(&cut.0).unwrap();
-        let mut changed = super::ControlState::decode(&meta.control_state)
-            .unwrap()
-            .unwrap();
+        let mut changed = super::ControlState::decode(&meta.control_state).unwrap();
         changed.exec_nonce += 1;
         meta.control_state = changed.encode();
         let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
