@@ -8,7 +8,7 @@ use crate::bridge::{Bridge, Event, event_hash};
 use crate::launch::Launch;
 use crate::profile::{HostIdentity, VerifiedProfile};
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,11 +170,18 @@ mod tests {
         launch.bridge = Some(Bridge::new(9));
         let recording =
             Recording::new_with_host(&profile("a"), &host("model=1"), &launch, &events).unwrap();
+        assert_eq!(recording.schema, 2);
         assert!(
             recording
                 .check_with_host(&profile("a"), &host("model=1"))
                 .is_ok()
         );
+        let mut old_schema = recording.clone();
+        old_schema.schema = 1;
+        assert!(matches!(
+            old_schema.check_with_host(&profile("a"), &host("model=1")),
+            Err(ReplayRefused::Schema(1))
+        ));
         assert!(matches!(
             recording.check_with_host(&profile("b"), &host("model=1")),
             Err(ReplayRefused::Profile { .. })
