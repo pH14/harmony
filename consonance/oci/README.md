@@ -129,6 +129,9 @@ PAX `SCHILY.fflags` records are rejected before extraction: macOS tar can apply
 immutable file flags that prevent staging, while GNU tar ignores the record.
 PAX `SCHILY.acl.*` records are rejected for the same reason: macOS can enforce
 an ACL that blocks the layer merge, while GNU tar ignores it without `--acls`.
+Layer extraction disables extended-attribute restoration. macOS tar otherwise
+tries to restore protected PAX xattrs and can fail where GNU tar succeeds;
+extended attributes are not represented in the guest CPIO image.
 Archive members with a `._`-prefixed path component are also rejected before
 extraction. macOS tar can consume an AppleDouble member as metadata for a later
 file, while GNU tar preserves it as a separate rootfs file.
