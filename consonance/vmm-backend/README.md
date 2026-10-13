@@ -102,10 +102,11 @@ CPUID mask, and no reserved MXCSR bits. These inputs likewise fail at
 `KVM_SET_XSAVE` after earlier writes, so preflight checks them first. The pure
 XSAVE image helper can retain a compacted image for non-KVM callers; the KVM
 restore path rejects it because its ioctl accepts standard layout only.
-The vCPU event validity flags in a snapshot must match the flags KVM reports
-for the VM. KVM accepts a different mask but returns its own after restore,
-changing the saved identity. Restore rejects that mismatch before any state
-write.
+The vCPU event validity flags sent to KVM must match the flags KVM reports
+for the VM. The restore adapter always adds the payload-valid bit so it can
+clear a previous exception payload; a typed snapshot may omit that selector
+while retaining the same event state. Preflight compares the effective KVM
+write mask before any state write.
 Event preflight also requires zero software-interrupt and SIPI fields that KVM
 never reports, an interrupt shadow using only the STI and MOV-SS bits, at most
 two pending NMIs, and canonical one-bit event fields. It also rejects a triple

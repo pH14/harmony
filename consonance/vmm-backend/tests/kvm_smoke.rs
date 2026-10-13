@@ -1258,7 +1258,7 @@ fn xsave_header_inputs_restore_rejects_before_mutation() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
-fn event_flags_restore_requires_host_mask_before_mutation() {
+fn event_flags_restore_checks_effective_set_mask_before_mutation() {
     let mut mem = GuestMem::new(0x10000);
     let mut backend = new_backend_or_explain();
     setup_real_mode(&mut backend, &mut mem, &[0xf4]);
@@ -1269,7 +1269,7 @@ fn event_flags_restore_requires_host_mask_before_mutation() {
     );
 
     for flags in [
-        baseline.events.flags & !kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD,
+        baseline.events.flags & !kvm_bindings::KVM_VCPUEVENT_VALID_SHADOW,
         baseline.events.flags | kvm_bindings::KVM_VCPUEVENT_VALID_SIPI_VECTOR,
     ] {
         let mut invalid = baseline.clone();
@@ -1287,11 +1287,14 @@ fn event_flags_restore_requires_host_mask_before_mutation() {
     }
 
     let mut valid = baseline.clone();
+    valid.events.flags &= !kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD;
     valid.sregs.cr2 ^= 1;
     backend
         .validate_restore_state(&valid)
-        .expect("validate host event flags");
-    backend.restore(&valid).expect("restore host event flags");
+        .expect("validate effective event restore flags");
+    backend
+        .restore(&valid)
+        .expect("restore effective event flags");
     let observed = backend.save().expect("save restored state");
     assert_eq!(observed.events.flags, baseline.events.flags);
     assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
