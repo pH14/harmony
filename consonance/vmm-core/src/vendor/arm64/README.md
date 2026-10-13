@@ -102,3 +102,7 @@ both group enables, and active-priority registers alongside distributor and
 redistributor state. It also includes per-INTID trigger configuration, so a
 guest-programmed SPI edge/level choice survives snapshot restore and enters
 architectural comparison and state identity.
+The record omits SPI routing because the only supported single-vCPU route is
+zero: KVM rejects capture of any nonzero `GICD_IROUTER` value, and restore
+clears all routes to zero. Consequently there is no additional device-blob
+field or version change for the route policy.

@@ -343,6 +343,14 @@ ARM KVM host and in the userspace model.
 The ignored `guest_gic_spi_trigger_survives_fresh_restore` ARM KVM test compares
 guest readback of that baseline and of a programmed edge after uninterrupted
 execution and cold restore.
+The single-vCPU machine supports SPI routing only to affinity zero. The
+userspace GIC rejects a nonzero `GICD_IROUTER` write. KVM can execute that
+write inside its in-kernel VGIC, so capture reads every implemented SPI's
+64-bit route and refuses a snapshot if any route is nonzero. Restore clears
+and verifies all SPI routes, including on a reused target that previously ran
+a guest with a nonzero route. The ignored
+`guest_nonzero_spi_route_rejects_capture_and_zero_route_restores` test checks
+guest readback, refusal, reused-target reset, and cold restore.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the

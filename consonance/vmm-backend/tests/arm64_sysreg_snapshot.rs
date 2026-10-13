@@ -256,6 +256,52 @@ fn guest_gic_spi_trigger_survives_fresh_restore() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_nonzero_spi_route_rejects_capture_and_zero_route_restores() {
+    let movz = |r: u32, imm: u32, shift: u32| 0xd280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let movk = |r: u32, imm: u32, shift: u32| 0xf280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let program = |route| {
+        [
+            movz(1, 0x0800, 16),
+            movk(1, 0x6100, 0),
+            movz(4, 0x0900, 16),
+            movz(0, route, 0),
+            0xf900_0020,
+            0xf940_0020,
+            0xf900_0080,
+            0xf940_0020,
+            0xf900_0080,
+            0x1400_0000,
+        ]
+    };
+    let mut source = Guest::new(live_backend(), &program(0));
+    assert_eq!(source.next_store(), 0);
+    let cut = source.save();
+    assert_eq!(source.next_store(), 0);
+    drop(source);
+
+    let mut reused = Guest::new(live_backend(), &program(1));
+    let guest_route = reused.next_store();
+    assert_eq!(guest_route, 1);
+    assert!(matches!(
+        reused.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+    reused.restore(&cut);
+    let restored = reused.next_store();
+    assert_eq!(restored, 0);
+
+    let mut fresh = Guest::new(live_backend(), &program(1));
+    fresh.restore(&cut);
+    let cold = fresh.next_store();
+    assert_eq!(cold, 0);
+    eprintln!(
+        "GICD_IROUTER32 guest={guest_route:#x} capture=rejected reused={restored:#x} fresh={cold:#x}"
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {
     let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
     let mut state = guest.save();
