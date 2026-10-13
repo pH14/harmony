@@ -777,6 +777,47 @@ fn validate_restore_shape_keys_and_xsave_len() {
 }
 
 #[test]
+fn validate_restore_shape_requires_coherent_sregs_msr_aliases() {
+    const EFER: u32 = 0xc000_0080;
+    const FS_BASE: u32 = 0xc000_0100;
+    const GS_BASE: u32 = 0xc000_0101;
+    let filter = MsrFilter {
+        allow_inkernel: vec![
+            MsrRange {
+                base: EFER,
+                count: 1,
+            },
+            MsrRange {
+                base: FS_BASE,
+                count: 2,
+            },
+        ],
+    };
+    let mut coherent = VcpuState {
+        msrs: BTreeMap::from([
+            (EFER, 0x100),
+            (FS_BASE, 0x1234_5000),
+            (GS_BASE, 0x6789_0000),
+        ]),
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    coherent.sregs.efer = coherent.msrs[&EFER];
+    coherent.sregs.fs.base = coherent.msrs[&FS_BASE];
+    coherent.sregs.gs.base = coherent.msrs[&GS_BASE];
+    assert!(validate_restore_shape(&coherent, Some(&filter), 4096).is_ok());
+
+    for index in [EFER, FS_BASE, GS_BASE] {
+        let mut inconsistent = coherent.clone();
+        *inconsistent.msrs.get_mut(&index).unwrap() ^= 1;
+        assert!(matches!(
+            validate_restore_shape(&inconsistent, Some(&filter), 4096),
+            Err(BackendError::InvalidState)
+        ));
+    }
+}
+
+#[test]
 fn kvm_capabilities_report_the_stock_backend_name() {
     let c = kvm_capabilities();
     assert_eq!(c.name, "kvm-stock");

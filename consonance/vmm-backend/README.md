@@ -58,6 +58,11 @@ events, then nested state. Event restoration follows general registers because
 KVM_SET_REGS clears the exception queue. The selftest's earlier event write
 loses pending #PF and #GP under the enabled exception-payload API; the existing
 live exception-payload and serviced-MSR regressions exercise that difference.
+EFER, FS base, and GS base occur in both the special-register record and the
+stateful MSR block. Restore rejects mismatched copies during preflight, before
+retiring a staged write completion or changing KVM state; otherwise the later
+MSR write silently replaces the special-register value. Coherent copies remain
+restorable and read back with the same values.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that

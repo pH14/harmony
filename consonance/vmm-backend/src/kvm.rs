@@ -509,6 +509,10 @@ pub(crate) fn validate_restore_shape(
     filter: Option<&MsrFilter>,
     xsave_len: usize,
 ) -> Result<()> {
+    const EFER: u32 = 0xc000_0080;
+    const FS_BASE: u32 = 0xc000_0100;
+    const GS_BASE: u32 = 0xc000_0101;
+
     let mut expected: Vec<u32> = filter
         .map(|f| f.allow_indices().collect())
         .unwrap_or_default();
@@ -520,6 +524,15 @@ pub(crate) fn validate_restore_shape(
     }
     if state.xsave.len() != xsave_len {
         return Err(BackendError::InvalidState);
+    }
+    for (index, value) in [
+        (EFER, state.sregs.efer),
+        (FS_BASE, state.sregs.fs.base),
+        (GS_BASE, state.sregs.gs.base),
+    ] {
+        if state.msrs.get(&index).is_some_and(|&msr| msr != value) {
+            return Err(BackendError::InvalidState);
+        }
     }
     Ok(())
 }
