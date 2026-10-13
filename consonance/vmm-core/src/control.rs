@@ -15,6 +15,7 @@ use environment::{
     channel::{Effect, NominalHandler, RecordedEnv, ServiceHandler},
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
+use hypercall_proto::Service as _;
 use snapshot_store::SnapshotId;
 use vm_state::SnapshotRecords;
 use vmm_backend::Backend;
@@ -1400,6 +1401,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             _ => return Ok(Err(ControlError::Unsupported)),
         };
         let mut prepared_env = RecordedEnv::new(seed.unwrap_or(0), prepared_handler);
+        if seed.is_some()
+            && (prepared_env.handler().identity() != restore_config.identity
+                || prepared_env.handler().configuration() != restore_config.configuration)
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         if let Some(snapshot) = self.sdk_snaps.get(&snap.0).filter(|_| seed.is_none())
             && snapshot
                 .channel
@@ -1439,6 +1446,36 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Some(mapping)
         };
         let restored_floor = vm_state.vtime().snapshot_vns;
+        if let Some(branch_seed) = seed {
+            let effective_reseed = if reseeds.is_empty() {
+                Some(branch_seed)
+            } else {
+                reseeds.get(&restored_floor).copied()
+            };
+            let handler_seed = if self.vmm.as_ref().is_some_and(Vmm::vtime_wired) {
+                let mut entropy =
+                    hypercall_proto::SeededEntropy::new(effective_reseed.unwrap_or(1));
+                if effective_reseed.is_none()
+                    && entropy.restore_state(vm_state.entropy_bytes()).is_err()
+                {
+                    return Ok(Err(ControlError::RestoreFailed));
+                }
+                u64::from_le_bytes(
+                    entropy
+                        .save_state()
+                        .try_into()
+                        .expect("entropy state is eight bytes"),
+                )
+            } else {
+                0
+            };
+            prepared_env.reseed(handler_seed);
+            if prepared_env.handler().identity() != restore_config.identity
+                || prepared_env.handler().configuration() != restore_config.configuration
+            {
+                return Ok(Err(ControlError::Unsupported));
+            }
+        }
         let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for (m, fault) in &host {
             if let Err(e) = self.check_fault_admissible(fault, *m, restored_floor) {
@@ -1570,9 +1607,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .map_err(ServeError::Service)?;
         }
         self.recorded.set_payloads(active_payloads);
-        if seed.is_some() {
-            prepared_env.reseed(self.recorded.seed());
-        }
         let sdk_env = prepared_env;
         let sdk_policy = self.recorded.config().clone();
         self.vmm
@@ -4262,6 +4296,101 @@ mod tests {
         );
         let _ = hash(&mut s);
         let _ = snap(&mut s);
+    }
+
+    #[test]
+    fn branch_rejects_service_contract_drift_from_either_reseed() {
+        #[derive(Clone)]
+        struct ReseedingService {
+            configuration: Vec<u8>,
+            trigger: u8,
+            reseeds: u8,
+        }
+
+        impl environment::channel::ServiceHandler for ReseedingService {
+            fn identity(&self) -> &[u8] {
+                b"reseed-contract-v1"
+            }
+
+            fn configuration(&self) -> &[u8] {
+                &self.configuration
+            }
+
+            fn respond(
+                &mut self,
+                _: environment::Moment,
+                _: &environment::channel::Question,
+            ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+            {
+                Ok(environment::channel::ServiceResponse::Answered(
+                    environment::channel::Answer::Data(self.configuration.clone()),
+                ))
+            }
+
+            fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+                Ok(Vec::new())
+            }
+
+            fn restore_state(
+                &mut self,
+                state: &[u8],
+            ) -> Result<(), environment::channel::ChannelError> {
+                if state.is_empty() {
+                    Ok(())
+                } else {
+                    Err(environment::channel::ChannelError::Malformed)
+                }
+            }
+
+            fn reseed(&mut self, _: u64) {
+                self.reseeds += 1;
+                if self.reseeds == self.trigger {
+                    self.configuration = b"after".to_vec();
+                } else if self.trigger == 1 && self.reseeds == 2 {
+                    self.configuration = b"before".to_vec();
+                }
+            }
+
+            fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+                Box::new(self.clone())
+            }
+        }
+
+        for late in [false, true] {
+            let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+            hello(&mut s);
+            let base = snap(&mut s);
+            let before = hash(&mut s);
+            let branch_seed = 7;
+            let trigger = if late { 2 } else { 1 };
+            let nominal = nominal_factory();
+            s.set_service_factory(std::sync::Arc::new(move |config| {
+                if config.identity == b"reseed-contract-v1" {
+                    Ok(Box::new(ReseedingService {
+                        configuration: config.configuration.clone(),
+                        trigger,
+                        reseeds: 0,
+                    }))
+                } else {
+                    nominal(config)
+                }
+            }));
+            let mut spec = EnvSpec::seeded(branch_seed);
+            spec.set_config(ServiceConfig {
+                identity: b"reseed-contract-v1".to_vec(),
+                configuration: b"before".to_vec(),
+            });
+            let env = Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            };
+            assert_eq!(
+                s.handle(&Request::Branch { snap: base, env }).unwrap(),
+                Err(ControlError::Unsupported),
+                "late reseed: {late}"
+            );
+            assert_eq!(hash(&mut s), before, "late reseed: {late}");
+        }
     }
 
     #[test]
