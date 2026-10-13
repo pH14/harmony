@@ -1125,6 +1125,37 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn import_rejects_corrupted_pages_even_when_near_has_the_claimed_hash() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
+        let target = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(1, 2)]),
+            5,
+            Some(120),
+        );
+        let sidecar = target.sidecar().unwrap();
+        let mut rows = owned_delta(&checkpoints, &base, &target);
+        assert_eq!(rows.len(), 1);
+        rows[0].2[0] ^= 1;
+        let borrowed: Vec<_> = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let before = checkpoints.stats().unwrap();
+
+        for near in [&target, &base] {
+            assert!(matches!(
+                checkpoints.import(&base, near, &borrowed, &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::Store(
+                    snapshot_store::StoreError::PageIntegrity { gfn: 1 }
+                )))
+            ));
+            assert_eq!(checkpoints.stats().unwrap(), before);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn import_rejects_malformed_page_rows_without_creating_a_snapshot() {
         let checkpoints = Checkpoints::new();
         let base = checkpoint(

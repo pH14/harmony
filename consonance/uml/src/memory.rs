@@ -174,6 +174,14 @@ impl Checkpoints {
         };
         let hashes: Vec<_> = rows.iter().map(|&(gfn, hash, _)| (gfn, hash)).collect();
         let rebase = pages.store.rebase(base.id, near, &hashes)?;
+        let mut keep = rebase.keep.iter().copied().peekable();
+        for (index, &(gfn, hash, data)) in rows.iter().enumerate() {
+            if keep.peek().copied() == Some(index) {
+                keep.next();
+            } else if blake3::hash(data).as_bytes() != hash {
+                return Err(snapshot_store::StoreError::PageIntegrity { gfn }.into());
+            }
+        }
         let mut merged: Vec<(u64, &PageHash, &[u8; PAGE_SIZE])> = rebase
             .keep
             .iter()
