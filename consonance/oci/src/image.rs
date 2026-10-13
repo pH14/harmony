@@ -3638,9 +3638,15 @@ mod tests {
             raw_member_with_mode(b"ro/", b'5', "", b"", Owner::ROOT, 0o555),
             raw_member_with_mode(b"ro/nested/", b'5', "", b"", Owner::ROOT, 0o555),
             raw_member(b"ro/nested/old", b'0', "", b"old"),
+            raw_member_with_mode(b"ro/sub/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member(b"ro/sub/inside", b'0', "", b"inside"),
         ]
         .concat();
-        let upper = raw_member(b"ro/nested/.wh.old", b'0', "", b"");
+        let upper = [
+            raw_member(b"ro/nested/.wh.old", b'0', "", b""),
+            raw_member(b"ro/.wh.sub", b'0', "", b""),
+        ]
+        .concat();
         let lower = write_archive(dir.path(), "lower.tar", &lower);
         let upper = write_archive(dir.path(), "upper.tar", &upper);
         let mut owners = Ownership::default();
@@ -3656,12 +3662,20 @@ mod tests {
             .permissions()
             .mode()
             & 0o7777;
+        if rootfs.join("ro/sub").is_dir() {
+            std::fs::set_permissions(
+                rootfs.join("ro/sub"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
         for path in ["ro", "ro/nested"] {
             std::fs::set_permissions(rootfs.join(path), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
         result.unwrap();
         assert!(!rootfs.join("ro/nested/old").exists());
+        assert!(!rootfs.join("ro/sub").exists());
         assert_eq!(ro_mode, 0o555);
         assert_eq!(nested_mode, 0o555);
         assert_eq!(owners.mode_of(Path::new("ro"), 0), 0o555);
