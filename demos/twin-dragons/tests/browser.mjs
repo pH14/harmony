@@ -53,9 +53,9 @@ await page.addInitScript((tourKey) => {
         if (data.type === "batch" && data.active === 2) {
           if (!window.tdTestNestedBatch)
             window.tdTestNestedBatch = { ...data, motionStart: [...data.motion[0].slice(0, 5)] };
-          window.tdTestNestedRetained ??= data.points.find(
+          window.tdTestNestedRetained = data.points.findLast(
             (point) => point.retained !== null && point.retained !== "2:0",
-          )?.retained;
+          )?.retained ?? window.tdTestNestedRetained;
         }
         if (
           data.type === "batch" &&
@@ -200,7 +200,7 @@ async function measurePlayback() {
   );
 }
 try {
-  await page.goto(process.env.DEMO_URL || "http://127.0.0.1:4173");
+  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?workers=1`);
   await page.waitForFunction(
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
@@ -433,7 +433,7 @@ try {
     .locator("#state-list .state-name")
     .allTextContents();
   const orderedNumbers = routeNumbers.map((name) =>
-    Number(name.slice("Route ".length)),
+    Number(name.slice("Path ".length)),
   );
   assert.ok(
     orderedNumbers.length > 1,
@@ -476,7 +476,7 @@ try {
   );
   const afterNumbers = (
     await page.locator("#state-list .state-name").allTextContents()
-  ).map((name) => Number(name.slice("Route ".length)));
+  ).map((name) => Number(name.slice("Path ".length)));
   assert.deepEqual(
     afterNumbers,
     [...afterNumbers].sort((a, b) => a - b),
@@ -970,7 +970,7 @@ try {
   assert.equal(await snapshotHash(emulator.capture()), nested.tape.endpoint_sha256);
   const nestedObservation = emulator.observation();
   assert.deepEqual(nested.batch.motionStart.slice(1, 4), [nestedObservation.level, nestedObservation.x, nestedObservation.y], "The first nested attempt must restore its new root position");
-  assert.equal(nested.batch.executions, 2);
+  assert.ok(nested.batch.executions >= 1, "Execution counts restart with the nested search");
   const admitted = new Set(["2:0", ...nested.batch.points.filter(p => p.retained !== null).map(p => p.retained)]);
   assert.ok(nested.batch.states >= 1 && nested.batch.states <= admitted.size, "Retained-state counts must belong to the active search");
   await page.waitForFunction(

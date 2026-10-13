@@ -256,7 +256,8 @@ reference vectors.
 The browser tests cover the swarm, heatmap, route selection, exact replay,
 scrubbing across the Level 1 to Level 2 change, 1x and 4x playback, human play,
 branching, the guided tour on desktop and phone, the level selector and the
-credits. `tests/room-cameras.mjs` checks one camera viewport per level on
+credits. `tests/browser.mjs` runs one worker so its Level 1 checks finish
+before the search reaches Level 2. `tests/room-cameras.mjs` checks one camera viewport per level on
 desktop and phone, Full view and Auto view, edge panning and the level track,
 rotation, and a retained-state hit near the far end of Level 1 using the
 hash-verified `level-one` history. `CHROME_CHANNEL=chrome` uses an installed Chrome, and
