@@ -652,7 +652,7 @@ impl HvfBackend {
             SMCCC_VERSION => SMCCC_VERSION_1_1,
             SMCCC_ARCH_FEATURES => match self.reg(1)? {
                 SMCCC_ARCH_WORKAROUND_1 => 1,
-                SMCCC_ARCH_WORKAROUND_2 => (-2i64) as u64,
+                SMCCC_ARCH_WORKAROUND_2 => PSCI_NOT_SUPPORTED,
                 SMCCC_ARCH_WORKAROUND_3 => 0,
                 _ => PSCI_NOT_SUPPORTED,
             },
