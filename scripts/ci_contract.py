@@ -243,6 +243,7 @@ HOST_TESTS = {
     ),
     "linux-aarch64": (
         ARM64_BASELINE_TEST,
+        "vmm-core vendor::arm64::dispatch::tests::live_in_kernel_preemption_matches_guest_acknowledgment",
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_cpu_interface_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot kvm_irq_mask_read_matches_full_capture",
