@@ -80,6 +80,8 @@ fn host_layout_modes(options: &Options, profile: &VerifiedProfile) -> io::Result
             .map_err(io::Error::other)?;
         if randomized {
             filter::deny_personality_change(&mut command);
+        } else {
+            filter::deny_personality_change_preserving_layout(&mut command);
         }
         let guest = Guest::start(command, work, &launch).map_err(io::Error::other)?;
         let flags = std::fs::read_to_string(format!("/proc/{}/personality", guest.pid()))?;
