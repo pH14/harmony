@@ -8,6 +8,8 @@ use std::path::Path;
 pub enum CpioError {
     #[error("unsupported file type in rootfs: {0} (sockets/devices are not staged)")]
     Unsupported(std::path::PathBuf),
+    #[error("non-UTF-8 file name in guest image: {0:?}")]
+    NonUtf8Name(std::path::PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -104,7 +106,14 @@ impl Writer {
         owner_of: &dyn Fn(&Path) -> Owner,
         mode_of: &dyn Fn(&Path, u32) -> u32,
     ) -> Result<(), CpioError> {
-        self.walk(dir, Path::new(""), prefix, owner_of, mode_of)
+        let start_len = self.out.len();
+        let start_ino = self.ino;
+        if let Err(error) = self.walk(dir, Path::new(""), prefix, owner_of, mode_of) {
+            self.out.truncate(start_len);
+            self.ino = start_ino;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn walk(
@@ -121,7 +130,9 @@ impl Writer {
             let path = entry.path();
             let name = entry.file_name();
             let relative = relative.join(&name);
-            let name = name.to_string_lossy();
+            let name = name
+                .to_str()
+                .ok_or_else(|| CpioError::NonUtf8Name(path.clone()))?;
             let archive_name = format!("{prefix}/{name}");
             let owner = owner_of(&relative);
             let meta = std::fs::symlink_metadata(&path)?;
@@ -351,5 +362,39 @@ mod tests {
             at = next;
         }
         assert_eq!(names, ["root/a", "root/a/inner", "root/b.txt", "root/c"]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tree_never_collapses_distinct_invalid_utf8_filenames() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        for byte in [0xfe, 0xff] {
+            let bytes = [byte];
+            let name = std::ffi::OsStr::from_bytes(&bytes);
+            std::fs::write(dir.path().join(name), b"data").unwrap();
+        }
+        std::fs::write(dir.path().join("a"), b"valid").unwrap();
+        let mut writer = Writer::new();
+        writer.file("prior", 0o644, b"unchanged");
+        assert!(matches!(
+            writer.tree(dir.path(), "root"),
+            Err(super::CpioError::NonUtf8Name(_))
+        ));
+        let mut expected = Writer::new();
+        expected.file("prior", 0o644, b"unchanged");
+        assert_eq!(writer.finish(), expected.finish());
+    }
+
+    #[test]
+    fn tree_preserves_valid_utf8_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("café"), b"valid").unwrap();
+        let mut writer = Writer::new();
+        writer.tree(dir.path(), "root").unwrap();
+        let (name, _, _, _, data, _) = parse_entry(&writer.finish(), 0);
+        assert_eq!(name, "root/café");
+        assert_eq!(data, b"valid");
     }
 }

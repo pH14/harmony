@@ -6,6 +6,10 @@
 guest image preparation and OCI staging. Entries are emitted with
 zeroed timestamps, stable inode numbers, and sorted directory walks so an
 identical input tree produces identical initramfs bytes.
+Walked entry names must be valid UTF-8. A name that cannot be represented
+exactly is rejected, and a failed tree walk leaves the writer unchanged;
+replacement characters would otherwise collapse distinct Unix filenames into
+the same guest path.
 
 Each entry records the owner the caller supplies, which the kernel applies
 when it unpacks the initramfs; `tree_owned` asks for every entry's owner by its
