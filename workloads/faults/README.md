@@ -257,9 +257,16 @@ either the bugs found or the replay outcomes.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
+UML outcomes instead have an empty `state_hash` and
+`state_hash_encoding: "unavailable"`: their guest memory has no canonical
+cross-process state digest. Search still confirms a bug when the fresh replay
+reproduces its recorded assertion or stop evidence. `harmony debug replay`
+records the new observations but refuses to call two UML outcomes an exact
+reproduction without a full-state identity.
 Reports written by earlier versions omit that marker and contain SHA-256 of
 the digest; readers default a missing marker to the legacy interpretation.
-The marker is additive, so older readers continue to parse the report shape.
+Earlier UML `engine_digest` values covered only bridge state and cannot prove
+full-state replay equivalence.
 
 The search report and `campaign-summary.json` also record
 `watchdog_cutoffs`, the number of guest action runs ended by the session's

@@ -253,15 +253,19 @@ Replay verifies the exact CLI executable, architecture and saved artifact hashes
 UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
 same processor. Standalone command runs and replays bind that saved identity
-before launching the guest. Application replay compares final state, assertions,
-actions and recovery evidence. Plain UML replay compares application output and
+before launching the guest. KVM and HVF application replay compare final state,
+assertions, actions and recovery evidence. UML application replay records
+assertions, actions and recovery evidence but cannot establish full-state
+identity. Plain UML command replay compares application output and
 bridge events while retaining raw boot logs as diagnostics. Hardware command
 replay also compares the full serial digest. NES replay compares its typed witness
 and snapshot digest. Removing a saved directory removes its saved evidence.
 
 Exit 0 means successful operation, including verified reproduction of a finding.
 Application search exits 1 for findings or unmet reachability assertions; a failed
-application command also exits 1. Exit 2 denotes invalid input, infrastructure
+application command also exits 1. UML application replay records observed
+assertions and stops, but exits 2 because a canonical full-state digest is not
+available to verify exact reproduction. Exit 2 also denotes invalid input, infrastructure
 failure or replay divergence. Search budgets and seeds must fit TOML's signed
 64-bit integer range.
 
