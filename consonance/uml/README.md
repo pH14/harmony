@@ -32,7 +32,8 @@
   copies an override into a sealed descriptor when configured, and every
   later launch from that `Launch` uses the same bytes. Linux launches normalize
   the host personality to `ADDR_NO_RANDOMIZE` before executing the pinned
-  kernel, excluding inherited host layout flags. This avoids UML's
+  kernel. If that request is denied, it clears the inherited flags with
+  `personality(0)`; if both calls fail, launch is refused. This avoids UML's
   `/proc/self/exe` re-exec, which cannot reopen a memory-backed executable by
   its symlink target. If the host denies that request, the patched kernel's
   randomized-layout fallback applies. Qualification deliberately clears the

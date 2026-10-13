@@ -32,7 +32,11 @@ fn fixed_host_layout(command: &mut Command) {
     // allocation or shared-memory access.
     unsafe {
         command.pre_exec(|| {
-            let _ = libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong);
+            if libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong) < 0
+                && libc::personality(0) < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
             Ok(())
         });
     }
@@ -566,6 +570,152 @@ fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn deny_fixed_layout(command: &mut Command, deny_zero: bool) {
+        let mut program = [
+            libc::sock_filter {
+                code: 0x20,
+                jt: 0,
+                jf: 0,
+                k: 0,
+            },
+            libc::sock_filter {
+                code: 0x15,
+                jt: 0,
+                jf: 5,
+                k: u32::try_from(libc::SYS_personality).unwrap(),
+            },
+            libc::sock_filter {
+                code: 0x20,
+                jt: 0,
+                jf: 0,
+                k: 16,
+            },
+            libc::sock_filter {
+                code: 0x15,
+                jt: 2,
+                jf: 0,
+                k: libc::ADDR_NO_RANDOMIZE as u32,
+            },
+            libc::sock_filter {
+                code: 0x15,
+                jt: 1,
+                jf: 0,
+                k: if deny_zero {
+                    0
+                } else {
+                    libc::ADDR_NO_RANDOMIZE as u32
+                },
+            },
+            libc::sock_filter {
+                code: 0x06,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ALLOW,
+            },
+            libc::sock_filter {
+                code: 0x06,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+            },
+            libc::sock_filter {
+                code: 0x06,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ALLOW,
+            },
+        ];
+        // SAFETY: the forked child only calls personality(2) and prctl(2)
+        // before exec. The initialized filter stays live until the kernel
+        // copies it, and no shared memory or allocator state is touched.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::personality(0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let filter = libc::sock_fprog {
+                    len: program.len() as u16,
+                    filter: program.as_mut_ptr(),
+                };
+                if libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &filter) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if !deny_zero {
+                    if libc::personality(0) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn denied_fixed_layout_clears_inherited_flags() {
+        let mut baseline = Command::new("/bin/cat");
+        baseline.arg("/proc/self/personality");
+        deny_fixed_layout(&mut baseline, false);
+        let output = match baseline.output() {
+            Ok(output) => output,
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return,
+            Err(error) => panic!("personality filter setup failed: {error}"),
+        };
+        assert!(output.status.success());
+        let inherited =
+            u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
+        assert_ne!(inherited & libc::UNAME26 as u32, 0);
+        assert_eq!(inherited & libc::ADDR_NO_RANDOMIZE as u32, 0);
+
+        let mut command = Command::new("/bin/cat");
+        command.arg("/proc/self/personality");
+        deny_fixed_layout(&mut command, false);
+        fixed_host_layout(&mut command);
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let flags =
+            u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
+        assert_eq!(flags, 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn denied_fixed_and_zero_layout_refuses_launch() {
+        let mut baseline = Command::new("/bin/cat");
+        baseline.arg("/proc/self/personality");
+        deny_fixed_layout(&mut baseline, true);
+        let output = match baseline.output() {
+            Ok(output) => output,
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return,
+            Err(error) => panic!("personality filter setup failed: {error}"),
+        };
+        assert!(output.status.success());
+        let inherited =
+            u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
+        assert_eq!(inherited, libc::UNAME26 as u32);
+
+        let mut command = Command::new("/bin/cat");
+        command.arg("/proc/self/personality");
+        deny_fixed_layout(&mut command, true);
+        fixed_host_layout(&mut command);
+        assert_eq!(
+            command.output().unwrap_err().raw_os_error(),
+            Some(libc::EPERM)
+        );
+    }
 
     #[test]
     #[cfg(target_os = "linux")]
