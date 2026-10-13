@@ -3,6 +3,7 @@ pub mod bundle;
 pub mod cache;
 pub mod cpio;
 pub mod credentials;
+mod exact;
 pub mod image;
 
 pub use bundle::{ExternalInput, LaunchRequest, PreparedExecution};
