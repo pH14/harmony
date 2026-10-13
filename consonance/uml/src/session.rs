@@ -648,6 +648,9 @@ impl Session {
                     }
                     Err(error) => return Err(error),
                 };
+                if length > STAMP_LEN + MAX_FRAME {
+                    return Err(SessionError::Protocol(format!("request of {length} bytes")));
+                }
                 let moment = stamp(&self.request[..length])
                     .ok_or_else(|| SessionError::Protocol(format!("request of {length} bytes")))?;
                 let stop = match until {
@@ -1055,6 +1058,7 @@ mod tests {
         oversized[request_field..request_field + 8]
             .copy_from_slice(&(oversized_len as u64).to_le_bytes());
         oversized.resize(request_field + 8 + oversized_len, 0);
+        oversized[request_field + 8..request_field + 16].copy_from_slice(&400_u64.to_le_bytes());
         let mut behind = sidecar.clone();
         behind[request_field + 8..request_field + 16].copy_from_slice(&89_u64.to_le_bytes());
         for (name, malformed) in [
