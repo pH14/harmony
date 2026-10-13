@@ -1009,6 +1009,45 @@ fn validate_restore_shape_requires_segment_encoding_widths() {
 }
 
 #[test]
+fn validate_restore_shape_requires_one_bit_segment_fields() {
+    for segment_index in 0..8 {
+        for field in 0..7 {
+            let mut state = VcpuState {
+                regs: VcpuRegs {
+                    rflags: 2,
+                    ..Default::default()
+                },
+                xsave: vec![0; 4096],
+                ..Default::default()
+            };
+            let segment = match segment_index {
+                0 => &mut state.sregs.cs,
+                1 => &mut state.sregs.ds,
+                2 => &mut state.sregs.es,
+                3 => &mut state.sregs.fs,
+                4 => &mut state.sregs.gs,
+                5 => &mut state.sregs.ss,
+                6 => &mut state.sregs.tr,
+                _ => &mut state.sregs.ldt,
+            };
+            match field {
+                0 => segment.present = 2,
+                1 => segment.db = 2,
+                2 => segment.s = 2,
+                3 => segment.l = 2,
+                4 => segment.g = 2,
+                5 => segment.avl = 2,
+                _ => segment.unusable = 2,
+            }
+            assert!(matches!(
+                validate_restore_shape(&state, None, 4096, 48, false),
+                Err(BackendError::InvalidState)
+            ));
+        }
+    }
+}
+
+#[test]
 fn sysenter_policy_follows_host_la57_and_guest_vendor() {
     assert_eq!(kvm_sysenter_virtual_bits(&[]), 48);
     let mut la57 = kvm_cpuid_entry2 {
