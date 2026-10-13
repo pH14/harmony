@@ -745,16 +745,20 @@ where
         <B::A as Vendor>::serial_capture(&self.devices)
     }
 
-    pub fn inspect_vcpu(&mut self) -> VcpuOf<B> {
+    pub fn inspect_vcpu(&mut self) -> Result<VcpuOf<B>, VmmError> {
         self.current_vcpu()
     }
 
-    pub fn has_inflight_event_injection(&mut self) -> bool {
-        <B::A as Vendor>::vcpu_has_inflight_injection(&self.current_vcpu())
+    pub fn has_inflight_event_injection(&mut self) -> Result<bool, VmmError> {
+        Ok(<B::A as Vendor>::vcpu_has_inflight_injection(
+            &self.current_vcpu()?,
+        ))
     }
 
-    pub fn has_active_event_injection(&mut self) -> bool {
-        <B::A as Vendor>::vcpu_has_active_injection(&self.current_vcpu())
+    pub fn has_active_event_injection(&mut self) -> Result<bool, VmmError> {
+        Ok(<B::A as Vendor>::vcpu_has_active_injection(
+            &self.current_vcpu()?,
+        ))
     }
 
     pub fn restore_guest_memory(&mut self, image: &[u8]) -> Result<(), VmmError> {
@@ -1324,13 +1328,13 @@ where
         Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
     }
 
-    pub fn state_components(&mut self) -> Vec<(&'static str, [u8; 32])> {
+    pub fn state_components(&mut self) -> Result<Vec<(&'static str, [u8; 32])>, VmmError> {
         fn dig(bytes: &[u8]) -> [u8; 32] {
             let mut h = Sha256::new();
             h.update(bytes);
             h.finalize().into()
         }
-        let vcpu = self.current_vcpu();
+        let vcpu = self.current_vcpu()?;
         let mut out: Vec<(&'static str, [u8; 32])> = Vec::new();
 
         let ram = self.ram.as_bytes();
@@ -1364,7 +1368,7 @@ where
             out.push(("vtim:eff-vns", dig(&vt.clock.vns().to_le_bytes())));
             out.push(("vtim:entropy", dig(&vt.entropy.save_state())));
         }
-        out
+        Ok(out)
     }
 
     pub fn report_stream(&self) -> &[u32] {
@@ -2447,10 +2451,10 @@ where
         self.vtime.as_ref().map(VtimeWiring::virtual_time_vns)
     }
 
-    pub(crate) fn current_vcpu(&mut self) -> VcpuOf<B> {
+    pub(crate) fn current_vcpu(&mut self) -> Result<VcpuOf<B>, VmmError> {
         match &self.saved_state {
-            Some(s) => s.clone(),
-            None => self.backend.save().unwrap_or_default(),
+            Some(s) => Ok(s.clone()),
+            None => Ok(self.backend.save()?),
         }
     }
 }
@@ -3609,8 +3613,8 @@ mod tests {
 
         assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
 
-        let ca = a.state_components();
-        let cb = b.state_components();
+        let ca = a.state_components().unwrap();
+        let cb = b.state_components().unwrap();
         let da = ca
             .iter()
             .find(|(l, _)| *l == "doorbell")
@@ -3636,6 +3640,7 @@ mod tests {
         assert!(
             !plain
                 .state_components()
+                .unwrap()
                 .iter()
                 .any(|(l, _)| *l == "doorbell")
         );
@@ -4142,11 +4147,15 @@ mod tests {
 
         vmm.backend.set_state(resumed_state.clone());
         assert_eq!(
-            vmm.current_vcpu(),
+            vmm.current_vcpu().unwrap(),
             resumed_state,
             "state_blob reads the live resumed vCPU, not the stale stop snapshot"
         );
-        assert_ne!(vmm.current_vcpu(), stop_state, "not the stop-time vCPU");
+        assert_ne!(
+            vmm.current_vcpu().unwrap(),
+            stop_state,
+            "not the stop-time vCPU"
+        );
     }
 
     #[test]
@@ -4745,8 +4754,12 @@ mod tests {
     #[test]
     fn state_components_breakdown_is_stable_and_covers_state() {
         let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        let comps = v.state_components();
-        assert_eq!(comps, v.state_components(), "pure: two calls agree");
+        let comps = v.state_components().unwrap();
+        assert_eq!(
+            comps,
+            v.state_components().unwrap(),
+            "pure: two calls agree"
+        );
         let labels: Vec<&str> = comps.iter().map(|(l, _)| *l).collect();
         for expect in [
             "RAM:0..64K",
@@ -4771,15 +4784,26 @@ mod tests {
         );
         let mut w = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         w.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
-        let wlabels: Vec<&str> = w.state_components().iter().map(|(l, _)| *l).collect();
+        let wlabels: Vec<&str> = w
+            .state_components()
+            .unwrap()
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
         for expect in ["vtim:cfg", "vtim:eff-vns", "vtim:entropy"] {
             assert!(wlabels.contains(&expect), "missing {expect}: {wlabels:?}");
         }
         let mut v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        assert_eq!(v.state_components(), v2.state_components());
+        assert_eq!(
+            v.state_components().unwrap(),
+            v2.state_components().unwrap()
+        );
         let mut v3 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         v3.report_stream = vec![0xDEAD_BEEF];
-        assert_eq!(v.state_components(), v3.state_components());
+        assert_eq!(
+            v.state_components().unwrap(),
+            v3.state_components().unwrap()
+        );
 
         let mut raw_backend = configured_mock(vec![]);
         let raw_state = VcpuState {
@@ -4790,6 +4814,7 @@ mod tests {
         let mut raw = Vmm::new(raw_backend, GuestRam::new(0x1000).unwrap());
         assert!(
             raw.state_components()
+                .unwrap()
                 .iter()
                 .any(|(label, _)| *label == "xsave-restore-bv")
         );
@@ -4801,6 +4826,7 @@ mod tests {
         let mut raw_two = Vmm::new(raw_two_backend, GuestRam::new(0x1000).unwrap());
         let component = |vmm: &mut Vmm<MockBackend>, name| {
             vmm.state_components()
+                .unwrap()
                 .into_iter()
                 .find(|(label, _)| *label == name)
                 .unwrap_or_else(|| panic!("missing diagnostic component {name}"))
@@ -6772,6 +6798,53 @@ mod tests {
     }
 
     #[test]
+    fn cpu_observations_fail_closed_on_backend_save_error() {
+        let mut v = Vmm::new(
+            SaveFailBackend(configured_mock(vec![])),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        assert!(matches!(v.inspect_vcpu(), Err(VmmError::Backend(_))));
+        assert!(matches!(
+            v.has_inflight_event_injection(),
+            Err(VmmError::Backend(_))
+        ));
+        assert!(matches!(
+            v.has_active_event_injection(),
+            Err(VmmError::Backend(_))
+        ));
+        assert!(matches!(v.state_components(), Err(VmmError::Backend(_))));
+
+        let captured = nonzero_state();
+        v.saved_state = Some(captured.clone());
+        assert_eq!(v.inspect_vcpu().unwrap(), captured);
+        assert!(!v.has_inflight_event_injection().unwrap());
+        assert!(!v.has_active_event_injection().unwrap());
+        assert!(v.state_components().is_ok());
+    }
+
+    #[test]
+    fn regs_request_fails_closed_on_backend_save_error() {
+        use crate::control::{ControlServer, ServeError, server_caps};
+        use control_proto::Request;
+
+        let mut backend = configured_mock(vec![]);
+        let mut state = VcpuState::default();
+        state.regs.rip = 0x1234;
+        backend.set_state(state);
+        let vmm = Vmm::new(SaveFailBackend(backend), GuestRam::new(0x1000).unwrap());
+        let mut server = ControlServer::new(vmm, Box::new(|| panic!("unused factory")));
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let reply = server.handle(&Request::Regs);
+        assert!(
+            matches!(reply, Err(ServeError::Vmm(VmmError::Backend(_)))),
+            "{reply:?}"
+        );
+    }
+
+    #[test]
     fn terminal_snapshots_preserve_the_stop_without_guest_reentry() {
         for (exit, reason) in [
             (
@@ -7461,7 +7534,7 @@ mod tests {
     fn has_inflight_event_injection_reflects_the_live_vcpu() {
         let mut quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
-            !quiescent.has_inflight_event_injection(),
+            !quiescent.has_inflight_event_injection().unwrap(),
             "a quiescent vCPU is not a non-quiescent point"
         );
         let mut st = nonzero_state();
@@ -7469,7 +7542,7 @@ mod tests {
         st.events.interrupt_nr = 0x34;
         let mut in_flight = full_vmm(st, vec![], 0, 1);
         assert!(
-            in_flight.has_inflight_event_injection(),
+            in_flight.has_inflight_event_injection().unwrap(),
             "an injected-but-undelivered interrupt is a non-quiescent point"
         );
     }
@@ -7478,18 +7551,18 @@ mod tests {
     fn has_active_event_injection_reflects_the_live_vcpu() {
         let mut quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
-            !quiescent.has_active_event_injection(),
+            !quiescent.has_active_event_injection().unwrap(),
             "a quiescent vCPU carries no active event"
         );
         let mut residual = nonzero_state();
         residual.events.interrupt_nr = 0x34;
         let mut residual_vmm = full_vmm(residual, vec![], 0, 1);
         assert!(
-            residual_vmm.has_inflight_event_injection(),
+            residual_vmm.has_inflight_event_injection().unwrap(),
             "an inert residual is still a would-reject point"
         );
         assert!(
-            !residual_vmm.has_active_event_injection(),
+            !residual_vmm.has_active_event_injection().unwrap(),
             "but an inert residual is NOT a genuine active injection — never seal here"
         );
         let mut st = nonzero_state();
@@ -7497,7 +7570,7 @@ mod tests {
         st.events.interrupt_nr = 0x34;
         let mut in_flight = full_vmm(st, vec![], 0, 1);
         assert!(
-            in_flight.has_active_event_injection(),
+            in_flight.has_active_event_injection().unwrap(),
             "an injected-but-undelivered interrupt is a genuine active injection"
         );
     }
