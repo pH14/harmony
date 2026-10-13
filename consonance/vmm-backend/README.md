@@ -63,6 +63,12 @@ stateful MSR block. Restore rejects mismatched copies during preflight, before
 retiring a staged write completion or changing KVM state; otherwise the later
 MSR write silently replaces the special-register value. Coherent copies remain
 restorable and read back with the same values.
+SYSENTER CS is a 32-bit VMCS field, while SYSENTER ESP and EIP are virtual
+addresses. KVM can accept wider values through `KVM_SET_MSRS` but return a
+truncated or sign-extended value on the next save. Restore preflight rejects a
+nonzero upper half of CS and noncanonical ESP or EIP values before changing
+the vCPU. The address width is the narrower of the host KVM capability and the
+installed guest CPUID model; the active guest contract exposes 48 virtual bits.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that

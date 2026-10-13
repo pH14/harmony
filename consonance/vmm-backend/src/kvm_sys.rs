@@ -54,6 +54,8 @@ pub struct KvmBackend {
     xsave2_size: Option<usize>,
     nested_state_config: Option<(NestedFormat, usize)>,
     nested_physical_bits: u32,
+    host_virtual_bits: u32,
+    sysenter_virtual_bits: u32,
     nested_state_guard: crate::arch::x86::NestedStateGuard,
     regions: MemRegions,
     mem_slot_count: u32,
@@ -95,6 +97,16 @@ impl KvmBackend {
         })
         .map_err(kvm_err)?;
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
+        let supported = kvm
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err)?;
+        let host_virtual_bits = supported
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 0x8000_0008 && entry.index == 0)
+            .map(|entry| (entry.eax >> 8) & 0xff)
+            .filter(|bits| (48..=64).contains(bits))
+            .unwrap_or(48);
         let mmap_size = kvm.get_vcpu_mmap_size().map_err(kvm_err)?;
         if mmap_size < size_of::<kvm_run>() {
             return Err(BackendError::Internal("kvm_run mmap size too small"));
@@ -110,6 +122,8 @@ impl KvmBackend {
             xsave2_size,
             nested_state_config: None,
             nested_physical_bits: 0,
+            host_virtual_bits,
+            sysenter_virtual_bits: host_virtual_bits,
             nested_state_guard: Default::default(),
             regions: MemRegions::new(),
             mem_slot_count: 0,
@@ -673,6 +687,7 @@ impl KvmBackend {
         let cpuid = CpuId::from_entries(&entries)
             .map_err(|_| BackendError::Internal("CPUID table too large for KVM"))?;
         self.vcpu.set_cpuid2(&cpuid).map_err(kvm_err)?;
+        self.sysenter_virtual_bits = self.host_virtual_bits.min(guest_virtual_bits(model));
         self.cpuid_installed = true;
         Ok(())
     }
@@ -1033,7 +1048,12 @@ impl Backend for KvmBackend {
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
         self.nested_state_guard.ensure_healthy()?;
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
-        validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        validate_restore_shape(
+            state,
+            self.msr_filter.as_ref(),
+            xsave_len,
+            self.sysenter_virtual_bits,
+        )?;
         match (self.nested_state_config, &state.nested_state) {
             (Some((format, maximum)), Some(bytes)) => {
                 format.validate(bytes, maximum)?;

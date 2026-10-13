@@ -750,21 +750,21 @@ fn validate_restore_shape_keys_and_xsave_len() {
         xsave: vec![0u8; 4096],
         ..Default::default()
     };
-    assert!(validate_restore_shape(&good, Some(&filter), 4096).is_ok());
+    assert!(validate_restore_shape(&good, Some(&filter), 4096, 48).is_ok());
 
     good.msrs.remove(&0x175);
     assert!(matches!(
-        validate_restore_shape(&good, Some(&filter), 4096),
+        validate_restore_shape(&good, Some(&filter), 4096, 48),
         Err(BackendError::InvalidState)
     ));
     good.msrs.insert(0x175, 0);
 
     good.msrs.insert(0x200, 0);
-    assert!(validate_restore_shape(&good, Some(&filter), 4096).is_err());
+    assert!(validate_restore_shape(&good, Some(&filter), 4096, 48).is_err());
     good.msrs.remove(&0x200);
 
     assert!(matches!(
-        validate_restore_shape(&good, Some(&filter), 8192),
+        validate_restore_shape(&good, Some(&filter), 8192, 48),
         Err(BackendError::InvalidState)
     ));
 
@@ -772,8 +772,8 @@ fn validate_restore_shape_keys_and_xsave_len() {
         xsave: vec![0u8; 4096],
         ..Default::default()
     };
-    assert!(validate_restore_shape(&empty, None, 4096).is_ok());
-    assert!(validate_restore_shape(&good, None, 4096).is_err());
+    assert!(validate_restore_shape(&empty, None, 4096, 48).is_ok());
+    assert!(validate_restore_shape(&good, None, 4096, 48).is_err());
 }
 
 #[test]
@@ -805,16 +805,65 @@ fn validate_restore_shape_requires_coherent_sregs_msr_aliases() {
     coherent.sregs.efer = coherent.msrs[&EFER];
     coherent.sregs.fs.base = coherent.msrs[&FS_BASE];
     coherent.sregs.gs.base = coherent.msrs[&GS_BASE];
-    assert!(validate_restore_shape(&coherent, Some(&filter), 4096).is_ok());
+    assert!(validate_restore_shape(&coherent, Some(&filter), 4096, 48).is_ok());
 
     for index in [EFER, FS_BASE, GS_BASE] {
         let mut inconsistent = coherent.clone();
         *inconsistent.msrs.get_mut(&index).unwrap() ^= 1;
         assert!(matches!(
-            validate_restore_shape(&inconsistent, Some(&filter), 4096),
+            validate_restore_shape(&inconsistent, Some(&filter), 4096, 48),
             Err(BackendError::InvalidState)
         ));
     }
+}
+
+#[test]
+fn validate_restore_shape_requires_preservable_sysenter_values() {
+    let filter = MsrFilter {
+        allow_inkernel: vec![MsrRange {
+            base: 0x174,
+            count: 3,
+        }],
+    };
+    let mut state = VcpuState {
+        msrs: BTreeMap::from([
+            (0x174, u64::from(u32::MAX)),
+            (0x175, 0x0000_7fff_ffff_ffff),
+            (0x176, 0xffff_8000_0000_0000),
+        ]),
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    assert!(validate_restore_shape(&state, Some(&filter), 4096, 48).is_ok());
+
+    for (index, value) in [
+        (0x174, 1 << 32),
+        (0x175, 0x0000_8000_0000_0000),
+        (0x176, 1 << 48),
+    ] {
+        let original = state.msrs.insert(index, value).unwrap();
+        assert!(matches!(
+            validate_restore_shape(&state, Some(&filter), 4096, 48),
+            Err(BackendError::InvalidState)
+        ));
+        state.msrs.insert(index, original);
+    }
+
+    state.msrs.insert(0x175, 1 << 48);
+    assert!(validate_restore_shape(&state, Some(&filter), 4096, 57).is_ok());
+}
+
+#[test]
+fn guest_virtual_width_follows_installed_cpuid() {
+    assert_eq!(guest_virtual_bits(&CpuidModel::default()), 48);
+    let model = CpuidModel {
+        entries: vec![CpuidEntry {
+            leaf: 0x8000_0008,
+            eax: 57 << 8,
+            ..Default::default()
+        }],
+    };
+    assert_eq!(guest_virtual_bits(&model), 57);
 }
 
 #[test]
