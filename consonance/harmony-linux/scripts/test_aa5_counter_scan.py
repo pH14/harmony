@@ -17,19 +17,23 @@ class CounterScanTests(unittest.TestCase):
     def test_timer_value_reads_with_every_destination(self):
         for base, name in (
             (0xD53BE200, "CNTP_TVAL_EL0"),
+            (0xD53BE220, "CNTP_CTL_EL0"),
             (0xD53BE300, "CNTV_TVAL_EL0"),
+            (0xD53BE320, "CNTV_CTL_EL0"),
         ):
             for register in range(32):
                 with self.subTest(name=name, register=register):
                     self.assertEqual(scan.decode_counter_read(base | register), name)
 
     def test_adjacent_registers_and_writes_are_not_counter_reads(self):
-        for word in (0xD53BE220, 0xD53BE240, 0xD53BE320, 0xD53BE340,
+        for word in (0xD53BE240, 0xD53BE340,
                      0xD538E200, 0xD53AE200, 0xD51BE200, 0xD51BE300):
             with self.subTest(word=hex(word)):
                 self.assertIsNone(scan.decode_counter_read(word))
         self.assertEqual(scan.decode_timer_program(0xD51BE200), "CNTP_TVAL_EL0")
+        self.assertEqual(scan.decode_timer_program(0xD51BE220), "CNTP_CTL_EL0")
         self.assertEqual(scan.decode_timer_program(0xD51BE300), "CNTV_TVAL_EL0")
+        self.assertEqual(scan.decode_timer_program(0xD51BE320), "CNTV_CTL_EL0")
 
     def check_scan(self, disassembly):
         words = [(0x1000, 0xD53BE201, ".text"), (0x1004, 0xD53BE31F, ".text")]
