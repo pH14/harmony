@@ -155,7 +155,10 @@ eviction asks the worker with the largest store to shrink.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
-setup and imports it; the store checks each page against its hash.
+setup and imports it; the store checks each page against its hash. Hardware
+session cache extents carry the publishing session's image identity beside the
+sparse sidecar. Import checks every extent's identity before changing the
+snapshot store, including when a caller passes a lease from another namespace.
 `cache::plan_memory` takes the free memory (the lower of `MemAvailable`
 and each enclosing cgroup's limit minus usage on Linux; free, file-backed and
 purgeable pages on macOS) less a 1 GiB reserve, fits as many workers as the
