@@ -7,8 +7,8 @@ use environment::input_spec::nominal_factory;
 use serde_json::{Value, json};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use uml::{
-    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, Session, SessionError, Stop,
-    VerifiedProfile, event_hash,
+    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, MemoryError, Session,
+    SessionError, Stop, VerifiedProfile, event_hash,
 };
 
 use crate::filter;
@@ -336,6 +336,27 @@ fn import(
         Some(failure) => return Ok(json!({"failures": [failure]})),
         None => second.capture(Capture::default())?.digest()? == setup.digest()?,
     };
+    let before = other.stats();
+    let events = second.events().to_vec();
+    let rejected = matches!(
+        second.restore(&setup),
+        Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+    );
+    let unchanged = other.stats() == before && second.events() == events;
+    failures.push((!rejected || !unchanged).then(|| {
+        json!({"step": "foreign in-place restore", "rejected": rejected, "unchanged": unchanged})
+    }));
+    let boot_failure = match start(profile, base, false, &other, Some(&setup)) {
+        Err(SessionError::Memory(MemoryError::ForeignSnapshot)) => None,
+        Ok(unexpected) => {
+            unexpected.kill()?;
+            Some(json!({"step": "foreign fresh restore was accepted"}))
+        }
+        Err(error) => Some(
+            json!({"step": "foreign fresh restore returned the wrong error", "error": error.to_string()}),
+        ),
+    };
+    failures.push(boot_failure);
     second.kill()?;
     Ok(json!({
         "pages": rows.len(),
