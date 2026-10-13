@@ -7099,6 +7099,45 @@ mod tests {
         miri,
         ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
     )]
+    fn branch_without_vtime_rejects_floor_reseed_before_replacing_the_vm() {
+        let make_vm = || {
+            let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            Ok(Vmm::new(backend, GuestRam::new(RAM).unwrap()))
+        };
+        let mut server = ControlServer::new(make_vm().unwrap(), Box::new(make_vm));
+        hello(&mut server);
+        let base = snap(&mut server);
+        let before = hash(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.record_reseed(0, 99);
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: spec.encode(),
+                    },
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(server.handle(&Request::Snapshot).unwrap().is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
+    )]
     fn branch_with_vtime_still_accepts_seed() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
