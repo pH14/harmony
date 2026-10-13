@@ -3,6 +3,13 @@
 The instruction scanners reject unsupported instructions in shipped guest
 executables. Their planted negative controls must continue to fail.
 
+The counter scanner also rejects physical and virtual timer-value reads
+(`CNTP_TVAL_EL0` and `CNTV_TVAL_EL0`). These expose a remaining interval derived
+from the live counter even when no timer is programmed. The raw executable-word
+walk covers both ordinary instructions and words marked as data by mapping
+symbols. Timer programming remains prohibited; owned code uses the Harmony
+clock and clockevent instead.
+
 `build-platform-runtime.sh` builds the native architecture's kernel, static
 supervisor, OCI runtime, and OCI smoke fixture, then seals their manifest. Run
 `make -C consonance/harmony-linux fetch` first. Install the pinned

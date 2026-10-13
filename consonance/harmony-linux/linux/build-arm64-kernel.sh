@@ -151,6 +151,10 @@ _start:
 	mrs x1, cntvct_el0
 	mrs x2, revidr_el1
 	mrs x3, aidr_el1
+	mrs x4, cntp_tval_el0
+	mrs x5, cntv_tval_el0
+	.word 0xd53be21f // executable data mapping: mrs xzr, cntp_tval_el0
+	.word 0xd53be31f // executable data mapping: mrs xzr, cntv_tval_el0
 	.word 0xd51be340 // executable data mapping: msr cntv_cval_el0, x0
 	ret
 EOF
@@ -159,8 +163,8 @@ if python3 "$scan" "$scan_probe_elf" >"$scan_probe_log" 2>&1; then
     echo "FAIL: AA-5 counter scanner accepted the planted CNTVCT_EL0 probe" >&2
     exit 1
 fi
-if ! grep -q '^\[REJECT\].*4 host-dependent register read' "$scan_probe_log"; then
-    echo "FAIL: AA-5 scanner did not identify all four planted host-dependent reads" >&2
+if ! grep -q '^\[REJECT\].*8 host-dependent register read' "$scan_probe_log"; then
+    echo "FAIL: AA-5 scanner did not identify all eight planted host-dependent reads" >&2
     cat "$scan_probe_log" >&2
     exit 1
 fi
