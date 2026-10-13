@@ -4,6 +4,7 @@
   "core_revision": "26bb785c9deddb66a17717b21bb4e328f03ade32",
   "id": 3632,
   "observation": {
+    "game": "twin-dragons",
     "x": 64,
     "y": 127,
     "health": 3,
@@ -14,7 +15,11 @@
     "on_ground": false,
     "facing": 0,
     "loading": false,
-    "cleared": 2
+    "cleared": 2,
+    "scene": 0,
+    "climb": 0,
+    "time": 0,
+    "fuel": 0
   },
   "actions": [
     {

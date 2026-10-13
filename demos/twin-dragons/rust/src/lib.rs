@@ -25,7 +25,15 @@ pub struct Action {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Game {
+    TwinDragons,
+    TobuTobuGirl,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Observation {
+    pub game: Game,
     pub x: u16,
     pub y: u16,
     pub health: u8,
@@ -37,25 +45,101 @@ pub struct Observation {
     pub facing: u8,
     pub loading: bool,
     pub cleared: u8,
+    pub scene: u8,
+    pub climb: u16,
+    pub time: u8,
+    pub fuel: u8,
 }
 
 const LEVEL_COUNT: u8 = 3;
 const PLAYING: u8 = 1;
 const LOADING: u8 = 2;
+const TOBU_IN_LEVEL: u8 = 4;
+const TOBU_ENDING: u8 = 10;
+const TOBU_LEVEL_COMPLETE: u8 = 2;
+const TOBU_BAND: u16 = 1024;
+
+impl Game {
+    fn parse(id: &str) -> Result<Game, &'static str> {
+        match id {
+            "twin-dragons" => Ok(Game::TwinDragons),
+            "tobu-tobu-girl" => Ok(Game::TobuTobuGirl),
+            _ => Err("unknown game"),
+        }
+    }
+    fn ram_bytes(self) -> usize {
+        match self {
+            Game::TwinDragons => 0x800,
+            Game::TobuTobuGirl => 0x400,
+        }
+    }
+    fn decode(self, ram: &[u8]) -> Result<Observation, &'static str> {
+        match self {
+            Game::TwinDragons => decode(ram),
+            Game::TobuTobuGirl => decode_tobu(ram),
+        }
+    }
+    fn admissible(self, o: Observation) -> bool {
+        match self {
+            Game::TwinDragons => o.health != 0 && o.gamestate != 0,
+            Game::TobuTobuGirl => !o.loading || o.gamestate == TOBU_ENDING,
+        }
+    }
+    fn level_complete(self, o: Observation) -> bool {
+        self == Game::TobuTobuGirl && o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE
+    }
+    fn starts_at_level_one(self, o: Observation) -> bool {
+        match self {
+            Game::TwinDragons => o.gamestate == PLAYING && o.level == 0,
+            Game::TobuTobuGirl => !o.loading && o.level == 0,
+        }
+    }
+    fn validate_actions(self, actions: &[Action]) -> Result<(), &'static str> {
+        if actions.len() > 10000 {
+            return Err("History too long");
+        }
+        let mut frames = 0_u32;
+        for a in actions {
+            let menu_buttons = self == Game::TobuTobuGirl;
+            if a.frames == 0
+                || (!menu_buttons && a.frames > 120)
+                || (!menu_buttons && a.buttons & 12 != 0)
+                || a.buttons & 48 == 48
+                || a.buttons & 192 == 192
+            {
+                return Err("Invalid controller action");
+            }
+            frames += u32::from(a.frames);
+        }
+        if frames > 200000 {
+            return Err("History too long");
+        }
+        Ok(())
+    }
+}
 
 impl ArchiveKey for Observation {
     type Place = (u8, bool, u16, u16);
-    type Progress = u8;
+    type Progress = (u8, u16);
     type Identity = (u16, u16);
     type Lineage = ();
     fn place(self) -> Self::Place {
-        (self.level, self.loading, self.x / 32, self.y / 32)
+        match self.game {
+            Game::TwinDragons => (self.level, self.loading, self.x / 32, self.y / 32),
+            Game::TobuTobuGirl => (self.level, self.loading, self.climb / 32, self.x / 32),
+        }
     }
     fn progress(self) -> Self::Progress {
-        self.cleared
+        match self.game {
+            Game::TwinDragons => (self.cleared, 0),
+            Game::TobuTobuGirl => (self.cleared, self.climb / TOBU_BAND),
+        }
     }
     fn identity(self) -> Self::Identity {
-        (self.x / 16, self.y / 16)
+        match self.game {
+            Game::TwinDragons => (self.x / 16, self.y / 16),
+            Game::TobuTobuGirl => (0, 0),
+        }
     }
     fn capacity() -> usize {
         1
@@ -64,7 +148,10 @@ impl ArchiveKey for Observation {
         1
     }
     fn preference_cmp(self, _: usize, other: Self) -> Ordering {
-        (self.cleared, self.health).cmp(&(other.cleared, other.health))
+        match self.game {
+            Game::TwinDragons => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
+            Game::TobuTobuGirl => (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb)),
+        }
     }
     fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
         self
@@ -74,7 +161,10 @@ impl ArchiveKey for Observation {
 
 impl Observation {
     fn won(self) -> bool {
-        self.cleared >= LEVEL_COUNT
+        match self.game {
+            Game::TwinDragons => self.cleared >= LEVEL_COUNT,
+            Game::TobuTobuGirl => self.gamestate == TOBU_ENDING,
+        }
     }
 }
 
@@ -94,6 +184,7 @@ pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
         _ => 0,
     };
     Ok(Observation {
+        game: Game::TwinDragons,
         x: u16::from(ram[0x52]) * 256 + u16::from(ram[0x57]) + u16::from(ram[0x62]),
         y: u16::from(ram[0x63]),
         health: ram[0x75],
@@ -105,33 +196,41 @@ pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
         facing: ram[0x74],
         loading: !settled,
         cleared,
+        scene: 0,
+        climb: 0,
+        time: 0,
+        fuel: 0,
     })
 }
 
-fn admissible(observation: Observation) -> bool {
-    observation.health != 0 && observation.gamestate != 0
-}
-
-fn validate_actions(actions: &[Action]) -> Result<(), &'static str> {
-    if actions.len() > 10000 {
-        return Err("History too long");
+pub fn decode_tobu(ram: &[u8]) -> Result<Observation, &'static str> {
+    if ram.len() != 0x400 {
+        return Err("emulator memory must contain 1 KiB of work RAM bank 0");
     }
-    let mut frames = 0_u32;
-    for a in actions {
-        if a.frames == 0
-            || a.frames > 120
-            || a.buttons & 12 != 0
-            || a.buttons & 48 == 48
-            || a.buttons & 192 == 192
-        {
-            return Err("Invalid controller action");
-        }
-        frames += u32::from(a.frames);
-    }
-    if frames > 200000 {
-        return Err("History too long");
-    }
-    Ok(())
+    let gamestate = ram[0xa5];
+    let scene = ram[0xa6];
+    let level = ram[0xa7].saturating_sub(1);
+    let in_level = gamestate == TOBU_IN_LEVEL && scene == 0;
+    let climb = u16::from(ram[0x233]) * u16::from(ram[0x237]) + u16::from(ram[0x230]);
+    let cleared = if gamestate == TOBU_ENDING { LEVEL_COUNT } else { level };
+    Ok(Observation {
+        game: Game::TobuTobuGirl,
+        x: u16::from(ram[0xc2]),
+        y: u16::from(ram[0xc3]),
+        health: u8::from(in_level || gamestate == TOBU_ENDING),
+        level,
+        next_level: 0,
+        gamestate,
+        goal: ram[0x235] != 0,
+        on_ground: false,
+        facing: 0,
+        loading: !in_level,
+        cleared,
+        scene,
+        climb,
+        time: ram[0xb0],
+        fuel: ram[0x23a],
+    })
 }
 
 const DIRECTIONS: [u8; 9] = [0, 0x80, 0x40, 0x10, 0x20, 0x90, 0xa0, 0x50, 0x60];
@@ -193,6 +292,7 @@ struct State {
 
 #[wasm_bindgen]
 pub struct Explorer {
+    game: Game,
     archive: Archive<Action, Observation, (), ()>,
     snapshots: BTreeMap<usize, Box<[u8]>>,
     digests: BTreeMap<usize, u64>,
@@ -216,8 +316,6 @@ struct Job {
     actions: Vec<Action>,
     frame: u32,
 }
-
-const RAM_BYTES: usize = 0x800;
 
 const MIN_SNAPSHOT_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_ACTIVE_ENTRIES: usize = 256;
@@ -246,17 +344,18 @@ fn js_error(e: impl std::fmt::Display) -> JsValue {
 #[wasm_bindgen]
 impl Explorer {
     #[wasm_bindgen(constructor)]
-    pub fn new(seed: u32) -> Result<Explorer, JsValue> {
-        Self::root(seed, Vec::new(), true)
+    pub fn new(game: &str, seed: u32) -> Result<Explorer, JsValue> {
+        Self::root(Game::parse(game).map_err(js_error)?, seed, Vec::new(), true)
     }
 
-    pub fn from_history(seed: u32, history: &str) -> Result<Explorer, JsValue> {
+    pub fn from_history(game: &str, seed: u32, history: &str) -> Result<Explorer, JsValue> {
+        let game = Game::parse(game).map_err(js_error)?;
         if history.len() > 1000000 {
             return Err(js_error("History file too large"));
         }
         let prefix: Vec<Action> = serde_json::from_str(history).map_err(js_error)?;
-        validate_actions(&prefix).map_err(js_error)?;
-        Self::root(seed, prefix, false)
+        game.validate_actions(&prefix).map_err(js_error)?;
+        Self::root(game, seed, prefix, false)
     }
 
     pub fn state_count(&self) -> usize {
@@ -267,10 +366,10 @@ impl Explorer {
         self.snapshot_bytes
     }
 
-    fn root(seed: u32, prefix: Vec<Action>, genesis: bool) -> Result<Explorer, JsValue> {
-        let obs = decode(&memory()?).map_err(js_error)?;
-        if !admissible(obs) || (genesis && (obs.gamestate != PLAYING || obs.level != 0)) {
-            return Err(js_error("Twin Dragons setup did not reach level one"));
+    fn root(game: Game, seed: u32, prefix: Vec<Action>, genesis: bool) -> Result<Explorer, JsValue> {
+        let obs = game.decode(&memory()?).map_err(js_error)?;
+        if !game.admissible(obs) || (genesis && !game.starts_at_level_one(obs)) {
+            return Err(js_error("Game setup did not reach level one"));
         }
         let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
         archive
@@ -293,6 +392,7 @@ impl Explorer {
         let root = compress_snapshot(&raw);
         let snapshot_bytes = root.len();
         Ok(Self {
+            game,
             archive,
             rng: RomuDuoJrRand::with_seed(u64::from(seed)),
             executions: 0,
@@ -400,7 +500,7 @@ impl Explorer {
         self.stopped
     }
 
-    pub fn merge(&mut self, steps: &[u8]) -> Result<(), JsValue> {
+    pub fn merge(&mut self, steps: &[u8], transition: &[u32]) -> Result<(), JsValue> {
         let job = self
             .pending
             .pop_front()
@@ -408,8 +508,18 @@ impl Explorer {
         if self.stopped {
             return Ok(());
         }
-        let stride = RAM_BYTES + self.snapshot_size;
-        if !steps.len().is_multiple_of(stride) || steps.len() / stride > job.actions.len() {
+        let ram_bytes = self.game.ram_bytes();
+        let stride = ram_bytes + self.snapshot_size;
+        let transition: Vec<Action> = transition
+            .iter()
+            .map(|&packed| Action { buttons: (packed >> 8) as u8, frames: packed as u8 })
+            .collect();
+        let planned = steps.len() / stride - usize::from(!transition.is_empty());
+        if !steps.len().is_multiple_of(stride)
+            || steps.len() < stride * usize::from(!transition.is_empty())
+            || planned > job.actions.len()
+            || transition.iter().any(|a| a.frames == 0)
+        {
             return Err(js_error("rollout result does not match its plan"));
         }
         let mut frame = job.frame;
@@ -417,13 +527,27 @@ impl Explorer {
         let mut suffix = Vec::new();
         let mut productive = false;
         let mut ended = false;
-        for (action, step) in job.actions.iter().zip(steps.chunks_exact(stride)) {
-            let (ram, raw) = step.split_at(RAM_BYTES);
-            self.frames += u64::from(action.frames);
-            frame += u32::from(action.frames);
-            suffix.push(*action);
-            let obs = decode(ram).map_err(js_error)?;
-            if !admissible(obs) {
+        let mut taken: Vec<(Vec<Action>, &[u8])> = job.actions[..planned]
+            .iter()
+            .zip(steps.chunks_exact(stride))
+            .map(|(action, step)| (vec![*action], step))
+            .collect();
+        if !transition.is_empty() {
+            taken.push((transition.clone(), &steps[planned * stride..]));
+        }
+        let last = taken.len().saturating_sub(1);
+        for (index, (actions, step)) in taken.into_iter().enumerate() {
+            let (ram, raw) = step.split_at(ram_bytes);
+            for action in &actions {
+                self.frames += u64::from(action.frames);
+                frame += u32::from(action.frames);
+            }
+            suffix.extend(actions);
+            let obs = self.game.decode(ram).map_err(js_error)?;
+            if !self.game.admissible(obs) {
+                if self.game.level_complete(obs) && !transition.is_empty() && index + 1 == last {
+                    continue;
+                }
                 self.deaths += 1;
                 ended = true;
                 break;
@@ -462,7 +586,7 @@ impl Explorer {
                 frame,
             });
         }
-        if !ended && steps.len() / stride != job.actions.len() {
+        if !ended && transition.is_empty() && steps.len() / stride != job.actions.len() {
             return Err(js_error("rollout result ended early"));
         }
         self.archive.record_selection_outcome(job.parent, productive);
@@ -547,8 +671,8 @@ mod tests {
         assert_eq!((before.observation.level, before.observation.cleared), (0, 0));
         assert_eq!((after.observation.level, after.observation.cleared), (1, 1));
         assert_ne!(before.observation.place(), after.observation.place());
-        assert!(admissible(before.observation));
-        assert!(admissible(after.observation));
+        assert!(Game::TwinDragons.admissible(before.observation));
+        assert!(Game::TwinDragons.admissible(after.observation));
         assert!(after.actions.starts_with(&before.actions));
         let suffix = after.actions[before.actions.len()..].to_vec();
         assert!(!suffix.is_empty());
@@ -586,7 +710,7 @@ mod tests {
     #[test]
     fn human_histories_reject_invalid_inputs_and_bound_total_work() {
         assert!(
-            validate_actions(&[Action {
+            Game::TwinDragons.validate_actions(&[Action {
                 buttons: 128,
                 frames: 1
             }])
@@ -614,10 +738,10 @@ mod tests {
                 frames: 121,
             },
         ] {
-            assert!(validate_actions(&[action]).is_err());
+            assert!(Game::TwinDragons.validate_actions(&[action]).is_err());
         }
         assert!(
-            validate_actions(&vec![
+            Game::TwinDragons.validate_actions(&vec![
                 Action {
                     buttons: 0,
                     frames: 120
@@ -627,7 +751,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            validate_actions(&vec![
+            Game::TwinDragons.validate_actions(&vec![
                 Action {
                     buttons: 0,
                     frames: 1
@@ -669,7 +793,7 @@ mod tests {
         assert_eq!(decode(&ram).unwrap().cleared, 2);
         ram[0x9e] = 0;
         assert_eq!(decode(&ram).unwrap().cleared, 0);
-        assert!(!admissible(decode(&ram).unwrap()));
+        assert!(!Game::TwinDragons.admissible(decode(&ram).unwrap()));
         assert!(decode(&ram[..0x400]).is_err());
         assert!(decode(&vec![0; 0x2800]).is_err());
     }
@@ -691,8 +815,8 @@ mod tests {
         let a = decode(&ram).unwrap();
         let b = Observation { health: 3, ..a };
         assert_eq!(a.place(), b.place());
-        assert!(!admissible(a));
-        assert!(admissible(b));
+        assert!(!Game::TwinDragons.admissible(a));
+        assert!(Game::TwinDragons.admissible(b));
         let loading = Observation {
             gamestate: LOADING,
             loading: true,

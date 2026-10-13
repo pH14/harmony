@@ -31,7 +31,7 @@ const target = extended ? 2 : 1,
 await mkdir("test-results", { recursive: true });
 for (const seed of extended ? [11] : [27, 34]) {
   engine.restore(root);
-  const search = new Explorer(seed),
+  const search = new Explorer("twin-dragons", seed),
     rounds = new RoundSearch(search, [engine]),
     arrivals = new Map();
   for (
@@ -95,7 +95,7 @@ const loadEngine = async () => createEngine(base, twinDragons, {
 const workers = [engine, await loadEngine(), await loadEngine()];
 function parallelRun(pool) {
   engine.restore(root);
-  const explorer = new Explorer(7),
+  const explorer = new Explorer("twin-dragons", 7),
     rounds = new RoundSearch(explorer, pool),
     batches = [],
     found = [];
@@ -141,7 +141,7 @@ for (const name of ["level-one", "level-two", "level-three"]) {
   );
   const observation = engine.observation();
   assert.ok(isMapEvidence(observation, catalog.levels));
-  assert.deepEqual(observation, tape.observation);
+  assert.deepEqual(observation, Object.fromEntries(Object.keys(observation).map((key) => [key, tape.observation[key]])));
   fixtures[name] = { tape, snapshot: engine.capture() };
 }
 assert.equal(fixtures["level-one"].tape.observation.level, 0);
@@ -161,7 +161,7 @@ assert.deepEqual(
 console.log("Level 1, 2 and 3 witnesses replay exactly; the Level 1 checkpoint plus its suffix reaches Level 2.");
 
 engine.restore(root);
-const bounded = new Explorer(1);
+const bounded = new Explorer("twin-dragons", 1);
 const smallBudget = 2 * 1024 * 1024;
 bounded.set_snapshot_budget(smallBudget);
 const boundedRounds = new RoundSearch(bounded, [engine]);
@@ -216,7 +216,7 @@ for (const [label, prefix, seed] of [
   appendInput(prefix, 1, 6);
   engine.run(1, 6, true);
   const manual = engine.capture();
-  const branch = Explorer.from_history(seed, JSON.stringify(prefix));
+  const branch = Explorer.from_history("twin-dragons", seed, JSON.stringify(prefix));
   assert.deepEqual(JSON.parse(branch.state(0)).actions, prefix);
   assert.deepEqual(branch.snapshot(0), manual);
   assert.equal(branch.state_count(), 1);

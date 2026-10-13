@@ -18,12 +18,16 @@ export function stepBytes(engine) {
   return engine.game.ramBytes + engine.stateSize;
 }
 
+export function rolloutBytes(engine, actions) {
+  return (actions.length + 1) * stepBytes(engine);
+}
+
 export function runRollout(engine, snapshot, actions, out, offset, record) {
   const { game } = engine, stride = stepBytes(engine), ramBytes = game.ramBytes;
   engine.restore(snapshot);
   const ram = engine.ramView();
   const samples = record ? [0, ...game.motion(ram)] : null;
-  let frame = 0, steps = 0, ended = false;
+  let frame = 0, steps = 0, ended = false, transition = [];
   for (const packed of actions) {
     const buttons = packed >> 8, frames = packed & 255;
     if (samples)
@@ -40,24 +44,31 @@ export function runRollout(engine, snapshot, actions, out, offset, record) {
     engine.captureInto(out.subarray(at + ramBytes, at + stride));
     steps++;
     if (game.ended(ram)) {
+      if (game.levelComplete?.(ram)) {
+        transition = game.transition(engine);
+        const next = offset + steps * stride;
+        out.set(ram, next);
+        engine.captureInto(out.subarray(next + ramBytes, next + stride));
+        steps++;
+      }
       ended = true;
       break;
     }
   }
   const trail = samples && samples.length > MOTION_STRIDE ? new Uint16Array(samples) : null;
-  return { steps, trail, points: steps - (ended ? 1 : 0) };
+  return { steps, trail, transition, points: steps - (ended && !transition.length ? 1 : 0) };
 }
 
 export function runPlan(engines, explorer, jobs, record = false) {
   const trails = [];
   jobs.forEach((job, index) => {
     const engine = engines[index % engines.length];
-    const out = new Uint8Array(job.actions.length * stepBytes(engine));
-    const { steps, trail, points } = runRollout(engine, job.snapshot, job.actions, out, 0, record);
+    const out = new Uint8Array(rolloutBytes(engine, job.actions));
+    const { steps, trail, points, transition } = runRollout(engine, job.snapshot, job.actions, out, 0, record);
     job.engine = index % engines.length;
     job.points = points;
     if (trail) trails.push(trail);
-    explorer.merge(out.subarray(0, steps * stepBytes(engine)));
+    explorer.merge(out.subarray(0, steps * stepBytes(engine)), new Uint32Array(transition));
   });
   return trails;
 }

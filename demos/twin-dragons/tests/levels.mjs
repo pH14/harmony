@@ -26,7 +26,7 @@ for (const level of catalog.levels) {
   assert.equal(observation.loading, false);
   assert.equal(observation.on_ground, true);
   assert.ok(isMapEvidence(observation, catalog.levels));
-  const search = level.id ? Explorer.from_history(2, '[]') : new Explorer(2);
+  const search = level.id ? Explorer.from_history("twin-dragons", 2, '[]') : new Explorer("twin-dragons", 2);
   search.set_snapshot_budget(4 * 1048576);
   const rounds = new RoundSearch(search, [engine]);
   let batch;
@@ -37,7 +37,7 @@ for (const level of catalog.levels) {
   assert.deepEqual(engine.boot(level.id), root, 'Repeated bootstrap is byte deterministic');
   for (const action of state.actions) engine.run(action.buttons, action.frames);
   assert.equal(snapshotDigest(engine.capture()), snapshot, `Level ${level.id} archive must replay exactly`);
-  const child = Explorer.from_history(3, JSON.stringify(state.actions));
+  const child = Explorer.from_history("twin-dragons", 3, JSON.stringify(state.actions));
   assert.equal(child.digest(0), snapshot, 'Fork is rooted at the replayed endpoint');
   assert.equal(new RoundSearch(child, [engine]).round().batch.executions, ROUND_PATHS);
   child.free(); search.free();

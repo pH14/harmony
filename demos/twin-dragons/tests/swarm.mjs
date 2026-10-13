@@ -20,14 +20,14 @@ const engine = await createEngine(base, twinDragons, {
 await init({ module_or_path: await readFile(new URL("../rust/pkg/twin_dragons_browser_bg.wasm", import.meta.url)) });
 globalThis.harmonyEngine = engine;
 const root = engine.boot(), catalog = JSON.parse(await readFile(new URL("maps.json", base)));
-const original = new Explorer(2), expected = [], plain = new RoundSearch(original, [engine]);
+const original = new Explorer("twin-dragons", 2), expected = [], plain = new RoundSearch(original, [engine]);
 for (let i = 0; i < 4; i++) {
   const { batch } = plain.round();
   expected.push({ batch, snapshots: batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, original.digest(p.retained)]) });
 }
 original.free();
 engine.restore(root);
-const recorded = new Explorer(2), sampled = new RoundSearch(recorded, [engine], { record: true });
+const recorded = new Explorer("twin-dragons", 2), sampled = new RoundSearch(recorded, [engine], { record: true });
 let recordedPoints = 0;
 const mapCatalog = new Map(catalog.maps.map(m => [m.id, m]));
 for (const before of expected) {

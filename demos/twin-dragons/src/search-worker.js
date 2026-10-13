@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
 import { createEngine, GAMES } from "./emulator.js";
-import { parsePlan, stepBytes, ROUND_PATHS, ROUNDS_AHEAD } from "./rollout.js";
+import { parsePlan, rolloutBytes, stepBytes, ROUND_PATHS, ROUNDS_AHEAD } from "./rollout.js";
 import { validateTape } from "./heat.js";
 import { branchInfo } from "./branch.js";
 import { snapshotHash } from "./media.js";
@@ -107,9 +107,9 @@ function drain(search) {
     if (round.next < round.jobs.length) shareSnapshotBudget(search);
     while (round.next < round.jobs.length && round.jobs[round.next].result) {
       const job = round.jobs[round.next++];
-      search.explorer.merge(job.result);
+      search.explorer.merge(job.result, new Uint32Array(job.transition));
       if (job.trail) search.motion.push(job.trail);
-      job.result = job.trail = job.snapshot = null;
+      job.result = job.trail = job.transition = job.snapshot = null;
       if (search.explorer.stopped()) {
         cancel(search);
         return;
@@ -179,7 +179,7 @@ function paced() {
     }, ((CHUNK_PATHS - allowance) * 1000) / pace);
   return false;
 }
-function finished({ chunk, buffer, steps, trails }) {
+function finished({ chunk, buffer, steps, trails, transitions }) {
   const entry = chunks.get(chunk);
   chunks.delete(chunk);
   entry.slot.chunks--;
@@ -188,10 +188,11 @@ function finished({ chunk, buffer, steps, trails }) {
   const touched = new Set();
   entry.jobs.forEach((job, i) => {
     const bytes = new Uint8Array(buffer, offset, steps[i] * stride);
-    offset += job.actions.length * stride;
+    offset += rolloutBytes(engine, job.actions);
     if (job.cancelled || !searches.has(job.search.id)) return;
     job.result = bytes;
     job.trail = trails[i];
+    job.transition = transitions[i];
     touched.add(job.search);
   });
   for (const search of touched) drain(search);
@@ -287,7 +288,7 @@ onmessage = async ({ data }) => {
       if (gen !== generation) return;
       await startPool(data.ports, data.base);
       if (gen !== generation) return;
-      const explorer = bootLevel === 0 ? new Explorer(data.seed ?? 1) : Explorer.from_history(data.seed ?? 1, "[]");
+      const explorer = bootLevel === 0 ? new Explorer(engine.game.id, data.seed ?? 1) : Explorer.from_history(engine.game.id, data.seed ?? 1, "[]");
       explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
       addSearch(0, { explorer, branch: null });
       initialized = true;
@@ -358,6 +359,7 @@ onmessage = async ({ data }) => {
         if ((await snapshotHash(engine.capture())) !== tape.endpoint_sha256)
           throw new Error("Branch history does not reproduce its snapshot");
         const explorer = Explorer.from_history(
+          engine.game.id,
           data.seed,
           JSON.stringify(tape.actions),
         );
