@@ -775,6 +775,12 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     }
 
     pub(crate) fn has_pending_guest_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
+        if kernel_gic_only(
+            self.devices.gic.is_some(),
+            self.backend.capabilities().arch.in_kernel_gic,
+        ) {
+            return Ok(self.devices.clockevent.line_asserted);
+        }
         if self.devices.gic.is_none() {
             return Ok(false);
         }
@@ -1367,6 +1373,33 @@ mod tests {
             vmm.backend().pending_irq(),
             Some(vmm_backend::GicIntId(INTID))
         );
+    }
+
+    #[test]
+    fn pending_guest_interrupt_query_observes_the_in_kernel_clockevent() {
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities, GicIntId};
+
+        let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+            name: "mock-kernel-gic",
+            arch: Arm64Caps {
+                in_kernel_gic: true,
+                asid_bits: Arm64AsidBits::Eight,
+            },
+        });
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
+        assert!(!vmm.has_pending_guest_interrupt().unwrap());
+
+        vmm.devices.clockevent.line_asserted = true;
+        vmm.service_pending_irqs_arm64().unwrap();
+        assert_eq!(vmm.backend().pending_irq(), Some(GicIntId(PVCLOCK_PPI)));
+        assert!(vmm.pending_deliverable_interrupt_arm64().unwrap());
+        assert!(vmm.has_pending_guest_interrupt().unwrap());
+
+        vmm.devices.clockevent.line_asserted = false;
+        vmm.service_pending_irqs_arm64().unwrap();
+        assert_eq!(vmm.backend().pending_irq(), None);
+        assert!(!vmm.has_pending_guest_interrupt().unwrap());
     }
 
     #[test]
