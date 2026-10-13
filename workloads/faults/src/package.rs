@@ -443,14 +443,12 @@ mod live {
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
         #[cfg(target_os = "linux")]
-        let mut config = config;
-        #[cfg(target_os = "linux")]
-        if let GuestBackend::Uml(guest) = &mut config.backend {
+        if let GuestBackend::Uml(guest) = &config.backend {
             let cpu = resources
                 .placement
                 .coordinator
                 .ok_or("User-mode Linux search needs an admitted coordinator host processor")?;
-            guest.admit_processor(cpu)?;
+            guest.verify_processor(cpu)?;
         }
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options, workers);

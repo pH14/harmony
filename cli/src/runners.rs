@@ -90,13 +90,38 @@ pub fn identity(spec: &Runner) -> Result<serde_json::Value> {
     Ok(match spec.kind.as_str() {
         "consonance" => {
             let c = consonance(spec)?;
-            serde_json::json!({"kind":spec.kind,"backend":c.backend,"host":if c.backend == Backend::Uml { serde_json::to_value(uml::HostIdentity::current()?)? } else { serde_json::Value::Null }})
+            let host = if c.backend == Backend::Uml {
+                serde_json::to_value(uml_host_identity()?)?
+            } else {
+                serde_json::Value::Null
+            };
+            serde_json::json!({"kind":spec.kind,"backend":c.backend,"host":host})
         }
         "quicknes" => serde_json::json!({"kind":"quicknes"}),
         #[cfg(test)]
         "test" => serde_json::json!({"kind":"test"}),
         other => return Err(format!("unknown runner {other:?}").into()),
     })
+}
+
+fn uml_host_identity() -> Result<uml::HostIdentity> {
+    #[cfg(target_os = "linux")]
+    {
+        let pool =
+            consonance_client::placement::CorePool::detect().map_err(std::io::Error::other)?;
+        let processor = pool
+            .plan(1)
+            .map_err(std::io::Error::other)?
+            .coordinator
+            .ok_or_else(|| {
+                std::io::Error::other("User-mode Linux needs a coordinator processor")
+            })?;
+        Ok(uml::HostIdentity::for_processor(processor)?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(uml::HostIdentity::current()?)
+    }
 }
 pub fn verify(spec: &Runner, expected: &serde_json::Value) -> Result<()> {
     if spec.kind == "consonance" {
@@ -110,4 +135,28 @@ pub fn verify(spec: &Runner, expected: &serde_json::Value) -> Result<()> {
         return Err("runner identity differs from the recording".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn uml_manifest_uses_the_campaign_coordinator_processor() {
+        let spec = Runner {
+            kind: "consonance".into(),
+            backend: Some("uml".into()),
+            options: toml::Table::new(),
+        };
+        let expected = uml_host_identity().unwrap();
+        let value = identity(&spec).unwrap();
+        assert_eq!(value["host"], serde_json::to_value(expected).unwrap());
+        verify(&spec, &value).unwrap();
+
+        let mut changed = value;
+        changed["host"]["processor"] = serde_json::json!(usize::MAX);
+        assert!(verify(&spec, &changed).is_err());
+    }
 }
