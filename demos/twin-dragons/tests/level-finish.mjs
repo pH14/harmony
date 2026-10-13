@@ -11,20 +11,14 @@ async function open(query) {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript((key) => {
     localStorage.setItem(key, "seen");
-    window.clearingEnds = [];
+    window.clearingBatches = [];
     const Base = window.Worker;
     window.Worker = class extends Base {
       constructor(...args) {
         super(...args);
         this.addEventListener("message", ({ data }) => {
           if (data?.type !== "batch") return;
-          for (const index of data.finishes || []) {
-            const trail = data.motion[index];
-            if (trail[1] !== 0) continue;
-            let exit = 0;
-            for (let i = 0; i < trail.length; i += 5) if (trail[i + 1] === 0) exit = trail[i];
-            window.clearingEnds.push(performance.now() + exit / 0.06);
-          }
+          if ((data.finishes || []).some((index) => data.motion[index][1] === 0)) window.clearingBatches.push(performance.now());
         });
       }
     };
@@ -37,15 +31,14 @@ for (const query of ["?pace=300", "?game=tobu-tobu-girl&pace=0"]) {
   const { page, errors } = await open(query);
   await page.waitForFunction(() => document.querySelector('.map-row[data-current="true"]')?.dataset.map === "1", null, { timeout: 120000 });
   const switched = await page.evaluate(() => performance.now());
-  const ends = await page.evaluate(() => window.clearingEnds);
-  assert.ok(ends.length, `${query}: the worker marks the rollouts that clear Level 1`);
-  const first = Math.min(...ends);
-  assert.ok(switched >= first, `${query}: the map stays on Level 1 until a clearing rollout has left it`);
-  assert.ok(switched - first < 1500, `${query}: the map moves to Level 2 within 1.5 seconds of the first clearing rollout leaving Level 1 (${Math.round(switched - first)} ms)`);
+  const batches = await page.evaluate(() => window.clearingBatches);
+  assert.ok(batches.length, `${query}: the worker marks the rollouts that clear Level 1`);
+  const first = Math.min(...batches);
+  assert.ok(switched - first < 500, `${query}: the map moves to Level 2 within half a second of the first batch that clears Level 1 (${Math.round(switched - first)} ms)`);
   assert.deepEqual(errors, []);
   await page.close();
 }
-console.log("The map moves to the next level shortly after the first clearing rollout leaves the cleared one.");
+console.log("The map moves to the next level as soon as the search clears the shown one.");
 
 const { page, errors } = await open("?game=tobu-tobu-girl&pace=0");
 const strip = page.locator('.level-overview[data-map="0"]');

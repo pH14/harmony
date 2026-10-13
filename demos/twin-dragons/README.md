@@ -242,14 +242,12 @@ expands the full list. The row wraps instead of scrolling sideways.
 
 A rollout that raises the cleared-level count is a clearing rollout. The map
 always draws clearing rollouts and the camera follows the one that leaves the
-level first. The map moves to the next level 0.5 seconds after the first
-clearing rollout that started in the shown level leaves it, and that sprite
-stays at its last position until then. When no such rollout is playing, as
-after a warp from an earlier level, the map moves at once. New rooms in levels
-behind the shown one never move the map back. A room change other than Auto
-view moving between the rooms of the shown level, a route preview, a branch
-preview or the tour cancels the pending move. The automatic replay pick waits
-for it and skips states outside the shown level.
+level first. The map moves to the next level as soon as the search reports a
+state there, so the page never shows a level the search has already left. New
+rooms in levels behind the shown one never move the map back. The automatic
+replay pick skips states outside the shown level. Showing a level also builds
+the next level's map in the background, so the map is ready when the search
+arrives.
 
 On a first visit the camera opens at 1.3 times the close-up, follows for 1.5
 seconds, then eases to the close-up over 0.8 seconds. Returning and

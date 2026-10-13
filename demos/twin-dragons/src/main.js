@@ -83,8 +83,6 @@ let heat = new Heatmap(),
   frameCredit = 0,
   latestBest = null,
   lastAuto = 0,
-  pendingRoom = null,
-  finishUntil = 0,
   hoverCell = null,
   selectedCell = null,
   mapLevel = 0,
@@ -178,8 +176,6 @@ function activateSearchView(id) {
   swarmRooms = swarm.frame(id, heat.clock(performance.now()), reducedMotion.matches);
   hoverCell = selectedCell = null;
   lastAuto = 0;
-  pendingRoom = null;
-  finishUntil = 0;
   return fresh;
 }
 function revealBranchOrigin() {
@@ -646,10 +642,9 @@ function updateCamera(now) {
   if (reducedMotion.matches && now - camera.jumped < 2000) return;
   camera.jumped = now;
   if (camera.pinned == null) {
-    const room = followRoom(now), pending = pendingRoom;
+    const room = followRoom(now);
     if (room != null) {
       setRoom(room, true);
-      pendingRoom = pending;
       camera.busierSince = 0;
       return;
     }
@@ -893,6 +888,12 @@ async function buildMapInBrowser(level) {
   builtMaps.queue.push(level);
   nextBuiltMap();
 }
+function prefetchNextMap(level) {
+  const next = catalog.levels[levelIndex(level) + 1]?.rooms[0];
+  if (!game.buildMap || next == null || panoramas.has(next)) return;
+  panoramas.set(next, null);
+  buildMapInBrowser(next);
+}
 function discoverArea(id) {
   if (maps.has(id) || panoramas.has(id) || !game.areaMap?.(id)) return;
   panorama(id);
@@ -934,6 +935,7 @@ function panorama(level) {
 if (game.buildMap) {
   startMapWorker();
   panorama(bootLevel);
+  prefetchNextMap(bootLevel);
 }
 else for (const map of catalog.maps) panorama(map.id);
 const canvas = $("map"),
@@ -1394,8 +1396,6 @@ function startSearch(level = bootLevel) {
   wins.clear();
   latestBest = null;
   lastAuto = 0;
-  pendingRoom = null;
-  finishUntil = 0;
   stats = {};
   for (const id of ["play", "scrub"]) $(id).disabled = true;
   $("details").replaceChildren();
@@ -1523,12 +1523,6 @@ function startSearch(level = bootLevel) {
         stats = batchStats;
         gameWon ||= data.won;
         const now = performance.now();
-        if (!reducedMotion.matches)
-          for (const index of finishes || []) {
-            const end = levelExit(motion[index]);
-            if (end === null) continue;
-            finishUntil = Math.min(finishUntil > now ? finishUntil : Infinity, now + end / 0.06 + FINISH_HOLD);
-          }
         heat.visitMotion(data.motion || [], maps, now);
         for (const point of data.points) {
           const o = point.observation,
@@ -1550,17 +1544,15 @@ function startSearch(level = bootLevel) {
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
           heat.retain({ ...point, observation: project(o, map) }, now);
-          const shown = pendingRoom?.level ?? branchPreview?.room ?? mapLevel;
+          const shown = branchPreview?.room ?? mapLevel;
           if (followDiscovery(o, first, focusedLevel, userSelected, cleared) && levelIndex(o.level) >= levelIndex(shown)) {
             if (branchPreview) branchPreview.room = o.level;
-            else if (finishUntil > now) pendingRoom = { level: o.level, from: pendingRoom?.from ?? mapLevel };
             else setRoom(o.level);
           }
         }
         if (
           latestBest !== null &&
           !userSelected &&
-          !pendingRoom &&
           now - lastAuto > 8000 &&
           !seeking
         ) {
@@ -1575,7 +1567,7 @@ function startSearch(level = bootLevel) {
           if (routeHover) showRoutePreview(stateCache.get(routeHover.id), routeHover);
         } else if (data.request === 0) {
           const state = data.states[0];
-          if (!userSelected && state && !pendingRoom && (!isMapEvidence(state.observation, catalog.levels) || levelRooms().includes(state.observation.level)))
+          if (!userSelected && state && (!isMapEvidence(state.observation, catalog.levels) || levelRooms().includes(state.observation.level)))
             selectState(state, true).catch(fail);
         } else if (data.request === request) {
           renderStates();
@@ -1616,21 +1608,10 @@ function updateSearchControl() {
       ? "Paused"
       : "Searching";
 }
-function levelExit(trail) {
-  const rooms = levelRooms(trail[1]);
-  if (!rooms.includes(mapLevel)) return null;
-  let frame = 0;
-  for (let i = 0; i < trail.length; i += MOTION_STRIDE) if (rooms.includes(trail[i + 1])) frame = trail[i];
-  return frame;
-}
 function setRoom(level, preserveSelection = false) {
   const map = maps.get(level);
   if (!map) return;
-  pendingRoom = null;
-  if (!levelRooms().includes(level)) {
-    camera.pinned = null;
-    finishUntil = 0;
-  }
+  if (!levelRooms().includes(level)) camera.pinned = null;
   mapLevel = level;
   mapWidth = map.width;
   mapHeight = map.height;
@@ -1644,6 +1625,7 @@ function setRoom(level, preserveSelection = false) {
   $("map-label").textContent = map.label.toUpperCase();
   renderMapRows(owner);
   updateStats();
+  prefetchNextMap(level);
 }
 function browseRoom(level) {
   stopControl();
@@ -1916,11 +1898,6 @@ function updateRoomChrome(c) {
 let spriteBudget = swarm.maxTrails, drawCost = 0, frameGap = 1000 / 60;
 function drawMap(now) {
   const start = performance.now();
-  if (pendingRoom && now >= finishUntil) {
-    const { level, from } = pendingRoom;
-    pendingRoom = null;
-    if (levelRooms(from).includes(mapLevel) && !routeHover && !branchPreview && !tour.open) setRoom(level);
-  }
   swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, Math.round(spriteBudget), true);
   updatePan(now);
   updateCamera(now);
