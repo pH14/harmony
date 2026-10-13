@@ -93,3 +93,19 @@ fn toy_bisect_without_divergence_reports_null_point() {
     assert_eq!(json["point"], serde_json::Value::Null);
     assert_eq!(json["compare"]["verdict"], serde_json::json!("identical"));
 }
+
+#[test]
+fn toy_bisect_reports_a_spawn_difference_with_zero_limit() {
+    let (code, json) = run(&[
+        "toy-bisect",
+        "--seed",
+        "42",
+        "--diverge-at",
+        "0",
+        "--limit",
+        "0",
+    ]);
+    assert_eq!(code, Some(2));
+    assert_eq!(json["compare"]["verdict"]["diverged"]["first_mismatch"], 0);
+    assert_eq!(json["point"]["first_divergent_work"], 0);
+}
