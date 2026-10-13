@@ -191,12 +191,14 @@ function roomView(id, c) {
   }
   return views.get(key);
 }
+const params = new URLSearchParams(location.search);
 const budget = memoryBudget(
   navigator.deviceMemory,
   matchMedia("(pointer: coarse)").matches,
   navigator.hardwareConcurrency,
-  Number(new URLSearchParams(location.search).get("workers")),
+  Number(params.get("workers")),
 );
+const pace = params.has("pace") ? Math.max(0, Number(params.get("pace")) || 0) : 85;
 const swarm = new Swarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
@@ -1328,7 +1330,7 @@ function startSearch(level = bootLevel) {
       fail(e);
     }
   };
-  worker.postMessage({ type: "init", base: base.href, seed, budget, ports, boot_level: bootLevel }, ports);
+  worker.postMessage({ type: "init", base: base.href, seed, budget, pace, ports, boot_level: bootLevel }, ports);
 }
 function updateSearchControl() {
   heat.setRunning(ready && !paused && !stats.stopped, performance.now());

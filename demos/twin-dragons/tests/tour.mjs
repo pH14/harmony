@@ -10,7 +10,7 @@ const browser = await chromium.launch({
     ? { channel: process.env.CHROME_CHANNEL }
     : {}),
 });
-const url = process.env.DEMO_URL || "http://127.0.0.1:4173";
+const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?pace=0`;
 const errors = [];
 async function open(options = {}) {
   const page = await browser.newPage(options);

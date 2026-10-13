@@ -66,7 +66,7 @@ for (const name of ["level-one", "level-two"]) {
 console.log(`Swarm sampling: ${4 * ROUND_PATHS} actual rollouts, ${recordedPoints} poses, every archived endpoint and recorded campaign transitions match unsampled execution.`);
 
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
-const url = process.env.DEMO_URL || "http://127.0.0.1:4173";
+const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?pace=0`;
 const errors = [];
 await mkdir("test-results", { recursive: true });
 try {

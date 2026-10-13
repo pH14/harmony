@@ -77,7 +77,11 @@ const pool = [],
   chunks = new Map();
 let running = false,
   nextChunk = 0,
-  flushTimer = null;
+  flushTimer = null,
+  pace = 0,
+  allowance = 0,
+  refilled = 0,
+  paceTimer = null;
 const parentKey = (search, id) => search.key * 4294967296 + id;
 function planRound(search) {
   if (search.explorer.stopped()) return;
@@ -155,8 +159,25 @@ function pump() {
     for (const slot of pool) {
       if (!search.queue.length) return;
       if (slot.chunks >= CHUNKS_AHEAD || !slot.ready) continue;
+      if (!paced()) return;
       send(slot, search.queue.splice(0, CHUNK_PATHS));
     }
+}
+function paced() {
+  if (!pace) return true;
+  const now = performance.now();
+  allowance = Math.min(Math.max(1, pace / 8), allowance + ((now - refilled) * pace) / 1000);
+  refilled = now;
+  if (allowance >= CHUNK_PATHS) {
+    allowance -= CHUNK_PATHS;
+    return true;
+  }
+  if (paceTimer === null)
+    paceTimer = setTimeout(() => {
+      paceTimer = null;
+      pump();
+    }, ((CHUNK_PATHS - allowance) * 1000) / pace);
+  return false;
 }
 function finished({ chunk, buffer, steps, trails }) {
   const entry = chunks.get(chunk);
@@ -211,6 +232,7 @@ function pause() {
 function resume() {
   if (running) return;
   running = true;
+  refilled = performance.now();
   pump();
   scheduleFlush();
 }
@@ -255,6 +277,8 @@ onmessage = async ({ data }) => {
       initialized = false;
       engine = await createEngine(data.base);
       budget = data.budget;
+      pace = data.pace ?? 0;
+      allowance = 0;
       if (gen !== generation) return;
       globalThis.harmonyEngine = engine;
       bootLevel = data.boot_level ?? 0;

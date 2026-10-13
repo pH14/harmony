@@ -128,6 +128,13 @@ workers. Rollouts already sent for a search still merge into it after a
 switch. The advancing search gets the global budget minus the bytes the others hold, with
 a 2 MiB floor.
 
+The coordinator sends at most 85 rollouts per second, so a viewer can follow
+the search. Winning the game takes 9,700 to 15,600 rollouts across 18 seeds, so
+a paced search finishes in about 2 to 3 minutes on any device that keeps up.
+The `pace` URL parameter sets the rate in rollouts per second, and `pace=0`
+removes the limit. The browser tests run with `pace=0`, and the throughput
+figures below are unpaced.
+
 Throughput scales with the worker count. On the 8 performance cores of an
 Intel Core Ultra 9 285HX in Chrome, 6 rollout workers run about 217,000 game
 frames per second, 7 run 236,000 and 8 run 243,000 (3,600 paths per second),

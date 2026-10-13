@@ -21,7 +21,7 @@ try {
         }
       };
     });
-    await page.goto(process.env.DEMO_URL || 'http://127.0.0.1:4173/');
+    await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?pace=0`);
     await page.locator('#goal-title').waitFor({state:'visible'});
     await page.waitForFunction(() => !document.querySelector('#goal-title').disabled);
     for (const level of [1,2,0]) {
