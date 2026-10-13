@@ -4,17 +4,26 @@ use control_proto::RegsView;
 use vmm_backend::{Arch, Backend, Exit, Gpa};
 
 use crate::virtual_time::NormalizedEventClass;
-use crate::vmm::{Step, Vmm, VmmError};
+use crate::vmm::{PvclockSnapshot, Step, Vmm, VmmError};
 
 pub mod arm64;
 pub mod x86;
+
+pub struct SnapshotHashParts {
+    pub doorbell: Option<Vec<u8>>,
+    pub serial: Vec<u8>,
+    pub device: Vec<u8>,
+    pub vendor_chunks: Vec<u8>,
+    pub clock_offset: u64,
+    pub pvclock: Option<PvclockSnapshot>,
+}
 
 pub trait Vendor: Arch + Sized {
     type Devices;
 
     type RestorePrep;
 
-    type Snapshot: vm_state::SnapshotRecords;
+    type Snapshot: vm_state::SnapshotRecords + Clone;
 
     fn new_devices() -> Self::Devices;
 
@@ -87,6 +96,12 @@ pub trait Vendor: Arch + Sized {
     fn contract_identity_hash<B: Backend<A = Self>>(_vmm: &Vmm<B>) -> Option<[u8; 32]> {
         None
     }
+
+    fn project_snapshot_hash_parts(
+        snapshot: &Self::Snapshot,
+    ) -> Result<SnapshotHashParts, VmmError>;
+
+    fn project_logical_snapshot(snapshot: &mut Self::Snapshot, vcpu: &Self::VcpuState);
 
     fn regs_view(vcpu: &Self::VcpuState) -> RegsView;
 

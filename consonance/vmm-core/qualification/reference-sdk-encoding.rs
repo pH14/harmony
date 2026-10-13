@@ -44,5 +44,15 @@ fn encode_sdk_channel(
             v.extend_from_slice(&threshold.to_le_bytes());
         }
     }
+    if !sdk.events.is_empty() {
+        v.extend_from_slice(b"EVTS");
+        v.extend_from_slice(&(sdk.events.len() as u64).to_le_bytes());
+        for (moment, local, payload) in &sdk.events {
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&local.to_le_bytes());
+            v.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            v.extend_from_slice(payload);
+        }
+    }
     Ok(v)
 }

@@ -60,7 +60,7 @@ copies each selected page directly into guest RAM. Page-write validation sorts
 small address/reference records, rejects duplicates and invalid ranges before
 any write, then coalesces instruction-cache invalidation ranges in the same pass
 that copies the pages. It does not sort or allocate temporary page payloads. Portable format
-6 preserves pending SDK stops, unanswered service requests, response sequences,
+7 preserves pending SDK stops, unanswered service requests, response sequences,
 pending host effects and reseeds, the recorded input prefix, schedule failure,
 and command nonce. Replay restores these without reseeding or reapplying consumed
 inputs; an explicit branch selects a new plan and retains the command nonce.
@@ -76,7 +76,18 @@ Seeded branches require a wired entropy stream. A branch into a VM without one
 is rejected before the live VM is replaced, leaving the session usable.
 Control-server imports require both SDK and control-state sections because every
 control snapshot captures both; missing sections are rejected before minting a
-handle.
+handle. The SDK hash chunk also binds its captured event history, including
+payloads, so replayed `SdkEvents` cannot differ under the same whole-state hash.
+The version-7 envelope pins this expanded identity and rejects older versions.
+Import reconstructs the hash suffix from validated VM-state,
+SDK, and control records. A full import checks its claimed whole-state hash
+against RAM and that suffix; a sparse import compares the reconstructed suffix
+with its sidecar before deriving pages or minting a handle. Sparse validation
+does not materialize guest RAM. Control seals and imports require VM-state
+hashing so every restored VM record participates in identity. Standalone VMM
+hashing remains optional. A mapped x86 doorbell cannot seal because the
+x86 VM-state record has no dedicated doorbell pages; the production dedicated
+mapping belongs to arm64 and is preserved in its device record.
 Whole-state hashes include this control state and the recorded prefix used for
 duplicate-input rejection. Writers always emit the current format, and readers
 reject older envelopes. Complete reads allocate incrementally from received
