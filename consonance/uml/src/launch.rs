@@ -213,7 +213,13 @@ impl Guest {
         let child = command.spawn()?;
         drop(command);
         let pid = i32::try_from(child.id()).map_err(io::Error::other)?;
-        let bridge_state = Arc::new(AtomicU8::new(bridge::RUNNING));
+        let bridge_state = Arc::new(AtomicU8::new(
+            if serve && launch.bridge.is_some_and(|bridge| bridge.cut == Some(0)) {
+                bridge::CUT
+            } else {
+                bridge::RUNNING
+            },
+        ));
         let (bridge, held) = match (host_end, launch.bridge) {
             (Some(host), Some(config)) if serve => {
                 let state = Arc::clone(&bridge_state);
@@ -570,6 +576,23 @@ mod tests {
         assert_eq!(exit.console_bytes, 20);
         assert!(exit.leftovers.is_empty());
         assert!(exit.work_removed);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn zero_event_cut_stops_a_live_guest_before_any_event() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.bridge = Some(Bridge {
+            seed: 7,
+            cut: Some(0),
+        });
+        launch.wall_limit = Duration::from_millis(500);
+        let exit = shell(&launch, "sleep 30").wait().unwrap();
+        assert_eq!(exit.reason, ExitReason::EventCut);
+        assert!(exit.events.is_empty());
+        assert!(exit.leftovers.is_empty());
     }
 
     #[test]
