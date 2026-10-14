@@ -504,6 +504,12 @@ fn guest_actlr_state_refuses_capture_and_clean_restore_resets_it() {
     assert_eq!(cold.next_store(), 0);
     drop(cold);
 
+    let mut independent = Guest::new(live_backend(), &program);
+    assert_eq!(independent.next_store(), 2);
+    independent.restore(&clean);
+    assert_eq!(independent.next_store(), 0);
+    drop(independent);
+
     let mut policy = Guest::new(live_backend(), &program);
     assert_eq!(policy.next_store(), 2);
     policy.backend.set_policy(&Arm64Policy::default()).unwrap();

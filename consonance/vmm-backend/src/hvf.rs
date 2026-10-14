@@ -524,6 +524,22 @@ impl HvfBackend {
             #[cfg(test)]
             fail_fault_after_pstate: false,
         };
+        let missing_actlr = || BackendError::Capability {
+            cap: "HVF ACTLR_EL1 read/write for deterministic snapshots",
+        };
+        backend
+            .sysreg(HV_SYS_REG_ACTLR_EL1)
+            .map_err(|_| missing_actlr())?;
+        backend
+            .set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)
+            .map_err(|_| missing_actlr())?;
+        if backend
+            .sysreg(HV_SYS_REG_ACTLR_EL1)
+            .map_err(|_| missing_actlr())?
+            != 0
+        {
+            return Err(missing_actlr());
+        }
         backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
         Ok(backend)
     }

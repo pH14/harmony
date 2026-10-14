@@ -368,7 +368,9 @@ Apple HVF also exposes guest-writable `ACTLR_EL1`, including the EnTSO memory
 ordering control. It is absent from the portable vCPU record: a guest-written
 value of `0x2` survived uninterrupted execution but read back as zero after a
 fresh restore. HVF refuses capture while `ACTLR_EL1` is nonzero, and policy
-installation and restore clear it to the fresh-vCPU zero baseline. The Arm
+installation and restore clear it to the fresh-vCPU zero baseline. Backend
+creation probes ACTLR read/write and refuses a host without that capability;
+Apple documents the register API from macOS 15. The Arm
 portable record now uses wire version 9 so snapshots created before this
 capture check are rejected. The live
 `guest_actlr_state_refuses_capture_and_clean_restore_resets_it` test checks
