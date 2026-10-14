@@ -27,7 +27,8 @@ same stream at any worker count. Worker ids appear only in run telemetry. The st
 configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay. Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
-checkpoint path and digest before copying its provenance into a completed report.
+checkpoint path, format, serialized bytes, and digest before copying its provenance
+into a completed report. Live archive import verifies the same bytes before execution.
 It also checks the fixed executor and selection-seed derivation labels. Replay reconstructs
 adaptive mixture weights from each admitted
 result at the original reservation boundary and rejects job or skip weights
