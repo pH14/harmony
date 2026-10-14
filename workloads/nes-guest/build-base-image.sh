@@ -94,9 +94,20 @@ build_arm64_busybox() {
     sed 's/^CONFIG_EXTRA_CFLAGS=""$/CONFIG_EXTRA_CFLAGS="-march=armv8.1-a+lse -mno-outline-atomics"/' \
         "$NES_BUSYBOX_OBJ/.config" >"$NES_BUSYBOX_OBJ/.config.tmp"
     mv "$NES_BUSYBOX_OBJ/.config.tmp" "$NES_BUSYBOX_OBJ/.config"
+    grep -qxF 'CONFIG_EXTRA_LDFLAGS=""' "$NES_BUSYBOX_OBJ/.config" || {
+        echo "FAIL: BusyBox default linker flags changed" >&2
+        exit 1
+    }
+    sed 's/^CONFIG_EXTRA_LDFLAGS=""$/CONFIG_EXTRA_LDFLAGS="-Wl,-z,separate-code"/' \
+        "$NES_BUSYBOX_OBJ/.config" >"$NES_BUSYBOX_OBJ/.config.tmp"
+    mv "$NES_BUSYBOX_OBJ/.config.tmp" "$NES_BUSYBOX_OBJ/.config"
     set +o pipefail
     yes '' | make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" oldconfig >/dev/null
     set -o pipefail
+    grep -qxF 'CONFIG_EXTRA_LDFLAGS="-Wl,-z,separate-code"' "$NES_BUSYBOX_OBJ/.config" || {
+        echo "FAIL: BusyBox lost separate-code linker flags" >&2
+        exit 1
+    }
     make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" CC="$ARM64_MUSL_PREFIX/bin/musl-gcc" \
         -j"$(nproc)" busybox >/dev/null
 }
@@ -131,7 +142,7 @@ build_agent_arm64() {
         exit 1
     }
     agent_rustflags=${RUSTFLAGS:-}
-    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-L$ARM64_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
+    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-Wl,-z,separate-code -C link-arg=-L$ARM64_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
     if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
         agent_rustflags="$agent_rustflags --remap-path-prefix=$HARMONY_BUILD_PATH_PREFIX=/build"
     fi
@@ -187,6 +198,13 @@ for applet in sh mount mknod chmod cat echo grep halt reboot; do
     ln -sf busybox "$NES_ROOT/bin/$applet"
 done
 install -m 0755 "$agent" "$NES_ROOT/opt/harmony/play-agent"
+if [ "$OCI_ARCH" = arm64 ]; then
+    require_tools python3
+    for executable in "$NES_ROOT/bin/busybox" "$NES_ROOT/opt/harmony/play-agent"; do
+        python3 "$REPO_ROOT/consonance/harmony-linux/scripts/aa4-exclusive-scan.py" "$executable"
+        python3 "$REPO_ROOT/consonance/harmony-linux/scripts/aa5-counter-scan.py" "$executable"
+    done
+fi
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$NES_ROOT/etc/passwd"
 printf 'root:x:0:\n' >"$NES_ROOT/etc/group"
 
