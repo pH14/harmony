@@ -140,7 +140,7 @@ pub const SELECTOR_IDENTIFIER: &str = "tier_pace_yield_cell_recent_count_decay_v
 
 const TIER_RANK_CAP: u8 = 8;
 
-const TIER_RANK_SHIFT: u32 = 1;
+const TIER_RANK_SHIFT: u32 = 3;
 
 const _: () = assert!(TIER_RANK_SHIFT * (TIER_RANK_CAP as u32) < u64::BITS);
 
@@ -8140,7 +8140,7 @@ mod tests {
     fn the_progress_order_beats_the_key_order_when_choosing_the_top_tier() {
         let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0002, 1024);
-        assert!(counts[0] * 2 > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 4);
     }
 
     fn unrecorded_draw_counts(archive: &mut TestArchive, seed: u64, draws: usize) -> Vec<u64> {
@@ -8186,7 +8186,7 @@ mod tests {
         }
         archive.tier_runs_mut((2, 1)).wins = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0009, 4096);
-        assert!(counts[0] * 2 > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
     }
 
     fn roughly_equal(left: u64, right: u64) -> bool {
@@ -8220,7 +8220,7 @@ mod tests {
             archive.record_selection(1, &next);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000a, 4096);
-        assert!(counts[0] * 2 > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
     }
 
     #[test]
@@ -8250,7 +8250,7 @@ mod tests {
             archive.record_selection(2, &middle);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
-        assert!(counts[1] * 2 > counts[2] * 3, "{counts:?}");
+        assert!(counts[1] > counts[2] * 5, "{counts:?}");
     }
 
     #[test]
@@ -8309,10 +8309,13 @@ mod tests {
             archive.record_selection(0, &draw);
         }
         let full = top_tier_draws(&mut archive, 0x7ea1_0006, 4096);
-        assert!(full[0] * 2 > full[1] * 3, "{full:?}");
+        assert!(full[0] > full[1] * 5, "{full:?}");
         archive.record_selection(0, &draw);
         let halved = top_tier_draws(&mut archive, 0x7ea1_0007, 4096);
-        assert!(roughly_equal(halved[0], halved[1]), "{halved:?}");
+        assert!(
+            halved[0] > halved[1] * 2 && halved[0] < halved[1] * 6,
+            "{halved:?}"
+        );
     }
 
     fn top_tier_draws(archive: &mut TestArchive, seed: u64, draws: usize) -> [u64; 2] {
