@@ -131,6 +131,11 @@ fn capture_refusal<T>(error: VmmError) -> Result<Result<T, ControlError>, ServeE
                 reason: what.to_owned(),
             }))
         }
+        VmmError::Backend(error @ vmm_backend::BackendError::NonportableXsaveMxcsr) => {
+            Ok(Err(ControlError::SnapshotRefused {
+                reason: error.to_string(),
+            }))
+        }
         other => Err(other.into()),
     }
 }
@@ -6613,7 +6618,7 @@ mod tests {
         let _ = hash(&mut s);
     }
 
-    struct RestoreFailBackend(MockBackend);
+    struct RestoreFailBackend(MockBackend, bool);
     impl Backend for RestoreFailBackend {
         type A = vmm_backend::X86;
 
@@ -6662,6 +6667,16 @@ mod tests {
         fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
         }
+        fn validate_snapshot_state(
+            &self,
+            _state: &vmm_backend::VcpuState,
+        ) -> vmm_backend::Result<()> {
+            if self.1 {
+                Err(vmm_backend::BackendError::NonportableXsaveMxcsr)
+            } else {
+                Ok(())
+            }
+        }
         fn validate_restore_state(
             &self,
             state: &vmm_backend::VcpuState,
@@ -6687,6 +6702,59 @@ mod tests {
     }
 
     #[test]
+    fn nonportable_mxcsr_snapshot_refusal_keeps_control_session_usable() {
+        let build = |reject_snapshot| {
+            let mut backend = MockBackend::with_exits(vec![
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                Exit::Common(CommonExit::Idle),
+            ]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vmm = Vmm::new(
+                RestoreFailBackend(backend, reject_snapshot),
+                GuestRam::new(RAM).unwrap(),
+            );
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+            vmm.wire_snapshot_hashing();
+            vmm.restore_guest_memory(&vec![0u8; RAM]).unwrap();
+            vmm
+        };
+        let mut live = build(true);
+        live.step().unwrap();
+        let mut server = ControlServer::new(live, Box::new(move || Ok(build(false))));
+        assert!(
+            server
+                .handle(&Request::Hello(server_caps()))
+                .unwrap()
+                .is_ok()
+        );
+        let before_hash = server.vmm_mut().unwrap().state_hash().unwrap();
+        let before_store = server.snapshot_store_stats();
+        let snapshot_result = server.handle(&Request::Snapshot);
+        assert!(
+            matches!(
+                &snapshot_result,
+                Ok(Err(ControlError::SnapshotRefused { reason }))
+                    if reason == &vmm_backend::BackendError::NonportableXsaveMxcsr.to_string()
+            ),
+            "unexpected snapshot result: {snapshot_result:?}"
+        );
+        assert_eq!(server.snapshot_store_stats(), before_store);
+        assert_eq!(server.latest_snapshot(), None);
+        assert_eq!(server.vmm_mut().unwrap().state_hash().unwrap(), before_hash);
+        assert!(matches!(
+            server.handle(&Request::Hash {
+                scope: HashScope::Whole
+            }),
+            Ok(Ok(Reply::Hash(_)))
+        ));
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn backend_restore_shape_is_preflighted_before_portable_import() {
         let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -6703,7 +6771,7 @@ mod tests {
                 msr_filter: vmm_backend::MsrFilter::default(),
             })
             .unwrap();
-            let mut v = Vmm::new(RestoreFailBackend(m), GuestRam::new(RAM).unwrap());
+            let mut v = Vmm::new(RestoreFailBackend(m, false), GuestRam::new(RAM).unwrap());
             v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap());
             v.wire_snapshot_hashing();
             v.wire_lapic(
@@ -6759,7 +6827,7 @@ mod tests {
                 msr_filter: vmm_backend::MsrFilter::default(),
             })
             .unwrap();
-            let mut v = Vmm::new(RestoreFailBackend(m), GuestRam::new(RAM).unwrap());
+            let mut v = Vmm::new(RestoreFailBackend(m, false), GuestRam::new(RAM).unwrap());
             v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
             v.wire_snapshot_hashing();
             v.restore_guest_memory(&vec![0u8; RAM]).unwrap();

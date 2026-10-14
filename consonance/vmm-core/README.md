@@ -114,7 +114,10 @@ archive identity is outside this snapshot identity check. Use a complete
 portable snapshot when the imported target's whole-state hash must be verified.
 Control seals and imports require VM-state
 hashing so every restored VM record participates in identity. Standalone VMM
-hashing remains optional. A mapped x86 doorbell cannot seal because the
+hashing remains optional. When KVM rejects a nonportable XSAVE MXCSR state,
+control `Snapshot` returns `SnapshotRefused` and keeps the execution session
+available for hashing or further running; the snapshot and restore portability
+guard remains in force. A mapped x86 doorbell cannot seal because the
 x86 VM-state record has no dedicated doorbell pages; the production dedicated
 mapping belongs to arm64 and is preserved in its device record.
 Whole-state hashes include this control state and the recorded prefix used for
