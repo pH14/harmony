@@ -1901,6 +1901,13 @@ where
         }
     }
 
+    pub fn sdk_request_bindings(&self) -> Vec<((u64, u16, u64), [u8; 32])> {
+        self.sdk
+            .as_ref()
+            .map(|sdk| sdk.env.request_bindings().collect())
+            .unwrap_or_default()
+    }
+
     pub fn resolve_service_answer(
         &mut self,
         answer: channel::Answer,

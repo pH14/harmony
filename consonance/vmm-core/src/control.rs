@@ -1013,10 +1013,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                     };
                     let mut recorded = self.recorded.clone();
-                    recorded.record_answer(
+                    recorded.record_bound_answer(
                         at,
                         question.service(),
                         question.request_id(),
+                        Sha256::digest(question.payload()).into(),
                         response.clone(),
                     )?;
                     if self
@@ -1442,6 +1443,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut reseeds: BTreeMap<u64, u64> = BTreeMap::new();
         let mut payloads: Option<Vec<Vec<u8>>> = None;
         let mut answers = BTreeMap::new();
+        let mut answer_bindings = BTreeMap::new();
         let mut env_policy: Option<ServiceConfig> = None;
         let mut branch_plan: Option<EnvSpec> = None;
         let seed = match env {
@@ -1464,6 +1466,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 payloads = spec.payloads().map(<[Vec<u8>]>::to_vec);
                 env_policy = Some(spec.config().clone());
                 answers = spec.answers().clone();
+                answer_bindings = spec.request_bindings().clone();
                 Some(spec.seed())
             }
         };
@@ -1508,7 +1511,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(ControlError::MalformedEnvironment));
         }
         for (&(at, service, request), answer) in &answers {
-            prepared_env.record_service_request(at, service, request, answer.clone());
+            match answer_bindings.get(&(at, service, request)) {
+                Some(&digest) => prepared_env.record_bound_service_request(
+                    at,
+                    service,
+                    request,
+                    digest,
+                    answer.clone(),
+                ),
+                None => prepared_env.record_service_request(at, service, request, answer.clone()),
+            }
         }
         let Some(&store_id) = self.snaps.get(&snap.0) else {
             return Ok(Err(ControlError::UnknownSnapshot(snap)));
@@ -1699,11 +1711,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .answers()
                 .map(|(key, value)| (key, value.clone()))
                 .collect();
+            answer_bindings = snapshot.channel.recorded.request_bindings().collect();
         }
         for ((at, service, request), answer) in answers {
-            self.recorded
-                .record_answer(at, service, request, answer)
-                .map_err(ServeError::Service)?;
+            match answer_bindings.get(&(at, service, request)) {
+                Some(&digest) => self
+                    .recorded
+                    .record_bound_answer(at, service, request, digest, answer),
+                None => self.recorded.record_answer(at, service, request, answer),
+            }
+            .map_err(ServeError::Service)?;
         }
         self.recorded.set_payloads(active_payloads);
         let sdk_env = prepared_env;
@@ -1783,6 +1800,35 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     fn run(
+        &mut self,
+        until: &control_proto::StopConditions,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
+        let result = self.run_inner(until);
+        if result.is_ok() {
+            self.sync_recorded_request_bindings()?;
+        }
+        result
+    }
+
+    fn sync_recorded_request_bindings(&mut self) -> Result<(), ServeError> {
+        let bindings = self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .sdk_request_bindings();
+        for (key, digest) in bindings {
+            if self.recorded.request_bindings().get(&key) == Some(&digest) {
+                continue;
+            }
+            if let Some(answer) = self.recorded.answers().get(&key).cloned() {
+                self.recorded
+                    .record_bound_answer(key.0, key.1, key.2, digest, answer)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_inner(
         &mut self,
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
@@ -2559,6 +2605,7 @@ mod tests {
     )]
     fn host_service_response_is_stopped_recorded_and_replayed() {
         use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+        use sha2::{Digest, Sha256};
         let mut s = payload_server();
         hello(&mut s);
         let config = ServiceConfig {
@@ -2691,6 +2738,10 @@ mod tests {
         assert_eq!(ServiceAnswer::decode(bytes).unwrap(), answer);
         let recorded = s.recorded_env().clone();
         assert_eq!(recorded.answers().get(&(at, 19, 77)), Some(&answer));
+        assert_eq!(
+            recorded.request_bindings().get(&(at, 19, 77)),
+            Some(&Sha256::digest(b"choose").into())
+        );
 
         let mut cold = payload_server();
         cold.set_service_factory(std::sync::Arc::clone(&s.service_factory));
@@ -2736,12 +2787,69 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        let mut changed_payload = payload.clone();
+        changed_payload[10..].copy_from_slice(b"other!");
+        let mut changed_frame = [0; 4096];
+        let changed_len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            13,
+            &changed_payload,
+            &mut changed_frame,
+        )
+        .unwrap();
+        let vmm = s.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, changed_len)
+            .unwrap()
+            .copy_from_slice(&changed_frame[..changed_len]);
+        assert_eq!(
+            vmm.service_doorbell(changed_len as u32).unwrap(),
+            crate::vmm::Step::Continued
+        );
+        assert_eq!(
+            hypercall_proto::decode(vmm.guest_slice(0xf000, 4096).unwrap())
+                .unwrap()
+                .0
+                .status,
+            hypercall_proto::Status::BadRequest as u16
+        );
         assert_eq!(ring(&mut s), crate::vmm::Step::Continued);
         assert_eq!(
             s.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
             response
         );
         assert_eq!(hash(&mut s), expected_hash);
+
+        let mut unbound = recorded.clone();
+        unbound.record_answer(at, 19, 77, answer.clone()).unwrap();
+        assert!(unbound.request_bindings().is_empty());
+        s.restore(
+            origin,
+            Some(&Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: unbound.encode(),
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ring(&mut s), crate::vmm::Step::Continued);
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        let exported = match s.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        let exported = EnvSpec::decode_reproducer(&exported.bytes).unwrap();
+        assert_eq!(
+            exported.request_bindings().get(&(at, 19, 77)),
+            Some(&Sha256::digest(b"choose").into())
+        );
     }
 
     #[test]
@@ -4517,14 +4625,14 @@ mod tests {
         let mut payloads = vec![Vec::new(); 9];
         payloads[0] = vec![0; 100];
         spec.set_payloads(Some(payloads.clone()));
-        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 24 - spec.encode().len();
+        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 56 - spec.encode().len();
         for payload in &mut payloads[1..] {
             *payload = vec![0; payload_bytes / 8];
         }
         payloads[1].extend(vec![0; payload_bytes % 8]);
         spec.set_payloads(Some(payloads));
         let bytes = spec.try_encode_reproducer().unwrap();
-        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 24);
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 56);
         assert_eq!(
             server
                 .handle(&Request::Branch {

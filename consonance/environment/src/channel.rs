@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, fmt};
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::Moment;
@@ -9,7 +10,7 @@ use crate::Moment;
 pub const MAX_CHANNEL_BYTES: usize = 1 << 20;
 
 const SNAPSHOT_MAGIC: u32 = u32::from_le_bytes(*b"EVC1");
-const SNAPSHOT_VERSION: u16 = 1;
+const SNAPSHOT_VERSION: u16 = 2;
 pub const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
 
 pub const SERVICE_ENTROPY: u16 = 1;
@@ -194,6 +195,8 @@ pub enum ChannelError {
     TooLarge,
     #[error("malformed channel state")]
     Malformed,
+    #[error("request identity was reused with different payload bytes")]
+    RequestIdentityMismatch,
     #[error("service handler state was rejected: {0}")]
     Handler(String),
 }
@@ -340,7 +343,7 @@ impl HandlerSnapshot {
 pub struct RecordedState {
     stream_state: u64,
     moment: Moment,
-    overrides: BTreeMap<DecisionKey, Answer>,
+    overrides: BTreeMap<DecisionKey, RecordedAnswer>,
     payloads: Option<Vec<Vec<u8>>>,
     handler: HandlerSnapshot,
 }
@@ -349,12 +352,20 @@ impl RecordedState {
     pub fn answers(&self) -> impl Iterator<Item = ((Moment, u16, u64), &Answer)> {
         self.overrides
             .iter()
-            .map(|(key, answer)| ((key.moment, key.service, key.request_id), answer))
+            .map(|(key, record)| ((key.moment, key.service, key.request_id), &record.answer))
+    }
+
+    pub fn request_bindings(&self) -> impl Iterator<Item = ((Moment, u16, u64), [u8; 32])> + '_ {
+        self.overrides.iter().filter_map(|(key, record)| {
+            record
+                .request_sha256
+                .map(|digest| ((key.moment, key.service, key.request_id), digest))
+        })
     }
 
     pub fn capture<H: ServiceHandler>(environment: &RecordedEnv<H>) -> Result<Self, ChannelError> {
-        for answer in environment.overrides.values() {
-            if let Answer::Data(bytes) = answer {
+        for record in environment.overrides.values() {
+            if let Answer::Data(bytes) = &record.answer {
                 check_len(bytes.len())?;
             }
         }
@@ -373,9 +384,12 @@ impl RecordedState {
 
     fn encoded_len(&self) -> usize {
         let mut size = 39usize;
-        for answer in self.overrides.values() {
+        for record in self.overrides.values() {
             size = size.saturating_add(19);
-            if let Answer::Data(bytes) = answer {
+            if record.request_sha256.is_some() {
+                size = size.saturating_add(32);
+            }
+            if let Answer::Data(bytes) = &record.answer {
                 size = size.saturating_add(4).saturating_add(bytes.len());
             }
         }
@@ -402,11 +416,11 @@ impl RecordedState {
         put_u64(out, self.stream_state);
         put_u64(out, self.moment);
         put_len(out, self.overrides.len());
-        for (key, answer) in &self.overrides {
+        for (key, record) in &self.overrides {
             put_u64(out, key.moment);
             put_u16(out, key.service);
             put_u64(out, key.request_id);
-            put_answer(out, answer);
+            put_recorded_answer(out, record);
         }
         match &self.payloads {
             None => out.push(0),
@@ -456,7 +470,7 @@ impl RecordedState {
                 return Err(ChannelError::Malformed);
             }
             previous = Some(key);
-            overrides.insert(key, read_answer(&mut reader)?);
+            overrides.insert(key, read_recorded_answer(&mut reader)?);
         }
         let payloads = match reader.u8()? {
             0 => None,
@@ -554,7 +568,7 @@ impl ServiceHandler for NominalHandler {
 
 pub struct RecordedEnv<H: ServiceHandler> {
     stream_state: u64,
-    overrides: BTreeMap<DecisionKey, Answer>,
+    overrides: BTreeMap<DecisionKey, RecordedAnswer>,
     moment: Moment,
     payloads: Option<Vec<Vec<u8>>>,
     payload_cursor: usize,
@@ -591,6 +605,14 @@ impl<H: ServiceHandler> fmt::Debug for RecordedEnv<H> {
 }
 
 impl<H: ServiceHandler> RecordedEnv<H> {
+    pub fn request_bindings(&self) -> impl Iterator<Item = ((Moment, u16, u64), [u8; 32])> + '_ {
+        self.overrides.iter().filter_map(|(key, record)| {
+            record
+                .request_sha256
+                .map(|digest| ((key.moment, key.service, key.request_id), digest))
+        })
+    }
+
     pub fn new(seed: u64, handler: H) -> Self {
         let mut environment = Self {
             stream_state: normalize_seed(seed),
@@ -634,12 +656,42 @@ impl<H: ServiceHandler> RecordedEnv<H> {
                 service,
                 request_id,
             },
-            answer,
+            RecordedAnswer {
+                answer,
+                request_sha256: None,
+            },
+        );
+    }
+
+    pub fn record_bound_service_request(
+        &mut self,
+        moment: Moment,
+        service: u16,
+        request_id: u64,
+        request_sha256: [u8; 32],
+        answer: Answer,
+    ) {
+        self.overrides.insert(
+            DecisionKey {
+                moment,
+                service,
+                request_id,
+            },
+            RecordedAnswer {
+                answer,
+                request_sha256: Some(request_sha256),
+            },
         );
     }
 
     pub fn record_question(&mut self, moment: Moment, question: &Question, answer: Answer) {
-        self.record_service_request(moment, question.service(), question.request_id(), answer);
+        self.record_bound_service_request(
+            moment,
+            question.service(),
+            question.request_id(),
+            Sha256::digest(question.payload()).into(),
+            answer,
+        );
     }
 
     pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) -> Result<(), ChannelError> {
@@ -684,8 +736,16 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             service: question.service(),
             request_id: question.request_id(),
         };
-        if let Some(answer) = self.overrides.get(&key) {
-            return Ok(ServiceResponse::Answered(answer.clone()));
+        if let Some(record) = self.overrides.get_mut(&key) {
+            let digest: [u8; 32] = Sha256::digest(question.payload()).into();
+            match record.request_sha256 {
+                Some(bound) if bound != digest => {
+                    return Err(ChannelError::RequestIdentityMismatch);
+                }
+                Some(_) => {}
+                None => record.request_sha256 = Some(digest),
+            }
+            return Ok(ServiceResponse::Answered(record.answer.clone()));
         }
         if let Some(answer) = self.decide_core_supply(question)? {
             return Ok(ServiceResponse::Answered(answer));
@@ -825,6 +885,23 @@ fn put_answer(out: &mut Vec<u8>, answer: &Answer) {
     }
 }
 
+fn put_recorded_answer(out: &mut Vec<u8>, record: &RecordedAnswer) {
+    match record.request_sha256 {
+        None => put_answer(out, &record.answer),
+        Some(digest) => {
+            out.push(if matches!(record.answer, Answer::Nominal) {
+                2
+            } else {
+                3
+            });
+            out.extend_from_slice(&digest);
+            if let Answer::Data(bytes) = &record.answer {
+                put_bytes(out, bytes);
+            }
+        }
+    }
+}
+
 fn read_answer(reader: &mut Reader<'_>) -> Result<Answer, ChannelError> {
     match reader.u8()? {
         0 => Ok(Answer::Nominal),
@@ -833,11 +910,44 @@ fn read_answer(reader: &mut Reader<'_>) -> Result<Answer, ChannelError> {
     }
 }
 
+fn read_recorded_answer(reader: &mut Reader<'_>) -> Result<RecordedAnswer, ChannelError> {
+    let Some(&tag) = reader.bytes.get(reader.cursor) else {
+        return Err(ChannelError::Malformed);
+    };
+    if tag <= 1 {
+        return Ok(RecordedAnswer {
+            answer: read_answer(reader)?,
+            request_sha256: None,
+        });
+    }
+    reader.u8()?;
+    if tag > 3 {
+        return Err(ChannelError::Malformed);
+    }
+    let mut digest = [0; 32];
+    digest.copy_from_slice(reader.take(32)?);
+    let answer = if tag == 2 {
+        Answer::Nominal
+    } else {
+        Answer::Data(reader.bytes()?.to_vec())
+    };
+    Ok(RecordedAnswer {
+        answer,
+        request_sha256: Some(digest),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct DecisionKey {
     moment: Moment,
     service: u16,
     request_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecordedAnswer {
+    answer: Answer,
+    request_sha256: Option<[u8; 32]>,
 }
 
 struct Reader<'a> {
@@ -1372,6 +1482,31 @@ mod tests {
         assert_eq!(
             env.decide(&second).unwrap(),
             ServiceResponse::Answered(Answer::Data(vec![1, 0, 0, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn recorded_answer_rejects_same_identity_with_different_request_bytes() {
+        let mut env = RecordedEnv::new(1, Handler { counter: 0 });
+        let original = Question::with_request_id(11, 7, b"first".to_vec()).unwrap();
+        env.record_question(4, &original, Answer::Data(vec![7]));
+        env.set_moment(4);
+        let changed = Question::with_request_id(11, 7, b"second".to_vec()).unwrap();
+        assert_eq!(
+            env.decide(&changed),
+            Err(ChannelError::RequestIdentityMismatch)
+        );
+        assert_eq!(
+            env.decide(&original),
+            Ok(ServiceResponse::Answered(Answer::Data(vec![7])))
+        );
+        let restored_state =
+            RecordedState::decode(&env.snapshot_state().unwrap().encode()).unwrap();
+        let mut restored = RecordedEnv::new(1, Handler { counter: 0 });
+        restored_state.restore_into(&mut restored).unwrap();
+        assert_eq!(
+            restored.decide(&changed),
+            Err(ChannelError::RequestIdentityMismatch)
         );
     }
 

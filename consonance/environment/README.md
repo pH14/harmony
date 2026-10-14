@@ -19,6 +19,13 @@ reproduces the recorded state bytes. Restoring a recorded environment makes the
 same checks on a cloned handler before replacing the live one, so a rejected
 restore leaves the environment untouched.
 
+The first use of a recorded answer binds its request identity to the request
+payload digest. Reusing that identity at the same virtual moment with different
+payload bytes fails the SDK request instead of silently reusing an answer meant
+for another question. The binding is part of the versioned channel snapshot
+and input reproducer, so restore, branch, and portable replay enforce the same
+check.
+
 `RecordedState::encode_into` appends the same canonical snapshot encoding as
 `encode` to an existing byte vector, preserving any prefix. Framing owners can
 write nested records directly into their destination instead of allocating and
