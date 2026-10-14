@@ -191,6 +191,7 @@ impl Package for Nes {
             wall_seconds: m.config.search.wall_seconds,
             checkpoint_owner: m.checkpoint_owner.clone(),
         };
+        m.store(&out, "search-origin-input.json", br#"{"actions":[]}"#)?;
         let result = if m.config.runner.kind == "quicknes" {
             let runner: crate::runners::Quicknes =
                 toml::Value::Table(m.config.runner.options.clone()).try_into()?;
@@ -397,6 +398,24 @@ fn finish(path: &Path, m: &mut Manifest, result: Result<u8>) -> Result<u8> {
     result
 }
 
+fn checkpoint_origin_input(parent: &Path, manifest: &Manifest) -> Result<serde_json::Value> {
+    let expected = manifest
+        .artifacts
+        .get("search-origin-input.json")
+        .ok_or("this search has no recorded origin input; its checkpoint cannot be resumed")?;
+    let bytes = fs::read(parent.join("artifacts/search-origin-input.json"))?;
+    if crate::runtime::digest(&bytes) != *expected {
+        return Err("recorded search origin input changed during resume".into());
+    }
+    let saved: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let observed: serde_json::Value =
+        serde_json::from_slice(&fs::read(parent.join("package/origin-input.json"))?)?;
+    if saved != observed {
+        return Err("search origin input differs from saved artifact".into());
+    }
+    Ok(saved)
+}
+
 fn continue_search(request: Request) -> Result<u8> {
     use nes_workload::package::{SearchOptions, SearchStart};
     let selection = request.selection.ok_or("select a search or branch")?;
@@ -431,7 +450,10 @@ fn continue_search(request: Request) -> Result<u8> {
             .ok_or("execution budget overflow")?;
         config.search.wall_seconds = request.budget.wall_seconds;
         config.validate()?;
-        SearchStart::Checkpoint(checkpoint)
+        SearchStart::Checkpoint {
+            checkpoint,
+            origin_input: checkpoint_origin_input(&parent, &original)?,
+        }
     } else {
         let mut input = original.payload["input"].clone();
         let actions = input["actions"]
@@ -450,6 +472,13 @@ fn continue_search(request: Request) -> Result<u8> {
     let out = request.destination.create()?;
     let mut m = original.inherit(&parent, &out, "search")?;
     m.config = config;
+    if let SearchStart::Actions(input) = &start {
+        m.store(
+            &out,
+            "search-origin-input.json",
+            &serde_json::to_vec(input)?,
+        )?;
+    }
     m.save(&out)?;
     let options = SearchOptions {
         seed: m.config.search.seed,
@@ -537,6 +566,82 @@ fn record_witness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use searcher::search::checkpoint::{
+        CheckpointHeader, SEARCH_CHECKPOINT_FORMAT, StoredSnapshot,
+    };
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn resumed_search_refuses_a_replaced_origin_input() {
+        let source = tempfile::tempdir().unwrap();
+        let children = tempfile::tempdir().unwrap();
+        let destination = children.path().join("resumed");
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(source.path(), "input", b"rom").unwrap();
+        manifest
+            .store(
+                source.path(),
+                "search-origin-input.json",
+                br#"{"actions":[]}"#,
+            )
+            .unwrap();
+        manifest.save(source.path()).unwrap();
+        let package = source.path().join("package");
+        let checkpoints = package.join("checkpoints");
+        fs::create_dir_all(&checkpoints).unwrap();
+        fs::write(package.join("origin-input.json"), br#"{"actions":[1]}"#).unwrap();
+        let header = CheckpointHeader {
+            format: SEARCH_CHECKPOINT_FORMAT.into(),
+            checkpoint_owner: manifest.checkpoint_owner.clone(),
+            reason: "interval".into(),
+            workload_identity_sha256: String::new(),
+            campaign_seed: 0,
+            window: 1,
+            archive_entry_limit: 8,
+            memory_budget_mib: None,
+            policies: Default::default(),
+            executions: 1,
+            reserved: 1,
+            admitted: 0,
+            planned_clock: 0,
+        };
+        let mut bytes = postcard::to_allocvec(&header).unwrap();
+        bytes.extend(postcard::to_allocvec(&Vec::<StoredSnapshot>::new()).unwrap());
+        bytes.extend_from_slice(&Sha256::digest(&bytes));
+        let name = "000000000001-interval.ckpt";
+        let checkpoint = checkpoints.join(name);
+        fs::write(&checkpoint, bytes).unwrap();
+        let checksum = crate::runs::file_digest(&checkpoint).unwrap();
+        fs::write(
+            checkpoints.join("checkpoints.jsonl"),
+            format!("{{\"file\":\"{name}\",\"executions\":1,\"reserved\":1,\"checkpoint_sha256\":\"{checksum}\"}}\n"),
+        )
+        .unwrap();
+        let request = Request {
+            operation: Operation::Resume,
+            selection: Some(crate::selection::Selection {
+                run: source.path().display().to_string(),
+                finding: None,
+            }),
+            destination: crate::runs::Destination {
+                out: Some(destination.clone()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let error = continue_search(request).unwrap_err().to_string();
+        assert!(error.contains("search origin input differs"), "{error}");
+        assert!(!destination.exists());
+        fs::write(package.join("origin-input.json"), br#"{"actions":[]}"#).unwrap();
+        assert_eq!(
+            checkpoint_origin_input(source.path(), &manifest).unwrap(),
+            serde_json::json!({"actions":[]})
+        );
+    }
+
     #[test]
     fn search_rejects_result_or_input_replaced_after_package_return() {
         for artifact in ["result.json", "witness-input.json"] {
