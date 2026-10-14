@@ -99,8 +99,9 @@ def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
         if offset > len(data) or size > len(data) - offset:
             raise ValueError(f"executable segment {index} outside file")
         segment = data[offset : offset + size]
-        found.append((f"<exec-segment {index}>", address, segment))
+        segment_end = address + size
         mapped_sections = 0
+        mapped_ranges: list[tuple[int, int, str]] = []
         for section_index in range(section_count):
             name_offset, _kind, section_flags, section_address, _offset, section_size, *_ = (
                 section(section_index)
@@ -109,19 +110,35 @@ def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
                 continue
             if section_size >= (1 << 64) - section_address:
                 raise ValueError(f"mapped section {section_index} address overflow")
-            if section_address < address:
+            section_end = section_address + section_size
+            if section_address >= segment_end or section_end <= address:
                 continue
+            if section_address < address or section_end > segment_end:
+                raise ValueError(f"partially mapped executable section {section_index}")
             relative = section_address - address
-            if relative > size or section_size > size - relative:
-                continue
-            if machine == EM_AARCH64 and section_address % 4 != 0:
-                raise ValueError(f"unaligned AArch64 mapped section {section_index}")
-            found.append(
-                (name_at(name_offset), section_address, segment[relative : relative + section_size])
-            )
             mapped_sections += 1
+            if machine == EM_X86_64:
+                mapped_ranges.append(
+                    (relative, relative + section_size, name_at(name_offset))
+                )
         if mapped_sections == 0:
             raise ValueError(f"executable segment {index} without a mapped section")
+        if machine == EM_AARCH64:
+            found.append((f"<exec-segment {index}>", address, segment))
+        else:
+            mapped_ranges.sort()
+            cursor = 0
+            for begin, end, label in mapped_ranges:
+                if begin > cursor:
+                    found.append(
+                        (f"<exec-segment {index}>", address + cursor, segment[cursor:begin])
+                    )
+                found.append((label, address + begin, segment[begin:end]))
+                cursor = max(cursor, end)
+            if cursor < size:
+                found.append(
+                    (f"<exec-segment {index}>", address + cursor, segment[cursor:])
+                )
     if not found:
         raise ValueError("no executable load segments")
     return machine, found

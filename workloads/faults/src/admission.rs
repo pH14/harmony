@@ -367,13 +367,14 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 if file_size == 0 || file_size > header.p_memsz(elf.endian()) {
                     return Err("invalid executable ELF segment size".into());
                 }
-                start
+                let end = start
                     .checked_add(file_size)
                     .ok_or("executable ELF segment address overflow")?;
                 let code = header
                     .data(elf.endian(), bytes)
                     .map_err(|()| "executable ELF segment outside file")?;
                 let mut mapped_sections = 0;
+                let mut mapped_ranges = Vec::new();
                 for section in elf.sections() {
                     let object::SectionFlags::Elf { sh_flags } = section.flags() else {
                         continue;
@@ -381,36 +382,78 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                     if sh_flags & u64::from(object::elf::SHF_ALLOC) == 0 || section.size() == 0 {
                         continue;
                     }
-                    section
+                    let section_end = section
                         .address()
                         .checked_add(section.size())
                         .ok_or("mapped ELF section address overflow")?;
+                    if section.address() >= end || section_end <= start {
+                        continue;
+                    }
                     let Some(section_code) = header
                         .data_range(elf.endian(), bytes, section.address(), section.size())
                         .map_err(|()| "mapped ELF section outside file")?
                     else {
-                        continue;
+                        return Err("partially mapped executable ELF section".into());
                     };
                     mapped_sections += 1;
-                    for (address, instruction) in
-                        scan_code(elf.architecture(), section.address(), section_code)?
-                    {
+                    if elf.architecture() == object::Architecture::X86_64 {
+                        let offset = usize::try_from(section.address() - start)?;
+                        let section_end = offset
+                            .checked_add(section_code.len())
+                            .ok_or("mapped ELF section size overflow")?;
+                        mapped_ranges.push((offset, section_end));
+                        for (address, instruction) in
+                            scan_code(elf.architecture(), section.address(), section_code)?
+                        {
+                            sites.push(InstructionSite {
+                                digest: digest.to_owned(),
+                                address,
+                                instruction: instruction.into(),
+                            });
+                        }
+                    }
+                }
+                if mapped_sections == 0 {
+                    return Err("executable ELF segment without a mapped section".into());
+                }
+                if elf.architecture() == object::Architecture::Aarch64 {
+                    for (address, instruction) in scan_code(elf.architecture(), start, code)? {
                         sites.push(InstructionSite {
                             digest: digest.to_owned(),
                             address,
                             instruction: instruction.into(),
                         });
                     }
-                }
-                if mapped_sections == 0 {
-                    return Err("executable ELF segment without a mapped section".into());
-                }
-                for (address, instruction) in scan_code(elf.architecture(), start, code)? {
-                    sites.push(InstructionSite {
-                        digest: digest.to_owned(),
-                        address,
-                        instruction: instruction.into(),
-                    });
+                } else {
+                    mapped_ranges.sort_unstable();
+                    let mut cursor = 0;
+                    for (range_start, range_end) in mapped_ranges {
+                        if range_start > cursor {
+                            let address = start + u64::try_from(cursor)?;
+                            for (site, instruction) in
+                                scan_code(elf.architecture(), address, &code[cursor..range_start])?
+                            {
+                                sites.push(InstructionSite {
+                                    digest: digest.to_owned(),
+                                    address: site,
+                                    instruction: instruction.into(),
+                                });
+                            }
+                        }
+                        cursor = cursor.max(range_end);
+                    }
+                    if cursor < code.len() {
+                        let address = start + u64::try_from(cursor)?;
+                        for (site, instruction) in
+                            scan_code(elf.architecture(), address, &code[cursor..])?
+                        {
+                            sites.push(InstructionSite {
+                                digest: digest.to_owned(),
+                                address: site,
+                                instruction: instruction.into(),
+                            });
+                        }
+                    }
                 }
             }
             _ => {}
@@ -442,7 +485,7 @@ fn scan_code(
         }
     } else {
         if !address.is_multiple_of(4) || !data.len().is_multiple_of(4) {
-            return Err("unaligned AArch64 executable section".into());
+            return Err("unaligned AArch64 executable segment".into());
         }
         for (index, bytes) in data.chunks_exact(4).enumerate() {
             let word = u32::from_le_bytes(bytes.try_into()?);
@@ -673,6 +716,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(0x400180, "RDRAND")]
         );
+    }
+
+    #[test]
+    fn x86_segment_prelude_cannot_invent_entropy_inside_a_mapped_section() {
+        let mut bytes = elf(&[0xb8, 0x90, 0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        for (offset, value) in [
+            (24, 0x400180_u64),
+            (72, 383),
+            (80, 0x40017f),
+            (88, 0x40017f),
+            (96, 7),
+            (104, 7),
+            (272, 0x400180),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[383] = 0x3c;
+        assert_eq!(
+            scan_code(object::Architecture::X86_64, 0x40017f, &bytes[383..390])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(scan_elf(&bytes, "").unwrap(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn arm_noncode_allocated_sections_need_not_be_word_aligned() {
+        let code: Vec<u8> = [0xd53b2400_u32, 0xd65f03c0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let mut bytes = elf(&code, 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        bytes[264..272].copy_from_slice(&2_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&3_u64.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].instruction, "RNDR");
     }
 
     #[test]
