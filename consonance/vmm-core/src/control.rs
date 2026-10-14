@@ -1935,11 +1935,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if self.timeline_tainted {
             return Err(ControlError::Tainted);
         }
-        let mut recorded = self.recorded.clone();
-        recorded.set_payloads(self.vmm.as_ref().and_then(Vmm::sdk_remaining_payloads));
         Ok(Reply::Recorded(Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
-            bytes: recorded
+            bytes: self
+                .recorded
                 .try_encode()
                 .map_err(|_| ControlError::MalformedEnvironment)?,
         }))
@@ -4231,6 +4230,51 @@ mod tests {
         miri,
         ignore = "reaches snapshot restore (materialize uses tempfile+mmap); payload tape semantics are covered by the Miri-run vmm and environment unit tests"
     )]
+    fn recorded_environment_replays_consumed_payloads_from_its_origin() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let first = vec![0x81, 4];
+        let second = vec![0, 2];
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: payload_env(7, vec![first.clone(), second]),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            ring_payload(&mut server, 2),
+            (hypercall_proto::Status::Ok as u16, first.clone())
+        );
+        let expected = hash(&mut server);
+        let reproducer = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: reproducer,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            ring_payload(&mut server, 2),
+            (hypercall_proto::Status::Ok as u16, first)
+        );
+        assert_eq!(hash(&mut server), expected);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize uses tempfile+mmap); payload tape semantics are covered by the Miri-run vmm and environment unit tests"
+    )]
     fn payload_branch_snapshot_replay_and_exhaustion_close_the_control_loop() {
         let mut s = payload_server();
         hello(&mut s);
@@ -4250,13 +4294,16 @@ mod tests {
 
         assert_eq!(
             ring_payload(&mut s, 2),
-            (hypercall_proto::Status::Ok as u16, chord_a)
+            (hypercall_proto::Status::Ok as u16, chord_a.clone())
         );
-        let remaining = match s.handle(&Request::RecordedEnv).unwrap() {
+        let recorded = match s.handle(&Request::RecordedEnv).unwrap() {
             Ok(Reply::Recorded(reproducer)) => EnvSpec::decode(&reproducer.bytes).unwrap(),
             other => panic!("recorded environment reply: {other:?}"),
         };
-        assert_eq!(remaining.payloads(), Some([chord_b.clone()].as_slice()));
+        assert_eq!(
+            recorded.payloads(),
+            Some([chord_a.clone(), chord_b.clone()].as_slice())
+        );
 
         let mid = snap(&mut s);
         assert_eq!(
@@ -4264,13 +4311,13 @@ mod tests {
             (hypercall_proto::Status::Ok as u16, chord_b.clone())
         );
         assert_eq!(s.handle(&Request::Replay(mid)).unwrap(), Ok(Reply::Unit));
-        let replay_remaining = match s.handle(&Request::RecordedEnv).unwrap() {
+        let replay_recorded = match s.handle(&Request::RecordedEnv).unwrap() {
             Ok(Reply::Recorded(reproducer)) => EnvSpec::decode(&reproducer.bytes).unwrap(),
             other => panic!("recorded environment after replay: {other:?}"),
         };
         assert_eq!(
-            replay_remaining.payloads(),
-            Some([chord_b.clone()].as_slice())
+            replay_recorded.payloads(),
+            Some([chord_a.clone(), chord_b.clone()].as_slice())
         );
         assert_eq!(
             ring_payload(&mut s, 2),

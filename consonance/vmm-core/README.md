@@ -136,6 +136,9 @@ then compares their persisted bytes while ignoring only the stored
 digests. It reports those counters for diagnostics; they are not restore inputs,
 and the helper does not change live trace scheduling or establish backend
 admissibility or future execution equivalence.
+`RecordedEnv` retains the complete payload tape from the branch origin, including
+entries already consumed. SDK snapshots separately retain the unread tail, so a
+reproducer can replay an earlier snapshot without shifting the payload order.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
 x86 device format is version 7 and the current arm64 device format is version
