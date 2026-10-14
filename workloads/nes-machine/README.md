@@ -40,6 +40,12 @@ unpatched core. Interrupts are taken between `run` calls, and each call starts
 with no recorded visit. The skip is 1.04x to 1.7x faster in search across the
 NES games.
 
+The script also patches how the core reads a saved nametable block. A
+four-screen cartridge such as Famidash saves 4 KiB of nametables, and the
+pinned reader fails on the second half of that block, so such states could not
+be restored. The patched reader reads the block in one call. States of other
+cartridges read the same bytes as before.
+
 Snapshots contain a format marker, the QuickNES revision, core hash, fixed
 serialized-state length, and canonicalized core state. Restore rejects a
 different core build, state size, or non-canonical state. The adapter keeps
