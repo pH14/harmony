@@ -97,6 +97,9 @@ walk also rejects an opcode split from code into adjacent code or reviewed data,
 and opcode-shaped bytes immediately after adjacent code sections. An x86
 instruction can cross a section boundary and change how the CPU decodes the
 next section, while section-by-section disassembly starts decoding it anew.
+The scan rejects an incomplete final instruction at adjacent code sections,
+including a prefix chain that would shift decoding farther than one maximum
+instruction length into the next section.
 
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during

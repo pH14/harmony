@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import re
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +39,10 @@ KNOWN_DATA = {
     "decompressor": frozenset((".rodata..compressed", ".rodata", ".data")),
 }
 MAX_X86_INSTRUCTION_BYTES = 15
+TRAILING_PREFIXES = frozenset(
+    ("data16", "data32", "addr16", "addr32", "lock", "rep", "repz", "repnz",
+     "cs", "ds", "es", "fs", "gs", "ss", "bnd", "notrack")
+)
 
 
 def unpack(fmt, data, offset):
@@ -101,7 +107,34 @@ def headers(data):
     return programs, sections
 
 
-def unclaimed_opcode(data, programs, sections, tag):
+def complete_section_tail(path, name, end):
+    try:
+        result = subprocess.run(
+            ["objdump", "-d", "-w", "-j", name, path],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError as error:
+        raise ValueError(f"cannot disassemble adjacent code section {name}: {error}") from error
+    if result.returncode:
+        raise ValueError(f"cannot disassemble adjacent code section {name}: {result.stderr.strip()}")
+    last = None
+    for line in result.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) < 3 or not re.fullmatch(r"[0-9a-fA-F]+:", fields[0].strip()):
+            continue
+        raw = fields[1].split()
+        if not raw or any(re.fullmatch(r"[0-9a-fA-F]{2}", byte) is None for byte in raw):
+            continue
+        last = (int(fields[0].strip()[:-1], 16), len(raw), fields[2].strip())
+    if last is None or last[0] + last[1] != end:
+        raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+    mnemonic = last[2].split()[0].lower() if last[2] else ""
+    if (not mnemonic or mnemonic in TRAILING_PREFIXES
+            or mnemonic.startswith((".byte", "(bad)", "rex"))):
+        raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+
+
+def unclaimed_opcode(data, programs, sections, tag, path):
     allowed_data = KNOWN_DATA.get(tag)
     if allowed_data is None:
         raise ValueError(f"unknown x86 kernel artifact tag: {tag}")
@@ -118,6 +151,7 @@ def unclaimed_opcode(data, programs, sections, tag):
         claimed = bytearray(size)
         executable = bytearray(size)
         boundaries = set()
+        executable_sections = []
         for name, section_kind, section_flags, section_address, section_offset, section_size in sections:
             if not section_flags & 2 or section_kind == 8 or not section_size:
                 continue
@@ -140,6 +174,7 @@ def unclaimed_opcode(data, programs, sections, tag):
             if section_flags & 4:
                 executable[begin : begin + section_size] = b"\x01" * section_size
                 boundaries.update((begin, begin + section_size))
+                executable_sections.append((name, section_address, section_offset, section_size))
 
         adjacent_code = {
             boundary
@@ -173,6 +208,14 @@ def unclaimed_opcode(data, programs, sections, tag):
                     for boundary in adjacent_code
                 ):
                     return opcode, offset + position, index, "boundary-desync"
+        for boundary in adjacent_code:
+            left = [
+                section for section in executable_sections
+                if section[2] + section[3] == offset + boundary
+            ]
+            if len(left) != 1:
+                raise ValueError(f"ambiguous adjacent executable section boundary in PT_LOAD {index}")
+            complete_section_tail(path, left[0][0], left[0][1] + left[0][3])
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
     return None
@@ -187,7 +230,7 @@ def main():
             raise SystemExit(f"invalid artifact argument: {artifact}")
         try:
             data = Path(path).read_bytes()
-            hit = unclaimed_opcode(data, *headers(data), tag)
+            hit = unclaimed_opcode(data, *headers(data), tag, path)
         except (OSError, ValueError, struct.error) as error:
             raise SystemExit(f"FAIL: {tag} ({path}) ELF coverage error: {error}") from error
         if hit:
