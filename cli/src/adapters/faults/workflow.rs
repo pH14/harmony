@@ -362,7 +362,7 @@ mod tests {
     use super::*;
 
     fn elf(code: &[u8; 4]) -> Vec<u8> {
-        let mut bytes = vec![0; 389];
+        let mut bytes = vec![0; 4101];
         bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
         for (offset, value) in [
             (16, 2_u16),
@@ -382,20 +382,20 @@ mod tests {
         }
         bytes[64..68].copy_from_slice(&1_u32.to_le_bytes());
         bytes[68..72].copy_from_slice(&5_u32.to_le_bytes());
-        for (offset, value) in [(72, 384_u64), (80, 0x1000), (96, 4), (104, 4), (112, 1)] {
+        for (offset, value) in [(72, 4096_u64), (80, 0x1000), (96, 4), (104, 4), (112, 4096)] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         bytes[120..124].copy_from_slice(&0x6474e551_u32.to_le_bytes());
         bytes[124..128].copy_from_slice(&6_u32.to_le_bytes());
         bytes[260..264].copy_from_slice(&1_u32.to_le_bytes());
-        for (offset, value) in [(264, 6_u64), (272, 0x1000), (280, 384), (288, 4), (304, 1)] {
+        for (offset, value) in [(264, 6_u64), (272, 0x1000), (280, 4096), (288, 4), (304, 1)] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         bytes[324..328].copy_from_slice(&3_u32.to_le_bytes());
-        for (offset, value) in [(344, 388_u64), (352, 1), (368, 1)] {
+        for (offset, value) in [(344, 4100_u64), (352, 1), (368, 1)] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
-        bytes[384..388].copy_from_slice(code);
+        bytes[4096..4100].copy_from_slice(code);
         bytes
     }
 
