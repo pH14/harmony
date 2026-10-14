@@ -20,6 +20,8 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 pub type FamidashInput = crate::search::archive::Input<ButtonChord>;
 
 pub const A_BUTTON: u8 = 0x01;
+pub const RIGHT_BUTTON: u8 = 0x80;
+pub const LAST_LEVEL: u8 = 21;
 pub const GAME_STATE_PLAYING: u8 = 2;
 pub const GAME_STATE_COMPLETE: u8 = 3;
 pub const GAME_STATE_LEVEL_SELECT: u8 = 6;
@@ -39,6 +41,10 @@ const SCROLL_X: usize = 0x04a2;
 const SCROLL_Y: usize = 0x04a6;
 const PAUSED: usize = 0x05b5;
 const DEATH: u8 = 0x01;
+const LEVEL_DONE_POLL_FRAMES: u32 = 15;
+const LEVEL_DONE_POLLS: u32 = 40;
+const MENU_SETTLE_FRAMES: u32 = 20;
+const LEVEL_START_FRAMES: u32 = 90;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FamidashGameplayState {
@@ -85,8 +91,23 @@ impl FamidashMechanicalState {
     }
 
     #[must_use]
+    pub fn finished(self) -> bool {
+        self.complete() && self.level >= LAST_LEVEL
+    }
+
+    #[must_use]
+    pub fn advancing(self) -> bool {
+        self.complete() && self.level < LAST_LEVEL
+    }
+
+    #[must_use]
     pub fn terminal(self) -> bool {
-        self.dead || self.complete()
+        self.dead || self.finished()
+    }
+
+    #[must_use]
+    pub fn cleared(self) -> u8 {
+        self.level.saturating_add(u8::from(self.complete()))
     }
 
     #[must_use]
@@ -199,8 +220,8 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
     }
 
     #[must_use]
-    pub fn complete(&self) -> bool {
-        self.observation.decoded.complete()
+    pub fn finished(&self) -> bool {
+        self.observation.decoded.finished()
     }
 
     #[must_use]
@@ -223,6 +244,60 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
 
     fn fail(&mut self) {
         self.failed = true;
+    }
+
+    fn press(&mut self, chord: ButtonChord) -> Option<u64> {
+        let start = self.machine.snapshot().ok()?;
+        let branched = self
+            .machine
+            .branch(start, &nes::reproducer(std::slice::from_ref(&chord)));
+        let _ = self.machine.drop_snapshot(start);
+        branched.ok()?;
+        let run = self.machine.run(StopConditions::default(), None);
+        if !matches!(
+            run,
+            Ok(machine::StopReason::Quiescent { .. } | machine::StopReason::SnapshotPoint { .. })
+        ) {
+            return None;
+        }
+        let frames = u64::try_from(self.machine.frames().len()).ok()?;
+        self.execution_work = self.execution_work.saturating_add(frames);
+        (frames == u64::from(chord.bounded_hold_frames())).then_some(frames)
+    }
+
+    fn advance_level<F>(&mut self, level: u8, mut press: F) -> Option<u64>
+    where
+        F: FnMut(&mut Self, ButtonChord) -> Option<u64>,
+    {
+        let mut frames = 0_u64;
+        let mut chords = |target: &mut Self, chords: &[ButtonChord]| -> Option<()> {
+            for chord in chords {
+                frames += press(target, *chord)?;
+            }
+            Some(())
+        };
+        let state = |target: &Self| decode_state(&read_wram(&target.machine).ok()?).ok();
+        for _ in 0..LEVEL_DONE_POLLS {
+            if state(self)?.game_state == GAME_STATE_LEVEL_SELECT {
+                break;
+            }
+            chords(self, &[ButtonChord::new(A_BUTTON, 1)])?;
+            chords(self, &idle(LEVEL_DONE_POLL_FRAMES))?;
+        }
+        if state(self)?.game_state != GAME_STATE_LEVEL_SELECT {
+            return None;
+        }
+        chords(self, &idle(MENU_SETTLE_FRAMES))?;
+        chords(self, &[ButtonChord::new(RIGHT_BUTTON, 1)])?;
+        chords(self, &idle(MENU_SETTLE_FRAMES))?;
+        let next = level.checked_add(1)?;
+        if state(self)?.level != next {
+            return None;
+        }
+        chords(self, &[ButtonChord::new(A_BUTTON, 1)])?;
+        chords(self, &idle(LEVEL_START_FRAMES))?;
+        let arrived = state(self)?;
+        (arrived.level == next && arrived.gameplay.is_some()).then_some(frames)
     }
 
     fn apply_internal(&mut self, action: &ButtonChord) {
@@ -254,13 +329,10 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
         self.execution_work = self
             .execution_work
             .saturating_add(u64::try_from(produced_frames).unwrap_or(u64::MAX));
-        let terminal_index = self
-            .machine
-            .frames()
-            .iter()
-            .position(|wram| decode_state(wram).is_ok_and(FamidashMechanicalState::terminal));
-        let logical_frames =
-            terminal_index.map_or(produced_frames, |index| index.saturating_add(1));
+        let stop_index = self.machine.frames().iter().position(|wram| {
+            decode_state(wram).is_ok_and(|state| state.terminal() || state.advancing())
+        });
+        let logical_frames = stop_index.map_or(produced_frames, |index| index.saturating_add(1));
         let endpoint_wram = self
             .machine
             .frames()
@@ -303,13 +375,12 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
         {
             emitted.push(Self::make_observation(endpoint_frame, endpoint_state));
         }
-        self.action_observations = emitted;
-        if let Some(observation) = self.action_observations.last() {
+        if let Some(observation) = emitted.last() {
             self.observation = observation.clone();
         }
         self.current_wram = endpoint_wram;
-        if let Some(terminal_index) = terminal_index {
-            let Ok(terminal_hold) = u8::try_from(terminal_index.saturating_add(1)) else {
+        if let Some(stop_index) = stop_index {
+            let Ok(stop_hold) = u8::try_from(stop_index.saturating_add(1)) else {
                 return self.fail();
             };
             if self.machine.replay(start).is_err()
@@ -319,7 +390,7 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
                         start,
                         &nes::reproducer(std::slice::from_ref(&ButtonChord::new(
                             action.buttons,
-                            terminal_hold,
+                            stop_hold,
                         ))),
                     )
                     .is_err()
@@ -338,6 +409,22 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
                 return self.fail();
             }
         }
+        if endpoint_state.advancing() {
+            let Some(driven) = self.advance_level(endpoint_state.level, Self::press) else {
+                return self.fail();
+            };
+            let Ok(wram) = read_wram(&self.machine) else {
+                return self.fail();
+            };
+            let Ok(state) = decode_state(&wram) else {
+                return self.fail();
+            };
+            let observation = Self::make_observation(endpoint_frame.saturating_add(driven), state);
+            emitted.push(observation.clone());
+            self.observation = observation;
+            self.current_wram = wram;
+        }
+        self.action_observations = emitted;
         let Ok(next) = self.machine.snapshot() else {
             return self.fail();
         };
@@ -383,11 +470,29 @@ impl FamidashTarget<QuickNesMachine> {
             for action in &input.actions {
                 self.render_action(
                     *action,
+                    true,
                     video_output,
                     audio_output,
                     &mut metadata,
                     &mut skip,
                 )?;
+                let state = decode_state(&read_wram(&self.machine)?)?;
+                if state.advancing() {
+                    self.advance_level(state.level, |target, chord| {
+                        target
+                            .render_action(
+                                chord,
+                                false,
+                                video_output,
+                                audio_output,
+                                &mut metadata,
+                                &mut skip,
+                            )
+                            .ok()?;
+                        Some(u64::from(chord.bounded_hold_frames()))
+                    })
+                    .ok_or("Famidash film could not advance to the next level")?;
+                }
             }
             let endpoint = decode_state(&read_wram(&self.machine)?)?;
             let mut remaining = tail_frames;
@@ -395,6 +500,7 @@ impl FamidashTarget<QuickNesMachine> {
                 let hold = remaining.min(u32::from(MAX_HOLD_FRAMES));
                 self.render_action(
                     ButtonChord::new(0, u8::try_from(hold)?),
+                    false,
                     video_output,
                     audio_output,
                     &mut metadata,
@@ -418,6 +524,7 @@ impl FamidashTarget<QuickNesMachine> {
     fn render_action(
         &mut self,
         action: ButtonChord,
+        stop_at_advance: bool,
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
         metadata: &mut Option<FamidashVideoMetadata>,
@@ -475,6 +582,9 @@ impl FamidashTarget<QuickNesMachine> {
                 existing.audio_frames = existing.audio_frames.saturating_add(u64::try_from(
                     audio.len() / usize::from(QUICKNES_AUDIO_CHANNELS),
                 )?);
+            }
+            if stop_at_advance && decode_state(&read_wram(&self.machine)?)?.advancing() {
+                break;
             }
         }
         Ok(())
@@ -616,15 +726,21 @@ impl<M: NesBackend<Vec<u8>>> Drop for FamidashTarget<M> {
     }
 }
 
-fn wait(tape: &mut Vec<ButtonChord>, mut frames: u32) {
+fn idle(mut frames: u32) -> Vec<ButtonChord> {
+    let mut chords = Vec::new();
     while frames > 0 {
         let hold = frames.min(u32::from(MAX_HOLD_FRAMES));
-        tape.push(ButtonChord::new(
+        chords.push(ButtonChord::new(
             0,
             u8::try_from(hold).unwrap_or(MAX_HOLD_FRAMES),
         ));
         frames -= hold;
     }
+    chords
+}
+
+fn wait(tape: &mut Vec<ButtonChord>, frames: u32) {
+    tape.extend(idle(frames));
 }
 
 #[must_use]
@@ -784,15 +900,23 @@ mod tests {
     }
 
     #[test]
-    fn the_level_complete_state_is_terminal_at_one_hundred_percent() {
+    fn only_the_last_level_complete_state_is_terminal() {
         let mut wram = playing_wram();
         wram[GAME_STATE] = GAME_STATE_COMPLETE;
         wram[CUBE_DATA] = DEATH;
         let state = decode_state(&wram).unwrap();
         assert!(state.complete());
         assert!(!state.dead);
-        assert!(state.terminal());
+        assert!(state.advancing());
+        assert!(!state.terminal());
         assert_eq!(state.percent(), 100);
+        assert_eq!(state.cleared(), 1);
+        wram[LEVEL] = LAST_LEVEL;
+        let state = decode_state(&wram).unwrap();
+        assert!(state.finished());
+        assert!(!state.advancing());
+        assert!(state.terminal());
+        assert_eq!(state.cleared(), LAST_LEVEL + 1);
     }
 
     #[test]

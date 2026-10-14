@@ -72,7 +72,7 @@ fn view(state: FamidashMechanicalState) -> View {
         gamestate: state.game_state,
         percent: state.percent(),
         gamemode: gameplay.gamemode,
-        goal: state.complete(),
+        goal: state.finished(),
         loading: state.gameplay.is_none(),
         cleared: cleared(state),
     }

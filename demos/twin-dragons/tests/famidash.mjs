@@ -49,6 +49,24 @@ for (const level of [0, 13]) {
   search.free();
 }
 
+{
+  const root = engine.boot(0),
+    search = campaignSearch(engine, identity, { seed: 1, executions: 20000 });
+  let arrival = null;
+  while (!arrival && runCampaign(search, worker, { jobs: 16 }))
+    arrival = JSON.parse(search.take_batch()).points.find((point) => point.retained !== null && point.observation.level === 1) ?? null;
+  assert.ok(arrival, "A search from Stereo Madness clears it and goes on to Back on Track");
+  assert.equal(arrival.observation.cleared, 1);
+  const state = JSON.parse(search.state(arrival.retained));
+  assert.ok(state.actions.some((action) => action.buttons & 0x80), "The history holds the Right press that picks the next level");
+  engine.restore(root);
+  for (const action of state.actions) engine.run(action.buttons, action.frames);
+  assert.equal(snapshotDigest(engine.capture()), search.digest(arrival.retained), "The state in Back on Track replays exactly from its controller history");
+  assert.equal(engine.observation().level, 1);
+  console.log(`After ${JSON.parse(search.take_batch()).executions} executions a cleared Stereo Madness advanced to Back on Track, and the history with the target's menu presses replays exactly.`);
+  search.free();
+}
+
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } }),
   errors = [];
@@ -144,4 +162,13 @@ for (const dir of [-1, 1]) {
 }
 assert.deepEqual(errors, []);
 console.log("On Dash, the level strip and the top and bottom pan edges move the view up and down.");
+
+const follow = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+follow.on("pageerror", (error) => errors.push(error.message));
+await follow.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
+await follow.goto(`${url}/?game=famidash&level=0&pace=0&workers=4`);
+await follow.waitForFunction(() => document.querySelector('#level-strip [aria-pressed="true"]')?.textContent === "Back on Track", null, { timeout: 900000 });
+assert.ok(await follow.locator('.area-map[data-map="1"]').isVisible(), "The main view shows the Back on Track map");
+assert.deepEqual(errors, []);
+console.log("When the search clears Stereo Madness, the level strip and the main view follow it into Back on Track.");
 await browser.close();

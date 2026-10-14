@@ -1569,7 +1569,6 @@ function startSearch(level = bootLevel) {
         // A clearing rollout can end before the next level finishes loading, so
         // its first archived point there may arrive several batches later.
         for (const index of finishes || []) {
-          if (game.separateLevels) break;
           const from = levelIndex(motion[index]?.[1]), next = catalog.levels[from + 1]?.rooms[0];
           const shown = branchPreview?.room ?? mapLevel;
           if (from < 0 || from !== levelIndex(shown) || next == null || !maps.has(next)) continue;
@@ -1605,10 +1604,10 @@ function startSearch(level = bootLevel) {
       } else if (data.type === "limit") {
         paused = true;
         replayPaused = false;
-        $("status").textContent = data.won ? (game.separateLevels ? "Level complete" : "Game won") : "Memory limit reached";
+        $("status").textContent = data.won ? "Game won" : "Memory limit reached";
         updateSearchControl();
         $("goal-status").textContent = data.won
-          ? game.separateLevels ? "Level complete" : "Game complete"
+          ? "Game complete"
           : "Memory limit reached";
         $("pause").disabled = true;
         $("memory-limit").hidden = data.won;

@@ -65,10 +65,23 @@ impl crate::film::Endpointed for FamidashGame {
     }
 
     fn input_frames(&self, input: &FamidashInput) -> Result<u64, Box<dyn Error>> {
-        Ok(input
-            .actions
-            .iter()
-            .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum())
+        let mut target = self
+            .new_target()
+            .map_err(|error| -> Box<dyn Error> { error.into() })?;
+        target.reset();
+        let mut frames = 0;
+        for action in &input.actions {
+            let before = target.observe().frame_count;
+            target.apply(action);
+            if target.exit_kind() != ExitKind::Ok {
+                return Err("the recorded Famidash input crashed during headless replay".into());
+            }
+            frames += if target.is_terminal() {
+                u64::from(action.bounded_hold_frames())
+            } else {
+                target.observe().frame_count - before
+            };
+        }
+        Ok(frames)
     }
 }

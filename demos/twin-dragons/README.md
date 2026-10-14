@@ -371,9 +371,12 @@ the pace is 120 rollouts per second.
 
 Famidash by TFDSoft is an unofficial fan demake of RobTop's Geometry Dash. The
 picker lists its 22 main levels. The 21 community levels in the ROM are left
-out of the picker. A level is complete when the game state reaches 3, and that
-is the search goal. Levels do not chain, so `separateLevels` keeps the map on
-the level after it is cleared and the status reads Level complete. The page
+out of the picker. A level is complete when the game state reaches 3. The
+search plays the main levels in order and its goal is completing Dash, the last
+one. After an earlier level, the workload target presses A, Right and A
+through the win screen and level select to start the next level. Those presses
+are part of the history, so replay, forking and Play from here use them, and
+the map follows the search into the next level. The page
 decodes RAM through `famidash_observation`; the workload README in
 `workloads/nes/src/famidash` lists the addresses. The observation carries the
 level percent, the scroll divided by the level's length, and the Details pane
@@ -413,9 +416,9 @@ time.
 `famidash_level_select_tape` export, writes the level to `$047B`, presses A and
 waits 90 frames, the same wait as the Stereo Madness setup.
 
-The native Stereo Madness search clears the level in 6,800 to 9,000 executions
-on seeds 1 to 5,
-so at 120 rollouts per second the browser search takes about a minute.
+The native search clears Stereo Madness in 6,800 to 9,000 executions on seeds
+1 to 5, so at 120 rollouts per second the browser search reaches Back on Track
+in about a minute.
 
 ### Super Mario Bros.
 
