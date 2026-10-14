@@ -338,6 +338,7 @@ fn checkpoint_record_unbound(path: &Path) -> Result<CheckpointRecord> {
     Ok(selected)
 }
 
+#[cfg(test)]
 pub fn checkpoint_record(
     path: &Path,
 ) -> Result<(searcher::search::checkpoint::PinnedCheckpoint, u64)> {
@@ -349,16 +350,30 @@ pub fn checkpoint_record(
     };
     if manifest_path.join("manifest.json").is_file() {
         let manifest = Manifest::read(manifest_path)?;
-        if manifest.mode == "search" {
-            let expected_owner = manifest
-                .checkpoint_owner
-                .as_deref()
-                .ok_or("saved search has no checkpoint owner")?;
-            if checkpoint.owner.as_deref() != Some(expected_owner) {
-                return Err("checkpoint belongs to a different saved search".into());
-            }
+        validate_checkpoint_record(&checkpoint, &manifest)?;
+    }
+    Ok(pin_checkpoint_record(checkpoint))
+}
+
+pub fn checkpoint_record_verified(
+    path: &Path,
+    manifest: &Manifest,
+) -> Result<(searcher::search::checkpoint::PinnedCheckpoint, u64)> {
+    let checkpoint = checkpoint_record_unbound(path)?;
+    validate_checkpoint_record(&checkpoint, manifest)?;
+    Ok(pin_checkpoint_record(checkpoint))
+}
+
+fn validate_checkpoint_record(checkpoint: &CheckpointRecord, manifest: &Manifest) -> Result<()> {
+    if manifest.mode == "search" {
+        let expected_owner = manifest
+            .checkpoint_owner
+            .as_deref()
+            .ok_or("saved search has no checkpoint owner")?;
+        if checkpoint.owner.as_deref() != Some(expected_owner) {
+            return Err("checkpoint belongs to a different saved search".into());
         }
-        if manifest.mode == "search" && manifest.status == "complete" {
+        if manifest.status == "complete" {
             let expected = manifest
                 .checkpoint_sha256
                 .as_deref()
@@ -368,13 +383,19 @@ pub fn checkpoint_record(
             }
         }
     }
-    Ok((
+    Ok(())
+}
+
+fn pin_checkpoint_record(
+    checkpoint: CheckpointRecord,
+) -> (searcher::search::checkpoint::PinnedCheckpoint, u64) {
+    (
         searcher::search::checkpoint::PinnedCheckpoint {
             path: checkpoint.path,
             sha256: checkpoint.sha256,
         },
         checkpoint.reserved,
-    ))
+    )
 }
 
 #[cfg(test)]
@@ -499,6 +520,36 @@ mod checkpoint_tests {
                     .contains("checkpoint differs from the saved search")
             );
         }
+    }
+
+    #[test]
+    fn resume_keeps_the_checkpoint_identity_from_the_verified_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let checkpoint = directory.join("checkpoint.ckpt");
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut saved = Manifest::new(config, "search").unwrap();
+        write_checkpoint(&checkpoint, 3, 3, 1, saved.checkpoint_owner.as_deref());
+        write_journal(&directory, "checkpoint.ckpt", 3, 3);
+        saved.status = "complete".into();
+        saved.save(root.path()).unwrap();
+
+        let original = Manifest::read(root.path()).unwrap();
+        original.verify(root.path()).unwrap();
+        write_checkpoint(&checkpoint, 3, 3, 17, saved.checkpoint_owner.as_deref());
+        write_journal(&directory, "checkpoint.ckpt", 3, 3);
+        saved.save(root.path()).unwrap();
+        let changed = Manifest::read(root.path()).unwrap();
+        assert_ne!(original.checkpoint_sha256, changed.checkpoint_sha256);
+
+        assert!(
+            checkpoint_record_verified(root.path(), &original)
+                .unwrap_err()
+                .to_string()
+                .contains("checkpoint differs from the saved search")
+        );
     }
 
     #[test]

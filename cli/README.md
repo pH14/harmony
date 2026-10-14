@@ -236,7 +236,9 @@ an interrupted run. A completed search also records the selected checkpoint's
 SHA-256 in its manifest and refuses changed checkpoint bytes, even when they
 remain valid for the same workload. The selected journal digest is carried to
 the searcher and compared with the checkpoint bytes it actually opens, closing
-the gap between selection and resume.
+the gap between selection and resume. Both NES and faults resume compare the
+selected checkpoint with the manifest already verified at command start; a
+replacement manifest cannot authorize a later checkpoint swap.
 
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
 `--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.
