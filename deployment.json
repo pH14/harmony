@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "cfc221ad4",
+    "commit": "1ae9f4053",
     "build": "locally verified static build",
-    "checks": "Runtime and production build, the full browser suite, campaign oracle and unit tests on the source branch, and the Mega Man 2, Metroid, Super Mario Bros. and browser checks in Chrome on this build.",
-    "asset_manifest_sha256": "e18fe0856d77fb35d968e8bb9fd566c797fa3b754e3536a87c28f58d06fd3fa3"
+    "checks": "Runtime and production build, the full browser suite, core and campaign oracles and unit tests on the source branch, and the Famidash, Super Mario Bros. and browser checks in Chrome on this build.",
+    "asset_manifest_sha256": "fc077a5f67e1f4377f06bf801fc13b3decf4d7eb36526372cf8dd1e733ccecd3"
   }
 }
