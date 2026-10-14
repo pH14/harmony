@@ -1386,6 +1386,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let dirty = {
             let vmm = self.vmm.as_mut().ok_or(())?;
             vmm.retire_pending_completion().map_err(|_| ())?;
+            vmm.validate_restore_vm_state(vm_state).map_err(|_| ())?;
             vmm.drain_dirty_pages().map_err(|_| ())?
         };
         if dirty.is_none() && from.is_some() {
@@ -3888,6 +3889,33 @@ mod tests {
             .unwrap();
         let before = s.vmm.as_ref().unwrap().guest_memory().to_vec();
         s.engine.remove_page_for_test(store_id, 2).unwrap();
+
+        assert!(s.restore_in_place(store_id, &vm_state).is_err());
+        assert_eq!(s.vmm.as_ref().unwrap().guest_memory(), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
+    )]
+    fn in_place_restore_preflight_rejects_before_page_write() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let target = snap(&mut s);
+        let store_id = s.snaps[&target.0];
+        let mut vm_state = s.engine.vm_state::<vm_state::VmState>(store_id).unwrap();
+        vm_state.contract_hash = [0x5A; 32];
+
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_effect(&EnvHostEffect::WriteMemory {
+                gpa: 2 * 4096,
+                bytes: vec![0xA5],
+            })
+            .unwrap();
+        let before = s.vmm.as_ref().unwrap().guest_memory().to_vec();
 
         assert!(s.restore_in_place(store_id, &vm_state).is_err());
         assert_eq!(s.vmm.as_ref().unwrap().guest_memory(), before);

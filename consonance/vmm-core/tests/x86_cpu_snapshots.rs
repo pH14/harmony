@@ -430,6 +430,16 @@ mod live_kvm {
         );
     }
 
+    fn amd_compatible_host() -> bool {
+        std::fs::read_to_string("/proc/cpuinfo")
+            .expect("read host CPU vendor")
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .any(|(key, value)| {
+                key.trim() == "vendor_id" && matches!(value.trim(), "AuthenticAMD" | "HygonGenuine")
+            })
+    }
+
     fn fresh_vmm(configure: bool) -> Vmm<KvmBackend> {
         let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
         let configure: fn(&mut KvmBackend) = if configure {
@@ -1876,30 +1886,52 @@ mod live_kvm {
         assert_eq!(reused_before_mutation, save_and_continue_endpoint);
         let mut mutator_state = save_stop.state.clone();
         mutator_state.regs.rip = XSAVE_MUTATOR_GPA as u64;
-        reused
-            .restore_snapshot(&save_stop.memory, &mutator_state)
-            .expect("restore XSAVE mutator continuation into reused VM");
-        let mutated = run_xsave_mutator(&mut reused);
-        retain_capture(
-            report.as_deref(),
-            "reused-mutator-endpoint",
-            &mutated,
-            xsave_output_page(&mutated.memory),
-        );
-        assert_ne!(
-            mutated.state.xsave, save_stop.state.xsave,
-            "the guest FPU/SSE continuation must change the saved XSAVE state"
-        );
-        reused
-            .restore_snapshot(&save_stop.memory, &save_stop.state)
-            .expect("restore XSAVE boundary after reused VM mutation");
-        let reused_endpoint = run_xsave_endpoint(&mut reused, endpoint_rip);
-        retain_capture(
-            report.as_deref(),
-            "reused-restored-endpoint",
-            &reused_endpoint,
-            xsave_output_page(&reused_endpoint.memory),
-        );
+        let reused_endpoint = if amd_compatible_host() {
+            let error = reused
+                .restore_snapshot(&save_stop.memory, &mutator_state)
+                .expect_err("AMD reused-vCPU restore must fail before guest mutation");
+            assert!(
+                error
+                    .to_string()
+                    .contains("AMD KVM cannot safely restore a previously run vCPU"),
+                "unexpected refusal: {error}"
+            );
+            let after_refusal = capture_full_vmm(&mut reused);
+            retain_capture(
+                report.as_deref(),
+                "reused-after-refusal-endpoint",
+                &after_refusal,
+                xsave_output_page(&after_refusal.memory),
+            );
+            assert_eq!(after_refusal, reused_before_mutation);
+            None
+        } else {
+            reused
+                .restore_snapshot(&save_stop.memory, &mutator_state)
+                .expect("restore XSAVE mutator continuation into reused VM");
+            let mutated = run_xsave_mutator(&mut reused);
+            retain_capture(
+                report.as_deref(),
+                "reused-mutator-endpoint",
+                &mutated,
+                xsave_output_page(&mutated.memory),
+            );
+            assert_ne!(
+                mutated.state.xsave, save_stop.state.xsave,
+                "the guest FPU/SSE continuation must change the saved XSAVE state"
+            );
+            reused
+                .restore_snapshot(&save_stop.memory, &save_stop.state)
+                .expect("restore XSAVE boundary after reused VM mutation");
+            let endpoint = run_xsave_endpoint(&mut reused, endpoint_rip);
+            retain_capture(
+                report.as_deref(),
+                "reused-restored-endpoint",
+                &endpoint,
+                xsave_output_page(&endpoint.memory),
+            );
+            Some(endpoint)
+        };
 
         let mut cold_unobserved = fresh_xsave_vmm(false, program, long_mode);
         wire_snapshot_path(&mut cold_unobserved);
@@ -1960,24 +1992,26 @@ mod live_kvm {
         for capture in [
             &uninterrupted_endpoint,
             &save_and_continue_endpoint,
-            &reused_endpoint,
             &cold_unobserved_endpoint,
             &cold_observed_endpoint,
         ] {
             validate_output(xsave_output_page(&capture.memory));
         }
-        assert_eq!(
-            xsave_output_page(&uninterrupted_endpoint.memory),
-            xsave_output_page(&reused_endpoint.memory),
-            "reused restore must preserve guest-authored XSAVE bytes"
-        );
+        if let Some(reused_endpoint) = reused_endpoint.as_ref() {
+            validate_output(xsave_output_page(&reused_endpoint.memory));
+            assert_eq!(
+                xsave_output_page(&uninterrupted_endpoint.memory),
+                xsave_output_page(&reused_endpoint.memory),
+                "reused restore must preserve guest-authored XSAVE bytes"
+            );
+            assert!(
+                uninterrupted_endpoint == *reused_endpoint,
+                "uninterrupted and reused-restore XSAVE futures differ; retained XSAVE evidence is available"
+            );
+        }
         assert!(
             uninterrupted_endpoint == save_and_continue_endpoint,
             "uninterrupted and save-and-continue XSAVE futures differ; retained XSAVE evidence is available"
-        );
-        assert!(
-            uninterrupted_endpoint == reused_endpoint,
-            "uninterrupted and reused-restore XSAVE futures differ; retained XSAVE evidence is available"
         );
         assert!(
             save_and_continue_endpoint == cold_unobserved_endpoint,

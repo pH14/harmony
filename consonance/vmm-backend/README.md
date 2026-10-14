@@ -176,6 +176,16 @@ Intel and non-PAE captures retain
 their normal behavior. The underlying AMD continuation discrepancy remains
 tracked in [#314](https://github.com/pH14/harmony/issues/314).
 
+AMD-compatible KVM also cannot safely restore CPU state into a vCPU that has
+already attempted ordinary guest entry. A 64-bit XRSTOR-to-init continuation
+produced guest XSAVE bytes with `XSTATE_BV=0` after reused restore, where the
+uninterrupted and fresh-restored guest wrote `XSTATE_BV=2`, although the captured
+KVM CPU records matched. Restore validation rejects that reused vCPU before any
+backend or guest-memory mutation. An unentered vCPU remains restorable; the
+control server falls back to a fresh VM when an in-place restore is refused.
+Intel reuse remains supported. The underlying AMD behavior is tracked in
+[#307](https://github.com/pH14/harmony/issues/307).
+
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
 PIO reads and MSR callbacks eagerly with an immediate-exit entry. A PIO write

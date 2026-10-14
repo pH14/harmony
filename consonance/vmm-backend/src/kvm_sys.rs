@@ -1105,6 +1105,9 @@ impl Backend for KvmBackend {
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
         self.state_mutation_guard.ensure_healthy()?;
+        if self.host_amd_compatible && self.guest_run_attempted {
+            return Err(BackendError::AmdReusedVcpuRestoreUnsafe);
+        }
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(
             state,

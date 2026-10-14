@@ -789,9 +789,8 @@ jobs:
             'AMD NPT 32-bit PAE continuation is excluded from snapshot publication; the required amd-pae-refusal regression above proves fail-closed capture and prevents resumed execution.' \
             'The prior guest-authored PDPT A5,42 versus captured A5,99 hardware witness is retained in https://github.com/pH14/harmony/issues/314.' \
             >> "$GITHUB_STEP_SUMMARY"
-      - name: Record AMD long-mode full-VMM XRSTOR-to-init reused continuation
+      - name: Require AMD long-mode full-VMM XRSTOR restore refusal and cold continuation
         if: ${{ !cancelled() && steps.host.outcome == 'success' && steps.host.outputs.amd_npt == 'true' }}
-        continue-on-error: true
         env:
           XSAVE_XRSTOR_LONG_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xrstor-init-long-full-vmm
         run: |

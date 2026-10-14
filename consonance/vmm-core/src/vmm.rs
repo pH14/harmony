@@ -986,7 +986,10 @@ where
         })
     }
 
-    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
+    fn checked_restore_preparation(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<RestorePreparation<B>, VmmError> {
         if self.completion_staged {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state into a backend with a staged completion: the VM just serviced a \
@@ -996,13 +999,24 @@ where
                     .to_string(),
             ));
         }
+        self.prepare_restore_vm_state(s)
+    }
+
+    pub(crate) fn validate_restore_vm_state(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<(), VmmError> {
+        self.checked_restore_preparation(s).map(|_| ())
+    }
+
+    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
         let RestorePreparation {
             engine_state,
             vcpu,
             clock_offset,
             vendor,
             vtime,
-        } = self.prepare_restore_vm_state(s)?;
+        } = self.checked_restore_preparation(s)?;
         self.snapshot_ready = false;
         self.backend.restore(&vcpu)?;
         if let Some((cfg, clock, entropy)) = vtime {

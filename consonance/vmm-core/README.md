@@ -192,7 +192,12 @@ supported. The hardware qualification requires the AMD refusal path and a
 long-mode continuation on both vendors. Its existing XSAVE fixtures use 32-bit
 PAE, so they remain required on Intel while their AMD continuation is excluded.
 The original AMD NPT witness remains in #314.
-The separate same-seed XSAVE divergence remains tracked in
+AMD long-mode reused-vCPU restore changes guest-authored XSAVE bytes despite
+identical saved CPU records. Restore validation now refuses that reuse before
+mutation; the control server retries with a fresh VM. The hardware qualification
+requires the public VMM witness to prove refusal without changing the source,
+and byte-for-byte equality among uninterrupted, save-and-continue, and fresh
+restored continuations. The underlying XSAVE behavior remains tracked in
 [#307](https://github.com/pH14/harmony/issues/307).
 
 ## Architecture boundary
