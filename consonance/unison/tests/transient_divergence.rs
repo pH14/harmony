@@ -91,3 +91,22 @@ fn a_later_matching_checkpoint_does_not_prove_no_earlier_difference() {
         .unwrap();
     assert_eq!(reported.first_divergent_work, 1);
 }
+
+#[test]
+fn matching_sampled_checkpoints_do_not_claim_global_identity() {
+    let a = Factory(false);
+    let b = Factory(true);
+    let report = compare_runs(&a, &b, 7, 4, 4).unwrap();
+    assert_eq!(report.checkpoints_compared, 1);
+    assert!(report.limit_reached);
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["verdict"],
+        serde_json::json!("matching_checkpoints")
+    );
+    assert_eq!(
+        bisect_divergence(&a, &b, 7, 0, 1)
+            .unwrap()
+            .first_divergent_work,
+        1
+    );
+}

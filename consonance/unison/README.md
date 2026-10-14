@@ -2,7 +2,8 @@
 
 `unison` is the determinism harness and divergence bisector. It compares two
 fresh machines created with the same seed, detects differing architectural
-state, and re-executes from scratch to locate the first divergent work count.
+state at selected checkpoints, and re-executes from scratch to locate the first
+divergent work count when a replayable checkpoint bracket exists.
 The `Subject` abstraction treats work as an opaque monotonic counter: VM exits
 for a real adapter and retired instructions for the bundled toy machine.
 
@@ -34,9 +35,11 @@ segmented calls; custom adapters must establish the same property.
 
 `compare_runs` checks both machines immediately after spawn, then compares their
 state hashes and output digests at a caller-selected interval until they halt or
-reach a limit. It reports identical runs, a checkpoint bracket, an equal-work
-terminal divergence, or a halt-count mismatch, and records whether the
-limit—not termination—ended the comparison. A zero-work mismatch is reported
+reach a limit. `MatchingCheckpoints` means only that the sampled states and
+outputs agree; a transient difference between checkpoints can go unobserved.
+The other verdicts report a checkpoint bracket, an equal-work terminal
+divergence, or a halt-count mismatch. The report records whether the limit—not
+termination—ended the comparison. A zero-work mismatch is reported
 even when the limit is zero.
 Before returning a reached-target divergence bracket, comparison replays both
 the last matching checkpoint and the mismatching checkpoint on fresh subjects.

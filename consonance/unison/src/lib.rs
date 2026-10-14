@@ -109,7 +109,7 @@ pub struct CompareReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
-    Identical,
+    MatchingCheckpoints,
     Diverged {
         last_match: Option<u64>,
         first_mismatch: u64,
@@ -190,7 +190,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     }
     if initial_a == RunOutcome::Halted {
         return Ok(CompareReport {
-            verdict: Verdict::Identical,
+            verdict: Verdict::MatchingCheckpoints,
             checkpoints_compared,
             halted_at: Some(ma.work()),
             limit_reached: false,
@@ -243,7 +243,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                         halted_at: wa,
                     }
                 } else {
-                    Verdict::Identical
+                    Verdict::MatchingCheckpoints
                 };
                 return Ok(CompareReport {
                     verdict,
@@ -277,7 +277,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         }
     }
     Ok(CompareReport {
-        verdict: Verdict::Identical,
+        verdict: Verdict::MatchingCheckpoints,
         checkpoints_compared,
         halted_at: None,
         limit_reached: true,
@@ -538,7 +538,7 @@ mod tests {
     fn zero_limit_checks_only_initial_state() {
         let f = factory();
         let r = compare_runs(&f, &f, 3, 10, 0).unwrap();
-        assert_eq!(r.verdict, Verdict::Identical);
+        assert_eq!(r.verdict, Verdict::MatchingCheckpoints);
         assert_eq!(r.checkpoints_compared, 0);
         assert_eq!(r.halted_at, None);
         assert!(r.limit_reached);
@@ -553,7 +553,7 @@ mod tests {
         };
         for limit in [0, 10] {
             let report = compare_runs(&halted, &halted, 3, 10, limit).unwrap();
-            assert_eq!(report.verdict, Verdict::Identical);
+            assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
             assert_eq!(report.checkpoints_compared, 0);
             assert_eq!(report.halted_at, Some(0));
             assert!(!report.limit_reached);

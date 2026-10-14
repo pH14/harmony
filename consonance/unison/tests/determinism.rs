@@ -215,7 +215,7 @@ proptest! {
         let a = ToyFactory { program: prog.instrs.clone() };
         let b = ToyFactory { program: prog.instrs };
         let report = compare_runs(&a, &b, seed, checkpoint_every, limit).unwrap();
-        prop_assert_eq!(report.verdict, Verdict::Identical);
+        prop_assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
         prop_assert!(report.limit_reached);
         prop_assert_eq!(report.halted_at, None);
     }
