@@ -113,6 +113,9 @@ impl<'a> ArchivedImage<'a> {
     }
 
     fn mentions(&self, relative: &str) -> bool {
+        if let Some(path) = self.resolve_path(relative) {
+            return self.entries.contains_key(path.as_str());
+        }
         let mut prefix = String::new();
         for component in relative.split('/') {
             if !prefix.is_empty() {
@@ -808,6 +811,44 @@ mod tests {
         assert!(packed.instrumented_events());
         assert!(packed.require_for(ExecutionMode::Vm).is_ok());
         assert!(packed.require_for(ExecutionMode::Uml).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn archived_admission_treats_missing_metadata_under_symlinks_as_absent() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["usr/share/symbols", "real/etc/harmony"] {
+            fs::create_dir_all(root.path().join(directory)).unwrap();
+        }
+        std::os::unix::fs::symlink("usr/share/symbols", root.path().join("symbols")).unwrap();
+        std::os::unix::fs::symlink("real/etc", root.path().join("etc")).unwrap();
+        std::os::unix::fs::symlink(
+            "missing-review",
+            root.path().join("real/etc/harmony/instruction-allowlist"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "missing-attestation",
+            root.path()
+                .join("usr/share/symbols/harmony-instrumented-events"),
+        )
+        .unwrap();
+        let staged = StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        let prepared =
+            oci_support::bundle::prepare(&staged, &oci_support::bundle::LaunchRequest::default())
+                .unwrap();
+        let archive = prepared.archived_rootfs().unwrap();
+        let packed = ArchivedImage::new(&archive).inspect().unwrap();
+        let staged = inspect_root(root.path()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&packed).unwrap(),
+            serde_json::to_value(&staged).unwrap()
+        );
+        assert!(packed.require_for(ExecutionMode::Vm).is_ok());
     }
 
     #[test]
