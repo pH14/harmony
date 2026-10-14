@@ -175,7 +175,8 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
                 "search --resume requires a saved search; use search --from for a branch".into(),
             );
         }
-        let (checkpoint, completed) = crate::runs::checkpoint_record(&parent)?;
+        let (checkpoint, completed) =
+            crate::runs::checkpoint_record_verified(&parent, &original.record)?;
         let additional =
             request
                 .budget

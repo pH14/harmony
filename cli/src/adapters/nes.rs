@@ -414,7 +414,8 @@ fn continue_search(request: Request) -> Result<u8> {
         if original.mode != "search" {
             return Err("search --resume requires a saved search".into());
         }
-        let (checkpoint, completed) = crate::runs::checkpoint_record(&parent.join("package"))?;
+        let (checkpoint, completed) =
+            crate::runs::checkpoint_record_verified(&parent.join("package"), &original)?;
         let additional =
             request
                 .budget
