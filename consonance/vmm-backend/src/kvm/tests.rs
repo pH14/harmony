@@ -584,17 +584,20 @@ fn finish_staged_completion_eintr_reaches_a_no_entry_fixpoint() {
     let s = SynRun::new();
     let mut pending = Pending::MmioLoad { len: 8 };
     let mut stage = Stage::AWAITING_FINISH;
+    let guard = StateMutationGuard::default();
     let mut entries = 0;
-    let first = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
-        entries += 1;
-        assert_eq!(s.page().immediate_exit(), 1);
-        Err(std::io::Error::from_raw_os_error(libc::EINTR))
-    })
-    .unwrap();
+    let first =
+        finish_staged_completion_guarded(s.page(), &mut pending, &mut stage, &guard, || {
+            entries += 1;
+            assert_eq!(s.page().immediate_exit(), 1);
+            Err(std::io::Error::from_raw_os_error(libc::EINTR))
+        })
+        .unwrap();
     assert_eq!(first, None);
     assert_eq!(entries, 1);
     assert_eq!(pending, Pending::None);
     assert!(!stage.staged);
+    assert!(guard.ensure_healthy().is_ok());
     assert_eq!(s.page().immediate_exit(), 0);
 
     let second = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
@@ -1513,25 +1516,28 @@ fn event_restore_preserves_pending_and_clears_displaced_exceptions() {
 fn snapshot_preparation_requires_interruption_and_clears_its_request() {
     for outcome in 0..3 {
         let run = SynRun::new();
+        let guard = StateMutationGuard::default();
         let mut entered = false;
         let mut pending = Pending::None;
         let mut stage = Stage::CLEAR;
-        let result = prepare_snapshot_run(run.page(), 7, &mut pending, &mut stage, || {
-            entered = true;
-            assert_eq!(run.page().immediate_exit(), 1);
-            // SAFETY: the synthetic run page is owned and initialized for the entire test.
-            assert_eq!(unsafe { (*run.run()).cr8 }, 7);
-            match outcome {
-                0 => Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
-                1 => Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
-                _ => Ok(()),
-            }
-        });
+        let result =
+            prepare_snapshot_run_guarded(run.page(), 7, &mut pending, &mut stage, &guard, || {
+                entered = true;
+                assert_eq!(run.page().immediate_exit(), 1);
+                // SAFETY: the synthetic run page is owned and initialized for the entire test.
+                assert_eq!(unsafe { (*run.run()).cr8 }, 7);
+                match outcome {
+                    0 => Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                    1 => Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+                    _ => Ok(()),
+                }
+            });
         assert!(entered);
         assert_eq!(result.is_ok(), outcome == 0);
         if outcome == 0 {
             assert_eq!(result.unwrap(), None);
         }
+        assert_eq!(guard.ensure_healthy().is_ok(), outcome == 0);
         assert_eq!(run.page().immediate_exit(), 0);
     }
 }
@@ -1542,18 +1548,67 @@ fn snapshot_preparation_drains_a_staged_completion_in_the_same_run() {
     let mut entries = 0;
     let mut pending = Pending::None;
     let mut stage = Stage::AWAITING_FINISH;
-    let result = prepare_snapshot_run(run.page(), 9, &mut pending, &mut stage, || {
-        entries += 1;
-        assert_eq!(run.page().immediate_exit(), 1);
-        // SAFETY: the synthetic run page is owned and initialized for the entire test.
-        assert_eq!(unsafe { (*run.run()).cr8 }, 9);
-        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
-    });
+    let guard = StateMutationGuard::default();
+    let result =
+        prepare_snapshot_run_guarded(run.page(), 9, &mut pending, &mut stage, &guard, || {
+            entries += 1;
+            assert_eq!(run.page().immediate_exit(), 1);
+            // SAFETY: the synthetic run page is owned and initialized for the entire test.
+            assert_eq!(unsafe { (*run.run()).cr8 }, 9);
+            Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+        });
     assert_eq!(entries, 1);
     assert_eq!(result.unwrap(), None);
     assert!(!stage.staged);
     assert_eq!(pending, Pending::None);
+    assert!(guard.ensure_healthy().is_ok());
     assert_eq!(run.page().immediate_exit(), 0);
+}
+
+#[test]
+fn unexpected_completion_exit_retires_the_backend_before_retry() {
+    let run = SynRun::new();
+    let mut pending = Pending::None;
+    let mut stage = Stage::AWAITING_FINISH;
+    let guard = StateMutationGuard::default();
+    let error =
+        prepare_snapshot_run_guarded(run.page(), 0, &mut pending, &mut stage, &guard, || {
+            set_reason(&run, KVM_EXIT_HLT);
+            Ok(())
+        })
+        .expect_err("a completion-only entry must reject guest control execution");
+    assert!(matches!(error, BackendError::Internal(_)));
+    assert!(stage.staged);
+    assert!(matches!(
+        guard.ensure_healthy(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+    assert!(matches!(
+        prepare_snapshot_run_guarded(run.page(), 0, &mut pending, &mut stage, &guard, || panic!(
+            "a retired backend must not retry the uncertain completion"
+        )),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+}
+
+#[test]
+fn unexpected_finish_exit_retires_the_backend_before_retry() {
+    let run = SynRun::new();
+    let mut pending = Pending::None;
+    let mut stage = Stage::AWAITING_FINISH;
+    let guard = StateMutationGuard::default();
+    let error =
+        finish_staged_completion_guarded(run.page(), &mut pending, &mut stage, &guard, || {
+            set_reason(&run, KVM_EXIT_HLT);
+            Ok(())
+        })
+        .expect_err("a completion-only entry must reject guest control execution");
+    assert!(matches!(error, BackendError::Internal(_)));
+    assert!(stage.staged);
+    assert!(matches!(
+        guard.ensure_healthy(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
 }
 
 #[test]

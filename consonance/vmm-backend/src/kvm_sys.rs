@@ -316,16 +316,22 @@ impl KvmBackend {
         self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
-        let next = finish_staged_completion(page, &mut self.pending, &mut self.completion, || {
-            // SAFETY: the owned vCPU fd references the mapped run page and
-            // this entry is restricted to consuming its staged completion.
-            let rc = unsafe { raw_kvm_run(fd) };
-            if rc < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })?;
+        let next = finish_staged_completion_guarded(
+            page,
+            &mut self.pending,
+            &mut self.completion,
+            &self.state_mutation_guard,
+            || {
+                // SAFETY: the owned vCPU fd references the mapped run page and
+                // this entry is restricted to consuming its staged completion.
+                let rc = unsafe { raw_kvm_run(fd) };
+                if rc < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
         if let Some(exit) = &next {
             self.counts.bump(exit.reason());
         }
@@ -794,11 +800,12 @@ impl KvmBackend {
         self.check_completion_clear()?;
         let sregs = self.read_sregs2_guarded()?;
         let fd = self.vcpu.as_raw_fd();
-        let continuation = prepare_snapshot_run(
+        let continuation = prepare_snapshot_run_guarded(
             self.run_page(),
             sregs.cr8,
             &mut self.pending,
             &mut self.completion,
+            &self.state_mutation_guard,
             || {
                 // SAFETY: the owned vCPU has a run page requesting immediate exit and,
                 // when a completion was staged, no pending value left to supply.

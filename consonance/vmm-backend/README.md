@@ -200,7 +200,10 @@ like any other MMIO exit. An MMIO exit stays unacknowledged until
 required by the same instruction. Callers service these continuations until `finish_exit` returns
 `None` before exposing a stopped execution. No completion entry executes the
 successor instruction or injects an interrupt. An MSR fault queues its
-exception without executing the handler.
+exception without executing the handler. An unexpected completion-only entry
+or ioctl error retires the backend before it can retry the uncertain completion
+or publish a snapshot; expected immediate-exit interruption and a decoded
+device continuation leave the backend usable.
 The live serviced-exit regressions require exact CPU state at the stopped
 completion boundary. After guest continuation, they compare logical XSAVE
 presence alongside every CPU field; the MMIO and MSR cases also compare guest
