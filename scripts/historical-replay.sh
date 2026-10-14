@@ -4,7 +4,7 @@
 # historical case's affected version.
 #
 #   historical-replay.sh sample <sample.json>
-#   historical-replay.sh reproduce <first-bug-input.json>
+#   historical-replay.sh reproduce <search-report.json>
 #
 # The campaign itself already performs one fresh replay for every finding.
 # Samples replay twice, covering fresh starts and no-find paths. KVM compares
@@ -54,18 +54,17 @@ max_sessions=${MAX_REPLAY_SESSIONS:-2}
 
 finding=
 if [[ "$mode" == reproduce ]]; then
-    source_report="$(dirname "$input")/report.json"
-    [[ -s "$source_report" ]] || {
-        echo "historical-replay: infra-failure (missing source report ${source_report})" >&2
-        exit 1
-    }
-    finding=$(jq -r '(.bugs // []) | to_entries | map(select(.value.confirmed == true))
-        | if length > 0 then .[0].key + 1 else empty end' "$source_report")
+    finding=$(jq -r --arg assertion "$ORACLE_ASSERTION" --arg evidence "$ORACLE_EVIDENCE" '
+        (.bugs // []) | to_entries | map(select(
+            .value.confirmed == true
+            and ((.value.violations // []) | index($assertion)) != null
+            and ((.value.sometimes // []) | index($evidence)) != null))
+        | if length > 0 then .[0].key + 1 else empty end' "$input")
     [[ "$finding" =~ ^[1-9][0-9]*$ ]] || {
-        echo 'historical-replay: infra-failure (no confirmed finding)' >&2
+        echo 'historical-replay: infra-failure (no confirmed case finding)' >&2
         exit 1
     }
-    actions=$(jq -r --argjson finding "$finding" '.bugs[$finding - 1].actions | length' "$source_report")
+    actions=$(jq -r --argjson finding "$finding" '.bugs[$finding - 1].actions | length' "$input")
 else
     actions=$(jq -r 'if type == "array" then length else (.actions | length) end' "${input}")
 fi
