@@ -1410,7 +1410,8 @@ fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
         *line = serde_json::to_string(&value).unwrap();
         let error = replay_error(&lines);
         assert!(
-            error.contains("recorded suffix limit does not match the drawn suffix"),
+            error.contains("recorded suffix limit does not match the drawn suffix")
+                || error.contains("replayed job suffix limit diverged at reservation"),
             "a tampered limit failed for another reason: {error}"
         );
     }

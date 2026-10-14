@@ -4386,14 +4386,14 @@ where
         None
     };
     let mut required_draw_versions = DrawVersionSchedule::default();
-    let mut replay_job_reservations = BTreeMap::<u64, u64>::new();
+    let mut replay_job_reservations = BTreeMap::<u64, (u64, Option<u8>)>::new();
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 if replay_job_reservations
-                    .insert(job.reservation, job.parent_id)
+                    .insert(job.reservation, (job.parent_id, job.suffix_limit))
                     .is_some()
                 {
                     return Err("campaign stream admits one reservation twice".into());
@@ -4419,7 +4419,8 @@ where
     if u64::try_from(replay_job_reservations.len())? > header.execution_budget {
         return Err("campaign stream exceeds its recorded execution budget".into());
     }
-    let replay_job_parents = replay_job_reservations.into_values().collect::<Vec<_>>();
+    let (replay_job_parents, replay_job_suffix_limits): (Vec<_>, Vec<_>) =
+        replay_job_reservations.into_values().unzip();
     let replay_job_metadata = replay_job_parents
         .iter()
         .map(|parent_id| vec![*parent_id])
@@ -4653,6 +4654,12 @@ where
             .archive
             .index_of_id(*parent_id)
             .ok_or("initial replay job names a parent the archive does not hold")?;
+        if replay_job_suffix_limits[job_slot]
+            .is_some_and(|recorded| core.suffix_limit(*parent_id, parent_index) != recorded)
+        {
+            return Err("replayed job suffix limit diverged at reservation".into());
+        }
+        core.start_suffix_job(*parent_id, replay_job_suffix_limits[job_slot]);
         replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
         replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
         for metadata_id in &replay_job_metadata[job_slot] {
@@ -5002,6 +5009,7 @@ where
                     .as_ref()
                     .map_or(0, |taken| taken.wave.saturating_add(1));
                 core.archive.set_admission_wave(continuation_wave);
+                core.finish_suffix_job(job.parent_id, suffix_limit);
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
@@ -5188,6 +5196,12 @@ where
                         .archive
                         .index_of_id(*parent_id)
                         .ok_or("next replay job names a parent the archive does not hold")?;
+                    if replay_job_suffix_limits[next_slot].is_some_and(|recorded| {
+                        core.suffix_limit(*parent_id, parent_index) != recorded
+                    }) {
+                        return Err("replayed job suffix limit diverged at reservation".into());
+                    }
+                    core.start_suffix_job(*parent_id, replay_job_suffix_limits[next_slot]);
                     replay_job_snapshots
                         .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
                     replay_selections.insert(next_slot, (replay_planned_clock, core.sequence));
@@ -6399,6 +6413,26 @@ mod tests {
                 .expect_err("replay certified a preference the key does not define")
                 .to_string();
         assert!(error.contains("preference"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_an_impossible_recorded_suffix_limit() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let first_job = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+            })
+            .unwrap();
+        let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
+        assert_eq!(job["suffix_limit"], 1);
+        job["suffix_limit"] = serde_json::json!(2);
+        lines[first_job] = serde_json::to_string(&job).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a suffix limit inconsistent with the archive")
+                .to_string();
+        assert!(error.contains("suffix limit"), "{error}");
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,
