@@ -5250,6 +5250,45 @@ mod tests {
     }
 
     #[test]
+    fn legacy_pic_imr_rejects_non_byte_io_before_state_or_time_changes() {
+        for port in [0x0021, 0x00A1] {
+            for size in [2, 4, 8, 0] {
+                for write in [Some(0x00EF), None] {
+                    let mut v = linux_vmm(vec![Exit::Arch(X86Exit::Io { port, size, write })]);
+                    v.wire_vtime(
+                        VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap(),
+                    );
+                    let before_vns = v.now_vns().unwrap();
+                    let before_imr = v.devices.legacy.as_ref().unwrap().pic_imr();
+                    assert!(
+                        matches!(v.step(), Err(VmmError::ContractViolation(_))),
+                        "PIC IMR port {port:#06x}, size {size}, write {write:?} must fail closed"
+                    );
+                    assert_eq!(v.now_vns().unwrap(), before_vns);
+                    assert_eq!(v.devices.legacy.as_ref().unwrap().pic_imr(), before_imr);
+                    assert!(v.backend.completions().is_empty());
+                }
+            }
+
+            let mut valid = linux_vmm(vec![
+                Exit::Arch(X86Exit::Io {
+                    port,
+                    size: 1,
+                    write: Some(0xFE),
+                }),
+                Exit::Arch(X86Exit::Io {
+                    port,
+                    size: 1,
+                    write: None,
+                }),
+                Exit::Common(CommonExit::Idle),
+            ]);
+            valid.run().unwrap();
+            assert_eq!(valid.backend.completions(), &[Completion::Read(0xFE)]);
+        }
+    }
+
+    #[test]
     fn rejected_xapic_offsets_do_not_advance_virtual_time() {
         for offset in [0x004, 0xFF4] {
             for write in [None, Some(0x20)] {
