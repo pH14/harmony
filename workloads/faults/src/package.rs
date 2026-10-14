@@ -258,7 +258,7 @@ pub enum SearchStart {
     #[default]
     Genesis,
     Actions(Vec<FaultAction>),
-    Checkpoint(PathBuf),
+    Checkpoint(searcher::search::checkpoint::PinnedCheckpoint),
 }
 
 pub struct Artifacts {
@@ -492,9 +492,10 @@ mod live {
         };
         let origin = match start {
             super::SearchStart::Genesis => CampaignOrigin::Genesis,
-            super::SearchStart::Checkpoint(path) => {
-                CampaignOrigin::SearchCheckpoint { path: path.clone() }
-            }
+            super::SearchStart::Checkpoint(checkpoint) => CampaignOrigin::SearchCheckpoint {
+                path: checkpoint.path.clone(),
+                expected_sha256: Some(checkpoint.sha256.clone()),
+            },
             super::SearchStart::Actions(actions) => {
                 let mut target =
                     FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, &config)?;

@@ -132,7 +132,10 @@ where
         return Err("a run resumed from a search checkpoint has no stream to replay; use witness verification".into());
     }
     let origin = match &request.resume {
-        Some(path) => CampaignOrigin::SearchCheckpoint { path: path.clone() },
+        Some(path) => CampaignOrigin::SearchCheckpoint {
+            path: path.clone(),
+            expected_sha256: None,
+        },
         None => CampaignOrigin::Genesis,
     };
     let checkpoints =

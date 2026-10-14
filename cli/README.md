@@ -234,7 +234,9 @@ Each search records a fresh owner in its initial manifest and checkpoint
 headers. Resume refuses a checkpoint from another saved search, including after
 an interrupted run. A completed search also records the selected checkpoint's
 SHA-256 in its manifest and refuses changed checkpoint bytes, even when they
-remain valid for the same workload.
+remain valid for the same workload. The selected journal digest is carried to
+the searcher and compared with the checkpoint bytes it actually opens, closing
+the gap between selection and resume.
 
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
 `--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.

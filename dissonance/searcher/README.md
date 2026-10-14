@@ -674,6 +674,8 @@ Harmony's saved-run manifest records that owner before search begins and checks
 it before resume, so a checkpoint from another run cannot impersonate the
 interrupted run's latest checkpoint. A completed saved run also binds the
 selected checkpoint's SHA-256. `CampaignOrigin::SearchCheckpoint` resumes one.
+When that origin carries a selected SHA-256, replay compares it with the exact
+checkpoint bytes opened for resume before restoring state.
 The admission
 window, limits, workload identity and the workload policies that give stored
 inputs and keys their meaning must match. The mixture and retention
