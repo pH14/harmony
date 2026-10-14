@@ -302,10 +302,10 @@ full-state replay equivalence.
 
 The search report and `campaign-summary.json` also record
 `watchdog_cutoffs`, the number of guest action runs and prefix reconstruction
-attempts ended by the session's host watchdog, including waits for a fresh UML
-restore. A reconstruction cutoff ends that preparation attempt, counts one
-execution failure and one watchdog cutoff, and leaves the worker available for
-later jobs. It
+attempts ended by the session's host watchdog, including waits for a fresh or
+in-place UML restore. A reconstruction cutoff ends that preparation attempt,
+counts one execution failure and one watchdog cutoff, and leaves the worker
+available for later jobs. It
 produces no suffix action, retained candidate, oracle evidence, or duration
 feedback. Other reconstruction errors still fail the campaign. A completed CLI
 with such cutoffs remains a measured campaign;
