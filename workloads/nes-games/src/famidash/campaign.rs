@@ -50,7 +50,7 @@ const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "a_only_no_start_select_v1";
 const RELEASE: &str = "tfdsoft/famidash@1.2.8";
-const TERMINAL_POLICY_IDENTIFIER: &str = "level_complete_win_or_death_bit_v1";
+const TERMINAL_POLICY_IDENTIFIER: &str = "dash_complete_win_or_death_bit_v1";
 
 pub type FamidashTargets<M> = Box<dyn Fn() -> Result<FamidashTarget<M>, String> + Send + Sync>;
 
@@ -185,7 +185,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
-        objective_reached: target.exit_kind() == ExitKind::Ok && target.complete(),
+        objective_reached: target.exit_kind() == ExitKind::Ok && target.finished(),
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
         } else if target.is_terminal() {
@@ -210,7 +210,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
         } else {
             target.last_action_observations().to_vec()
         };
-        let raw_objective = target.exit_kind() == ExitKind::Ok && target.complete();
+        let raw_objective = target.exit_kind() == ExitKind::Ok && target.finished();
         let objective_reached = raw_objective && !objective_seen;
         objective_seen |= raw_objective;
         let disposition = if target.exit_kind() != ExitKind::Ok {
@@ -502,7 +502,7 @@ impl<M: NesBackend<Vec<u8>>> Evaluation for FamidashGame<M> {
         _run: &FamidashCampaignRun,
         target: &FamidashTarget<M>,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(target.exit_kind() == ExitKind::Ok && target.complete())
+        Ok(target.exit_kind() == ExitKind::Ok && target.finished())
     }
 
     fn current_key(

@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "famidash_band_256_cell_32x16_mode_motion_earliest_v2";
+pub const KEY_POLICY_IDENTIFIER: &str = "famidash_level_band_256_cell_32x16_mode_motion_earliest_v3";
 pub const REPLACEMENT_IDENTIFIER: &str = "earliest_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_tap_1_4_or_hold_6_40_v1";
 
@@ -41,12 +41,13 @@ pub struct FamidashArchiveKey {
 }
 
 impl ArchiveKey for FamidashArchiveKey {
-    type Place = (i32, i32, u8, bool, bool, bool);
+    type Place = (u8, i32, i32, u8, bool, bool, bool);
     type Progress = (u8, i32);
     type Identity = u8;
 
     fn place(self) -> Self::Place {
         (
+            self.level,
             self.x.div_euclid(CELL_WIDTH),
             self.y.div_euclid(CELL_HEIGHT),
             self.gamemode,
@@ -111,6 +112,7 @@ pub fn archive_key(state: FamidashMechanicalState) -> Option<FamidashArchiveKey>
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FamidashMilestones {
+    pub cleared: u8,
     pub percent: u8,
     pub complete: bool,
     pub death: bool,
@@ -130,6 +132,7 @@ pub struct FamidashMilestoneInputs {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FamidashProgressWatermark {
+    pub cleared: u8,
     pub percent: u8,
     pub x: i32,
 }
@@ -161,8 +164,9 @@ pub struct FamidashArchiveReport {
 #[must_use]
 pub fn milestones(state: FamidashMechanicalState) -> FamidashMilestones {
     FamidashMilestones {
-        percent: state.percent(),
-        complete: state.complete(),
+        cleared: state.cleared(),
+        percent: level_percent(state),
+        complete: state.finished(),
         death: state.dead,
     }
 }
@@ -172,15 +176,22 @@ pub fn milestones_from_observation(observation: &FamidashObservations) -> Famida
     milestones(observation.decoded)
 }
 
+fn level_percent(state: FamidashMechanicalState) -> u8 {
+    if state.complete() { 0 } else { state.percent() }
+}
+
 pub fn merge_milestones(into: &mut FamidashMilestones, from: FamidashMilestones) {
-    into.percent = into.percent.max(from.percent);
+    if (from.cleared, from.percent) > (into.cleared, into.percent) {
+        into.cleared = from.cleared;
+        into.percent = from.percent;
+    }
     into.complete |= from.complete;
     into.death |= from.death;
 }
 
 #[must_use]
-pub fn milestone_key(value: FamidashMilestones) -> (bool, u8, bool) {
-    (value.complete, value.percent, !value.death)
+pub fn milestone_key(value: FamidashMilestones) -> (bool, u8, u8, bool) {
+    (value.complete, value.cleared, value.percent, !value.death)
 }
 
 pub fn merge_progress_watermark(
@@ -189,10 +200,11 @@ pub fn merge_progress_watermark(
 ) {
     for observation in observations {
         let state = observation.decoded;
-        watermark.percent = watermark.percent.max(state.percent());
-        if let Some(gameplay) = state.gameplay {
-            watermark.x = watermark.x.max(gameplay.x);
-        }
+        *watermark = (*watermark).max(FamidashProgressWatermark {
+            cleared: state.cleared(),
+            percent: level_percent(state),
+            x: state.gameplay.map_or(0, |gameplay| gameplay.x),
+        });
     }
 }
 
@@ -210,7 +222,7 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::famidash::target::{FamidashGameplayState, GAME_STATE_COMPLETE};
+    use crate::famidash::target::{FamidashGameplayState, GAME_STATE_COMPLETE, LAST_LEVEL};
     use crate::search::rand::RomuDuoJrRand;
 
     fn state(x: i32, y: i32, gamemode: u8) -> FamidashMechanicalState {
@@ -228,9 +240,12 @@ mod tests {
     }
 
     #[test]
-    fn places_are_32_by_16_pixel_cells_per_mode() {
+    fn places_are_32_by_16_pixel_cells_per_level_and_mode() {
         let key = archive_key(state(1_000, 897, 0)).unwrap();
-        assert_eq!(key.place(), (31, 56, 0, false, false, false));
+        assert_eq!(key.place(), (0, 31, 56, 0, false, false, false));
+        let mut later = state(1_000, 897, 0);
+        later.level = 1;
+        assert_ne!(archive_key(later).unwrap().place(), key.place());
         assert_ne!(
             archive_key(state(1_000, 897, 1)).unwrap().place(),
             key.place()
@@ -283,12 +298,29 @@ mod tests {
         complete.game_state = GAME_STATE_COMPLETE;
         complete.gameplay = None;
         assert_eq!(archive_key(complete), None);
+        assert!(!milestones(complete).complete);
+        assert_eq!(
+            (milestones(complete).cleared, milestones(complete).percent),
+            (1, 0)
+        );
+        complete.level = LAST_LEVEL;
         assert!(milestones(complete).complete);
-        assert_eq!(milestones(complete).percent, 100);
+        assert_eq!(milestones(complete).cleared, LAST_LEVEL + 1);
     }
 
     #[test]
-    fn watermark_orders_by_percent_then_distance() {
+    fn a_cleared_level_outranks_any_percent_of_the_level_before() {
+        let mut into = milestones(state(14_000, 897, 0));
+        let mut next = state(500, 897, 0);
+        next.level = 1;
+        merge_milestones(&mut into, milestones(next));
+        assert_eq!((into.cleared, into.percent), (1, 3));
+        merge_milestones(&mut into, milestones(state(14_000, 897, 0)));
+        assert_eq!((into.cleared, into.percent), (1, 3));
+    }
+
+    #[test]
+    fn watermark_orders_by_level_then_percent_then_distance() {
         let mut watermark = FamidashProgressWatermark::default();
         let observation = |state| FamidashObservations {
             frame_count: 1,
@@ -300,10 +332,15 @@ mod tests {
         assert_eq!(
             watermark,
             FamidashProgressWatermark {
+                cleared: 0,
                 percent: 9,
                 x: 1_500
             }
         );
+        let mut next = state(300, 897, 0);
+        next.level = 1;
+        merge_progress_watermark(&mut watermark, &[observation(next)]);
+        assert_eq!((watermark.cleared, watermark.x), (1, 300));
     }
 
     #[test]

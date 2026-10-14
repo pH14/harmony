@@ -21,7 +21,10 @@ use crate::campaign::{Action, BrowserGame, HIDDEN, JsMachine, actions, js_error,
 
 pub type Famidash = FamidashGame<JsMachine>;
 
-const MAP_TOP: i32 = 240;
+const MAP_TOPS: [i32; 22] = [
+    662, 664, 679, 630, 599, 615, 710, 584, 643, 678, 480, 250, 616, 272, 661, 422, 658, 604, 558,
+    622, 583, 342,
+];
 
 fn pose(state: FamidashMechanicalState) -> u16 {
     state.gameplay.map_or(0, |gameplay| {
@@ -29,10 +32,14 @@ fn pose(state: FamidashMechanicalState) -> u16 {
     })
 }
 
-fn map_point(x: i32, y: i32) -> (u16, u16) {
+fn map_top(level: u8) -> i32 {
+    MAP_TOPS.get(usize::from(level)).copied().unwrap_or(0)
+}
+
+fn map_point(level: u8, x: i32, y: i32) -> (u16, u16) {
     (
         u16::try_from(x.max(0)).unwrap_or(u16::MAX),
-        u16::try_from((y - MAP_TOP).max(0)).unwrap_or(u16::MAX),
+        u16::try_from((y - map_top(level)).max(0)).unwrap_or(u16::MAX),
     )
 }
 
@@ -56,7 +63,7 @@ fn cleared(state: FamidashMechanicalState) -> u8 {
 
 fn view(state: FamidashMechanicalState) -> View {
     let gameplay = state.gameplay.unwrap_or_default();
-    let (x, y) = map_point(gameplay.x, gameplay.y);
+    let (x, y) = map_point(state.level, gameplay.x, gameplay.y);
     View {
         x,
         y,
@@ -65,7 +72,7 @@ fn view(state: FamidashMechanicalState) -> View {
         gamestate: state.game_state,
         percent: state.percent(),
         gamemode: gameplay.gamemode,
-        goal: state.complete(),
+        goal: state.finished(),
         loading: state.gameplay.is_none(),
         cleared: cleared(state),
     }
@@ -101,7 +108,7 @@ impl BrowserGame for Famidash {
         match decode_state(memory) {
             Ok(state) => match state.gameplay {
                 Some(gameplay) => {
-                    let (x, y) = map_point(gameplay.x, gameplay.y);
+                    let (x, y) = map_point(state.level, gameplay.x, gameplay.y);
                     [u16::from(state.level), x, y, pose(state)]
                 }
                 None => [HIDDEN, 0, 0, 0],
@@ -168,6 +175,6 @@ pub fn famidash_level_select_tape() -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn famidash_map_top() -> i32 {
-    MAP_TOP
+pub fn famidash_map_top(level: u8) -> i32 {
+    map_top(level)
 }
