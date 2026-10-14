@@ -82,6 +82,17 @@ cargo run --release --manifest-path workloads/nes/Cargo.toml --bin nes-eval -- r
 Seeds 1 to 5 clear Stereo Madness in 6,800 to 9,000 executions, about 2
 seconds on 8 workers, and each victory witness replays. `nes-film` accepts
 `--game famidash` with `--level` for a run started at another level, and
-renders the witness. The browser demo in
+renders the witness.
+
+`famidash-probe ROM LEVEL INPUT.json` replays an input from a level's start and
+prints the endpoint. With `trace` it prints the decoded state every frame. With
+`frontier FRAMES [OUT.json]` it searches every press or release per frame from
+the endpoint, keeping one branch per vertical position, velocity, mode and held
+button, and reports how many branches stay alive. "every continuation dies"
+means the endpoint is already lost whatever the player presses. `OUT.json`
+receives a surviving or completing input. `HARMONY_QUICKNES_CORE` names the
+core.
+
+The browser demo in
 `demos/twin-dragons` runs the same workload and starts later levels by writing
 the level number at level select.
