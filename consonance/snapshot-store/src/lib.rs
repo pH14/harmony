@@ -357,16 +357,22 @@ impl Store {
             }
         }
 
+        let mut verified_pages = BTreeSet::new();
         let Some(from) = from else {
             return (0..self.cfg.mem_pages)
-                .map(|gfn| Ok((gfn, self.stored_page(to, gfn)?)))
+                .map(|gfn| {
+                    let (_, page) =
+                        self.page_entry(self.resolve(to.0, gfn), gfn, &mut verified_pages)?;
+                    Ok((gfn, page))
+                })
                 .collect();
         };
 
         self.live_layer(from)?;
         let mut pages = Vec::new();
         for gfn in self.changed_gfns(from, to, dirty)? {
-            pages.push((gfn, self.stored_page(to, gfn)?));
+            let (_, page) = self.page_entry(self.resolve(to.0, gfn), gfn, &mut verified_pages)?;
+            pages.push((gfn, page));
         }
         Ok(pages)
     }
@@ -1573,6 +1579,42 @@ mod tests {
         assert!(matches!(
             store.restore_pages(Some(base), child, &[1]),
             Err(StoreError::PageIntegrity { gfn: 2 })
+        ));
+    }
+
+    #[test]
+    fn restore_and_diff_reject_corrupt_resident_pages() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let target = snap_with(&mut store, base, &[(1, 0x5a)]);
+        let PageRef::Data(id) = store.resolve(target.0, 1) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+
+        assert!(matches!(
+            store.restore_pages(Some(base), target, &[]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            store.diff_pages(Some(base), target),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            store.restore_pages(None, target, &[]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        let PageRef::Data(id) = store.resolve(target.0, 0) else {
+            panic!("expected inherited resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        assert!(matches!(
+            store.restore_pages(Some(base), target, &[0]),
+            Err(StoreError::PageIntegrity { gfn: 0 })
         ));
     }
 
