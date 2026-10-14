@@ -659,7 +659,7 @@ the format name first, then checks the checksum before decoding the rest of the
 header or body, so byte changes that remain valid postcard data fail closed
 instead of changing the continuation. These
 checks detect corruption, not deliberate rewriting of a checkpoint and its
-checksum. `checkpoints.jsonl` records write time and sizes:
+checksum. `checkpoints.jsonl` records each checkpoint's SHA-256, write time and sizes:
 `store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
 kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
 what the write's pruning released. The

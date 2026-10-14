@@ -4,7 +4,7 @@ use crate::config::{Config, Result};
 use crate::runtime::digest;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -281,25 +281,50 @@ fn checkpoint_record_unbound(path: &Path) -> Result<(PathBuf, u64)> {
     let text = fs::read_to_string(directory.join("checkpoints.jsonl")).map_err(
         |_| "this recording has no whole-search checkpoint yet (written periodically and when a search completes)",
     )?;
+    let mut recorded_files = BTreeSet::new();
+    let mut selected = None;
     for (index, line) in text.lines().rev().enumerate() {
         let record: serde_json::Value = match serde_json::from_str(line) {
             Ok(record) => record,
             Err(error) if index == 0 && !text.ends_with('\n') && error.is_eof() => continue,
             Err(error) => return Err(error.into()),
         };
-        if let Some(file) = record["file"].as_str() {
-            let candidate = directory.join(
-                Path::new(file)
-                    .file_name()
-                    .ok_or("invalid checkpoint filename")?,
-            );
-            if candidate.is_file() {
-                let reserved = searcher::search::checkpoint::read_header(&candidate)?.reserved;
-                return Ok((candidate, reserved));
+        let file = record["file"]
+            .as_str()
+            .ok_or("checkpoint journal record has no file")?;
+        let name = Path::new(file)
+            .file_name()
+            .ok_or("invalid checkpoint filename")?;
+        recorded_files.insert(name.to_owned());
+        if selected.is_none() {
+            let candidate = directory.join(name);
+            if !candidate.is_file() {
+                return Err("latest checkpoint named by journal is missing".into());
             }
+            let expected = record["checkpoint_sha256"]
+                .as_str()
+                .ok_or("checkpoint journal has no checkpoint SHA-256")?;
+            if file_digest(&candidate)? != expected {
+                return Err("checkpoint differs from its journal record".into());
+            }
+            let reserved = searcher::search::checkpoint::read_header(&candidate)?.reserved;
+            selected = Some((candidate, reserved));
         }
     }
-    Err("no retained search checkpoint exists".into())
+    let selected = selected.ok_or("no retained search checkpoint exists")?;
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "ckpt")
+            && entry.path().is_file()
+            && !recorded_files.contains(&entry.file_name())
+        {
+            return Err("checkpoint directory has an unjournaled retained checkpoint".into());
+        }
+    }
+    Ok(selected)
 }
 
 pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
@@ -482,6 +507,94 @@ mod checkpoint_tests {
                 .unwrap_err()
                 .to_string()
                 .contains("checkpoint belongs to a different saved search")
+        );
+    }
+
+    #[test]
+    fn interrupted_search_refuses_an_older_checkpoint_from_the_same_run() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let manifest = Manifest::new(config, "search").unwrap();
+        let older = directory.join("000000000100-interval.ckpt");
+        let latest = directory.join("000000000106-final.ckpt");
+        write_checkpoint(&older, 100, 106, 1, manifest.checkpoint_owner.as_deref());
+        write_journal(&directory, "000000000100-interval.ckpt", 100, 106);
+        let older_record = fs::read_to_string(directory.join("checkpoints.jsonl")).unwrap();
+        write_checkpoint(&latest, 106, 106, 1, manifest.checkpoint_owner.as_deref());
+        write_journal(&directory, "000000000106-final.ckpt", 106, 106);
+        let latest_record = fs::read_to_string(directory.join("checkpoints.jsonl")).unwrap();
+        fs::write(
+            directory.join("checkpoints.jsonl"),
+            format!("{older_record}{latest_record}"),
+        )
+        .unwrap();
+        manifest.save(root.path()).unwrap();
+        assert_eq!(checkpoint_record(root.path()).unwrap().0, latest);
+
+        fs::copy(&older, &latest).unwrap();
+        assert!(
+            checkpoint_record(root.path())
+                .unwrap_err()
+                .to_string()
+                .contains("checkpoint differs from its journal record")
+        );
+    }
+
+    #[test]
+    fn interrupted_search_refuses_a_missing_latest_checkpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let manifest = Manifest::new(config, "search").unwrap();
+        let older = directory.join("000000000100-interval.ckpt");
+        let latest = directory.join("000000000106-final.ckpt");
+        write_checkpoint(&older, 100, 106, 1, manifest.checkpoint_owner.as_deref());
+        write_journal(&directory, "000000000100-interval.ckpt", 100, 106);
+        let older_record = fs::read_to_string(directory.join("checkpoints.jsonl")).unwrap();
+        write_checkpoint(&latest, 106, 106, 1, manifest.checkpoint_owner.as_deref());
+        write_journal(&directory, "000000000106-final.ckpt", 106, 106);
+        let latest_record = fs::read_to_string(directory.join("checkpoints.jsonl")).unwrap();
+        fs::write(
+            directory.join("checkpoints.jsonl"),
+            format!("{older_record}{latest_record}"),
+        )
+        .unwrap();
+        manifest.save(root.path()).unwrap();
+        fs::remove_file(latest).unwrap();
+
+        assert!(
+            checkpoint_record(root.path())
+                .unwrap_err()
+                .to_string()
+                .contains("latest checkpoint named by journal is missing")
+        );
+    }
+
+    #[test]
+    fn interrupted_search_refuses_a_truncated_journal_tip() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let manifest = Manifest::new(config, "search").unwrap();
+        let older = directory.join("000000000100-interval.ckpt");
+        let latest = directory.join("000000000106-final.ckpt");
+        write_checkpoint(&older, 100, 106, 1, manifest.checkpoint_owner.as_deref());
+        write_journal(&directory, "000000000100-interval.ckpt", 100, 106);
+        write_checkpoint(&latest, 106, 106, 1, manifest.checkpoint_owner.as_deref());
+        manifest.save(root.path()).unwrap();
+
+        assert!(
+            checkpoint_record(root.path())
+                .unwrap_err()
+                .to_string()
+                .contains("unjournaled retained checkpoint")
         );
     }
 
