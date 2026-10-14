@@ -219,6 +219,8 @@ holds the Harmony link, Credits & source and the Dark mode / Light mode switch.
 
 Two toggles, Movement and Heatmap, choose what the map shows. Either or both
 can be on, and the last one on stays on. Movement alone is the default.
+Picking a level the search has already cleared switches to Heatmap, and
+picking the live level again restores the earlier choice.
 Movement shows the level map with small dragon sprites replaying recorded
 search rollouts. Each rollout worker samples its emulator every four game
 frames and at each action's end, without changing inputs, random draws or
@@ -252,7 +254,8 @@ and right edges; moving the mouse onto one and resting there pans that way, so a
 layout change that leaves a still pointer over an edge does not pan, and a tap on a touch screen
 glides about half a screen. A mouse click on a chevron selects the cell
 beneath it. A strip under the view shows the whole level, with
-each live sprite as a dot (or the heat cells in Heatmap mode) and a box for the
+the heat cells when Heatmap is on, each live sprite as a dot when Movement is
+on, and a box for the
 part on screen. Clicking or dragging the strip moves the view there, and a
 sideways scroll on the map or the strip pans it. When a level is taller than
 the view, as in Famidash, chevrons at the top and bottom edges pan it up and

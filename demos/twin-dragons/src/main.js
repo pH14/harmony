@@ -250,18 +250,19 @@ const swarm = new Swarm(
   budget.snapshotsMiB === 32 ? 2048 : 8192,
   FINISH_HOLD,
 );
-let visualization = "movement", swarmRooms = new Map();
+let visualization = "movement", liveVisualization = null, swarmRooms = new Map();
 const sprites = new Image();
 if (!game.buildSprites) sprites.src = new URL("sprites.png", assets).href;
-function setVisualization(mode) {
+function setVisualization(mode, draw = true) {
   visualization = mode;
   $("visualization").dataset.value = mode;
   for (const button of $("visualization").children) button.setAttribute("aria-pressed", mode === "both" || button.dataset.viz === mode);
   $("hover").hidden = true;
-  drawMap(performance.now());
+  if (draw) drawMap(performance.now());
 }
 for (const button of $("visualization").children) button.onclick = () => {
   userSelected = true;
+  liveVisualization = null;
   const on = new Set(visualization === "both" ? ["movement", "heat"] : [visualization]);
   if (on.has(button.dataset.viz)) on.delete(button.dataset.viz);
   else on.add(button.dataset.viz);
@@ -526,12 +527,7 @@ function drawOverview(strip, now) {
   if (image) ctx.drawImage(image.small || image, 0, 0, strip.width, strip.height);
   ctx.fillStyle = "rgba(7,24,43,.4)";
   ctx.fillRect(0, 0, strip.width, strip.height);
-  if (visualization === "movement") {
-    const dot = game.vertical ? 3 : 4;
-    ctx.fillStyle = "#ffd96a";
-    for (const p of swarmRooms.get(id) || [])
-      ctx.fillRect(Math.round((p.x + 8) * kx - dot / 2), Math.round((p.y + 8) * ky - dot / 2), dot, dot);
-  } else {
+  if (visualization !== "movement")
     for (const cell of heat.cells.values()) {
       if (cell.level !== id) continue;
       const color = heat.color(cell, now);
@@ -539,6 +535,11 @@ function drawOverview(strip, now) {
       ctx.fillStyle = `rgba(${color},.75)`;
       ctx.fillRect(cell.x * 32 * kx, cellTop(cell.y) * ky, 32 * kx, 32 * ky);
     }
+  if (visualization !== "heat") {
+    const dot = game.vertical ? 3 : 4;
+    ctx.fillStyle = "#ffd96a";
+    for (const p of swarmRooms.get(id) || [])
+      ctx.fillRect(Math.round((p.x + 8) * kx - dot / 2), Math.round((p.y + 8) * ky - dot / 2), dot, dot);
   }
   const c = mapCanvas(id);
   if (!c) return;
@@ -1464,6 +1465,8 @@ function startSearch(level = bootLevel) {
   replayEpoch++;
   playing = false;
   userSelected = false;
+  if (liveVisualization !== null) setVisualization(liveVisualization, false);
+  liveVisualization = null;
   camera.pinned = null;
   gameWon = false;
   paused = false;
@@ -1880,6 +1883,13 @@ $("level-more").onclick = () => {
 };
 function showLevel(level, live) {
   userSelected = true;
+  if (!live && cleared.has(level.id) && liveVisualization === null) {
+    liveVisualization = visualization;
+    setVisualization("heat");
+  } else if (live && liveVisualization !== null) {
+    setVisualization(liveVisualization);
+    liveVisualization = null;
+  }
   const active = live ? level.rooms.findLast((id) => swarmRooms.get(id)?.length) : undefined;
   const room = active ?? level.rooms.findLast((id) => seenMaps.has(id)) ?? level.rooms[0];
   if (!level.rooms.includes(mapLevel)) browseRoom(room);
