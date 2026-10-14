@@ -302,6 +302,70 @@ fn guest_nonzero_spi_route_rejects_capture_and_zero_route_restores() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_physical_timer_state_refuses_capture_and_legacy_restore() {
+    let enabled = [
+        0xd280_0020,
+        0xd51b_e200,
+        0xd51b_e220,
+        0xd503_3fdf,
+        0xd53b_e220,
+        0xd2a1_2001,
+        0xf900_0020,
+        0xd53b_e220,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &enabled);
+    assert_eq!(source.next_store(), 5);
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+    assert_eq!(source.next_store(), 5);
+
+    let disabled_with_compare = [
+        0xd280_0020,
+        0xd51b_e200,
+        0xd53b_e240,
+        0xd2a1_2001,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut disabled = Guest::new(live_backend(), &disabled_with_compare);
+    assert_ne!(disabled.next_store(), 0);
+    assert!(matches!(
+        disabled.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+
+    let pristine = [0xd53b_e220, 0xd2a1_2001, 0xf900_0020, 0x1400_0000];
+    let mut target = Guest::new(live_backend(), &pristine);
+    let pristine_cut = target.save();
+    assert_eq!(target.next_store(), 0);
+    let valid = target.save();
+    let mut legacy = valid;
+    legacy.gic.as_mut().unwrap().version = 5;
+    assert!(matches!(
+        target.backend.restore(&legacy),
+        Err(vmm_backend::BackendError::InvalidState)
+    ));
+    let after = target.save();
+    assert_eq!(after.core, valid.core);
+    assert_eq!(after.gic, valid.gic);
+
+    source.restore(&pristine_cut);
+    for (slot, word) in source._memory.0.chunks_exact_mut(4).zip(pristine) {
+        slot.copy_from_slice(&word.to_le_bytes());
+    }
+    source
+        .backend
+        .invalidate_instruction_cache(source._memory.0.as_ptr() as usize, source._memory.0.len());
+    assert_eq!(source.next_store(), 0);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {
     let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
     let mut state = guest.save();

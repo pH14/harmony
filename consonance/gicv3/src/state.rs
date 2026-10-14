@@ -18,7 +18,7 @@ pub const CNTV_CTL_ENABLE: u64 = 1;
 
 pub const CNTV_CTL_IMASK: u64 = 1 << 1;
 
-pub const GIC_STATE_VERSION: u32 = 5;
+pub const GIC_STATE_VERSION: u32 = 6;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GicState {

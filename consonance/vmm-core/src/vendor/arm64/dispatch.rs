@@ -1904,6 +1904,35 @@ mod tests {
     }
 
     #[test]
+    fn public_kvm_restore_rejects_unproven_physical_timer_records_before_mutation() {
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
+
+        let machine = || {
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(5, 0x1_0c00, false, 0xaaaa_aaaa).unwrap();
+            fake.vcpu_init().unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut source = machine();
+        let valid = source.save_vm_state().unwrap();
+        let mut legacy = valid.clone();
+        let mut dev = records::decode_device_blob(&legacy.devices.0).unwrap();
+        dev.gic.as_mut().unwrap().version = 5;
+        legacy.devices = records::encode_device_blob(&dev);
+
+        let mut target = machine();
+        let before = target.save_vm_state().unwrap();
+        assert!(matches!(
+            target.restore_vm_state(&legacy),
+            Err(VmmError::Snapshot(SnapshotError::DeviceRestore(_)))
+        ));
+        assert_eq!(target.save_vm_state().unwrap(), before);
+        target.restore_vm_state(&valid).unwrap();
+    }
+
+    #[test]
     fn in_kernel_clockevent_idle_survives_uncapturable_spi_state() {
         use crate::vmm::VtimeWiring;
         use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};

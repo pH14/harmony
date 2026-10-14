@@ -51,7 +51,7 @@ const HARMONY_GIC_IMPL_SPIS: u32 = 64;
 pub(crate) const HARMONY_GIC_NR_IRQS: u32 = 32 + HARMONY_GIC_IMPL_SPIS;
 const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
-const GIC_STATE_VERSION: u32 = 5;
+const GIC_STATE_VERSION: u32 = 6;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -457,6 +457,8 @@ const CORE_FPCR: u64 = 213;
 const CNTV_CTL_EL0: u64 = sysreg_id(3, 3, 14, 3, 1);
 const CNTV_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 0, 2);
 const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
+const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
+const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
 
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
@@ -996,6 +998,11 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     if s.vtimer.cntv_ctl_el0 & 1 != 0 {
         return Err(BackendError::InvalidState);
     }
+    if k.get_one_reg(CNTP_CTL_EL0)? != 0 || k.get_one_reg(CNTP_CVAL_EL0)? != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with noncanonical physical timer state",
+        });
+    }
     s.vtimer.cntv_cval_el0 = k.get_one_reg(CNTV_CVAL_EL0)?;
     s.vtimer.counter = k.get_one_reg(CNTVCT_EL0)?;
     s.vtimer.masked = true;
@@ -1040,6 +1047,8 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
+    k.set_one_reg(CNTP_CTL_EL0, 0)?;
+    k.set_one_reg(CNTP_CVAL_EL0, 0)?;
     k.set_one_reg(CNTVCT_EL0, s.vtimer.counter)?;
     k.set_one_reg(CNTV_CVAL_EL0, s.vtimer.cntv_cval_el0)?;
     k.set_one_reg(CNTV_CTL_EL0, s.vtimer.cntv_ctl_el0)?;
@@ -1360,6 +1369,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
+        self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
+        self.kvm.set_one_reg(CNTP_CVAL_EL0, 0)?;
         if !self.configured {
             for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
                 let (group, attr) = vgic_config_attr(word);
@@ -3349,6 +3360,47 @@ mod tests {
         fake.set_one_reg(CNTV_CTL_EL0, 1).unwrap();
 
         assert!(matches!(save_vcpu(&fake), Err(BackendError::InvalidState)));
+    }
+
+    #[test]
+    fn physical_timer_control_and_compare_value_refuse_capture() {
+        for (control, compare) in [(1, 0), (4, 0), (0, 0x1234)] {
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            fake.set_one_reg(sysreg_id(3, 3, 14, 2, 1), control)
+                .unwrap();
+            fake.set_one_reg(sysreg_id(3, 3, 14, 2, 2), compare)
+                .unwrap();
+            assert!(matches!(
+                save_vcpu(&fake),
+                Err(BackendError::Unsupported { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_timer_record_and_reused_timer_target_refuse_or_reset_before_guest_entry() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+        let mut legacy = valid;
+        legacy.gic.as_mut().unwrap().version = 5;
+
+        let mut target = FakeKvm::new();
+        target.vcpu_init().unwrap();
+        assert!(matches!(
+            restore_vcpu(&mut target, &legacy),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(save_vcpu(&target).unwrap(), valid);
+
+        target.set_one_reg(sysreg_id(3, 3, 14, 2, 1), 1).unwrap();
+        target
+            .set_one_reg(sysreg_id(3, 3, 14, 2, 2), 0x1234)
+            .unwrap();
+        restore_vcpu(&mut target, &valid).unwrap();
+        assert_eq!(target.get_one_reg(sysreg_id(3, 3, 14, 2, 1)).unwrap(), 0);
+        assert_eq!(target.get_one_reg(sysreg_id(3, 3, 14, 2, 2)).unwrap(), 0);
     }
 
     #[test]

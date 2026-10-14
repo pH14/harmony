@@ -336,6 +336,17 @@ The owned ARM guest cannot program its architected virtual timer controls.
 Both backends set `CNTV_CTL_EL0` to zero before guest entry and reject an
 enabled timer during capture or restore. This keeps a restored checkpoint from
 arming a host-time interrupt outside the Harmony clockevent path.
+ARM KVM also exposes the guest physical timer. A guest can change
+`CNTP_CVAL_EL0` while `CNTP_CTL_EL0` is disabled, or arm the timer and receive
+PPI 30. Neither register belongs to the portable vCPU record. ARM KVM therefore
+admits capture only when both physical-timer registers equal the fresh-vCPU
+zero baseline, and clears both before guest entry and restore. GIC state version
+6 rejects older Arm snapshots that did not prove this condition; externally
+asserted PPI 30 remains supported when the physical timer is canonical. The
+live `guest_physical_timer_state_refuses_capture_and_legacy_restore` check
+observes a programmed timer's guest control value of `0x5` against a fresh
+guest's `0x0`, then verifies capture and old-record restore refusal. It also
+checks a disabled timer with a nonzero compare value.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
