@@ -218,7 +218,9 @@ permits 5,000 new executions, in addition to finishing any work already queued a
 removes the previous execution ceiling. Checkpoints are written periodically and
 at completion; an interrupted search can retain an earlier checkpoint. NES retains
 its checkpoint journal and origin input under `package/`. A new seed intentionally
-changes the draw sequence.
+changes the draw sequence. The journal identifies the latest retained checkpoint;
+the additional execution budget uses its verified header's reserved count, so a
+stale journal count cannot change the continuation budget.
 
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
 `--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.
