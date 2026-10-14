@@ -504,7 +504,7 @@ exit by trying a grid of positions with the exit's direction held, with
 rendering off. A try ends once Mega Man stands still for 30 frames. Crash
 Man's map takes about 2 seconds to build. The Wily 2, 3 and 6 maps stop
 partway, because the builder does not yet find some of their exits.
-`tests/mm2.mjs` searches from the first stage and from the Wily 1 jump, replays
+`tests/mega-man.mjs` searches from the first stage and from the Wily 1 jump, replays
 the farthest state exactly, and branches from a played history that opens and
 closes the weapon menu with Start. It reads the ROM from `MM2_ROM` or
 `~/workspace/roms/mm2.nes` and skips when it is absent.
@@ -618,7 +618,7 @@ the map moves to Level 2 within half a second of the first batch that clears
 Level 1 in Twin Dragons and Tobu Tobu Girl, and that
 the level strip moves the view in both. `tests/smb.mjs` also checks that
 cleared levels collapse into the +N button and that nothing scrolls sideways
-at 1,280 and 390 pixels wide. `tests/mm2.mjs` boots every stage, builds three
+at 1,280 and 390 pixels wide. `tests/mega-man.mjs` boots every stage, builds three
 maps, replays a Crash Man state exactly, compares the Rust and browser
 decoders, checks that the stage map is drawn when the first rollouts appear,
 and checks that the stage map and the top and bottom edge chevrons move the
