@@ -470,7 +470,6 @@ impl KvmBackend {
             None => xsave_to_bytes(&self.vcpu.get_xsave().map_err(kvm_err)?),
         };
         let restore_bv = canonicalize_xsave_with_restore_bv(&mut bytes);
-        validate_kvm_xsave_mxcsr_presence(&bytes, restore_bv)?;
         Ok((bytes, restore_bv))
     }
 
@@ -1057,6 +1056,10 @@ impl Backend for KvmBackend {
                 None => None,
             },
         })
+    }
+
+    fn validate_snapshot_state(&self, state: &VcpuState) -> Result<()> {
+        validate_kvm_xsave_mxcsr_presence(&state.xsave, state.xsave_restore_bv)
     }
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
@@ -1760,6 +1763,10 @@ mod xsave_diagnostic {
         state.xsave[576] = 0x5a;
         state.xsave_restore_bv = Some(4);
         state.regs.rip ^= 0x100;
+        assert!(matches!(
+            fixture.backend.validate_snapshot_state(&state),
+            Err(BackendError::NonportableXsaveMxcsr)
+        ));
         assert!(matches!(
             fixture.backend.validate_restore_state(&state),
             Err(BackendError::NonportableXsaveMxcsr)
