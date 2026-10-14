@@ -28,7 +28,19 @@ import {
 } from "./world.js";
 const params = new URLSearchParams(location.search);
 const requested = GAMES.get(params.get("game")) || GAMES.get("twin-dragons");
-const suppliedRom = requested.rom.upload ? await loadRom(requested.id) : null;
+const bundledRoms = new URL("roms/", new URL(import.meta.env.BASE_URL, location.href));
+const bundled = new Set(
+  await fetch(new URL("manifest.json", bundledRoms))
+    .then((response) => (response.ok ? response.json() : []))
+    .catch(() => []),
+);
+async function bundledRom(choice) {
+  if (!bundled.has(choice.id)) return null;
+  const response = await fetch(new URL(`${choice.id}.nes`, bundledRoms)).catch(() => null);
+  const bytes = response?.ok ? new Uint8Array(await response.arrayBuffer()) : null;
+  return bytes?.length === choice.rom.bytes && (await sha256Hex(bytes)) === choice.rom.sha256 ? bytes : null;
+}
+const suppliedRom = requested.rom.upload ? (await loadRom(requested.id)) || (await bundledRom(requested)) : null;
 const missingRom = requested.rom.upload && !suppliedRom ? requested : null;
 const game = missingRom ? GAMES.get("twin-dragons") : requested;
 const engineInputs = suppliedRom && !missingRom ? { rom: suppliedRom } : {};
@@ -3207,7 +3219,7 @@ $("new-search").onclick = () => {
       location.assign(url);
     };
     button.onclick = () => {
-      if (choice.rom.upload && (choice !== requested || missingRom)) showRomPanel(choice, play);
+      if (choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || missingRom)) showRomPanel(choice, play);
       else if (choice === game) showLevelGrid();
       else play();
     };

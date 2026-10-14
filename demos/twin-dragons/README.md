@@ -359,6 +359,12 @@ also shows that YouTube video below, embedded from youtube-nocookie.com
 through the IFrame Player API, which sets the playback rate to 2. Super Mario
 Bros., Mega Man 2 and Metroid each have one.
 
+A private build can ship ROMs beside the page. At startup the page reads
+`roms/manifest.json`, a JSON array of game ids, and loads `roms/<id>.nes` for
+a listed game that has no stored ROM. The file must match the game's size and
+SHA-256. A listed game skips the ROM page. The public site has no manifest, so
+the request fails and every game asks for its ROM.
+
 The adapter uses the RAM rules from `workloads/nes/src/smb`:
 
 | Address | Meaning |
