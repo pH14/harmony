@@ -32,7 +32,9 @@ persistent within the bracket.
 
 `ToyMachine` is a tiny deterministic register VM with eight registers, 64 KiB
 of memory, a program counter, output log, seeded xorshift64* state, and one work
-unit per retired instruction. Its state hash also includes the complete
+unit per retired instruction. An empty program halts at work zero; falling past
+the final instruction or jumping beyond the program halts at that instruction's
+work boundary. Its state hash also includes the complete
 instruction program, so two machines with identical registers and memory but
 different future instructions differ at work zero. Its instruction set and
 state-hash layout are stable and fully exercised by the harness tests.
