@@ -1191,10 +1191,9 @@ fn parse_octal(field: &[u8]) -> Result<u64, ImageError> {
 }
 
 fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
-    let id = match pax {
-        Some(id) => id,
-        None => parse_octal(field)?,
-    };
+    let header = parse_octal(field)?;
+    u32::try_from(header).map_err(|_| ImageError::Tar("tar owner id is too large".into()))?;
+    let id = pax.unwrap_or(header);
     u32::try_from(id).map_err(|_| ImageError::Tar("tar owner id is too large".into()))
 }
 
@@ -3135,6 +3134,38 @@ mod tests {
                 reseal(&mut member);
                 let case = format!("{name}-{label}");
                 let archive = write_archive(dir.path(), &format!("{case}.tar"), &member);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn pax_owner_override_does_not_hide_an_invalid_base_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, field) in [("uid", 108..116), ("gid", 116..124)] {
+            for (label, bytes) in [
+                ("spaces", b"        ".as_slice()),
+                ("junk", b"abcdef\0 ".as_slice()),
+                ("too-large", b"\x80\xff\xff\xff\xff\xff\xff\xff".as_slice()),
+            ] {
+                let mut member = raw_member(b"payload", b'0', "", b"data");
+                member[field.clone()].copy_from_slice(bytes);
+                reseal(&mut member);
+                let body = [
+                    raw_member(b"PaxHeaders/0", b'x', "", pax_record(name, "0").as_bytes()),
+                    member,
+                ]
+                .concat();
+                let case = format!("pax-{name}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &body);
                 let dest = dir.path().join(case);
                 std::fs::create_dir(&dest).unwrap();
 
