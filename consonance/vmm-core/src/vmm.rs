@@ -1851,7 +1851,7 @@ where
         if let Some(sdk) = &self.sdk {
             let mut projected = sdk.env.clone();
             projected.record_question(moment, question, answer.clone());
-            projected.snapshot_state()?;
+            projected.snapshot_state_with_binding_reserve()?;
         }
         Ok(())
     }

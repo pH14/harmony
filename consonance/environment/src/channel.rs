@@ -382,7 +382,7 @@ impl RecordedState {
         Ok(state)
     }
 
-    pub fn encoded_len(&self) -> usize {
+    fn encoded_len(&self) -> usize {
         let mut size = 39usize;
         for record in self.overrides.values() {
             size = size.saturating_add(19);
@@ -774,6 +774,23 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 
     pub fn snapshot_state(&self) -> Result<RecordedState, ChannelError> {
         RecordedState::capture(self)
+    }
+
+    pub fn snapshot_state_with_binding_reserve(&self) -> Result<RecordedState, ChannelError> {
+        let state = self.snapshot_state()?;
+        let unbound = state
+            .overrides
+            .values()
+            .filter(|record| record.request_sha256.is_none())
+            .count();
+        if state
+            .encoded_len()
+            .saturating_add(unbound.saturating_mul(Sha256::output_size()))
+            > MAX_RECORDED_STATE_BYTES
+        {
+            return Err(ChannelError::TooLarge);
+        }
+        Ok(state)
     }
 
     pub fn remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
@@ -1548,6 +1565,44 @@ mod tests {
         entries.last_mut().unwrap().push(0);
         env.set_payloads(Some(entries)).unwrap();
         assert_eq!(env.snapshot_state(), Err(ChannelError::TooLarge));
+    }
+
+    #[test]
+    fn snapshot_reserves_capacity_for_first_use_answer_binding() {
+        let mut env = RecordedEnv::nominal(17);
+        env.record_service_request(7, 19, 77, Answer::Nominal);
+        env.set_payloads(Some(vec![Vec::new(); 8])).unwrap();
+        let overhead = env.snapshot_state().unwrap().encoded_len();
+        let payload_bytes = MAX_RECORDED_STATE_BYTES - 31 - overhead;
+        let mut entries = vec![vec![0; payload_bytes / 8]; 8];
+        entries[0].extend(vec![0; payload_bytes % 8]);
+        env.set_payloads(Some(entries.clone())).unwrap();
+        assert_eq!(
+            env.snapshot_state().unwrap().encoded_len(),
+            MAX_RECORDED_STATE_BYTES - 31
+        );
+        assert_eq!(
+            env.snapshot_state_with_binding_reserve(),
+            Err(ChannelError::TooLarge)
+        );
+        entries[0].pop();
+        env.set_payloads(Some(entries)).unwrap();
+        assert_eq!(
+            env.snapshot_state_with_binding_reserve()
+                .unwrap()
+                .encoded_len(),
+            MAX_RECORDED_STATE_BYTES - 32
+        );
+        env.set_moment(7);
+        let question = Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
+        assert_eq!(
+            env.decide(&question),
+            Ok(ServiceResponse::Answered(Answer::Nominal))
+        );
+        assert_eq!(
+            env.snapshot_state().unwrap().encoded_len(),
+            MAX_RECORDED_STATE_BYTES
+        );
     }
 
     #[test]
