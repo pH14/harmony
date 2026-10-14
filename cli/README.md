@@ -297,7 +297,8 @@ assertions, actions and recovery evidence but cannot establish full-state
 identity. Plain UML command replay compares application output and
 bridge events while retaining raw boot logs as diagnostics. Hardware command
 replay also compares the full serial digest. NES replay compares its typed witness
-and snapshot digest. NES search binds the saved witness input and result to the
+and snapshot digest; failed recordings and disagreeing saved repeats cannot
+certify exact replay. NES search binds the saved witness input and result to the
 bytes returned by the package, then saves a finding only when the search result
 and its fresh replay witness agree on victory. Removing a saved directory
 removes its saved evidence.
