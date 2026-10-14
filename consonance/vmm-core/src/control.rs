@@ -9448,6 +9448,8 @@ mod tests {
 
     #[test]
     fn deadline_requests_without_virtual_time_are_rejected_before_mutation() {
+        use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+
         let make_vm = || {
             let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
             backend
@@ -9456,7 +9458,7 @@ mod tests {
                     msr_filter: vmm_backend::MsrFilter::default(),
                 })
                 .unwrap();
-            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            let mut vmm = Vmm::new(backend, GuestRam::new(BIG_RAM).unwrap());
             vmm.wire_snapshot_hashing();
             Ok(vmm)
         };
@@ -9488,6 +9490,68 @@ mod tests {
             Err(ControlError::Unsupported)
         );
         assert_eq!(hash(&mut server), before);
+
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        assert_eq!(
+            vmm.pending_service_question()
+                .map(|(at, question)| (at, question.request_id())),
+            Some((0, 77))
+        );
+        let before_pending = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(10)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(0),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(ServiceAnswer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before_pending);
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
     }
 
     #[test]
