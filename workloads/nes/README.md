@@ -253,6 +253,8 @@ this adapter. Runner libraries live in `runner.options.core`, and the guest OCI
 image in `workload.options.guest_image`.
 
 `package` exposes typed search and replay for native and prepared guest execution.
+Search returns the exact serialized witness input and result that it wrote, so
+the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search
 checkpoint. The package uses existing searcher snapshot-root and checkpoint APIs,
 retains final checkpoints and preserves native/controller action types internally.

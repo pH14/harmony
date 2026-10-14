@@ -50,6 +50,11 @@ pub enum SearchStart {
     Actions(serde_json::Value),
     Checkpoint(searcher::search::checkpoint::PinnedCheckpoint),
 }
+#[derive(Clone, Debug)]
+pub struct SearchEvidence {
+    pub witness_input: Vec<u8>,
+    pub result: Vec<u8>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SearchIdentity {
     pub seed: u64,
@@ -132,7 +137,7 @@ fn search<G: Endpointed>(
     backend: &str,
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>>
+) -> Result<SearchEvidence, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
 {
@@ -261,23 +266,22 @@ where
             serde_json::to_vec_pretty(&best)?,
         )?;
     }
-    serde_json::to_writer_pretty(
-        fs::File::create(options.output.join("witness-input.json"))?,
-        &best,
-    )?;
+    let witness_input = serde_json::to_vec_pretty(&best)?;
+    fs::write(options.output.join("witness-input.json"), &witness_input)?;
     let witness = replay_witness(&game, &config.run, &best)?;
     let endpoint = game.headless_endpoint(&best)?;
-    serde_json::to_writer_pretty(
-        fs::File::create(options.output.join("result.json"))?,
-        &serde_json::json!({
-            "format": "harmony-search-result-v1",
-            "backend": backend,
-            "solved": report.objectives_reached > 0,
-            "witness": witness,
-            "endpoint": endpoint,
-        }),
-    )?;
-    Ok(())
+    let result = serde_json::to_vec_pretty(&serde_json::json!({
+        "format": "harmony-search-result-v1",
+        "backend": backend,
+        "solved": report.objectives_reached > 0,
+        "witness": witness,
+        "endpoint": endpoint,
+    }))?;
+    fs::write(options.output.join("result.json"), &result)?;
+    Ok(SearchEvidence {
+        witness_input,
+        result,
+    })
 }
 fn smb_run() -> SmbCampaignRun {
     SmbCampaignRun {
@@ -290,7 +294,7 @@ pub fn search_native(
     core: &Path,
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
     record_identity(
@@ -329,7 +333,7 @@ pub fn search_consonance(
     platform_initramfs: &[u8],
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
     let initramfs = prepared.initramfs(platform_initramfs);
     let prepared_identity = prepared.identity_hex();
@@ -415,7 +419,7 @@ pub fn search_saved_guest(
     initramfs: &[u8],
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
     RomKind::identify(rom)?;
     search(
