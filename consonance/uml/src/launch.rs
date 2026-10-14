@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::ffi::OsString;
+#[cfg(target_os = "linux")]
+use std::io::Write;
 use std::io::{self, Read};
 #[cfg(target_os = "linux")]
 use std::mem::size_of;
@@ -11,6 +13,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -158,11 +161,50 @@ pub struct Guest {
     console: Arc<Mutex<ConsoleTail>>,
     over_limit: Arc<AtomicBool>,
     reader: Option<JoinHandle<io::PipeReader>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    console_reset: Sender<SyncSender<io::Result<()>>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    console_wake: io::PipeWriter,
     bridge_state: Arc<AtomicU8>,
     bridge: Option<JoinHandle<BridgeLog>>,
     started: Instant,
     wall_limit: Duration,
     finished: bool,
+}
+
+enum ConsoleRead {
+    Bytes,
+    Idle,
+    Closed,
+    Limit,
+}
+
+fn read_console(
+    reader: &mut io::PipeReader,
+    block: &mut [u8],
+    console: &Mutex<ConsoleTail>,
+    over_limit: &AtomicBool,
+    limit: u64,
+) -> io::Result<ConsoleRead> {
+    loop {
+        match reader.read(block) {
+            Ok(0) => return Ok(ConsoleRead::Closed),
+            Ok(read) => {
+                let mut tail = console.lock().unwrap_or_else(PoisonError::into_inner);
+                tail.push(&block[..read]);
+                if tail.total() > limit {
+                    over_limit.store(true, Ordering::Release);
+                    return Ok(ConsoleRead::Limit);
+                }
+                return Ok(ConsoleRead::Bytes);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return Ok(ConsoleRead::Idle);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 impl Launch {
@@ -409,6 +451,10 @@ impl Guest {
         physmem: Option<OwnedFd>,
     ) -> Result<(Self, Option<OwnedFd>), LaunchError> {
         let (mut reader, writer) = io::pipe()?;
+        let flags = rustix::fs::fcntl_getfl(&reader).map_err(io::Error::from)?;
+        rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK)
+            .map_err(io::Error::from)?;
+        let (mut wake_reader, console_wake) = io::pipe()?;
         command.stdout(writer.try_clone()?).stderr(writer);
         set_parent_death_signal(&mut command);
         let host_end = match launch.bridge {
@@ -447,6 +493,7 @@ impl Guest {
         let console = Arc::new(Mutex::new(ConsoleTail::new(launch.console_tail_bytes)));
         let over_limit = Arc::new(AtomicBool::new(false));
         let limit = launch.console_limit_bytes;
+        let (console_reset, resets) = mpsc::channel::<SyncSender<io::Result<()>>>();
         let reader = {
             let console = Arc::clone(&console);
             let over_limit = Arc::clone(&over_limit);
@@ -455,17 +502,74 @@ impl Guest {
                 .spawn(move || {
                     let mut block = vec![0_u8; 64 << 10];
                     loop {
-                        let read = match reader.read(&mut block) {
-                            Ok(0) => return reader,
-                            Ok(read) => read,
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                            Err(_) => return reader,
+                        let (console_ready, reset_ready) = {
+                            let mut fds = [
+                                rustix::event::PollFd::new(&reader, rustix::event::PollFlags::IN),
+                                rustix::event::PollFd::new(
+                                    &wake_reader,
+                                    rustix::event::PollFlags::IN,
+                                ),
+                            ];
+                            match rustix::event::poll(&mut fds, None) {
+                                Ok(_) => {
+                                    (!fds[0].revents().is_empty(), !fds[1].revents().is_empty())
+                                }
+                                Err(rustix::io::Errno::INTR) => continue,
+                                Err(_) => return reader,
+                            }
                         };
-                        let mut tail = console.lock().unwrap_or_else(PoisonError::into_inner);
-                        tail.push(&block[..read]);
-                        if tail.total() > limit {
-                            over_limit.store(true, Ordering::Release);
-                            return reader;
+                        if reset_ready {
+                            let mut wake = [0];
+                            if wake_reader.read_exact(&mut wake).is_err() {
+                                return reader;
+                            }
+                            let Ok(ack) = resets.recv() else {
+                                return reader;
+                            };
+                            let result = loop {
+                                match read_console(
+                                    &mut reader,
+                                    &mut block,
+                                    &console,
+                                    &over_limit,
+                                    limit,
+                                ) {
+                                    Ok(ConsoleRead::Bytes) => {}
+                                    Ok(ConsoleRead::Idle) => {
+                                        console
+                                            .lock()
+                                            .unwrap_or_else(PoisonError::into_inner)
+                                            .clear_bytes();
+                                        break Ok(());
+                                    }
+                                    Ok(ConsoleRead::Closed) => {
+                                        break Err(io::Error::from(io::ErrorKind::BrokenPipe));
+                                    }
+                                    Ok(ConsoleRead::Limit) => {
+                                        break Err(io::Error::other("console limit reached"));
+                                    }
+                                    Err(error) => break Err(error),
+                                }
+                            };
+                            let stopped = result.is_err();
+                            let _ = ack.send(result);
+                            if stopped {
+                                return reader;
+                            }
+                        }
+                        if console_ready {
+                            match read_console(
+                                &mut reader,
+                                &mut block,
+                                &console,
+                                &over_limit,
+                                limit,
+                            ) {
+                                Ok(ConsoleRead::Bytes | ConsoleRead::Idle) => {}
+                                Ok(ConsoleRead::Closed | ConsoleRead::Limit) | Err(_) => {
+                                    return reader;
+                                }
+                            }
                         }
                     }
                 })?
@@ -477,6 +581,8 @@ impl Guest {
             console,
             over_limit,
             reader: Some(reader),
+            console_reset,
+            console_wake,
             bridge_state,
             bridge,
             started: now(),
@@ -495,6 +601,18 @@ impl Guest {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .bytes()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn reset_console(&mut self) -> io::Result<()> {
+        let (ack, reply) = mpsc::sync_channel(0);
+        self.console_reset
+            .send(ack)
+            .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
+        self.console_wake.write_all(&[1])?;
+        reply
+            .recv()
+            .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?
     }
 
     pub fn console_contains(&self, needle: &str) -> bool {

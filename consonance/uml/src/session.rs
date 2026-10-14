@@ -618,6 +618,7 @@ impl Session {
         };
         self.services = checkpoint.services.clone();
         self.pending = Some(checkpoint.request.clone());
+        self.guest.reset_console()?;
         Ok(())
     }
 
