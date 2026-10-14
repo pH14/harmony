@@ -16,8 +16,8 @@ fn saved_fault_run(
     std::fs::write(
         path.join("manifest.json"),
         serde_json::to_vec(&serde_json::json!({
-            "format": "harmony-run-v2",
-            "binary_sha256": "saved-on-another-host",
+            "format": "harmony-run-v3",
+            "binary_identity": "saved-on-another-host",
             "architecture": "other-architecture",
             "mode": if bundle.is_null() { "run" } else { "search" },
             "status": status,
