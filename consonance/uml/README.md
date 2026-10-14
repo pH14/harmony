@@ -73,6 +73,10 @@
   paused guest and clears its diagnostic tail before the new branch runs. This
   keeps text from a discarded branch out of later crash classification and
   diagnostics. Its cumulative byte count still enforces the host output limit.
+  After a terminal guest stop, the client waits for the host process to exit,
+  finishes process cleanup, and joins the console collector before using the
+  tail to classify a kernel panic. A closed bridge whose process does not exit
+  within the progress limit fails instead of guessing from partial output.
   The host owns the guest's physical memory file and an image file, both
   memfds, and maps them side by side. A `Checkpoint` is a snapshot in the
   session's `Checkpoints` page store plus the services state at the capture.
