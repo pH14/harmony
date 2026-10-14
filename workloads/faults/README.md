@@ -37,7 +37,15 @@ a readiness command keep immediate hook launches.
 ## Image admission
 
 Preparation scans every executable and shared library in the staged rootfs
-before it builds the guest image ([`admission`](src/admission.rs)). It rejects:
+before it builds the guest image ([`admission`](src/admission.rs)).
+
+Staged image inspection temporarily grants host read and directory search
+permission while scanning files and reading the bundle, then restores their
+original modes before guest packaging. Images containing mode-zero files and
+directories therefore receive the same admission result on privileged and
+unprivileged hosts.
+
+The scan rejects:
 
 - a writable executable segment or an executable stack;
 - an ELF file that is not 64-bit little-endian x86-64 or arm64;
