@@ -5,6 +5,39 @@ import sys
 from pathlib import Path
 
 
+KNOWN_DATA = {
+    "vmlinux": frozenset(
+        (
+            ".rodata",
+            ".pci_fixup",
+            "__param",
+            "__modver",
+            "__ex_table",
+            ".notes",
+            ".data",
+            "__bug_table",
+            ".orc_header",
+            ".orc_unwind_ip",
+            ".orc_unwind",
+            ".init.data",
+            ".x86_cpu_dev.init",
+            ".retpoline_sites",
+            ".return_sites",
+            ".call_sites",
+            ".altinstructions",
+            ".apicdrivers",
+            ".data..percpu",
+            "runtime_shift_d_hash_shift",
+            "runtime_ptr_dentry_hashtable",
+            "runtime_ptr_USER_PTR_MAX",
+            ".smp_locks",
+        )
+    ),
+    "setup": frozenset((".header", ".initdata", ".rodata", ".videocards", ".data", ".signature")),
+    "decompressor": frozenset((".rodata..compressed", ".rodata", ".data")),
+}
+
+
 def unpack(fmt, data, offset):
     if offset < 0 or offset + struct.calcsize(fmt) > len(data):
         raise ValueError("ELF table extends beyond the file")
@@ -67,7 +100,11 @@ def headers(data):
     return programs, sections
 
 
-def unclaimed_opcode(data, programs, sections):
+def unclaimed_opcode(data, programs, sections, tag):
+    allowed_data = KNOWN_DATA.get(tag)
+    if allowed_data is None:
+        raise ValueError(f"unknown x86 kernel artifact tag: {tag}")
+    seen_data = set()
     saw_load = False
     for index, kind, _flags, offset, address, size in programs:
         if kind != 1:
@@ -89,9 +126,14 @@ def unclaimed_opcode(data, programs, sections):
                 raise ValueError(f"allocated section crosses PT_LOAD {index} boundary")
             if section_address - address != section_offset - offset:
                 raise ValueError(f"allocated section does not map to PT_LOAD {index} address")
-            if section_flags & 4 or name in (".rodata", ".rodata..compressed"):
-                begin = section_offset - offset
-                claimed[begin : begin + section_size] = b"\x01" * section_size
+            if not section_flags & 4:
+                if name not in allowed_data:
+                    raise ValueError(f"unreviewed allocated data section {name!r} in PT_LOAD {index}")
+                if name in seen_data:
+                    raise ValueError(f"duplicate allocated data section {name!r}")
+                seen_data.add(name)
+            begin = section_offset - offset
+            claimed[begin : begin + section_size] = b"\x01" * section_size
 
         segment = data[offset : offset + size]
         for position in range(size - 1):
@@ -123,7 +165,7 @@ def main():
             raise SystemExit(f"invalid artifact argument: {artifact}")
         try:
             data = Path(path).read_bytes()
-            hit = unclaimed_opcode(data, *headers(data))
+            hit = unclaimed_opcode(data, *headers(data), tag)
         except (OSError, ValueError, struct.error) as error:
             raise SystemExit(f"FAIL: {tag} ({path}) ELF coverage error: {error}") from error
         if hit:

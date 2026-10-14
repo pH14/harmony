@@ -99,16 +99,17 @@ initramfs. The x86 loader requires the [64-bit Linux boot entry](https://docs.ke
 The x86 kernel build rejects raw RDTSC, RDTSCP, RDRAND, and RDSEED in the
 kernel proper, setup, and decompressor. Its scan checks that the known
 linker-defined code sections present in each image are marked executable before
-relying on section-based disassembly and scans opcode bytes in loaded file
-ranges outside executable sections. The known `.rodata` and
-`.rodata..compressed` data sections are exempt from raw-byte scanning because
-their inert data can contain the same byte sequences;
+relying on section-based disassembly. It rejects unknown or duplicate allocated
+data sections and scans opcode bytes in loaded file ranges outside reviewed
+sections. Reviewed data sections are exempt from raw-byte scanning because
+ordinary kernel tables contain the same byte sequences by chance;
 an unreadable or empty disassembly also fails the build. This guards against an
 executable image whose section flags or sizes hide code from `objdump -d`.
 Read-only data shares some executable ELF segments, so segment flags alone do
 not identify instruction bytes. `test_x86_counter_scan.py` exercises hidden
-code in shortened, non-executable, and separately allocated sections in all
-three artifacts.
+code in shortened, non-executable, separately allocated, and duplicate-name
+sections, and inert opcode-shaped data, in all three artifacts. A new data
+section name requires review before the image can be published.
 
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during
