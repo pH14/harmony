@@ -140,9 +140,9 @@ fn frontier(
                 if let Some(gameplay) = state.gameplay {
                     best_x = best_x.max(gameplay.x);
                 }
-                if !next.contains_key(&key) {
+                if let std::collections::btree_map::Entry::Vacant(slot) = next.entry(key) {
                     let snapshot = target.snapshot().ok_or("could not snapshot a branch")?;
-                    next.insert(key, Branch { snapshot, frames });
+                    slot.insert(Branch { snapshot, frames });
                 }
             }
         }
