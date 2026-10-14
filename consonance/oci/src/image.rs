@@ -1523,7 +1523,12 @@ fn resolve_under(
 
 fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
     let out = Command::new("sh")
-        .env_remove("TAR_OPTIONS")
+        .env_clear()
+        .env(
+            "PATH",
+            std::env::var_os("PATH").unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin")),
+        )
+        .env("LC_ALL", "C")
         .arg("-c")
         .arg("umask 022; exec tar \"$@\"")
         .arg("tar")
@@ -2108,7 +2113,7 @@ mod tests {
         let wrapper = bin.join("tar");
         std::fs::write(
             &wrapper,
-            b"#!/bin/sh\ncp \"$HARMONY_ARCHIVE_SWAP_REPLACEMENT\" \"$HARMONY_ARCHIVE_SWAP_ORIGINAL\"\nexec /usr/bin/tar \"$@\"\n",
+            b"#!/bin/sh\ndir=${0%/*}\ncat \"$dir/replacement\" > \"$dir/original\"\nexec /usr/bin/tar \"$@\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -2121,12 +2126,18 @@ mod tests {
             ]
             .concat(),
         );
+        std::os::unix::fs::symlink(&replacement, bin.join("replacement")).unwrap();
         for kind in ["outer", "layer"] {
             let original = write_archive(
                 dir.path(),
                 &format!("{kind}.tar"),
                 &raw_member(b"accepted", b'0', "", b"checked"),
             );
+            let original_link = bin.join("original");
+            if original_link.exists() {
+                std::fs::remove_file(&original_link).unwrap();
+            }
+            std::os::unix::fs::symlink(&original, &original_link).unwrap();
             let dest = dir.path().join(format!("{kind}-dest"));
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -3739,40 +3750,34 @@ mod tests {
     }
 
     #[test]
-    fn extraction_ignores_inherited_tar_options() {
-        if std::env::var_os("HARMONY_OCI_TAR_OPTIONS_TEST_CHILD").is_some() {
+    fn extraction_ignores_inherited_tar_environment() {
+        if std::env::var_os("HARMONY_OCI_TAR_ENV_TEST_CHILD").is_some() {
             let dir = tempfile::tempdir().unwrap();
             let dest = dir.path().join("layout");
             std::fs::create_dir(&dest).unwrap();
             let archive = write_archive(
                 dir.path(),
                 "nested.tar",
-                &raw_member(b"a/file", b'0', "", b"data"),
+                &[
+                    raw_member(b"a/file", b'0', "", b"data"),
+                    raw_member(b"a\\b", b'0', "", b"other"),
+                ]
+                .concat(),
             );
             extract_checked(&archive, &dest).unwrap();
             assert_eq!(std::fs::read(dest.join("a/file")).unwrap(), b"data");
+            assert_eq!(std::fs::read(dest.join("a\\b")).unwrap(), b"other");
             assert!(!dest.join("file").exists());
             return;
         }
-        let wrapper = tempfile::tempdir().unwrap();
-        let tar = wrapper.path().join("tar");
-        std::fs::write(
-            &tar,
-            b"#!/bin/sh\nif [ \"${TAR_OPTIONS+x}\" = x ]; then exit 47; fi\nexec /usr/bin/tar \"$@\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&tar, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut path = wrapper.path().as_os_str().to_os_string();
-        path.push(":");
-        path.push(std::env::var_os("PATH").unwrap_or_default());
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "image::tests::extraction_ignores_inherited_tar_options",
+                "image::tests::extraction_ignores_inherited_tar_environment",
             ])
-            .env("HARMONY_OCI_TAR_OPTIONS_TEST_CHILD", "1")
+            .env("HARMONY_OCI_TAR_ENV_TEST_CHILD", "1")
             .env("TAR_OPTIONS", "--strip-components=1")
-            .env("PATH", path)
+            .env("TAR_READER_OPTIONS", "hdrcharset=SHIFT_JIS")
             .output()
             .unwrap();
         assert!(
