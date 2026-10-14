@@ -844,9 +844,15 @@ fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
     let file = std::fs::File::open(archive)?;
     let mut magic = Vec::with_capacity(6);
     file.take(6).read_to_end(&mut magic)?;
-    let tool = if magic.starts_with(&[0x1f, 0x8b]) {
-        "gzip"
-    } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+    if magic.starts_with(&[0x1f, 0x8b]) {
+        return Ok(ArchiveReader {
+            reader: Box::new(flate2::bufread::MultiGzDecoder::new(
+                std::io::BufReader::new(std::fs::File::open(archive)?),
+            )),
+            child: None,
+        });
+    }
+    let tool = if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
         "zstd"
     } else if magic.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
         "xz"
@@ -5239,12 +5245,46 @@ mod tests {
         let dest = dir.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
 
-        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(read_members(&archive), Err(ImageError::Io(_))));
         assert!(matches!(
             extract_checked(&archive, &dest),
-            Err(ImageError::Tar(_))
+            Err(ImageError::Io(_))
         ));
         assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn gzip_layer_with_trailing_padding_is_rejected_on_every_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let plain = write_archive(
+            dir.path(),
+            "plain.tar",
+            &raw_member(b"payload", b'0', "", b"data"),
+        );
+        let output = Command::new("gzip").arg("-c").arg(&plain).output().unwrap();
+        assert!(output.status.success());
+        let mut compressed = output.stdout;
+        std::fs::write(layout.join("layer.tar"), &compressed).unwrap();
+        let admitted = stage(layout.to_str().unwrap(), &dir.path().join("plain-staging")).unwrap();
+        assert_eq!(
+            std::fs::read(admitted.rootfs.join("payload")).unwrap(),
+            b"data"
+        );
+        compressed.extend_from_slice(&[0; 8]);
+        std::fs::write(layout.join("layer.tar"), compressed).unwrap();
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("padded-staging")),
+            Err(ImageError::Io(_))
+        ));
     }
 
     #[test]

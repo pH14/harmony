@@ -697,6 +697,7 @@ dependencies = [
  "crc32fast",
  "environment",
  "execution-proto",
+ "flate2",
  "guest-image",
  "miniz_oxide",
  "process-proto",
