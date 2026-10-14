@@ -596,11 +596,12 @@ is preserved. The original restore bitmap remains separately bound. This does
 not assert that raw guest XSAVE buffers with both bits absent are returned
 unchanged by the host UABI.
 
-KVM restore rejects a YMM-present/SSE-absent image with non-init MXCSR before
-mutating the vCPU. KVM can retain MXCSR=0x3f80 in its UABI buffer while guest
-entry initializes live MXCSR to 0x1f80, so accepting that image would silently
-change the state the guest observes. The ignored
-`ymm_without_sse_noninit_mxcsr_restore_rejects_atomically` regression checks
+KVM capture and restore reject a YMM-present/SSE-absent image with non-init
+MXCSR before publishing a snapshot or mutating the vCPU. A host using compacted
+restore can retain MXCSR=0x3f80 in its KVM UABI buffer while guest entry
+initializes live MXCSR to 0x1f80. A host using standard XRSTOR may restore that
+state locally, but the snapshot would not be portable to a compacted host. The
+ignored `ymm_without_sse_noninit_mxcsr_restore_rejects_atomically` regression checks
 that admission boundary on a live KVM vCPU. It requires AVX. Images with init
 MXCSR or SSE presence remain admissible.
 
@@ -612,7 +613,9 @@ than asserted to exclude SSE on every host.
 
 The rejected imported-case observation is consistent with a compacted host restore:
 [Intel SDM volume 1, sections 13.8.2, 13.11 and 13.12](https://cdrdv2-public.intel.com/868137/325462-089-sdm-vol-1-2abcd-3abcd-4.pdf)
-specifies that compacted restore initializes MXCSR when SSE presence is clear.
+specifies that compacted restore initializes MXCSR when SSE presence is clear,
+while standard XRSTOR loads it when YMM is requested even if SSE presence is
+clear.
 Compacted save includes SSE presence for nondefault MXCSR. On ms02, host boot
 metadata confirms compacted FPU format; the natural test reports presence 6.
 The imported presence-4 case therefore does not establish naturally occurring
