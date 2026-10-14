@@ -48,7 +48,6 @@ export default {
   pace: 120,
   maxActionFrames: 120,
   menuButtons: false,
-  separateLevels: true,
   system: "NES",
   assets: "famidash/",
   screen: { width: 256, height: 224 },

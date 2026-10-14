@@ -246,7 +246,11 @@ glides about half a screen. A mouse click on a chevron selects the cell
 beneath it. A strip under the view shows the whole level, with
 each live sprite as a dot (or the heat cells in Heatmap mode) and a box for the
 part on screen. Clicking or dragging the strip moves the view there, and a
-sideways scroll on the map or the strip pans it. A room the visitor has not
+sideways scroll on the map or the strip pans it. When a level is taller than
+the view, as in Famidash, chevrons at the top and bottom edges pan it up and
+down, and the strip moves the view on both axes. Outside Play from here, the
+arrow keys pan the view the same way the chevrons do. When the map has focus,
+they move the keyboard cell cursor instead, and the view follows it. A room the visitor has not
 seen yet opens at the close-up, centered on the frontier or the level start.
 
 A game with `grid: true` has maps that run in two directions. Its view is 4:3,
@@ -385,41 +389,54 @@ the pace is 120 rollouts per second.
 
 Famidash by TFDSoft is an unofficial fan demake of RobTop's Geometry Dash. The
 picker lists its 22 main levels. The 21 community levels in the ROM are left
-out of the picker. A level is complete when the game state reaches 3, and that
-is the search goal. Levels do not chain, so `separateLevels` keeps the map on
-the level after it is cleared and the status reads Level complete. The page
+out of the picker. A level is complete when the game state reaches 3. The
+search plays the main levels in order and its goal is completing Dash, the last
+one. After an earlier level, the workload target presses A, Right and A
+through the win screen and level select to start the next level. Those presses
+are part of the history, so replay, forking and Play from here use them, and
+the map follows the search into the next level. The page
 decodes RAM through `famidash_observation`; the workload README in
 `workloads/nes/src/famidash` lists the addresses. The observation carries the
 level percent, the scroll divided by the level's length, and the Details pane
 shows it as Level progress. One A button is the whole controller.
 
-Map coordinates are the world x and the world y minus 240, the top of the
-second nametable row. Maps are 720 lines tall, from world y 240 to 960, and as
-wide as the level's scroll plus one screen. The pose is the game mode (cube,
-ship, ball, UFO, robot, spider, wave, swing) times two plus flipped gravity.
+Map coordinates are the world x and the world y minus the level's map top.
+`MAP_TOPS` in `rust/src/famidash.rs` holds the top of each level, and
+`famidash_map_top(level)` exports it. Each map covers the rows the camera
+showed on the recorded route plus 16 lines above and below, from 257 lines
+for Jumper to 717 for Theory of Everything, and is as wide as the level's
+scroll plus one screen. The pose is the game mode (cube, ship, ball, UFO,
+robot, spider, wave, swing) times two plus flipped gravity.
 
 `tools/build-famidash-maps.mjs` builds the maps when the runtime is built,
-because the site ships the ROM. For each level it runs a beam search over
-8-frame chunks from the level's root: it keeps up to 12 surviving states with
-distinct vertical position, velocity, mode, gravity, size and second-player
-position, and retries with 48 and then 128 when every state dies. It replays
-the clearing path and composes the frames at the scroll and camera of the
-previous frame, because pixels show the RAM of one frame earlier. Each map
-pixel keeps the frame where its column was nearest screen x 176, ahead of the
-player, so trails and the player stay out of the map. Rows the camera never
-showed copy the nearest shown row in their column. The sprite sheet comes from
-Stereo Madness with the background switched off through the PPU mask copy at
-`$0B`: the build writes each game mode to `$7A` and captures the player. The
-flipped-gravity row is the same sprite turned upside down. Levels build on one
-worker thread per CPU core; the 22 maps take about 1.5 minutes on 10 cores.
+because the site ships the ROM. `tools/famidash-routes.json` holds one
+clearing route per level as a string of 8-frame input patterns. The build
+replays each route once on one thread and renders every 16th frame. Before
+each frame it sets the parallax phase at `$04A0` to 0 and copies the backdrop
+color at `$01A0` to the parallax colors at `$01A1` and `$01A9`, so the
+parallax art draws as the flat backdrop and the background stays still. It
+composes each frame at the scroll and camera of the previous frame, because
+pixels show the RAM of one frame earlier. Each map pixel keeps the frame where
+its column was nearest screen x 176, ahead of the player, so trails and the
+player stay out of the map. Pixels the camera never showed take their column's
+most common color. The build fails if a route no longer clears its level or
+a map top differs from `MAP_TOPS`, and prints the new tops.
+`node tools/build-famidash-maps.mjs --search [levels]` searches new routes:
+it plays the plain pattern until a death, then retries one or two other
+patterns a few chunks back, then a 12-wide beam search, and checks two chunks
+past the repair. The sprite sheet comes from Stereo Madness with the
+background switched off through the PPU mask copy at `$0B`: the build writes
+each game mode to `$7A` and captures the player. The flipped-gravity row is
+the same sprite turned upside down. The 22 maps take about 12 seconds of CPU
+time.
 
 `boot(level)` for a later level runs the workload's level-select tape from the
 `famidash_level_select_tape` export, writes the level to `$047B`, presses A and
 waits 90 frames, the same wait as the Stereo Madness setup.
 
-The native Stereo Madness search clears the level in 6,800 to 9,000 executions
-on seeds 1 to 5,
-so at 120 rollouts per second the browser search takes about a minute.
+The native search clears Stereo Madness in 6,800 to 9,000 executions on seeds
+1 to 5, so at 120 rollouts per second the browser search reaches Back on Track
+in about a minute.
 
 ### Super Mario Bros.
 
@@ -653,7 +670,10 @@ view.
 Stereo Madness and Clubstep states exactly, checks the picker order, starts a
 Stereo Madness search and waits for Level progress, pauses, selects the root's
 cell, then plays from it and branches, and replays the branch history to its
-endpoint checksum.
+endpoint checksum. On Dash it checks that the level strip and the top and
+bottom chevrons move the view up and down.
+`tests/arrow-pan.mjs` checks that the arrow keys pan the view in Twin Dragons,
+Famidash and Tobu Tobu Girl without taking control.
 `tests/replay-pause.mjs` checks that the path
 counter stays still while a visitor's replay plays and advances during the
 automatic replay pick and after the replay pauses, ends or closes.

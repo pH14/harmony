@@ -52,15 +52,26 @@ again to start Stereo Madness and waits 90 frames, 1,141 frames in all. The
 genesis check requires gameplay in level 0.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
-6 to 40. A death bit is a terminal death. Game state 3 is the objective.
-Frames outside gameplay are not archived.
+6 to 40. A death bit is a terminal death. The search plays the 22 main levels
+in order, and the objective is game state 3 in Dash, level 21. Frames outside
+gameplay are not archived.
+
+Game state 3 in an earlier level ends the action at that frame. The target
+then presses buttons to start the next level: A once every 16 frames until the
+level-select state 6 appears, 20 idle frames, Right, 20 idle frames, A, and
+the 90-frame wait from setup. It checks that the level number went up by one
+and that gameplay is running. The advance takes about 290 frames. Its presses
+are part of the recorded input, so replays and films follow the same path.
+The action's observation list ends with the arrival in the next level.
 
 The archive key is the level, world x and y, game mode, gravity, size, dual
-mode and the sign of the vertical velocity. The place is the 32 × 16-pixel
-cell with the mode fields, progress is the level and the 256-pixel band of
-world x, and the identity is the vertical motion. Each place keeps one entry,
-the one furthest right. The progress watermark is the best percent and the
-furthest world x.
+mode and the sign of the vertical velocity. The place is the level and the
+32 × 16-pixel cell with the mode fields, progress is the level and the
+256-pixel band of world x, and the identity is the vertical motion. Each place
+keeps one entry, the one furthest right. The milestones are the levels
+cleared, the percent of the level being played, the finished game and a
+death. The progress watermark orders levels cleared, then percent, then world
+x.
 
 ## Running
 

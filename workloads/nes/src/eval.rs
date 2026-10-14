@@ -125,8 +125,8 @@ where
     if request.verification != "witness" && !full {
         return Err("verification must be campaign or witness".into());
     }
-    if full && request.executions > 5000 {
-        return Err("full campaign verification is bounded to 5000 executions; use witness verification for performance runs".into());
+    if full && request.executions > 10000 {
+        return Err("full campaign verification is bounded to 10000 executions; use witness verification for performance runs".into());
     }
     if full && request.resume.is_some() {
         return Err("a run resumed from a search checkpoint has no stream to replay; use witness verification".into());
