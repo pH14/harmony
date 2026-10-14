@@ -1596,7 +1596,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             } else {
                 0
             };
-            prepared_env.reseed(handler_seed);
+            if prepared_env.reseed(handler_seed).is_err() {
+                return Ok(Err(ControlError::Unsupported));
+            }
             if prepared_env.handler().identity() != restore_config.identity
                 || prepared_env.handler().configuration() != restore_config.configuration
             {

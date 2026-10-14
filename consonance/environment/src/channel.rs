@@ -651,9 +651,25 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         self.moment = moment;
     }
 
-    pub fn reseed(&mut self, seed: u64) {
+    pub fn reseed(&mut self, seed: u64) -> Result<(), ChannelError>
+    where
+        H: Clone,
+    {
+        self.ensure_healthy()?;
+        let before = HandlerSnapshot::capture(&self.handler)?;
+        let mut candidate = self.handler.clone();
+        candidate.reseed(seed);
+        self.check_original_handler(&before)?;
+        let after = HandlerSnapshot::capture(&candidate)?;
+        if after.identity() != before.identity() || after.configuration() != before.configuration()
+        {
+            return Err(ChannelError::Handler(
+                "handler identity or configuration changed while reseeding".to_owned(),
+            ));
+        }
+        self.handler = candidate;
         self.stream_state = normalize_seed(seed);
-        self.handler.reseed(seed);
+        Ok(())
     }
 
     pub fn record(&mut self, moment: Moment, answer: Answer) {
@@ -1214,6 +1230,7 @@ mod tests {
         configuration: Vec<u8>,
         state: Vec<u8>,
         respond_change: Option<bool>,
+        reseed_change: Option<bool>,
     }
 
     impl ChangingContractHandler {
@@ -1223,6 +1240,7 @@ mod tests {
                 configuration: vec![configuration],
                 state: state.to_vec(),
                 respond_change: None,
+                reseed_change: None,
             }
         }
     }
@@ -1265,6 +1283,16 @@ mod tests {
             self.configuration = vec![*configuration];
             self.state = state.to_vec();
             Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            if seed == 42 {
+                match self.reseed_change {
+                    Some(true) => self.identity = vec![9],
+                    Some(false) => self.configuration = vec![9],
+                    None => {}
+                }
+            }
         }
 
         fn clone_box(&self) -> Box<dyn ServiceHandler> {
@@ -1886,7 +1914,7 @@ mod tests {
             first,
             ServiceResponse::Answered(Answer::Data(5180492295206395165u64.to_le_bytes().to_vec()))
         );
-        seeded.reseed(2);
+        seeded.reseed(2).unwrap();
         let second = seeded.decide(&Question::entropy(8).unwrap()).unwrap();
         assert_eq!(
             second,
@@ -2020,6 +2048,7 @@ mod tests {
     struct SharedStateHandler {
         state: std::sync::Arc<std::sync::atomic::AtomicU8>,
         response: SharedResponse,
+        reseed_changes_state: bool,
     }
 
     impl SharedStateHandler {
@@ -2027,6 +2056,7 @@ mod tests {
             Self {
                 state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(value)),
                 response,
+                reseed_changes_state: false,
             }
         }
     }
@@ -2071,6 +2101,12 @@ mod tests {
             Ok(())
         }
 
+        fn reseed(&mut self, _seed: u64) {
+            if self.reseed_changes_state {
+                self.state.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
         fn clone_box(&self) -> Box<dyn ServiceHandler> {
             Box::new(self.clone())
         }
@@ -2112,5 +2148,28 @@ mod tests {
         let parent = target.clone();
         assert_eq!(state.restore_into(&mut target), Err(ChannelError::Poisoned));
         assert_eq!(parent.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn shared_handler_reseed_cannot_silently_change_parent_snapshot() {
+        let mut handler = SharedStateHandler::new(0, SharedResponse::External);
+        handler.reseed_changes_state = true;
+        let parent = RecordedEnv::new(1, handler);
+        let mut branch = parent.clone();
+        assert!(parent.snapshot_state().is_ok());
+        assert_eq!(branch.reseed(2), Err(ChannelError::Poisoned));
+        assert_eq!(parent.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn reseed_rejects_handler_contract_drift_without_committing() {
+        for change_identity in [true, false] {
+            let mut handler = ChangingContractHandler::new(1, 2, [3, 4]);
+            handler.reseed_change = Some(change_identity);
+            let mut env = RecordedEnv::new(1, handler);
+            let before = env.snapshot_state().unwrap().encode();
+            assert!(matches!(env.reseed(42), Err(ChannelError::Handler(_))));
+            assert_eq!(env.snapshot_state().unwrap().encode(), before);
+        }
     }
 }
