@@ -462,7 +462,8 @@ pub fn first_divergence_from_report<FA: SubjectFactory, FB: SubjectFactory>(
             match bisect_divergence(a, b, seed, 0, halted_at) {
                 Ok(point) => Ok(Some(point)),
                 Err(SubjectError::NoDivergence { .. })
-                | Err(SubjectError::UnreplayableTerminal { .. }) => Ok(None),
+                | Err(SubjectError::UnreplayableTerminal { .. })
+                | Err(SubjectError::UnreplayableCheckpoint { .. }) => Ok(None),
                 Err(error) => Err(error),
             }
         }

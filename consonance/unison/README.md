@@ -65,7 +65,9 @@ probe through the halt count reproduces the mismatch. Direct bisection
 also refuses a mismatching probe that halted at a different work count from
 the requested target, because that terminal observation cannot be assigned
 the probe's work coordinate. A terminal observation reached at the requested
-work count remains bisectable.
+work count remains bisectable. If direct replay does not reproduce the
+terminal observation, the observed divergence remains in the comparison
+report without a first-work coordinate.
 Already-halted machines spawned at equal nonzero work also report a differing
 initial observation as `TerminalDiverged` at their actual halt count; reporting
 it at work zero would provide an unreplayable bisection coordinate. An initial

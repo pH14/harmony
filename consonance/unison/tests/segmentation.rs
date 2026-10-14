@@ -10,25 +10,37 @@ use unison::{
 };
 
 #[derive(Clone)]
-struct CounterFactory(Rc<Cell<u8>>);
+struct CounterFactory {
+    next_id: Rc<Cell<u8>>,
+    halt_at_one: bool,
+}
 
 struct CounterMachine {
     work: u64,
     spawn_id: u8,
+    halt_at_one: bool,
 }
 
 impl SubjectFactory for CounterFactory {
     type M = CounterMachine;
 
     fn spawn(&self, _: u64) -> Self::M {
-        let spawn_id = self.0.get();
-        self.0.set(spawn_id.wrapping_add(1));
-        CounterMachine { work: 0, spawn_id }
+        let spawn_id = self.next_id.get();
+        self.next_id.set(spawn_id.wrapping_add(1));
+        CounterMachine {
+            work: 0,
+            spawn_id,
+            halt_at_one: self.halt_at_one,
+        }
     }
 }
 
 impl Subject for CounterMachine {
     fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
+        if self.halt_at_one && target >= 1 {
+            self.work = 1;
+            return Ok(RunOutcome::Halted);
+        }
         self.work = target;
         Ok(RunOutcome::ReachedTarget)
     }
@@ -144,7 +156,10 @@ fn compare_refuses_a_matching_low_checkpoint_that_direct_replay_diverges_at() {
 
 #[test]
 fn same_seed_nondeterminism_is_reported_without_a_first_work_claim() {
-    let factory = CounterFactory(Rc::new(Cell::new(0)));
+    let factory = CounterFactory {
+        next_id: Rc::new(Cell::new(0)),
+        halt_at_one: false,
+    };
     let report = compare_runs(&factory, &factory, 7, 1, 1).unwrap();
     assert_eq!(
         report.verdict,
@@ -153,6 +168,26 @@ fn same_seed_nondeterminism_is_reported_without_a_first_work_claim() {
     assert_eq!(
         serde_json::to_value(&report).unwrap()["verdict"]["unreplayable_divergence"]["observed_at"],
         1
+    );
+    assert_eq!(
+        first_divergence_from_report(&factory, &factory, 7, &report).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn terminal_mismatch_keeps_observation_when_direct_replay_is_unstable() {
+    let factory = CounterFactory {
+        next_id: Rc::new(Cell::new(0)),
+        halt_at_one: true,
+    };
+    let report = compare_runs(&factory, &factory, 7, 2, 2).unwrap();
+    assert_eq!(
+        report.verdict,
+        Verdict::TerminalDiverged {
+            last_match: None,
+            halted_at: 1,
+        }
     );
     assert_eq!(
         first_divergence_from_report(&factory, &factory, 7, &report).unwrap(),
