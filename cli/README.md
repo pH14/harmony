@@ -272,6 +272,9 @@ diagnostic are not replay invariants.
 
 Finding replay refuses an unconfirmed saved finding, because replay did not
 establish its reported failure. Branching can still inspect that evidence.
+Faults replay also refuses a failed or incomplete recording. A saved supervised
+run with multiple replays must have matching outcomes before one can serve as
+the reference for a fresh replay.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 
