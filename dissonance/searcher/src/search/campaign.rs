@@ -4542,6 +4542,13 @@ where
 
     let replay_window_depth = schedule_policy_window(&header.schedule_policy)
         .ok_or("campaign stream schedule policy is not recognized")?;
+    if stop_reservations_after_objective(
+        header.stop_campaign_on_objective,
+        core.objective_witness.is_some(),
+    ) && !record_lines.is_empty()
+    {
+        return Err("campaign replay selected work after its objective stop".into());
+    }
     let mut duration_admissions = VecDeque::new();
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
@@ -4594,6 +4601,12 @@ where
             serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
+                if stop_reservations_after_objective(
+                    header.stop_campaign_on_objective,
+                    core.objective_witness.is_some(),
+                ) {
+                    return Err("campaign replay selected work after its objective stop".into());
+                }
                 if (skip.mixture_weight, skip.splice_weight)
                     != mixture_weights(&core.mixture_energy, replay_mixture)
                 {
@@ -5027,10 +5040,15 @@ where
                         }
                     }
                 }
-                if let Some(parent_id) =
-                    replay_job_parents.get(admission_index.saturating_add(replay_window_depth))
+                let next_slot = admission_index.saturating_add(replay_window_depth);
+                if stop_reservations_after_objective(
+                    header.stop_campaign_on_objective,
+                    core.objective_witness.is_some(),
+                ) && replay_job_parents.get(next_slot).is_some()
                 {
-                    let next_slot = admission_index.saturating_add(replay_window_depth);
+                    return Err("campaign replay selected work after its objective stop".into());
+                }
+                if let Some(parent_id) = replay_job_parents.get(next_slot) {
                     let (energy, continuation) = continuation_attempt(
                         &mut core,
                         header.campaign_seed,
@@ -5228,6 +5246,7 @@ mod tests {
         refuse: bool,
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
+        objective_after_work: std::sync::atomic::AtomicU64,
     }
 
     #[derive(Default)]
@@ -5434,7 +5453,14 @@ mod tests {
             _run: &Self::Run,
             target: &Self::Target,
         ) -> Result<bool, Box<dyn Error>> {
-            Ok(self.bootstrap_objective && target.execution_work == 0)
+            let after_work = target._counted.as_ref().is_some_and(|count| {
+                let threshold = count
+                    .0
+                    .objective_after_work
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                threshold != 0 && target.execution_work >= threshold
+            });
+            Ok((self.bootstrap_objective && target.execution_work == 0) || after_work)
         }
 
         fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
@@ -5982,6 +6008,119 @@ mod tests {
             assert_eq!(replayed, live);
             std::fs::remove_file(witness_path).expect("remove bootstrap witness file");
         }
+    }
+
+    #[test]
+    fn replay_rejects_work_after_a_bootstrap_objective_stop() {
+        let config = CampaignConfig {
+            campaign_seed: 7,
+            workers: 1,
+            execution_budget: 1,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 16,
+            window: 1,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: true,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("live campaign");
+        assert_eq!(live.executions_completed, 1);
+        let mut lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["stop_campaign_on_objective"] = serde_json::json!(true);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err(
+                    "replay certified a campaign that continued after its bootstrap objective",
+                )
+                .to_string();
+        assert!(error.contains("after its objective stop"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_new_reservations_after_an_admitted_objective_stop() {
+        let targets = Arc::new(LiveTargets::default());
+        targets
+            .objective_after_work
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut config = CampaignConfig {
+            campaign_seed: 7,
+            workers: 1,
+            execution_budget: 5,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 16,
+            window: 2,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("live campaign");
+        assert_eq!(live.executions_completed, 5);
+        assert!(live.objectives_reached > 0);
+        config.stop_campaign_on_objective = true;
+        let (stopped, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+        )
+        .expect("live objective-stop campaign");
+        assert!(stopped.executions_completed <= 2);
+        let mut lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["stop_campaign_on_objective"] = serde_json::json!(true);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified reservations made after an objective")
+                .to_string();
+        assert!(error.contains("after its objective stop"), "{error}");
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,
