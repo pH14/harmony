@@ -1537,6 +1537,7 @@ function startSearch(level = bootLevel) {
           routePreviews.clear();
         }
         ready = true;
+        if (activeSearch !== data.active) camera.targets = new Map();
         activeSearch = data.active;
         const fresh = activateSearchView(activeSearch),
           handedOff = fresh && !!pendingOrigin;
