@@ -183,10 +183,12 @@ children while retaining the directory's metadata. Whiteout removal temporarily
 grants owner read, write, and search access only to affected lower directories,
 then restores their modes. Read-only lower directories therefore behave the
 same under ordinary and privileged host users.
-Guest image packaging temporarily grants the staging user read access to files
-and read/search access to directories, then restores their modes. The guest
-CPIO keeps the archive's recorded modes, even for files the staging user
-otherwise could not read.
+Preparation temporarily grants the staging user read access to files and
+read/search access to directories while validating mount paths, resolving
+credentials, and packaging the guest image, then restores their modes. The
+guest CPIO keeps the archive's recorded modes, even for files the staging user
+otherwise could not read. Standalone credential resolution uses the same
+temporary access rule.
 
 `RuntimeConfig::user` retains the image `Config.User` value. The supported
 Linux forms are `uid`, `uid:gid`, `user`, `user:group`, `uid:group`, and
