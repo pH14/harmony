@@ -53,6 +53,10 @@ what owns it, and the linter rejects them.
 | `Release / Harmony` | `release.yml` | push (version tags) |
 | `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
+The `Archive` job in `Checks / Dissonance` also checks that the searcher builds
+for `wasm32-unknown-unknown`, so the browser demo can run the campaign
+coordinator.
+
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
 

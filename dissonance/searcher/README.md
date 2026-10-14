@@ -692,11 +692,52 @@ The checkpoint journal records both completed (`executions`) and reserved
 from `reserved`, because restoring the checkpoint also restores already queued
 work. At a completed checkpoint those counts are equal.
 
+## Stepwise coordination
+
+`CampaignCoordinator` holds a live campaign: the `CoordinatorCore`, the seeded
+selection state, the draw tables, the duration policies and the admission
+window. A single-threaded caller drives it with five calls:
+
+| Call | Effect |
+| --- | --- |
+| `CampaignCoordinator::start` | Validates the config, writes the stream header, bootstraps or restores the archive and reserves the first window. |
+| `plan(limit)` | Hands out up to `limit` reserved jobs, lowest planned finish first. |
+| `admit(outcome)` | Takes one finished job, admits every job that admission order now allows and reserves one job after each admission. |
+| `finished()` | Reports that every reservation is admitted. |
+| `finish(workers)` | Writes the final search checkpoint and builds the report. |
+
+`archive()`, `evidence()`, `executions()`, `reserved()`, `objective_witness()`
+and `progress()` read the live state for display. `progress()` returns the
+same `CampaignProgressRecord` the progress sink receives.
+
+A worker runs a `JobSpec` with `run_job` and returns a `JobOutcome`. A
+`JobSpec` carries its reservation, planned finish, parent snapshot, replay
+actions and suffix. A `JobOutcome` carries the `CampaignJobResult`, the
+execution work and the result digest. Both derive serde, so a caller can pass
+them between threads or browser workers as postcard bytes. A workload's
+`Observations` must therefore deserialize.
+
+`run_campaign_checkpointed_with_options` drives the same coordinator from the
+worker pool. It plans every reserved job into the pool's queue and admits each
+reply. A reservation follows an admission and never a caller's request, so a
+caller that plans any number of jobs and runs them in any order writes the same
+stream as the pool for the same seed and window.
+
+The crate builds for `wasm32-unknown-unknown`. On wasm32 the telemetry clock
+reads zero and progress lines carry `unix_time` 0, because `std::time::Instant`
+and `SystemTime` panic there. A wall budget never stops a wasm32 campaign.
+Search checkpoints and objective witness files need a filesystem. The worker
+pool and thread placement need threads.
+
+```sh
+cargo check --locked --manifest-path dissonance/Cargo.toml -p searcher --target wasm32-unknown-unknown
+```
+
 ## Browser adapters
 
 `Archive::entry_input` materializes an entry’s complete ancestral action tape
 for inspection or playback and rejects missing indices. A browser adapter can own
 execution snapshots outside the archive and use this read accessor for films.
-A bounded adapter driver does not replace native Campaign coordination. Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
+Weighted draws use `RomuDuoJrRand::below_u64` for 64-bit weight
 totals, so wasm32 does not truncate them through `usize`. This uses the same
 multiply-high draw as native selection and preserves its random sequence.

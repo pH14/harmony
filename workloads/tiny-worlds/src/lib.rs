@@ -241,7 +241,7 @@ pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
     pub evidence: Evidence,
     pub selector: searcher::search::archive::SelectorAccounting,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Observation {
     before: State,
     after: State,

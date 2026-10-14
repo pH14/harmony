@@ -226,7 +226,7 @@ impl ArchiveKey for HeldKey {
     fn record(_lineage: &mut (), _key: Self) {}
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Observation {
     after: State,
     work_in_job: u64,
