@@ -263,7 +263,9 @@ never repeats automatic runner selection or resolves a mutable image tag.
 Replay verifies the exact CLI executable, architecture and saved artifact hashes.
 Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that
-evidence. Search resume restores its checkpoint and does not consume the report;
+evidence. Replay and branch selection use that verified manifest copy, even
+if a source outcome file changes later. Search resume restores its
+checkpoint and does not consume the report;
 an interrupted report write does not invalidate an earlier checkpoint.
 UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
