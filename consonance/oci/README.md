@@ -110,6 +110,8 @@ exact same spelling. Hardlink, symlink, and directory members cannot carry
 data in either their tar header or a pax size override. This also excludes
 archives that only extract because a host resolves a hardlink target
 case-insensitively or interprets a non-file payload differently.
+A hardlink cannot point to its own name, even when an earlier member created
+that name: macOS tar rejects the repeated self-link while GNU tar accepts it.
 An entry whose name ends in `/` must carry the directory typeflag; some host
 tar tools otherwise treat a regular file as a directory and parse its payload
 as additional members that admission never saw. Empty effective member names,

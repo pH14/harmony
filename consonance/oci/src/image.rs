@@ -677,6 +677,12 @@ fn check_hardlinks(members: &[Member]) -> Result<(), ImageError> {
                 ));
             }
             let exact = normalized(path);
+            if exact == normalized(member.path()) {
+                return Err(ImageError::UnsafePath(format!(
+                    "hardlink {} points to itself",
+                    member.shown()
+                )));
+            }
             if exact.as_os_str().is_empty() || !seen.contains(&exact) {
                 return Err(ImageError::UnsafePath(format!(
                     "hardlink {} has no earlier exact target {}",
@@ -2597,6 +2603,29 @@ mod tests {
         let layer = write_archive(dir.path(), "exact-hardlink.tar", &body);
         apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
         assert_eq!(std::fs::read(rootfs.join("link")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn self_referential_repeated_hardlink_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "self-hardlink.tar",
+            &[
+                raw_member(b"target", b'0', "", b"content"),
+                raw_member(b"link", b'1', "target", b""),
+                raw_member(b"link", b'1', "link", b""),
+            ]
+            .concat(),
+        );
+
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
     }
 
     #[test]
