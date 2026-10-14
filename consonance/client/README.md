@@ -199,9 +199,11 @@ process. Boot checks their SHA-256 against the caller's admitted initramfs
 digest. The caller supplies the admitted profile and exact host processor
 identity; boot checks both against the pinned profile and
 processor before starting a guest. The root identity includes that host
-identity, so an import from a different physical processor is refused before
-the checkpoint store changes. Fresh restore spawns recheck the same admitted
-processor and host identity. A publish exports the checkpoint into one extent,
+identity and the exact boot argument list and initramfs bytes, with explicit
+field boundaries. An import from a different physical processor or launch
+input is refused before the checkpoint store changes. Fresh restore spawns
+recheck the same admitted processor and host identity. A publish exports the
+checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
 or inject interrupts. `store_bytes` is the allocated size of every held
