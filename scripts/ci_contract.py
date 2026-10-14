@@ -12,6 +12,7 @@ new workflow is registered once.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 from pathlib import Path
@@ -232,8 +233,9 @@ ARM64_BASELINE_TEST = (
 )
 
 # Ignored tests that need a hypervisor no hosted runner offers, keyed by the
-# `<os>-<arch>` of a machine that has one. The pre-push hook runs the entry for
-# the machine it is on.
+# `<os>-<arch>` of a machine that has one. A `-hybrid` suffix selects a Linux
+# x86-64 KVM host with both core-type pools accessible to the caller. The
+# pre-push hook runs the entry for the machine it is on.
 HOST_TESTS = {
     "macos-aarch64": (
         "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
@@ -256,6 +258,9 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot kvm_irq_mask_read_matches_full_capture",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
+    ),
+    "linux-x86_64-hybrid": (
+        "vmm-core vendor::x86::logical_identity_live_tests::public_snapshot_restore_rejects_a_different_host_core_class",
     ),
 }
 
@@ -348,8 +353,7 @@ CONSONANCE_CHECKS = Workflow(
                            "vmm-backend::kvm_smoke nonnested_failed_restore_poisoned_after_partial_mutation",
                            "vmm-core::x86_kvm_pcide_preflight pcide_restore_requires_ia32e_mode_before_entry",
                            "vmm-backend kvm_sys::xsave_diagnostic::failed_dirty_drain_cannot_retry_after_prior_slot_was_cleared",
-                           PUBLIC_SNAPSHOT_IDENTITY_TEST,
-                           "vmm-core vendor::x86::logical_identity_live_tests::public_snapshot_restore_rejects_a_different_host_core_class"),
+                           PUBLIC_SNAPSHOT_IDENTITY_TEST),
             scope="consonance_kvm",
             select="rust_checks"),
         Job("Execution Protocol", "pr", 15,
@@ -976,11 +980,38 @@ def runners_of(binary_id: str, test: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _cpu_list(text: str) -> set[int]:
+    cpus: set[int] = set()
+    for part in text.strip().split(","):
+        first, separator, last = part.partition("-")
+        lo = int(first)
+        hi = int(last) if separator else lo
+        if lo > hi:
+            raise ValueError("invalid CPU range")
+        cpus.update(range(lo, hi + 1))
+    return cpus
+
+
+def _hybrid_kvm_pair_available() -> bool:
+    if not os.access("/dev/kvm", os.R_OK | os.W_OK):
+        return False
+    try:
+        allowed = os.sched_getaffinity(0)
+        core = _cpu_list(Path("/sys/bus/event_source/devices/cpu_core/cpus").read_text())
+        atom = _cpu_list(Path("/sys/bus/event_source/devices/cpu_atom/cpus").read_text())
+    except (AttributeError, OSError, ValueError):
+        return False
+    return bool(allowed & core) and bool(allowed & atom)
+
+
 def this_host() -> str:
     """This machine as a `HOST_TESTS` key."""
     system = {"Darwin": "macos"}.get(platform.system(), platform.system().lower())
     machine = {"arm64": "aarch64", "AMD64": "x86_64"}.get(platform.machine(), platform.machine())
-    return f"{system}-{machine}"
+    host = f"{system}-{machine}"
+    if host == "linux-x86_64" and _hybrid_kvm_pair_available():
+        return f"{host}-hybrid"
+    return host
 
 
 def host_filter(host: str) -> str:

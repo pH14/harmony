@@ -557,15 +557,6 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee snapshot-report/public-snapshot-identity.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/public-snapshot-identity.log
-          timeout -k 10 120 cargo test --locked --release -p vmm-core --lib \
-            vendor::x86::logical_identity_live_tests::public_snapshot_restore_rejects_a_different_host_core_class \
-            -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee snapshot-report/host-core-class.log
-          if grep -Fq 'SKIP: host has no accessible P-core/E-core pair' snapshot-report/host-core-class.log; then
-            echo '::notice::Hybrid P/E restore qualification skipped on this host'
-          else
-            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/host-core-class.log
-          fi
       - name: Record the fixed-CPU raw XRSTOR reuse counterexample
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         continue-on-error: true

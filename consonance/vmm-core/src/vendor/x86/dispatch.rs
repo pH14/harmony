@@ -1169,6 +1169,9 @@ mod tests {
             Vmm::new(backend, crate::vmm::GuestRam::new(0x1000).unwrap())
         };
         let mut source = build(Performance);
+        let mut source_memory = source.guest_memory().to_vec();
+        source_memory[0x100] = 0x5a;
+        source.restore_guest_memory(&source_memory).unwrap();
         let saved = source.save_vm_state().unwrap();
         let saved = vm_state::VmState::decode(&saved.encode().unwrap()).unwrap();
         assert_eq!(

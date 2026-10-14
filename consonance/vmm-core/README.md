@@ -566,9 +566,10 @@ without reported class masks and without a hybrid CPUID indication require
 placement qualification; a host reporting hybrid CPUID without the masks is
 refused. Cross-host placement and broader XSAVE state lie outside the
 qualified set.
-The hosted hardware job reports an explicit skip when it lacks both P and E
-cores. A mock-backed test runs in ordinary CI to enforce the VMM contract
-binding; the live cross-class continuation remains qualified on a hybrid host.
+A mock-backed test runs in ordinary CI to enforce the VMM contract binding.
+The live cross-class qualification runs during pre-push on a Linux KVM host
+only when both P and E cores are accessible; it fails if that requirement
+disappears before the test starts.
 
 The supported x86 workload is the shipped 64-bit Linux kernel and initramfs on
 a 64-bit host. Application bitness is separate: 32-bit compatibility-mode
