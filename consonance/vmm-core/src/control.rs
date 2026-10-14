@@ -7313,6 +7313,181 @@ mod tests {
         assert_eq!(sparse_destination.latest_snapshot(), Some(destination_base));
     }
 
+    struct UsedRestoreRejectBackend {
+        inner: MockBackend,
+        entered: bool,
+    }
+
+    impl Backend for UsedRestoreRejectBackend {
+        type A = X86;
+
+        fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
+            self.inner.set_policy(policy)
+        }
+
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: the wrapper forwards the caller's mapping obligation unchanged to the mock backend.
+            unsafe { self.inner.map_memory(gpa, host) }
+        }
+
+        fn run(&mut self) -> vmm_backend::Result<Exit<X86>> {
+            let exit = self.inner.run()?;
+            self.entered = true;
+            Ok(exit)
+        }
+
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.inner.inject(event)
+        }
+
+        fn set_pending_irq(&mut self, vector: Option<u8>) -> vmm_backend::Result<()> {
+            self.inner.set_pending_irq(vector)
+        }
+
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.inner.take_accepted_interrupt()
+        }
+
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_read(value)
+        }
+
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_fault()
+        }
+
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_ok()
+        }
+
+        fn complete_hypercall(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_hypercall(value)
+        }
+
+        fn complete_arch(&mut self, value: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
+            self.inner.complete_arch(value)
+        }
+
+        fn prepare_snapshot(&mut self) -> vmm_backend::Result<()> {
+            self.inner.prepare_snapshot()
+        }
+
+        fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.inner.save()
+        }
+
+        fn validate_restore_state(
+            &self,
+            state: &vmm_backend::VcpuState,
+        ) -> vmm_backend::Result<()> {
+            if self.entered {
+                Err(vmm_backend::BackendError::AmdReusedVcpuRestoreUnsafe)
+            } else {
+                self.inner.validate_restore_state(state)
+            }
+        }
+
+        fn validate_import_state(&self, state: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.inner.validate_restore_state(state)
+        }
+
+        fn restore(&mut self, state: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.validate_restore_state(state)?;
+            self.inner.restore(state)
+        }
+
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.inner.exit_counts()
+        }
+
+        fn reset_exit_counts(&mut self) {
+            self.inner.reset_exit_counts();
+        }
+
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
+            self.inner.capabilities()
+        }
+    }
+
+    #[test]
+    fn used_restore_reject_backend_mapping_is_miri_safe() {
+        #[repr(align(4096))]
+        struct Aligned([u8; 4096]);
+        let mut page = Aligned([0; 4096]);
+        let mut backend = UsedRestoreRejectBackend {
+            inner: MockBackend::new(),
+            entered: false,
+        };
+        // SAFETY: the aligned page remains live and exclusive until after the mock backend is dropped.
+        unsafe { backend.map_memory(vmm_backend::Gpa(0), &mut page.0) }.unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "portable import uses mapped snapshot storage")]
+    fn portable_import_on_used_backend_validates_for_fresh_replay() {
+        fn build() -> Vmm<UsedRestoreRejectBackend> {
+            let mut inner = MockBackend::with_exits([Exit::Common(CommonExit::Idle)]);
+            inner.set_policy(&X86Policy::default()).unwrap();
+            let mut vmm = Vmm::new(
+                UsedRestoreRejectBackend {
+                    inner,
+                    entered: false,
+                },
+                GuestRam::new(RAM).unwrap(),
+            );
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap());
+            vmm.wire_snapshot_hashing();
+            vmm.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            vmm
+        }
+
+        for mode in [super::RestoreMode::Memcpy, super::RestoreMode::InPlace] {
+            let mut server = ControlServer::new(build(), Box::new(|| Ok(build())));
+            server.set_restore_mode(mode);
+            assert_eq!(
+                server.handle(&Request::Hello(server_caps())).unwrap(),
+                Ok(Reply::Hello(server_caps()))
+            );
+            let cut = match server.handle(&Request::Snapshot).unwrap() {
+                Ok(Reply::Snapshot { id, .. }) => id,
+                other => panic!("snapshot reply: {other:?}"),
+            };
+            let portable = server.export_sparse_snapshot(cut, cut).unwrap();
+            let before = server.vmm_mut().unwrap().backend_mut().save().unwrap();
+            assert_eq!(
+                server.vmm_mut().unwrap().backend_mut().run().unwrap(),
+                Exit::Common(CommonExit::Idle)
+            );
+            assert!(matches!(
+                server
+                    .vmm_mut()
+                    .unwrap()
+                    .backend_mut()
+                    .validate_restore_state(&before),
+                Err(vmm_backend::BackendError::AmdReusedVcpuRestoreUnsafe)
+            ));
+            let imported = server.import_sparse_snapshot(cut, portable).unwrap();
+            assert_eq!(
+                server.handle(&Request::Replay(imported.id)).unwrap(),
+                Ok(Reply::Unit)
+            );
+            assert_eq!(
+                server.in_place_fallbacks(),
+                u64::from(mode == super::RestoreMode::InPlace)
+            );
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn accumulated_transport_inputs_survive_local_and_portable_replay() {

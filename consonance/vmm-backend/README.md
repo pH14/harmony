@@ -183,6 +183,9 @@ uninterrupted and fresh-restored guest wrote `XSTATE_BV=2`, although the capture
 KVM CPU records matched. Restore validation rejects that reused vCPU before any
 backend or guest-memory mutation. An unentered vCPU remains restorable; the
 control server falls back to a fresh VM when an in-place restore is refused.
+Portable import checks the snapshot's structural compatibility separately from
+this current-vCPU reuse rule. Importing a valid artifact after AMD guest entry
+does not restore the entered vCPU; replay still requires a fresh backend.
 Intel reuse remains supported. The underlying AMD behavior is tracked in
 [#307](https://github.com/pH14/harmony/issues/307).
 

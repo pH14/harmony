@@ -509,8 +509,11 @@ handle is minted.
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
 device records, and clock wiring are rejected before changing the destination
-execution. Import requires a live validation target. This preflight does not
-replace backend validation or make host ioctl failures transactional.
+execution. Import requires a live validation target, but its backend check is
+for the artifact's shape, not the current vCPU's reuse eligibility. That lets
+an AMD session import a valid artifact after guest entry; replay then creates
+a fresh VM or refuses in-place reuse before changing CPU or RAM. This preflight
+does not replace backend validation or make host ioctl failures transactional.
 
 ## Publishing prepared snapshot boundaries
 

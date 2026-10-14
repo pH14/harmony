@@ -341,6 +341,11 @@ where
     pub(crate) pvclock: Option<PvclockChannel>,
 }
 
+enum RestoreValidation {
+    CurrentBackend,
+    ImportedArtifact,
+}
+
 struct RestorePreparation<B: Backend>
 where
     B::A: Vendor,
@@ -922,6 +927,7 @@ where
     fn prepare_restore_vm_state(
         &self,
         s: &<B::A as Vendor>::Snapshot,
+        validation: RestoreValidation,
     ) -> Result<RestorePreparation<B>, VmmError> {
         let engine_state = EngineState::decode(s.engine_state())?;
         if *s.timers() != vm_state::TimerQueueState::default() {
@@ -934,13 +940,15 @@ where
         }
         let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
         self.check_guest_mode(&vcpu)?;
-        self.backend
-            .validate_restore_state(&vcpu)
-            .map_err(|error| {
-                VmmError::ContractViolation(format!(
-                    "restore_vm_state: backend rejected snapshot shape: {error}"
-                ))
-            })?;
+        let backend_validation = match validation {
+            RestoreValidation::CurrentBackend => self.backend.validate_restore_state(&vcpu),
+            RestoreValidation::ImportedArtifact => self.backend.validate_import_state(&vcpu),
+        };
+        backend_validation.map_err(|error| {
+            VmmError::ContractViolation(format!(
+                "restore_vm_state: backend rejected snapshot shape: {error}"
+            ))
+        })?;
         let svt = s.vtime();
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
@@ -999,7 +1007,7 @@ where
                     .to_string(),
             ));
         }
-        let preparation = self.prepare_restore_vm_state(s)?;
+        let preparation = self.prepare_restore_vm_state(s, RestoreValidation::CurrentBackend)?;
         if let Some(trace) = self.virtual_time_trace.as_ref() {
             trace
                 .preflight_restore_clockevent_schedule(
@@ -1328,7 +1336,8 @@ where
         snapshot: &<B::A as Vendor>::Snapshot,
         sdk: &SdkSnapshot,
     ) -> Result<Vec<u8>, VmmError> {
-        let prepared = self.prepare_restore_vm_state(snapshot)?;
+        let prepared =
+            self.prepare_restore_vm_state(snapshot, RestoreValidation::ImportedArtifact)?;
         let parts = <B::A as Vendor>::project_snapshot_hash_parts(snapshot)?;
         if self.doorbell_pages.is_some() != parts.doorbell.is_some() {
             return Err(VmmError::ContractViolation(
