@@ -12,7 +12,9 @@ use control_proto::{
     encode_reply,
 };
 use environment::{
-    channel::{ChannelError, Effect, HandlerSnapshot, NominalHandler, RecordedEnv, ServiceHandler},
+    channel::{
+        ChannelError, Effect, HandlerFingerprint, NominalHandler, RecordedEnv, ServiceHandler,
+    },
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
 use hypercall_proto::Service as _;
@@ -290,17 +292,17 @@ fn validate_control_import_sections<'a>(
 }
 
 impl<B: Backend<A: Vendor>> ControlServer<B> {
-    fn live_sdk_handler_snapshot(&self) -> Result<Option<HandlerSnapshot>, ChannelError> {
+    fn live_sdk_handler_fingerprint(&self) -> Result<Option<HandlerFingerprint>, ChannelError> {
         self.vmm
             .as_ref()
-            .map(Vmm::sdk_handler_snapshot)
+            .map(Vmm::sdk_handler_fingerprint)
             .transpose()
             .map(Option::flatten)
     }
 
     fn verify_live_sdk_handler_unchanged(
         &self,
-        before: &Option<HandlerSnapshot>,
+        before: &Option<HandlerFingerprint>,
     ) -> Result<(), ChannelError> {
         if let Some(before) = before {
             self.vmm
@@ -341,7 +343,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         sdk: &SdkSnapshot,
         policy: &ServiceConfig,
     ) -> Result<(), PortableSnapshotError> {
-        let before = self.live_sdk_handler_snapshot()?;
+        let before = self.live_sdk_handler_fingerprint()?;
         let result = (|| {
             let handler = (self.service_factory)(policy)?;
             if handler.identity() != policy.identity
@@ -1576,7 +1578,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         snap: SnapId,
         env: Option<&control_proto::Reproducer>,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
-        let before = self.live_sdk_handler_snapshot()?;
+        let before = self.live_sdk_handler_fingerprint()?;
         let mut preflight_complete = false;
         let result = self.restore_inner(snap, env, &before, &mut preflight_complete);
         if !preflight_complete {
@@ -1589,7 +1591,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         &mut self,
         snap: SnapId,
         env: Option<&control_proto::Reproducer>,
-        before: &Option<HandlerSnapshot>,
+        before: &Option<HandlerFingerprint>,
         preflight_complete: &mut bool,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
         let mut host: Vec<(u64, Effect)> = Vec::new();
@@ -5236,9 +5238,14 @@ mod tests {
     }
 
     #[test]
-    fn oversized_service_state_refuses_snapshot_without_retiring_the_vm() {
+    fn oversized_live_recording_refuses_capture_but_allows_replay_and_import() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
+        let origin = snap(&mut server);
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(origin, &mut artifact)
+            .unwrap();
         let config = ServiceConfig::default();
         let mut oversized = RecordedEnv::new(
             7,
@@ -5265,6 +5272,11 @@ mod tests {
             Err(ControlError::SnapshotRefused { .. })
         ));
         assert!(server.vmm().is_some());
+        assert!(server.import_portable_snapshot(artifact.as_slice()).is_ok());
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
         server.vmm.as_mut().unwrap().enable_sdk(
             RecordedEnv::new(
                 7,
@@ -5280,6 +5292,36 @@ mod tests {
                 })
                 .unwrap(),
             Ok(Reply::Hash(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_live_handler_allows_replay_recovery() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                0,
+                Box::new(MaxStateExternalService(vec![
+                    0;
+                    environment::channel::MAX_CHANNEL_BYTES
+                        + 1
+                ])) as Box<dyn environment::channel::ServiceHandler>,
+            ),
+            &ServiceConfig::default(),
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotRefused { .. })
+        ));
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
         ));
     }
 
