@@ -176,6 +176,24 @@ impl Manifest {
                 Ok(Arc::new(bytes))
             })
             .transpose()?;
+        let uml_profile = self
+            .uml_host
+            .as_ref()
+            .map(|_| -> Result<_> {
+                let file = path.join("artifacts/uml/profile.json");
+                let bytes = fs::read(&file)?;
+                let expected = self
+                    .artifacts
+                    .get("uml/profile.json")
+                    .ok_or("recorded UML profile artifact is missing")?;
+                if crate::runtime::digest(&bytes) != *expected {
+                    return Err("recorded UML profile changed during load".into());
+                }
+                let profile: uml::Profile = serde_json::from_slice(&bytes)?;
+                let identity = crate::runtime::digest(&serde_json::to_vec(&profile)?);
+                Ok((path.join("artifacts/uml"), identity))
+            })
+            .transpose()?;
         Ok(faults_workload::Options {
             seed: self.config.seed,
             executions: self.config.executions,
@@ -184,7 +202,7 @@ impl Manifest {
             wall_seconds: self.config.wall_seconds,
             output: path.to_path_buf(),
             root,
-            uml_profile: self.uml_host.as_ref().map(|_| path.join("artifacts/uml")),
+            uml_profile,
             checkpoint_owner: self.record.checkpoint_owner.clone(),
         })
     }
@@ -228,6 +246,61 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loaded_uml_profile_must_match_the_verified_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        let profile = serde_json::json!({
+            "schema": 2,
+            "architecture": "x86_64",
+            "kernel_version": "test",
+            "userspace": "seccomp",
+            "patch_series_sha256": "test",
+            "host_libraries": [],
+            "executable": { "name": "linux", "sha256": "test" },
+            "config": { "name": "config", "sha256": "test" },
+            "rootfs": { "name": "rootfs", "sha256": "test" },
+            "virtual_time": { "syscall_vns": 100, "clock_read_vns": 1 }
+        });
+        let original = serde_json::to_vec(&profile).unwrap();
+        record
+            .store(dir.path(), "uml/profile.json", &original)
+            .unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        record.save(dir.path()).unwrap();
+        let mut manifest = Manifest::read(dir.path()).unwrap();
+        manifest.uml_host = Some(serde_json::Value::Null);
+        manifest.record.verify(dir.path()).unwrap();
+
+        let mut changed = profile;
+        changed["virtual_time"]["syscall_vns"] = 200.into();
+        fs::write(
+            dir.path().join("artifacts/uml/profile.json"),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .options(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("UML profile changed during load")
+        );
+
+        fs::write(dir.path().join("artifacts/uml/profile.json"), &original).unwrap();
+        let canonical: uml::Profile = serde_json::from_slice(&original).unwrap();
+        let expected = crate::runtime::digest(&serde_json::to_vec(&canonical).unwrap());
+        assert_eq!(
+            manifest.options(dir.path()).unwrap().uml_profile.unwrap().1,
+            expected
+        );
+    }
 
     #[test]
     fn loaded_root_bytes_must_match_the_verified_manifest() {
