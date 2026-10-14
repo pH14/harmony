@@ -11533,6 +11533,50 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FalsePoisonService(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl environment::channel::ServiceHandler for FalsePoisonService {
+        fn identity(&self) -> &[u8] {
+            b"false-poison-service-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, ChannelError> {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            let state = self.0.load(std::sync::atomic::Ordering::SeqCst);
+            if state == 1 {
+                Err(ChannelError::Poisoned)
+            } else {
+                Ok(state.to_le_bytes().to_vec())
+            }
+        }
+
+        fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ChannelError> {
+            let state = u64::from_le_bytes(bytes.try_into().map_err(|_| ChannelError::Malformed)?);
+            self.0.store(state, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            self.0.store(seed, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
     fn install_aliased_service(
         server: &mut ControlServer<MockBackend>,
         state: &std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -11627,6 +11671,40 @@ mod tests {
             server.handle(&Request::Replay(imported.id)).unwrap(),
             Ok(Reply::Unit)
         );
+    }
+
+    #[test]
+    fn handler_poison_error_does_not_skip_live_guard() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let state = Arc::new(AtomicU64::new(0));
+        server.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                1,
+                Box::new(FalsePoisonService(state.clone()))
+                    as Box<dyn environment::channel::ServiceHandler>,
+            ),
+            &ServiceConfig::default(),
+        );
+        let factory_state = state.clone();
+        server.set_service_factory(Arc::new(move |_| {
+            factory_state.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FalsePoisonService(factory_state.clone())))
+        }));
+        let reply = server.handle(&Request::Replay(origin));
+        assert!(!matches!(
+            server.handle(&Request::Snapshot),
+            Ok(Ok(Reply::Snapshot { .. }))
+        ));
+        assert!(matches!(
+            reply,
+            Err(ServeError::Service(ChannelError::Poisoned))
+        ));
+        assert_eq!(state.load(Ordering::SeqCst), 1);
     }
 
     #[test]

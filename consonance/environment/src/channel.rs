@@ -824,11 +824,15 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     }
 
     fn ensure_healthy(&self) -> Result<(), ChannelError> {
-        if self.poisoned.load(Ordering::Acquire) {
+        if self.is_poisoned() {
             Err(ChannelError::Poisoned)
         } else {
             Ok(())
         }
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
     }
 
     pub fn verify_handler_unchanged(&self, before: &HandlerSnapshot) -> Result<(), ChannelError> {
