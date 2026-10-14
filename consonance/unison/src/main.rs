@@ -77,6 +77,7 @@ fn exit_for_verdict(v: &Verdict) -> ExitCode {
     match v {
         Verdict::MatchingCheckpoints => ExitCode::SUCCESS,
         Verdict::Diverged { .. }
+        | Verdict::UnreplayableDivergence { .. }
         | Verdict::TerminalDiverged { .. }
         | Verdict::HaltMismatch { .. } => ExitCode::from(2),
     }

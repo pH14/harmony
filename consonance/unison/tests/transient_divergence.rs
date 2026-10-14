@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use unison::{
     RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence, compare_runs,
     first_divergence_from_report,
@@ -11,6 +13,59 @@ struct Factory(bool);
 struct Machine {
     work: u64,
     divergent: bool,
+}
+
+#[derive(Clone)]
+struct CountingFactory {
+    divergent: bool,
+    advances: Arc<AtomicU64>,
+}
+
+struct CountingMachine {
+    work: u64,
+    divergent: bool,
+    advances: Arc<AtomicU64>,
+}
+
+impl SubjectFactory for CountingFactory {
+    type M = CountingMachine;
+
+    fn spawn(&self, _: u64) -> Self::M {
+        CountingMachine {
+            work: 0,
+            divergent: self.divergent,
+            advances: Arc::clone(&self.advances),
+        }
+    }
+}
+
+impl Subject for CountingMachine {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
+        if target < self.work {
+            return Err(SubjectError::TargetBehind {
+                target,
+                current: self.work,
+            });
+        }
+        self.advances
+            .fetch_add(target - self.work, Ordering::Relaxed);
+        self.work = target;
+        Ok(RunOutcome::ReachedTarget)
+    }
+
+    fn work(&self) -> u64 {
+        self.work
+    }
+
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
+        let mut hash = [self.work as u8; 32];
+        hash[0] ^= u8::from(self.divergent && self.work >= 150);
+        Ok(hash)
+    }
+
+    fn observable_digest(&self) -> [u8; 32] {
+        [0; 32]
+    }
 }
 
 impl SubjectFactory for Factory {
@@ -68,6 +123,22 @@ fn first_mismatch_precedes_a_matching_checkpoint() {
     let point = bisect_divergence(&a, &b, 7, 0, 5).unwrap();
     assert_eq!(point.first_divergent_work, 1);
     assert_ne!(point.hash_a, point.hash_b);
+}
+
+#[test]
+fn first_mismatch_scan_advances_work_linearly() {
+    let advances = Arc::new(AtomicU64::new(0));
+    let a = CountingFactory {
+        divergent: false,
+        advances: Arc::clone(&advances),
+    };
+    let b = CountingFactory {
+        divergent: true,
+        advances: Arc::clone(&advances),
+    };
+    let point = bisect_divergence(&a, &b, 7, 0, 200).unwrap();
+    assert_eq!(point.first_divergent_work, 150);
+    assert!(advances.load(Ordering::Relaxed) < 2_000);
 }
 
 #[test]

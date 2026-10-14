@@ -28,10 +28,13 @@ halt count to detect mismatches.
 For a given seed and target, a fresh subject must produce the same outcome,
 work count, state hash, and observable digest whether `run_to(target)` is called
 once or after any increasing sequence of earlier targets. `spawn(seed)` must
-also reproduce the same starting state. Without this segmentation-invariance
-contract, a checkpoint bracket cannot identify a replayable work coordinate.
-The bundled toy and perturbation adapters are qualified against direct and
-segmented calls; custom adapters must establish the same property.
+also reproduce the same starting state. This segmentation-invariance contract
+is required to identify a replayable first-work coordinate. A same-seed
+checkpoint mismatch that fails direct replay is still reported as an
+`UnreplayableDivergence` at the observed checkpoint, without a first-work
+claim. The bundled toy and perturbation adapters are qualified against direct
+and segmented calls; custom adapters must establish the same property for
+bisection.
 
 `compare_runs` checks both machines immediately after spawn, then compares their
 state hashes and output digests at a caller-selected interval until they halt or
@@ -39,8 +42,9 @@ reach a limit. `MatchingCheckpoints` means only that the sampled states and
 outputs agree; a transient difference between checkpoints can go unobserved.
 The serialized report carries `checkpoint_every` and `requested_limit`, so this
 claim identifies its sampling plan even when the run halts before the limit.
-The other verdicts report a checkpoint bracket, an equal-work terminal
-divergence, or a halt-count mismatch. The report records whether the limit—not
+The other verdicts report a replayable checkpoint bracket, an observed but
+unreplayable checkpoint mismatch, an equal-work terminal divergence, or a
+halt-count mismatch. The report records whether the limit—not
 termination—ended the comparison. A zero-work mismatch is reported
 even when the limit is zero.
 Before returning a reached-target divergence bracket, comparison replays both
@@ -56,7 +60,8 @@ differ, the report uses `TerminalDiverged`. This names the observed halt count
 and last matching checkpoint without claiming a first divergent work count:
 a fresh run to the halt count may stop at a pre-halt state, while the terminal
 transition happens only when asked to run farther. The CLI reports this
-divergence with exit code 2 and no bisection point. Direct bisection
+divergence with exit code 2 and supplies a first-work point only if a direct
+probe through the halt count reproduces the mismatch. Direct bisection
 also refuses a mismatching probe that halted at a different work count from
 the requested target, because that terminal observation cannot be assigned
 the probe's work coordinate. A terminal observation reached at the requested
@@ -67,14 +72,17 @@ it at work zero would provide an unreplayable bisection coordinate. An initial
 difference at work zero remains directly bisectable.
 `bisect_divergence` checks the initial state when the lower bound is zero,
 returns zero if the machines already differ there, and otherwise verifies the
-bracket endpoints and probes each work count in ascending order with fresh
-executions. This costs `O(hi - lo)` probe pairs but finds the first mismatch
-within the supplied bracket even when observations diverge temporarily and
-then reconverge. A matching checkpoint does not rule out an earlier transient
-difference. `first_divergence_from_report` and the CLI probe from work zero to
+bracket endpoints and advances one pair through each work count in ascending
+order. A fresh direct probe verifies a mismatching candidate before reporting
+its work count; an inconsistent segmented/direct observation is refused. This
+uses `O(hi - lo)` incremental `run_to` calls and `O(hi)` total work for subjects
+whose `run_to` advances incrementally, and finds the first mismatch within the
+supplied bracket even when observations diverge temporarily and then
+reconverge. A matching checkpoint does not rule out an earlier transient
+difference. `first_divergence_from_report` and the CLI scan from work zero to
 the report's first mismatching checkpoint before claiming a global first work
-count, costing `O(first_mismatch)` probe pairs. The upper endpoint must still
-differ for the supplied interval to be a valid bracket.
+count. The upper endpoint must still differ for the supplied interval to be a
+valid bracket.
 
 ## Reference machines
 
