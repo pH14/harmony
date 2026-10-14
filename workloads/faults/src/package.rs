@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, fs, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,7 +17,7 @@ pub struct Options {
     pub wall_seconds: Option<u64>,
     pub output: PathBuf,
     pub uml_profile: Option<PathBuf>,
-    pub root: Option<PathBuf>,
+    pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
 }
 
@@ -415,13 +415,7 @@ mod live {
             knobs: options.knobs.clone(),
             ram_mib: options.ram_mib,
             backend,
-            root: options
-                .root
-                .as_ref()
-                .map(std::fs::read)
-                .transpose()
-                .map_err(|e| e.to_string())?
-                .map(Arc::new),
+            root: options.root.clone(),
         })
     }
 
