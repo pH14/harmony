@@ -20,6 +20,9 @@ use crate::{
 const SCREEN_PAGE_OFFSET: usize = 0x071a;
 const SCREEN_X_OFFSET: usize = 0x071c;
 const PLAYER_Y_OFFSET: usize = 0x00ce;
+const PLAYER_X_PAGE_OFFSET: usize = 0x006d;
+const PLAYER_X_LOW_OFFSET: usize = 0x0086;
+const PLAYER_FACING_OFFSET: usize = 0x0033;
 const PLAYER_ENGINE_STATE_OFFSET: usize = 0x000e;
 const PLAYER_KILLED_STATE: u8 = 0x0b;
 const WORLD_NUMBER_OFFSET: usize = 0x075f;
@@ -97,6 +100,11 @@ impl<P: SnapshotState> SmbSnapshot<P> {
     }
 
     #[must_use]
+    pub fn emulator_state(&self) -> &P {
+        &self.emulator_state
+    }
+
+    #[must_use]
     pub fn emulator_state_bytes_len(&self) -> usize {
         self.emulator_state.memory_charge()
     }
@@ -161,10 +169,7 @@ where
         }];
         let mut reached_play = false;
         for _ in 0..BOOT_PLAY_WAIT_FRAMES {
-            let wram = wram_array(&machine)?;
-            if wram[OPER_MODE_OFFSET] == OPER_MODE_PLAY
-                && wram[OPER_MODE_TASK_OFFSET] == OPER_MODE_TASK_PLAY
-            {
+            if smb_is_playing(&wram_array(&machine)?) {
                 reached_play = true;
                 break;
             }
@@ -319,6 +324,25 @@ where
     #[must_use]
     pub fn last_action_observations(&self) -> &[SmbObservations] {
         &self.action_observations
+    }
+
+    pub fn snapshot_of_state(
+        &mut self,
+        state: &P,
+        frame_count: u64,
+    ) -> Result<SmbSnapshot<P>, Box<dyn Error>> {
+        self.forget_stop();
+        self.machine
+            .restore_nes(state)
+            .map_err(|error| error.to_string())?;
+        let wram = wram_array(&self.machine).map_err(|error| error.to_string())?;
+        self.dead = smb_player_is_dead(&wram);
+        self.failed = false;
+        self.snapshot_base = None;
+        self.observation = observation_from(&wram, frame_count, self.dead);
+        self.action_observations = vec![self.observation.clone()];
+        self.snapshot()
+            .ok_or_else(|| "failed to snapshot the restored state".into())
     }
 }
 
@@ -639,6 +663,35 @@ pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalSt
         player_engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
         dead: smb_player_is_dead(wram),
         flag_active: wram[FLAG_TASK_OFFSET] != 0,
+    }
+}
+
+#[must_use]
+pub fn smb_is_playing(wram: &[u8; WRAM_SIZE]) -> bool {
+    wram[OPER_MODE_OFFSET] == OPER_MODE_PLAY && wram[OPER_MODE_TASK_OFFSET] == OPER_MODE_TASK_PLAY
+}
+
+#[must_use]
+pub fn smb_world_cleared(wram: &[u8; WRAM_SIZE]) -> bool {
+    wram[OPERATING_MODE_OFFSET] == VICTORY_OPERATING_MODE
+        && wram[WORLD_NUMBER_OFFSET] != FINAL_WORLD_NUMBER
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SmbPlayerPosition {
+    pub x: u32,
+    pub y: u8,
+    pub vertical_page: u8,
+    pub facing: u8,
+}
+
+#[must_use]
+pub fn smb_player_position(wram: &[u8; WRAM_SIZE]) -> SmbPlayerPosition {
+    SmbPlayerPosition {
+        x: u32::from(wram[PLAYER_X_PAGE_OFFSET]) * 256 + u32::from(wram[PLAYER_X_LOW_OFFSET]),
+        y: wram[PLAYER_Y_OFFSET],
+        vertical_page: wram[PLAYER_VERTICAL_PAGE_OFFSET],
+        facing: wram[PLAYER_FACING_OFFSET],
     }
 }
 

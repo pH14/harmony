@@ -1,297 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{
-    error::Error,
-    io::Write,
-    marker::PhantomData,
-    path::{Path, PathBuf},
-};
+use std::{error::Error, io::Write};
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use machine::quicknes::QuickNesMachine;
 
-use crate::target::ExitKind;
+pub use nes_games::smb::campaign::*;
 
 use crate::{
-    chord::{
-        CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD, ChordVocabulary,
-        NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES,
-    },
     nes_backend::{NesBackend, SnapshotState},
     search::archive::RetentionPolicy,
-    search::campaign::{
-        CampaignActionResult, CampaignCheckpoint, CampaignJobRecord, CampaignJobResult,
-        CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignSkipRecord,
-        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy,
-        Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_result_sha256,
-        replay_campaign_checkpointed, run_campaign_checkpointed,
-    },
+    search::campaign::{TargetExecution, replay_campaign_checkpointed, run_campaign_checkpointed},
     search::draw::DrawMixture,
-    search::draw_tables::DrawTableHeader,
-    search::empirical_steps::EmpiricalStepCheckpoint,
-    search::rand::RomuDuoJrRand,
-    search::rollout::{ExecutionDisposition, Outcome},
-    smb::archive::{
-        DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER,
-        SmbArchiveKey, SmbArchiveReport, admission_is_viable, archive_key, chord_time,
-        merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
-        stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
-    },
-    smb::target::{
-        ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
-        smb_mechanical_state_from_wram,
-    },
-    target::Target,
+    smb::archive::SmbArchiveReport,
+    smb::target::SmbInput,
+    target::{ExitKind, Target},
 };
 
-use machine::{Machine, quicknes::QuickNesMachine};
+pub type SmbGame<M = QuickNesMachine, P = Vec<u8>> = nes_games::smb::campaign::SmbGame<M, P>;
+pub type SmbCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> =
+    nes_games::smb::campaign::SmbCampaignOrigin<M, P>;
+pub type SmbCampaignActionResult<M = QuickNesMachine, P = Vec<u8>> =
+    nes_games::smb::campaign::SmbCampaignActionResult<M, P>;
 
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-use machine::consonance::{ConsonanceMachine, ConsonancePortable, identity as consonance_identity};
-
-pub use crate::search::campaign::{
-    CampaignAdmissionDecision as SmbCampaignAdmissionDecision,
-    CampaignConfig as GenericCampaignConfig, CampaignOriginRecord as SmbCampaignOriginRecord,
-    RESUME_IDENTIFIER, TreeImportCounts as SmbTreeImportCounts, derive_selection_seed,
-};
-
-pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint>;
-pub type SmbCampaignSkipRecord = CampaignSkipRecord<EmpiricalStepCheckpoint>;
-pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>;
-
-pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
-
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v3";
-pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v2";
-
-pub const DURATION_IDENTIFIER: &str = "stratified";
-
-pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
-pub const KEY_POLICY_FIELD: &str = "key_policy";
-pub const DURATION_POLICY_FIELD: &str = "duration_policy";
-pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
-pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
-pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
-
-pub fn recorded_policy<'a>(
-    policies: &'a WorkloadPolicies,
-    field: &str,
-) -> Result<&'a str, Box<dyn Error>> {
-    policies
-        .get(field)
-        .map(String::as_str)
-        .ok_or_else(|| format!("campaign stream is missing the {field} policy").into())
-}
-
-pub struct SmbGame<M = QuickNesMachine, P = Vec<u8>> {
-    rom: Vec<u8>,
-    core_path: PathBuf,
-    core_sha256: String,
-    identity: String,
-    backend: SmbBackend,
-    machine: PhantomData<fn() -> (M, P)>,
-    #[cfg(test)]
-    loopback: bool,
-}
-
-enum SmbBackend {
-    QuickNes,
-    #[cfg(all(
-        feature = "consonance",
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(miri)
-    ))]
-    Consonance {
-        kernel: Vec<u8>,
-        initramfs: Vec<u8>,
-    },
-}
-
-fn quicknes_identity(core_sha256: &str) -> String {
-    format!(
-        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
-        machine::quicknes::QUICKNES_REVISION,
-        machine::quicknes::QUICKNES_BUILD,
-        machine::quicknes::QUICKNES_OPTIONS,
-    )
-}
-
-#[doc(hidden)]
-pub trait SmbMachineKind<P>: Machine + NesBackend<P> + Sized
-where
-    P: SnapshotState,
-{
-    fn new_smb_target(game: &SmbGame<Self, P>) -> Result<SmbTarget<Self, P>, String>;
-}
-
-impl SmbMachineKind<Vec<u8>> for QuickNesMachine {
-    fn new_smb_target(game: &SmbGame<Self, Vec<u8>>) -> Result<SmbTarget<Self, Vec<u8>>, String> {
-        #[cfg(test)]
-        if game.loopback {
-            return SmbTarget::loopback_for_tests(&game.rom).map_err(|error| error.to_string());
-        }
-        match &game.backend {
-            SmbBackend::QuickNes => SmbTarget::from_smb_rom_bytes_headless(
-                &game.rom,
-                &game.core_path,
-                &game.core_sha256,
-            )
-            .map_err(|error| error.to_string()),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                any(target_arch = "x86_64", target_arch = "aarch64"),
-                not(miri)
-            ))]
-            SmbBackend::Consonance { .. } => {
-                Err("SMB backend does not match the direct machine type".to_owned())
-            }
-        }
-    }
-}
-
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
-    fn new_smb_target(
-        game: &SmbGame<Self, ConsonancePortable>,
-    ) -> Result<SmbTarget<Self, ConsonancePortable>, String> {
-        match &game.backend {
-            SmbBackend::Consonance { kernel, initramfs } => {
-                let machine =
-                    ConsonanceMachine::new(kernel, initramfs).map_err(|error| error.to_string())?;
-                SmbTarget::from_machine(machine).map_err(|error| error.to_string())
-            }
-            SmbBackend::QuickNes => Err("SMB backend does not match Consonance".to_owned()),
-        }
-    }
-}
-
-impl SmbGame<QuickNesMachine, Vec<u8>> {
-    #[must_use]
-    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
-        Self {
-            rom: rom.to_vec(),
-            core_path: core_path.to_path_buf(),
-            core_sha256: core_sha256.to_owned(),
-            identity: quicknes_identity(core_sha256),
-            backend: SmbBackend::QuickNes,
-            machine: PhantomData,
-            #[cfg(test)]
-            loopback: false,
-        }
-    }
-
-    pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let core_path = PathBuf::from(
-            std::env::var_os("HARMONY_QUICKNES_CORE")
-                .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
-        );
-        let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
-        Ok(Self::new(rom, &core_path, &core_sha256))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn loopback_for_tests(rom: &[u8]) -> Self {
-        let core_sha256 = "a".repeat(64);
-        Self {
-            rom: rom.to_vec(),
-            core_path: PathBuf::new(),
-            identity: quicknes_identity(&core_sha256),
-            core_sha256,
-            backend: SmbBackend::QuickNes,
-            machine: PhantomData,
-            loopback: true,
-        }
-    }
-}
-
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-impl SmbGame<ConsonanceMachine, ConsonancePortable> {
-    #[must_use]
-    pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
-        Self {
-            rom: rom.to_vec(),
-            core_path: PathBuf::new(),
-            core_sha256: String::new(),
-            identity: format!(
-                "{};result_digest=postcard-1.1.3-logical-xsave-sha256-hex-v4",
-                consonance_identity(kernel, initramfs),
-            ),
-            backend: SmbBackend::Consonance {
-                kernel: kernel.to_vec(),
-                initramfs: initramfs.to_vec(),
-            },
-            machine: PhantomData,
-            #[cfg(test)]
-            loopback: false,
-        }
-    }
-}
-
-impl<M, P> SmbGame<M, P> {
-    #[must_use]
-    pub fn emulator_identity(&self) -> &str {
-        &self.identity
-    }
-
-    #[must_use]
-    pub fn snapshot_checkpoint_format(&self) -> &'static str {
-        match &self.backend {
-            SmbBackend::QuickNes => SNAPSHOT_CHECKPOINT_FORMAT,
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                any(target_arch = "x86_64", target_arch = "aarch64"),
-                not(miri)
-            ))]
-            SmbBackend::Consonance { .. } => CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct SmbCampaignRun {
-    pub vocabulary: SmbButtonVocabulary,
-    pub terminal: Option<SmbTerminalPredicate>,
-}
-
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SmbCampaignEvidence {
-    aggregate: SmbMilestones,
-    watermark: SmbProgressWatermark,
-    first_reached: SmbMilestoneTimes,
-    first_inputs: SmbMilestoneInputs,
-    champion_input: SmbInput,
-    champion_milestones: SmbMilestones,
-}
-
-pub type SmbCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
-pub type SmbCampaignCheckpoint<P = Vec<u8>> = CampaignCheckpoint<SmbSnapshot<P>>;
-pub type SmbSnapshotCheckpoint<P = Vec<u8>> = SnapshotCheckpoint<SmbSnapshot<P>>;
-pub type SmbSnapshotCheckpointEntry<P = Vec<u8>> =
-    crate::search::campaign::SnapshotCheckpointEntry<SmbSnapshot<P>>;
-pub type SmbCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
-pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveReport>;
-pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
-pub(crate) type SmbCampaignActionResult<M = QuickNesMachine, P = Vec<u8>> =
-    CampaignActionResult<SmbGame<M, P>>;
 pub struct SmbCampaignConfig {
     pub campaign_seed: u64,
     pub workers: u32,
@@ -313,7 +43,7 @@ pub struct SmbCampaignConfig {
 impl SmbCampaignConfig {
     fn generic<M, P>(&self) -> GenericCampaignConfig<SmbGame<M, P>>
     where
-        M: SmbMachineKind<P>,
+        M: NesBackend<P>,
         P: SnapshotState,
     {
         GenericCampaignConfig {
@@ -339,495 +69,6 @@ impl SmbCampaignConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum SmbTerminalPredicate {
-    #[default]
-    GameVictory,
-    LevelTransition {
-        world: u8,
-        level: u8,
-    },
-}
-
-impl SmbTerminalPredicate {
-    #[must_use]
-    pub fn identifier(self) -> String {
-        match self {
-            Self::GameVictory => "game_victory".to_owned(),
-            Self::LevelTransition { world, level } => {
-                format!("level_transition:{world},{level}")
-            }
-        }
-    }
-
-    pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
-        if identifier == "game_victory" {
-            return Ok(Self::GameVictory);
-        }
-        let fields = identifier
-            .strip_prefix("level_transition:")
-            .ok_or("SMB terminal predicate is not recognized")?;
-        let (world, level) = fields
-            .split_once(',')
-            .ok_or("level-transition predicate is missing world or level")?;
-        if level.contains(',') {
-            return Err("level-transition predicate has extra fields".into());
-        }
-        Ok(Self::LevelTransition {
-            world: world.parse()?,
-            level: level.parse()?,
-        })
-    }
-
-    fn reached<M, P>(self, target: &SmbTarget<M, P>) -> Result<bool, Box<dyn Error>>
-    where
-        M: NesBackend<P>,
-        P: SnapshotState,
-    {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("SMB terminal predicate cannot inspect a failed emulator".into());
-        }
-        if target.is_victory() {
-            return Ok(true);
-        }
-        Ok(match self {
-            Self::GameVictory => false,
-            Self::LevelTransition { world, level } => {
-                let state = target.mechanical_state();
-                (state.world, state.level) != (world, level)
-            }
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub enum SmbButtonVocabulary {
-    DownTenMask,
-    NesDownTen,
-    NesRunThirteen,
-    #[default]
-    NesPressable,
-}
-
-impl SmbButtonVocabulary {
-    #[must_use]
-    pub fn masks(self) -> &'static [u8] {
-        match self {
-            Self::DownTenMask => &DOWN_TEN_BUTTON_MASKS,
-            Self::NesDownTen => &crate::smb::archive::NES_DOWN_TEN_BUTTON_MASKS,
-            Self::NesRunThirteen => &crate::smb::archive::NES_RUN_THIRTEEN_BUTTON_MASKS,
-            Self::NesPressable => &NES_PRESSABLE_BUTTON_MASKS,
-        }
-    }
-
-    #[must_use]
-    pub fn chords(self) -> ChordVocabulary {
-        ChordVocabulary {
-            held: self.masks(),
-            tap: None,
-            short_hold: SHORT_HOLD_FRAMES,
-            long_hold: LONG_HOLD_FRAMES,
-        }
-    }
-}
-
-#[must_use]
-pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static str {
-    match vocabulary {
-        SmbButtonVocabulary::DownTenMask => "down_ten_mask",
-        SmbButtonVocabulary::NesDownTen => "nes_down_ten",
-        SmbButtonVocabulary::NesRunThirteen => "nes_run_thirteen",
-        SmbButtonVocabulary::NesPressable => "nes_pressable_36",
-    }
-}
-
-pub fn button_vocabulary_from_identifier(
-    identifier: &str,
-) -> Result<SmbButtonVocabulary, Box<dyn Error>> {
-    match identifier {
-        "down_ten_mask" => Ok(SmbButtonVocabulary::DownTenMask),
-        "nes_down_ten" => Ok(SmbButtonVocabulary::NesDownTen),
-        "nes_run_thirteen" => Ok(SmbButtonVocabulary::NesRunThirteen),
-        "nes_pressable_36" => Ok(SmbButtonVocabulary::NesPressable),
-        _ => Err("campaign stream controller vocabulary is not recognized".into()),
-    }
-}
-
-pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInput, Box<dyn Error>> {
-    let frontier = source
-        .entries
-        .iter()
-        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
-        .max()
-        .ok_or("source archive contains no retained entries")?;
-    source
-        .entries
-        .iter()
-        .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
-        .min_by_key(|entry| (entry.input.actions.len(), entry.id))
-        .map(|entry| entry.input.clone())
-        .ok_or_else(|| "source archive contains no frontier entries".into())
-}
-
-impl<M, P> CampaignTypes for SmbGame<M, P>
-where
-    M: SmbMachineKind<P>,
-    P: SnapshotState,
-{
-    type Target = SmbTarget<M, P>;
-    type Action = ButtonChord;
-    type Key = SmbArchiveKey;
-    type Milestones = SmbMilestones;
-    type Progress = SmbProgressWatermark;
-    type Snapshot = SmbSnapshot<P>;
-    type Observations = SmbObservations;
-    type Evidence = SmbCampaignEvidence;
-    type ArchiveReport = SmbArchiveReport;
-    type Run = SmbCampaignRun;
-}
-
-impl<M, P> Reporting for SmbGame<M, P>
-where
-    M: SmbMachineKind<P>,
-    P: SnapshotState,
-{
-    fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(serde_json::to_vec(evidence)?)
-    }
-    fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
-        Ok(serde_json::from_slice(bytes)?)
-    }
-    fn stream_format(&self) -> &'static str {
-        CAMPAIGN_STREAM_FORMAT
-    }
-    fn checkpoint_format(&self) -> &'static str {
-        self.snapshot_checkpoint_format()
-    }
-    fn workload_identity_sha256(&self) -> String {
-        format!("{:x}", Sha256::digest(&self.rom))
-    }
-    fn action_cost_unit(&self) -> &'static str {
-        "frames"
-    }
-    fn execution_work_unit(&self) -> &'static str {
-        "frames"
-    }
-    fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        let mut logical = result.clone();
-        for candidate in logical
-            .actions
-            .iter_mut()
-            .filter_map(|action| action.candidate.as_mut())
-        {
-            candidate.snapshot = candidate.snapshot.logical_identity()?;
-        }
-        postcard_result_sha256(&logical)
-    }
-
-    fn archive_report(
-        &self,
-        evidence: &SmbCampaignEvidence,
-        state: crate::search::campaign::ArchiveReportState<Self>,
-    ) -> SmbArchiveReport {
-        SmbArchiveReport {
-            seed: state.seed,
-            executions: state.executions,
-            milestones: evidence.aggregate,
-            progress_watermark: evidence.watermark,
-            first_reached: evidence.first_reached,
-            first_inputs: evidence.first_inputs.clone(),
-            champion_input: evidence.champion_input.clone(),
-            entries: state.entries,
-            progress_curve: state.progress_curve,
-            retained: state.retained,
-            rejected: state.rejected,
-            deaths: state
-                .terminal_endpoints
-                .saturating_sub(state.terminal_objectives),
-            selector: state.selector,
-        }
-    }
-}
-
-impl<M, P> InputPolicy for SmbGame<M, P>
-where
-    M: SmbMachineKind<P>,
-    P: SnapshotState,
-{
-    fn policies(&self, run: &SmbCampaignRun) -> WorkloadPolicies {
-        let mut policies: WorkloadPolicies = [
-            (
-                CONTROLLER_VOCABULARY_FIELD,
-                button_vocabulary_identifier(run.vocabulary).to_owned(),
-            ),
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER.to_owned()),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
-            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
-            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
-        ]
-        .into_iter()
-        .map(|(field, value)| (field.to_owned(), value))
-        .collect();
-        if let Some(terminal) = run.terminal {
-            policies.insert(TERMINAL_POLICY_FIELD.to_owned(), terminal.identifier());
-        }
-        policies.insert(EMULATOR_BACKEND_FIELD.to_owned(), self.identity.clone());
-        policies
-    }
-
-    fn resolve_recorded(
-        &self,
-        policies: &WorkloadPolicies,
-    ) -> Result<SmbCampaignRun, Box<dyn Error>> {
-        let recorded = |field: &str| recorded_policy(policies, field);
-        let pinned = [
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
-            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
-        ];
-        for (field, compiled) in pinned {
-            if recorded(field)? != compiled {
-                return Err(format!("campaign stream {field} is not recognized").into());
-            }
-        }
-        if recorded(EMULATOR_BACKEND_FIELD)? != self.identity {
-            return Err("campaign stream emulator_backend is not this SMB backend".into());
-        }
-        let run = SmbCampaignRun {
-            vocabulary: button_vocabulary_from_identifier(recorded(CONTROLLER_VOCABULARY_FIELD)?)?,
-            terminal: policies
-                .get(TERMINAL_POLICY_FIELD)
-                .map(|identifier| SmbTerminalPredicate::from_identifier(identifier))
-                .transpose()?,
-        };
-        let unknown = policies
-            .keys()
-            .find(|field| !self.policies(&run).contains_key(field.as_str()));
-        if let Some(field) = unknown {
-            return Err(format!("campaign stream carries an unknown {field} policy").into());
-        }
-        Ok(run)
-    }
-
-    fn sample_alphabet(
-        &self,
-        run: &SmbCampaignRun,
-        previous: Option<&ButtonChord>,
-        rand: &mut RomuDuoJrRand,
-    ) -> Result<ButtonChord, Box<dyn Error>> {
-        run.vocabulary.chords().draw(rand, previous)
-    }
-}
-
-impl<M, P> TargetExecution for SmbGame<M, P>
-where
-    M: SmbMachineKind<P>,
-    P: SnapshotState,
-{
-    fn new_target(&self) -> Result<SmbTarget<M, P>, String> {
-        M::new_smb_target(self)
-    }
-    fn reset(&self, target: &mut SmbTarget<M, P>) {
-        target.reset();
-    }
-    fn restore(
-        &self,
-        target: &mut SmbTarget<M, P>,
-        snapshot: &SmbSnapshot<P>,
-    ) -> Result<(), Box<dyn Error>> {
-        target.restore(snapshot)
-    }
-    fn execution_work(&self, target: &SmbTarget<M, P>) -> u64 {
-        target.execution_work()
-    }
-    fn apply_action(
-        &self,
-        target: &mut SmbTarget<M, P>,
-        action: &ButtonChord,
-        milestones: &mut SmbMilestones,
-    ) -> Result<(), Box<dyn Error>> {
-        target.apply(action);
-        merge_action_milestones(milestones, target)
-    }
-    fn rollout_observations(&self, target: &SmbTarget<M, P>) -> Vec<SmbObservations> {
-        if target.exit_kind() != ExitKind::Ok {
-            Vec::new()
-        } else {
-            target.last_action_observations().to_vec()
-        }
-    }
-    fn rollout_probe(
-        &self,
-        _run: &SmbCampaignRun,
-        target: &mut SmbTarget<M, P>,
-        snapshot: &SmbSnapshot<P>,
-    ) -> Result<bool, Box<dyn Error>> {
-        admission_is_viable(target, snapshot)
-    }
-    fn snapshot(&self, target: &mut SmbTarget<M, P>) -> Result<SmbSnapshot<P>, Box<dyn Error>> {
-        target.snapshot().ok_or_else(|| "failed to snapshot".into())
-    }
-
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
-        chord_time
-    }
-
-    fn snapshot_memory_charge(snapshot: &SmbSnapshot<P>) -> usize {
-        snapshot.resident_memory_charge()
-    }
-}
-
-impl<M, P> Evaluation for SmbGame<M, P>
-where
-    M: SmbMachineKind<P>,
-    P: SnapshotState,
-{
-    fn merge_milestones(&self, into: &mut SmbMilestones, from: SmbMilestones) {
-        merge_milestones(into, from);
-    }
-    fn aggregate_milestones(evidence: &SmbCampaignEvidence) -> SmbMilestones {
-        evidence.aggregate
-    }
-    fn aggregate_progress(evidence: &SmbCampaignEvidence) -> SmbProgressWatermark {
-        evidence.watermark
-    }
-    fn merge_origin_evidence(&self, evidence: &mut SmbCampaignEvidence, source: &SmbArchiveReport) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
-    }
-    fn merge_snapshot_root_evidence(
-        &self,
-        evidence: &mut SmbCampaignEvidence,
-        target: &SmbTarget<M, P>,
-    ) -> Result<(), Box<dyn Error>> {
-        let state = smb_mechanical_state_from_wram(&target.wram());
-        evidence.watermark = evidence.watermark.max(SmbProgressWatermark {
-            world: state.world,
-            level: state.level,
-            progress: state.progress,
-        });
-        Ok(())
-    }
-    fn merge_import_evidence(
-        &self,
-        evidence: &mut SmbCampaignEvidence,
-        milestones: SmbMilestones,
-        input: &SmbInput,
-    ) {
-        merge_milestones(&mut evidence.aggregate, milestones);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            milestones,
-            0,
-            input,
-        );
-        if milestone_key(milestones) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = milestones;
-            evidence.champion_input = input.clone();
-        }
-    }
-    fn merge_action_evidence<F>(
-        &self,
-        evidence: &mut SmbCampaignEvidence,
-        action: &SmbCampaignActionResult<M, P>,
-        sequence: u64,
-        input: F,
-    ) -> Result<(), Box<dyn Error>>
-    where
-        F: FnOnce() -> Result<SmbInput, Box<dyn Error>>,
-    {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let first_input_needed = (action.milestones.max_1_1_scroll_bucket > 0
-            && evidence.first_inputs.progress_into_1_1.is_none())
-            || (action.milestones.reached_1_1_flag && evidence.first_inputs.flag_1_1.is_none())
-            || (action.milestones.reached_1_2 && evidence.first_inputs.level_1_2.is_none())
-            || (action.milestones.reached_onward && evidence.first_inputs.onward.is_none());
-        let champion =
-            milestone_key(action.milestones) > milestone_key(evidence.champion_milestones);
-        if first_input_needed || champion {
-            let input = input()?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                sequence,
-                &input,
-            );
-            if champion {
-                evidence.champion_milestones = action.milestones;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
-    }
-    fn source_entries<'a>(
-        &self,
-        source: &'a SmbArchiveReport,
-    ) -> &'a [crate::smb::archive::SmbArchiveEntryReport] {
-        &source.entries
-    }
-    fn resume_input(&self, source: &SmbArchiveReport) -> Result<SmbInput, Box<dyn Error>> {
-        select_frontier_resume_input(source)
-    }
-
-    fn execution_disposition(&self, target: &SmbTarget<M, P>) -> ExecutionDisposition {
-        if target.exit_kind() != ExitKind::Ok {
-            ExecutionDisposition::Failed
-        } else if target.is_dead() || target.is_victory() {
-            ExecutionDisposition::Terminal
-        } else {
-            ExecutionDisposition::Runnable
-        }
-    }
-
-    fn objective_reached(
-        &self,
-        run: &SmbCampaignRun,
-        target: &SmbTarget<M, P>,
-    ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Ok(false);
-        }
-        run.terminal.unwrap_or_default().reached(target)
-    }
-
-    fn rollout_outcome(
-        &self,
-        run: &SmbCampaignRun,
-        target: &SmbTarget<M, P>,
-    ) -> Result<Outcome, Box<dyn Error>> {
-        let objective_reached = self.objective_reached(run, target)?;
-        Ok(Outcome {
-            objective_reached,
-            disposition: if target.exit_kind() != ExitKind::Ok {
-                ExecutionDisposition::Failed
-            } else if target.is_dead() || objective_reached {
-                ExecutionDisposition::Terminal
-            } else {
-                ExecutionDisposition::Runnable
-            },
-        })
-    }
-
-    fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(archive_key(&target.wram()), &target.wram())
-    }
-
-    fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(&target.wram()))
-    }
-
-    fn complete_candidate_key(
-        &self,
-        key: SmbArchiveKey,
-        snapshot: &SmbSnapshot<P>,
-    ) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room_identity(key, snapshot.room_area())
-    }
-}
-
 pub fn run_smb_campaign<M, P>(
     game: &SmbGame<M, P>,
     config: &SmbCampaignConfig,
@@ -835,7 +76,7 @@ pub fn run_smb_campaign<M, P>(
     stream: &mut dyn Write,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>>
 where
-    M: SmbMachineKind<P>,
+    M: NesBackend<P>,
     P: SnapshotState,
 {
     run_smb_campaign_with_progress(game, config, origin, stream, None)
@@ -849,7 +90,7 @@ pub fn run_smb_campaign_with_progress<M, P>(
     progress: Option<&mut dyn Write>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>>
 where
-    M: SmbMachineKind<P>,
+    M: NesBackend<P>,
     P: SnapshotState,
 {
     run_smb_campaign_checkpointed(game, config, origin, stream, progress).map(|(report, _)| report)
@@ -863,7 +104,7 @@ pub fn run_smb_campaign_checkpointed<M, P>(
     progress: Option<&mut dyn Write>,
 ) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint<P>), Box<dyn Error>>
 where
-    M: SmbMachineKind<P>,
+    M: NesBackend<P>,
     P: SnapshotState,
 {
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
@@ -875,7 +116,7 @@ pub fn replay_smb_campaign<M, P>(
     origin_report: Option<&SmbArchiveReport>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>>
 where
-    M: SmbMachineKind<P>,
+    M: NesBackend<P>,
     P: SnapshotState,
 {
     replay_smb_campaign_checkpointed(game, stream_bytes, origin_report, None)
@@ -889,7 +130,7 @@ pub fn replay_smb_campaign_checkpointed<M, P>(
     origin_checkpoint: Option<&SmbCampaignCheckpoint<P>>,
 ) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint<P>), Box<dyn Error>>
 where
-    M: SmbMachineKind<P>,
+    M: NesBackend<P>,
     P: SnapshotState,
 {
     replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
@@ -897,7 +138,7 @@ where
 
 impl<M, P> crate::film::Endpointed for SmbGame<M, P>
 where
-    M: SmbMachineKind<P>,
+    M: NesBackend<P>,
     P: SnapshotState,
 {
     fn headless_endpoint(&self, input: &SmbInput) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -2211,6 +1452,7 @@ mod tests {
 #[cfg(test)]
 mod evidence_checkpoint_tests {
     use super::*;
+    use crate::{search::campaign::Reporting, smb::target::ButtonChord};
     #[test]
     fn evidence_round_trip_preserves_all_serialized_fields_and_rejects_truncation() {
         let mut evidence = SmbCampaignEvidence::default();

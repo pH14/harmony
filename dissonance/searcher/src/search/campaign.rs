@@ -2414,6 +2414,52 @@ pub fn postcard_result_sha256<G: Workload + ?Sized>(
     postcard_value_sha256(result)
 }
 
+#[derive(Serialize)]
+struct SemanticCandidate<'a, K> {
+    key: &'a K,
+    viable: bool,
+}
+
+#[derive(Serialize)]
+struct SemanticAction<'a, A, O, M, K> {
+    action: &'a A,
+    observations: &'a [O],
+    milestones: &'a M,
+    outcome: crate::search::rollout::Outcome,
+    candidate: Option<SemanticCandidate<'a, K>>,
+}
+
+#[derive(Serialize)]
+struct SemanticResult<'a, A, O, M, K> {
+    preparation_failure: &'a Option<Vec<O>>,
+    actions: Vec<SemanticAction<'a, A, O, M, K>>,
+}
+
+pub fn postcard_semantic_result_sha256<G: CampaignTypes + ?Sized>(
+    result: &CampaignJobResult<G>,
+) -> Result<String, Box<dyn Error>> {
+    postcard_value_sha256(&SemanticResult {
+        preparation_failure: &result.preparation_failure,
+        actions: result
+            .actions
+            .iter()
+            .map(|action| SemanticAction {
+                action: &action.action,
+                observations: &action.observations,
+                milestones: &action.milestones,
+                outcome: action.outcome,
+                candidate: action
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| SemanticCandidate {
+                        key: &candidate.key,
+                        viable: candidate.viable,
+                    }),
+            })
+            .collect(),
+    })
+}
+
 pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,

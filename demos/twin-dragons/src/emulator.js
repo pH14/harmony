@@ -2,6 +2,7 @@
 import initRust from "../rust/pkg/twin_dragons_browser.js";
 import { loadQuickNES } from "./cores/quicknes.js";
 import { loadSameBoy } from "./cores/sameboy.js";
+import { campaignGenesis } from "./campaign.js";
 import twinDragons from "./games/twin-dragons.js";
 import tobuTobuGirl from "./games/tobu-tobu-girl.js";
 import superMarioBros from "./games/super-mario-bros.js";
@@ -61,12 +62,15 @@ export async function createEngine(base, game, inputs = {}) {
       return out;
     },
     boot(level = 0) {
+      if (level === 0 && game.campaign) genesis ??= JSON.parse(campaignGenesis(this));
       this.restore(powerOn);
-      game.boot(this, level);
+      if (level === 0 && game.campaign) for (const { buttons, frames } of genesis) core.runRendered(buttons, frames, true);
+      else game.boot(this, level);
       return this.capture();
     },
   };
   const powerOn = engine.capture();
+  let genesis = null;
   return engine;
 }
 async function loadRust() {

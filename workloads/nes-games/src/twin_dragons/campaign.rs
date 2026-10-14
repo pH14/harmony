@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use machine::quicknes::QuickNesMachine;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -18,7 +17,7 @@ use crate::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignJobResult, CampaignModeReport, CampaignStreamHeader, CampaignTypes, Evaluation,
             InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-            postcard_value_sha256,
+            postcard_semantic_result_sha256,
         },
         draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
@@ -73,7 +72,7 @@ impl<M: NesBackend<Vec<u8>>> TwinDragonsGame<M> {
         Self {
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
             identity: format!(
-                "{core};state=ppu-unused2-zero-v1;source=Garydos/twin-dragons-nes@{SOURCE_COMMIT};rom=silent-effects;genesis=twin-dragons-level-1-v1;result_digest=twin-dragons-semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
+                "{core};state=ppu-unused2-zero-v1;source=Garydos/twin-dragons-nes@{SOURCE_COMMIT};rom=silent-effects;genesis=twin-dragons-level-1-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
             ),
             targets,
         }
@@ -143,49 +142,6 @@ pub type TwinDragonsCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>
 pub type TwinDragonsCampaignModeReport = CampaignModeReport<ButtonChord, TwinDragonsArchiveReport>;
 type TwinDragonsCampaignActionResult<M> = CampaignActionResult<TwinDragonsGame<M>>;
 type TwinDragonsCampaignJobResult<M> = CampaignJobResult<TwinDragonsGame<M>>;
-
-#[derive(Serialize)]
-struct TwinDragonsResultCandidate<'a> {
-    key: &'a TwinDragonsArchiveKey,
-    viable: bool,
-}
-
-#[derive(Serialize)]
-struct TwinDragonsResultAction<'a> {
-    action: ButtonChord,
-    observations: &'a [TwinDragonsObservations],
-    milestones: TwinDragonsMilestones,
-    outcome: Outcome,
-    candidate: Option<TwinDragonsResultCandidate<'a>>,
-}
-
-#[derive(Serialize)]
-struct TwinDragonsResult<'a> {
-    actions: Vec<TwinDragonsResultAction<'a>>,
-}
-
-fn twin_dragons_result_sha256<M: NesBackend<Vec<u8>>>(
-    result: &TwinDragonsCampaignJobResult<M>,
-) -> Result<String, Box<dyn Error>> {
-    let actions = result
-        .actions
-        .iter()
-        .map(|action| TwinDragonsResultAction {
-            action: action.action,
-            observations: &action.observations,
-            milestones: action.milestones,
-            outcome: action.outcome,
-            candidate: action
-                .candidate
-                .as_ref()
-                .map(|candidate| TwinDragonsResultCandidate {
-                    key: &candidate.key,
-                    viable: candidate.viable,
-                }),
-        })
-        .collect();
-    postcard_value_sha256(&TwinDragonsResult { actions })
-}
 
 fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
@@ -377,7 +333,7 @@ impl<M: NesBackend<Vec<u8>>> Reporting for TwinDragonsGame<M> {
         &self,
         result: &TwinDragonsCampaignJobResult<M>,
     ) -> Result<String, Box<dyn Error>> {
-        twin_dragons_result_sha256(result)
+        postcard_semantic_result_sha256(result)
     }
 
     fn archive_report(

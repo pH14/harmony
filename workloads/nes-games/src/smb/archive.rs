@@ -17,6 +17,7 @@ use crate::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
         SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_area_is_loading,
         smb_camera_pixels, smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        smb_player_position,
     },
     target::Target,
 };
@@ -50,21 +51,13 @@ pub struct SmbArchiveKey {
     pub progress: u16,
     pub player_y_bucket: u8,
     pub loop_on_path: bool,
-    #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
+    #[serde(default)]
     pub room_x_bucket: u8,
     #[serde(default)]
     pub time_bucket: u8,
     pub clock: u16,
-    #[serde(default, skip_serializing_if = "room_is_absent")]
+    #[serde(default)]
     pub room: SmbRoomIdentity,
-}
-
-fn room_is_absent(room: &SmbRoomIdentity) -> bool {
-    *room == SmbRoomIdentity::default()
-}
-
-fn room_x_bucket_is_absent(bucket: &u8) -> bool {
-    *bucket == 0
 }
 
 impl ArchiveKey for SmbArchiveKey {
@@ -259,12 +252,10 @@ pub fn stamp_arrival_room_identity(
     Ok(key)
 }
 
-const PLAYER_ROOM_X_PAGE_OFFSET: usize = 0x006d;
-const PLAYER_ROOM_X_LOW_OFFSET: usize = 0x0086;
 fn screen_x_bucket(wram: &[u8; 2_048]) -> u8 {
-    let player_x = u32::from(wram[PLAYER_ROOM_X_PAGE_OFFSET]) * 256
-        + u32::from(wram[PLAYER_ROOM_X_LOW_OFFSET]);
-    let screen_x = player_x.saturating_sub(smb_camera_pixels(wram));
+    let screen_x = smb_player_position(wram)
+        .x
+        .saturating_sub(smb_camera_pixels(wram));
     u8::try_from(screen_x.min(255) / 16).unwrap_or(15)
 }
 
@@ -621,6 +612,16 @@ mod tests {
         assert!(ahead.progress() > beside.progress());
         let next_level = SmbArchiveKey { level: 4, ..behind };
         assert!(next_level.progress() > ahead.progress());
+    }
+
+    #[test]
+    fn the_key_round_trips_through_postcard_with_absent_room_fields() {
+        let bare = key(300, [0, 0]);
+        let encoded = postcard::to_allocvec(&bare).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<SmbArchiveKey>(&encoded).unwrap(),
+            bare
+        );
     }
 
     #[test]

@@ -6,8 +6,7 @@ import smb, { areaRoom, buildMap, buildSprites, MAP_WIDTHS, MAP_HEIGHT } from ".
 import { createEngine } from "../src/emulator.js";
 import { isMapEvidence } from "../src/world.js";
 import { snapshotDigest } from "../src/media.js";
-import { RoundSearch, ROUND_PATHS } from "../src/rollout.js";
-import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
+import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../src/campaign.js";
 import { chromium } from "@playwright/test";
 import { TOUR_KEY } from "../src/tour.js";
 
@@ -21,8 +20,6 @@ try {
 }
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, smb, { rom, wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)) });
-globalThis.harmonyEngine = engine;
-await init({ module_or_path: await readFile(new URL("../rust/pkg/twin_dragons_browser_bg.wasm", import.meta.url)) });
 
 for (let level = 0; level < smb.levelCount; level++) {
   engine.boot(level);
@@ -46,26 +43,24 @@ const sheet = buildSprites(engine);
 assert.ok(sheet.data.some((v, i) => i % 4 === 3 && v > 0), "The sprite sheet holds Mario");
 console.log("Level maps and the sprite sheet build from the ROM.");
 
-const root = engine.boot(0);
+const root = engine.boot(0),
+  identity = coreIdentity("browser"),
+  worker = campaignWorker(engine, identity);
 for (const seed of [27]) {
-  engine.restore(root);
-  const search = new Explorer(smb.id, seed),
-    rounds = new RoundSearch(search, [engine]);
-  let found = null, tries = 0;
-  for (; tries < 30000 && !found; tries += ROUND_PATHS) {
-    const { batch } = rounds.round();
-    for (const point of batch.points)
-      if (point.retained !== null && point.observation.cleared >= 1 && !point.observation.loading) found = point;
-  }
-  assert.ok(found, `Seed ${seed} reaches World 1-2 within 30000 paths`);
+  const search = campaignSearch(engine, identity, { seed, executions: 30000 });
+  let found = null;
+  while (!found && runCampaign(search, worker, { jobs: 16 }))
+    for (const point of JSON.parse(search.take_batch()).points)
+      if (point.retained !== null && point.observation.stage === 1 && !point.observation.loading) found = point;
+  assert.ok(found, `Seed ${seed} reaches World 1-2 within 30000 executions`);
+  const executions = JSON.parse(search.take_batch()).executions;
   const state = JSON.parse(search.state(found.retained));
   engine.restore(root);
   for (const action of state.actions) engine.run(action.buttons, action.frames);
   assert.equal(snapshotDigest(engine.capture()), search.digest(found.retained), "The archived state replays exactly from its controller history");
-  const decoded = engine.observation();
-  assert.equal(decoded.level, 1);
-  for (const key of Object.keys(decoded)) assert.equal(decoded[key], state.observation[key], `Browser and Rust decoders agree on ${key}`);
-  console.log(`Seed ${seed}: World 1-2 at ${tries} paths; exact replay passed.`);
+  assert.deepEqual(engine.observation(), state.observation, "The replayed state decodes to the archived observation");
+  assert.deepEqual([state.observation.world, state.observation.stage], [0, 1]);
+  console.log(`Seed ${seed}: World 1-2 at ${executions} executions; exact replay passed.`);
   search.free();
 }
 

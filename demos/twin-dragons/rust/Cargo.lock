@@ -204,6 +204,7 @@ dependencies = [
  "machine",
  "searcher",
  "serde",
+ "serde_json",
  "sha2",
 ]
 

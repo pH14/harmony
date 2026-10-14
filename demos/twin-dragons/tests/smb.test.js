@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import test from "node:test";
 import assert from "node:assert/strict";
-import smb, { areaMap, areaRoom, decode, MAIN_AREAS, MAP_WIDTHS } from "../src/games/super-mario-bros.js";
+import smb, { areaMap, areaRoom, decode, MAP_WIDTHS } from "../src/games/super-mario-bros.js";
 import { validateTape } from "../src/heat.js";
+import { smb_main_area } from "../rust/pkg/twin_dragons_browser.js";
+import { initRustNode } from "../tools/rust-node.mjs";
+
+await initRustNode();
+const MAIN_AREAS = Array.from({ length: smb.levelCount }, (_, level) => smb_main_area(level));
 
 function memory({ world = 0, level = 0, area = MAIN_AREAS[world * 4 + level], mode = 1, task = 3, state = 8, flag = 0, page = 1, x = 40, y = 176, camera = 0 } = {}) {
   const ram = new Uint8Array(0x800);
@@ -16,17 +21,15 @@ function memory({ world = 0, level = 0, area = MAIN_AREAS[world * 4 + level], mo
 
 test("Super Mario Bros. decode names the level map and the progress through it", () => {
   const start = decode(memory());
-  assert.deepEqual([start.level, start.loading, start.health, start.cleared, start.clock], [0, false, 1, 0, 400]);
+  assert.deepEqual([start.level, start.loading, start.health, start.cleared, start.x], [0, false, 1, 0, 40]);
   assert.equal(start.y, 185);
   const later = decode(memory({ world: 3, level: 2, x: 1200, camera: 1100 }));
-  assert.equal(later.level, 14);
-  assert.equal(later.climb, (1100 >> 4) + 6);
+  assert.deepEqual([later.level, later.world, later.stage, later.x], [14, 3, 2, 1200]);
   const water = decode(memory({ world: 7, level: 3, area: 2 }));
   assert.deepEqual([water.level, water.loading, water.cleared], [areaRoom(31, 2), false, 31]);
-  assert.deepEqual(smb.motion(memory({ world: 7, level: 3, area: 2 })).slice(0, 1), [areaRoom(31, 2)]);
   assert.equal(decode(memory({ task: 0 })).loading, true);
-  assert.equal(MAIN_AREAS.length, smb.levelCount);
   assert.equal(MAP_WIDTHS.length, smb.levelCount);
+  assert.throws(() => smb_main_area(smb.levelCount));
   assert.throws(() => decode(new Uint8Array(0x400)));
 });
 
@@ -38,25 +41,14 @@ test("Super Mario Bros. separate areas get their own map rooms", () => {
   assert.equal(areaMap(areaRoom(32, 0)), null);
 });
 
-test("Super Mario Bros. rollouts end at death and at each level's end", () => {
-  assert.equal(smb.ended(memory()), false);
-  for (const dead of [memory({ state: 0x0b }), memory({ page: 2 })]) {
-    assert.equal(decode(dead).health, 0);
-    assert.equal(smb.ended(dead), true);
-    assert.equal(smb.levelComplete(dead), false);
-  }
+test("Super Mario Bros. decode reports deaths and cleared levels", () => {
+  for (const dead of [memory({ state: 0x0b }), memory({ page: 2 })]) assert.equal(decode(dead).health, 0);
   const flag = memory({ flag: 1 });
-  assert.equal(smb.levelComplete(flag), true);
-  assert.equal(decode(flag).cleared, 1);
+  assert.deepEqual([decode(flag).goal, decode(flag).cleared], [true, 1]);
   const advanced = memory({ level: 1, flag: 5, area: MAIN_AREAS[0] });
   assert.equal(decode(advanced).level, 0);
-  const castle = memory({ world: 0, level: 3, mode: 2 });
-  assert.equal(smb.levelComplete(castle), true);
-  assert.equal(decode(castle).cleared, 4);
-  const won = memory({ world: 7, level: 3, mode: 2 });
-  assert.equal(smb.levelComplete(won), false);
-  assert.equal(smb.ended(won), true);
-  assert.equal(decode(won).cleared, 32);
+  assert.equal(decode(memory({ world: 0, level: 3, mode: 2 })).cleared, 4);
+  assert.equal(decode(memory({ world: 7, level: 3, mode: 2 })).cleared, 32);
 });
 
 test("Super Mario Bros. histories reject menu buttons", () => {

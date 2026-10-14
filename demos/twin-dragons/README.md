@@ -75,22 +75,31 @@ rollout worker holds its own QuickNES instance. The page starts every worker and
 hands the coordinator a `MessageChannel` port to each rollout worker, because
 some browsers fail to load a worker started from inside another worker.
 
-Twin Dragons runs the same search as the native `twin-dragons-campaign`
-binary. `rust/src/twin_dragons.rs` builds the `TwinDragonsGame` workload from
-`nes-games` over `JsMachine`, a `machine::Machine` and `NesBackend` that drives
-the browser QuickNES core through `globalThis.harmonyCores`. The coordinator
-worker owns a Dissonance `CampaignCoordinator`. It sends each planned
-`JobSpec` to a rollout worker as postcard bytes; the rollout worker runs it with
-`run_job` and returns the `JobOutcome` bytes. The coordinator admits outcomes in
-reservation order, whatever order they arrive in, so the seed alone decides the
-search. The browser always uses an admission window of 16 and records workers as
-16, independent of the device's worker count, so its decision stream equals the
-native campaign run with `--workers 16`. The archive key, draw, milestones and
-objective are the workload's; `workloads/nes/src/twin_dragons/README.md`
-describes them. Each rollout worker samples motion inside `JsMachine` and
-reports whether the rollout cleared a level. The coordinator releases a trail
-with the batch only once its job is admitted. Level-load frames are not
-archived, so a clearing rollout often ends before the next level loads.
+Twin Dragons and Super Mario Bros. run the same search as their native
+workloads. `rust/src/campaign.rs` holds `JsMachine`, a `machine::Machine`,
+`NesBackend` and `NesMemory` that drives the browser QuickNES core through
+`globalThis.harmonyCores`, and a coordinator and rollout worker that are generic
+over `BrowserGame`. Each game implements `BrowserGame` in its own file
+(`rust/src/twin_dragons.rs`, `rust/src/smb.rs`): it builds the `nes-games`
+workload (`TwinDragonsGame`, `SmbGame`) over `JsMachine` from a target factory,
+names the run and draw mixture, and maps the workload's decoded state to the
+page's observation and motion samples. `CampaignSearch` and `CampaignWorker`
+take the game id. The coordinator worker owns a Dissonance
+`CampaignCoordinator`. It sends each planned `JobSpec` to a rollout worker as
+postcard bytes; the rollout worker runs it with `run_job` and returns the
+`JobOutcome` bytes. The coordinator admits outcomes in reservation order,
+whatever order they arrive in, so the seed alone decides the search. The
+browser always uses an admission window of 16 and records workers as 16,
+independent of the device's worker count, so its decision stream equals the
+native campaign run with 16 workers. The archive key, draw, milestones,
+admission rules and objective are the workload's; the game READMEs under
+`workloads/nes/src` describe them. Twin Dragons draws from the controller
+alphabet like `twin-dragons-campaign`; Super Mario Bros. uses the
+`energy_splice:6` mixture of `smb-campaign` and the search benchmarks. Each
+rollout worker samples motion inside `JsMachine` and reports whether the
+rollout cleared a level. The coordinator releases a trail with the batch only
+once its job is admitted. Level-load frames are not archived, so a clearing
+rollout often ends before the next level loads.
 
 The other games still use the older `Explorer` in `rust/src/lib.rs`. Rollouts
 have 1 to 24 controller actions. Each action holds its buttons for 2 to 12
@@ -142,15 +151,20 @@ The map samples swarm sprites evenly when drawing falls behind. While display
 frames run late and drawing the maps takes more than 6 ms, the sprite budget
 shrinks by 10% per frame, down to 256; it grows back once frames are on time.
 
-Each level's root comes from a fixed boot route. `boot(level)` restores a
-power-on snapshot and presses nothing for 60 frames, Start for 2 frames, and
-nothing for 240 frames, the native genesis tape, so the Level 1 root equals
-the native campaign's genesis. For Level 2 or 3 it writes the level to `$35` and sets `$04E3` during Level 1
-gameplay, then runs until the requested level is settled, the goal flag is
-clear and the player is on the ground. Every root has full health. The level
-selector starts a fresh search at the chosen root. Replay and forks include the
-starting level, and the worker rejects tapes from a different root. A Level 2
-or 3 search starts from a `CampaignOrigin::SnapshotRoot` built from that root.
+For a game with `campaign: true`, the first level's root is the workload's
+genesis. `campaign_genesis` builds the workload's target over `JsMachine`,
+records the controller actions that lead from power-on to its genesis, and
+`boot(0)` replays those actions on the page's core, so the root equals the
+native campaign's genesis and the screen shows its last frame. Other levels
+come from the game module's `boot(level)`, which writes RAM on a fixed route.
+For Twin Dragons Level 2 or 3, it writes the level to `$35` and sets `$04E3`
+during Level 1 gameplay, then runs until the requested level is settled, the
+goal flag is clear and the player is on the ground. Every root has full
+health. The level selector starts a fresh search at the chosen root. Replay and
+forks include the starting level, and the worker rejects tapes from a different
+root. A later level, and every fork, starts from a
+`CampaignOrigin::SnapshotRoot` built from that root. The coordinator first
+checks that the workload's admission probe accepts the root.
 
 ## Maps and sprites
 
@@ -282,13 +296,14 @@ in the meantime. The automatic replay pick plays while the search runs.
 
 Each game is a module in `src/games/` that names its core, ROM, RAM size,
 level count, screen and sprite sizes, controls, credits, rollout pace and
-history limits, and supplies `decode` and `boot`. A game on the older
-`Explorer` path also supplies `ended` and `motion`, and one with a scripted
-level change supplies `levelComplete` and `transition`. `src/emulator.js` lists
-the games and cores. The Rust `Game` enum in `rust/src/lib.rs` holds the
-matching decoder and archive key for those games, and `tests/*.mjs` check that
-the two decoders agree. A game with `campaign: true`, Twin Dragons, decodes in
-Rust and searches with the `nes-games` workload through `src/campaign.js`.
+history limits, and supplies `decode` and `boot`. `src/emulator.js` lists the
+games and cores. A game with `campaign: true` (Twin Dragons, Super Mario Bros.)
+decodes in Rust through its `*_observation` export and searches with its
+`nes-games` workload through `src/campaign.js`. A game on the older `Explorer`
+path also supplies `ended` and `motion`, and one with a scripted level change
+supplies `levelComplete` and `transition`. The Rust `Game` enum in
+`rust/src/lib.rs` holds the matching decoder and archive key for those games,
+and `tests/*.mjs` check that the two decoders agree.
 
 ### Tobu Tobu Girl Deluxe
 
@@ -351,35 +366,25 @@ for a listed game that has no stored ROM. The file must match the game's size
 and SHA-256. A listed game skips the ROM page. The public site has no manifest,
 so the request fails and every game asks for its ROM.
 
-The adapter uses the RAM rules from `workloads/nes/src/smb`:
-
-| Address | Meaning |
-| --- | --- |
-| `$075F`, `$075C` | world and level; the level is one ahead once `$0746` is 5 |
-| `$074E`, `$074F` | area type and area offset |
-| `$0770`, `$0772` | mode (1 play, 2 castle cleared or game won) and play task (3 playing) |
-| `$000E` | player state; `$0B` is dead |
-| `$00B5` | vertical page; 2 or more has fallen into a pit |
-| `$006D`, `$0086`, `$00CE` | player x page, x and y |
-| `$071A`, `$071C` | camera page and x |
-| `$0746` | flag-pole sequence |
-| `$07F8`–`$07FA` | timer digits |
-| `$06D9`, `$06DA` | castle loop checks passed correctly and in total |
+The search is the `SmbGame` workload from `nes-games` with the
+`nes_pressable_36` vocabulary and the game-victory objective, as `nes-eval`
+runs it. `workloads/nes/src/smb/README.md` describes its RAM map, archive key
+and admission probe. A rollout ends at death or at the end of the game; flag
+poles and castles do not stop it. `rust/src/smb.rs` builds the page's
+observation from the workload's decoders in
+`workloads/nes-games/src/smb/target.rs`: world and level, player position,
+death, the flag sequence, play mode and the area bytes `$074E` and `$074F`.
 
 The 32 levels are the map ids, world × 4 + level. A state in another area,
 such as a bonus room or the World 8-4 underwater section, gets the map id 32 +
-level × 128 + area. The page builds that area's map the first time the search
-enters it and shows it as another room of the level. The builder enters an area
-by writing `$0750` (area pointer) and `$0751` (entrance page) and setting
-`$0772` to 0. Pipe scenes and other non-play tasks count as loading. `boot(level)` writes the world, level and area number on the title
-screen and presses Start. The archive place is (level, loop on path, area ×
-512 + camera / 16 + player screen x / 16, y / 16 and timer hundreds), progress
-is (levels cleared, camera / 1,024), and the preference is more time left.
-A separate area restarts the camera measure, so the World 8-4 underwater
-section ranks below the castle tiers. At 8 times per tier the search stalls
-there. A
-rollout ends at death, the flag pole or a castle's end. `transition` presses
-nothing until the next level is playable.
+level × 128 + area. The table of each level's main area lives in
+`rust/src/smb.rs`, and the page reads it through `smb_main_area`. The page
+builds that area's map the first time the search enters it and shows it as
+another room of the level. The builder enters an area by writing `$0750` (area
+pointer) and `$0751` (entrance page) and setting `$0772` to 0. Pipe scenes and
+other non-play tasks count as loading. For a later level, `boot(level)` writes
+the world, level and area number on the title screen, presses Start and waits
+until Mario stands on the level.
 
 The page builds each map in a worker from the ROM. The builder holds Mario at
 a fixed height, hides sprites, clears enemies and loop checks, holds Right
@@ -389,7 +394,7 @@ the flag sequence. Built maps are cached in IndexedDB by ROM hash. Maps build in
 one map worker per four cores, at most three, and the shown level's map
 builds first. Map widths
 are fixed per level, because the page lays out maps before they are built.
-Seed 27 reaches World 1-2 from World 1-1 after about 2,300 rollouts.
+Seed 27 reaches World 1-2 from World 1-1 after about 14,600 executions.
 `tests/smb.mjs` reads the ROM from `SMB_ROM` or
 `~/workspace/roms/Super Mario Bros. (World).nes` and skips when it is absent.
 
@@ -523,11 +528,18 @@ came from real searches and contain only controller inputs.
 workers and once with one, and requires the first 120 archived histories and
 digests to match.
 
-`node tests/campaign-oracle.mjs` runs the native `twin-dragons-campaign` with 16
-workers and the browser coordinator in Node on the same seed and execution
+`node tests/campaign-oracle.mjs` runs each campaign game natively with 16
+workers and in the browser coordinator in Node on the same seed and execution
 budget, and requires every job and skip line of the two decision streams to be
-equal. `ORACLE_SEED` (default 1) and `ORACLE_EXECUTIONS` (default 600) set the
-run. It needs the native core like `tests/core-oracle.mjs`.
+equal. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Super
+Mario Bros. runs `nes-eval` with `energy_splice:6`, a window of 16 and a
+1,024 MiB memory budget for 400 executions. `ORACLE_GAMES` (comma-separated
+game ids), `ORACLE_SEED` (default 1) and `ORACLE_EXECUTIONS` set the run. A
+game without a ROM at the path `tests/core-oracle.mjs` uses is skipped. It
+needs the native core like `tests/core-oracle.mjs`. The workloads digest each
+job result over its actions, observations, milestones, outcomes and candidate
+keys, without the emulator state, so the two streams compare even though the
+browser keeps raw QuickNES states.
 
 `tests/media.test.js` checks the snapshot digest against the Rust
 reference vectors.

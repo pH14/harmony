@@ -1,35 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { smb_main_area, smb_observation } from "../../rust/pkg/twin_dragons_browser.js";
+
 const LEVEL_COUNT = 32,
   WORLD = 0x75f,
   LEVEL = 0x75c,
   AREA_NUMBER = 0x760,
-  AREA_TYPE = 0x74e,
-  AREA_OFFSET = 0x74f,
   MODE = 0x770,
   TASK = 0x772,
   ENGINE = 0x0e,
   FLAG = 0x746,
   PLAY = 1,
-  VICTORY = 2,
-  PLAYING_TASK = 3,
   NORMAL = 8,
-  KILLED = 0x0b,
-  ADVANCED_FLAG = 5,
   START = 8,
   FLAGPOLE = 0x31,
   INTRO_WORLDS = [0, 1, 3, 6];
 
-export const MAIN_AREAS = [
-  37, 64, 38, 96, 40, 1, 39, 98, 36, 53, 32, 99, 34, 65, 44, 97,
-  42, 49, 38, 98, 46, 35, 45, 96, 51, 1, 39, 100, 48, 50, 33, 101,
-];
 export const MAP_WIDTHS = [
   3378, 3072, 2622, 2278, 3168, 3078, 3793, 2278, 3410, 3555, 2611, 2278, 3812, 3072, 2548, 2795,
   3394, 3409, 2622, 2278, 3221, 3666, 2862, 2278, 3075, 3078, 3793, 3302, 6225, 3667, 3668, 4839,
 ];
 export const MAP_HEIGHT = 224;
 const HUD_ROWS = 24,
-  SPRITE_TOP = 9,
   AREA_POINTER = 0x750,
   ENTRANCE_PAGE = 0x751,
   AREA_SLOTS = 128,
@@ -43,83 +34,30 @@ function roomLevel(id) {
   return id < LEVEL_COUNT ? id : Math.floor((id - LEVEL_COUNT) / AREA_SLOTS);
 }
 function roomArea(id) {
-  return id < LEVEL_COUNT ? MAIN_AREAS[id] : (id - LEVEL_COUNT) % AREA_SLOTS;
+  return id < LEVEL_COUNT ? smb_main_area(id) : (id - LEVEL_COUNT) % AREA_SLOTS;
 }
 export function areaMap(id) {
   if (!Number.isInteger(id) || id < LEVEL_COUNT || id >= areaRoom(LEVEL_COUNT, 0)) return null;
   const level = roomLevel(id), area = roomArea(id), name = AREA_NAMES[area >> 5];
-  if (area === MAIN_AREAS[level]) return null;
+  if (area === smb_main_area(level)) return null;
   return { id, level, name, label: `${levelName(level)} ${name}`, height: MAP_HEIGHT };
 }
 
 export function levelName(id) {
   return `World ${(id >> 2) + 1}-${(id & 3) + 1}`;
 }
-function currentLevel(ram) {
-  const level = ram[LEVEL];
-  return ram[FLAG] === ADVANCED_FLAG ? Math.max(0, level - 1) : level;
+export function decode(ram) {
+  return JSON.parse(smb_observation(ram));
 }
-function levelId(ram) {
-  return ram[WORLD] * 4 + currentLevel(ram);
-}
-function room(ram) {
-  return ram[AREA_TYPE] * 32 + (ram[AREA_OFFSET] & 31);
-}
-function dead(ram) {
-  return ram[ENGINE] === KILLED || ram[0xb5] >= 2;
-}
-function victory(ram) {
-  return ram[MODE] === VICTORY && ram[WORLD] === 7;
-}
-function castleCleared(ram) {
-  return ram[MODE] === VICTORY && ram[WORLD] !== 7;
-}
-function onMap(ram) {
-  return ram[MODE] === PLAY && ram[TASK] === PLAYING_TASK && room(ram) === MAIN_AREAS[levelId(ram)];
-}
-function inArea(ram) {
-  return ram[MODE] === PLAY && ram[TASK] === PLAYING_TASK && room(ram) !== MAIN_AREAS[levelId(ram)];
-}
-function mapRoom(ram) {
-  return inArea(ram) ? areaRoom(levelId(ram), room(ram)) : levelId(ram);
+function levelId(o) {
+  return o.world * 4 + o.stage;
 }
 function playable(ram, id) {
-  return onMap(ram) && ram[ENGINE] === NORMAL && ram[FLAG] === 0 && levelId(ram) === id;
+  const o = decode(ram);
+  return !o.loading && o.level === id && o.health && !o.goal && ram[ENGINE] === NORMAL;
 }
 function camera(ram) {
   return ram[0x71a] * 256 + ram[0x71c];
-}
-function playerX(ram) {
-  return ram[0x6d] * 256 + ram[0x86];
-}
-function playerY(ram) {
-  if (ram[0xb5] !== 1) return ram[0xb5] === 0 ? 0 : MAP_HEIGHT - 1;
-  return Math.min(MAP_HEIGHT - 1, ram[0xce] + SPRITE_TOP);
-}
-
-export function decode(ram) {
-  if (ram.length !== 2048) throw new Error("Invalid Super Mario Bros. memory");
-  const id = levelId(ram),
-    x = playerX(ram),
-    loading = !(ram[MODE] === PLAY && ram[TASK] === PLAYING_TASK),
-    screenX = loading ? 0 : Math.min(15, Math.max(0, x - camera(ram)) >> 4);
-  return {
-    x,
-    y: playerY(ram),
-    health: dead(ram) ? 0 : 1,
-    level: mapRoom(ram),
-    gamestate: ram[MODE],
-    goal: ram[FLAG] !== 0,
-    on_ground: ram[0x1d] === 0,
-    facing: ram[0x33],
-    loading,
-    cleared: victory(ram) ? LEVEL_COUNT : id + (ram[FLAG] !== 0 || castleCleared(ram) ? 1 : 0),
-    scene: room(ram),
-    climb: (loading ? 0 : camera(ram) >> 4) + screenX,
-    time: ram[0x7f8],
-    fuel: ram[0x6d9] === ram[0x6da] ? 1 : 0,
-    clock: ram[0x7f8] * 100 + ram[0x7f9] * 10 + ram[0x7fa],
-  };
 }
 
 function idleUntil(engine, done, limit, render = false) {
@@ -148,6 +86,12 @@ function boot(engine, id) {
   idleUntil(engine, (r) => playable(r, id), 900, true);
 }
 
+// The search starts when the level begins to load; map and sprite capture need Mario standing on it.
+function bootPlayable(engine, level) {
+  engine.boot(level);
+  idleUntil(engine, (r) => playable(r, level), 900, true);
+}
+
 function hideSprites(ram) {
   ram[0x779] &= ~0x10;
   for (let i = 0x204; i < 0x300; i += 4) ram[i] = 0xf8;
@@ -155,23 +99,23 @@ function hideSprites(ram) {
 
 const LANES = Array.from({ length: 19 }, (_, i) => 32 + ((i * 7) % 19) * 8);
 
-function enterArea(engine, area) {
+function enterArea(engine, id) {
   const ram = engine.ramView();
-  ram[AREA_POINTER] = area;
+  ram[AREA_POINTER] = roomArea(id);
   ram[ENTRANCE_PAGE] = 0;
   ram[TASK] = 0;
-  idleUntil(engine, (r) => r[TASK] === PLAYING_TASK && r[ENGINE] === NORMAL && room(r) === area, 900, true);
+  idleUntil(engine, (r) => r[ENGINE] === NORMAL && !decode(r).loading && decode(r).level === id, 900, true);
 }
 
 export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
-  const level = roomLevel(id), area = roomArea(id);
-  engine.boot(level);
-  if (id >= LEVEL_COUNT) enterArea(engine, area);
+  const level = roomLevel(id);
+  bootPlayable(engine, level);
+  if (id >= LEVEL_COUNT) enterArea(engine, id);
   const ram = engine.ramView();
   let data = new Uint8ClampedArray(width * MAP_HEIGHT * 4);
   const lanes = [ram[0xce], ...LANES];
   let farthest = -1,
-    ahead = playerX(ram),
+    ahead = decode(ram).x,
     still = 0,
     lane = 0;
   for (let frame = 0; frame < 8000 && still < 400; frame++) {
@@ -187,7 +131,8 @@ export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
     }
     hideSprites(ram);
     engine.run(flying ? 0x82 : 0, 1, true);
-    if (ram[MODE] !== PLAY || levelId(ram) !== level || (ram[TASK] === PLAYING_TASK && room(ram) !== area)) break;
+    const o = decode(ram);
+    if (ram[MODE] !== PLAY || levelId(o) !== level || (!o.loading && o.level !== id)) break;
     const left = camera(ram);
     if (id >= LEVEL_COUNT && farthest >= 0 && left > farthest + 64) break;
     if (frame > 8 && left > farthest) {
@@ -206,8 +151,8 @@ export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
       }
       farthest = left;
     }
-    if (playerX(ram) > ahead) {
-      ahead = playerX(ram);
+    if (o.x > ahead) {
+      ahead = o.x;
       still = 0;
     } else if (flying && ++still % 12 === 0) lane = (lane + 1) % lanes.length;
   }
@@ -222,13 +167,13 @@ export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
 }
 
 export function buildSprites(engine) {
-  engine.boot(0);
+  bootPlayable(engine, 0);
   const ram = engine.ramView(),
     start = engine.capture();
   engine.run(0, 2, true);
   const shown = engine.pixels().data,
-    sx = playerX(ram) - camera(ram),
-    sy = playerY(ram);
+    sx = decode(ram).x - camera(ram),
+    sy = decode(ram).y;
   engine.restore(start);
   for (let frame = 0; frame < 2; frame++) {
     hideSprites(ram);
@@ -276,15 +221,6 @@ export default {
   buildSprites,
   areaMap,
   decode,
-  ended: (ram) => dead(ram) || ram[FLAG] !== 0 || ram[MODE] !== PLAY,
-  levelComplete: (ram) => !dead(ram) && (ram[FLAG] !== 0 || castleCleared(ram)),
-  transition(engine) {
-    const id = levelId(engine.ramView()) + 1;
-    return idleUntil(engine, (ram) => playable(ram, id), 3000);
-  },
-  motion(ram) {
-    const valid = ram[MODE] === PLAY && ram[TASK] === PLAYING_TASK && !dead(ram);
-    return [valid ? mapRoom(ram) : 65535, playerX(ram), playerY(ram), ram[0x33] === 2 ? 1 : 0];
-  },
+  campaign: true,
   boot,
 };
