@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::progress::{BossDefeats, TourianEvents};
 use crate::{
-    nes_backend::{NesBackend, unpack_quicknes_state},
+    nes_backend::{NesBackend, NesMemory, unpack_quicknes_state},
     target::{ExitKind, Target},
 };
 
@@ -445,7 +445,7 @@ pub fn power_on_walk() -> Vec<ButtonChord> {
     chords
 }
 
-fn run_chords(machine: &mut QuickNesMachine, chords: &[ButtonChord]) -> Result<(), MachineError> {
+fn run_chords<M: Machine>(machine: &mut M, chords: &[ButtonChord]) -> Result<(), MachineError> {
     let here = machine.snapshot()?;
     machine.branch(here, &nes::reproducer(chords))?;
     machine.run(StopConditions::default(), None)?;
@@ -453,8 +453,8 @@ fn run_chords(machine: &mut QuickNesMachine, chords: &[ButtonChord]) -> Result<(
 }
 
 #[derive(Debug)]
-pub struct MetroidTarget {
-    machine: QuickNesMachine,
+pub struct MetroidTarget<M: NesBackend<Vec<u8>> + NesMemory = QuickNesMachine> {
+    machine: M,
     genesis: SnapId,
     genesis_observation: MetroidObservations,
     genesis_wram: [u8; WRAM_SIZE],
@@ -467,7 +467,7 @@ pub struct MetroidTarget {
     terminal_policy: MetroidTerminalPolicy,
 }
 
-impl MetroidTarget {
+impl MetroidTarget<QuickNesMachine> {
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,
@@ -486,11 +486,6 @@ impl MetroidTarget {
         machine.set_video_capture(true);
         machine.set_audio_capture(true);
         Self::from_machine(machine, &power_on_walk(), GenesisDepth::NewGame)
-    }
-
-    #[must_use]
-    pub fn current_wram(&self) -> &[u8] {
-        &self.current_wram
     }
 
     pub fn start_capturing(&mut self) {
@@ -530,8 +525,94 @@ impl MetroidTarget {
         )
     }
 
+    pub fn diagnostic_set_resources(
+        &mut self,
+        health: u16,
+        missiles: u8,
+    ) -> Result<(), Box<dyn Error>> {
+        let state = self.mechanical_state();
+        if self.failed
+            || !state.in_play()
+            || self.is_dead()
+            || self.is_victory()
+            || state.energy_tanks > MAX_ENERGY_TANKS
+            || state.health == 0
+            || u32::from(state.health) > health_cap(state.energy_tanks)
+            || state.missiles > state.missile_capacity
+            || health == 0
+            || u32::from(health) > health_cap(state.energy_tanks)
+            || missiles > state.missile_capacity
+        {
+            return Err("resource intervention exceeds the live state's earned capacities".into());
+        }
+        let wram = self.machine.read_wram()?;
+        let cartridge = self.cartridge()?;
+        if !consistent_with(&wram, &cartridge, state)? || wram != self.current_wram {
+            return Err("resource intervention requires a consistent paused boundary".into());
+        }
+        let before = self
+            .snapshot()
+            .ok_or("resource intervention snapshot failed")?;
+        let clock = self.frames_clocked();
+        let mut expected_wram = wram;
+        expected_wram[HEALTH_LOW] = to_bcd(health % 100);
+        expected_wram[HEALTH_HIGH] = to_bcd(health / 100);
+        let mut expected_cartridge = cartridge.clone();
+        expected_cartridge[MISSILES] = missiles;
+        let changes = [
+            (wram[HEALTH_LOW], expected_wram[HEALTH_LOW]),
+            (wram[HEALTH_HIGH], expected_wram[HEALTH_HIGH]),
+            (cartridge[MISSILES], missiles),
+        ];
+        let applied = (|| -> Result<(), Box<dyn Error>> {
+            self.machine
+                .poke_wram(HEALTH_LOW, expected_wram[HEALTH_LOW]);
+            self.machine
+                .poke_wram(HEALTH_HIGH, expected_wram[HEALTH_HIGH]);
+            self.machine.write_save_ram(MISSILES, &[missiles])?;
+            if self.machine.read_wram()? != expected_wram
+                || self.cartridge()? != expected_cartridge
+                || self.frames_clocked() != clock
+            {
+                return Err("resource intervention changed another RAM byte or the clock".into());
+            }
+            let mut expected_state = state;
+            expected_state.health = health;
+            expected_state.missiles = missiles;
+            if !consistent_with(&expected_wram, &expected_cartridge, expected_state)? {
+                return Err("resource intervention changed another mechanical field".into());
+            }
+            let after = self.snapshot().ok_or("intervened snapshot failed")?;
+            let before_state = unpack_quicknes_state(&self.machine, &before.emulator_state)?;
+            let after_state = unpack_quicknes_state(&self.machine, &after.emulator_state)?;
+            if !only_resource_bytes_changed(&before_state, &after_state, &changes) {
+                return Err("resource intervention changed unexpected serialized bytes".into());
+            }
+            self.current_wram = expected_wram;
+            self.observation.decoded = expected_state;
+            self.action_observations = vec![self.observation.clone()];
+            Ok(())
+        })();
+        if let Err(error) = applied {
+            self.machine.poke_wram(HEALTH_LOW, wram[HEALTH_LOW]);
+            self.machine.poke_wram(HEALTH_HIGH, wram[HEALTH_HIGH]);
+            self.machine
+                .write_save_ram(MISSILES, &[cartridge[MISSILES]])?;
+            self.restore(&before)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
+    #[must_use]
+    pub fn current_wram(&self) -> &[u8] {
+        &self.current_wram
+    }
+
     fn from_machine(
-        mut machine: QuickNesMachine,
+        mut machine: M,
         prefix: &[ButtonChord],
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
@@ -675,85 +756,6 @@ impl MetroidTarget {
             .collect()
     }
 
-    pub fn diagnostic_set_resources(
-        &mut self,
-        health: u16,
-        missiles: u8,
-    ) -> Result<(), Box<dyn Error>> {
-        let state = self.mechanical_state();
-        if self.failed
-            || !state.in_play()
-            || self.is_dead()
-            || self.is_victory()
-            || state.energy_tanks > MAX_ENERGY_TANKS
-            || state.health == 0
-            || u32::from(state.health) > health_cap(state.energy_tanks)
-            || state.missiles > state.missile_capacity
-            || health == 0
-            || u32::from(health) > health_cap(state.energy_tanks)
-            || missiles > state.missile_capacity
-        {
-            return Err("resource intervention exceeds the live state's earned capacities".into());
-        }
-        let wram = self.machine.read_wram()?;
-        let cartridge = self.cartridge()?;
-        if !consistent_with(&wram, &cartridge, state)? || wram != self.current_wram {
-            return Err("resource intervention requires a consistent paused boundary".into());
-        }
-        let before = self
-            .snapshot()
-            .ok_or("resource intervention snapshot failed")?;
-        let clock = self.frames_clocked();
-        let mut expected_wram = wram;
-        expected_wram[HEALTH_LOW] = to_bcd(health % 100);
-        expected_wram[HEALTH_HIGH] = to_bcd(health / 100);
-        let mut expected_cartridge = cartridge.clone();
-        expected_cartridge[MISSILES] = missiles;
-        let changes = [
-            (wram[HEALTH_LOW], expected_wram[HEALTH_LOW]),
-            (wram[HEALTH_HIGH], expected_wram[HEALTH_HIGH]),
-            (cartridge[MISSILES], missiles),
-        ];
-        let applied = (|| -> Result<(), Box<dyn Error>> {
-            self.machine
-                .poke_wram(HEALTH_LOW, expected_wram[HEALTH_LOW]);
-            self.machine
-                .poke_wram(HEALTH_HIGH, expected_wram[HEALTH_HIGH]);
-            self.machine.write_save_ram(MISSILES, &[missiles])?;
-            if self.machine.read_wram()? != expected_wram
-                || self.cartridge()? != expected_cartridge
-                || self.frames_clocked() != clock
-            {
-                return Err("resource intervention changed another RAM byte or the clock".into());
-            }
-            let mut expected_state = state;
-            expected_state.health = health;
-            expected_state.missiles = missiles;
-            if !consistent_with(&expected_wram, &expected_cartridge, expected_state)? {
-                return Err("resource intervention changed another mechanical field".into());
-            }
-            let after = self.snapshot().ok_or("intervened snapshot failed")?;
-            let before_state = unpack_quicknes_state(&self.machine, &before.emulator_state)?;
-            let after_state = unpack_quicknes_state(&self.machine, &after.emulator_state)?;
-            if !only_resource_bytes_changed(&before_state, &after_state, &changes) {
-                return Err("resource intervention changed unexpected serialized bytes".into());
-            }
-            self.current_wram = expected_wram;
-            self.observation.decoded = expected_state;
-            self.action_observations = vec![self.observation.clone()];
-            Ok(())
-        })();
-        if let Err(error) = applied {
-            self.machine.poke_wram(HEALTH_LOW, wram[HEALTH_LOW]);
-            self.machine.poke_wram(HEALTH_HIGH, wram[HEALTH_HIGH]);
-            self.machine
-                .write_save_ram(MISSILES, &[cartridge[MISSILES]])?;
-            self.restore(&before)?;
-            return Err(error);
-        }
-        Ok(())
-    }
-
     #[must_use]
     pub fn last_action_observations(&self) -> &[MetroidObservations] {
         &self.action_observations
@@ -761,25 +763,6 @@ impl MetroidTarget {
 
     fn cartridge(&self) -> Result<Vec<u8>, MachineError> {
         self.machine.read_save_ram()
-    }
-
-    fn make_observation(
-        frame_count: u64,
-        state: MetroidMechanicalState,
-        boss_health_seen: u16,
-        wram: &[u8; WRAM_SIZE],
-        boss_defeats: BossDefeats,
-        tourian_events: TourianEvents,
-    ) -> MetroidObservations {
-        MetroidObservations {
-            frame_count,
-            decoded: state,
-            boss_health_seen,
-            boss_defeats,
-            mother_brain_status: wram[0x98],
-            tourian_events,
-            dead: state.is_dead(),
-        }
     }
 
     fn run_action(&mut self, action: &ButtonChord) -> Option<(Vec<[u8; WRAM_SIZE]>, Vec<u8>)> {
@@ -799,7 +782,7 @@ impl MetroidTarget {
     }
 }
 
-impl Target for MetroidTarget {
+impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
     type Action = ButtonChord;
     type Observations = MetroidObservations;
     type Snapshot = MetroidSnapshot;
@@ -899,6 +882,25 @@ impl Target for MetroidTarget {
     }
 }
 
+fn make_observation(
+    frame_count: u64,
+    state: MetroidMechanicalState,
+    boss_health_seen: u16,
+    wram: &[u8; WRAM_SIZE],
+    boss_defeats: BossDefeats,
+    tourian_events: TourianEvents,
+) -> MetroidObservations {
+    MetroidObservations {
+        frame_count,
+        decoded: state,
+        boss_health_seen,
+        boss_defeats,
+        mother_brain_status: wram[0x98],
+        tourian_events,
+        dead: state.is_dead(),
+    }
+}
+
 fn decode_action_observations(
     frames: &[[u8; WRAM_SIZE]],
     cartridge_frames: &[u8],
@@ -937,7 +939,7 @@ fn decode_action_observations(
         let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
             || policy.is_dead(state) != policy.is_dead(prior_state);
         if boundary || offset + 1 == frames.len() {
-            let mut observation = MetroidTarget::make_observation(
+            let mut observation = make_observation(
                 frame_count,
                 state,
                 boss_health_seen,
@@ -1272,7 +1274,7 @@ mod observation_tests {
         let mut start = [0; WRAM_SIZE];
         start[GAME_MODE] = GAME_MODE_PLAYING;
         start[HEALTH_LOW] = 0x37;
-        let initial = MetroidTarget::make_observation(
+        let initial = make_observation(
             0,
             decode_state(&start, &cartridge).unwrap(),
             0,
@@ -1332,7 +1334,7 @@ mod observation_tests {
             wram[GAME_MODE] = GAME_MODE_PLAYING;
             wram[0x107] = health;
             wram[0x74] = area;
-            let initial = MetroidTarget::make_observation(
+            let initial = make_observation(
                 400,
                 decode_state(&wram, &cartridge).unwrap(),
                 0,
@@ -1389,7 +1391,7 @@ mod observation_tests {
         hurt[slot + ENEMY_HIT_POINTS] = 0x30;
         let mut flash = hurt;
         flash[slot + ENEMY_HIT_POINTS] = ENEMY_HIT_POINTS_ABSENT;
-        let mut initial = MetroidTarget::make_observation(
+        let mut initial = make_observation(
             0,
             decode_state(&entry, &cartridge).unwrap(),
             0,
@@ -1515,7 +1517,7 @@ mod observation_tests {
         kraid_slot[enemy_type] = 0x08;
         let mut cartridge = [0; 8192];
         cartridge[CARTRIDGE_FRAME_RANGE].copy_from_slice(&ridley_slot);
-        let initial = MetroidTarget::make_observation(
+        let initial = make_observation(
             0,
             decode_state(&ridley, &cartridge).unwrap(),
             0x8c,
@@ -1562,7 +1564,7 @@ mod observation_tests {
         before[CARTRIDGE_FRAME_RANGE].copy_from_slice(&in_use);
         let mut cartridge = [0; 8192];
         cartridge[CARTRIDGE_FRAME_RANGE].copy_from_slice(&released);
-        let initial = MetroidTarget::make_observation(
+        let initial = make_observation(
             0,
             decode_state(&fight, &before).unwrap(),
             0,
@@ -1701,7 +1703,7 @@ mod observation_tests {
         assert_eq!((raw.map_x, raw.map_y), (9, 28));
         let mut arrived = scrolling;
         arrived[DOOR_STATE] = DOOR_ARRIVED;
-        let initial = MetroidTarget::make_observation(
+        let initial = make_observation(
             0,
             decode_state(&walking, &cartridge).unwrap(),
             0,

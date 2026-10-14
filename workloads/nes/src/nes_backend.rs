@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cell::RefCell, fmt};
+use std::{cell::RefCell, fmt, ops::Range};
 
 use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE, quicknes::QuickNesMachine};
 use serde::{Serialize, de::DeserializeOwned};
@@ -90,6 +90,46 @@ where
         let dropped = self.drop_snapshot(imported);
         replayed?;
         dropped
+    }
+}
+
+pub trait NesMemory {
+    fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError>;
+
+    fn poke_wram(&mut self, addr: usize, byte: u8);
+
+    fn capture_save_ram_per_frame(&mut self, range: Range<usize>);
+
+    fn save_ram_frames(&self) -> &[u8];
+
+    fn read_save_ram(&self) -> Result<Vec<u8>, MachineError>;
+
+    fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError>;
+}
+
+impl NesMemory for QuickNesMachine {
+    fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
+        QuickNesMachine::read_wram(self)
+    }
+
+    fn poke_wram(&mut self, addr: usize, byte: u8) {
+        QuickNesMachine::poke_wram(self, addr, byte);
+    }
+
+    fn capture_save_ram_per_frame(&mut self, range: Range<usize>) {
+        QuickNesMachine::capture_save_ram_per_frame(self, range);
+    }
+
+    fn save_ram_frames(&self) -> &[u8] {
+        QuickNesMachine::save_ram_frames(self)
+    }
+
+    fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
+        QuickNesMachine::read_save_ram(self)
+    }
+
+    fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
+        QuickNesMachine::write_save_ram(self, offset, bytes)
     }
 }
 

@@ -9,7 +9,7 @@ use machine::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    nes_backend::NesBackend,
+    nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
 };
 
@@ -604,8 +604,8 @@ const STAGE_START_WAIT_FRAMES: u32 = 1_200;
 const WILY_STAGE_START_WAIT_FRAMES: u32 = 8_000;
 
 #[derive(Debug)]
-pub struct Mm2Target {
-    machine: QuickNesMachine,
+pub struct Mm2Target<M: NesBackend<Vec<u8>> + NesMemory = QuickNesMachine> {
+    machine: M,
     genesis: SnapId,
     genesis_observation: Mm2Observations,
     genesis_wram: [u8; WRAM_SIZE],
@@ -617,14 +617,16 @@ pub struct Mm2Target {
     genesis_prefix: Vec<ButtonChord>,
     execution_work: u64,
     route: Mm2Route,
-    sink: Option<CaptureSink>,
+    sink: Option<CaptureSink<M>>,
 }
 
 pub type FrameSink = Box<dyn FnMut(&[VideoFrame], &[i16]) -> Result<(), Box<dyn Error>> + Send>;
 
-struct CaptureSink(FrameSink);
+type MachineFrameSink<M> = Box<dyn FnMut(&mut M) -> Result<(), Box<dyn Error>> + Send>;
 
-impl std::fmt::Debug for CaptureSink {
+struct CaptureSink<M>(MachineFrameSink<M>);
+
+impl<M> std::fmt::Debug for CaptureSink<M> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("CaptureSink")
     }
@@ -730,14 +732,14 @@ pub fn target_from_args<'a>(
     }
 }
 
-fn run_chords(machine: &mut QuickNesMachine, chords: &[ButtonChord]) -> Result<(), MachineError> {
+fn run_chords<M: Machine>(machine: &mut M, chords: &[ButtonChord]) -> Result<(), MachineError> {
     let here = machine.snapshot()?;
     machine.branch(here, &nes::reproducer(chords))?;
     machine.run(StopConditions::default(), None)?;
     machine.drop_snapshot(here)
 }
 
-impl Mm2Target {
+impl Mm2Target<QuickNesMachine> {
     pub fn from_rom_bytes_headless_at_stage(
         rom: &[u8],
         core_path: &Path,
@@ -806,147 +808,19 @@ impl Mm2Target {
         Self::at_genesis(machine, wram, tape.to_vec(), Mm2Route::WholeGame)
     }
 
-    fn rebase_genesis(&mut self) -> Result<(), MachineError> {
-        self.machine.drop_snapshot(self.genesis)?;
-        self.genesis = self.machine.snapshot()?;
-        self.genesis_wram = self.current_wram;
-        self.genesis_observation = Mm2Observations {
-            frame_count: 0,
-            ..self.observation.clone()
-        };
-        self.observation = self.genesis_observation.clone();
-        self.action_observations = vec![self.observation.clone()];
-        self.genesis_weapons = self.observation.decoded.weapons_obtained;
-        Ok(())
-    }
-
-    fn from_machine(
-        mut machine: QuickNesMachine,
-        prefix: &[ButtonChord],
-        stage: Mm2Stage,
-        route: Mm2Route,
-    ) -> Result<Self, MachineError> {
-        let mut genesis_prefix = prefix.to_vec();
-        for chunk in prefix.chunks(64) {
-            run_chords(&mut machine, chunk)?;
-        }
-        for direction in stage.select_path() {
-            let chords = [ButtonChord::new(*direction, 4), ButtonChord::new(0, 30)];
-            run_chords(&mut machine, &chords)?;
-            genesis_prefix.extend(chords);
-        }
-        if stage.number() <= MM2_FIRST_WILY_STAGE {
-            run_chords(&mut machine, &[ButtonChord::new(JOYPAD_START, 4)])?;
-            genesis_prefix.push(ButtonChord::new(JOYPAD_START, 4));
-        }
-        let wait_limit = if stage.is_wily() {
-            WILY_STAGE_START_WAIT_FRAMES
-        } else {
-            STAGE_START_WAIT_FRAMES
-        };
-        let mut waited = 0;
-        let mut wram = machine.read_wram()?;
-        loop {
-            let state = decode_state(&wram)?;
-            if state.arrived_at(stage) {
-                break;
-            }
-            if waited >= wait_limit {
-                return Err(MachineError::Backend(format!(
-                    "Mega Man 2 stage {} did not reach play within {wait_limit} \
-                     frames: stage={} player_state={} health={}",
-                    stage.number(),
-                    state.stage,
-                    state.player_state,
-                    state.health
-                )));
-            }
-            run_chords(&mut machine, &[ButtonChord::new(0, 1)])?;
-            waited += 1;
-            wram = machine.read_wram()?;
-        }
-        genesis_prefix.extend(idle_chords(waited));
-        Self::at_genesis(machine, wram, genesis_prefix, route)
-    }
-
-    fn at_genesis(
-        mut machine: QuickNesMachine,
-        wram: [u8; WRAM_SIZE],
-        genesis_prefix: Vec<ButtonChord>,
-        route: Mm2Route,
-    ) -> Result<Self, MachineError> {
-        let state = decode_state(&wram)?;
-        let genesis = machine.snapshot()?;
-        let observation = Mm2Observations {
-            decoded: state,
-            arrived: true,
-            ..Mm2Observations::default()
-        };
-        Ok(Self {
-            machine,
-            genesis,
-            genesis_observation: observation.clone(),
-            genesis_wram: wram,
-            current_wram: wram,
-            action_observations: vec![observation.clone()],
-            observation,
-            failed: false,
-            genesis_weapons: state.weapons_obtained,
-            genesis_prefix,
-            execution_work: 0,
-            route,
-            sink: None,
-        })
-    }
-
-    #[must_use]
-    pub fn genesis_prefix(&self) -> &[ButtonChord] {
-        &self.genesis_prefix
-    }
-
-    #[must_use]
-    pub fn mechanical_state(&self) -> Mm2MechanicalState {
-        self.observation.decoded
-    }
-
-    #[must_use]
-    pub fn is_dead(&self) -> bool {
-        self.observation.dead
-    }
-
-    #[must_use]
-    pub fn route(&self) -> Mm2Route {
-        self.route
-    }
-
-    #[must_use]
-    pub fn defeated_a_boss(&self) -> bool {
-        let state = self.observation.decoded;
-        matches!(self.route, Mm2Route::Stage(_))
-            && (state.weapons_obtained & !self.genesis_weapons != 0
-                || state.stage > self.genesis_observation.decoded.stage)
-    }
-
-    #[must_use]
-    pub fn objective_reached(&self) -> bool {
-        match self.route {
-            Mm2Route::Stage(_) => self.defeated_a_boss(),
-            Mm2Route::WholeGame => self.observation.ending,
-        }
-    }
-
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        self.is_dead() || self.objective_reached()
-    }
-
     pub fn start_capturing(&mut self) {
         self.machine.set_video_capture(true);
         self.machine.set_audio_capture(true);
     }
 
     pub fn set_frame_sink(&mut self, sink: Option<FrameSink>) {
-        self.sink = sink.map(CaptureSink);
+        self.sink = sink.map(|mut sink| {
+            CaptureSink(Box::new(move |machine: &mut QuickNesMachine| {
+                let video = machine.take_video_frames();
+                let audio = machine.take_audio_samples();
+                sink(&video, &audio)
+            }))
+        });
     }
 
     pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
@@ -955,71 +829,6 @@ impl Mm2Target {
 
     pub fn drain_audio(&mut self) -> Vec<i16> {
         self.machine.take_audio_samples()
-    }
-
-    pub fn diagnostic_weapon_energies(&self) -> Result<Vec<u8>, MachineError> {
-        let wram = self.machine.read_wram()?;
-        (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
-            .map(|index| read_byte(&wram, index))
-            .collect()
-    }
-
-    #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
-    }
-
-    #[must_use]
-    pub fn genesis_weapons(&self) -> u8 {
-        self.genesis_weapons
-    }
-
-    #[must_use]
-    pub fn execution_work(&self) -> u64 {
-        self.execution_work
-    }
-
-    #[must_use]
-    pub fn last_action_observations(&self) -> &[Mm2Observations] {
-        &self.action_observations
-    }
-
-    pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-        if self.failed || self.is_terminal() || frames == 0 {
-            return false;
-        }
-        let mut actions = Vec::new();
-        let mut remaining = frames;
-        while remaining > 0 {
-            let hold = remaining.min(u16::from(MAX_HOLD_FRAMES));
-            actions.push(ButtonChord::new(buttons, u8::try_from(hold).unwrap_or(1)));
-            remaining -= hold;
-        }
-        let Ok(start) = self.machine.snapshot() else {
-            self.failed = true;
-            return false;
-        };
-        let survived = (|| {
-            self.machine.branch(start, &nes::reproducer(&actions))?;
-            self.machine.run(StopConditions::default(), None)?;
-            let mut alive = true;
-            for wram in self.machine.frames() {
-                if decode_state(wram)?.is_dead() {
-                    alive = false;
-                    break;
-                }
-            }
-            self.machine.replay(start)?;
-            Ok::<bool, MachineError>(alive)
-        })();
-        let _ = self.machine.drop_snapshot(start);
-        match survived {
-            Ok(alive) => alive,
-            Err(_) => {
-                self.failed = true;
-                false
-            }
-        }
     }
 
     pub fn render_input(
@@ -1124,6 +933,207 @@ impl Mm2Target {
         }
         Ok(())
     }
+}
+
+impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
+    fn rebase_genesis(&mut self) -> Result<(), MachineError> {
+        self.machine.drop_snapshot(self.genesis)?;
+        self.genesis = self.machine.snapshot()?;
+        self.genesis_wram = self.current_wram;
+        self.genesis_observation = Mm2Observations {
+            frame_count: 0,
+            ..self.observation.clone()
+        };
+        self.observation = self.genesis_observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+        self.genesis_weapons = self.observation.decoded.weapons_obtained;
+        Ok(())
+    }
+
+    fn from_machine(
+        mut machine: M,
+        prefix: &[ButtonChord],
+        stage: Mm2Stage,
+        route: Mm2Route,
+    ) -> Result<Self, MachineError> {
+        let mut genesis_prefix = prefix.to_vec();
+        for chunk in prefix.chunks(64) {
+            run_chords(&mut machine, chunk)?;
+        }
+        for direction in stage.select_path() {
+            let chords = [ButtonChord::new(*direction, 4), ButtonChord::new(0, 30)];
+            run_chords(&mut machine, &chords)?;
+            genesis_prefix.extend(chords);
+        }
+        if stage.number() <= MM2_FIRST_WILY_STAGE {
+            run_chords(&mut machine, &[ButtonChord::new(JOYPAD_START, 4)])?;
+            genesis_prefix.push(ButtonChord::new(JOYPAD_START, 4));
+        }
+        let wait_limit = if stage.is_wily() {
+            WILY_STAGE_START_WAIT_FRAMES
+        } else {
+            STAGE_START_WAIT_FRAMES
+        };
+        let mut waited = 0;
+        let mut wram = machine.read_wram()?;
+        loop {
+            let state = decode_state(&wram)?;
+            if state.arrived_at(stage) {
+                break;
+            }
+            if waited >= wait_limit {
+                return Err(MachineError::Backend(format!(
+                    "Mega Man 2 stage {} did not reach play within {wait_limit} \
+                     frames: stage={} player_state={} health={}",
+                    stage.number(),
+                    state.stage,
+                    state.player_state,
+                    state.health
+                )));
+            }
+            run_chords(&mut machine, &[ButtonChord::new(0, 1)])?;
+            waited += 1;
+            wram = machine.read_wram()?;
+        }
+        genesis_prefix.extend(idle_chords(waited));
+        Self::at_genesis(machine, wram, genesis_prefix, route)
+    }
+
+    fn at_genesis(
+        mut machine: M,
+        wram: [u8; WRAM_SIZE],
+        genesis_prefix: Vec<ButtonChord>,
+        route: Mm2Route,
+    ) -> Result<Self, MachineError> {
+        let state = decode_state(&wram)?;
+        let genesis = machine.snapshot()?;
+        let observation = Mm2Observations {
+            decoded: state,
+            arrived: true,
+            ..Mm2Observations::default()
+        };
+        Ok(Self {
+            machine,
+            genesis,
+            genesis_observation: observation.clone(),
+            genesis_wram: wram,
+            current_wram: wram,
+            action_observations: vec![observation.clone()],
+            observation,
+            failed: false,
+            genesis_weapons: state.weapons_obtained,
+            genesis_prefix,
+            execution_work: 0,
+            route,
+            sink: None,
+        })
+    }
+
+    #[must_use]
+    pub fn genesis_prefix(&self) -> &[ButtonChord] {
+        &self.genesis_prefix
+    }
+
+    #[must_use]
+    pub fn mechanical_state(&self) -> Mm2MechanicalState {
+        self.observation.decoded
+    }
+
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        self.observation.dead
+    }
+
+    #[must_use]
+    pub fn route(&self) -> Mm2Route {
+        self.route
+    }
+
+    #[must_use]
+    pub fn defeated_a_boss(&self) -> bool {
+        let state = self.observation.decoded;
+        matches!(self.route, Mm2Route::Stage(_))
+            && (state.weapons_obtained & !self.genesis_weapons != 0
+                || state.stage > self.genesis_observation.decoded.stage)
+    }
+
+    #[must_use]
+    pub fn objective_reached(&self) -> bool {
+        match self.route {
+            Mm2Route::Stage(_) => self.defeated_a_boss(),
+            Mm2Route::WholeGame => self.observation.ending,
+        }
+    }
+
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.is_dead() || self.objective_reached()
+    }
+
+    pub fn diagnostic_weapon_energies(&self) -> Result<Vec<u8>, MachineError> {
+        let wram = self.machine.read_wram()?;
+        (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
+            .map(|index| read_byte(&wram, index))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn frames_clocked(&self) -> u64 {
+        self.machine.now().0
+    }
+
+    #[must_use]
+    pub fn genesis_weapons(&self) -> u8 {
+        self.genesis_weapons
+    }
+
+    #[must_use]
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
+    }
+
+    #[must_use]
+    pub fn last_action_observations(&self) -> &[Mm2Observations] {
+        &self.action_observations
+    }
+
+    pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
+        if self.failed || self.is_terminal() || frames == 0 {
+            return false;
+        }
+        let mut actions = Vec::new();
+        let mut remaining = frames;
+        while remaining > 0 {
+            let hold = remaining.min(u16::from(MAX_HOLD_FRAMES));
+            actions.push(ButtonChord::new(buttons, u8::try_from(hold).unwrap_or(1)));
+            remaining -= hold;
+        }
+        let Ok(start) = self.machine.snapshot() else {
+            self.failed = true;
+            return false;
+        };
+        let survived = (|| {
+            self.machine.branch(start, &nes::reproducer(&actions))?;
+            self.machine.run(StopConditions::default(), None)?;
+            let mut alive = true;
+            for wram in self.machine.frames() {
+                if decode_state(wram)?.is_dead() {
+                    alive = false;
+                    break;
+                }
+            }
+            self.machine.replay(start)?;
+            Ok::<bool, MachineError>(alive)
+        })();
+        let _ = self.machine.drop_snapshot(start);
+        match survived {
+            Ok(alive) => alive,
+            Err(_) => {
+                self.failed = true;
+                false
+            }
+        }
+    }
 
     fn run_one_frame(&mut self) -> Result<bool, ()> {
         let deadline = machine::Moment(self.machine.now().0.saturating_add(1));
@@ -1175,9 +1185,7 @@ impl Mm2Target {
         for chord in chords {
             frames += u64::try_from(self.run_action(chord)?.len()).ok()?;
             if let Some(CaptureSink(sink)) = &mut self.sink {
-                let video = self.machine.take_video_frames();
-                let audio = self.machine.take_audio_samples();
-                sink(&video, &audio).ok()?;
+                sink(&mut self.machine).ok()?;
             }
         }
         Some(frames)
@@ -1245,7 +1253,7 @@ impl Mm2Target {
     }
 }
 
-impl Target for Mm2Target {
+impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
     type Action = ButtonChord;
     type Observations = Mm2Observations;
     type Snapshot = Mm2Snapshot;

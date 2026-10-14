@@ -104,6 +104,9 @@ thread serializes, compresses and decompresses in buffers it reuses, so a
 capture allocates only the stored block and a restore allocates nothing. With
 one malloc arena, every allocation takes a lock that all workers share. The
 Consonance backend stores its own portable state through the same trait.
+Mega Man 2 and Metroid also read work RAM and cartridge RAM through
+`NesMemory` in the same file. Metroid also writes them there. QuickNES
+implements `NesMemory`, and the Consonance backend does not.
 
 A snapshot keeps the decoded observation it was taken at. QuickNES serves
 reads right after a restore, so a game that needs work RAM after a restore
