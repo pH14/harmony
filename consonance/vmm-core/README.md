@@ -102,6 +102,13 @@ The branch preparation also checks the service identity and configuration after
 the decode seed zero and both branch handler reseeds. A handler that changes its
 advertised contract is rejected before CPU or RAM restore, leaving the live
 execution intact.
+Branch and import preparation also compare the live SDK handler's captured
+identity, configuration, and state before and after calling a service factory
+or restoring a prepared handler. If a factory or shallow clone changes that
+live state, the operation fails and poisons the live SDK channel, so later
+hashes and snapshots cannot certify the changed session. This check relies on
+the handler snapshot covering all state that can affect future responses;
+service factories must not mutate external state outside that captured contract.
 Control-server imports require both SDK and control-state sections because every
 control snapshot captures both; missing sections are rejected before minting a
 handle. The SDK hash chunk also binds its captured event history, including

@@ -12,7 +12,7 @@ use control_proto::{
     encode_reply,
 };
 use environment::{
-    channel::{ChannelError, Effect, NominalHandler, RecordedEnv, ServiceHandler},
+    channel::{ChannelError, Effect, HandlerSnapshot, NominalHandler, RecordedEnv, ServiceHandler},
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
 use hypercall_proto::Service as _;
@@ -252,6 +252,27 @@ fn validate_control_import_sections<'a>(
 }
 
 impl<B: Backend<A: Vendor>> ControlServer<B> {
+    fn live_sdk_handler_snapshot(&self) -> Result<Option<HandlerSnapshot>, ChannelError> {
+        self.vmm
+            .as_ref()
+            .map(Vmm::sdk_handler_snapshot)
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    fn verify_live_sdk_handler_unchanged(
+        &self,
+        before: &Option<HandlerSnapshot>,
+    ) -> Result<(), ChannelError> {
+        if let Some(before) = before {
+            self.vmm
+                .as_ref()
+                .ok_or(ChannelError::Poisoned)?
+                .verify_sdk_handler_unchanged(before)?;
+        }
+        Ok(())
+    }
+
     fn project_imported_hash_suffix(
         &self,
         vm_state: &<B::A as Vendor>::Snapshot,
@@ -282,16 +303,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         sdk: &SdkSnapshot,
         policy: &ServiceConfig,
     ) -> Result<(), PortableSnapshotError> {
-        let handler = (self.service_factory)(policy)?;
-        if handler.identity() != policy.identity || handler.configuration() != policy.configuration
-        {
-            return Err(PortableSnapshotError::Malformed(
-                "portable service implementation differs from policy",
-            ));
-        }
-        let mut environment = RecordedEnv::new(0, handler);
-        sdk.recorded.restore_into(&mut environment)?;
-        Ok(())
+        let before = self.live_sdk_handler_snapshot()?;
+        let result = (|| {
+            let handler = (self.service_factory)(policy)?;
+            if handler.identity() != policy.identity
+                || handler.configuration() != policy.configuration
+            {
+                return Err(PortableSnapshotError::Malformed(
+                    "portable service implementation differs from policy",
+                ));
+            }
+            let mut environment = RecordedEnv::new(0, handler);
+            sdk.recorded.restore_into(&mut environment)?;
+            Ok(())
+        })();
+        self.verify_live_sdk_handler_unchanged(&before)?;
+        result
     }
 
     pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
@@ -1458,6 +1485,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         snap: SnapId,
         env: Option<&control_proto::Reproducer>,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
+        let before = self.live_sdk_handler_snapshot()?;
+        let mut preflight_complete = false;
+        let result = self.restore_inner(snap, env, &before, &mut preflight_complete);
+        if !preflight_complete {
+            self.verify_live_sdk_handler_unchanged(&before)?;
+        }
+        result
+    }
+
+    fn restore_inner(
+        &mut self,
+        snap: SnapId,
+        env: Option<&control_proto::Reproducer>,
+        before: &Option<HandlerSnapshot>,
+        preflight_complete: &mut bool,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
         let mut host: Vec<(u64, Effect)> = Vec::new();
         let mut reseeds: BTreeMap<u64, u64> = BTreeMap::new();
         let mut payloads: Option<Vec<Vec<u8>>> = None;
@@ -1636,6 +1679,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         {
             return Ok(Err(ControlError::Unsupported));
         }
+        self.verify_live_sdk_handler_unchanged(before)?;
+        *preflight_complete = true;
         self.finish_session_trace_segment();
         let in_place = self.restore_mode == RestoreMode::InPlace;
         let in_place_result = in_place.then(|| self.restore_in_place(store_id, &vm_state));
@@ -2195,7 +2240,7 @@ mod tests {
         Reproducer, Request, Resolution, SnapId, StopConditions, StopMask, StopReason,
     };
     use environment::{
-        channel::{Effect as EnvHostEffect, RecordedEnv},
+        channel::{ChannelError, Effect as EnvHostEffect, RecordedEnv},
         input_spec::{InputSpec as EnvSpec, ServiceConfig, nominal_factory},
     };
 
@@ -11397,5 +11442,177 @@ mod tests {
             "a pvclock composition mismatch rejects the restore loudly"
         );
         let _ = hash(&mut s);
+    }
+
+    #[derive(Clone)]
+    struct AliasedService(
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+        std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    );
+
+    impl environment::channel::ServiceHandler for AliasedService {
+        fn identity(&self) -> &[u8] {
+            b"aliased-service-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, ChannelError> {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(self
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .to_le_bytes()
+                .to_vec())
+        }
+
+        fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ChannelError> {
+            let value = u64::from_le_bytes(bytes.try_into().map_err(|_| ChannelError::Malformed)?);
+            self.0.store(value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            self.0.store(seed, std::sync::atomic::Ordering::SeqCst);
+            self.1.lock().unwrap().push(seed);
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    fn install_aliased_service(
+        server: &mut ControlServer<MockBackend>,
+        state: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+        reseeds: &std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+        seed: u64,
+    ) -> ServiceConfig {
+        let config = ServiceConfig {
+            identity: b"aliased-service-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                seed,
+                Box::new(AliasedService(state.clone(), reseeds.clone())),
+            ),
+            &config,
+        );
+        let factory_state = state.clone();
+        let factory_reseeds = reseeds.clone();
+        server.set_service_factory(std::sync::Arc::new(move |_| {
+            Ok(Box::new(AliasedService(
+                factory_state.clone(),
+                factory_reseeds.clone(),
+            )))
+        }));
+        config
+    }
+
+    fn assert_aliased_service_cannot_certify(server: &mut ControlServer<MockBackend>) {
+        assert!(matches!(
+            server.vmm().unwrap().sdk_snapshot(),
+            Err(ChannelError::Poisoned)
+        ));
+        assert!(!matches!(
+            server.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            }),
+            Ok(Ok(Reply::Hash(_)))
+        ));
+        assert!(!matches!(
+            server.handle(&Request::Snapshot),
+            Ok(Ok(Reply::Snapshot { .. }))
+        ));
+    }
+
+    #[test]
+    fn rejected_branch_poisoned_when_factory_aliases_live_service() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let state = Arc::new(AtomicU64::new(0));
+        let reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let config = install_aliased_service(&mut server, &state, &reseeds, 0);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(config);
+        let missing = SnapId(999_999);
+        let reply = server.handle(&Request::Branch {
+            snap: missing,
+            env: Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            },
+        });
+        assert!(matches!(
+            reply,
+            Err(ServeError::Service(ChannelError::Poisoned))
+        ));
+        assert_eq!(state.load(Ordering::SeqCst), 7);
+        assert_eq!(*reseeds.lock().unwrap(), vec![0, 0, 7]);
+        assert_aliased_service_cannot_certify(&mut server);
+    }
+
+    #[test]
+    fn full_and_sparse_import_poisoned_when_factory_aliases_live_service() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let source_state = Arc::new(AtomicU64::new(0));
+        let source_reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let config = install_aliased_service(&mut source, &source_state, &source_reseeds, 7);
+        let source_snap = snap(&mut source);
+        let mut artifact = Vec::new();
+        source
+            .export_portable_snapshot(source_snap, &mut artifact)
+            .unwrap();
+        let sparse = source
+            .export_sparse_snapshot(source_snap, source_snap)
+            .unwrap();
+
+        let full_state = Arc::new(AtomicU64::new(0));
+        let full_reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut full = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut full);
+        install_aliased_service(&mut full, &full_state, &full_reseeds, 5);
+        assert!(matches!(
+            full.import_portable_snapshot(artifact.as_slice()),
+            Err(PortableSnapshotError::Environment(ChannelError::Poisoned))
+        ));
+        assert!(full.snaps.is_empty());
+        assert_eq!(full_state.load(Ordering::SeqCst), 7);
+        assert_eq!(*full_reseeds.lock().unwrap(), vec![5, 0]);
+        assert_aliased_service_cannot_certify(&mut full);
+
+        let sparse_state = Arc::new(AtomicU64::new(0));
+        let sparse_reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut sparse_dest = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut sparse_dest);
+        sparse_dest.recorded.set_config(config.clone());
+        install_aliased_service(&mut sparse_dest, &sparse_state, &sparse_reseeds, 5);
+        let base = snap(&mut sparse_dest);
+        assert!(matches!(
+            sparse_dest.import_sparse_snapshot(base, sparse),
+            Err(PortableSnapshotError::Environment(ChannelError::Poisoned))
+        ));
+        assert_eq!(sparse_dest.snaps.len(), 1);
+        assert_eq!(sparse_state.load(Ordering::SeqCst), 7);
+        assert_eq!(*sparse_reseeds.lock().unwrap(), vec![5, 0]);
+        assert_aliased_service_cannot_certify(&mut sparse_dest);
     }
 }
