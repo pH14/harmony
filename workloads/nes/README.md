@@ -145,6 +145,14 @@ ROMs are not redistributed by this package. On aarch64, the caller must supply
 a kernel, platform runtime, and NES OCI image built for that architecture; no
 current ARM result is claimed by this matrix.
 
+`nes-core-oracle` writes the native QuickNES reference for the browser demo's
+WebAssembly core. It runs a game's setup tape followed by seeded chords from
+that game's vocabulary, with occasional Start and Select taps, and writes the
+tape, system RAM after every frame, and system RAM, cartridge RAM and the
+canonical core state at every action boundary. `--play` turns on video and
+audio capture. `demos/twin-dragons/tests/core-oracle.mjs` runs it and
+compares the browser core frame by frame.
+
 ```sh
 cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings

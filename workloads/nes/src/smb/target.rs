@@ -113,7 +113,7 @@ impl<P: SnapshotState> SmbSnapshot<P> {
     }
 }
 
-const BOOT_WALK: [ButtonChord; 2] = [
+pub const BOOT_WALK: [ButtonChord; 2] = [
     ButtonChord {
         buttons: 0,
         hold_frames: 120,

@@ -501,6 +501,7 @@ skips when it is absent.
 
 ```sh
 npm test
+node tests/core-oracle.mjs
 cargo test --locked --manifest-path rust/Cargo.toml
 cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 wasm-pack test --node rust
@@ -553,6 +554,23 @@ counter stays still while a visitor's replay plays and advances during the
 automatic replay pick and after the replay pauses, ends or closes.
 `CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
+
+`node tests/core-oracle.mjs` checks that the browser QuickNES build emulates
+exactly like the native core the workloads use. It builds the native core
+into `.build/native-quicknes` unless `HARMONY_QUICKNES_CORE` names one, runs
+`nes-core-oracle` from `workloads/nes`, and replays the same tape on
+`public/engine/quicknes.wasm` one frame per call. It compares system RAM after
+every frame, and at every action boundary also cartridge RAM (Metroid) and the
+save state with the PPU padding bytes zeroed. It runs once with video and audio
+off on both cores and once with both on. Each game runs its workload setup tape
+and then `ORACLE_FRAMES` (default 8,000) frames of chords drawn with
+`ORACLE_SEED` (default 1). Twin Dragons always runs. Super Mario Bros., Mega
+Man 2 and Metroid run when `SMB_ROM`, `MM2_ROM` and `METROID_ROM` or the
+default paths under `~/workspace/roms` name a ROM. The check needs the Rust
+toolchain and a C++ compiler, so it runs locally and not in the browser lane.
+A snapshot taken with audio on differs from one taken with audio off in the APU
+block, so snapshot digests are comparable only between cores in the same audio
+mode.
 
 `Checks / Dissonance Workloads / Twin Dragons Browser` rebuilds and tests the
 static app, then uploads `twin-dragons-browser-dist` and browser evidence. No
