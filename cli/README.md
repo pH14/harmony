@@ -297,7 +297,9 @@ assertions, actions and recovery evidence but cannot establish full-state
 identity. Plain UML command replay compares application output and
 bridge events while retaining raw boot logs as diagnostics. Hardware command
 replay also compares the full serial digest. NES replay compares its typed witness
-and snapshot digest. Removing a saved directory removes its saved evidence.
+and snapshot digest. NES search saves a finding only when the search result and
+its fresh replay witness agree on victory. Removing a saved directory removes
+its saved evidence.
 
 Exit 0 means successful operation, including verified reproduction of a finding.
 Application search exits 1 for findings or unmet reachability assertions; a failed
