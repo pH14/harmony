@@ -155,15 +155,24 @@ elif (( watchdog_cutoffs > 0 )); then
     execution_status=completed_with_watchdog_cutoffs
 fi
 
-# Keep the manifest, configuration and first current-build reproducer beside
+# Keep the manifest, configuration and selected current-build finding beside
 # the report. These are diagnostics and provenance; the oracle still judges
 # the structured report.
 if [[ -n "${CASE_DIR:-}" && -s "${CASE_DIR}/case.json" ]]; then
     cp "${CASE_DIR}/case.json" "${out}/case.json"
 fi
+finding=$(jq -r --arg assertion "$ORACLE_ASSERTION" --arg evidence "$ORACLE_EVIDENCE" \
+    -f "$(dirname "$0")/historical-confirmed-finding.jq" "$report") || {
+    echo 'historical-search: infra-failure (could not select a confirmed case finding)' >&2
+    exit 1
+}
 reproducer=
-if [[ -s "${out}/first-bug-input.json" ]]; then
-    reproducer="${out}/first-bug-input.json"
+if [[ "$finding" =~ ^[1-9][0-9]*$ ]]; then
+    reproducer="${out}/bug-${finding}.json"
+    [[ -s "$reproducer" ]] || {
+        echo "historical-search: infra-failure (missing selected bug report ${reproducer})" >&2
+        exit 1
+    }
 fi
 jq -n \
     --arg case_id "${CASE_ID}" --arg software "${SOFTWARE_NAME}" \
@@ -175,7 +184,8 @@ jq -n \
     --argjson executions_budget "${EXECUTIONS}" \
     --argjson ram_mib "${RAM_MIB}" \
     --argjson wall_minutes "${WALL_MINUTES}" --arg knobs "${knobs}" \
-    --arg reproducer "${reproducer}" --arg backend "${BACKEND:-consonance}" \
+    --arg reproducer "${reproducer}" --arg finding "${finding}" \
+    --arg backend "${BACKEND:-consonance}" \
     --arg snapshots "${snapshots}" \
     '{case_id:$case_id, backend:$backend, snapshots:$snapshots, software:$software, version:$version,
       image_prefix:$image_prefix, seed:$seed, workers:$workers,
@@ -185,6 +195,7 @@ jq -n \
       cli_exit_status:$cli_exit_status, watchdog_cutoffs:$watchdog_cutoffs,
       execution_failures:$execution_failures,
       oracle:$oracle,
+      finding:(if $finding == "" then null else ($finding | tonumber) end),
       reproducer:(if $reproducer == "" then null else $reproducer end)}' \
     /dev/null >"${out}/panel-status.json"
 

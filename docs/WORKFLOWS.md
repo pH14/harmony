@@ -389,8 +389,10 @@ default, on the User-mode Linux profile when an operator dispatches it.
 runner's ordinary UID with ptrace and KVM ioctls denied, with the credentials
 and denial recorded beside the report. The search fails when the campaign
 captured no snapshot or restored none. The same job then selects the first
-confirmed finding carrying the case's assertion and evidence from the search
-report, and replays it from genesis in fresh processes before uploading the run.
+confirmed finding whose saved replay also carried the case's assertion and
+evidence and applied every action, then replays it from genesis in fresh
+processes before uploading the run. Both panel records name the selected
+finding; the search panel points to its `bug-N.json` evidence.
 This preserves the recorded UML host identity and executable artifact modes.
 The UML search wall is capped at 280 minutes within a 360-minute job, reserving
 20 minutes for search shutdown, 50 for finding replay and 10 for setup and uploads.
