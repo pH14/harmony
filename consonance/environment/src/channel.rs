@@ -10,7 +10,7 @@ pub const MAX_CHANNEL_BYTES: usize = 1 << 20;
 
 const SNAPSHOT_MAGIC: u32 = u32::from_le_bytes(*b"EVC1");
 const SNAPSHOT_VERSION: u16 = 1;
-const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
+pub const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
 
 pub const SERVICE_ENTROPY: u16 = 1;
 pub const SERVICE_PAYLOAD: u16 = 2;

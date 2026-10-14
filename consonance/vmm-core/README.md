@@ -140,8 +140,15 @@ admissibility or future execution equivalence.
 entries already consumed. SDK snapshots separately retain the unread tail, so a
 reproducer can replay an earlier snapshot without shifting the payload order.
 Control rejects a new fault or service answer if the recorded inputs plus
-pending faults and reseeds would exceed the eight MiB reproducer limit.
-Branch admission also reserves the reseed marker created at its snapshot floor.
+pending faults and reseeds would exceed the seven MiB reproducer limit.
+The seven MiB reproducer budget reserves one MiB for the largest admitted
+service handler state in an eight MiB SDK snapshot, so a payload already read
+in the live session remains branchable from its origin after answers are added.
+Branch admission also reserves the reseed marker created at its snapshot floor
+and checks the resulting SDK snapshot, including service handler state. A
+service answer must fit both the reproducer and the SDK snapshot. If a handler
+later grows beyond snapshot capacity, Snapshot and whole-state Hash return a
+recoverable refusal without retiring the VM.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
 x86 device format is version 7 and the current arm64 device format is version

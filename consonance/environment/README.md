@@ -48,8 +48,10 @@ per-effect buffers while preserving field order, tags, and length framing.
 for a caller-bounded captured section, so a long input history may contain more
 than one transport message while every nested value remains bounded and ordered.
 `InputSpec::decode_reproducer` and `try_encode_reproducer` admit a complete
-reproducer up to eight MiB for the control plane. Individual channel values
-remain capped at `MAX_CHANNEL_BYTES`.
+reproducer up to seven MiB for the control plane. The one MiB headroom under
+the SDK snapshot's eight MiB limit covers the maximum service handler state
+when a reproducer restores the full payload tape at its branch origin.
+Individual channel values remain capped at `MAX_CHANNEL_BYTES`.
 
 `sdk` holds the SDK request rules every backend shares: the event classes,
 service questions and answers, payload pulls, and coverage requests and

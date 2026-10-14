@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::channel::{
-    Answer, ChannelError, Effect, MAX_CHANNEL_BYTES, NominalHandler, RecordedEnv, ServiceHandler,
+    Answer, ChannelError, Effect, MAX_CHANNEL_BYTES, MAX_RECORDED_STATE_BYTES, NominalHandler,
+    RecordedEnv, ServiceHandler,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -62,7 +63,7 @@ pub struct InputSpec {
 }
 impl InputSpec {
     pub const BLOB_VERSION: u16 = 5;
-    pub const MAX_REPRODUCER_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
+    pub const MAX_REPRODUCER_BYTES: usize = MAX_RECORDED_STATE_BYTES - MAX_CHANNEL_BYTES;
     pub fn seeded(seed: u64) -> Self {
         Self {
             seed,

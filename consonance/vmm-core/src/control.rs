@@ -12,7 +12,7 @@ use control_proto::{
     encode_reply,
 };
 use environment::{
-    channel::{Effect, NominalHandler, RecordedEnv, ServiceHandler},
+    channel::{ChannelError, Effect, NominalHandler, RecordedEnv, ServiceHandler},
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
 use hypercall_proto::Service as _;
@@ -136,6 +136,9 @@ fn capture_refusal<T>(error: VmmError) -> Result<Result<T, ControlError>, ServeE
                 reason: error.to_string(),
             }))
         }
+        VmmError::Channel(ChannelError::TooLarge) => Ok(Err(ControlError::SnapshotRefused {
+            reason: "recorded service state exceeds snapshot capacity".into(),
+        })),
         other => Err(other.into()),
     }
 }
@@ -1023,6 +1026,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     {
                         return Ok(Err(ControlError::MalformedEnvironment));
                     }
+                    if self
+                        .vmm
+                        .as_ref()
+                        .ok_or(ServeError::Poisoned)?
+                        .sdk_snapshot_after_answer(at, &question, &response)
+                        .is_err()
+                    {
+                        return Ok(Err(ControlError::MalformedEnvironment));
+                    }
                     if let Err(error) = self
                         .vmm
                         .as_mut()
@@ -1259,6 +1271,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         };
         let sdk_channel = match vmm.sdk_snapshot() {
             Ok(state) => state,
+            Err(ChannelError::TooLarge) => {
+                return Ok(Err(ControlError::SnapshotRefused {
+                    reason: "recorded service state exceeds snapshot capacity".into(),
+                }));
+            }
             Err(error) => {
                 self.retire_vmm();
                 return Err(ServeError::Service(error));
@@ -1553,6 +1570,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 || prepared_env.handler().configuration() != restore_config.configuration
             {
                 return Ok(Err(ControlError::Unsupported));
+            }
+            if prepared_env.snapshot_state().is_err() {
+                return Ok(Err(ControlError::MalformedEnvironment));
             }
         }
         let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
@@ -2490,6 +2510,41 @@ mod tests {
                     .try_into()
                     .map_err(|_| environment::channel::ChannelError::Malformed)?,
             );
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[derive(Clone)]
+    struct MaxStateExternalService(Vec<u8>);
+    impl environment::channel::ServiceHandler for MaxStateExternalService {
+        fn identity(&self) -> &[u8] {
+            b"test-max-state-external-v1"
+        }
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(self.0.clone())
+        }
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            if state.len() != environment::channel::MAX_CHANNEL_BYTES {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            self.0 = state.to_vec();
             Ok(())
         }
         fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
@@ -4384,6 +4439,232 @@ mod tests {
             Ok(Reply::Unit)
         );
         assert_eq!(hash(&mut server), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn branch_rejects_payloads_without_service_snapshot_headroom() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: Vec::new(),
+        });
+        spec.set_payloads(Some(vec![Vec::new(); 8]));
+        let payload_bytes = environment::channel::MAX_RECORDED_STATE_BYTES - spec.encode().len();
+        let mut payloads = vec![vec![0; payload_bytes / 8]; 8];
+        payloads[0].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.encode();
+        assert_eq!(bytes.len(), environment::channel::MAX_RECORDED_STATE_BYTES);
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn resolved_full_tape_remains_branchable_with_maximum_handler_state() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let config = ServiceConfig {
+            identity: b"test-max-state-external-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        let expected_config = config.clone();
+        server.set_service_factory(std::sync::Arc::new(move |actual| {
+            if actual != &expected_config {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(MaxStateExternalService(vec![
+                0;
+                environment::channel::MAX_CHANNEL_BYTES
+            ])))
+        }));
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                server.recorded.seed(),
+                Box::new(MaxStateExternalService(vec![
+                    0;
+                    environment::channel::MAX_CHANNEL_BYTES
+                ])),
+            ),
+            &config,
+        );
+        let origin = snap(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(config);
+        let mut payloads = vec![Vec::new(); 9];
+        payloads[0] = vec![0; 100];
+        spec.set_payloads(Some(payloads.clone()));
+        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 24 - spec.encode().len();
+        for payload in &mut payloads[1..] {
+            *payload = vec![0; payload_bytes / 8];
+        }
+        payloads[1].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 24);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let full_state = server
+            .vmm()
+            .unwrap()
+            .sdk_snapshot()
+            .unwrap()
+            .unwrap()
+            .recorded
+            .encode()
+            .len();
+        assert!(full_state <= environment::channel::MAX_RECORDED_STATE_BYTES);
+        assert_eq!(
+            ring_payload(&mut server, 100),
+            (hypercall_proto::Status::Ok as u16, vec![0; 100])
+        );
+        let unread_state = server
+            .vmm()
+            .unwrap()
+            .sdk_snapshot()
+            .unwrap()
+            .unwrap()
+            .recorded
+            .encode()
+            .len();
+        assert!(unread_state < full_state);
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(at)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(vec![1, 9]),
+                    }),
+                })
+                .unwrap(),
+            Ok(Reply::Stop(_))
+        ));
+        let reproducer = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert_eq!(reproducer.bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: reproducer,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
+    }
+
+    #[test]
+    fn oversized_service_state_refuses_snapshot_without_retiring_the_vm() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let config = ServiceConfig::default();
+        let mut oversized = RecordedEnv::new(
+            7,
+            Box::new(environment::channel::NominalHandler)
+                as Box<dyn environment::channel::ServiceHandler>,
+        );
+        oversized
+            .set_payloads(Some(vec![
+                vec![0; environment::channel::MAX_CHANNEL_BYTES];
+                8
+            ]))
+            .unwrap();
+        server.vmm.as_mut().unwrap().enable_sdk(oversized, &config);
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotRefused { .. })
+        ));
+        assert!(matches!(
+            server
+                .handle(&Request::Hash {
+                    scope: HashScope::Whole,
+                })
+                .unwrap(),
+            Err(ControlError::SnapshotRefused { .. })
+        ));
+        assert!(server.vmm().is_some());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                7,
+                Box::new(environment::channel::NominalHandler)
+                    as Box<dyn environment::channel::ServiceHandler>,
+            ),
+            &config,
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Hash {
+                    scope: HashScope::Whole,
+                })
+                .unwrap(),
+            Ok(Reply::Hash(_))
+        ));
     }
 
     #[test]

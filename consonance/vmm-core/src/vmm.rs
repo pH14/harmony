@@ -1833,6 +1833,20 @@ where
             .transpose()
     }
 
+    pub fn sdk_snapshot_after_answer(
+        &self,
+        moment: u64,
+        question: &channel::Question,
+        answer: &channel::Answer,
+    ) -> Result<(), channel::ChannelError> {
+        if let Some(sdk) = &self.sdk {
+            let mut projected = sdk.env.clone();
+            projected.record_question(moment, question, answer.clone());
+            projected.snapshot_state()?;
+        }
+        Ok(())
+    }
+
     pub fn sdk_restore(&mut self, snap: &SdkSnapshot) -> Result<(), channel::ChannelError> {
         if let Some(s) = self.sdk.as_mut() {
             snap.recorded.restore_into(&mut s.env)?;
