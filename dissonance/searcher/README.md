@@ -35,8 +35,11 @@ result at the original reservation boundary and rejects job or skip weights
 that the recorded policy could not have produced. When the recorded policy
 stops the campaign on an objective, replay rejects work selected after it while allowing jobs
 already reserved in the admission window to finish. The same admission-window
-rule applies when cumulative work reaches the recorded work budget. Schema version 11 appends a
-terminal record only after the campaign has drained its jobs and finished
+rule applies when cumulative work reaches the recorded work budget. Schema version 12 records
+the reservation that owns each duplicate skip. Replay checks that skips follow
+selection order, stay within the admission window, and do not exceed the live
+limit of 1,024 attempts for one reservation. A terminal record follows only
+after the campaign has drained its jobs and finished
 successfully. Replay requires that record and checks its job, skip, and
 admission totals. Without a wall-time limit, it also requires every reservation
 the deterministic stop policy would have made; intermediate prefix replay is

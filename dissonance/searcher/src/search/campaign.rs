@@ -56,7 +56,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 11;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 12;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -725,6 +725,7 @@ pub struct CampaignJobRecord<C, K = ()> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 pub struct CampaignSkipRecord<C, K = ()> {
+    pub reservation: u64,
     pub parent_id: u64,
     pub mutation_seed: u64,
     pub mixture_weight: u8,
@@ -3358,6 +3359,7 @@ where
                             &core.evidence,
                         )?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
+                            reservation: *reserved,
                             parent_id,
                             mutation_seed,
                             mixture_weight,
@@ -4369,6 +4371,47 @@ fn initial_draw_state<G: Workload>(
     Ok((tables, Some(header)))
 }
 
+#[derive(Default)]
+struct ReplaySkipSchedule {
+    last_reservation: Option<u64>,
+    skips_for_reservation: u64,
+    admitted: BTreeSet<u64>,
+}
+
+impl ReplaySkipSchedule {
+    fn accept_skip(
+        &mut self,
+        reservation: u64,
+        selected: usize,
+        total: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let slot = usize::try_from(reservation)?;
+        if slot >= selected || slot >= total {
+            return Err("recorded skip names a reservation outside the selection window".into());
+        }
+        if self.admitted.contains(&reservation) {
+            return Err("recorded skip follows its job admission".into());
+        }
+        if self.last_reservation.is_some_and(|last| reservation < last) {
+            return Err("recorded skips are out of reservation order".into());
+        }
+        if self.last_reservation == Some(reservation) {
+            self.skips_for_reservation = self.skips_for_reservation.saturating_add(1);
+        } else {
+            self.last_reservation = Some(reservation);
+            self.skips_for_reservation = 1;
+        }
+        if self.skips_for_reservation > CONSECUTIVE_SKIP_LIMIT {
+            return Err("recorded selection exceeds the consecutive skip limit".into());
+        }
+        Ok(())
+    }
+
+    fn admit(&mut self, reservation: u64) {
+        self.admitted.insert(reservation);
+    }
+}
+
 pub fn replay_campaign_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
@@ -4836,12 +4879,20 @@ where
         .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
 
     let mut replay_admissions = 0_usize;
+    let mut replay_skips = ReplaySkipSchedule::default();
     for (replay_record_index, line) in record_lines.into_iter().enumerate() {
         draw_state.release_versions(&required_draw_versions, replay_record_index);
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
+                replay_skips.accept_skip(
+                    skip.reservation,
+                    replay_admissions
+                        .saturating_add(replay_window_depth)
+                        .min(replay_job_parents.len()),
+                    replay_job_parents.len(),
+                )?;
                 if stop_reservations_after_objective(
                     header.stop_campaign_on_objective,
                     core.objective_witness.is_some(),
@@ -5020,6 +5071,7 @@ where
                     );
                 }
                 let replay_job_slot = usize::try_from(job.reservation)?;
+                replay_skips.admit(job.reservation);
                 let selector_tier_limit = replay_job_tier_limits
                     .remove(&replay_job_slot)
                     .ok_or("recorded job has no rebuilt selection tier bound")?;
@@ -6842,7 +6894,7 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":12,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -7906,6 +7958,99 @@ mod tests {
                 "replay accepted an impossible ordinary splice {field}"
             );
         }
+    }
+
+    #[test]
+    fn replay_rejects_more_consecutive_skips_than_live_selection_allows() {
+        let mut config = three_worker_config();
+        config.execution_budget = 2_000;
+        config.window = 1;
+        config.workers = 1;
+        config.mixture = DrawMixture::AlphabetOnly;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let (live, mut records, skip_index, original_stream) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                let (live, _) = run_campaign_checkpointed(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .expect("campaign");
+                let records = std::str::from_utf8(&stream)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .collect::<Vec<_>>();
+                let skip_index = records.iter().position(|record| {
+                    record["event"] == "skip"
+                        && record["draw_checkpoint_before"]["records"]
+                            .as_u64()
+                            .unwrap()
+                            .is_multiple_of(64)
+                })?;
+                Some((live, records, skip_index, stream))
+            })
+            .expect("campaign with a skip on an empty draw-table update boundary");
+        replay_campaign_checkpointed(&workload, &original_stream, None, None)
+            .expect("unmodified campaign replays");
+        let original = records[skip_index].clone();
+        let before = original["draw_checkpoint_before"].clone();
+        let first_record = before["records"].as_u64().unwrap();
+        let mut inserted = Vec::new();
+        for offset in 0..super::CONSECUTIVE_SKIP_LIMIT {
+            let mut skip = original.clone();
+            skip["draw_checkpoint_before"]["records"] = serde_json::json!(first_record + offset);
+            let after_record = first_record + offset + 1;
+            skip["draw_checkpoint_after"] = if after_record.is_multiple_of(1_024) {
+                let mut checkpoint = before.clone();
+                checkpoint["records"] = serde_json::json!(after_record);
+                checkpoint
+            } else {
+                serde_json::Value::Null
+            };
+            inserted.push(skip);
+        }
+        for record in records.iter_mut().skip(skip_index) {
+            for field in ["draw_checkpoint_before", "draw_checkpoint_after"] {
+                if let Some(value) = record[field]["records"].as_u64() {
+                    record[field]["records"] =
+                        serde_json::json!(value + super::CONSECUTIVE_SKIP_LIMIT);
+                }
+            }
+        }
+        records.splice(skip_index..skip_index, inserted);
+        records.last_mut().unwrap()["skips"] =
+            serde_json::json!(live.duplicates_skipped + super::CONSECUTIVE_SKIP_LIMIT);
+        let lines = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err(
+                    "replay certified more consecutive skips than live selection can record",
+                )
+                .to_string();
+        assert!(error.contains("consecutive skip limit"), "{error}");
+    }
+
+    #[test]
+    fn multi_window_reservations_each_allow_the_full_skip_limit() {
+        let mut schedule = super::ReplaySkipSchedule::default();
+        for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
+            schedule.accept_skip(0, 2, 2).unwrap();
+        }
+        for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
+            schedule.accept_skip(1, 2, 2).unwrap();
+        }
+        assert!(schedule.accept_skip(1, 2, 2).is_err());
     }
 
     #[test]
