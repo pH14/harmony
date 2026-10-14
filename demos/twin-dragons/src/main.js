@@ -1827,6 +1827,7 @@ function renderMapRows(owner) {
         c.tabIndex = 0;
         if (c !== canvas) bindMap(c);
         part.append(c, panEdge(c, -1), panEdge(c, 1));
+        if (game.grid) part.append(panEdge(c, -1, "y"), panEdge(c, 1, "y"));
         if (game.grid) {
           const pair = document.createElement("div");
           pair.className = "room-pair";
@@ -1849,24 +1850,27 @@ function renderMapRows(owner) {
   }
 }
 let panHold = null, panLast = 0;
-function panEdge(c, dir) {
+function panEdge(c, dir, axis = "x") {
   const edge = document.createElement("button");
   edge.className = "pan-edge";
   edge.dataset.dir = dir;
+  if (axis === "y") edge.dataset.axis = axis;
   edge.tabIndex = -1;
-  edge.setAttribute("aria-label", dir < 0 ? "Look left" : "Look right");
-  edge.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${dir < 0 ? "M14.5 5.5 8 12l6.5 6.5" : "M9.5 5.5 16 12l-6.5 6.5"}"/></svg>`;
+  edge.setAttribute("aria-label", axis === "y" ? (dir < 0 ? "Look up" : "Look down") : dir < 0 ? "Look left" : "Look right");
+  const path = axis === "y" ? (dir < 0 ? "M5.5 14.5 12 8l6.5 6.5" : "M5.5 9.5 12 16l6.5-6.5") : dir < 0 ? "M14.5 5.5 8 12l6.5 6.5" : "M9.5 5.5 16 12l-6.5 6.5";
+  edge.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
+  const mine = () => panHold?.canvas === c && panHold.dir === dir && panHold.axis === axis;
   const start = () => {
-    if (panHold?.canvas !== c || panHold.dir !== dir) panHold = { canvas: c, dir, since: performance.now() };
+    if (!mine()) panHold = { canvas: c, dir, axis, since: performance.now() };
     panHold.until = 0;
   };
   const end = () => {
-    if (panHold?.canvas !== c || panHold.dir !== dir) return;
+    if (!mine()) return;
     if (performance.now() - panHold.since < 300) panHold.until = performance.now() + 450;
     else panHold = null;
   };
   edge.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") start(); });
-  edge.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && panHold?.canvas === c && panHold.dir === dir) panHold = null; });
+  edge.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && mine()) panHold = null; });
   edge.addEventListener("pointerdown", (e) => { e.preventDefault(); if (e.pointerType !== "mouse") start(); });
   edge.addEventListener("pointerup", (e) => { if (e.pointerType !== "mouse") end(); });
   edge.addEventListener("pointercancel", () => { if (panHold?.canvas === c) panHold = null; });
@@ -1894,20 +1898,23 @@ function updatePan(now) {
     moveCameraByHand();
   }
   if (camera.follow) camera.manual = now + 10000;
-  const speed = (c.width / scale) * 0.85 * ease(Math.min(1, ramp));
-  Object.assign(view, panelCenter(map, view.zoom, { x: view.x + panHold.dir * speed * dt, y: view.y }, c));
+  const step = (panHold.axis === "y" ? c.height : c.width) / scale * 0.85 * ease(Math.min(1, ramp)) * panHold.dir * dt;
+  Object.assign(view, panelCenter(map, view.zoom, panHold.axis === "y" ? { x: view.x, y: view.y + step } : { x: view.x + step, y: view.y }, c));
 }
 function updateRoomChrome(c) {
   const part = c.parentElement;
   if (!part) return;
   const id = Number(c.dataset.map), map = canvasPanel(c), view = roomView(id, c);
-  const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom, half = c.width / 2 / scale;
+  const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom, half = c.width / 2 / scale, halfY = c.height / 2 / scale;
   const before = view.x - half - map.x, after = map.x + map.width - view.x - half;
-  const key = `${before > 1},${after > 1}`;
+  const above = game.grid && view.y - halfY - map.y > 1, below = game.grid && map.y + map.height - view.y - halfY > 1;
+  const key = `${before > 1},${after > 1},${above},${below}`;
   if (part.dataset.chrome === key) return;
   part.dataset.chrome = key;
   part.dataset.panLeft = before > 1;
   part.dataset.panRight = after > 1;
+  part.dataset.panUp = above;
+  part.dataset.panDown = below;
 }
 let spriteBudget = swarm.maxTrails, drawCost = 0, frameGap = 1000 / 60;
 function drawMap(now) {

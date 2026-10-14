@@ -233,7 +233,8 @@ seen yet opens at the close-up, centered on the frontier or the level start.
 A game with `grid: true` has maps that run in two directions. Its view is 4:3,
 and the whole-level map sits beside it, or under it on screens narrower than
 720 pixels. Clicking the map moves the view on both axes, and a scroll moves it
-on both. The game's `route(level, x, y)` ranks a map point by its order along
+on both. Chevrons at the top and bottom edges of the view pan it up and down
+the same way the left and right ones pan it sideways. The game's `route(level, x, y)` ranks a map point by its order along
 the level, and the frontier is the 80th-percentile live sprite in that order.
 With nothing live, the camera goes to the furthest heat cell in that order, or
 to `entry(level)`.
@@ -531,7 +532,8 @@ the level strip moves the view in both. `tests/smb.mjs` also checks that
 cleared levels collapse into the +N button and that nothing scrolls sideways
 at 1,280 and 390 pixels wide. `tests/mm2.mjs` boots every stage, builds three
 maps, replays a Crash Man state exactly, compares the Rust and browser
-decoders, and checks that the stage map moves the view on both axes.
+decoders, and checks that the stage map and the top and bottom edge chevrons
+move the view.
 `tests/metroid.mjs` does the same for Metroid's five area maps.
 `tests/replay-pause.mjs` checks that the path
 counter stays still while a visitor's replay plays and advances during the

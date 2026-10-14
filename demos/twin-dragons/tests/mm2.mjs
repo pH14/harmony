@@ -85,7 +85,20 @@ const low = await center();
 await page.mouse.click(stripBox.x + stripBox.width * 0.8, stripBox.y + stripBox.height * 0.1);
 const high = await center();
 assert.ok(high[0] > low[0] && high[1] < low[1], `Clicking the stage map moves the view across and up (${low} to ${high})`);
+const part = page.locator('.map-row[data-map="0"] .room-part');
+for (const dir of [1, -1]) {
+  await page.waitForFunction((key) => document.querySelector('.map-row[data-map="0"] .room-part').dataset[key] === "true", dir > 0 ? "panDown" : "panUp");
+  const before = (await center())[1];
+  await view.hover();
+  await part.locator(`.pan-edge[data-axis="y"][data-dir="${dir}"]`).hover();
+  await page.waitForFunction(([dir, before]) => dir * (Number(document.querySelector('.area-map[data-map="0"]').dataset.centerY) - before) > 8, [dir, before]);
+  await page.mouse.move(2, 890);
+}
+for (const edge of await part.locator(".pan-edge").all()) {
+  const box = await edge.boundingBox();
+  assert.ok(box.x + box.width <= stripBox.x, "The pan edges stay off the stage map");
+}
 assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Nothing scrolls sideways");
 assert.deepEqual(errors, []);
-console.log("Choosing the ROM in the game picker starts a Mega Man 2 search, and the stage map moves the view in both directions.");
+console.log("Choosing the ROM in the game picker starts a Mega Man 2 search, and the stage map and the top and bottom pan edges move the view.");
 await browser.close();
