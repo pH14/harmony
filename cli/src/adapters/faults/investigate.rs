@@ -91,6 +91,9 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
     let source = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&source)?;
     original.verify(&source)?;
+    if original.status != "complete" {
+        return Err("a failed or incomplete recording cannot certify exact replay".into());
+    }
     if original.bundle.is_some()
         && let Some(finding) = selection.finding
     {
@@ -101,10 +104,20 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
         }
     }
     let recorded = if original.bundle.is_some() {
-        Some((
-            selected_actions(&original, selection.finding)?,
-            recorded_witness(&original, selection.finding)?,
-        ))
+        let actions = selected_actions(&original, selection.finding)?;
+        let report = recorded_report(&original)?;
+        let expected = report_witness(&report, selection.finding)?;
+        if selection.finding.is_none()
+            && expected.state_hash_encoding != StateHashEncoding::Unavailable
+            && report
+                .replays
+                .iter()
+                .skip(1)
+                .any(|saved| !equivalent(&expected, saved))
+        {
+            return Err("saved repeats disagree; exact replay cannot be verified".into());
+        }
+        Some((actions, expected))
     } else {
         if selection.finding.is_some() || repeat != 1 {
             return Err("command runs have no finding selector and replay once".into());
@@ -554,6 +567,110 @@ mod tests {
         assert!(equivalent(&expected, &actual));
     }
 
+    fn saved_replay_record(path: &std::path::Path, digests: &[Option<[u8; 32]>], status: &str) {
+        use faults_workload::{package::Report, target::FaultObservations};
+
+        let options = faults_workload::Options {
+            seed: 0,
+            executions: 1,
+            ram_mib: 1024,
+            knobs: Vec::new(),
+            wall_seconds: None,
+            output: path.to_path_buf(),
+            uml_profile: None,
+            root: None,
+            checkpoint_owner: None,
+        };
+        let mut report = Report::new(
+            "replay",
+            &faults_workload::Artifacts {
+                kernel: Vec::new(),
+                initramfs: Vec::new(),
+            },
+            "runner".into(),
+            &options,
+            1,
+        );
+        for (index, digest) in digests.iter().enumerate() {
+            let mut summary =
+                ReplaySummary::from_observation(&FaultObservations::default(), *digest, 0, 0);
+            summary.run = (index + 1) as u32;
+            report.replays.push(summary);
+        }
+        report.write(path).unwrap();
+
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        config.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(config, "run").unwrap();
+        record.status = status.into();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
+            "outcome":serde_json::to_value(&report).unwrap()
+        });
+        record.save(path).unwrap();
+    }
+
+    #[test]
+    fn saved_replay_refuses_disagreeing_recorded_repeats_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        saved_replay_record(dir.path(), &[Some([7; 32]), Some([8; 32])], "complete");
+
+        let error = replay(
+            Selection {
+                run: dir.path().display().to_string(),
+                finding: None,
+            },
+            Destination {
+                out: Some(dir.path().join("child")),
+                name: None,
+            },
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("saved repeats disagree"), "{error}");
+        assert!(!dir.path().join("child").exists());
+    }
+
+    #[test]
+    fn saved_replay_refuses_failed_recording_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        saved_replay_record(dir.path(), &[Some([7; 32]), Some([7; 32])], "failed");
+        let original = Manifest::read(dir.path()).unwrap();
+        assert!(recorded_witness(&original, None).is_ok());
+
+        let error = replay(
+            Selection {
+                run: dir.path().display().to_string(),
+                finding: None,
+            },
+            Destination {
+                out: Some(dir.path().join("child")),
+                name: None,
+            },
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("failed or incomplete recording"), "{error}");
+        assert!(!dir.path().join("child").exists());
+    }
+
+    #[test]
+    fn divergent_and_uml_saved_repeats_remain_inspectable() {
+        for digests in [[Some([7; 32]), Some([8; 32])], [None, None]] {
+            let dir = tempfile::tempdir().unwrap();
+            saved_replay_record(dir.path(), &digests, "complete");
+            let selection = Selection {
+                run: dir.path().display().to_string(),
+                finding: None,
+            };
+            assert!(timeline(selection.clone(), Point::default(), true).is_ok());
+            assert!(logs(selection, Point::default(), None, true).is_ok());
+        }
+    }
+
     #[test]
     fn command_replay_uses_the_outcome_from_the_verified_manifest() {
         let dir = tempfile::tempdir().unwrap();
@@ -711,6 +828,7 @@ mod tests {
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.status = "complete".into();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
             "outcome":serde_json::to_value(&report).unwrap()
