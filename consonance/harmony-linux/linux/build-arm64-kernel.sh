@@ -237,7 +237,8 @@ if ! grep -q '^\[BANNED\].*: 1 LL/SC exclusive instruction(s)$' "$exclusive_prob
     exit 1
 fi
 echo "ok: scanner rejected the executable .rodata LDXR probe"
-python3 "$exclusive_scan" --kernel-vmlinux "$arm64_object_root/vmlinux"
+python3 "$exclusive_scan" --kernel-vmlinux "$arm64_object_root/vmlinux" \
+    "$arm64_object_root/arch/arm64/boot/Image"
 python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
 python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
 

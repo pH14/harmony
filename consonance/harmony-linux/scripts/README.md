@@ -26,8 +26,11 @@ ARM user binaries link their read-only data into page-separated non-executable
 The pinned `vmlinux` has a different mapping: its page tables execute
 `_stext.._etext` and `__inittext_begin..__inittext_end`, while its early
 identity map also executes the `.rodata.text` page. The explicit
-`--kernel-vmlinux` AA-4 mode validates those linker boundaries and scans all
-three executable ranges while excluding reviewed data on NX pages. The arm64
+`--kernel-vmlinux <vmlinux> <Image>` AA-4 mode validates those linker boundaries,
+requires each range to start in a file-backed executable ELF load, and scans
+the exact boot Image bytes across all three runtime-executable ranges. The
+Image scan covers zero-filled alignment tails omitted by ELF `p_filesz` and
+does not trust section or segment flags to identify executable bytes. The arm64
 linker patch places `.altinstructions` and unwind metadata on NX init-data
 pages, and the early identity map makes the ordinary read-only interval NX
 without blocking its special identity-map code. The vDSO uses ordinary user-page

@@ -118,7 +118,7 @@ def kernel_runtime_exec_ranges(path: str, entry: int):
             (symbols["__inittext_begin"], symbols["__inittext_end"]))
 
 
-def executable_words(path: str, kernel_image: bool = False):
+def executable_words(path: str, kernel_image_path: str = None):
     data = Path(path).read_bytes()
     elf_header = "<16sHHIQQQIHHHHHH"
     section_header = "<IIQQQQIIQQ"
@@ -307,7 +307,16 @@ def executable_words(path: str, kernel_image: bool = False):
     # that its linker-bound page tables actually map non-executable.
     data_ranges.sort()
     _data_starts = [lo for lo, _ in data_ranges]
-    kernel_exec_ranges = kernel_runtime_exec_ranges(path, _entry) if kernel_image else ()
+    kernel_exec_ranges = kernel_runtime_exec_ranges(path, _entry) if kernel_image_path else ()
+    for lo, hi in kernel_exec_ranges:
+        covering = [
+            segment for segment in executable_segments
+            if segment[3] <= lo < segment[3] + segment[4]
+        ]
+        if len(covering) != 1:
+            raise SystemExit(
+                f"SCANNER KERNEL ERROR for {path}: executable linker range starts outside PF_X load"
+            )
 
     def _in_data_section(addr):
         i = bisect.bisect_right(_data_starts, addr) - 1
@@ -325,7 +334,7 @@ def executable_words(path: str, kernel_image: bool = False):
             word_address = mapped_address + file_offset - page_offset
             if word_address in addresses:
                 continue
-            if (kernel_image and _in_data_section(word_address)
+            if (kernel_image_path and _in_data_section(word_address)
                     and not any(lo <= word_address < hi for lo, hi in kernel_exec_ranges)):
                 continue
             addresses.add(word_address)
@@ -334,6 +343,20 @@ def executable_words(path: str, kernel_image: bool = False):
 
     if not words:
         raise SystemExit(f"SCANNER ELF ERROR for {path}: no executable words")
+    if kernel_image_path:
+        image = Path(kernel_image_path).read_bytes()
+        known = {address: word for address, word, _section in words}
+        for lo, hi in kernel_exec_ranges:
+            if lo < _entry or hi - _entry > len(image):
+                raise SystemExit(f"SCANNER KERNEL ERROR for {path}: linker range outside boot Image")
+            for address in range(lo, hi, 4):
+                word = int.from_bytes(image[address - _entry : address - _entry + 4], "little")
+                if address in known:
+                    if known[address] != word:
+                        raise SystemExit(f"SCANNER KERNEL ERROR for {path}: boot Image differs from vmlinux")
+                else:
+                    words.append((address, word, "<kernel-image>"))
+                    known[address] = word
     words.sort(key=lambda w: w[0])
     return words
 
@@ -378,8 +401,8 @@ def disassembly_cross_check(path: str):
     return decoded
 
 
-def scan(path: str, kernel_image: bool = False):
-    words = executable_words(path, kernel_image=kernel_image)
+def scan(path: str, kernel_image_path: str = None):
+    words = executable_words(path, kernel_image_path=kernel_image_path)
     decoded = disassembly_cross_check(path)
     raw_by_address = {address: word for address, word, _section in words}
     raw_mismatches = [
@@ -403,14 +426,15 @@ def scan(path: str, kernel_image: bool = False):
 def main():
     self_test_mask()
     if len(sys.argv) < 2:
-        raise SystemExit("usage: aa4-exclusive-scan.py [--kernel-vmlinux] <aarch64-elf> [<elf> ...]")
+        raise SystemExit("usage: aa4-exclusive-scan.py [--kernel-vmlinux <vmlinux> <Image>] <aarch64-elf> [<elf> ...]")
     kernel_image = sys.argv[1] == "--kernel-vmlinux"
     paths = sys.argv[2:] if kernel_image else sys.argv[1:]
-    if kernel_image and len(paths) != 1:
-        raise SystemExit("usage: aa4-exclusive-scan.py --kernel-vmlinux <vmlinux>")
+    if kernel_image and len(paths) != 2:
+        raise SystemExit("usage: aa4-exclusive-scan.py --kernel-vmlinux <vmlinux> <Image>")
+    kernel_image_path = paths.pop() if kernel_image else None
     any_hits = False
     for path in paths:
-        hits = scan(path, kernel_image=kernel_image)
+        hits = scan(path, kernel_image_path=kernel_image_path)
         name = path.split("/")[-1]
         if hits:
             any_hits = True
