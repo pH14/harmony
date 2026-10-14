@@ -82,25 +82,10 @@ fn setup_real_mode(backend: &mut KvmBackend, mem: &mut GuestMem, code: &[u8]) {
     enter_real_mode_at(backend, 0x1000);
 }
 
-fn native_entropy_endpoint(instruction: &[u8], cpuid: CpuidModel) -> u32 {
+fn native_entropy_endpoint(code: &[u8], cpuid: CpuidModel) -> (u8, u32) {
     let mut backend = new_backend_or_explain();
     let mut mem = GuestMem::new(0x10000);
-    setup_real_mode(
-        &mut backend,
-        &mut mem,
-        &[
-            instruction[0],
-            instruction[1],
-            instruction[2],
-            0xBA,
-            0xF8,
-            0x03,
-            0xB0,
-            0x42,
-            0xEE,
-            0xF4,
-        ],
-    );
+    setup_real_mode(&mut backend, &mut mem, code);
     backend
         .set_policy(&X86Policy {
             cpuid,
@@ -119,6 +104,7 @@ fn native_entropy_endpoint(instruction: &[u8], cpuid: CpuidModel) -> u32 {
         .write_guest(Gpa(0x2000), &[0xBA, 0xF8, 0x03, 0xB0, 0x55, 0xEE, 0xF4])
         .expect("load #UD handler");
     let mut state = backend.save().expect("save entropy guest entry");
+    state.regs.rax = 0;
     state.regs.rsp = 0x8000;
     state.sregs.ss.base = 0;
     state.sregs.ss.selector = 0;
@@ -128,45 +114,104 @@ fn native_entropy_endpoint(instruction: &[u8], cpuid: CpuidModel) -> u32 {
     match backend.run().expect("run entropy instruction") {
         Exit::Arch(X86Exit::Io {
             port: 0x3F8,
-            size: 1,
+            size,
             write: Some(marker),
-        }) => marker,
+        }) => (size, marker),
         other => panic!("expected entropy instruction or #UD marker, got {other:?}"),
     }
+}
+
+fn native_entropy_instruction_endpoint(instruction: &[u8], cpuid: CpuidModel) -> (u8, u32) {
+    let mut code = instruction.to_vec();
+    code.extend_from_slice(&[0xBA, 0xF8, 0x03, 0xB0, 0x42, 0xEE, 0xF4]);
+    native_entropy_endpoint(&code, cpuid)
 }
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
 fn masked_native_entropy_instructions_raise_ud() {
-    for (name, instruction, enabled_model) in [
+    for (name, instruction, cpuid_probe, enabled_model) in [
         (
             "RDRAND",
             [0x0F, 0xC7, 0xF0],
+            [
+                0x66, 0xB8, 1, 0, 0, 0, 0x66, 0x31, 0xC9, 0x0F, 0xA2, 0x66, 0xC1, 0xE9, 30, 0x80,
+                0xE1, 1, 0x88, 0xC8, 0xBA, 0xF8, 0x03, 0xEE, 0xF4,
+            ],
             CpuidModel {
-                entries: vec![CpuidEntry {
-                    leaf: 1,
-                    ecx: 1 << 30,
-                    ..Default::default()
-                }],
+                entries: vec![
+                    CpuidEntry {
+                        leaf: 0,
+                        eax: 7,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 1,
+                        ecx: 1 << 30,
+                        ..Default::default()
+                    },
+                ],
             },
         ),
         (
             "RDSEED",
             [0x0F, 0xC7, 0xF8],
+            [
+                0x66, 0xB8, 7, 0, 0, 0, 0x66, 0x31, 0xC9, 0x0F, 0xA2, 0x66, 0xC1, 0xEB, 18, 0x80,
+                0xE3, 1, 0x88, 0xD8, 0xBA, 0xF8, 0x03, 0xEE, 0xF4,
+            ],
             CpuidModel {
-                entries: vec![CpuidEntry {
-                    leaf: 7,
-                    ebx: 1 << 18,
-                    ..Default::default()
-                }],
+                entries: vec![
+                    CpuidEntry {
+                        leaf: 0,
+                        eax: 7,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 7,
+                        ebx: 1 << 18,
+                        ..Default::default()
+                    },
+                ],
             },
         ),
     ] {
-        let enabled = native_entropy_endpoint(&instruction, enabled_model);
-        assert_eq!(enabled, 0x42, "host cannot execute {name} positive control");
-        let masked = native_entropy_endpoint(&instruction, CpuidModel::default());
-        assert_eq!(masked, 0x55, "masked {name} executed natively");
+        assert_eq!(
+            native_entropy_endpoint(&cpuid_probe, enabled_model.clone()),
+            (1, 1),
+            "guest does not observe enabled {name} CPUID bit"
+        );
+        assert_eq!(
+            native_entropy_endpoint(&cpuid_probe, CpuidModel::default()),
+            (1, 0),
+            "guest observes masked {name} CPUID bit"
+        );
+        let enabled = native_entropy_instruction_endpoint(&instruction, enabled_model);
+        assert_eq!(
+            enabled,
+            (1, 0x42),
+            "host cannot execute {name} positive control"
+        );
+        let masked = native_entropy_instruction_endpoint(&instruction, CpuidModel::default());
+        assert_eq!(masked, (1, 0x55), "masked {name} executed natively");
     }
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn masked_rdseed_output_is_not_host_entropy() {
+    let code = [
+        0xB9, 0x00, 0x10, 0x0F, 0xC7, 0xF8, 0x72, 0x05, 0xE2, 0xF9, 0xB8, 0x00, 0x00, 0xBA, 0xF8,
+        0x03, 0xEF, 0xF4,
+    ];
+    let observed: Vec<_> = (0..8)
+        .map(|_| native_entropy_endpoint(&code, CpuidModel::default()))
+        .collect();
+    assert!(
+        observed.iter().all(|value| *value == observed[0]),
+        "identical masked RDSEED guests observed different native outputs: {observed:?}"
+    );
+    assert_eq!(observed[0], (1, 0x55), "masked RDSEED executed natively");
 }
 
 #[test]
