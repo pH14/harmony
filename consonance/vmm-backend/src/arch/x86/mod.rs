@@ -17,6 +17,8 @@ pub(crate) use nested::{
 };
 
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use state::validate_kvm_xsave_mxcsr_presence;
 pub use state::{
     DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave, canonicalize_xsave_with_restore_bv,
