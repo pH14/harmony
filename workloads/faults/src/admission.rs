@@ -522,6 +522,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     let writable_executable = object::elf::PF_W | object::elf::PF_X;
     let mut sites = Vec::new();
     let mut executable_segments = 0;
+    let mut x86_executable_loads = Vec::new();
     for (header_index, header) in elf.elf_program_headers().iter().enumerate() {
         let flags = header.p_flags(elf.endian());
         match header.p_type(elf.endian()) {
@@ -544,6 +545,9 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 let code = header
                     .data(elf.endian(), bytes)
                     .map_err(|()| "executable ELF segment outside file")?;
+                if elf.architecture() == object::Architecture::X86_64 {
+                    x86_executable_loads.push((start, code));
+                }
                 let mut mapped_sections = 0;
                 let mut mapped_ranges = Vec::new();
                 for section in elf.sections() {
@@ -715,6 +719,31 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     }
     if executable_segments == 0 {
         return Err("no executable ELF segment".into());
+    }
+    x86_executable_loads.sort_unstable_by_key(|(start, _)| *start);
+    for pair in x86_executable_loads.windows(2) {
+        let (left_start, left) = pair[0];
+        let (right_start, right) = pair[1];
+        if left_start.checked_add(u64::try_from(left.len())?) != Some(right_start) {
+            continue;
+        }
+        let suffix_len = left.len().min(2);
+        let mut boundary = left[left.len() - suffix_len..].to_vec();
+        boundary.extend_from_slice(&right[..right.len().min(2)]);
+        for (offset, candidate) in boundary.windows(3).enumerate() {
+            if offset < suffix_len
+                && offset + 3 > suffix_len
+                && candidate[0] == 0x0f
+                && candidate[1] == 0xc7
+                && ((candidate[2] >> 3) & 7) >= 6
+            {
+                let address = right_start - u64::try_from(suffix_len - offset)?;
+                return Err(format!(
+                    "hardware entropy opcode crosses executable segment boundary at 0x{address:x}"
+                )
+                .into());
+            }
+        }
     }
     sites.sort();
     sites.dedup();
@@ -1251,6 +1280,73 @@ mod tests {
             assert!(
                 error.contains("crosses executable section boundary"),
                 "{mnemonic} crossing section start: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn x86_entropy_split_across_adjacent_executable_loads_is_rejected() {
+        for (mnemonic, modrm) in [("RDRAND", 0xf0), ("RDSEED", 0xf8)] {
+            let mut bytes = vec![0; 8203];
+            bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+            for (offset, value) in [
+                (16, 2_u16),
+                (18, 62),
+                (52, 64),
+                (54, 56),
+                (56, 3),
+                (58, 64),
+                (60, 4),
+                (62, 3),
+            ] {
+                bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+            for (offset, value) in [(24, 0x1ffe_u64), (32, 64), (40, 256)] {
+                bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            for (index, size) in [(0_usize, 4096_u64), (1, 10)] {
+                let offset = 64 + index * 56;
+                bytes[offset..offset + 4].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
+                bytes[offset + 4..offset + 8].copy_from_slice(&5_u32.to_le_bytes());
+                for (field, value) in [
+                    (8, 4096_u64 + index as u64 * 4096),
+                    (16, 0x1000_u64 + index as u64 * 4096),
+                    (24, 0x1000_u64 + index as u64 * 4096),
+                    (32, size),
+                    (40, size),
+                    (48, 4096),
+                ] {
+                    bytes[offset + field..offset + field + 8].copy_from_slice(&value.to_le_bytes());
+                }
+                let section = 320 + index * 64;
+                bytes[section + 4..section + 8]
+                    .copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+                for (field, value) in [
+                    (8, 6_u64),
+                    (16, 0x1000_u64 + index as u64 * 4096),
+                    (24, 4096_u64 + index as u64 * 4096),
+                    (32, size),
+                    (48, 1),
+                ] {
+                    bytes[section + field..section + field + 8]
+                        .copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            bytes[176..180].copy_from_slice(&object::elf::PT_GNU_STACK.to_le_bytes());
+            bytes[180..184].copy_from_slice(&6_u32.to_le_bytes());
+            bytes[452..456].copy_from_slice(&object::elf::SHT_STRTAB.to_le_bytes());
+            bytes[472..480].copy_from_slice(&8202_u64.to_le_bytes());
+            bytes[480..488].copy_from_slice(&1_u64.to_le_bytes());
+            bytes[496..504].copy_from_slice(&1_u64.to_le_bytes());
+            bytes[4096..8192].fill(0x90);
+            bytes[8190..8192].copy_from_slice(&[0x0f, 0xc7]);
+            bytes[8192..8202]
+                .copy_from_slice(&[modrm, 0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+            let error = scan_elf(&bytes, "").unwrap_err().to_string();
+            assert!(
+                error.contains("crosses executable segment boundary"),
+                "{mnemonic}: {error}"
             );
         }
     }

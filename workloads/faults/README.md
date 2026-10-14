@@ -65,10 +65,11 @@ instructions even when reviewed. UML runs guest user instructions natively, so
 the VM's hidden feature bits do not protect a guarded call site. This admission
 check walks the bytes of executable load segments in the packed image. Section
 headers do not determine what the guest loader executes. It rejects x86
-entropy opcodes whose bytes cross a section boundary, where each side would
-otherwise be decoded independently. The scan still requires cooperative
-workloads: dynamically generated code and instructions hidden inside another
-instruction's operand bytes are outside its guarantee.
+entropy opcodes whose bytes cross a section or adjacent executable load
+boundary, where each side would otherwise be decoded independently. The scan
+still requires cooperative workloads: dynamically generated code and
+instructions hidden inside another instruction's operand bytes are outside its
+guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
@@ -87,15 +88,16 @@ x86 it decodes each allocated section inside an executable load segment from
 its start, regardless of the section's executable flag, and separately decodes
 the gaps between sections. This preserves instruction alignment when a segment
 begins with headers or other data without reporting an instruction assembled
-across a section boundary. On arm64 it checks aligned instruction words across
-the complete 4 KiB page-rounded file mapping of each executable load, including
-bytes beyond the declared load size, and rejects another load segment that
-aliases an executable memory page. Images with read-only data in executable
-loads must link with separate code pages. It ignores a trailing partial word
-that cannot hold an instruction. The LL/SC mask excludes LSE CASP and ordinary
-acquire/release loads, which do not use the reservation monitor. A
-binary built to hide an x86 instruction inside another instruction's operand
-bytes can still pass.
+across a section boundary. It rejects entropy opcode patterns split across
+these decoded ranges or adjacent executable loads. On arm64 it checks aligned
+instruction words across the complete 4 KiB page-rounded file mapping of each
+executable load, including bytes beyond the declared load size, and rejects
+another load segment that aliases an executable memory page. Images with
+read-only data in executable loads must link with separate code pages. It
+ignores a trailing partial word that cannot hold an instruction. The LL/SC
+mask excludes LSE CASP and ordinary acquire/release loads, which do not use
+the reservation monitor. A binary built to hide an x86 instruction inside
+another instruction's operand bytes can still pass.
 
 `harmony prepare IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete
