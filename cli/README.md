@@ -282,8 +282,9 @@ and further exploration uses `search`.
 
 ## Storage and boundaries
 
-The v3 manifest contains the loaded Harmony executable identity, resolved workload and runner identities, artifact
-hashes, parent recording and a package-owned payload. Shared recording storage never decodes
+The v3 manifest contains the loaded Harmony executable identity, resolved
+workload and runner identities, artifact hashes, parent recording and a
+package-owned payload. Shared recording storage never decodes
 fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.

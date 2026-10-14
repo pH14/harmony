@@ -545,26 +545,15 @@ impl Drop for Mapping {
 pub struct WorkerLauncher {
     program: PathBuf,
     args: Vec<OsString>,
-    expected_image: Option<String>,
+    expected_image: String,
 }
 
 impl WorkerLauncher {
-    #[must_use]
-    pub fn new(program: PathBuf, args: Vec<OsString>) -> Self {
-        Self {
-            program,
-            args,
-            expected_image: None,
-        }
-    }
-
     pub fn current_exe(args: Vec<OsString>) -> io::Result<Self> {
         Ok(Self {
             program: std::env::current_exe()?,
             args,
-            expected_image: Some(crate::image_identity::loaded_executable_identity(
-                std::process::id(),
-            )?),
+            expected_image: crate::image_identity::loaded_executable_identity_self()?,
         })
     }
 
@@ -583,23 +572,21 @@ impl WorkerLauncher {
             command.pre_exec(move || set_cloexec(raw, false));
         }
         let mut process = command.spawn()?;
-        if let Some(expected) = &self.expected_image {
-            let actual = crate::image_identity::loaded_executable_identity(process.id());
-            let check = match actual {
-                Ok(actual) if actual == *expected => Ok(()),
-                Ok(_) => Err(io::Error::other(
-                    "session worker executable differs from launcher",
-                )),
-                Err(error) => Err(io::Error::new(
-                    error.kind(),
-                    format!("cannot identify session worker executable: {error}"),
-                )),
-            };
-            if let Err(error) = check {
-                let _ = process.kill();
-                let _ = process.wait();
-                return Err(error);
-            }
+        let actual = crate::image_identity::loaded_executable_identity_for_child(process.id());
+        let check = match actual {
+            Ok(actual) if actual == self.expected_image => Ok(()),
+            Ok(_) => Err(io::Error::other(
+                "session worker executable differs from launcher",
+            )),
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!("cannot identify session worker executable: {error}"),
+            )),
+        };
+        if let Err(error) = check {
+            let _ = process.kill();
+            let _ = process.wait();
+            return Err(error);
         }
         drop(child);
         Ok((process, parent))

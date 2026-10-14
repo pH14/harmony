@@ -91,9 +91,7 @@ impl Manifest {
         let checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         Ok(Self {
             format: "harmony-run-v3".into(),
-            binary_identity: consonance_client::image_identity::loaded_executable_identity(
-                std::process::id(),
-            )?,
+            binary_identity: consonance_client::image_identity::loaded_executable_identity_self()?,
             architecture: std::env::consts::ARCH.into(),
             mode: mode.into(),
             status: "running".into(),
@@ -153,7 +151,7 @@ impl Manifest {
             return Err("run architecture differs from this host".into());
         }
         if self.binary_identity
-            != consonance_client::image_identity::loaded_executable_identity(std::process::id())?
+            != consonance_client::image_identity::loaded_executable_identity_self()?
         {
             return Err("this run requires the exact Harmony executable that recorded it".into());
         }
