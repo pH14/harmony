@@ -87,8 +87,10 @@ fn output_only_difference_at_spawn_is_a_divergence() {
     );
     let point = bisect_divergence(&a, &b, 7, 0, 0).unwrap();
     assert_eq!(point.first_divergent_work, 0);
-    assert_eq!(point.hash_a, point.hash_b);
-    assert_ne!(point.observable_digest_a, point.observable_digest_b);
+    assert_eq!(point.hash_a, [0; 32]);
+    assert_eq!(point.hash_b, [0; 32]);
+    assert_eq!(point.observable_digest_a, [b'A'; 32]);
+    assert_eq!(point.observable_digest_b, [b'B'; 32]);
 }
 
 #[test]
@@ -103,8 +105,10 @@ fn output_only_difference_after_work_is_detected_and_bisected() {
     );
     let point = bisect_divergence(&a, &b, 7, 0, 5).unwrap();
     assert_eq!(point.first_divergent_work, 3);
-    assert_eq!(point.hash_a, point.hash_b);
-    assert_ne!(point.observable_digest_a, point.observable_digest_b);
+    assert_eq!(point.hash_a, [3; 32]);
+    assert_eq!(point.hash_b, [3; 32]);
+    assert_eq!(point.observable_digest_a, [b'A'; 32]);
+    assert_eq!(point.observable_digest_b, [b'B'; 32]);
 }
 
 #[test]
