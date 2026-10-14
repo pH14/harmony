@@ -650,6 +650,13 @@ fn vgic_level_attr(block: u32) -> u64 {
     VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
 }
 
+fn has_timer_owned_ppi_delivery_state(s: &Arm64GicState) -> bool {
+    let mask = (1u32 << KVM_VTIMER_PPI) | (1u32 << KVM_PTIMER_PPI);
+    [s.pending[0], s.active[0], s.line_level[0]]
+        .into_iter()
+        .any(|word| word & mask != 0)
+}
+
 fn has_pending_or_asserted_spi(s: &Arm64GicState) -> bool {
     let words = HARMONY_GIC_NR_IRQS as usize / 32;
     s.pending[1..words]
@@ -790,6 +797,11 @@ fn read_vgic_state<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
 
 fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
     let s = read_vgic_state(k)?;
+    if has_timer_owned_ppi_delivery_state(&s) {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with timer-owned PPI delivery state",
+        });
+    }
     if has_pending_or_asserted_spi(&s) {
         return Err(BackendError::Unsupported {
             what: "save vGIC with pending or asserted SPI",
@@ -815,6 +827,7 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.ctlr & 1 != 0
         || s.bpr0 > 7
         || s.bpr1 > 7
+        || has_timer_owned_ppi_delivery_state(s)
         || has_pending_or_asserted_spi(s)
         || single_asserted_ppi(s).is_err()
     {
@@ -4080,6 +4093,46 @@ mod tests {
 
         backend.set_pending_irq(Some(GicIntId(29))).unwrap();
         assert_eq!(backend.save().unwrap().gic.unwrap().line_level[0], 1 << 29);
+    }
+
+    #[test]
+    fn timer_owned_ppi_delivery_state_refuses_capture_and_restore() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let valid = save_vcpu(&fake).unwrap();
+        for intid in [20, 30] {
+            let bit = 1u32 << intid;
+            for field in [0, 1, 2] {
+                let mut malformed = valid;
+                let gic = malformed.gic.as_mut().unwrap();
+                let (group, attr) = match field {
+                    0 => {
+                        gic.pending[0] = bit;
+                        vgic_bitmap_attr(0, GIC_ISPENDR)
+                    }
+                    1 => {
+                        gic.active[0] = bit;
+                        vgic_bitmap_attr(0, GIC_ISACTIVER)
+                    }
+                    _ => {
+                        gic.line_level[0] = bit;
+                        (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(0))
+                    }
+                };
+                assert!(matches!(
+                    validate_restore_vcpu_state(&malformed),
+                    Err(BackendError::InvalidState)
+                ));
+                fake.set_vgic_attr(group, attr, false, u64::from(bit))
+                    .unwrap();
+                assert!(matches!(
+                    save_vcpu(&fake),
+                    Err(BackendError::Unsupported { .. })
+                ));
+                fake.set_vgic_attr(group, attr, false, 0).unwrap();
+            }
+        }
+        assert_eq!(save_vcpu(&fake).unwrap(), valid);
     }
 
     #[test]

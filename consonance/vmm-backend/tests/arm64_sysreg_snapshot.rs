@@ -375,6 +375,62 @@ fn guest_physical_timer_state_refuses_capture_and_legacy_restore() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore() {
+    let program = [
+        0xd280_0020,
+        0xd51b_e200,
+        0xd51b_e220,
+        0xd503_3fdf,
+        0xd53b_e220,
+        0xd2a1_2001,
+        0xb900_0020,
+        0xd280_0000,
+        0xd51b_e220,
+        0xd51b_e240,
+        0xd503_3fdf,
+        0xd280_0100,
+        0xf2b0_8000,
+        0xd400_0002,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    assert_eq!(source.next_store(), 5);
+    assert_eq!(source.backend.run().unwrap(), CommonExit::Shutdown.into());
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { what })
+            if what == "save vGIC with timer-owned PPI delivery state"
+    ));
+
+    let mut target = Guest::new(live_backend(), &[0x1400_0000]);
+    let valid = target.save();
+    for intid in [20, 30] {
+        let bit = 1u32 << intid;
+        for field in [0, 1, 2] {
+            let mut malformed = valid;
+            let gic = malformed.gic.as_mut().unwrap();
+            match field {
+                0 => gic.pending[0] = bit,
+                1 => gic.active[0] = bit,
+                _ => gic.line_level[0] = bit,
+            }
+            assert!(matches!(
+                target.backend.restore(&malformed),
+                Err(vmm_backend::BackendError::InvalidState)
+            ));
+            assert_eq!(target.save().gic, valid.gic);
+        }
+    }
+    target
+        .backend
+        .set_pending_irq(Some(vmm_backend::GicIntId(29)))
+        .unwrap();
+    assert_eq!(target.save().gic.unwrap().line_level[0], 1 << 29);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {
     let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
     let mut state = guest.save();

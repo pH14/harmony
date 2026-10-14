@@ -348,7 +348,13 @@ the backend refuses external injection of both timer-owned PPIs. The
 live `guest_physical_timer_state_refuses_capture_and_legacy_restore` check
 observes a programmed timer's guest control value of `0x5` against a fresh
 guest's `0x0`, then verifies capture and old-record restore refusal. It also
-checks a disabled timer with a nonzero compare value.
+checks a disabled timer with a nonzero compare value. KVM can retain a
+timer-owned PPI 20 or 30 in pending, active, or asserted line state after the
+timer controls return to zero at a terminal cut. Capture refuses any of those
+delivery states, and restore rejects a record containing one. The live
+`guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore` check
+exercises the asserted PPI 30 terminal cut and confirms an external PPI 29
+remains admitted.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
