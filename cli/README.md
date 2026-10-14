@@ -224,13 +224,16 @@ permits 5,000 new executions, in addition to finishing any work already queued a
 removes the previous execution ceiling. Checkpoints are written periodically and
 at completion; an interrupted search can retain an earlier checkpoint. NES retains
 its checkpoint journal and origin input under `package/`. A new seed intentionally
-changes the draw sequence. The journal identifies the latest retained checkpoint;
-the additional execution budget uses its verified header's reserved count, so a
-stale journal count cannot change the continuation budget.
+changes the draw sequence. The journal identifies the latest retained checkpoint
+and binds its bytes with SHA-256. Resume refuses a missing or changed latest
+checkpoint or an unjournaled retained checkpoint, including after an
+interruption. The additional execution budget uses the verified header's
+reserved count, so a stale journal count cannot
+change the continuation budget.
 Each search records a fresh owner in its initial manifest and checkpoint
 headers. Resume refuses a checkpoint from another saved search, including after
-an interrupted run. Completed searches also record the selected checkpoint's
-SHA-256 in their manifest and refuse changed checkpoint bytes, even when they
+an interrupted run. A completed search also records the selected checkpoint's
+SHA-256 in its manifest and refuses changed checkpoint bytes, even when they
 remain valid for the same workload.
 
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.

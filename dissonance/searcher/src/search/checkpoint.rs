@@ -79,6 +79,7 @@ struct CheckpointLogLine<'a> {
     reserved: u64,
     reason: &'a str,
     file: String,
+    checkpoint_sha256: String,
     write_seconds: f64,
     snapshots: usize,
     new_snapshots: usize,
@@ -243,7 +244,10 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         body(&mut out)?;
         out.flush()?;
         let hashing = out.into_inner().map_err(|error| error.into_error())?;
-        let checksum = hashing.digest.finalize();
+        let checksum = hashing.digest.clone().finalize();
+        let mut checkpoint_digest = hashing.digest;
+        checkpoint_digest.update(checksum);
+        let checkpoint_sha256 = format!("{:x}", checkpoint_digest.finalize());
         let mut file = hashing.inner;
         file.write_all(&checksum)?;
         file.sync_data()?;
@@ -277,6 +281,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
             reserved: header.reserved,
             reason: &header.reason,
             file: name,
+            checkpoint_sha256,
             write_seconds: started.elapsed().as_secs_f64(),
             snapshots: index.len(),
             new_snapshots,
@@ -487,6 +492,15 @@ mod tests {
         assert_eq!(
             read_header(&path).expect("read header").checkpoint_owner,
             Some("saved-run-a".into())
+        );
+        let journal = fs::read_to_string(directory.join(CHECKPOINT_LOG)).expect("read journal");
+        let record: serde_json::Value = serde_json::from_str(journal.trim()).expect("record");
+        assert_eq!(
+            record["checkpoint_sha256"],
+            format!(
+                "{:x}",
+                Sha256::digest(fs::read(path).expect("read checkpoint"))
+            )
         );
         drop(writer);
         fs::remove_dir_all(directory).expect("remove directory");
