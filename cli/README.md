@@ -258,7 +258,9 @@ fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
-Replay verifies the exact CLI executable, architecture and saved artifact hashes;
+Replay verifies the exact CLI executable, architecture and saved artifact hashes.
+Faults replay, branching and continuation also compare the saved `report.json`
+or `run.json` outcome with its manifest copy before using that evidence.
 UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
 same processor. Standalone command runs and replays bind that saved identity

@@ -43,6 +43,23 @@ impl DerefMut for Manifest {
     }
 }
 impl Manifest {
+    fn outcome_file(&self) -> &'static str {
+        if self.bundle.is_some() {
+            "report.json"
+        } else {
+            "run.json"
+        }
+    }
+
+    fn outcome(&self, path: &Path) -> Result<serde_json::Value> {
+        let file = path.join(self.outcome_file());
+        if file.is_file() {
+            Ok(serde_json::from_slice(&fs::read(file)?)?)
+        } else {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
     pub fn new(
         config: Config,
         mode: &str,
@@ -87,15 +104,16 @@ impl Manifest {
             actions: self.actions.clone(),
             settle: self.settle,
             uml_entropy_admitted: self.uml_entropy_admitted,
-            outcome: if path.join("report.json").is_file() {
-                serde_json::from_slice(&fs::read(path.join("report.json"))?)?
-            } else if path.join("run.json").is_file() {
-                serde_json::from_slice(&fs::read(path.join("run.json"))?)?
-            } else {
-                serde_json::Value::Null
-            },
+            outcome: self.outcome(path)?,
         })?;
         record.save(path)
+    }
+    pub fn verify(&self, path: &Path) -> Result<()> {
+        self.record.verify(path)?;
+        if self.outcome(path)? != self.record.payload["outcome"] {
+            return Err(format!("recorded {} has changed", self.outcome_file()).into());
+        }
+        Ok(())
     }
     pub fn inherit(&self, source: &Path, destination: &Path, mode: &str) -> Result<Self> {
         let mut child = self.clone();
@@ -143,6 +161,87 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edited_report_fails_verification_before_replay_or_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = serde_json::json!({
+            "package":"faults","mode":"search","image_sha256":"image","kernel_sha256":"kernel",
+            "identity":"runner","seed":0,"workers":1,"ram_mib":1024,"executions":1,
+            "bug_found":false,"first_bug_execution":null,"bugs":[],"replays":[],
+            "execution_ticks":1,"wall_seconds":1,"execution_failures":0
+        });
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":report
+        });
+        record.save(dir.path()).unwrap();
+        let manifest = Manifest::read(dir.path()).unwrap();
+        manifest.verify(dir.path()).unwrap();
+
+        let mut changed = report;
+        changed["bug_found"] = true.into();
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        let read: faults_workload::Report =
+            serde_json::from_slice(&fs::read(dir.path().join("report.json")).unwrap()).unwrap();
+        assert!(read.bug_found);
+        assert!(
+            manifest
+                .verify(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("report.json has changed")
+        );
+    }
+
+    #[test]
+    fn edited_command_record_fails_verification_before_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorded = serde_json::json!({"exit_code":0,"output":"same"});
+        fs::write(
+            dir.path().join("run.json"),
+            serde_json::to_vec(&recorded).unwrap(),
+        )
+        .unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "run").unwrap();
+        record.payload = serde_json::json!({
+            "bundle":null,"actions":[],"settle":true,"outcome":recorded
+        });
+        record.save(dir.path()).unwrap();
+        let manifest = Manifest::read(dir.path()).unwrap();
+        manifest.verify(dir.path()).unwrap();
+
+        fs::write(
+            dir.path().join("run.json"),
+            serde_json::to_vec(&serde_json::json!({"exit_code":0,"output":"changed"})).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .verify(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("run.json has changed")
+        );
+        fs::remove_file(dir.path().join("run.json")).unwrap();
+        assert!(manifest.verify(dir.path()).is_err());
+    }
+
     #[test]
     fn old_run_state_has_no_uml_entropy_admission_evidence() {
         let state: State = serde_json::from_value(serde_json::json!({
