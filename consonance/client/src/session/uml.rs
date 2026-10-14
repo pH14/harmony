@@ -55,7 +55,7 @@ fn root_identity(
     initramfs: &[u8],
 ) -> [u8; 32] {
     let mut identity = Sha256::new();
-    identity.update(b"harmony-uml-root-v2\0");
+    identity.update(b"harmony-uml-root-v3\0");
     identity.update(profile.identity_sha256().as_bytes());
     for field in [&host.architecture, &host.cpu_model, &host.cpu_features] {
         identity.update((field.len() as u64).to_le_bytes());
@@ -65,10 +65,12 @@ fn root_identity(
     identity.update(config.seed.to_le_bytes());
     identity.update(config.memory_mib.to_le_bytes());
     identity.update(config.setup_budget.to_le_bytes());
+    identity.update((config.kernel_arguments.len() as u64).to_le_bytes());
     for argument in &config.kernel_arguments {
         identity.update((argument.len() as u64).to_le_bytes());
         identity.update(argument.as_bytes());
     }
+    identity.update((initramfs.len() as u64).to_le_bytes());
     identity.update(initramfs);
     identity.finalize().into()
 }
@@ -801,5 +803,30 @@ mod tests {
         assert_eq!(session.snapshots.len(), 0);
         assert_eq!(session.next, 1);
         index.release(root);
+    }
+
+    #[test]
+    fn root_identity_separates_boot_arguments_from_initramfs_bytes() {
+        let profile = profile();
+        let host = host();
+        let mut config = UmlLaunch {
+            profile: PathBuf::new(),
+            expected_profile_identity_sha256: profile.identity_sha256().to_owned(),
+            expected_host: host.clone(),
+            initramfs: PathBuf::new(),
+            expected_initramfs_sha256: Sha256::digest(b"070701").into(),
+            memory_mib: 128,
+            kernel_arguments: vec![String::new()],
+            work_parent: PathBuf::new(),
+            seed: 7,
+            setup_budget: 100,
+            progress_limit: Duration::from_secs(1),
+        };
+        let with_empty_argument = root_identity(&config, &profile, &host, b"070701");
+        config.kernel_arguments.clear();
+        let mut padded_initramfs = [0_u8; 8].to_vec();
+        padded_initramfs.extend_from_slice(b"070701");
+        let with_padding = root_identity(&config, &profile, &host, &padded_initramfs);
+        assert_ne!(with_empty_argument, with_padding);
     }
 }
