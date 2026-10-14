@@ -42,6 +42,24 @@ fn stable_report(payload: &serde_json::Value) -> serde_json::Value {
     outcome
 }
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn replay_report_matches(
+    source_mode: &str,
+    saved: &serde_json::Value,
+    replayed: &serde_json::Value,
+) -> bool {
+    match source_mode {
+        "search" => {
+            saved["archive"]["entries"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+                && stable_report(saved) == stable_report(replayed)
+        }
+        "replay" => saved == replayed,
+        _ => false,
+    }
+}
+
 impl Package for Nested {
     fn name(&self) -> &'static str {
         "nested"
@@ -214,7 +232,7 @@ fn execute(mut request: Request) -> Result<u8> {
     });
     let result = result.and_then(|finding| {
         if let Some((_, source, _)) = &original
-            && stable_report(&source.payload) != stable_report(&m.payload)
+            && !replay_report_matches(&source.mode, &source.payload, &m.payload)
         {
             return Err("nested replay report diverged from saved campaign".into());
         }
@@ -275,9 +293,24 @@ mod tests {
         });
         let mut replayed = saved.clone();
         replayed["archive"]["entries"] = serde_json::json!([{"key": "materialized"}]);
-        assert_eq!(stable_report(&saved), stable_report(&replayed));
+        assert!(replay_report_matches("search", &saved, &replayed));
         replayed["executions_completed"] = serde_json::json!(7);
-        assert_ne!(stable_report(&saved), stable_report(&replayed));
+        assert!(!replay_report_matches("search", &saved, &replayed));
+    }
+
+    #[test]
+    fn nested_replay_rejects_fabricated_saved_archive_entries() {
+        let saved = serde_json::json!({
+            "executions_completed": 1,
+            "archive": {"entries": [{"forged": "phantom verified archive"}], "evidence": {"failures": []}}
+        });
+        let replayed = serde_json::json!({
+            "executions_completed": 1,
+            "archive": {"entries": [{"key": "materialized"}], "evidence": {"failures": []}}
+        });
+        assert!(!replay_report_matches("search", &saved, &replayed));
+        assert!(replay_report_matches("replay", &replayed, &replayed));
+        assert!(!replay_report_matches("replay", &saved, &replayed));
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
