@@ -57,6 +57,7 @@ The scan rejects:
   review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
 - an arm64 monitor-based LL/SC instruction, even if listed for review;
+- an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
 For User-mode Linux, preparation rejects all four scanned hardware entropy
@@ -88,7 +89,8 @@ begins with headers or other data without reporting an instruction assembled
 across a section boundary. On arm64 it checks aligned instruction words across
 the complete 4 KiB page-rounded file mapping of each executable load, including
 bytes beyond the declared load size, and rejects another load segment that
-aliases an executable file or memory page. It ignores a trailing partial word
+aliases an executable memory page. Images with read-only data in executable
+loads must link with separate code pages. It ignores a trailing partial word
 that cannot hold an instruction. The LL/SC mask excludes LSE CASP and ordinary
 acquire/release loads, which do not use the reservation monitor. A
 binary built to hide an x86 instruction inside another instruction's operand
