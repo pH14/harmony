@@ -632,6 +632,7 @@ impl HvfBackend {
             }
             if raw.reason == HV_EXIT_REASON_EXCEPTION
                 && exit_ec(raw.exception.syndrome) == ESR_EC_HVC64
+                && self.reg(HV_REG_PC)? == gpa + (TLB_FLUSH_STUB.len() * 4) as u64
             {
                 return Ok(());
             }
@@ -1465,6 +1466,33 @@ mod tests {
         assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1011, 4));
         assert_eq!(TLB_FLUSH_STUB[3], barrier(0b1111, 6));
         assert_eq!(TLB_FLUSH_STUB[4], 0xd400_0002);
+    }
+
+    #[test]
+    #[ignore = "live HVF flush-origin boundary; run on Apple silicon"]
+    fn restore_rejects_hvc_from_guest_exception_vector() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut target = backend.save().unwrap();
+        target.core.pc = 0x1000;
+        let stub_gpa = backend.ensure_flush_stub().unwrap();
+        let stub_page = backend.flush_stub.as_ref().unwrap().page;
+        // SAFETY: the owned flush allocation is a live 16 KiB page; both word
+        // offsets lie within it, and the vCPU is stopped while it is changed.
+        unsafe {
+            stub_page.add(16).cast::<u32>().write(0);
+            stub_page.add(0x200).cast::<u32>().write(0xd400_0002);
+            sys_icache_invalidate(stub_page.cast(), HV_PAGE_SIZE);
+        }
+        backend.set_sysreg(HV_SYS_REG_VBAR_EL1, stub_gpa).unwrap();
+        assert!(matches!(
+            backend.restore(&target),
+            Err(BackendError::Internal(
+                "HVF translation flush stub did not reach its hypercall"
+            ))
+        ));
+        assert_eq!(backend.reg(HV_REG_PC).unwrap(), stub_gpa + 0x204);
+        assert!(backend.state_poisoned);
     }
 
     #[test]

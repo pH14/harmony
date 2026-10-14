@@ -317,6 +317,9 @@ the snapshot. Host writes to guest RAM go through
 `Backend::invalidate_instruction_cache`, which HVF clips to the host ranges it
 mapped. Stage 2 never changes across a restore and needs no maintenance: the
 host allocation behind guest RAM keeps its address.
+The flush accepts its HVC exit only when the vCPU PC equals the instruction
+after the private stub. An HVC in a guest exception vector can otherwise make
+an aborted stub look complete; restore must refuse and retire the backend.
 
 A watchdog cancellation requested before the stub's guest entry is consumed by
 that entry and retires no instruction, so the stub entry is retried once. The
