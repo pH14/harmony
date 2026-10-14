@@ -84,6 +84,7 @@ pub struct ToyMachine {
 
 impl ToyMachine {
     pub fn new(program: Vec<Instr>, seed: u64) -> Self {
+        let halted = program.is_empty();
         Self {
             program,
             regs: [0; 8],
@@ -91,7 +92,7 @@ impl ToyMachine {
             pc: 0,
             out_log: Vec::new(),
             prng: if seed == 0 { ZERO_SEED_STATE } else { seed },
-            halted: false,
+            halted,
             work: 0,
         }
     }
@@ -137,6 +138,10 @@ impl ToyMachine {
             }
             Instr::Halt => self.halted = true,
         }
+        self.halted |= self
+            .program
+            .get(usize::try_from(self.pc).unwrap_or(usize::MAX))
+            .is_none();
     }
 }
 
