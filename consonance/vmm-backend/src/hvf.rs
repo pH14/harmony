@@ -443,6 +443,9 @@ pub struct HvfBackend {
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
     host_id_regs: std::collections::BTreeMap<u16, u64>,
+    restore_poisoned: bool,
+    #[cfg(test)]
+    fail_flush_after_staging: bool,
 }
 
 struct FlushStub {
@@ -508,9 +511,19 @@ impl HvfBackend {
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
             host_id_regs: std::collections::BTreeMap::new(),
+            restore_poisoned: false,
+            #[cfg(test)]
+            fail_flush_after_staging: false,
         };
         backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
         Ok(backend)
+    }
+
+    fn ensure_healthy(&self) -> Result<()> {
+        if self.restore_poisoned {
+            return Err(BackendError::Internal("backend state mutation failed"));
+        }
+        Ok(())
     }
 
     fn ensure_flush_stub(&mut self) -> Result<u64> {
@@ -564,6 +577,10 @@ impl HvfBackend {
         hv("hv_vcpu_set_pending_interrupt", unsafe {
             hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, false)
         })?;
+        #[cfg(test)]
+        if self.fail_flush_after_staging {
+            return Err(BackendError::Internal("injected HVF flush failure"));
+        }
         for _ in 0..2 {
             // SAFETY: the vCPU is live and this call runs on its owning thread.
             hv("hv_vcpu_run", unsafe { hv_vcpu_run(self.vcpu) })?;
@@ -630,6 +647,7 @@ impl HvfBackend {
     }
 
     fn ensure_runnable(&self) -> Result<()> {
+        self.ensure_healthy()?;
         if !self.configured {
             return Err(BackendError::NotConfigured);
         }
@@ -854,6 +872,7 @@ impl Backend for HvfBackend {
     type A = Arm64;
 
     fn set_policy(&mut self, policy: &Arm64Policy) -> Result<()> {
+        self.ensure_healthy()?;
         for (&encoding, &value) in &policy.id_regs.regs {
             if let Some(measured) = hvf_implicit_identity_value(encoding) {
                 if value != measured {
@@ -885,6 +904,7 @@ impl Backend for HvfBackend {
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
+        self.ensure_healthy()?;
         if host.is_empty() {
             return Err(BackendError::Memory("zero-length memory region"));
         }
@@ -934,6 +954,7 @@ impl Backend for HvfBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.ensure_healthy()?;
         for (start, len) in contiguous_runs(&self.writable) {
             // SAFETY: every recorded page lies inside a region this backend
             // mapped with `hv_vm_map`, and the call only removes the guest's
@@ -978,6 +999,7 @@ impl Backend for HvfBackend {
     }
 
     fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
+        self.ensure_healthy()?;
         self.pending_irq = id;
         Ok(())
     }
@@ -987,6 +1009,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        self.ensure_healthy()?;
         match self.pending {
             Pending::MmioLoad {
                 reg,
@@ -1026,6 +1049,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         match self.pending {
             Pending::SysregRead { .. } | Pending::SysregWrite => {
                 let exception = undefined_exception(
@@ -1047,6 +1071,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         if self.pending == Pending::SysregWrite {
             self.pending = Pending::None;
             Ok(())
@@ -1056,6 +1081,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
+        self.ensure_healthy()?;
         Err(BackendError::NoPendingRead)
     }
 
@@ -1064,10 +1090,15 @@ impl Backend for HvfBackend {
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
-        Ok(())
+        self.ensure_healthy()
+    }
+
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        self.ensure_healthy()
     }
 
     fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
@@ -1075,6 +1106,7 @@ impl Backend for HvfBackend {
     }
 
     fn save(&mut self) -> Result<Arm64VcpuState> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
@@ -1175,6 +1207,7 @@ impl Backend for HvfBackend {
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         validate_restore_vcpu_state(state)?;
         if state.core.pstate >> 32 != 0 {
             return Err(BackendError::InvalidState);
@@ -1183,10 +1216,12 @@ impl Backend for HvfBackend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
         self.validate_restore_state(state)?;
+        self.restore_poisoned = true;
         self.flush_guest_translations()?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
@@ -1272,6 +1307,7 @@ impl Backend for HvfBackend {
         })?;
         self.pending_irq = None;
         self.accepted_irq = None;
+        self.restore_poisoned = false;
         Ok(())
     }
 
@@ -1351,6 +1387,41 @@ mod tests {
         assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1011, 4));
         assert_eq!(TLB_FLUSH_STUB[3], barrier(0b1111, 6));
         assert_eq!(TLB_FLUSH_STUB[4], 0xd400_0002);
+    }
+
+    #[test]
+    #[ignore = "live HVF failed-restore boundary; run on Apple silicon"]
+    fn failed_translation_flush_retires_mutated_vcpu() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut target = backend.save().unwrap();
+        target.core.pc = 0x1000;
+        validate_restore_vcpu_state(&target).unwrap();
+        let mut invalid = target;
+        invalid.vtimer.masked = false;
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(backend.save().is_ok());
+        backend.fail_flush_after_staging = true;
+        assert!(matches!(
+            backend.restore(&target),
+            Err(BackendError::Internal("injected HVF flush failure"))
+        ));
+        assert_ne!(backend.reg(HV_REG_PC).unwrap(), target.core.pc);
+        for result in [
+            backend.prepare_snapshot(),
+            backend.save().map(|_| ()),
+            backend.read_irq_mask().map(|_| ()),
+            backend.run().map(|_| ()),
+            backend.restore(&target),
+        ] {
+            assert!(matches!(
+                result,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ));
+        }
     }
 
     #[test]
