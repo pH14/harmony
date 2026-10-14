@@ -4489,6 +4489,11 @@ where
         ORIGIN_ARCHIVE => {
             let source =
                 origin_report.ok_or("archive campaign replay requires the source archive")?;
+            if header.origin_checkpoint_sha256.is_some() != origin_checkpoint.is_some() {
+                return Err(
+                    "archive campaign replay checkpoint does not match the recorded stream".into(),
+                );
+            }
             workload.resume_input(source)?
         }
         ORIGIN_SEARCH_CHECKPOINT => {
@@ -4521,8 +4526,8 @@ where
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
-        let logical_path_matches = header.origin_kind != ORIGIN_SNAPSHOT_ROOT
-            || header.origin_checkpoint_path.as_deref() == Some(checkpoint.path.as_str());
+        let logical_path_matches =
+            header.origin_checkpoint_path.as_deref() == Some(checkpoint.path.as_str());
         if !sha256_matches || !logical_path_matches {
             return Err("campaign replay checkpoint does not match the recorded stream".into());
         }
@@ -5357,10 +5362,10 @@ mod tests {
 
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
-        CampaignConfig, CampaignCounters, CampaignExecutionOptions, CampaignJobRecord,
-        CampaignJobResult, CampaignOrigin, CampaignOutcome, CampaignProgressRecord,
-        CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
-        ContinuationAccounting, CoordinatorCore, DrawTables, DurationAdmission,
+        CampaignCheckpoint, CampaignConfig, CampaignCounters, CampaignExecutionOptions,
+        CampaignJobRecord, CampaignJobResult, CampaignOrigin, CampaignOutcome,
+        CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
+        CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables, DurationAdmission,
         EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
         LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL,
         PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry,
@@ -6405,6 +6410,83 @@ mod tests {
                     .expect_err("genesis replay copied a forged source into its report")
                     .to_string();
             assert!(error.contains("origin provenance"), "{field}: {error}");
+        }
+    }
+
+    #[test]
+    fn replay_rejects_archive_checkpoint_provenance_it_did_not_verify() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 5;
+        config.window = 2;
+        let mut source_stream = Vec::new();
+        let (source, snapshots) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut source_stream,
+            None,
+        )
+        .expect("source campaign");
+        let source_archive = source.archive;
+        let source_archive_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
+        );
+        let source_checkpoint = CampaignCheckpoint {
+            path: "source.snapshots".to_owned(),
+            file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes().unwrap())),
+            snapshots,
+        };
+        config.execution_budget = 2;
+        for checkpoint in [None, Some(source_checkpoint)] {
+            let mut archive_stream = Vec::new();
+            let archive_origin = CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                file_sha256: source_archive_sha256.clone(),
+                report: Box::new(source_archive.clone()),
+                checkpoint: checkpoint.clone(),
+            };
+            run_campaign_checkpointed(
+                &workload,
+                &config,
+                &archive_origin,
+                &mut archive_stream,
+                None,
+            )
+            .expect("archive campaign");
+            replay_campaign_checkpointed(
+                &workload,
+                &archive_stream,
+                Some(&source_archive),
+                checkpoint.as_ref(),
+            )
+            .expect("untouched archive replay");
+            let mut lines = std::str::from_utf8(&archive_stream)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+            header["origin_checkpoint_path"] = serde_json::json!("forged.snapshots");
+            if checkpoint.is_none() {
+                header["origin_checkpoint_sha256"] = serde_json::json!("forged-sha256");
+            }
+            lines[0] = serde_json::to_string(&header).unwrap();
+            let result = replay_campaign_checkpointed(
+                &workload,
+                lines.join("\n").as_bytes(),
+                Some(&source_archive),
+                checkpoint.as_ref(),
+            );
+            assert!(
+                result.is_err(),
+                "archive replay certified forged checkpoint provenance: {:?}",
+                result.unwrap().0.origin
+            );
         }
     }
 
