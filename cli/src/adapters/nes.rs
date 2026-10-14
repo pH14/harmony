@@ -493,8 +493,16 @@ fn collect_search(out: &Path, package: &Path, m: &mut Manifest) -> Result<u8> {
     let input: serde_json::Value =
         serde_json::from_slice(&fs::read(out.join("witness-input.json"))?)?;
     let report: serde_json::Value = serde_json::from_slice(&fs::read(out.join("result.json"))?)?;
-    m.payload =
-        serde_json::json!({"input":input,"witness":report["witness"],"finding":report["solved"]});
+    let solved = report["solved"]
+        .as_bool()
+        .ok_or("NES search result has no solved outcome")?;
+    let replayed = report["witness"]["victory"]
+        .as_bool()
+        .ok_or("NES search result has no fresh replay victory outcome")?;
+    if solved != replayed {
+        return Err("NES search result disagrees with its fresh replay witness".into());
+    }
+    m.payload = serde_json::json!({"input":input,"witness":report["witness"],"finding":replayed});
     Ok(0)
 }
 fn record_witness(
@@ -518,6 +526,39 @@ fn record_witness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_rejects_a_claimed_solution_without_fresh_replay_victory() {
+        let out = tempfile::tempdir().unwrap();
+        let package = out.path().join("package");
+        fs::create_dir(&package).unwrap();
+        fs::write(
+            package.join("witness-input.json"),
+            serde_json::to_vec(&serde_json::json!({"actions":[]})).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            package.join("result.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "format":"harmony-search-result-v1",
+                "backend":"native",
+                "solved":true,
+                "witness":{"victory":false,"snapshot_sha256":"fresh"},
+                "endpoint":{"snapshot_sha256":"fresh"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        let result = collect_search(out.path(), &package, &mut manifest);
+        assert!(finish(out.path(), &mut manifest, result).is_err());
+        let saved = Manifest::read(out.path()).unwrap();
+        assert_eq!(saved.status, "failed");
+        assert_ne!(saved.payload["finding"], true);
+    }
+
     #[test]
     fn repeats_preserve_observed_divergence_and_inheritance_clears_results() {
         let mut c = Config::default();
