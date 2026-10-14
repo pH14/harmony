@@ -641,7 +641,7 @@ fn start(
     if randomized {
         filter::deny_personality_change(&mut command);
     }
-    Session::start(command, work, base, checkpoints, restore)
+    Session::start(command, work, base, checkpoints, restore, None)
 }
 
 fn pause(

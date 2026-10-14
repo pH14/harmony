@@ -288,10 +288,11 @@ impl Session {
         profile: &VerifiedProfile,
         checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
+        progress_limit: Option<Duration>,
     ) -> Result<Self, SessionError> {
         let work = launch.work_directory()?;
         let command = launch.command(profile, work.path())?;
-        Self::start(command, work, launch, checkpoints, restore)
+        Self::start(command, work, launch, checkpoints, restore, progress_limit)
     }
 
     pub fn start(
@@ -300,6 +301,7 @@ impl Session {
         launch: &Launch,
         checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
+        progress_limit: Option<Duration>,
     ) -> Result<Self, SessionError> {
         if let Some(checkpoint) = restore {
             checkpoints.require_owned_snapshot(&checkpoint.memory)?;
@@ -324,7 +326,7 @@ impl Session {
             services: Services::new(bridge.seed),
             pending: None,
             failure: None,
-            progress_limit: None,
+            progress_limit,
             request: vec![0; STAMP_LEN + MAX_FRAME],
             response: vec![0; MAX_FRAME],
             memory,
@@ -369,10 +371,6 @@ impl Session {
             .as_deref()
             .and_then(stamp)
             .unwrap_or(self.services.latest)
-    }
-
-    pub fn set_progress_limit(&mut self, limit: Option<Duration>) {
-        self.progress_limit = limit;
     }
 
     pub fn branch(
@@ -993,6 +991,7 @@ fn unexpected_pages(
 #[cfg(test)]
 mod tests {
     use std::os::fd::FromRawFd;
+    use std::os::unix::process::CommandExt;
 
     use super::*;
     use environment::input_spec::nominal_factory;
@@ -1380,10 +1379,40 @@ mod tests {
                 &launch,
                 &second,
                 Some(&foreign),
+                None,
             ),
             Err(SessionError::Memory(MemoryError::ForeignSnapshot))
         ));
         assert!(second.stats().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn restore_boot_wait_obeys_the_progress_limit() {
+        let checkpoints = Checkpoints::new();
+        let saved = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 7, Some(120));
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(crate::bridge::Bridge::new(7));
+        launch.wall_limit = Duration::MAX;
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30"]).process_group(0);
+        let limit = Duration::from_millis(25);
+        let error = match Session::start(
+            command,
+            launch.work_directory().unwrap(),
+            &launch,
+            &checkpoints,
+            Some(&saved),
+            Some(limit),
+        ) {
+            Ok(_) => panic!("a restore-mode guest sent no request"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            SessionError::Boot { error, .. } if matches!(*error, SessionError::Hung(elapsed) if elapsed == limit)
+        ));
     }
 
     #[test]
@@ -1469,7 +1498,7 @@ mod tests {
             .env("HARMONY_UML_DEADLINE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None).unwrap();
+        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
         let first = session.run_until(0).unwrap();
         let zero_hash = session.bridge_state_digest().unwrap();
         assert!(matches!(
