@@ -2068,6 +2068,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         cmd: &str,
         deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
+        let result = self.exec_inner(cmd, deadline);
+        if result.is_err() && self.vmm.is_some() {
+            self.retire_failed_vmm();
+        }
+        result
+    }
+
+    fn exec_inner(
+        &mut self,
+        cmd: &str,
+        deadline: Moment,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
         if self
             .vmm
             .as_ref()
@@ -10340,6 +10352,41 @@ mod tests {
         assert!(matches!(live.handle(&run), Err(ServeError::Vmm(_))));
         assert!(matches!(
             live.handle(&Request::RecordedEnv),
+            Err(ServeError::Poisoned)
+        ));
+    }
+
+    #[test]
+    fn a_failed_exec_step_cannot_publish_a_snapshot() {
+        let mut failed = charged_idle_vmm(0x1D1E);
+        failed.backend.2 = true;
+        let mut live = ControlServer::new(failed, Box::new(|| Ok(charged_idle_vmm(0x1D1E))));
+        assert!(live.handle(&Request::Hello(server_caps())).unwrap().is_ok());
+        assert!(matches!(
+            live.handle(&Request::Exec {
+                cmd: "true".into(),
+                deadline: Moment(1_000),
+            }),
+            Err(ServeError::Vmm(_))
+        ));
+        assert!(matches!(
+            live.handle(&Request::Snapshot),
+            Err(ServeError::Poisoned)
+        ));
+        assert!(matches!(
+            live.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            }),
+            Err(ServeError::Poisoned)
+        ));
+        assert!(matches!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            }),
             Err(ServeError::Poisoned)
         ));
     }
