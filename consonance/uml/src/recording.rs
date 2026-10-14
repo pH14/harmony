@@ -138,7 +138,7 @@ mod tests {
         VerifiedProfile::for_test(
             PathBuf::from("/profile"),
             Profile {
-                schema: 2,
+                schema: 3,
                 architecture: "x86_64".to_owned(),
                 kernel_version: "6.18.35".to_owned(),
                 userspace: "seccomp".to_owned(),

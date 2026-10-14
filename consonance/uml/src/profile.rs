@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const PT_INTERP: u32 = 3;
 #[cfg(target_os = "linux")]
 const KERNEL_FD: i32 = 240;
@@ -718,6 +718,13 @@ mod tests {
         write_profile(directory.path(), |_| {});
         let verified = Profile::load(directory.path()).unwrap();
         assert_eq!(verified.identity_sha256.len(), 64);
+
+        write_profile(directory.path(), |profile| profile.schema = 2);
+        assert!(matches!(
+            Profile::load(directory.path()),
+            Err(ProfileError::Schema(2))
+        ));
+        write_profile(directory.path(), |_| {});
 
         std::fs::write(directory.path().join("config"), b"CONFIG_UML=n\n").unwrap();
         assert!(matches!(

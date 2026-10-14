@@ -51,7 +51,13 @@ sequence of guest events.
   library clock calls are system calls and follow virtual time.
 - `/proc/cpuinfo` no longer shows the host `uname` line. The CPU flags and
   model still come from the host and `cpuid` runs natively, so the recording
-  names both. A guest program that executes `rdrand` or `rdseed` gets host
+  names both. The launcher captures the host CPU-info lines the owned kernel
+  parses, binds them into the host identity, and passes them as
+  `HARMONY_UML_CPUINFO` at spawn. The kernel refuses a launch without that
+  input and never reopens host `/proc/cpuinfo` during boot. `profile.json`
+  schema 3 requires this patched import; earlier profiles are refused. The
+  arm64 kernel takes its hardware-capability flags separately from the host
+  auxiliary vector. A guest program that executes `rdrand` or `rdseed` gets host
   randomness, and one that reads the APIC ID from `cpuid` (leaf 1 EBX bits
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
   CPU it happens to run on; workloads must not use them. Fault-workload image

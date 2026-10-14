@@ -96,6 +96,8 @@ pub struct Launch {
     #[cfg(target_os = "linux")]
     admitted_processor: Arc<OnceLock<usize>>,
     #[cfg(target_os = "linux")]
+    admitted_host: Arc<OnceLock<HostIdentity>>,
+    #[cfg(target_os = "linux")]
     expected_host: Option<HostIdentity>,
     #[cfg(target_os = "linux")]
     shared_host: bool,
@@ -243,6 +245,8 @@ impl Launch {
             #[cfg(target_os = "linux")]
             admitted_processor: Arc::new(OnceLock::new()),
             #[cfg(target_os = "linux")]
+            admitted_host: Arc::new(OnceLock::new()),
+            #[cfg(target_os = "linux")]
             expected_host: None,
             #[cfg(target_os = "linux")]
             shared_host: false,
@@ -269,6 +273,13 @@ impl Launch {
         #[cfg(target_os = "linux")]
         {
             let current = HostIdentity::for_processor(self.admitted_processor()?)?;
+            let admitted = self.admitted_host.get_or_init(|| current.clone());
+            if admitted != &current {
+                return Err(LaunchError::HostIdentity {
+                    expected: Box::new(admitted.clone()),
+                    current: Box::new(current),
+                });
+            }
             if let Some(expected) = &self.expected_host
                 && expected != &current
             {
@@ -310,6 +321,13 @@ impl Launch {
                 requested: host.processor,
             });
         }
+        let admitted_host = self.admitted_host.get_or_init(|| host.clone());
+        if admitted_host != &host {
+            return Err(LaunchError::HostIdentity {
+                expected: Box::new(admitted_host.clone()),
+                current: Box::new(host),
+            });
+        }
         self.expected_host = Some(host);
         self.shared_host = true;
         Ok(())
@@ -318,6 +336,7 @@ impl Launch {
     #[cfg(target_os = "linux")]
     pub(crate) fn with_recorded_host(mut self, host: HostIdentity) -> Self {
         let _ = self.admitted_processor.set(host.processor);
+        let _ = self.admitted_host.set(host.clone());
         self.expected_host = Some(host);
         self.shared_host = true;
         self
@@ -491,6 +510,7 @@ impl Guest {
         #[cfg(target_os = "linux")]
         {
             let host = launch.host_identity()?;
+            command.env("HARMONY_UML_CPUINFO", &host.boot_cpuinfo);
             enforce_host_cpu(&mut command, host.processor, launch.shared_host)?;
         }
         let child = command.spawn()?;
@@ -944,6 +964,26 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
+    fn guest_start_passes_the_admitted_cpuinfo_lines() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        let host = launch.host_identity().unwrap();
+        launch.console_tail_bytes = host.boot_cpuinfo.len() + 1;
+        launch.console_limit_bytes = (host.boot_cpuinfo.len() + 1) as u64;
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("printf %s \"$HARMONY_UML_CPUINFO\"");
+        let exit = Guest::start(command, work, &launch)
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert_eq!(exit.reason, ExitReason::Exited(0));
+        assert_eq!(exit.console, host.boot_cpuinfo.as_bytes());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
     fn final_host_cpu_pin_overrides_an_earlier_affinity_callback() {
         let launch = Launch::new(std::env::temp_dir());
         let cpu = launch.admitted_processor().unwrap();
@@ -1293,7 +1333,7 @@ mod tests {
         let profile = VerifiedProfile::for_test(
             directory.path().to_path_buf(),
             Profile {
-                schema: 2,
+                schema: 3,
                 architecture: std::env::consts::ARCH.to_owned(),
                 kernel_version: String::new(),
                 userspace: "seccomp".to_owned(),

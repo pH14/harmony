@@ -1,0 +1,52 @@
+Import the admitted host CPU-info lines from the launcher
+
+The launcher records the lines that the UML boot parser consumes and passes
+those exact bytes to the kernel. Reading the live host proc file after the
+launcher checked its identity allows a mount or CPU-info change to produce a
+guest under the wrong recording identity. Require the pinned input and still
+initialize the auxiliary-vector CPU flags after any cache-alignment lines.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/start_up.c
++++ b/arch/um/os-Linux/start_up.c
+@@ -397,17 +397,21 @@
+  */
+ void  __init get_host_cpu_features(int (*line_helper_func)(char *line))
+ {
++	const char *pinned = getenv("HARMONY_UML_CPUINFO");
+ 	FILE *cpuinfo;
+ 	char *line = NULL;
++	char terminal[] = "";
+ 	size_t len = 0;
++	int done = 0;
+ 
+-	cpuinfo = fopen("/proc/cpuinfo", "r");
+-	if (cpuinfo == NULL) {
+-		os_info("Failed to get host CPU features\n");
+-	} else {
++	if (pinned == NULL)
++		fatal("Harmony requires pinned host CPU info\n");
++	if (*pinned != '\0') {
++		cpuinfo = fmemopen((void *)pinned, strlen(pinned), "r");
++		if (cpuinfo == NULL)
++			fatal("Cannot read pinned host CPU info: %d\n", errno);
+ 		while ((getline(&line, &len, cpuinfo)) != -1) {
+-			int done = line_helper_func(line);
+-
++			done = line_helper_func(line);
+ 			free(line);
+ 			line = NULL;
+ 			if (done)
+@@ -415,6 +419,8 @@
+ 		}
+ 		fclose(cpuinfo);
+ 	}
++	if (!done)
++		line_helper_func(terminal);
+ }
+ 
+ static int __init uml_seccomp_config(char *line, int *add)

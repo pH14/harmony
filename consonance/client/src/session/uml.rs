@@ -641,7 +641,7 @@ mod tests {
             ),
         };
         let profile = Profile {
-            schema: 2,
+            schema: 3,
             architecture: std::env::consts::ARCH.into(),
             kernel_version: String::new(),
             userspace: "seccomp".into(),
