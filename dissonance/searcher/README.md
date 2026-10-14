@@ -471,6 +471,8 @@ highest, read from the slot's active holders when the splice is prepared. Each
 admission records itself as the deepest descendant of its ancestors until an
 ancestor already holds a deeper one, and that walk follows parent positions
 stored beside the entries.
+Campaign replay rebuilds ordinary splice selection before each recorded job or
+skip and rejects a donor, leaf, or action tail that differs from that selection.
 
 The archive builds each entry's input node by extending its parent's node with
 the entry's suffix, so a donor that owns its input node has an intact prefix of

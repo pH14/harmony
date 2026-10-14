@@ -2639,6 +2639,46 @@ fn replay_splice<G: CampaignTypes>(
     }
 }
 
+fn verify_splice_selection<G: Workload>(
+    core: &mut CoordinatorCore<G>,
+    parent_index: usize,
+    mutation_seed: u64,
+    weights: (u8, u8),
+    selector_path: SelectorPath,
+    actual_continuation: bool,
+    recorded: Option<&CampaignSpliceRecord>,
+) -> Result<(), Box<dyn Error>> {
+    if selector_path == SelectorPath::Continuation || actual_continuation {
+        return Ok(());
+    }
+    let expected =
+        if energy_strategy(mutation_seed, weights.0, weights.1)? == EnergyStrategy::Splice {
+            match core
+                .archive
+                .splice_tail_for_campaign(parent_index, LONGEST_SPLICE_TAIL)
+            {
+                Some(tail) => Some(CampaignSpliceRecord::Tail {
+                    donor_id: core
+                        .archive
+                        .stable_id(tail.donor_id)
+                        .ok_or("replayed splice donor is missing")?,
+                    leaf_id: core
+                        .archive
+                        .stable_id(tail.leaf_id)
+                        .ok_or("replayed splice leaf is missing")?,
+                    tail_postcard: postcard::to_allocvec(&tail.actions)?,
+                }),
+                None => Some(CampaignSpliceRecord::Unavailable),
+            }
+        } else {
+            None
+        };
+    if expected.as_ref() != recorded {
+        return Err("recorded splice provenance diverged from selection".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
@@ -4462,14 +4502,32 @@ where
         None
     };
     let mut required_draw_versions = DrawVersionSchedule::default();
-    let mut replay_job_reservations = BTreeMap::<u64, (u64, Option<u8>)>::new();
+    let mut replay_job_reservations = BTreeMap::<
+        u64,
+        (
+            u64,
+            Option<u8>,
+            u64,
+            SelectorPath,
+            Option<CampaignSpliceRecord>,
+        ),
+    >::new();
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 if replay_job_reservations
-                    .insert(job.reservation, (job.parent_id, job.suffix_limit))
+                    .insert(
+                        job.reservation,
+                        (
+                            job.parent_id,
+                            job.suffix_limit,
+                            job.mutation_seed,
+                            job.selector.path,
+                            job.splice.clone(),
+                        ),
+                    )
                     .is_some()
                 {
                     return Err("campaign stream admits one reservation twice".into());
@@ -4495,8 +4553,18 @@ where
     if u64::try_from(replay_job_reservations.len())? > header.execution_budget {
         return Err("campaign stream exceeds its recorded execution budget".into());
     }
-    let (replay_job_parents, replay_job_suffix_limits): (Vec<_>, Vec<_>) =
-        replay_job_reservations.into_values().unzip();
+    let replay_job_parents = replay_job_reservations
+        .values()
+        .map(|record| record.0)
+        .collect::<Vec<_>>();
+    let replay_job_suffix_limits = replay_job_reservations
+        .values()
+        .map(|record| record.1)
+        .collect::<Vec<_>>();
+    let replay_job_splices = replay_job_reservations
+        .into_values()
+        .map(|(_, _, seed, path, splice)| (seed, path, splice))
+        .collect::<Vec<_>>();
     let replay_job_metadata = replay_job_parents
         .iter()
         .map(|parent_id| vec![*parent_id])
@@ -4724,6 +4792,7 @@ where
         replay_job_tier_limits.insert(job_slot, observed_progress_tiers.len());
         let (energy, continuation) =
             continuation_attempt(&mut core, header.campaign_seed, u64::try_from(job_slot)?);
+        let actual_continuation = continuation.is_some();
         replay_continuation_energy.insert(job_slot, energy);
         if let Some(continuation) = continuation {
             replay_continuations.insert(job_slot, continuation);
@@ -4743,6 +4812,16 @@ where
         {
             return Err("replayed job suffix limit diverged at reservation".into());
         }
+        let (mutation_seed, selector_path, splice) = &replay_job_splices[job_slot];
+        verify_splice_selection(
+            &mut core,
+            parent_index,
+            *mutation_seed,
+            replay_job_weights[&job_slot],
+            *selector_path,
+            actual_continuation,
+            splice.as_ref(),
+        )?;
         core.start_suffix_job(*parent_id, replay_job_suffix_limits[job_slot]);
         replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
         replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
@@ -4787,6 +4866,15 @@ where
                     .archive
                     .index_of_id(skip.parent_id)
                     .ok_or("recorded skip names a parent the archive does not hold")?;
+                verify_splice_selection(
+                    &mut core,
+                    parent_index,
+                    skip.mutation_seed,
+                    (skip.mixture_weight, skip.splice_weight),
+                    skip.selector.path,
+                    false,
+                    skip.splice.as_ref(),
+                )?;
                 let strategy =
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, skip.splice)?;
@@ -5286,6 +5374,7 @@ where
                         header.campaign_seed,
                         u64::try_from(next_slot)?,
                     );
+                    let actual_continuation = continuation.is_some();
                     replay_continuation_energy.insert(next_slot, energy);
                     if let Some(continuation) = continuation {
                         replay_continuations.insert(next_slot, continuation);
@@ -5305,6 +5394,16 @@ where
                     }) {
                         return Err("replayed job suffix limit diverged at reservation".into());
                     }
+                    let (mutation_seed, selector_path, splice) = &replay_job_splices[next_slot];
+                    verify_splice_selection(
+                        &mut core,
+                        parent_index,
+                        *mutation_seed,
+                        replay_job_weights[&next_slot],
+                        *selector_path,
+                        actual_continuation,
+                        splice.as_ref(),
+                    )?;
                     core.start_suffix_job(*parent_id, replay_job_suffix_limits[next_slot]);
                     replay_job_snapshots
                         .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
@@ -7759,6 +7858,54 @@ mod tests {
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn replay_rejects_forged_ordinary_splice_provenance() {
+        let mut config = three_worker_config();
+        config.execution_budget = 2_000;
+        config.mixture = DrawMixture::EnergySplice { scale: 6 };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("campaign");
+        assert_eq!(
+            replay_campaign_checkpointed(&workload, &stream, None, None)
+                .expect("untampered splice replays"),
+            live
+        );
+        let lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let (index, _) = job_lines(&stream)
+            .into_iter()
+            .find(|(_, job)| {
+                job.selector.path != SelectorPath::Continuation
+                    && matches!(job.splice, Some(CampaignSpliceRecord::Tail { .. }))
+            })
+            .expect("ordinary splice job");
+        for field in ["donor_id", "leaf_id"] {
+            let mut tampered = lines.clone();
+            let mut record: serde_json::Value = serde_json::from_str(&tampered[index]).unwrap();
+            record["splice"][field] = serde_json::json!(u64::MAX);
+            tampered[index] = serde_json::to_string(&record).unwrap();
+            let mutated = format!("{}\n", tampered.join("\n"));
+            assert!(
+                replay_campaign_checkpointed(&workload, mutated.as_bytes(), None, None).is_err(),
+                "replay accepted an impossible ordinary splice {field}"
+            );
+        }
     }
 
     #[test]
