@@ -89,7 +89,7 @@ assert_off() {
     done
 }
 
-assert_y ARM64 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
+assert_y ARM64 ARM64_4K_PAGES 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
     SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF BLK_DEV_INITRD \
     RD_GZIP SYSFS DEVTMPFS POSIX_TIMERS ARM_ARCH_TIMER \
     ARM_PSCI_FW IRQCHIP ARM_GIC ARM_GIC_V3 HARMONY_ARM_PVCLOCK \
@@ -107,7 +107,7 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES FHANDLE HIGH_RES_TIMERS NO_HZ_C
     ARM_ARCH_TIMER_EVTSTREAM ARM_ARCH_TIMER_OOL_WORKAROUND \
     FSL_ERRATUM_A008585 HISILICON_ERRATUM_161010101 \
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
-    ARM64_MTE \
+    ARM64_MTE ARM64_16K_PAGES ARM64_64K_PAGES \
     BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH
 assert_off RWSEM_SPIN_ON_OWNER
 # The platform image executes a shell PID 1 and an OCI runtime, so its
@@ -179,7 +179,9 @@ if ! grep -q '^\[REJECT\].*3 live-domain timer program' "$scan_probe_log"; then
 fi
 echo "ok: scanner rejected the planted live-counter probe"
 python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
-    "$arm64_object_root/vmlinux" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+    "$arm64_object_root/vmlinux" \
+    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg" \
+    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
 
 # LL/SC permits implementation-dependent spurious STXR failures that can change
 # guest-visible control flow across hosts. The config removes the known fallback
@@ -237,6 +239,7 @@ fi
 echo "ok: scanner rejected the executable .rodata LDXR probe"
 python3 "$exclusive_scan" --kernel-vmlinux "$arm64_object_root/vmlinux"
 python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
 
 install -m 0644 "$arm64_object_root/arch/arm64/boot/Image" "$ARM64_ART_DIR/$arm64_output"
 echo "ok: $ARM64_ART_DIR/$arm64_output"

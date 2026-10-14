@@ -76,7 +76,8 @@ def reviewed_data_section(name: str) -> bool:
 
 def kernel_runtime_exec_ranges(path: str, entry: int):
     names = (
-        "_text", "_stext", "_etext", "__start_rodata", "__inittext_begin",
+        "_text", "_stext", "_etext", "__start_rodata",
+        "__rodata_text_begin", "__rodata_text_end", "__inittext_begin",
         "__inittext_end", "__initdata_begin", "__initdata_end", "_data", "_end",
     )
     try:
@@ -107,11 +108,13 @@ def kernel_runtime_exec_ranges(path: str, entry: int):
         raise SystemExit(f"SCANNER KERNEL ERROR for {path}: unaligned linker boundary")
     if not (
         ordered[0] < ordered[1] < ordered[2] == ordered[3]
-        < ordered[4] < ordered[5] == ordered[6] < ordered[7] == ordered[8]
-        < ordered[9]
+        < ordered[4] < ordered[5] < ordered[6]
+        < ordered[7] == ordered[8] < ordered[9] == ordered[10]
+        < ordered[11]
     ):
         raise SystemExit(f"SCANNER KERNEL ERROR for {path}: unexpected linker layout")
     return ((symbols["_stext"], symbols["_etext"]),
+            (symbols["__rodata_text_begin"], symbols["__rodata_text_end"]),
             (symbols["__inittext_begin"], symbols["__inittext_end"]))
 
 

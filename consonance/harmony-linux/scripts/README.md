@@ -17,17 +17,22 @@ executable segments, duplicate or overlapping loaded sections, a non-executable
 `.text`, an entrypoint in data, and unreviewed data-section names. Both AA-4
 and AA-5 check every aligned word in the 4 KiB page-rounded file mapping of a `PF_X` load
 segment, including words labeled as data or lying outside its declared
-`p_filesz`. The scanners reject load segments whose file or virtual pages
+`p_filesz`. The ARM kernel builder requires 4 KiB pages to match that scan.
+The scanners reject load segments whose file or virtual pages
 overlap an executable load's pages, so a separate data segment cannot supply
 an executable alias through Linux's page rounding.
 ARM user binaries link their read-only data into page-separated non-executable
 `PT_LOAD` segments so incidental exclusive-shaped metadata remains usable.
-The pinned `vmlinux` has a different mapping: its own page tables execute
-`_stext.._etext` and `__inittext_begin..__inittext_end`, not every `PF_X`
-program-header byte. The explicit `--kernel-vmlinux` AA-4 mode validates those
-linker boundaries and excludes reviewed data only outside the runtime
-executable ranges. The arm64 linker patch places `.altinstructions` and unwind
-metadata on NX init-data pages. The vDSO uses ordinary user-page scanning.
+The pinned `vmlinux` has a different mapping: its page tables execute
+`_stext.._etext` and `__inittext_begin..__inittext_end`, while its early
+identity map also executes the `.rodata.text` page. The explicit
+`--kernel-vmlinux` AA-4 mode validates those linker boundaries and scans all
+three executable ranges while excluding reviewed data on NX pages. The arm64
+linker patch places `.altinstructions` and unwind metadata on NX init-data
+pages, and the early identity map makes the ordinary read-only interval NX
+without blocking its special identity-map code. The vDSO uses ordinary user-page
+scanning on both its symbolized debug ELF and the stripped bytes embedded in
+the kernel image.
 These are static artifact checks; they do not trap later executable mappings,
 `mprotect`, generated code, or writes to executable files.
 
