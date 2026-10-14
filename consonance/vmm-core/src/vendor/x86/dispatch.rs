@@ -195,23 +195,28 @@ impl<B: Backend<A = X86>> Vmm<B> {
             self.advance_virtual_time_for_port(port)?;
             return self.on_idle();
         }
+        if port == ISA_DEBUG_EXIT_PORT || Uart8250::owns(port) {
+            require_byte_io("OUT", port, size)?;
+        } else if port == REPORT_PORT || port == DOORBELL_PORT {
+            require_dword_io("OUT", port, size)?;
+        } else if self.devices.legacy.is_none() || !LegacyPlatform::owns(port) {
+            return Err(VmmError::ContractViolation(format!(
+                "unmodeled OUT to port {port:#06x} value {value:#x} (size {size})"
+            )));
+        }
         self.advance_virtual_time_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
-            require_byte_io("OUT", port, size)?;
             return Ok(self.terminate(TerminalReason::DebugExit { code: value as u8 }));
         }
         if Uart8250::owns(port) {
-            require_byte_io("OUT", port, size)?;
             self.devices.uart.write(port, value as u8);
             return Ok(Step::Continued);
         }
         if port == REPORT_PORT {
-            require_dword_io("OUT", port, size)?;
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
         if port == DOORBELL_PORT {
-            require_dword_io("OUT", DOORBELL_PORT, size)?;
             return self.service_doorbell(value);
         }
         if let Some(legacy) = self.devices.legacy.as_mut()
@@ -232,13 +237,19 @@ impl<B: Backend<A = X86>> Vmm<B> {
                  ports are write-only"
             )));
         }
-        self.advance_virtual_time_for_port(port)?;
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;
-            if let Some(byte) = self.devices.uart.read_in(port) {
-                self.backend.complete_read(u64::from(byte))?;
-                return Ok(Step::Continued);
-            }
+        } else if self.devices.legacy.is_none() || !LegacyPlatform::owns(port) {
+            return Err(VmmError::ContractViolation(format!(
+                "unmodeled IN from port {port:#06x} (size {size})"
+            )));
+        }
+        self.advance_virtual_time_for_port(port)?;
+        if Uart8250::owns(port)
+            && let Some(byte) = self.devices.uart.read_in(port)
+        {
+            self.backend.complete_read(u64::from(byte))?;
+            return Ok(Step::Continued);
         }
         if let Some(legacy) = self.devices.legacy.as_ref()
             && LegacyPlatform::owns(port)
@@ -273,13 +284,15 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 gpa.0
             )));
         }
+        let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
+        lapic::Lapic::validate_mmio_offset(offset)
+            .map_err(|e| VmmError::ContractViolation(format!("xAPIC access {offset:#x}: {e}")))?;
         if self.virtual_time_vtime_enabled() {
             self.advance_virtual_time_vtime(
                 contract::virtual_time_timing().interrupt_controller_mmio_vns,
             )?;
         }
         let now_vns = self.now_vns()?;
-        let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
         match write {
             None => {
                 let lapic = self
