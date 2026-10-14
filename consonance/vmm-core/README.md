@@ -54,6 +54,9 @@ another run from an unverified continuation.
 The failed run's console and SDK events remain readable from a diagnostic
 copy without keeping the failed VM executable. Replay starts with fresh
 observations.
+An `Exec` substrate failure also retires the VM before a snapshot or hash can
+certify a partially completed guest step. Its console and SDK events remain
+available for diagnosis.
 Arm clockevent deadlines require a zero guest-clock offset. Arm guests do not
 write that offset, and both full-VM snapshot restore and V-time-only restore
 reject a nonzero value before changing live state. This keeps an armed
