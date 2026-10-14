@@ -162,6 +162,10 @@ dispatch, and records. `vendor/arm64` supplies the arm64 Image/DTB boot path,
 board devices, policy, and records. The arm64 vendor is also used to exercise
 the additive architecture seam on portable mocks and QEMU.
 
+The x86 xAPIC MMIO page accepts only 4-byte register accesses. Other widths
+fail before advancing virtual time or changing the modeled LAPIC, so a wider
+write cannot be silently truncated into a register transaction.
+
 Boot does not require a particular host CPU model, stepping, or microcode.
 Each architecture supplies a guest machine policy; the backend supplies the
 required virtualization capabilities. The x86 runtime boots controlled Linux on stock KVM; instruction interception
