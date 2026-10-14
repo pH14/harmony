@@ -4,6 +4,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -43,6 +44,8 @@ TRAILING_PREFIXES = frozenset(
     ("data16", "data32", "addr16", "addr32", "lock", "rep", "repz", "repnz",
      "cs", "ds", "es", "fs", "gs", "ss", "bnd", "notrack")
 )
+COUNTER_INSTRUCTIONS = frozenset(("rdtsc", "rdtscp", "rdrand", "rdseed"))
+SYMBOL_RESTART_LIMIT = 4096
 
 
 def unpack(fmt, data, offset):
@@ -107,37 +110,185 @@ def headers(data):
     return programs, sections
 
 
-def complete_section_tail(path, name, end):
-    try:
-        result = subprocess.run(
-            ["objdump", "-d", "-w", "-j", name, path],
-            capture_output=True, text=True, check=False,
-        )
-    except OSError as error:
-        raise ValueError(f"cannot disassemble adjacent code section {name}: {error}") from error
-    if result.returncode:
-        raise ValueError(f"cannot disassemble adjacent code section {name}: {result.stderr.strip()}")
-    decoded = []
-    for line in result.stdout.splitlines():
+def complete_section_tail(data, name, offset, size):
+    with tempfile.TemporaryDirectory() as directory:
+        raw_section = Path(directory) / "section.bin"
+        raw_section.write_bytes(data[offset : offset + size])
+        for mode in ("amd64", "intel64"):
+            try:
+                result = subprocess.run(
+                    ["objdump", "-D", "-w", "-b", "binary", "-m", "i386:x86-64",
+                     "-M", mode, str(raw_section)],
+                    capture_output=True, text=True, check=False,
+                )
+            except OSError as error:
+                raise ValueError(
+                    f"cannot disassemble adjacent code section {name} in {mode}: {error}"
+                ) from error
+            if result.returncode:
+                raise ValueError(
+                    f"cannot disassemble adjacent code section {name} in {mode}: "
+                    f"{result.stderr.strip()}"
+                )
+            decoded = []
+            for line in result.stdout.splitlines():
+                fields = line.split("\t")
+                if len(fields) < 3 or not re.fullmatch(r"[0-9a-fA-F]+:", fields[0].strip()):
+                    continue
+                raw = fields[1].split()
+                if not raw or any(re.fullmatch(r"[0-9a-fA-F]{2}", byte) is None for byte in raw):
+                    continue
+                decoded.append((int(fields[0].strip()[:-1], 16), len(raw), fields[2].strip()))
+            last = decoded[-1] if decoded else None
+            if last is None or last[0] + last[1] != size:
+                raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+            for address, _length, instruction in decoded:
+                if address < size - (MAX_X86_INSTRUCTION_BYTES - 1):
+                    continue
+                words = instruction.lower().split()
+                if (not words or words[0].startswith((".byte", "(bad)"))
+                        or (len(words) == 1 and (
+                            words[0] in TRAILING_PREFIXES or words[0].startswith("rex")
+                        ))):
+                    raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+
+
+def disassembled_instructions(output):
+    for line in output.splitlines():
         fields = line.split("\t")
         if len(fields) < 3 or not re.fullmatch(r"[0-9a-fA-F]+:", fields[0].strip()):
             continue
         raw = fields[1].split()
         if not raw or any(re.fullmatch(r"[0-9a-fA-F]{2}", byte) is None for byte in raw):
             continue
-        decoded.append((int(fields[0].strip()[:-1], 16), len(raw), fields[2].strip()))
-    last = decoded[-1] if decoded else None
-    if last is None or last[0] + last[1] != end:
-        raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
-    for address, _length, instruction in decoded:
-        if address < end - (MAX_X86_INSTRUCTION_BYTES - 1):
+        yield int(fields[0].strip()[:-1], 16), len(raw), fields[2].strip()
+
+
+def instruction_mnemonic(instruction):
+    for word in instruction.lower().split():
+        if word in TRAILING_PREFIXES or word.startswith("rex"):
             continue
-        words = instruction.lower().split()
-        if (not words or words[0].startswith((".byte", "(bad)"))
-                or (len(words) == 1 and (
-                    words[0] in TRAILING_PREFIXES or words[0].startswith("rex")
-                ))):
-            raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+        return word
+    return ""
+
+
+def truncated_instruction(instruction):
+    mnemonic = instruction_mnemonic(instruction)
+    return mnemonic.startswith((".byte", "(bad)")) or not mnemonic
+
+
+def scan_mixed_mode_raw_code(data, sections, tag):
+    for name, kind, flags, _address, offset, size in sections:
+        if kind != 1 or not flags & 4 or not size:
+            continue
+        code = data[offset : offset + size]
+        for position in range(len(code) - 1):
+            if code[position] != 0x0F:
+                continue
+            tail = code[position + 1 : position + 3]
+            opcode = None
+            if tail[:1] == b"\x31":
+                opcode = "rdtsc"
+            elif tail == b"\x01\xf9":
+                opcode = "rdtscp"
+            elif len(tail) == 2 and tail[0] == 0xC7 and (tail[1] >> 3) & 7 in (6, 7):
+                opcode = "rdrand/rdseed"
+            if opcode:
+                raise ValueError(
+                    f"mixed-mode raw counter instruction {opcode} in "
+                    f"{tag}:{name} at file offset 0x{offset + position:x}"
+                )
+
+
+def scan_symbol_restarts(data, sections, tag, path):
+    if tag == "setup":
+        scan_mixed_mode_raw_code(data, sections, tag)
+        return
+    names = {
+        name: (address, offset, size)
+        for name, kind, flags, address, offset, size in sections
+        if flags & 4 and kind == 1 and size and (tag == "vmlinux" or name == ".text")
+    }
+    if not names:
+        return
+    with tempfile.TemporaryDirectory() as directory:
+        for mode in ("amd64", "intel64"):
+            result = subprocess.run(
+                ["objdump", "-d", "-z", "-w", "-M", mode, path],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode:
+                raise ValueError(f"cannot disassemble {tag} symbol boundaries in {mode}")
+            section = None
+            decoded = {name: [] for name in names}
+            symbols = {name: set() for name in names}
+            for line in result.stdout.splitlines():
+                match = re.fullmatch(r"Disassembly of section (.+):", line)
+                if match:
+                    section = match.group(1)
+                    continue
+                if section not in names:
+                    continue
+                match = re.fullmatch(r"([0-9a-fA-F]+) <[^>]+>:", line)
+                if match:
+                    symbols[section].add(int(match.group(1), 16))
+                    continue
+                decoded[section].extend(disassembled_instructions(line))
+
+            for name, (address, offset, size) in names.items():
+                canonical = {site: (length, instruction) for site, length, instruction in decoded[name]}
+                by_end = {site + length: (site, instruction) for site, length, instruction in decoded[name]}
+                starts = set()
+                for symbol in symbols[name]:
+                    previous = by_end.get(symbol)
+                    if previous is None or not truncated_instruction(previous[1]):
+                        continue
+                    start = previous[0]
+                    while (prior := by_end.get(start)) and truncated_instruction(prior[1]):
+                        start = prior[0]
+                    starts.add((start, symbol))
+                if not starts:
+                    continue
+                raw_section = Path(directory) / f"section-{mode}-{offset:x}.bin"
+                raw_section.write_bytes(data[offset : offset + size])
+                for start, symbol in sorted(starts):
+                    relative = start - address
+                    if relative < 0 or relative >= size:
+                        raise ValueError(f"symbol restart outside {tag} section {name}")
+                    stop = min(size, relative + SYMBOL_RESTART_LIMIT)
+                    raw = subprocess.run(
+                        ["objdump", "-D", "-z", "-w", "-b", "binary", "-m", "i386:x86-64",
+                         "-M", mode, f"--start-address={relative}", f"--stop-address={stop}",
+                         str(raw_section)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    if raw.returncode:
+                        raise ValueError(f"cannot decode {tag} symbol restart in {name} ({mode})")
+                    rejoined = False
+                    for raw_address, length, instruction in disassembled_instructions(raw.stdout):
+                        site = address + raw_address
+                        mnemonic = instruction_mnemonic(instruction)
+                        if mnemonic in COUNTER_INSTRUCTIONS:
+                            raise ValueError(
+                                f"symbol-restart counter instruction {mnemonic} in "
+                                f"{tag}:{name}:{mode} at 0x{site:x}"
+                            )
+                        ordinary = canonical.get(site)
+                        if site >= symbol and ordinary is not None and ordinary[0] == length \
+                                and not truncated_instruction(ordinary[1]):
+                            rejoined = True
+                            break
+                        if mnemonic.startswith("j") or mnemonic in ("call", "lcall", "loop", "loope", "loopne"):
+                            raise ValueError(
+                                f"unresolved branch in {tag}:{name}:{mode} symbol restart at 0x{site:x}"
+                            )
+                        if mnemonic.startswith("ret") or mnemonic in ("iret", "iretq"):
+                            rejoined = True
+                            break
+                    if not rejoined:
+                        raise ValueError(
+                            f"unresolved {tag}:{name}:{mode} symbol restart at 0x{start:x}"
+                        )
 
 
 def unclaimed_opcode(data, programs, sections, tag, path):
@@ -221,9 +372,10 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             ]
             if len(left) != 1:
                 raise ValueError(f"ambiguous adjacent executable section boundary in PT_LOAD {index}")
-            complete_section_tail(path, left[0][0], left[0][1] + left[0][3])
+            complete_section_tail(data, left[0][0], left[0][2], left[0][3])
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
+    scan_symbol_restarts(data, sections, tag, path)
     return None
 
 
