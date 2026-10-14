@@ -475,6 +475,12 @@ impl PageSegments {
         })
     }
 
+    pub(crate) fn owns(&self, extent: &WritableExtent) -> bool {
+        self.segments
+            .get(&extent.segment_id)
+            .is_some_and(|used| Arc::ptr_eq(&used.segment, &extent.segment))
+    }
+
     pub fn free(&mut self, segment_id: u64, offset: usize, len: usize) {
         self.remove(segment_id, offset, len, true);
     }
