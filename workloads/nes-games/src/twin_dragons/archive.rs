@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
+    chord::{ChordVocabulary, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     search::archive::{
         Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
         entries_by_suffix,
@@ -17,7 +17,12 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "twin_dragons_level_spatial_32_health_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "twin_dragons_cleared_tier_transition_stage_spatial_32_health_preference_v2";
+const TRANSITION_STAGE_FRAMES: u8 = 32;
+const GOAL_STAGES: u8 = 4;
+const SETTLING_STAGE: u8 = u8::MAX - 1;
+const GAMEPLAY_STAGE: u8 = u8::MAX;
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -27,6 +32,7 @@ pub type TwinDragonsArchive =
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TwinDragonsArchiveKey {
     pub level: u8,
+    pub stage: u8,
     pub x: i16,
     pub y: i16,
     pub health: u8,
@@ -34,8 +40,9 @@ pub struct TwinDragonsArchiveKey {
 
 impl Ord for TwinDragonsArchiveKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.level, self.x, self.health, self.y).cmp(&(
+        (self.level, self.stage, self.x, self.health, self.y).cmp(&(
             other.level,
+            other.stage,
             other.x,
             other.health,
             other.y,
@@ -50,18 +57,25 @@ impl PartialOrd for TwinDragonsArchiveKey {
 }
 
 impl ArchiveKey for TwinDragonsArchiveKey {
-    type Place = (u8, i16, i16);
-    type Progress = ();
-    type Identity = (u8, i16, i16);
+    type Place = (u8, u8, i16, i16);
+    type Progress = u8;
+    type Identity = (u8, u8, i16, i16);
 
     fn place(self) -> Self::Place {
-        (self.level, self.x.div_euclid(2), self.y.div_euclid(2))
+        (
+            self.level,
+            self.stage,
+            self.x.div_euclid(2),
+            self.y.div_euclid(2),
+        )
     }
 
-    fn progress(self) -> Self::Progress {}
+    fn progress(self) -> Self::Progress {
+        self.level
+    }
 
     fn identity(self) -> Self::Identity {
-        (self.level, self.x, self.y)
+        (self.level, self.stage, self.x, self.y)
     }
 
     fn capacity() -> usize {
@@ -88,6 +102,7 @@ impl ArchiveKey for TwinDragonsArchiveKey {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TwinDragonsChampionKey {
     level: u8,
+    stage: u8,
     x: i16,
     health: u8,
 }
@@ -96,6 +111,7 @@ impl TwinDragonsArchiveKey {
     pub fn champion_key(self) -> TwinDragonsChampionKey {
         TwinDragonsChampionKey {
             level: self.level,
+            stage: self.stage,
             x: self.x,
             health: self.health,
         }
@@ -104,13 +120,38 @@ impl TwinDragonsArchiveKey {
 
 #[must_use]
 pub fn archive_key(state: TwinDragonsMechanicalState) -> Option<TwinDragonsArchiveKey> {
-    let gameplay = state.gameplay?;
+    if state.terminal() {
+        return None;
+    }
+    let Some(gameplay) = state.gameplay else {
+        return transition_stage(state).map(|stage| TwinDragonsArchiveKey {
+            level: state.levels_cleared(),
+            stage,
+            x: 0,
+            y: 0,
+            health: 0,
+        });
+    };
     Some(TwinDragonsArchiveKey {
         level: state.level,
+        stage: GAMEPLAY_STAGE,
         x: gameplay.x.div_euclid(16),
         y: gameplay.y.div_euclid(16),
         health: gameplay.health,
     })
+}
+
+fn transition_stage(state: TwinDragonsMechanicalState) -> Option<u8> {
+    let stage = state.transition_timer / TRANSITION_STAGE_FRAMES;
+    if state.playing() && state.loaded && state.goal {
+        Some(1 + stage.min(GOAL_STAGES - 1))
+    } else if state.loading() {
+        Some(1 + GOAL_STAGES + stage)
+    } else if state.playing() && !state.loaded {
+        Some(SETTLING_STAGE)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -217,7 +258,7 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
     held: &NES_PRESSABLE_BUTTON_MASKS,
     tap: None,
     short_hold: SHORT_HOLD_FRAMES,
-    long_hold: LONG_HOLD_FRAMES,
+    long_hold: (6, 40),
 };
 
 #[cfg(test)]
@@ -246,12 +287,51 @@ mod tests {
     fn places_are_32_pixel_cells_within_a_level() {
         for x in 0_i16..=2304 {
             let key = archive_key(state(1, x, 3)).unwrap();
-            assert_eq!(key.place(), (1, x.div_euclid(32), 175_i16.div_euclid(32)));
-            assert_eq!(key.identity().1, x.div_euclid(16));
+            assert_eq!(
+                key.place(),
+                (1, GAMEPLAY_STAGE, x.div_euclid(32), 175_i16.div_euclid(32))
+            );
+            assert_eq!(key.identity().2, x.div_euclid(16));
         }
         assert_ne!(
             archive_key(state(0, 500, 3)).unwrap().place(),
             archive_key(state(1, 500, 3)).unwrap().place()
+        );
+    }
+
+    #[test]
+    fn level_transitions_are_staged_places_in_the_next_tier() {
+        let mut goal = state(0, 2200, 3);
+        goal.goal = true;
+        goal.gameplay = None;
+        let mut loading = goal;
+        loading.game_state = 2;
+        loading.level = 1;
+        loading.loaded = false;
+        loading.goal = false;
+        let mut settling = loading;
+        settling.game_state = 1;
+        let mut stages = Vec::new();
+        for timer in [0, 40, 127] {
+            goal.transition_timer = timer;
+            stages.push(archive_key(goal).unwrap());
+        }
+        for timer in [0, 100, 165] {
+            loading.transition_timer = timer;
+            stages.push(archive_key(loading).unwrap());
+        }
+        stages.push(archive_key(settling).unwrap());
+        assert!(stages.iter().all(|key| key.progress() == 1));
+        assert!(
+            stages
+                .windows(2)
+                .all(|pair| pair[0].place() < pair[1].place())
+        );
+        assert!(archive_key(state(0, 2200, 3)).unwrap().progress() < stages[0].progress());
+        assert!(
+            stages
+                .iter()
+                .all(|key| *key < archive_key(state(1, 40, 3)).unwrap())
         );
     }
 
