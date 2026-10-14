@@ -13,7 +13,7 @@ use machine::{
     quicknes::QuickNesMachine,
 };
 use nes_workload::{
-    chord::ChordVocabulary, metroid, mm2, search::rand::RomuDuoJrRand, smb, twin_dragons,
+    chord::ChordVocabulary, famidash, metroid, mm2, search::rand::RomuDuoJrRand, smb, twin_dragons,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -36,6 +36,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             setup: twin_dragons::target::setup_tape(),
             chords: twin_dragons::archive::CHORDS,
             cartridge_ram: false,
+        },
+        "famidash" => Game {
+            setup: famidash::target::setup_tape(),
+            chords: famidash::archive::CHORDS,
+            cartridge_ram: true,
         },
         "super-mario-bros" => Game {
             setup: smb::target::BOOT_WALK.to_vec(),

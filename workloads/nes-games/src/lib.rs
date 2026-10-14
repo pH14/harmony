@@ -2,6 +2,7 @@
 
 pub use searcher::{search, target};
 pub mod chord;
+pub mod famidash;
 pub mod metroid;
 pub mod mm2;
 pub mod nes_backend;

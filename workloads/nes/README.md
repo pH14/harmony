@@ -136,6 +136,7 @@ and platform evidence is not uniform:
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Twin Dragons/native | Unit tests are checked in and `twin-dragons-campaign` passes local replay qualification; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
+| Famidash/native | Unit tests are checked in, and `nes-eval` clears Stereo Madness with a replayed victory witness on seeds 1 to 5; no CI lane runs it yet. | Host QuickNES core with the four-screen state patch and the official 1.2.8 release ROM. |
 | Super Tilt Bro/native | The `STB` job in `Checks / Dissonance Workloads / NES` runs a bounded search on affected pull requests. The `Benchmarks / Dissonance Workloads / NES` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
@@ -176,6 +177,8 @@ The `tools` directory contains NES movie conversion and trace utilities.
 [Twin Dragons](src/twin_dragons/README.md) has a pinned recipe in
 `scripts/build-twin-dragons-rom.sh`, `twin-dragons-versions.env`, and
 `TWIN-DRAGONS-ARTIFACT-LICENSE.md`.
+[Famidash](src/famidash/README.md) has a pinned recipe in
+`scripts/build-famidash-rom.sh` and `famidash-versions.env`.
 New workloads use the execution, observation, input, and qualification contracts
 described above, with minimal game guidance.
 

@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    famidash::target::FamidashSnapshot,
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
@@ -25,6 +26,8 @@ pub trait EndpointIdentity: Serialize {
         postcard_sha256(self)
     }
 }
+
+impl EndpointIdentity for FamidashSnapshot {}
 
 impl EndpointIdentity for MetroidSnapshot {}
 

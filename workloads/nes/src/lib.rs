@@ -5,6 +5,7 @@ pub use searcher::{search, target};
 pub mod admission;
 pub mod allocator;
 pub mod eval;
+pub mod famidash;
 pub mod film;
 pub mod prepare;
 pub mod smb;

@@ -2,6 +2,7 @@
 
 use nes_workload::{
     eval::{Result, evaluate, run_cli},
+    famidash::campaign::{FamidashCampaignRun, FamidashGame},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
@@ -76,12 +77,10 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons"
+            "twin-dragons" | "famidash"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
-                return Err(
-                    "Twin Dragons evaluation takes no stage, ai or whole_game option".into(),
-                );
+                return Err("this game takes no stage, ai or whole_game option".into());
             }
             _ => {}
         }
@@ -155,6 +154,13 @@ fn main() -> Result<()> {
             "twin-dragons" => evaluate(
                 TwinDragonsGame::new(&rom, p, h),
                 TwinDragonsCampaignRun,
+                &request,
+                &out,
+                started,
+            ),
+            "famidash" => evaluate(
+                FamidashGame::new(&rom, p, h),
+                FamidashCampaignRun,
                 &request,
                 &out,
                 started,

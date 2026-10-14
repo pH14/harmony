@@ -8,6 +8,7 @@ use std::{
 };
 
 use nes_workload::{
+    famidash::campaign::{FamidashCampaignRun, FamidashGame},
     film::{Capture, FilmMetadata, Filmable, Reel},
     search::archive::Input,
     stb::{
@@ -257,7 +258,18 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        _ => Err("nes-film renders the STB and Twin Dragons benchmark scenarios".into()),
+        "famidash" => {
+            if args.ai.is_some() {
+                return Err("Famidash takes no ai option".into());
+            }
+            produce(
+                FamidashGame::new(&rom, &args.core, &args.core_sha256),
+                FamidashCampaignRun,
+                &args,
+                identity,
+            )
+        }
+        _ => Err("nes-film renders the STB, Twin Dragons and Famidash scenarios".into()),
     }
 }
 
