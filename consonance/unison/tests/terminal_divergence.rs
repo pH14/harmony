@@ -2,6 +2,7 @@
 
 use unison::{
     RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence, compare_runs,
+    first_divergence_from_report,
 };
 
 #[derive(Clone, Copy)]
@@ -87,6 +88,10 @@ fn same_work_terminal_change_cannot_be_reported_as_a_bisection_bracket() {
             halted_at: 1,
         }
     );
+    assert_eq!(
+        first_divergence_from_report(&Factory(false), &Factory(true), 7, &report).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -146,6 +151,7 @@ fn equal_spawn_halt_counts_at_zero_remain_directly_bisectable() {
             first_mismatch: 0,
         }
     );
+    assert_eq!(report.halted_at, Some(0));
     assert_eq!(
         bisect_divergence(&a, &b, 7, 0, 0)
             .unwrap()

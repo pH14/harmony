@@ -47,7 +47,7 @@ fn bisect_runs_executed_is_exact() {
     let (toy, flaky) = persistent(1);
     let p = bisect_divergence(&toy, &flaky, 9, 0, 16).unwrap();
     assert_eq!(p.first_divergent_work, 1);
-    assert_eq!(p.runs_executed, 6);
+    assert_eq!(p.runs_executed, 8);
 }
 
 #[test]

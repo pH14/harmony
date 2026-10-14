@@ -1,8 +1,54 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::cell::Cell;
+use std::rc::Rc;
 use unison::flaky::{FlakyFactory, Perturbation};
 use unison::toy::{ToyFactory, generate_program};
-use unison::{RunOutcome, Subject, SubjectError, SubjectFactory, bisect_divergence, compare_runs};
+use unison::{
+    RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence, compare_runs,
+    first_divergence_from_report,
+};
+
+#[derive(Clone)]
+struct CounterFactory(Rc<Cell<u8>>);
+
+struct CounterMachine {
+    work: u64,
+    spawn_id: u8,
+}
+
+impl SubjectFactory for CounterFactory {
+    type M = CounterMachine;
+
+    fn spawn(&self, _: u64) -> Self::M {
+        let spawn_id = self.0.get();
+        self.0.set(spawn_id.wrapping_add(1));
+        CounterMachine { work: 0, spawn_id }
+    }
+}
+
+impl Subject for CounterMachine {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
+        self.work = target;
+        Ok(RunOutcome::ReachedTarget)
+    }
+
+    fn work(&self) -> u64 {
+        self.work
+    }
+
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
+        let mut hash = [self.work as u8; 32];
+        if self.work > 0 {
+            hash[0] ^= self.spawn_id;
+        }
+        Ok(hash)
+    }
+
+    fn observable_digest(&self) -> [u8; 32] {
+        [0; 32]
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -74,9 +120,10 @@ fn compare_refuses_a_mismatch_missing_from_direct_replay() {
         bisect_divergence(&a, &b, 7, 2, 4),
         Err(SubjectError::NoDivergence { hi: 4 })
     );
+    let report = compare_runs(&a, &b, 7, 2, 4).unwrap();
     assert_eq!(
-        compare_runs(&a, &b, 7, 2, 4),
-        Err(SubjectError::UnreplayableCheckpoint { target: 4 })
+        report.verdict,
+        Verdict::UnreplayableDivergence { observed_at: 4 }
     );
 }
 
@@ -88,9 +135,28 @@ fn compare_refuses_a_matching_low_checkpoint_that_direct_replay_diverges_at() {
         bisect_divergence(&a, &b, 7, 2, 4),
         Err(SubjectError::DivergesAtLo { lo: 2 })
     );
+    let report = compare_runs(&a, &b, 7, 2, 4).unwrap();
     assert_eq!(
-        compare_runs(&a, &b, 7, 2, 4),
-        Err(SubjectError::UnreplayableCheckpoint { target: 2 })
+        report.verdict,
+        Verdict::UnreplayableDivergence { observed_at: 4 }
+    );
+}
+
+#[test]
+fn same_seed_nondeterminism_is_reported_without_a_first_work_claim() {
+    let factory = CounterFactory(Rc::new(Cell::new(0)));
+    let report = compare_runs(&factory, &factory, 7, 1, 1).unwrap();
+    assert_eq!(
+        report.verdict,
+        Verdict::UnreplayableDivergence { observed_at: 1 }
+    );
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["verdict"]["unreplayable_divergence"]["observed_at"],
+        1
+    );
+    assert_eq!(
+        first_divergence_from_report(&factory, &factory, 7, &report).unwrap(),
+        None
     );
 }
 
