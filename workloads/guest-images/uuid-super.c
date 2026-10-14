@@ -161,11 +161,10 @@ int main(void)
     // Pre-draw stabilization + operational logging, unified in ONE bounded loop.
     // The periodic console writes below are BOTH the bug-agnostic signal workload
     // (identical idiom to bugs 1/2) AND — crucially — the snapshottable boundaries
-    // `seal_base` needs to land a base BEFORE the draw. A SILENT busy loop has no
-    // such boundary, so the seal can land only at the entropy device exit
-    // itself and bake the draw into the base (0 fires on the box; both the
-    // silent-loop and no-loop variants confirmed this 2026-07-07). Each `fflush`
-    // is a console-write exit the seal can land on. The draw is taken ONCE, at
+    // `seal_base` needs to land a base BEFORE the draw. A silent busy loop has
+    // no deliberate boundary before the entropy device exchange, so the seal
+    // could capture a completed draw. Each `fflush` is a console-write exit
+    // the seal can land on. The draw is taken ONCE, at
     // iteration STABILIZE_ITERS — by then many checkpoint writes have given the
     // seal a home earlier in the loop, so the draw executes POST-seal, per-branch.
     // STABILIZE_ITERS is tuned (box smoke probe) so the post-seal draw lands within
