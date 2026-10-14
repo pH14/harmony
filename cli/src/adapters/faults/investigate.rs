@@ -6,16 +6,10 @@ use faults_workload::{
     FaultAction,
     package::{self, ReplaySummary, Report, StateHashEncoding},
 };
-use std::{fs, path::Path};
+use std::fs;
 
 use crate::selection::Point;
 pub use crate::selection::Selection;
-
-fn report(path: &Path) -> Result<Report> {
-    Ok(serde_json::from_slice(&fs::read(
-        path.join("report.json"),
-    )?)?)
-}
 
 fn recorded_report(manifest: &Manifest) -> Result<Report> {
     Ok(serde_json::from_value(
@@ -58,10 +52,6 @@ fn report_witness(report: &Report, bug: Option<usize>) -> Result<ReplaySummary> 
             .cloned()
             .ok_or_else(|| "select a finding with --finding NUMBER".into())
     }
-}
-
-fn witness(path: &Path, bug: Option<usize>) -> Result<ReplaySummary> {
-    report_witness(&report(path)?, bug)
 }
 
 fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
@@ -319,16 +309,7 @@ pub fn prefix(
 pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let manifest = Manifest::read(&path)?;
-    let report_path = if path.join("report.json").exists() {
-        path.join("report.json")
-    } else {
-        path.join("run.json")
-    };
-    let report: serde_json::Value = if report_path.is_file() {
-        serde_json::from_slice(&fs::read(report_path)?)?
-    } else {
-        serde_json::Value::Null
-    };
+    let report = manifest.record.payload["outcome"].clone();
     let selected = if let Some(bug) = selection.finding {
         let bugs = report["bugs"]
             .as_array()
@@ -424,7 +405,8 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
 
 pub fn timeline(selection: Selection, point: Point, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
-    let mut witness = witness(&path, selection.finding)?;
+    let manifest = Manifest::read(&path)?;
+    let mut witness = recorded_witness(&manifest, selection.finding)?;
     if point.specified() {
         let (_, boundaries, anchor) = trajectory(&witness, selection.finding.is_some());
         let step = point.resolve(&boundaries, anchor)?;
@@ -482,7 +464,8 @@ pub fn logs(
         }
         sections.push(serde_json::json!({"source":"console","step":null,"lines":filter(&fs::read_to_string(path.join("serial.log"))?)}));
     } else {
-        let witness = match witness(&path, selection.finding) {
+        let manifest = Manifest::read(&path)?;
+        let witness = match recorded_witness(&manifest, selection.finding) {
             Ok(witness) => Some(witness),
             Err(_)
                 if selection.finding.is_none()
