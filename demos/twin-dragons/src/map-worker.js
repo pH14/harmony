@@ -5,6 +5,7 @@ onmessage = async ({ data }) => {
   try {
     if (data.type === "init") {
       engine = await createEngine(data.base, GAMES.get(data.game), { rom: data.rom });
+      if (!data.sprites) return postMessage({ type: "ready" });
       const sheet = engine.game.buildSprites(engine);
       postMessage({ type: "sprites", ...sheet }, [sheet.data.buffer]);
     } else if (data.type === "map") {

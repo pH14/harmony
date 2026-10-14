@@ -836,7 +836,7 @@ function mapURL(level) {
   url.searchParams.set("v", "level-data-1");
   return url.href;
 }
-const builtMaps = { worker: null, ready: false, queue: [], busy: false, wanted: null, waiting: new Map() };
+const builtMaps = { workers: [], ready: false, queue: [], wanted: null, waiting: new Map() };
 function imageCanvas({ width, height, data }) {
   const image = document.createElement("canvas");
   image.width = width;
@@ -845,11 +845,14 @@ function imageCanvas({ width, height, data }) {
   return image;
 }
 function nextBuiltMap() {
-  if (!builtMaps.ready || builtMaps.busy || !builtMaps.queue.length) return;
-  const at = Math.max(0, builtMaps.queue.indexOf(builtMaps.wanted));
-  const [level] = builtMaps.queue.splice(at, 1);
-  builtMaps.busy = true;
-  builtMaps.worker.postMessage({ type: "map", level });
+  if (!builtMaps.ready) return;
+  for (const slot of builtMaps.workers) {
+    if (!slot.ready || slot.busy || !builtMaps.queue.length) continue;
+    const at = Math.max(0, builtMaps.queue.indexOf(builtMaps.wanted));
+    const [level] = builtMaps.queue.splice(at, 1);
+    slot.busy = true;
+    slot.worker.postMessage({ type: "map", level });
+  }
 }
 function builtMapKey(level) {
   return `${game.id}:${game.rom.sha256}:map-v1:${level}`;
@@ -875,25 +878,31 @@ function showBuiltMap(level, image) {
   });
 }
 function startMapWorker() {
-  if (builtMaps.worker) return;
-  builtMaps.worker = new Worker(new URL("./map-worker.js", import.meta.url), { type: "module" });
-  builtMaps.worker.onmessage = ({ data }) => {
-    if (data.type === "error") return showError(data.message);
-    if (data.type === "sprites") {
-      imageCanvas(data).toBlob((blob) => (sprites.src = URL.createObjectURL(blob)));
-      builtMaps.ready = true;
-    } else if (data.type === "map" && data.tiles) {
-      showBuiltMap(data.level, data);
-      builtMaps.busy = false;
-    } else if (data.type === "map") {
-      const image = imageCanvas(data);
-      showBuiltMap(data.level, image);
-      image.toBlob((blob) => blob && save(builtMapKey(data.level), blob));
-      builtMaps.busy = false;
-    }
-    nextBuiltMap();
-  };
-  builtMaps.worker.postMessage({ type: "init", base: base.href, game: game.id, rom: engineInputs.rom });
+  if (builtMaps.workers.length) return;
+  const count = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 4) >> 2));
+  for (let i = 0; i < count; i++) {
+    const slot = { worker: new Worker(new URL("./map-worker.js", import.meta.url), { type: "module" }), ready: false, busy: false };
+    slot.worker.onmessage = ({ data }) => {
+      if (data.type === "error") return showError(data.message);
+      if (data.type === "sprites") {
+        imageCanvas(data).toBlob((blob) => (sprites.src = URL.createObjectURL(blob)));
+        builtMaps.ready = slot.ready = true;
+      } else if (data.type === "ready") {
+        slot.ready = true;
+      } else if (data.type === "map" && data.tiles) {
+        showBuiltMap(data.level, data);
+        slot.busy = false;
+      } else if (data.type === "map") {
+        const image = imageCanvas(data);
+        showBuiltMap(data.level, image);
+        image.toBlob((blob) => blob && save(builtMapKey(data.level), blob));
+        slot.busy = false;
+      }
+      nextBuiltMap();
+    };
+    slot.worker.postMessage({ type: "init", base: base.href, game: game.id, rom: engineInputs.rom, sprites: i === 0 });
+    builtMaps.workers.push(slot);
+  }
 }
 async function buildMapInBrowser(level) {
   const cached = await load(builtMapKey(level));

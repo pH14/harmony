@@ -383,7 +383,9 @@ The page builds each map in a worker from the ROM. The builder holds Mario at
 a fixed height, hides sprites, clears enemies and loop checks, holds Right
 and B, and copies each newly scrolled column into the map. When Mario stops
 moving it tries the next height. It keeps the flag pole, so each map ends after
-the flag sequence. Built maps are cached in IndexedDB by ROM hash. Map widths
+the flag sequence. Built maps are cached in IndexedDB by ROM hash. Maps build in a pool of
+one map worker per four cores, at most three, and the shown level's map
+builds first. Map widths
 are fixed per level, because the page lays out maps before they are built.
 Seed 27 reaches World 1-2 from World 1-1 after about 2,300 rollouts.
 `tests/smb.mjs` reads the ROM from `SMB_ROM` or
