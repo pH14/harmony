@@ -922,6 +922,9 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
             ));
         }
         let size = parse_octal(&block[124..136])?;
+        if size >= i64::MAX as u64 {
+            return Err(ImageError::Tar("tar member size is too large".into()));
+        }
         i64::try_from(parse_octal(&block[136..148])?)
             .map_err(|_| ImageError::Tar("tar timestamp is too large".into()))?;
         check_device_number(&block[329..337])?;
@@ -4234,6 +4237,49 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["cover".to_string()]
         );
+    }
+
+    #[test]
+    fn pax_size_override_refuses_a_base_size_that_overflows_host_tar() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, size, admitted) in [
+            ("max-minus-one", i64::MAX as u64 - 1, true),
+            ("max", i64::MAX as u64, false),
+            ("max-plus-one", i64::MAX as u64 + 1, false),
+        ] {
+            let mut member = raw_member(b"payload", b'0', "", b"data");
+            let mut encoded = [0u8; 12];
+            encoded[0] = 0x80;
+            encoded[4..].copy_from_slice(&size.to_be_bytes());
+            member[124..136].copy_from_slice(&encoded);
+            reseal(&mut member);
+            let body = [
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("size", "4").as_bytes(),
+                ),
+                member,
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("{label}.tar"), &body);
+            let dest = dir.path().join(label);
+            std::fs::create_dir(&dest).unwrap();
+
+            if admitted {
+                assert_eq!(read_members(&archive).unwrap().len(), 1);
+                extract_checked(&archive, &dest).unwrap();
+                assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
+            } else {
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
     }
 
     #[test]
