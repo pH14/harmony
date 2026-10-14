@@ -80,11 +80,19 @@ all_sites() {
         echo "FAIL: kernel ELF '$VMLINUX' not found — scan the uncompressed vmlinux." >&2
         return 1
     fi
-    local dis
+    local dis rc=0
     dis=$(mktemp)
-    objdump -d "$VMLINUX" > "$dis"
-    sites "$dis" vmlinux "${1:-}"
+    if ! objdump -d "$VMLINUX" > "$dis"; then
+        echo "FAIL: could not disassemble kernel ELF '$VMLINUX'" >&2
+        rc=1
+    elif ! grep -Eq '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+[[:xdigit:]]{2}' "$dis"; then
+        echo "FAIL: kernel ELF '$VMLINUX' yielded no disassembled instructions" >&2
+        rc=1
+    else
+        sites "$dis" vmlinux "${1:-}" || rc=1
+    fi
     rm -f "$dis"
+    return "$rc"
 }
 
 # raw_byte_scan: fail-closed opcode scan of the boot artifacts. Setup and the
@@ -234,6 +242,12 @@ ffffffff81000022:	c3                   	ret
 EOF
     if [ -n "$(sites "$d/clean.dis" vmlinux)$(sites "$d/clean.dis" vmlinux '^(rdrand|rdseed)$')" ]; then
         echo "FAIL: self-test — the clean fixture matched an instruction" >&2
+        exit 1
+    fi
+
+    printf 'not an ELF\n' > "$d/malformed.elf"
+    if (VMLINUX="$d/malformed.elf"; all_sites >/dev/null 2>&1); then
+        echo "FAIL: self-test — an unreadable kernel ELF passed the disassembly gate" >&2
         exit 1
     fi
 
