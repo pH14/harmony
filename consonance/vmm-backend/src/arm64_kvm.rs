@@ -1118,7 +1118,7 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     dirty_log: bool,
     unlogged_slot: bool,
     dirty_log_poisoned: bool,
-    restore_poisoned: bool,
+    state_poisoned: bool,
     pending_irq: Option<GicIntId>,
     applied_irq: Option<GicIntId>,
     accepted_irq: Option<GicIntId>,
@@ -1142,7 +1142,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             dirty_log: true,
             unlogged_slot: false,
             dirty_log_poisoned: false,
-            restore_poisoned: false,
+            state_poisoned: false,
             pending_irq: None,
             applied_irq: None,
             accepted_irq: None,
@@ -1160,7 +1160,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
     }
 
     fn ensure_healthy(&self) -> Result<()> {
-        if self.restore_poisoned {
+        if self.state_poisoned {
             return Err(BackendError::Internal("backend state mutation failed"));
         }
         Ok(())
@@ -1322,6 +1322,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn set_policy(&mut self, policy: &crate::arch::arm64::Arm64Policy) -> Result<()> {
         self.ensure_healthy()?;
+        self.state_poisoned = true;
         self.kvm
             .set_one_reg(KVM_REG_ARM_PSCI_VERSION, KVM_ARM_PSCI_1_0)?;
         for id in OPTIONAL_FIRMWARE_BITMAPS {
@@ -1351,6 +1352,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         }
         let _ = &policy.sysreg_traps;
         self.configured = true;
+        self.state_poisoned = false;
         Ok(())
     }
 
@@ -1571,7 +1573,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.settle_mmio()?;
         self.validate_restore_state(state)?;
         if let Err(error) = restore_vcpu(&mut self.kvm, state) {
-            self.restore_poisoned = true;
+            self.state_poisoned = true;
             return Err(error);
         }
         self.pending_irq = None;
@@ -2915,6 +2917,41 @@ mod tests {
                 "optional SMCCC firmware bitmap {fw_id:#x} must be denied"
             );
         }
+    }
+
+    #[test]
+    fn failed_policy_write_retires_partly_reconfigured_vcpu() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut policy = Arm64Policy::default();
+        policy.id_regs.regs.insert(0xc030, 0x20);
+        policy.id_regs.regs.insert(0xc038, 0x40);
+        backend.kvm.fail_reg_write_on =
+            Some(backend.kvm.reg_writes + 1 + OPTIONAL_FIRMWARE_BITMAPS.len() + 2);
+        assert!(matches!(
+            backend.set_policy(&policy),
+            Err(BackendError::Internal("fake KVM register write failed"))
+        ));
+        let first_id = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG | 0xc030;
+        assert_eq!(backend.kvm.reg(first_id), Some(0x20));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.set_policy(&policy),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 
     #[test]

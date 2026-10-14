@@ -347,6 +347,13 @@ them. The stage-2 and EL2 fields `MMFR0.TGran*_2`, `MMFR1.VMIDBits`,
 `MMFR1.VH`, `MMFR2.FWB` and `MMFR2.EVT` are not compared because the guest runs
 at EL1 and never uses them.
 
+Arm KVM also retires the vCPU when policy installation fails after it starts
+writing PSCI, firmware, ID-register or GIC state. A later rejection can leave
+the previous live policy only partly replaced. The fake-KVM
+`failed_policy_write_retires_partly_reconfigured_vcpu` test injects failure
+after the first ID-register write and requires later capture and guest entry to
+refuse that vCPU.
+
 `Arm64Caps::asid_bits` reports the ASID width each backend's host fixes for the
 guest. Hypervisor.framework implements 8-bit ASIDs, so HVF reports 8 bits. ARM
 KVM leaves `MMFR0.ASIDBits` out of its writable ID register mask and fails
