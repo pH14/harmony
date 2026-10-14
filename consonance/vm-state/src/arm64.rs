@@ -11,7 +11,7 @@ use crate::error::VmStateError;
 use crate::records::SnapshotRecords;
 use crate::types::{DeviceBlob, MpState, TimerQueueState, VtimeState};
 use crate::wire::{HeaderWire, VtimeWire};
-use crate::{ARCH_AARCH64, VM_STATE_MAGIC, VM_STATE_VERSION};
+use crate::{ARCH_AARCH64, ARM64_VM_STATE_VERSION, VM_STATE_MAGIC};
 
 const TAG_REGS: u16 = 1;
 const TAG_SYSREGS: u16 = 2;
@@ -402,7 +402,7 @@ impl Arm64VmState {
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
-                version: VM_STATE_VERSION.into(),
+                version: ARM64_VM_STATE_VERSION.into(),
                 arch: ARCH_AARCH64.into(),
                 section_count: section_count.into(),
             }
@@ -456,13 +456,13 @@ impl Arm64VmState {
         if magic != VM_STATE_MAGIC {
             return Err(VmStateError::BadMagic(magic));
         }
-        let version = header.version.get();
-        if version != VM_STATE_VERSION {
-            return Err(VmStateError::UnsupportedVersion(version));
-        }
         let arch = header.arch.get();
         if arch != ARCH_AARCH64 {
             return Err(VmStateError::UnsupportedArch(arch));
+        }
+        let version = header.version.get();
+        if version != ARM64_VM_STATE_VERSION {
+            return Err(VmStateError::UnsupportedVersion(version));
         }
         let section_count = header.section_count.get();
 
@@ -718,7 +718,7 @@ mod tests {
             let blob = state.encode().unwrap();
             assert_eq!(
                 u16::from_le_bytes(blob[4..6].try_into().unwrap()),
-                VM_STATE_VERSION
+                ARM64_VM_STATE_VERSION
             );
             assert_eq!(
                 u16::from_le_bytes(blob[8..10].try_into().unwrap()),
@@ -746,19 +746,20 @@ mod tests {
         let mut empty = sections.clone();
         empty.last_mut().unwrap().1.clear();
         assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_VERSION, count, &empty)),
+            Arm64VmState::decode(&pack(ARM64_VM_STATE_VERSION, count, &empty)),
             Err(VmStateError::InvalidField)
         );
 
         let mut missing = sections.clone();
         missing.pop();
-        let decoded = Arm64VmState::decode(&pack(VM_STATE_VERSION, count - 1, &missing)).unwrap();
+        let decoded =
+            Arm64VmState::decode(&pack(ARM64_VM_STATE_VERSION, count - 1, &missing)).unwrap();
         assert!(decoded.engine_state.is_empty());
 
         let mut duplicate = sections.clone();
         duplicate.push(sections.last().unwrap().clone());
         assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_VERSION, count + 1, &duplicate)),
+            Arm64VmState::decode(&pack(ARM64_VM_STATE_VERSION, count + 1, &duplicate)),
             Err(VmStateError::DuplicateTag(TAG_ENGINE_STATE))
         );
 
@@ -766,7 +767,7 @@ mod tests {
         let last = out_of_order.len() - 1;
         out_of_order.swap(last - 1, last);
         assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_VERSION, count, &out_of_order)),
+            Arm64VmState::decode(&pack(ARM64_VM_STATE_VERSION, count, &out_of_order)),
             Err(VmStateError::SectionOrder(TAG_ENGINE_STATE - 1))
         );
 
@@ -826,6 +827,16 @@ mod tests {
             Arm64VmState::decode(&bad_version),
             Err(VmStateError::UnsupportedVersion(_))
         ));
+    }
+
+    #[test]
+    fn pre_actlr_arm_record_is_rejected() {
+        let mut old = sample().encode().unwrap();
+        old[4..6].copy_from_slice(&8u16.to_le_bytes());
+        assert_eq!(
+            Arm64VmState::decode(&old),
+            Err(VmStateError::UnsupportedVersion(8))
+        );
     }
 
     #[test]

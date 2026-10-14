@@ -30,6 +30,7 @@ const HV_REG_FPSR: u32 = 33;
 const HV_REG_CPSR: u32 = 34;
 
 const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
+const HV_SYS_REG_ACTLR_EL1: u16 = 0xc081;
 const HV_SYS_REG_CONTEXTIDR_EL1: u16 = 0xc681;
 const HV_SYS_REG_AMAIR_EL1: u16 = 0xc518;
 const HV_SYS_REG_PAR_EL1: u16 = 0xc3a0;
@@ -908,6 +909,7 @@ impl Backend for HvfBackend {
             writes.push((reg, value));
         }
         self.state_poisoned = true;
+        self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
         for (reg, value) in writes {
             self.set_sysreg(reg, value)?;
             #[cfg(test)]
@@ -1136,6 +1138,11 @@ impl Backend for HvfBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
+        if self.sysreg(HV_SYS_REG_ACTLR_EL1)? != 0 {
+            return Err(BackendError::Unsupported {
+                what: "save HVF with noncanonical ACTLR_EL1",
+            });
+        }
         let mut state = Arm64VcpuState::default();
         for (reg, slot) in state.core.x.iter_mut().enumerate() {
             *slot = self.reg(reg as u32)?;
@@ -1249,6 +1256,7 @@ impl Backend for HvfBackend {
         self.validate_restore_state(state)?;
         self.state_poisoned = true;
         self.flush_guest_translations()?;
+        self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }

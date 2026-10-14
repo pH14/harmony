@@ -364,6 +364,16 @@ both the physical-timer and `DISR_EL1` boundaries. The live
 `guest_disr_state_refuses_capture_and_legacy_restore` check covers capture
 refusal, version-6 restore refusal, and a clean restore into a reused vCPU.
 
+Apple HVF also exposes guest-writable `ACTLR_EL1`, including the EnTSO memory
+ordering control. It is absent from the portable vCPU record: a guest-written
+value of `0x2` survived uninterrupted execution but read back as zero after a
+fresh restore. HVF refuses capture while `ACTLR_EL1` is nonzero, and policy
+installation and restore clear it to the fresh-vCPU zero baseline. The Arm
+portable record now uses wire version 9 so snapshots created before this
+capture check are rejected. The live
+`guest_actlr_state_refuses_capture_and_clean_restore_resets_it` test checks
+capture refusal and clean reused and fresh restores.
+
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
 guest RAM or backend state is changed.

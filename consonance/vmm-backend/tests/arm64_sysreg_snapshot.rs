@@ -470,6 +470,47 @@ fn guest_disr_state_refuses_capture_and_legacy_restore() {
 }
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[ignore = "live HVF; registered in HOST_TESTS"]
+fn guest_actlr_state_refuses_capture_and_clean_restore_resets_it() {
+    let program = [
+        0xd280_0040,
+        0xd518_1020,
+        0xd503_3fdf,
+        0xd538_1020,
+        0xd2a1_2001,
+        0xf900_0020,
+        0xd538_1020,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    let mut clean = source.save();
+    clean.core.pc = RAM + 24;
+    clean.core.x[1] = OUTPUT;
+    assert_eq!(source.next_store(), 2);
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { what })
+            if what == "save HVF with noncanonical ACTLR_EL1"
+    ));
+    assert_eq!(source.next_store(), 2);
+    source.restore(&clean);
+    assert_eq!(source.next_store(), 0);
+    drop(source);
+
+    let mut cold = Guest::new(live_backend(), &program);
+    cold.restore(&clean);
+    assert_eq!(cold.next_store(), 0);
+    drop(cold);
+
+    let mut policy = Guest::new(live_backend(), &program);
+    assert_eq!(policy.next_store(), 2);
+    policy.backend.set_policy(&Arm64Policy::default()).unwrap();
+    assert_eq!(policy.next_store(), 0);
+}
+
+#[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {

@@ -244,6 +244,7 @@ HOST_TESTS = {
         "vmm-backend hvf::tests::failed_policy_write_retires_mutated_vcpu",
         "vmm-backend hvf::tests::failed_fault_completion_retires_partly_changed_vcpu",
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_actlr_state_refuses_capture_and_clean_restore_resets_it",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
