@@ -185,6 +185,22 @@ class CounterScanTests(unittest.TestCase):
             words = exclusive.executable_words(str(path))
         self.assertEqual(words, [(0x1000, 0xD65F03C0, ".text")])
 
+    def test_pinned_go_runtime_metadata_in_executable_segment_is_reviewed_data(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        ldxr_shaped_data = (0x885F7C20).to_bytes(4, "little")
+        sections = ((".text", 6, ret),) + tuple(
+            (name, 2, ldxr_shaped_data)
+            for name in (".typelink", ".itablink", ".gopclntab")
+        )
+        data = elf_sections(sections, 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "go-runtime-metadata"
+            path.write_bytes(data)
+            exclusive_words = exclusive.executable_words(str(path))
+            counter_words = scan.executable_words(str(path))
+        self.assertEqual(exclusive_words, [(0x1000, 0xD65F03C0, ".text")])
+        self.assertEqual(len(counter_words), 4)
+
     def test_overlapping_executable_segments_are_rejected(self):
         ret = (0xD65F03C0).to_bytes(4, "little")
         data = elf_sections(((".text", 6, ret), (".gap", 0, ret),
@@ -196,6 +212,38 @@ class CounterScanTests(unittest.TestCase):
             path = Path(temporary) / "overlapping-segments"
             path.write_bytes(data)
             with self.assertRaisesRegex(SystemExit, "overlapping executable segments"):
+                exclusive.executable_words(str(path))
+
+    def test_overlapping_loaded_data_and_code_are_rejected(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret), (".rodata", 2, ret),
+                             (".safe", 6, ret)), 2)
+        struct.pack_into("<Q", data, 256 + 2 * 64 + 16, 0x1000)
+        struct.pack_into("<Q", data, 256 + 2 * 64 + 24, 1024)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "overlapping-loaded-sections"
+            path.write_bytes(data)
+            with self.assertRaisesRegex(SystemExit, "overlapping loaded sections"):
+                exclusive.executable_words(str(path))
+
+    def test_entrypoint_in_segment_gap_is_rejected(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret), (".gap", 0, ret),
+                             (".safe", 6, ret)), 1)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "gap-entrypoint"
+            path.write_bytes(data)
+            with self.assertRaisesRegex(SystemExit, "entrypoint outside executable sections"):
+                exclusive.executable_words(str(path))
+
+    def test_executable_section_outside_executable_segment_is_rejected(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret), (".safe", 6, ret)), 0)
+        struct.pack_into("<Q", data, 256 + 2 * 64 + 16, 0x2000)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "outside-executable-segment"
+            path.write_bytes(data)
+            with self.assertRaisesRegex(SystemExit, "executable section.*outside executable load"):
                 exclusive.executable_words(str(path))
 
 
