@@ -2713,6 +2713,31 @@ mod tests {
     }
 
     #[test]
+    fn gnu_sparse_map_cannot_hide_a_later_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut first = raw_member(b"first", b'0', "", b"");
+        first[257..265].copy_from_slice(b"ustar  \0");
+        first[386..398].copy_from_slice(b"00000000001\0");
+        first[398..410].copy_from_slice(b"00000000001\0");
+        first[482] = b'1';
+        reseal(&mut first);
+        let archive = write_archive(
+            dir.path(),
+            "gnu-sparse-map.tar",
+            &[first, raw_member(b"later", b'0', "", b"data")].concat(),
+        );
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
     fn hardlink_with_data_is_rejected_before_rootfs_mutation() {
         let dir = tempfile::tempdir().unwrap();
         let rootfs = dir.path().join("rootfs");
