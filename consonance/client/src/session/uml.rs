@@ -155,6 +155,13 @@ impl UmlSession {
         let initramfs = launch
             .initramfs_bytes()?
             .ok_or_else(|| SessionError::Control("the pinned initramfs is missing".into()))?;
+        let actual_initramfs_sha256: [u8; 32] = Sha256::digest(&initramfs).into();
+        if actual_initramfs_sha256 != config.expected_initramfs_sha256 {
+            return Err(SessionError::Control(
+                "the pinned UML initramfs changed after workload admission".into(),
+            )
+            .into());
+        }
         let root_identity = root_identity(config, &profile, &host, &initramfs);
         let checkpoints = Checkpoints::new();
         let mut session = uml::Session::spawn(&launch, &profile, &checkpoints, None)?;
@@ -686,6 +693,7 @@ mod tests {
             expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
             expected_host: host(),
             initramfs: directory.path().join("rootfs"),
+            expected_initramfs_sha256: Sha256::digest(b"rootfs").into(),
             memory_mib: 128,
             kernel_arguments: Vec::new(),
             work_parent: directory.path().to_path_buf(),
@@ -695,6 +703,32 @@ mod tests {
         };
         let error = UmlSession::boot(&config, nominal_factory()).err().unwrap();
         assert!(error.to_string().contains("profile identity changed"));
+    }
+
+    #[test]
+    fn initramfs_changed_after_admission_rejects_before_guest_boot() {
+        let (directory, admitted) = profile_fixture();
+        let path = directory.path().join("override.cpio");
+        std::fs::write(&path, b"changed initramfs").unwrap();
+        let config = UmlLaunch {
+            profile: directory.path().to_path_buf(),
+            expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
+            expected_host: uml::HostIdentity::current().unwrap(),
+            initramfs: path,
+            expected_initramfs_sha256: Sha256::digest(b"admitted initramfs").into(),
+            memory_mib: 128,
+            kernel_arguments: Vec::new(),
+            work_parent: directory.path().to_path_buf(),
+            seed: 1,
+            setup_budget: 1,
+            progress_limit: Duration::from_secs(1),
+        };
+        let error = UmlSession::boot(&config, nominal_factory()).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("initramfs changed after workload admission")
+        );
     }
 
     #[test]
@@ -740,6 +774,7 @@ mod tests {
             expected_profile_identity_sha256: profile.identity_sha256().to_owned(),
             expected_host: host.clone(),
             initramfs: PathBuf::new(),
+            expected_initramfs_sha256: Sha256::digest(b"initramfs").into(),
             memory_mib: 128,
             kernel_arguments: vec!["rdinit=/init".into()],
             work_parent: PathBuf::new(),

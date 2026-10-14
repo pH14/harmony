@@ -195,12 +195,13 @@ the guest to its setup snapshot point and captures it. Each snapshot is a full
 `uml::Checkpoint`; a restore is in place while the guest is paused and starts
 a fresh process otherwise. The initramfs override is pinned before the first
 boot; its sealed bytes define the root identity and serve every later fresh
-process. The caller supplies the admitted profile and exact host processor
-identity; boot checks both against the pinned profile and processor before
-starting a guest. The root identity includes that host identity, so an import
-from a different physical processor is refused before the checkpoint store
-changes. Fresh restore spawns recheck the same admitted processor and host
-identity. A publish exports the checkpoint into one extent,
+process. Boot checks their SHA-256 against the caller's admitted initramfs
+digest. The caller supplies the admitted profile and exact host processor
+identity; boot checks both against the pinned profile and
+processor before starting a guest. The root identity includes that host
+identity, so an import from a different physical processor is refused before
+the checkpoint store changes. Fresh restore spawns recheck the same admitted
+processor and host identity. A publish exports the checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
 or inject interrupts. `store_bytes` is the allocated size of every held
