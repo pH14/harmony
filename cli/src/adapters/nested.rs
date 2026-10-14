@@ -31,12 +31,26 @@ fn verified_report(
     Ok(serde_json::from_slice(&run.report)?)
 }
 
+fn stable_report(payload: &serde_json::Value) -> serde_json::Value {
+    let mut outcome = payload.clone();
+    if let Some(archive) = outcome
+        .get_mut("archive")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        archive.remove("entries");
+    }
+    outcome
+}
+
 impl Package for Nested {
     fn name(&self) -> &'static str {
         "nested"
     }
     fn accepts(&self, _: &str) -> bool {
         false
+    }
+    fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
+        stable_report(payload)
     }
     fn normalize(&self, c: &mut Config, base: &Path) -> Result<()> {
         crate::config::resolve_input(&mut c.workload.input, base, false);
@@ -198,6 +212,14 @@ fn execute(mut request: Request) -> Result<u8> {
         m.payload = verified_report(&out, &run)?;
         Ok(run.finding)
     });
+    let result = result.and_then(|finding| {
+        if let Some((_, source, _)) = &original
+            && stable_report(&source.payload) != stable_report(&m.payload)
+        {
+            return Err("nested replay report diverged from saved campaign".into());
+        }
+        Ok(finding)
+    });
     m.status = if result.is_ok() { "complete" } else { "failed" }.into();
     m.error = result.as_ref().err().map(ToString::to_string);
     m.save(&out)?;
@@ -243,6 +265,19 @@ mod tests {
                 .to_string(),
             "recorded nested campaign has no stream digest"
         );
+    }
+
+    #[test]
+    fn nested_replay_compares_stable_report_fields() {
+        let saved = serde_json::json!({
+            "executions_completed": 1,
+            "archive": {"entries": [], "evidence": {"failures": []}}
+        });
+        let mut replayed = saved.clone();
+        replayed["archive"]["entries"] = serde_json::json!([{"key": "materialized"}]);
+        assert_eq!(stable_report(&saved), stable_report(&replayed));
+        replayed["executions_completed"] = serde_json::json!(7);
+        assert_ne!(stable_report(&saved), stable_report(&replayed));
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

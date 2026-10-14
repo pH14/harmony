@@ -161,3 +161,7 @@ continues to invoke the historical binary's own CLI.
 The host producer returns its serialized report bytes to the adapter as well as
 writing `report.json`; the adapter requires the moved file to match those bytes
 before it records a completed search or replay.
+Developer replay also compares the saved report with the freshly rederived
+report. It ignores only archive entries materialized for replay, because live
+search intentionally leaves those entries unmaterialized; execution counts,
+work, evidence and stream identity must still agree.
