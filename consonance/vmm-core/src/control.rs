@@ -11961,6 +11961,56 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_live_handler_allows_replay_and_import_recovery() {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::{Arc, Mutex};
+
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(origin, &mut artifact)
+            .unwrap();
+
+        let poisoned_env = || {
+            let mut env = RecordedEnv::new(
+                0,
+                Box::new(AliasedService(
+                    Arc::new(AtomicU64::new(0)),
+                    Arc::new(Mutex::new(Vec::new())),
+                )) as Box<dyn environment::channel::ServiceHandler>,
+            );
+            assert!(matches!(env.reseed(7), Err(ChannelError::Poisoned)));
+            env
+        };
+        server
+            .vmm_mut()
+            .unwrap()
+            .enable_sdk(poisoned_env(), &ServiceConfig::default());
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
+
+        server
+            .vmm_mut()
+            .unwrap()
+            .enable_sdk(poisoned_env(), &ServiceConfig::default());
+        let imported = server
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        assert_eq!(
+            server.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    #[test]
     fn rejected_branch_poisoned_when_factory_aliases_live_service() {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::{Arc, Mutex};
