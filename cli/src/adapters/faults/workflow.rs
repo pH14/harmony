@@ -155,11 +155,15 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
     let parent = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&parent)?;
-    original.verify(&parent)?;
+    let resume = request.operation == crate::adapters::Operation::Resume;
+    if resume {
+        original.record.verify(&parent)?;
+    } else {
+        original.verify(&parent)?;
+    }
     if original.bundle.is_none() {
         return Err("this execution has no searchable supervisor scenario".into());
     }
-    let resume = request.operation == crate::adapters::Operation::Resume;
     let mut shared = original.config.shared()?;
     request.budget.apply(&mut shared)?;
     let start = if resume {
