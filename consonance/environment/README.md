@@ -22,6 +22,9 @@ candidate commits, leaving the live handler usable.
 Reseeding follows the same candidate-commit rule: a shallow clone that changes
 the original handler poisons every channel clone. Rejecting a separate candidate
 leaves the entropy stream and live handler unchanged.
+Integrations that probe a handler outside the channel can call
+`verify_handler_unchanged` with a prior handler snapshot to poison the channel
+if that probe changed its live handler.
 Restoring a captured handler checks both selectors on the factory result and
 again after loading its state. It also checks that a new capture exactly
 reproduces the recorded state bytes. Restoring a recorded environment makes the

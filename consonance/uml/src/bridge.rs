@@ -6,7 +6,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use environment::channel::{NominalHandler, RecordedEnv, ServiceHandler};
+use environment::channel::{HandlerSnapshot, NominalHandler, RecordedEnv, ServiceHandler};
 use environment::sdk::{self, EventClass, ServiceOutcome};
 #[cfg(target_os = "linux")]
 use environment::{
@@ -186,13 +186,26 @@ impl Services {
     ) -> Result<(), String> {
         let identity = handler.identity().to_vec();
         let configuration = handler.configuration().to_vec();
+        let current_before = HandlerSnapshot::capture(self.env.handler().as_ref())
+            .map_err(|error| format!("current service handler: {error}"))?;
+        let candidate_before = HandlerSnapshot::capture(handler.as_ref())
+            .map_err(|error| format!("service handler: {error}"))?;
         let decode_env = RecordedEnv::new(0, handler.clone());
+        self.env
+            .verify_handler_unchanged(&current_before)
+            .map_err(|error| format!("current service handler: {error}"))?;
+        if HandlerSnapshot::capture(handler.as_ref()).as_ref() != Ok(&candidate_before) {
+            return Err("service handler changed while checking its reseed".to_owned());
+        }
         if decode_env.handler().identity() != identity
             || decode_env.handler().configuration() != configuration
         {
             return Err("service handler identity or configuration changed on reseed".to_owned());
         }
         let mut env = RecordedEnv::new(seed, handler);
+        self.env
+            .verify_handler_unchanged(&current_before)
+            .map_err(|error| format!("current service handler: {error}"))?;
         if env.handler().identity() != identity || env.handler().configuration() != configuration {
             return Err("service handler identity or configuration changed on reseed".to_owned());
         }
@@ -510,6 +523,89 @@ pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> Br
         events: services.events,
         failure,
         socket,
+    }
+}
+
+#[cfg(test)]
+mod branch_isolation_tests {
+    use super::*;
+    use environment::channel::{
+        Answer, ChannelError, MAX_CHANNEL_BYTES, Question, ServiceResponse,
+    };
+
+    #[derive(Clone)]
+    struct SharedReseedHandler {
+        state: Arc<AtomicU8>,
+    }
+
+    impl ServiceHandler for SharedReseedHandler {
+        fn identity(&self) -> &[u8] {
+            b"shared-reseed"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _moment: u64,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Nominal))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.state.load(Ordering::SeqCst)])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [byte] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.state.store(*byte, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn reseed(&mut self, _seed: u64) {
+            self.state.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn rejected_branch_cannot_certify_mutated_current_handler() {
+        let handler = SharedReseedHandler {
+            state: Arc::new(AtomicU8::new(0)),
+        };
+        let mut services = Services::new(1);
+        services.env = RecordedEnv::new(1, Box::new(handler.clone()));
+        assert!(services.env.snapshot_state().is_ok());
+        assert!(
+            services
+                .branch(2, Box::new(handler), vec![vec![0; MAX_CHANNEL_BYTES + 1]])
+                .is_err()
+        );
+        assert_eq!(services.env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn branch_rejects_a_shared_clone_changed_by_reseed_preflight() {
+        let handler = SharedReseedHandler {
+            state: Arc::new(AtomicU8::new(0)),
+        };
+        let mut services = Services::new(1);
+        let before = services.env.snapshot_state().unwrap().encode();
+        assert!(services.branch(2, Box::new(handler), Vec::new()).is_err());
+        assert_eq!(services.env.snapshot_state().unwrap().encode(), before);
+        assert!(
+            services
+                .branch(2, Box::new(NominalHandler), Vec::new())
+                .is_ok()
+        );
     }
 }
 

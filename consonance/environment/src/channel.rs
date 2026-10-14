@@ -531,7 +531,7 @@ impl RecordedState {
             )?;
             check_handler_state(&handler, &self.handler.state)
         })();
-        environment.check_original_handler(&before)?;
+        environment.verify_handler_unchanged(&before)?;
         restored?;
         environment.handler = handler;
         environment.stream_state = self.stream_state;
@@ -659,7 +659,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         let before = HandlerSnapshot::capture(&self.handler)?;
         let mut candidate = self.handler.clone();
         candidate.reseed(seed);
-        self.check_original_handler(&before)?;
+        self.verify_handler_unchanged(&before)?;
         let after = HandlerSnapshot::capture(&candidate)?;
         if after.identity() != before.identity() || after.configuration() != before.configuration()
         {
@@ -793,7 +793,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         let before = HandlerSnapshot::capture(&self.handler)?;
         let mut candidate = self.handler.clone();
         let response = candidate.respond(self.moment, question);
-        self.check_original_handler(&before)?;
+        self.verify_handler_unchanged(&before)?;
         let response = response?;
         if let ServiceResponse::Answered(answer) = &response {
             if let Answer::Data(bytes) = answer {
@@ -828,7 +828,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         }
     }
 
-    fn check_original_handler(&self, before: &HandlerSnapshot) -> Result<(), ChannelError> {
+    pub fn verify_handler_unchanged(&self, before: &HandlerSnapshot) -> Result<(), ChannelError> {
         if HandlerSnapshot::capture(&self.handler).as_ref() != Ok(before) {
             self.poisoned.store(true, Ordering::Release);
         }
