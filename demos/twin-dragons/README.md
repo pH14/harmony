@@ -205,9 +205,7 @@ Each level shows through one camera viewport: a 4:1 strip on desktop and a 2:1
 view on phones. The camera holds the full level height on screen and follows
 the search frontier (the 80th-percentile x of live sprites, smoothed), or the
 furthest cell the search has reached, or the level start. Following pauses
-while the mouse is over the map and for 2.5 seconds after a touch. Auto view
-and Full view sit beside the visualization toggles. Full view fits the whole
-level and stops following. A drag, pinch or edge pan holds the camera where the
+while the mouse is over the map and for 2.5 seconds after a touch. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.
 Selecting a cell stops following. Hovering the map shows chevrons at its left
 and right edges; resting on one pans that way, and a tap on a touch screen
@@ -316,8 +314,7 @@ The adapter reads the first 1 KiB bank of work RAM:
 The level scrolls upward, so the camera viewport is a 432 × 900 canvas that
 fits the 144-pixel level width, and it follows the highest players. The level
 strip stands beside the view at its full height, and the mouse wheel scrolls
-the view. Manual view takes the place of Full view and
-stops following. Climb is `$233 * $237 + $230`. Map coordinates are x =
+the view. Climb is `$233 * $237 + $230`. Map coordinates are x =
 screen x - 24 and y = level height - 155 - climb + screen y. Level heights are
 2,000, 2,896 and 3,792 lines. `tools/build-tobu-maps.mjs` climbs each level
 with a save-state search and composes the maps and the sprite sheet from the
@@ -540,7 +537,7 @@ scrubbing across the Level 1 to Level 2 change, 1x and 4x playback, human play,
 branching, the guided tour on desktop and phone, the level selector and the
 credits. `tests/browser.mjs` runs one worker so its Level 1 checks finish
 before the search reaches Level 2. `tests/room-cameras.mjs` checks one camera viewport per level on
-desktop and phone, Full view and Auto view, edge panning and the level strip,
+desktop and phone, following, edge panning and the level strip,
 rotation, and a retained-state hit near the far end of Level 1 using the
 hash-verified `level-one` history. `tests/level-finish.mjs` checks that
 the map moves to Level 2 within half a second of the first batch that clears

@@ -10,6 +10,7 @@ import { snapshotHash, snapshotDigest } from "../src/media.js";
 import { prefixAt } from "../src/branch.js";
 import { TOUR_KEY } from "../src/tour.js";
 import { isMapEvidence } from "../src/world.js";
+import { showOnMap } from "./map-point.mjs";
 const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const browser = await chromium.launch({
   headless: true,
@@ -29,10 +30,13 @@ await page.addInitScript((tourKey) => {
   const RealWorker = window.Worker;
   window.tdTestRouteCells = new Map();
   window.tdTestHeatPixels = (canvas) => {
-    const context = canvas.getContext('2d'), pixels = [];
-    for (let y = 8; y < canvas.height; y += 32)
-      for (let x = 112; x < canvas.width; x += 32)
-        pixels.push(...context.getImageData(x, y, 1, 1).data);
+    const context = canvas.getContext('2d'), d = canvas.dataset, pixels = {};
+    const scale = Math.min(canvas.width / +d.mapWidth, canvas.height / +d.mapHeight) * +d.zoom;
+    for (let wy = 4; wy < +d.roomHeight; wy += 32)
+      for (let wx = 36; wx < +d.roomWidth; wx += 32) {
+        const x = Math.round((wx - +d.centerX) * scale + canvas.width / 2), y = Math.round((wy - +d.centerY) * scale + canvas.height / 2);
+        if (x >= 0 && y >= 0 && x < canvas.width && y < canvas.height) pixels[`${wx},${wy}`] = [...context.getImageData(x, y, 1, 1).data];
+      }
     return pixels;
   };
   window.Worker = class extends RealWorker {
@@ -104,10 +108,14 @@ await page.addInitScript((tourKey) => {
     }
   };
 }, TOUR_KEY);
-async function wholeRoom() {
+async function settledCamera() {
   await page.waitForFunction(() => document.querySelector(".map-wrap")?.dataset.camera !== "focus", null, { timeout: 10000 });
-  await page.locator('#camera-toggle [data-camera="room"]').click();
-  await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].filter((c) => c.offsetParent).every((c) => c.dataset.zoom === "1"));
+}
+async function clickCell([x, y]) {
+  await settledCamera();
+  const room = Number(await page.locator("#map").getAttribute("data-map"));
+  const point = await showOnMap(page, room, Math.floor((x + 8) / 32) * 32 + 16, Math.floor(y / 32) * 32 + 24);
+  await page.mouse.click(point.x, point.y);
 }
 async function openCurrentCell() {
   await page.waitForFunction(
@@ -115,34 +123,7 @@ async function openCurrentCell() {
       !!document.querySelector("#details b") &&
       !document.querySelector("#take-control").disabled,
   );
-  await wholeRoom();
-  const map = page.locator("#map");
-  await map.scrollIntoViewIfNeeded();
-  const point = await map.evaluate((canvas) => {
-    const [x, y] = document
-        .querySelector("#details b")
-        .textContent.split(",")
-        .map(Number),
-      width = Number(canvas.dataset.mapWidth),
-      height = Number(canvas.dataset.mapHeight),
-      scale =
-        Math.min(canvas.width / width, canvas.height / height) *
-        Number(canvas.dataset.zoom),
-      rect = canvas.getBoundingClientRect(),
-      px = Math.floor((x + 8) / 32) * 32 + 16,
-      py = Math.floor(y / 32) * 32 + 24;
-    return {
-      x:
-        (((px - Number(canvas.dataset.centerX)) * scale + canvas.width / 2) *
-          rect.width) /
-        canvas.width,
-      y:
-        (((py - Number(canvas.dataset.centerY)) * scale + canvas.height / 2) *
-          rect.height) /
-        canvas.height,
-    };
-  });
-  await map.click({ position: point });
+  await clickCell(await page.locator("#details b").first().textContent().then((t) => t.split(",").map(Number)));
   await page.waitForFunction(
     () =>
       !document.querySelector("#inspector").hidden &&
@@ -209,7 +190,7 @@ try {
       document.querySelector("#verification")?.textContent === "Original game",
   );
   await page.waitForFunction(() => !document.querySelector("#pause").disabled);
-  await wholeRoom();
+  await settledCamera();
   assert.equal(await page.locator("#speed").inputValue(), "1");
   assert.equal(
     await page.locator("#screenshot,#export,#import,#history-file").count(),
@@ -308,33 +289,20 @@ try {
   const introMap = page.locator('.map-row .area-map').first();
   await introMap.scrollIntoViewIfNeeded();
   const clickIntroCell = async () => {
-    const click = await introMap.evaluate(
-      (canvas, position) => {
-        const width = Number(canvas.dataset.mapWidth),
-          height = Number(canvas.dataset.mapHeight),
-          scale = Math.min(canvas.width / width, canvas.height / height),
-          rect = canvas.getBoundingClientRect();
-        const px = Math.floor(position.x / 32) * 32 + 16,
-          py = Math.floor((position.y - 8) / 32) * 32 + 24;
-        return {
-          x:
-            (rect.width * ((canvas.width - width * scale) / 2 + px * scale)) /
-            canvas.width,
-          y:
-            (rect.height *
-              ((canvas.height - height * scale) / 2 + py * scale)) /
-            canvas.height,
-        };
-      },
-      { x, y },
-    );
-    await introMap.hover({ position: click });
+    const room = Number(await introMap.getAttribute("data-map"));
+    const point = await showOnMap(page, room, Math.floor(x / 32) * 32 + 16, Math.floor((y - 8) / 32) * 32 + 24);
+    await page.mouse.move(point.x, point.y);
     assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
-    await introMap.click({ position: click });
+    await page.mouse.click(point.x, point.y);
   };
-  await introMap.hover({ position: { x: 2, y: 2 } });
+  const emptyCell = async (move) => {
+    const room = Number(await introMap.getAttribute("data-map"));
+    const point = await showOnMap(page, room, 16, 8);
+    await (move ? page.mouse.move(point.x, point.y) : page.mouse.click(point.x, point.y));
+  };
+  await emptyCell(true);
   assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "default");
-  await introMap.click({ position: { x: 2, y: 2 } });
+  await emptyCell();
   assert.equal(
     await page.locator("#inspector").getAttribute("data-empty"),
     "true",
@@ -347,7 +315,7 @@ try {
       .evaluate((el) => el.classList.contains("inspect-open")),
     false,
   );
-  await introMap.click({ position: { x: 2, y: 2 } });
+  await emptyCell();
   assert.equal(await page.locator("#inspector").isVisible(), false);
   await page.waitForFunction(() =>
     [...document.querySelectorAll(".map-row .area-map")].every(
@@ -374,7 +342,7 @@ try {
           .tracePoints,
       ) > 1,
   );
-  await introMap.click({ position: { x: 2, y: 2 } });
+  await emptyCell();
   assert.equal(await page.locator("#inspector").isVisible(), false);
   assert.equal(await page.locator("#state-list .state").count(), 0);
   assert.equal(await page.locator("#play").isEnabled(), false);
@@ -703,7 +671,6 @@ try {
       rooms.includes(Number(document.querySelector("#map").dataset.map)),
     { level: liveLevel, rooms: catalog.levels.find((level) => level.id === liveLevel).rooms },
   );
-  assert.equal(await page.locator('#camera-toggle [data-camera="follow"]').getAttribute("aria-pressed"), "true");
   console.log("The level trail returns from a replayed level to the level the search is exploring.");
   const longFrames = await selectFixture(
     {
@@ -730,7 +697,7 @@ try {
       document.querySelector("#scrub").max === "0",
   );
   await setView(page,'heat');
-  await wholeRoom();
+  await settledCamera();
   const originalAttempts = await page.locator("#attempts").textContent();
   const originalCells = await page.locator("#cells").textContent();
   await page.mouse.move(0, 0);
@@ -835,7 +802,7 @@ try {
   for (let attempt = 0; attempt < 30; attempt++) {
     await page.waitForTimeout(1000);
     const next = await readOverlay();
-    if (next.every((value, index) => value === originalOverlay[index])) break;
+    if (JSON.stringify(next) === JSON.stringify(originalOverlay)) break;
     originalOverlay = next;
   }
   await page.locator("#search-here").click();
@@ -915,28 +882,7 @@ try {
     () => !document.querySelector("#take-control").disabled,
   );
   const { x: bx, y: by } = await page.evaluate(() => window.tdTestBranchRetained);
-  await wholeRoom();
-  const branchClick = await page.locator("#map").evaluate(
-    (c, p) => {
-      const r = c.getBoundingClientRect(),
-        w = Number(c.dataset.mapWidth),
-        h = Number(c.dataset.mapHeight),
-        scale = Math.min(c.width / w, c.height / h) * Number(c.dataset.zoom),
-        px = Math.floor((p.x + 8) / 32) * 32 + 16,
-        py = Math.floor(p.y / 32) * 32 + 24;
-      return {
-        x:
-          (((px - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width) /
-          c.width,
-        y:
-          (((py - Number(c.dataset.centerY)) * scale + c.height / 2) *
-            r.height) /
-          c.height,
-      };
-    },
-    { x: bx, y: by },
-  );
-  await page.locator("#map").click({ position: branchClick });
+  await clickCell([bx, by]);
   await page.waitForFunction(
     () =>
       document
@@ -1072,10 +1018,11 @@ try {
     );
     if (attempts !== undefined) assert.equal(restored.attempts, attempts);
     if (overlay) {
-      assert.equal(restored.overlay.length, overlay.length);
+      const shared = Object.keys(overlay).filter((key) => key in restored.overlay);
+      assert.ok(shared.length >= 10, `Too few shared map positions to compare colors: ${shared.length}`);
       assert.ok(
-        restored.overlay.every(
-          (channel, i) => Math.abs(channel - overlay[i]) <= 3,
+        shared.every((key) =>
+          overlay[key].every((channel, i) => Math.abs(channel - restored.overlay[key][i]) <= 3),
         ),
         "Returning to the original search must preserve its rendered cell colors while exploration resumes",
       );
@@ -1096,7 +1043,7 @@ try {
     await page.waitForTimeout(100);
     return page.locator("#cells").textContent();
   }
-  await wholeRoom();
+  await settledCamera();
   const resumedOriginalCells = await switchSearch(
     0,
     originalCells,
@@ -1293,26 +1240,7 @@ try {
     }
   }
   assert.ok(phonePosition, "no retained state outside the root cell survives holding right");
-  await wholeRoom();
-  const phoneCell = await page.locator("#map").evaluate((canvas, position) => {
-    const w = Number(canvas.dataset.mapWidth),
-      h = Number(canvas.dataset.mapHeight),
-      scale = Math.min(canvas.width / w, canvas.height / h) * Number(canvas.dataset.zoom),
-      rect = canvas.getBoundingClientRect();
-    const x = Math.floor((position[0] + 8) / 32) * 32 + 16,
-      y = Math.floor(position[1] / 32) * 32 + 24;
-    return {
-      x:
-        (((x - Number(canvas.dataset.centerX)) * scale + canvas.width / 2) *
-          rect.width) /
-        canvas.width,
-      y:
-        (((y - Number(canvas.dataset.centerY)) * scale + canvas.height / 2) *
-          rect.height) /
-        canvas.height,
-    };
-  }, phonePosition);
-  await page.locator("#map").click({ position: phoneCell });
+  await clickCell(phonePosition);
   await page.waitForFunction(
     () =>
       document.querySelector("#verification").textContent === "Exact replay ✓",

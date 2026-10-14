@@ -50,7 +50,6 @@ const centerY = Number(await page.locator('.area-map[data-map="0"]').getAttribut
 assert.ok(Math.abs(centerY - 200) < 20, `Clicking 10% down the level strip centers the view there (${centerY})`);
 const view = await page.locator('.area-map[data-map="0"]').boundingBox();
 assert.ok(box.x >= view.x + view.width && box.x - (view.x + view.width) < 40, "The level strip sits beside the game view");
-assert.equal(await page.locator('#camera-toggle [data-camera="room"]').textContent(), "Manual view");
 assert.deepEqual(errors, []);
 console.log("Tobu Tobu Girl shows a whole-level strip that moves the view.");
 

@@ -3,6 +3,7 @@ import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { TOUR_KEY } from '../src/tour.js';
+import { showOnMap } from './map-point.mjs';
 const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const browser = await chromium.launch({headless: true, ...(process.env.CHROME_CHANNEL ? {channel: process.env.CHROME_CHANNEL} : {})});
 const errors = [];
@@ -34,19 +35,11 @@ async function open(options) {
 async function inspectRoot(page, touch = false) {
   if (await page.locator('#pause').getAttribute('aria-label') === 'Pause Search') await page.locator('#pause').click();
   await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus', null, { timeout: 10000 });
-  await (touch ? page.locator('#camera-toggle [data-camera="room"]').tap() : page.locator('#camera-toggle [data-camera="room"]').click());
   const target = await page.evaluate(() => {
     const root = window.tdReady.root.observation;
     return document.querySelector(`.map-row[data-map="${root.level}"]`) ? root : window.tdRetained.get(Number(document.querySelector('#map').dataset.map));
   });
-  await page.locator(`.map-row[data-map="${target.level}"] .area-map`).scrollIntoViewIfNeeded();
-  const point = await page.evaluate((o) => {
-    const c = document.querySelector(`.map-row[data-map="${o.level}"] .area-map`), r = c.getBoundingClientRect();
-    const scale = Math.min(c.width / Number(c.dataset.mapWidth), c.height / Number(c.dataset.mapHeight)) * Number(c.dataset.zoom);
-    const x = Math.floor((o.x + 8) / 32) * 32 + 16, y = Math.floor(o.y / 32) * 32 + 24;
-    return {room: o.level, x: r.left + ((x - Number(c.dataset.centerX)) * scale + c.width / 2) * r.width / c.width,
-      y: r.top + ((y - Number(c.dataset.centerY)) * scale + c.height / 2) * r.height / c.height};
-  }, target);
+  const point = {room: target.level, ...await showOnMap(page, target.level, Math.floor((target.x + 8) / 32) * 32 + 16, Math.floor(target.y / 32) * 32 + 24, touch)};
   if (touch) await page.touchscreen.tap(point.x, point.y);
   else await page.mouse.click(point.x, point.y);
   await page.waitForFunction(() => !document.querySelector('#inspector').hidden && !document.querySelector('#take-control').disabled);

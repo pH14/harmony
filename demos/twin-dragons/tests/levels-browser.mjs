@@ -2,6 +2,7 @@
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
+import { showOnMap } from './map-point.mjs';
 const browser = await chromium.launch({headless:true, ...(process.env.CHROME_CHANNEL ? {channel:process.env.CHROME_CHANNEL} : {})});
 const errors = [];
 await mkdir('test-results', {recursive:true});
@@ -44,17 +45,9 @@ try {
       await page.waitForFunction(() => Number(document.querySelector('#attempts').textContent.replaceAll(',','')) >= 4);
       await page.locator('#pause').click();
       // Select the exact starting state in its projected map cell.
-      await (phone ? page.locator('#camera-toggle [data-camera="room"]').tap() : page.locator('#camera-toggle [data-camera="room"]').click());
-      const point = await page.evaluate(() => {
-        const o = window.tdRoot.observation, panels=[...document.querySelectorAll(`.map-row[data-map="${o.level}"] .area-map`)];
-        const worldX=o.x+8, worldY=o.y+8;
-        const x=Math.floor(worldX/32)*32+16,y=Math.floor((worldY-8)/32)*32+24;
-        const c=panels.find(c=>worldX>=+c.dataset.panelX && worldX<+c.dataset.panelX+ +c.dataset.mapWidth && worldY-8>=+c.dataset.panelY && worldY-8<+c.dataset.panelY+ +c.dataset.mapHeight);
-        c.scrollIntoView({block:'center',behavior:'instant'});
-        const r=c.getBoundingClientRect(),w=Number(c.dataset.mapWidth),h=Number(c.dataset.mapHeight);
-        const scale=Math.min(c.width/w,c.height/h)*Number(c.dataset.zoom);
-        return {x:r.left+((x-Number(c.dataset.centerX))*scale+c.width/2)*r.width/c.width,y:r.top+((y-Number(c.dataset.centerY))*scale+c.height/2)*r.height/c.height};
-      });
+      await page.waitForFunction(() => document.querySelector('.map-wrap').dataset.camera !== 'focus', null, {timeout: 10000});
+      const o = await page.evaluate(() => window.tdRoot.observation);
+      const point = await showOnMap(page, o.level, Math.floor((o.x+8)/32)*32+16, Math.floor(o.y/32)*32+24, phone);
       if (phone) await page.touchscreen.tap(point.x,point.y); else await page.mouse.click(point.x,point.y);
       await page.waitForFunction(() => !document.querySelector('#inspector').hidden && !document.querySelector('#take-control').disabled);
       const route = await page.locator('#state-list .state').first();

@@ -58,7 +58,7 @@ const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets)
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
-<div class="goal"><div class="level-nav"><nav id="level-strip" class="level-strip" aria-label="Levels in this search"></nav><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><span id="goal-status" hidden></span></div><div><div id="camera-toggle" class="segments" role="group" aria-label="Camera" data-value="follow"><button data-camera="follow" aria-pressed="true" title="Follow the search, and return to it 10 seconds after you move the map">Auto view</button><button data-camera="room" aria-pressed="false" title="Show the whole level">Full view</button></div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
+<div class="goal"><div class="level-nav"><nav id="level-strip" class="level-strip" aria-label="Levels in this search"></nav><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><span id="goal-status" hidden></span></div><div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
@@ -214,7 +214,7 @@ function roomView(id, c) {
   const key = c ? `${id}:${c.dataset.panel}` : id;
   if (!views.has(key)) {
     const map = c ? canvasPanel(c) : { x: 0, y: 0, ...maps.get(id) };
-    const fresh = c && !views.has(id) && camera.mode === "follow";
+    const fresh = c && !views.has(id);
     const view = { zoom: c ? roomView(id).zoom : 1, x: (map.x || 0) + map.width / 2, y: (map.y || 0) + map.height / 2 };
     views.set(key, view);
     if (fresh) {
@@ -540,34 +540,26 @@ function drawOverview(strip, now) {
   ctx.lineWidth = line;
   ctx.strokeRect(x0 + line / 2, y0 + line / 2, x1 - x0 - line, y1 - y0 - line);
 }
-function updateCameraToggle() {
-  $("camera-toggle").dataset.value = camera.mode;
-  for (const button of $("camera-toggle").children) button.setAttribute("aria-pressed", button.dataset.camera === camera.mode);
-}
 function stopCamera() {
   camera.overview = false;
   camera.only = null;
   camera.follow = false;
   camera.focus = null;
   camera.introDone = true;
-  updateCameraToggle();
 }
 function moveCameraByHand() {
   camera.overview = false;
   camera.introDone = true;
   camera.focus = null;
   if (camera.follow) camera.manual = performance.now() + 10000;
-  updateCameraToggle();
 }
 function followSearch() {
   camera.overview = false;
   camera.manual = 0;
   camera.only = null;
   camera.targets = new Map();
-  camera.mode = "follow";
-  camera.follow = true;
+    camera.follow = true;
   camera.focus = null;
-  updateCameraToggle();
 }
 function levelIndex(room) {
   return catalog.levels.findIndex((level) => level.rooms.includes(room));
@@ -581,26 +573,13 @@ function cameraRooms() {
 function drivenRooms() {
   return cameraRooms().filter((room) => camera.only == null || room === camera.only);
 }
-function applyCameraMode(mode = camera.mode) {
-  if (mode === "room") {
-    stopCamera();
-    camera.mode = "room";
-    for (const room of cameraRooms()) overview(room);
-    updateCameraToggle();
-  } else {
-    camera.pinned = null;
-    followSearch();
-    const room = followRoom(performance.now(), true);
-    if (room != null) setRoom(room, true);
-  }
+function applyCameraMode() {
+  camera.pinned = null;
+  followSearch();
+  const room = followRoom(performance.now(), true);
+  if (room != null) setRoom(room, true);
   drawMap(performance.now());
 }
-for (const button of $("camera-toggle").children) button.onclick = () => applyCameraMode(button.dataset.camera);
-if (game.vertical || game.grid)
-  Object.assign(document.querySelector('#camera-toggle [data-camera="room"]'), {
-    textContent: "Manual view",
-    title: "Stop following the search. Scroll the map or drag the level strip to move.",
-  });
 function latestRoom() {
   const rooms = levelRooms();
   return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
@@ -617,12 +596,11 @@ function followRoom(now, immediate = false) {
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
   const introRoom = intro ? mapLevel : null;
-  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, jumped: 0, targets: new Map(), focus: null, mode: "follow", follow: true, introDone: !intro, introRoom, only });
+  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
     const c = mapCanvas(room);
     if (c) steerCamera(room, c, game.grid ? game.entry(room) : { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
   }
-  updateCameraToggle();
 }
 function updateCamera(now) {
   const dt = Math.min(0.1, camera.last ? (now - camera.last) / 1000 : 0);
@@ -1544,7 +1522,6 @@ function startSearch(level = bootLevel) {
           if (branchOrigin.point) {
             camera.follow = false;
             camera.focus = { point: branchOrigin.point, start: performance.now() };
-            updateCameraToggle();
           }
           $("branch-feedback").textContent =
             `${searchLabel(searchChoices.find((s) => s.id === activeSearch))} is searching from this frame.`;
@@ -2935,10 +2912,6 @@ const mapResize = new ResizeObserver(([entry]) => {
   mapLayoutWidth = width;
   for (const key of views.keys()) if (typeof key === "string") views.delete(key);
   renderMapRows(catalog.levels.find(l => l.rooms.includes(mapLevel)));
-  if (camera.mode === "room" && !camera.focus) {
-    for (const room of cameraRooms()) overview(room);
-    updateCameraToggle();
-  }
   drawMap(performance.now());
 });
 mapResize.observe($("map-rows"));

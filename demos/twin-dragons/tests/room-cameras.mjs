@@ -6,6 +6,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { TOUR_KEY } from '../src/tour.js';
 import { createEngine } from '../src/emulator.js';
 import { snapshotHash } from '../src/media.js';
+import { showOnMap } from './map-point.mjs';
 const recorded=JSON.parse(await readFile(new URL('./fixtures/level-one.json',import.meta.url)));
 // Fork from a grounded point far into Level 1 but short of its goal, so the forked search stays in Level 1.
 const base=new URL('../public/',import.meta.url);
@@ -21,8 +22,6 @@ assert.ok(tape,'The Level 1 history passes a grounded point far into the level')
 const browserType=process.env.BROWSER==='webkit'?webkit:chromium;
 const browser=await browserType.launch({headless:true,...(browserType===chromium&&process.env.CHROME_CHANNEL?{channel:process.env.CHROME_CHANNEL}:{})}),errors=[];
 await mkdir('test-results',{recursive:true});
-const camera=async(page,phone,mode)=>{const b=page.locator(`#camera-toggle [data-camera="${mode}"]`);await(phone?b.tap():b.click());};
-const cameraMode=page=>page.locator('#camera-toggle').getAttribute('data-value');
 try {
   for(const phone of [false,true]) {
     const page=await browser.newPage({viewport:phone?{width:390,height:844}:{width:1440,height:1000},hasTouch:phone,isMobile:phone});
@@ -61,7 +60,7 @@ try {
         const edge=part.locator(`.pan-edge[data-dir="${dir}"]`);
         if(phone)await edge.tap();else{await canvases.first().hover();await edge.hover();}
         await page.waitForFunction(([room,before,dir])=>dir*(+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.centerX-before)>8,[room,before,dir]);
-        assert.equal(await cameraMode(page),'follow','Panning from a room edge keeps Auto view, which resumes after a pause');
+        assert.equal(await page.locator('.map-wrap').getAttribute('data-camera'),'follow','Panning from a room edge keeps following, which resumes after a pause');
         if(!phone){
           await canvases.first().evaluate(c=>{c.dataset.clicks=0;if(!c.countsClicks)c.addEventListener('click',()=>c.dataset.clicks++);c.countsClicks=true;});
           await edge.click();
@@ -69,14 +68,7 @@ try {
           if(!await page.locator('#inspector').isHidden())await page.locator('#close-inspector').click();
           await page.mouse.move(0,0);
         }
-        await camera(page,phone,'follow');
       }
-      await camera(page,phone,'room');
-      await page.waitForFunction(room=>+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.zoom===1,room);
-      assert.equal(await cameraMode(page),'room');
-      await camera(page,phone,'follow');
-      assert.equal(await cameraMode(page),'follow');
-      assert.equal(await page.locator('#camera-toggle [data-camera="follow"]').getAttribute('aria-pressed'),'true');
       await canvases.first().scrollIntoViewIfNeeded();await page.screenshot({path:`test-results/room-camera-${level}-${phone?'phone':'desktop'}.png`});
     }
     assert.ok(panned>0,'At least one long room offers edge panning');
@@ -96,13 +88,9 @@ try {
     await page.waitForFunction(()=>window.root?.id==='1:0'&&!document.querySelector('#pause').disabled);
     await page.locator('#pause').click();
     await page.waitForFunction(()=>document.querySelector('.map-wrap').dataset.camera!=='focus',null,{timeout:10000});
-    await camera(page,phone,'room');
     const target=await page.evaluate(()=>{const o=window.root.observation;return{id:window.root.id,room:o.level,x:Math.floor((o.x+8)/32)*32+16,y:Math.floor(o.y/32)*32+24};});
     if(phone&&await page.locator(`#room-tabs button[data-map="${target.room}"]`).getAttribute('aria-pressed')!=='true')await page.locator(`#room-tabs button[data-map="${target.room}"]`).tap();
-    await camera(page,phone,'room');
-    const canvas=page.locator(`.map-row[data-map="${target.room}"] .area-map`);
-    await canvas.scrollIntoViewIfNeeded();
-    const point=await canvas.evaluate((c,t)=>{const r=c.getBoundingClientRect(),scale=Math.min(c.width/+c.dataset.mapWidth,c.height/+c.dataset.mapHeight)*+c.dataset.zoom;return{x:r.left+((t.x-+c.dataset.centerX)*scale+c.width/2)*r.width/c.width,y:r.top+((t.y-+c.dataset.centerY)*scale+c.height/2)*r.height/c.height};},target);
+    const point=await showOnMap(page,target.room,target.x,target.y,phone);
     if(phone)await page.touchscreen.tap(point.x,point.y);else await page.mouse.click(point.x,point.y);
     await page.waitForFunction(()=>!document.querySelector('#inspector').hidden&&!document.querySelector('#take-control').disabled);
     assert.ok(await page.evaluate(id=>window.lastStateRequest.includes(id),target.id),'Selecting the far end of a long room opens its authentic retained history');
@@ -111,5 +99,5 @@ try {
     await page.locator('#close-inspector').click();
     await page.goto('about:blank');await page.close();
   }
-  assert.deepEqual(errors,[]);console.log('Room cameras: one viewport per room on desktop and phone, whole-room and follow modes, edge panning, rotation, and authentic retained hits at the far end of a long room passed.');
+  assert.deepEqual(errors,[]);console.log('Room cameras: one viewport per room on desktop and phone, edge panning, rotation, and authentic retained hits at the far end of a long room passed.');
 }finally{await browser.close();}
