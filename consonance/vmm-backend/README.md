@@ -163,7 +163,8 @@ be reused after an incomplete reload. Portable fault injection exercises each
 slot-removal/replacement error and the final nested-state installation boundary.
 
 On AMD-compatible KVM with NPT, full capture after a guest has entered 32-bit
-PAE paging has changed the guest's cached PDPTR continuation. Both snapshot
+PAE paging has changed the guest's cached PDPTR continuation. The guard applies
+to AMD-compatible KVM regardless of NPT mode. Both snapshot
 preparation and direct vCPU capture inspect the returned SREGS2 paging mode.
 If that mode is active after guest entry, they report `AmdPaeSnapshotUnsafe`
 and poison the backend. SREGS2 inspection cannot certify that hidden state is

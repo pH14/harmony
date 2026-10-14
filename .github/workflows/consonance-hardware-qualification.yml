@@ -528,6 +528,7 @@ jobs:
           run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend || failed=1
           run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm \
             "MMIO_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/mmio-full-vmm" || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::long_mode_capture_preserves_continuation long-mode-continuation || failed=1
           if [[ "$CPU_VENDOR" == AuthenticAMD ]]; then
             run_exact vmm-core x86_cpu_snapshots live_kvm::amd_pae_capture_refuses_and_retires_public_paths amd-pae-refusal || failed=1
           elif [[ "$CPU_VENDOR" == GenuineIntel ]]; then
@@ -781,8 +782,7 @@ jobs:
             result=$?
             set -e
             test "$result" -ne 0
-            grep -Fq 'AMD KVM cannot safely capture or continue a running 32-bit PAE guest' \
-              "snapshot-report/$name.log"
+            grep -Fq 'AmdPaeSnapshotUnsafe' "snapshot-report/$name.log"
             printf 'EXPECTED_AMD_PAE_REFUSAL=%s\n' "$name" | tee "snapshot-report/$name.status"
           done
           printf '%s\n' \

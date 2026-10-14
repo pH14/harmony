@@ -1104,7 +1104,13 @@ mod live_kvm {
             VmmError::Backend(vmm_backend::BackendError::AmdPaeSnapshotUnsafe)
         ));
         assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
-        assert!(vmm.step().is_err(), "capture must retire the source vCPU");
+        assert!(matches!(
+            vmm.step(),
+            Err(VmmError::Backend(vmm_backend::BackendError::Internal(
+                "backend state mutation failed"
+            )))
+        ));
+        assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
 
         let mut vmm = fresh_guest_pdpt_vmm(true);
         wire_snapshot_path(&mut vmm);
@@ -1116,7 +1122,12 @@ mod live_kvm {
             error,
             VmmError::Backend(vmm_backend::BackendError::AmdPaeSnapshotUnsafe)
         ));
-        assert!(vmm.step().is_err(), "raw read must retire the source vCPU");
+        assert!(matches!(
+            vmm.step(),
+            Err(VmmError::Backend(vmm_backend::BackendError::Internal(
+                "backend state mutation failed"
+            )))
+        ));
 
         let mut vmm = fresh_guest_pdpt_vmm(true);
         wire_snapshot_path(&mut vmm);
@@ -1147,10 +1158,80 @@ mod live_kvm {
             until: control_proto::StopConditions::default(),
             resolve: None,
         });
-        assert!(
-            retry.is_err(),
-            "control run must not resume the poisoned vCPU"
+        assert!(matches!(
+            retry,
+            Err(ServeError::Vmm(VmmError::Backend(
+                vmm_backend::BackendError::Internal("backend state mutation failed")
+            )))
+        ));
+    }
+
+    fn fresh_long_mode_vmm() -> Vmm<KvmBackend> {
+        let mut ram = guest_ram_image();
+        let bytes = ram.as_mut_bytes();
+        put_bytes(
+            bytes,
+            CODE_GPA,
+            &[
+                0xBA,
+                0xF8,
+                0x03,
+                0x00,
+                0x00,
+                0xB0,
+                WARMUP_MARKER,
+                0xEE,
+                0xF4,
+            ],
         );
+        put_u64(bytes, 0x3000, PDPT_GPA as u64 | 3);
+        put_u64(bytes, PDPT_GPA, PD_A_GPA as u64 | 3);
+        put_u64(bytes, PD_A_GPA, 0x83);
+        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+        let mut vmm = compose(ram, backend, |backend| {
+            install_pae_entry(backend);
+            let mut state = backend.save().expect("save long-mode entry template");
+            state.sregs.cr3 = 0x3000;
+            state.sregs.efer = (1 << 8) | (1 << 10);
+            state.sregs.cs.l = 1;
+            state.sregs.cs.db = 0;
+            state.sregs.flags = 0;
+            state.sregs.pdptrs = [0; 4];
+            state.msrs.insert(IA32_EFER, state.sregs.efer);
+            backend
+                .restore(&state)
+                .expect("restore long-mode entry state");
+        });
+        wire_snapshot_path(&mut vmm);
+        vmm
+    }
+
+    #[test]
+    #[ignore = "live KVM; long-mode capture and continuation on every x86 host"]
+    fn long_mode_capture_preserves_continuation() {
+        require_kvm();
+        let mut source = fresh_long_mode_vmm();
+        assert_eq!(
+            source.step().expect("run long-mode UART warmup"),
+            Step::Continued
+        );
+        assert_eq!(source.serial(), &[WARMUP_MARKER]);
+        let boundary = source
+            .save_vm_state()
+            .expect("capture running long-mode VM");
+        assert_eq!(
+            source.step().expect("continue long-mode source"),
+            Step::Terminal(TerminalReason::Idle)
+        );
+        let mut cold = fresh_long_mode_vmm();
+        cold.restore_vm_state(&boundary)
+            .expect("restore long-mode VM");
+        assert_eq!(cold.serial(), &[WARMUP_MARKER]);
+        assert_eq!(
+            cold.step().expect("continue restored long-mode VM"),
+            Step::Terminal(TerminalReason::Idle)
+        );
+        assert_eq!(cold.serial(), source.serial());
     }
 
     #[test]
