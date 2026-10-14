@@ -62,8 +62,10 @@ The archive key is the level, world x and y, game mode, gravity, size, dual
 mode and the sign of the vertical velocity. The place is the 32 × 16-pixel
 cell with the mode fields, progress is the level and the 256-pixel band of
 world x, and the identity is the vertical motion. Each place keeps one entry,
-the one furthest right. The progress watermark is the best percent and the
-furthest world x.
+the one furthest left. The level scrolls at a fixed speed, so x is also time,
+and a later arrival in the same cell has had fewer frames to line up the next
+jump. Many later arrivals are already doomed whatever the player presses. The
+progress watermark is the best percent and the furthest world x.
 
 ## Running
 
